@@ -1,0 +1,28 @@
+# Build output
+/build/
+*.o
+*.a
+
+# Native-compilation artifacts (--exe / --aot / --bundle)
+*.gen.cpp
+/a.out
+
+# Scratch binaries and files left in the tree during development
+/1
+/2
+/fib
+/1.raku
+/comb.testing
+/results.json
+/t
+
+# Test-run temp files (created by the Roast I/O tests when run from the repo root)
+/temp-*
+/tempfile*
+
+# Rakudo precompilation cache (created when modules are loaded)
+**/.precomp/
+
+# Editor / OS cruft
+.DS_Store
+*.swp

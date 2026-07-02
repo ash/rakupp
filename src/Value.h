@@ -1,0 +1,184 @@
+#pragma once
+#include "Ast.h"
+#include "BigInt.h"
+#include <functional>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace rakupp {
+
+struct Value;
+struct Env;
+class Interpreter;
+
+using ValueList = std::vector<Value>;
+using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
+
+// A callable: either a user sub (params+body+closure) or a builtin.
+struct Callable {
+    std::string name;
+    const std::vector<Param>* params = nullptr;   // borrowed from AST
+    const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
+    std::shared_ptr<Env> closure;
+    std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)
+    BuiltinFn builtin;                             // set => builtin
+    std::vector<std::string> placeholders;         // $^a auto-params (sorted)
+    std::vector<Value> candidates;                 // multi-dispatch candidates
+    bool isMultiDispatcher = false;
+    bool isWhateverCode = false;                    // produced by * currying (composes further)
+    bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
+};
+
+enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
+
+struct ClassInfo;
+struct ObjectData;
+
+struct Value {
+    VT t = VT::Any;
+    bool b = false;
+    long long i = 0;
+    double n = 0;
+    double im = 0; // imaginary part for VT::Complex (real part is n)
+    std::string s; // also holds type name for VT::Type, key for VT::Pair
+    std::string hashKind; // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/...
+    bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
+    bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
+    std::shared_ptr<ValueList> arr;
+    std::shared_ptr<std::map<std::string, Value>> hash;
+    std::shared_ptr<Callable> code;
+    std::shared_ptr<Value> pairVal; // for Pair value
+    std::shared_ptr<ObjectData> obj; // for VT::Object
+    std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
+    std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
+    // range
+    long long rFrom = 0, rTo = 0;
+    bool rExFrom = false, rExTo = false;
+    std::string enumName; // non-empty for enum values (e.g. Order: Less/Same/More)
+
+    Value() : t(VT::Any) {}
+
+    static Value nil() { Value v; v.t = VT::Nil; return v; }
+    static Value any() { Value v; v.t = VT::Any; return v; }
+    static Value boolean(bool x) { Value v; v.t = VT::Bool; v.b = x; return v; }
+    static Value integer(long long x) { Value v; v.t = VT::Int; v.i = x; return v; }
+    static Value bigint(const BigInt& b) {
+        Value v; v.t = VT::Int;
+        if (b.fitsLL()) v.i = b.toLL();
+        else v.big = std::make_shared<BigInt>(b);
+        return v;
+    }
+    static Value rat(BigInt n, BigInt d) {
+        Value v; v.t = VT::Rat;
+        if (d.sign < 0) { n = -n; d = -d; }
+        if (d.sign == 0) d = BigInt(1);
+        BigInt g = BigInt::gcd(n, d);
+        if (!g.isZero()) { BigInt q, r; BigInt::divmod(n, g, q, r); n = q; BigInt::divmod(d, g, q, r); d = q; }
+        v.ratN = std::make_shared<BigInt>(n);
+        v.ratD = std::make_shared<BigInt>(d);
+        return v;
+    }
+    BigInt toBig() const {
+        if (t == VT::Int) return big ? *big : BigInt(i);
+        if (t == VT::Bool) return BigInt(b ? 1 : 0);
+        return BigInt((long long)toInt());
+    }
+    static Value number(double x) { Value v; v.t = VT::Num; v.n = x; return v; }
+    static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.im = imag; return v; }
+    static Value str(std::string x) { Value v; v.t = VT::Str; v.s = std::move(x); return v; }
+    static Value array() { Value v; v.t = VT::Array; v.arr = std::make_shared<ValueList>(); return v; }
+    static Value array(ValueList items) { Value v; v.t = VT::Array; v.arr = std::make_shared<ValueList>(std::move(items)); return v; }
+    // a List/Seq: same storage as Array but gists with (..) instead of [..]
+    static Value list(ValueList items) { Value v = array(std::move(items)); v.isList = true; return v; }
+    // Wrap a C++ callable as a Raku Code value (used by native codegen for closures / WhateverCode).
+    static Value closure(std::function<Value(ValueList&)> fn) {
+        Value v; v.t = VT::Code; v.code = std::make_shared<Callable>();
+        v.code->builtin = [fn](Interpreter&, ValueList& a) -> Value { return fn(a); };
+        return v;
+    }
+    static Value makeHash() { Value v; v.t = VT::Hash; v.hash = std::make_shared<std::map<std::string, Value>>(); return v; }
+    static Value typeObj(std::string name) { Value v; v.t = VT::Type; v.s = std::move(name); return v; }
+    static Value whatever() { Value v; v.t = VT::Whatever; return v; }
+    static Value object(std::shared_ptr<ObjectData> o) { Value v; v.t = VT::Object; v.obj = std::move(o); return v; }
+    static Value enumVal(const std::string& name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
+    static Value regex(std::string pat, std::string flags = "") {
+        Value v; v.t = VT::Regex; v.s = std::move(pat); v.hashKind = std::move(flags); return v;
+    }
+    static Value matchVal(std::string text, long from = 0, long to = 0) {
+        Value v; v.t = VT::Match; v.s = std::move(text); v.rFrom = from; v.rTo = to;
+        v.arr = std::make_shared<ValueList>();
+        v.hash = std::make_shared<std::map<std::string, Value>>();
+        return v;
+    }
+    static Value pair(std::string key, Value val) {
+        Value v; v.t = VT::Pair; v.s = std::move(key);
+        v.pairVal = std::make_shared<Value>(std::move(val)); return v;
+    }
+    static Value range(long long from, long long to, bool exFrom, bool exTo) {
+        Value v; v.t = VT::Range; v.rFrom = from; v.rTo = to;
+        v.rExFrom = exFrom; v.rExTo = exTo; return v;
+    }
+
+    bool isNumeric() const { return t == VT::Int || t == VT::Num || t == VT::Bool || t == VT::Rat; }
+
+    bool truthy() const;
+    long long toInt() const;
+    double toNum() const;
+    std::string toStr() const;        // Str coercion (~)
+    std::string gist() const;         // .gist / say output
+    std::string typeName() const;
+
+    // expand a Range/Array into a flat list of values
+    ValueList flatten() const;
+};
+
+bool valueEq(const Value& a, const Value& b);   // numeric/str smart equality
+int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
+std::string strSucc(const std::string& s);             // Raku magic string increment
+std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=false on underflow)
+
+struct ClassAttr {
+    std::string name;
+    char sigil = '$';
+    bool pub = true;
+    const Expr* def = nullptr; // borrowed from AST
+    Value defVal;              // native codegen: precomputed default value
+    bool hasDefVal = false;    // use defVal instead of `def`
+};
+
+struct ClassInfo {
+    std::string name;
+    std::shared_ptr<ClassInfo> parent;
+    std::vector<ClassAttr> attrs;
+    std::map<std::string, Value> methods; // Code values (closures)
+    std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
+    std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
+    bool isGrammar = false;
+
+    Value* findMethod(const std::string& m) {
+        auto it = methods.find(m);
+        if (it != methods.end()) return &it->second;
+        if (parent) return parent->findMethod(m);
+        return nullptr;
+    }
+    const std::string* findRule(const std::string& n) const {
+        auto it = rules.find(n);
+        if (it != rules.end()) return &it->second;
+        if (parent) return parent->findRule(n);
+        return nullptr;
+    }
+    const ClassAttr* findAttr(const std::string& n) const {
+        for (auto& a : attrs) if (a.name == n) return &a;
+        if (parent) return parent->findAttr(n);
+        return nullptr;
+    }
+};
+
+struct ObjectData {
+    std::shared_ptr<ClassInfo> cls;
+    std::map<std::string, Value> attrs;
+};
+
+} // namespace rakupp

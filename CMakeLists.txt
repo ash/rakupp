@@ -1,0 +1,32 @@
+cmake_minimum_required(VERSION 3.16)
+project(RakuPP VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+
+find_package(Threads REQUIRED)
+
+file(GLOB_RECURSE RAKUPP_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+
+# The runtime (everything except the CLI entry point) is a static library, so
+# it can be linked both into `rakupp` and into standalone executables produced
+# by `rakupp --compile`.
+set(RAKUPP_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_MAIN}")
+
+add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
+target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
+
+add_executable(rakupp "${RAKUPP_MAIN}")
+target_link_libraries(rakupp PRIVATE rakupp_rt)
+
+install(TARGETS rakupp RUNTIME DESTINATION bin)
