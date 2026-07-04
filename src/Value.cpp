@@ -2,9 +2,19 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <sstream>
 
 namespace rakupp {
+
+static std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
+    auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
+    char buf[40];
+    if (isDate) std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", f("year"), f("month"), f("day"));
+    else std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld",
+                       f("year"), f("month"), f("day"), f("hour"), f("minute"), f("second"));
+    return buf;
+}
 
 bool Value::truthy() const {
     switch (t) {
@@ -38,6 +48,7 @@ long long Value::toInt() const {
         case VT::Num:  return (long long)n;
         case VT::Rat:  { if (!ratN || !ratD || ratD->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN, *ratD, q, r); return q.toLL(); }
         case VT::Str:  { try { return std::stoll(s); } catch (...) { return 0; } }
+        case VT::Match: { try { return std::stoll(s); } catch (...) { return 0; } } // matched text as a number
         case VT::Array: return arr ? (long long)arr->size() : 0;
         case VT::Hash:  return hash ? (long long)hash->size() : 0;
         default: return 0;
@@ -51,6 +62,7 @@ double Value::toNum() const {
         case VT::Num:  return n;
         case VT::Rat:  return (ratN && ratD && !ratD->isZero()) ? ratN->toDouble() / ratD->toDouble() : 0.0;
         case VT::Str:  { try { return std::stod(s); } catch (...) { return 0.0; } }
+        case VT::Match: { try { return std::stod(s); } catch (...) { return 0.0; } }
         default: return (double)toInt();
     }
 }
@@ -61,8 +73,15 @@ static std::string numToStr(double n) {
     if (n == (long long)n && std::fabs(n) < 1e15) {
         return std::to_string((long long)n);
     }
+    // shortest decimal that round-trips to the same double (matches Rakudo's Num.Str)
+    for (int prec = 15; prec <= 17; prec++) {
+        std::ostringstream os;
+        os.precision(prec);
+        os << n;
+        if (std::strtod(os.str().c_str(), nullptr) == n) return os.str();
+    }
     std::ostringstream os;
-    os.precision(15);
+    os.precision(17);
     os << n;
     return os.str();
 }
@@ -70,18 +89,23 @@ static std::string numToStr(double n) {
 static std::string ratToStr(const BigInt& num, const BigInt& den) {
     if (den.isZero()) return "0";
     bool neg = (num.sign < 0) != (den.sign < 0);
+    std::string sign = neg ? "-" : "";
     BigInt n = num.abs(), d = den.abs();
-    BigInt ip, rem; BigInt::divmod(n, d, ip, rem);
-    std::string out = (neg && (!ip.isZero() || !rem.isZero()) ? "-" : "") + ip.toString();
-    if (rem.isZero()) return out;
-    std::string frac;
-    for (int k = 0; k < 100 && !rem.isZero(); k++) {
-        rem = rem * BigInt(10);
-        BigInt dig, r2; BigInt::divmod(rem, d, dig, r2);
-        frac += std::to_string(dig.toLL());
-        rem = r2;
-    }
-    return out + "." + frac;
+    { BigInt ip, rem; BigInt::divmod(n, d, ip, rem);
+      if (rem.isZero()) return ip.isZero() ? "0" : sign + ip.toString(); } // integer-valued
+    // Rakudo Rat.Str: fractional digits = max(6, #digits(denominator) + 1),
+    // the value rounded to that many places, then trailing zeros trimmed.
+    long long fracDigits = std::max<long long>(6, (long long)d.toString().size() + 1);
+    BigInt scaled = n * BigInt(10).pow(fracDigits);
+    BigInt q, r; BigInt::divmod(scaled, d, q, r);
+    if ((r * BigInt(2) - d).sign >= 0) q = q + BigInt(1); // round half up
+    std::string digits = q.toString();
+    while ((long long)digits.size() <= fracDigits) digits = "0" + digits;
+    std::string ipart = digits.substr(0, digits.size() - fracDigits);
+    std::string fpart = digits.substr(digits.size() - fracDigits);
+    while (!fpart.empty() && fpart.back() == '0') fpart.pop_back();
+    std::string res = sign + ipart + (fpart.empty() ? "" : "." + fpart);
+    return res == "-0" ? "0" : res;
 }
 
 std::string Value::toStr() const {
@@ -115,6 +139,7 @@ std::string Value::toStr() const {
             return out;
         }
         case VT::Hash: {
+            if ((hashKind == "Date" || hashKind == "DateTime") && hash) return dateGist(*hash, hashKind == "Date");
             std::string out;
             if (hash) { bool first = true;
                 for (auto& kv : *hash) {
@@ -171,6 +196,7 @@ std::string Value::gist() const {
 }
 
 std::string Value::typeName() const {
+    if (!enumType.empty()) return enumType; // enum value / enum type object -> its enum type
     switch (t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";
@@ -182,9 +208,10 @@ std::string Value::typeName() const {
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             return (isList && s == "Seq") ? "Seq" : "Array";
-        case VT::Hash:  return hashKind.empty() ? "Hash" : hashKind;
+        case VT::Hash:  return (hashKind == "Date" || hashKind == "DateTime") && hash ? dateGist(*hash, hashKind == "Date")
+                             : (hashKind.empty() ? "Hash" : hashKind);
         case VT::Code:  return "Sub";
-        case VT::Rat:   return "Rat";
+        case VT::Rat:   return fatRat ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
         case VT::Type:  return s;

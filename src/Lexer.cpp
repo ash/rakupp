@@ -227,8 +227,9 @@ Token Lexer::lexNumber() {
         char c = advance();
         if (c != '_') num += c;
     }
+    bool hasDot = false, hasExp = false;
     if (peek() == '.' && std::isdigit((unsigned char)peek(1))) {
-        isFloat = true;
+        isFloat = true; hasDot = true;
         num += advance(); // .
         while (std::isdigit((unsigned char)peek()) || peek() == '_') {
             char c = advance();
@@ -236,7 +237,7 @@ Token Lexer::lexNumber() {
         }
     }
     if (peek() == 'e' || peek() == 'E') {
-        isFloat = true;
+        isFloat = true; hasExp = true;
         num += advance();
         if (peek() == '+' || peek() == '-') num += advance();
         while (std::isdigit((unsigned char)peek())) num += advance();
@@ -251,6 +252,7 @@ Token Lexer::lexNumber() {
     if (isFloat) {
         Token t = make(Tok::NumLit, num);
         t.nval = std::strtod(num.c_str(), nullptr);
+        t.flag = (hasDot && !hasExp); // a decimal literal with no exponent is a Rat (3.14), not a Num
         return t;
     }
     Token t = make(Tok::IntLit, num);
@@ -288,8 +290,9 @@ bool Lexer::tryQuoteForm(Token& out) {
     while (p < src_.size() && std::isalpha((unsigned char)src_[p])) { w += src_[p]; p++; }
     bool isRegex = (w == "rx" || w == "m" || w == "ms" || w == "mm");
     bool isSubst = (w == "s" || w == "S");
+    bool isTrans = (w == "tr" || w == "y"); // transliteration tr/from/to/
     bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww"); // word-list quotes
-    if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords) return false;
+    if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans) return false;
     // adverbs between keyword and delimiter, e.g. m:i/.../ , s:g/.../.../
     std::string adverbs;
     while (p < src_.size() && src_[p] == ':') {
@@ -312,13 +315,29 @@ bool Lexer::tryQuoteForm(Token& out) {
         case '/': case '|': case '!': close = d; bracket = false; break;
         default: return false;
     }
+    // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b]. If the
+    // second group is absent, this is really a call like S(5) or s($x) — not a
+    // substitution — so let it lex as an identifier instead.
+    if (isSubst && bracket) {
+        int depth = 0; size_t q = p;
+        for (; q < src_.size(); q++) {
+            if (src_[q] == d) depth++;
+            else if (src_[q] == close) { depth--; if (depth == 0) { q++; break; } }
+        }
+        while (q < src_.size() && std::isspace((unsigned char)src_[q])) q++;
+        if (q >= src_.size() || src_[q] != d) return false;
+    }
     bool patQuoteAware = (isRegex || isSubst) && !bracket; // regex/subst PATTERN: '...'/{...}/<...>/[...] protect the delimiter
     bool codeBlocks = (isRegex || isSubst); // regex/subst may contain { ... } embedded code
+    // Perl-5 regex mode (rx:P5/…/) uses Perl bracket semantics where `[` does not
+    // nest like Raku char classes, so don't shield the delimiter inside `[ ]` there.
+    bool p5 = adverbs.find("P5") != std::string::npos || adverbs.find("Perl5") != std::string::npos;
     auto readPart = [&](bool quoteAware, bool blocks) -> std::string {
         std::string raw;
         int depth = 1;
         char q = 0;
         int bd = 0; // { } embedded-code-block nesting
+        int sd = 0; // [ ] nesting: a char class <-[/]> / group shields the delimiter
         while (!eof()) {
             char ch = peek();
             if (ch == '\\') { advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
@@ -332,8 +351,11 @@ bool Lexer::tryQuoteForm(Token& out) {
             if (quoteAware && q) { if (ch == q) q = 0; raw += advance(); continue; }
             if (quoteAware && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
             if (blocks && ch == '{') { bd++; raw += advance(); continue; } // enter code block
-            if (bracket && ch == d) { depth++; raw += advance(); continue; }
-            if (ch == close) { depth--; if (depth == 0) { advance(); break; } raw += advance(); continue; }
+            // Raku regex/subst pattern: `[ ... ]` groups & char classes (incl. <-[/]>) shield the delimiter
+            if (quoteAware && !p5 && ch == '[') { sd++; raw += advance(); continue; }
+            if (quoteAware && !p5 && ch == ']' && sd > 0) { sd--; raw += advance(); continue; }
+            if (sd == 0 && bracket && ch == d) { depth++; raw += advance(); continue; }
+            if (sd == 0 && ch == close) { depth--; if (depth == 0) { advance(); break; } raw += advance(); continue; }
             raw += advance();
         }
         return raw;
@@ -352,15 +374,16 @@ bool Lexer::tryQuoteForm(Token& out) {
         out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, ""); // body filled at line end
         return true;
     }
-    if (isSubst) {
+    if (isSubst || isTrans) {
         std::string repl;
-        if (bracket) { // s[..][..] : skip ws, expect a fresh bracket pair
+        if (bracket) { // s[..][..] / tr[..][..] : skip ws, expect a fresh bracket pair
             while (!eof() && std::isspace((unsigned char)peek())) advance();
-            if (peek() == d) { advance(); repl = readPart(false, true); }
+            if (peek() == d) { advance(); repl = readPart(false, !isTrans); }
         } else {
-            repl = readPart(false, true); // replacement: brace-aware, not quote-aware
+            repl = readPart(false, !isTrans); // replacement (tr: raw, not brace-aware)
         }
-        out = make(Tok::SubstLit, adverbs + raw);
+        // tr/y: tag the pattern with a sentinel so the interpreter transliterates
+        out = make(Tok::SubstLit, (isTrans ? std::string("\x01") : std::string()) + adverbs + raw);
         out.text2 = repl;
         out.flag = (w == "S"); // uppercase S/// : non-mutating, returns the new string
         return true;
@@ -456,6 +479,14 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         if (peek() == ':' && peek(1) == '<') { name += advance(); name += advance(); while (!eof() && peek() != '>') name += advance(); if (peek() == '>') name += advance(); }
     }
     while (!eof() && (peek() == ' ' || peek() == '\t' || peek() == '\n')) advance();
+    // optional signature: `token NAME(Str $indent) { … }` — capture the balanced
+    // parameter list onto the name (parseClass parses out the param var names) so
+    // parameterised subrule calls `<NAME($x)>` can bind arguments.
+    if (peek() == '(') {
+        int pd = 0;
+        do { char ch = peek(); if (ch == '(') pd++; else if (ch == ')') pd--; name += advance(); } while (!eof() && pd > 0);
+        while (!eof() && (peek() == ' ' || peek() == '\t' || peek() == '\n')) advance();
+    }
     if (peek() != '{') { pos_ = save; return false; }
     advance(); // {
     std::string body;
@@ -556,6 +587,7 @@ Token Lexer::lexOperator() {
         pos_ = save; // not a hyper-binary; fall through to normal operator lexing
     }
     static const char* ops[] = {
+        "==>", "<==", // feed operators (before == / <=)
         "!!!", "???", "...^", "...", "^..^", "..^", "^..",
         "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",
         "??", "!!", "**", "//", "||", "&&", "^^", "==", "!=", "<=", ">=", "~~", "=>",
@@ -679,7 +711,8 @@ std::vector<Token> Lexer::tokenize() {
                 char ch = peek();
                 if (ch == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
                 if (quote) { if (ch == quote) quote = 0; raw += advance(); continue; }
-                if (ch == '\'' || ch == '"') { quote = ch; raw += advance(); continue; }
+                // '...'/"..." protect an inner '/', but inside a <[...]> char class they are literal chars
+                if ((ch == '\'' || ch == '"') && brack == 0) { quote = ch; raw += advance(); continue; }
                 if (ch == '<') angle++;
                 else if (ch == '>' && angle > 0) angle--;
                 else if (ch == '[') brack++;

@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **185 / 1,464 files fully pass (~13%)**; 508 partial, 752 no-TAP, 19 timeout. (Among files that run, 96,059 / 111,360 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **249 / 1,464 files fully pass (~17%)**; 565 partial, 643 no-TAP, 7 timeout. (Among files that run, 119,645 / 164,029 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
 
 ## Lexical & Literals
 - Int (arbitrary precision / bignum), Num, Rat, **Complex** (`3+4i`); FatRat ~
@@ -27,14 +27,16 @@ Roast standing: **185 / 1,464 files fully pass (~13%)**; 508 partial, 752 no-TAP
 - Reduce `[+]`, zip `Z`, cross `X`, hyper `>>op>>` / `«op»`
 - Contextualizers `$( ) @( ) %( ) $[ ]`, ternary `?? !!`, assignment `= := += …`
 - Divisibility `%%` and negated `!%%` (both return `Bool`)
-- **Gaps:** other negated metaops, custom operator definitions (`sub infix:<…>`)
+- User-defined operators: `sub infix:<…>` / `postfix:<…>` (e.g. `sub postfix:<!>` → `5!`)
+- Whatever-currying: infix `* + 1`, prefix `~* -* +*`, postcircumfix `*.<key>` `*[i]`, subscript `@a[*-1]` `@a[*]`
+- **Gaps:** other negated metaops, custom operator precedence (`is tighter`), user infix overriding built-ins
 
 ## Control Flow
 - `if/elsif/else`, `unless`, `while/until`, `for`, C-style `loop`, `repeat`
 - `given/when/default`, `with/without`
 - Statement modifiers (`if unless while until for given when with`), including chained (`X if A for B`)
-- `last/next/redo`, `gather/take`, `do`
-- **Gaps:** loop labels (`LABEL: for … { last LABEL }`)
+- `last/next/redo` (incl. labeled: `LABEL: for … { last LABEL }`), `gather/take`, `do`
+- **Gaps:** `FIRST`/`NEXT`/`LAST` loop phasers
 
 ## Subs, Signatures & Dispatch
 - `sub`, `multi`/`proto` dispatch (by type, arity, `where`, literal, `:D`/`:U` smileys)
@@ -47,8 +49,9 @@ Roast standing: **185 / 1,464 files fully pass (~13%)**; 508 partial, 752 no-TAP
 - `class`/`role`/`grammar`, attributes `has $.x`/`$!x` (+ defaults), accessors
 - `method`/`multi method`/`submethod`, `self`, single inheritance `is`, `does`
 - `BUILD`, default `.new`, `bless`, enums
-- Metamodel: `.^name .^methods .^add_method .^find_method`, `.WHAT .WHICH`
-- **Gaps:** `.HOW` metaobjects, `Metamodel::*`, subset error-detection
+- Metamodel: `.^name .^methods .^add_method .^find_method`, `.WHAT .WHICH .HOW`
+- Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
+- **Gaps:** `Metamodel::*` construction, submethod-not-inherited, `callsame`
 
 ## Regexes & Grammars
 - `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`
@@ -68,14 +71,20 @@ Roast standing: **185 / 1,464 files fully pass (~13%)**; 508 partial, 752 no-TAP
 
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise
-- String: `chars codes uc lc tc index rindex substr split comb subst words lines flip trim starts-with~ ends-with~ contains sprintf`
-- List: `map grep sort reverse join first reduce sum min max elems push pop shift unshift keys values kv pairs antipairs invert unique repeated squish permutations combinations rotate flat head tail`
-- Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, constants `pi tau e`
+- String: `chars codes uc lc tc fc wordcase samecase index rindex substr split comb subst trans words lines flip trim starts-with~ ends-with~ contains sprintf` (`.trans` supports `a..z` ranges)
+- List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll`; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; list methods on scalars (`5.map`, `42.grep`); `roundrobin`
+- Hash: `push`/`append` (accumulate values under a key), `kv keys values pairs invert antipairs`
+- Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, `polymod`, `base`, `rand` / `.rand`, constants `pi tau e`
 
 ## I/O, System, Concurrency
 - `open`/FileHandle (`.lines .get .slurp .print .say .close`), `dir`, `make-temp-file`
-- `run` → standard `Proc` (`.out.slurp .exitcode .so`); `Proc::Async`, `Promise`, `await` (synchronous)
-- `$*CWD $*EXECUTABLE $*ARGS $*RAKU/$*PERL` (`.compiler.name` = "Raku++", backend "cpp")
+- `run` → standard `Proc` (`.out.slurp .exitcode .so`); bidirectional `run(:in,:out)` (`.in.spurt` / `.out.slurp`, e.g. piping through `pandoc`); `shell`
+- **Concurrency (real `std::thread`s + a GIL; blocking ops — `sleep`/`await` — release the lock so tasks interleave in time, e.g. sleep-sort actually sorts; correct semantics, no CPU parallelism):**
+  - `Promise` — `start` (kept, or **broken** if the block dies), `await` (blocks, rethrows the cause), manual `Promise.new`/`.keep`/`.break`/`.vow`, `.result`/`.status` (a real `PromiseStatus` enum)/`.cause`/`.Bool`, deferred `.then`, `Promise.anyof`/`.allof` (with `X::Promise::Combinator`), `Proc::Async`
+  - `Supply` (`from-list`/`tap`/`act`/`map`/`grep`/`unique`/`squish`/`head`/`tail`/`skip`/`reverse`/`sort`/`min`/`max` (running extremes)/…), live `Supplier` (`.emit`/`.done`/`.quit`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
+  - `Channel` (`send`/`receive`/`poll`/`close`/`fail`/`closed`, `X::Channel::*`), `Thread` (`.start`/`.join`, `is-initial-thread`, `$*THREAD`), `Lock`/`Semaphore` (`.protect`/`.acquire`/`.release`), `sleep`
+- `$*CWD $*EXECUTABLE $*ARGS $*RAKU/$*PERL` (`.compiler.name` = "Raku++", backend "cpp"), `$*DISTRO $*KERNEL $*VM $*THREAD $*SCHEDULER`
+- **Gaps:** true CPU parallelism, real wall-clock timers (`Promise.in`/`.at` are capped), atomic-container ops (`atomic-fetch`/`cas`), stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
 
 ## Phasers, Modules, Exceptions, Special Vars, Testing
 - Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `CATCH`

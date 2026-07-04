@@ -33,6 +33,14 @@ say @a >>*>> 2;           # → (2 4 6)  (hyper)
 say 5 <=> 3;              # → More     (spaceship)
 ```
 
+```raku
+sub postfix:<!>(Int $n) { [*] 1..$n }
+say 5!;                   # → 120      (user-defined postfix operator)
+
+say <a b c d>[*-1];       # → d        (Whatever-star index)
+say (1, 5, 10, 2).sort(~*);  # → (1 10 2 5)   (prefix `~*` sorts as strings)
+```
+
 ## Control Flow
 
 ```raku
@@ -126,6 +134,46 @@ say $p.out.slurp(:close).chomp;           # → hi          (capture subprocess 
 say $*RAKU.compiler.name;                 # → Raku++
 say $*RAKU.compiler.backend;              # → cpp
 say "/tmp/x.txt".IO.extension;            # → txt
+```
+
+```raku
+# Supplies, Supplier, react/whenever
+my @seen;
+react {
+    whenever Supply.from-list(1, 2, 3) { @seen.push($_ * 10) }
+}
+say @seen;                                # → [10 20 30]
+
+my $s = Supplier.new;
+$s.Supply.tap({ say "got $_" });
+$s.emit(42);                              # → got 42     (live push to the tap)
+```
+
+```raku
+# Promises: manual keep/break, await, and a broken promise from a dying block
+my $p = Promise.new;
+$p.keep(42);
+say $p.result, " ", $p.status;            # → 42 Kept
+
+my $done = start { die "boom" };
+say (try await $done) // "caught: {$!.message}";  # → caught: boom  (die → Broken)
+
+my $a = Promise.allof(Promise.kept(1), Promise.kept(2));
+say $a.status;                            # → Kept       (anyof/allof combinators)
+```
+
+```raku
+# Channels — a thread-safe queue
+my $c = Channel.new;
+$c.send(1); $c.send(2);
+$c.close;
+say $c.receive;                           # → 1
+say $c.poll;                              # → 2
+say $c.closed.status;                     # → Kept       (closed + drained)
+
+# Threads (is-initial-thread is False inside a spawned block)
+say Thread.is-initial-thread;             # → True
+Thread.start({ say Thread.is-initial-thread }).join;   # → False
 ```
 
 ## Phasers, State & Testing

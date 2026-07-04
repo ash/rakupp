@@ -78,7 +78,8 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "*" || o == "/" || o == "%" || o == "%%" || o == "!%%") { in.valid = true; in.lbp = BP_MUL; return in; }
         if (o == "+" || o == "-" || o == "~") { in.valid = true; in.lbp = BP_ADD; return in; }
         if (o == ".." || o == "..^" || o == "^.." || o == "^..^") { in.valid = true; in.lbp = BP_RANGE; in.isRange = true; return in; }
-        if (o == "..." || o == "...^") { in.valid = true; in.lbp = BP_RANGE; return in; } // sequence operator
+        if (o == "..." || o == "...^") { in.valid = true; in.lbp = BP_COMMA; return in; } // sequence op: looser than comma, so `1,3 ... 19` seeds with (1,3)
+        if (o == "==>" || o == "<==") { in.valid = true; in.lbp = BP_OR; return in; } // feed operators (very loose, left-assoc)
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||
             o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "===" || o == "!==" ||
             o == "=~=" || o == "≅") { in.valid = true; in.lbp = BP_COMPARE; return in; }
@@ -132,6 +133,7 @@ static bool startsTermToken(const Token& t) {
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
+                   t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
                    t.text == "$" || t.text == "@" || t.text == "%"; // contextualizers $( $[ @( %(
         case Tok::Ident:
@@ -152,6 +154,9 @@ static bool startsListopArg(const Token& t) {
         case Tok::Op:
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
+                   t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
+                   t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
+                   (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB"; // ∞  and  «qw»
         case Tok::Ident:
             // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords
@@ -168,6 +173,31 @@ ExprPtr Parser::parseExpression() { return parseExpr(0); }
 ExprPtr Parser::parseExpr(int minbp) {
     ExprPtr lhs = parsePrefix();
     for (;;) {
+        // user-defined infix operator: `4 avg 10`  ==  infix:<avg>(4, 10)
+        if (cur().kind == Tok::Ident && userInfix_.count(cur().text)) {
+            if (BP_ADD < minbp) break; // default (additive) precedence, left-assoc
+            std::string opname = advance().text;
+            auto call = std::make_unique<Call>();
+            call->name = "infix:<" + opname + ">";
+            call->args.push_back(std::move(lhs));
+            call->args.push_back(parseExpr(BP_ADD + 1));
+            lhs = std::move(call);
+            continue;
+        }
+        // reverse metaoperator `a R/ b` == `b / a` (R immediately before an infix op)
+        if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && !peek().spaceBefore) {
+            InfixInfo base = classifyInfix(peek());
+            if (base.valid && base.lbp >= minbp) {
+                advance(); // R
+                std::string baseOp = advance().text;
+                auto bin = std::make_unique<Binary>();
+                bin->op = "R" + baseOp;
+                bin->lhs = std::move(lhs);
+                bin->rhs = parseExpr(base.lbp + 1);
+                lhs = std::move(bin);
+                continue;
+            }
+        }
         InfixInfo in = classifyInfix(cur());
         if (!in.valid || in.lbp < minbp) break;
 
@@ -377,11 +407,16 @@ ExprPtr Parser::parsePostfix(ExprPtr base) {
             expectKind(Tok::RBrace, "}");
             base = std::move(idx);
         } else if (isOp("<") && !cur().spaceBefore) {
-            // word-key hash subscript: %h<key>
+            // word-key hash subscript: %h<key>  (and $<name>/@<name>/%<name> capture sugar for $/<name>)
             advance();
-            std::vector<std::string> words;
-            while (!isOp(">") && !isKind(Tok::End)) words.push_back(advance().text);
-            matchOp(">");
+            std::vector<std::string> words = readAngleWords(">");
+            char sigilCtx = 0;
+            if (base->kind == NK::VarExpr) {
+                auto* ve = static_cast<VarExpr*>(base.get());
+                if (ve->name == "$") ve->name = "$/";                          // $<name> == $/<name>
+                else if (ve->name == "@") { ve->name = "$/"; sigilCtx = '@'; } // @<name> == @($/<name>)
+                else if (ve->name == "%") { ve->name = "$/"; sigilCtx = '%'; } // %<name> == %($/<name>)
+            }
             auto idx = std::make_unique<Index>();
             idx->base = std::move(base);
             idx->isHash = true;
@@ -393,6 +428,12 @@ ExprPtr Parser::parsePostfix(ExprPtr base) {
                 idx->index = std::move(al);
             }
             base = std::move(idx);
+            if (sigilCtx) { // @<name>/%<name>: wrap the capture in the list/hash contextualizer
+                auto u = std::make_unique<Unary>();
+                u->op = std::string("ctx") + sigilCtx;
+                u->operand = std::move(base);
+                base = std::move(u);
+            }
         } else if (isOp("!") && !cur().spaceBefore && peek().kind == Tok::Ident && !peek().spaceBefore) {
             // private method call: self!method / $obj!method (shares the method table)
             advance(); // !
@@ -409,9 +450,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base) {
             // .<key> postcircumfix:  $_.<key>  ==  $_<key>
             if (isOp("<") && !cur().spaceBefore) {
                 advance();
-                std::vector<std::string> words;
-                while (!isOp(">") && !isKind(Tok::End)) words.push_back(advance().text);
-                matchOp(">");
+                std::vector<std::string> words = readAngleWords(">");
                 auto idx = std::make_unique<Index>();
                 idx->base = std::move(base); idx->isHash = true;
                 if (words.size() == 1) idx->index = std::make_unique<StrLit>(words[0]);
@@ -460,13 +499,19 @@ ExprPtr Parser::parsePostfix(ExprPtr base) {
             mc->hyper = hyperNext; hyperNext = false;
             if (cur().kind == Tok::Ident || cur().kind == Tok::Var) {
                 mc->method = advance().text;
+            } else if (cur().kind == Tok::StrLit) {
+                mc->method = advance().text;           // ."literal-name"()
+            } else if (cur().kind == Tok::StrInterp) {
+                mc->methodExpr = parsePrimary();       // ."$name"() — computed at runtime
             } else {
                 error("expected method name after '.'");
             }
             if (isKind(Tok::LParen)) { advance(); mc->args = parseCallArgs(); } // .method(args) or .method (args)
-            else if (isOp(":") && startsTermToken(peek())) {
+            else if (isOp(":") && (startsTermToken(peek()) ||
+                     (peek().kind == Tok::Ident && (peek().text == "my" || peek().text == "our" || peek().text == "state")))) {
                 // colon method-args:  @x.sort: -*.value   ==  @x.sort(-*.value)
                 // also blocks / pointy blocks:  @x.map: { ... } / @x.map: -> $a { ... }
+                // and declarator args:  @a.push: my \p = ...
                 advance(); // :
                 do {
                     mc->args.push_back(parseExpr(BP_COMMA + 1));
@@ -477,6 +522,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base) {
             auto u = std::make_unique<Unary>();
             u->op = advance().text; u->postfix = true; u->operand = std::move(base);
             base = std::move(u);
+        } else if (cur().kind == Tok::Op && userPostfix_.count(cur().text)) {
+            // user-defined postfix operator:  5!  ==  postfix:<!>(5)
+            // (a preceding private-method branch already claimed `!ident`, so we
+            //  only reach here when the operator is a genuine postfix)
+            std::string opname = advance().text;
+            auto call = std::make_unique<Call>();
+            call->name = "postfix:<" + opname + ">";
+            call->args.push_back(std::move(base));
+            base = std::move(call);
         } else if (isKind(Tok::LParen) && !cur().spaceBefore) {
             // invocation of a callable expression (e.g. NameTerm or coderef)
             advance();
@@ -582,6 +636,23 @@ ExprPtr Parser::parseColonPair() {
         pair->value = std::make_unique<VarExpr>(vn);
         return pair;
     }
+    // radix literal: :16<FF> / :2<1010> / :8<777>  (a number written in the given base)
+    if (isKind(Tok::IntLit) && peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
+        int base = std::atoi(cur().text.c_str());
+        advance(); advance(); // radix and '<'
+        std::vector<std::string> words = readAngleWords(">");
+        std::string digits = words.empty() ? "" : words[0];
+        long long val = 0;
+        for (char c : digits) {
+            if (c == '_') continue;
+            long long d = (c >= '0' && c <= '9') ? c - '0'
+                        : (c >= 'a' && c <= 'z') ? c - 'a' + 10
+                        : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : -1;
+            if (d < 0 || d >= base) break; // stop at a fractional '.' or invalid digit
+            val = val * base + d;
+        }
+        return std::make_unique<IntLit>(val);
+    }
     if (isKind(Tok::Ident) || isKind(Tok::IntLit)) {
         pair->key = cur().text;
         advance();
@@ -594,9 +665,7 @@ ExprPtr Parser::parseColonPair() {
         }
         if (isOp("<") && !cur().spaceBefore) {
             advance();
-            std::vector<std::string> words;
-            while (!isOp(">") && !isKind(Tok::End)) words.push_back(advance().text);
-            matchOp(">");
+            std::vector<std::string> words = readAngleWords(">");
             if (words.size() == 1) pair->value = std::make_unique<StrLit>(words[0]);
             else { auto al = std::make_unique<ArrayLit>(); for (auto& w : words) al->items.push_back(std::make_unique<StrLit>(w)); pair->value = std::move(al); }
             return pair;
@@ -615,6 +684,13 @@ ExprPtr Parser::parseColonPair() {
 }
 
 ExprPtr Parser::parsePrimary() {
+    // symbolic name reference in term position: `::Foo::Bar` → the named type/package
+    if (isOp("::") && peek().kind == Tok::Ident) {
+        advance(); // ::
+        std::string name = advance().text;
+        while (isOp("::") && peek().kind == Tok::Ident) { advance(); name += "::" + advance().text; }
+        return std::make_unique<NameTerm>(name);
+    }
     const Token& t = cur();
     switch (t.kind) {
         case Tok::IntLit: {
@@ -625,7 +701,24 @@ ExprPtr Parser::parsePrimary() {
             }
             return e;
         }
-        case Tok::NumLit: { bool imag = !t.text.empty() && t.text.back() == 'i'; auto e = std::make_unique<NumLit>(advance().nval); e->imaginary = imag; return e; }
+        case Tok::NumLit: {
+            bool imag = !t.text.empty() && t.text.back() == 'i';
+            bool isRat = t.flag && !imag; // decimal literal with no exponent -> Rat
+            std::string txt = t.text;
+            auto e = std::make_unique<NumLit>(advance().nval);
+            e->imaginary = imag;
+            if (isRat) {
+                // "15.8972" -> numerator 158972, denominator 10^(fractional digits)
+                size_t dot = txt.find('.');
+                std::string digits = txt.substr(0, dot) + txt.substr(dot + 1);
+                long long fracLen = (long long)(txt.size() - dot - 1);
+                long long den = 1; for (long long k = 0; k < fracLen && den < 1000000000000000LL; k++) den *= 10;
+                e->isRat = true;
+                e->ratNum = std::strtoll(digits.c_str(), nullptr, 10);
+                e->ratDen = den;
+            }
+            return e;
+        }
         case Tok::StrLit: { auto e = std::make_unique<StrLit>(advance().text); return e; }
         case Tok::StrInterp: { std::string raw = advance().text; return parseInterpString(raw); }
         case Tok::RegexLit: { auto e = std::make_unique<RegexLit>(advance().text); return e; }
@@ -633,6 +726,7 @@ ExprPtr Parser::parsePrimary() {
         case Tok::QwList: { // qw<...> : split raw content on whitespace into a list of strings
             std::string raw = advance().text;
             auto arr = std::make_unique<ArrayLit>();
+            arr->isList = true;
             size_t i = 0, n = raw.size();
             while (i < n) {
                 while (i < n && std::isspace((unsigned char)raw[i])) i++;
@@ -663,6 +757,19 @@ ExprPtr Parser::parsePrimary() {
                 if (neg) { tern->then = std::move(empty); tern->els = std::move(e); }
                 else { tern->then = std::move(e); tern->els = std::move(empty); }
                 e = std::move(tern);
+            }
+            else if (isIdent("for")) {
+                // (EXPR for LIST) — a for statement-modifier inside parens; run EXPR
+                // per item ($_ bound). Desugar to map({ EXPR }, LIST).
+                advance();
+                ExprPtr list = parseExpression();
+                auto blk = std::make_unique<BlockExpr>();
+                auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+                blk->body.push_back(std::move(es));
+                auto call = std::make_unique<Call>(); call->name = "map";
+                call->args.push_back(std::move(blk));
+                call->args.push_back(std::move(list));
+                e = std::move(call);
             }
             expectKind(Tok::RParen, ")");
             return e;
@@ -739,20 +846,16 @@ ExprPtr Parser::parsePrimary() {
                 // qw word list  < a b c >
                 advance();
                 auto arr = std::make_unique<ArrayLit>();
-                while (!isOp(">") && !isKind(Tok::End)) {
-                    arr->items.push_back(std::make_unique<StrLit>(advance().text));
-                }
-                matchOp(">");
+                for (auto& w : readAngleWords(">")) arr->items.push_back(std::make_unique<StrLit>(w));
+                arr->isList = true;
                 return arr;
             }
             if (t.text == "\xC2\xAB") {
                 // guillemet qw word list  « a b c »  (interpolating qw, treated as plain here)
                 advance();
                 auto arr = std::make_unique<ArrayLit>();
-                while (!isOp("\xC2\xBB") && !isKind(Tok::End)) {
-                    arr->items.push_back(std::make_unique<StrLit>(advance().text));
-                }
-                matchOp("\xC2\xBB");
+                for (auto& w : readAngleWords("\xC2\xBB")) arr->items.push_back(std::make_unique<StrLit>(w));
+                arr->isList = true;
                 return arr;
             }
             if (t.text == "->" || t.text == "<->") {
@@ -797,6 +900,50 @@ ExprPtr Parser::parsePrimary() {
                 if (isKind(Tok::LBrace)) { auto blk = parseBlock(); be->body = std::move(blk->stmts); }
                 return be;
             }
+            // phaser in expression position: `my $x = BEGIN { … }` — run the block, yield its value
+            if ((name == "BEGIN" || name == "INIT" || name == "CHECK" || name == "END" ||
+                 name == "ENTER" || name == "LEAVE" || name == "FIRST") && peek().kind == Tok::LBrace) {
+                advance();
+                auto u = std::make_unique<Unary>();
+                u->op = "do";
+                auto blk = parseBlock();
+                auto be = std::make_unique<BlockExpr>();
+                be->body = std::move(blk->stmts);
+                u->operand = std::move(be);
+                return u;
+            }
+            if (name == "react" || name == "supply") {
+                advance();
+                auto call = std::make_unique<Call>(); call->name = name;
+                if (isKind(Tok::LBrace)) {
+                    bool saved = inReactBlock_; inReactBlock_ = true;
+                    auto blk = parseBlock();
+                    inReactBlock_ = saved;
+                    auto be = std::make_unique<BlockExpr>(); be->body = std::move(blk->stmts);
+                    call->args.push_back(std::move(be));
+                } else {
+                    // statement form: `react whenever $c { … }` — the body is a single statement.
+                    bool saved = inReactBlock_; inReactBlock_ = true;
+                    auto inner = parseExpr(BP_COMMA + 1);
+                    inReactBlock_ = saved;
+                    auto be = std::make_unique<BlockExpr>();
+                    auto es = std::make_unique<ExprStmt>(); es->e = std::move(inner);
+                    be->body.push_back(std::move(es));
+                    call->args.push_back(std::move(be));
+                }
+                return call;
+            }
+            if (name == "whenever") {
+                if (!inReactBlock_) error("whenever outside the lexical scope of a react/supply block");
+                advance();
+                auto call = std::make_unique<Call>(); call->name = "whenever";
+                call->args.push_back(parseExpr(BP_COMMA + 1)); // the supply/promise expression
+                auto be = std::make_unique<BlockExpr>();
+                if (isOp("->") || isOp("<->")) { advance(); be->params = parsePointyParams(); } // whenever $s -> $v { }
+                if (isKind(Tok::LBrace)) { auto blk = parseBlock(); be->body = std::move(blk->stmts); }
+                call->args.push_back(std::move(be));
+                return call;
+            }
             if (name == "do" || name == "try" || name == "gather" || name == "quietly") {
                 advance();
                 auto u = std::make_unique<Unary>();
@@ -805,6 +952,13 @@ ExprPtr Parser::parsePrimary() {
                     auto blk = parseBlock();
                     auto be = std::make_unique<BlockExpr>();
                     be->body = std::move(blk->stmts);
+                    u->operand = std::move(be);
+                } else if (isIdent("for") || isIdent("if") || isIdent("unless") || isIdent("while") ||
+                           isIdent("until") || isIdent("loop") || isIdent("repeat") || isIdent("given") ||
+                           isIdent("when") || isIdent("with") || isIdent("without")) {
+                    // `gather for … {}` / `do if … {}` — the operand is a whole statement
+                    auto be = std::make_unique<BlockExpr>();
+                    be->body.push_back(parseStatement());
                     u->operand = std::move(be);
                 } else {
                     u->operand = parseExpr(BP_PREFIX);
@@ -848,6 +1002,17 @@ ExprPtr Parser::parsePrimary() {
                 do {
                     c->args.push_back(parseExpr(BP_ASSIGN));
                 } while (matchKind(Tok::Comma) && startsTermToken(cur()));
+                // `say 1, 3 ... 19` — the gathered args are the seed of a sequence
+                if (isOp("...") || isOp("...^")) {
+                    auto seq = std::make_unique<Binary>();
+                    seq->op = advance().text;
+                    if (c->args.size() == 1) seq->lhs = std::move(c->args[0]);
+                    else { auto le = std::make_unique<ListExpr>(); for (auto& a : c->args) le->items.push_back(std::move(a)); seq->lhs = std::move(le); }
+                    seq->rhs = parseExpr(BP_COMMA + 1);
+                    c->args.clear();
+                    c->args.push_back(std::move(seq));
+                    return c;
+                }
                 // `f (a, b)` (space then a parenthesised comma-list) == `f(a, b)`:
                 // flatten the single list argument into the call's args.
                 if (c->args.size() == 1 && c->args[0]->kind == NK::ListExpr) {
@@ -880,6 +1045,21 @@ static ExprPtr parseEmbeddedExpr(const std::string& src) {
     return u;
 }
 
+// Read a `<...>` / `«...»` word list (the opening delimiter is already consumed).
+// Tokens with no intervening whitespace join into one word, so "/usr/bin" and
+// "1/0" stay whole rather than splitting on '/'.
+std::vector<std::string> Parser::readAngleWords(const std::string& close) {
+    std::vector<std::string> words;
+    while (!isOp(close) && !isKind(Tok::End)) {
+        const Token& t = cur();
+        if (words.empty() || t.spaceBefore) words.push_back(t.text);
+        else words.back() += t.text;
+        advance();
+    }
+    matchOp(close);
+    return words;
+}
+
 ExprPtr Parser::parseInterpString(const std::string& raw) {
     auto result = std::make_unique<InterpStr>();
     std::string lit;
@@ -904,11 +1084,19 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
                     else { lit += (char)(0xF0 | (cp >> 18)); lit += (char)(0x80 | ((cp >> 12) & 0x3F)); lit += (char)(0x80 | ((cp >> 6) & 0x3F)); lit += (char)(0x80 | (cp & 0x3F)); }
                 };
                 if (j < n && raw[j] == '[') {
-                    j++; std::string hex;
-                    while (j < n && raw[j] != ']') hex += raw[j++];
+                    j++; std::string body;
+                    while (j < n && raw[j] != ']') body += raw[j++];
                     if (j < n) j++; // ]
-                    for (auto& part : std::vector<std::string>{hex}) {} // single for now
-                    emitCp(strtol(hex.c_str(), nullptr, base));
+                    // comma-separated list of codepoints:  \x[0042,0323]
+                    size_t p = 0;
+                    while (p < body.size()) {
+                        size_t comma = body.find(',', p);
+                        std::string tok = body.substr(p, comma == std::string::npos ? std::string::npos : comma - p);
+                        size_t a = tok.find_first_not_of(" \t_"), b = tok.find_last_not_of(" \t");
+                        if (a != std::string::npos) { tok = tok.substr(a, b - a + 1); emitCp(strtol(tok.c_str(), nullptr, base)); }
+                        if (comma == std::string::npos) break;
+                        p = comma + 1;
+                    }
                 } else {
                     std::string digits;
                     auto isd = [&](char ch) { return base == 16 ? std::isxdigit((unsigned char)ch) : (ch >= '0' && ch <= '7'); };
@@ -1041,35 +1229,53 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
                 var += raw[j++];
                 while (j < n && isIdentCont(raw[j])) var += raw[j++];
             }
-            // postfix chain: [..] {..} .name .[..] .{..} .(..)
+            // postfix chain: [..] {..} <..> .name .[..] .{..} .(..)
+            // A method call interpolates only if it — or a later link in the
+            // chain — has parens: "$x.ord" stays literal, but "$x.ord.fmt('%d')"
+            // interpolates the whole chain up to the last parenthesised call
+            // ("$x.ord.fmt('%d').flip" leaves the trailing bare .flip literal).
+            // Subscripts always interpolate. Bare .method links are appended
+            // tentatively and only "committed" once a parenthesised call or a
+            // subscript follows; any uncommitted tail is dropped back to literal.
             bool hadPostfix = false;
+            size_t committedLen = var.size();   // var length confirmed for interpolation
+            size_t committedJ = j;              // matching raw index
+            auto commit = [&]() { hadPostfix = true; committedLen = var.size(); committedJ = j; };
             for (;;) {
                 if (j < n && raw[j] == '[') {
-                    hadPostfix = true; int d = 1; var += raw[j++];
+                    int d = 1; var += raw[j++];
                     while (j < n && d > 0) { if (raw[j]=='[') d++; else if (raw[j]==']') d--; var += raw[j++]; }
+                    commit();
                 } else if (j < n && raw[j] == '<') {
                     // angle-bracket hash subscript: %h<key>  @a<...>
-                    hadPostfix = true; var += raw[j++];
+                    var += raw[j++];
                     while (j < n && raw[j] != '>') var += raw[j++];
                     if (j < n) var += raw[j++]; // closing >
+                    commit();
                 } else if (j < n && raw[j] == '{') {
-                    hadPostfix = true; int d = 1; var += raw[j++];
+                    int d = 1; var += raw[j++];
                     while (j < n && d > 0) { if (raw[j]=='{') d++; else if (raw[j]=='}') d--; var += raw[j++]; }
+                    commit();
                 } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '[' || raw[j+1] == '{' || raw[j+1] == '(')) {
-                    hadPostfix = true; var += raw[j++]; // .
+                    var += raw[j++]; // .
                     char open = raw[j], close = open == '[' ? ']' : open == '{' ? '}' : ')';
                     int d = 1; var += raw[j++];
                     while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
+                    commit();
                 } else if (j + 1 < n && raw[j] == '.' && (std::isalpha((unsigned char)raw[j+1]) || raw[j+1]=='_')) {
-                    // .method interpolates only with parens (@a.foo() / $a.foo()); bare .foo is literal
-                    size_t k = j + 1; while (k < n && isIdentCont(raw[k])) k++;
-                    if (k >= n || raw[k] != '(') break;
-                    hadPostfix = true; var += raw[j++]; // .
+                    // bare .method — tentative; consume its name, commit only if parens follow
+                    var += raw[j++]; // .
                     while (j < n && isIdentCont(raw[j])) var += raw[j++];
-                    int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                    if (j < n && raw[j] == '(') {
+                        int d = 1; var += raw[j++];
+                        while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                        commit();
+                    }
+                    // else: leave uncommitted; a later link in the chain may still commit it
                 } else break;
             }
+            // drop any uncommitted trailing bare-method links back to literal text
+            if (committedLen < var.size()) { var.resize(committedLen); j = committedJ; }
             // @arr/%hash only interpolate when followed by a postcircumfix/method
             if ((sig == '@' || sig == '%') && !hadPostfix) { lit += var; i = j; continue; }
             flush();
@@ -1101,9 +1307,17 @@ std::vector<Param> Parser::parseSignature() {
     while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue; // multi-frame separator `;` / `;;` in signatures
         Param p;
-        // return-type constraint `--> Type` — always last; consume type and stop
+        // return-type constraint `--> Type` — always last; discarded. Skip to the
+        // end of the signature so smileys (IO::Path:D) and parametrised types
+        // (Positional[Int], (Int, Str)) don't trip the `)`-expectation.
         if (matchOp("-->")) {
-            if (!isKind(Tok::RParen) && !isKind(Tok::End)) parseExpr(BP_COMMA + 1);
+            int depth = 0;
+            while (!isKind(Tok::End)) {
+                if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
+                if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
+                else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
+                advance();
+            }
             break;
         }
         // literal parameter, e.g. multi MAIN('population') / multi fact(0)
@@ -1121,7 +1335,9 @@ std::vector<Param> Parser::parseSignature() {
             if (!matchKind(Tok::Comma)) break;
             continue;
         }
-        if (matchOp("*") || matchOp("**")) p.slurpy = true;
+        if (matchOp("**")) { p.slurpy = true; p.slurpyKind = 'n'; }      // **@a — no flatten
+        else if (matchOp("*")) { p.slurpy = true; p.slurpyKind = 'f'; }  // *@a  — flatten iterables
+        else if (matchOp("+")) { p.slurpy = true; p.slurpyKind = '1'; }  // +@a  — single-argument rule
         if (matchOp("\\")) {
             // sigilless capture parameter: \a  -> bound under bare name
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
@@ -1132,15 +1348,41 @@ std::vector<Param> Parser::parseSignature() {
             continue;
         }
         bool named = matchOp(":");
-        // type-capture parameter:  sub f(::T $x)  /  sub f(::T)
-        if (isOp("::") && peek().kind == Tok::Ident) {
-            advance(); std::string tv = advance().text;
+        // named alias:  :name($var)  — external key `name`, binds `$var` (optional inner type)
+        if (named && isKind(Tok::Ident) && peek().kind == Tok::LParen) {
+            p.namedKey = advance().text;
+            advance(); // (
+            if (isKind(Tok::Ident)) p.type = advance().text; // optional inner type constraint
+            matchOp(":"); // allow :name(:$var)
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
-            else { p.name = ""; p.sigil = '$'; p.type = tv; }
-            if (matchOp("?")) p.optional = true; else if (matchOp("!")) {}
+            else error("expected variable in named-parameter alias");
+            p.named = true;
+            if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
+            if (matchOp("?")) p.optional = true;
+            else if (matchOp("!")) p.required = true;
+            while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of")) {
+                std::string trait = advance().text;
+                if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
+                else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
+                    if (trait == "is" && (isIdent("rw") || isIdent("copy"))) p.isRw = (cur().text == "rw");
+                    advance();
+                }
+            }
+            if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
-            if (!matchKind(Tok::Comma)) break;
+            if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
             continue;
+        }
+        // type-capture parameter:  ::T $x  /  ::T  /  ::Grammar:U :$named
+        // Capture the type-variable name (+ optional smiley) and fall through to
+        // the shared var/named/default handling so it can type a following param.
+        if (isOp("::") && peek().kind == Tok::Ident) {
+            advance(); p.type = advance().text;
+            if (isOp(":") && peek().kind == Tok::Ident &&
+                (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
+                advance(); std::string sm = advance().text;
+                if (sm == "D") p.defConstraint = 1; else if (sm == "U") p.defConstraint = 2;
+            }
         }
         // optional type constraint: a bare Ident (possibly Foo::Bar, with :D/:U smiley, [..])
         if (isKind(Tok::Ident)) {
@@ -1170,12 +1412,17 @@ std::vector<Param> Parser::parseSignature() {
         } else if (isKind(Tok::Var)) {
             p.name = cur().text; p.sigil = cur().text[0]; advance();
             p.named = named;
+        } else if (isKind(Tok::Op) && cur().text.size() == 1 &&
+                   (cur().text[0]=='%'||cur().text[0]=='@'||cur().text[0]=='&'||cur().text[0]=='$')) {
+            // anonymous sigil-only parameter, e.g. method concretize($, $, %, %)
+            p.sigil = cur().text[0]; p.name = ""; advance();
+            p.named = named;
         } else if (!p.type.empty()) {
             // anonymous type-only parameter, e.g. (Str:U) / (Int) — used for dispatch, no binding
             p.name = ""; p.sigil = '$';
         } else error("expected parameter variable");
         if (matchOp("?")) p.optional = true;
-        else if (matchOp("!")) { /* required */ }
+        else if (matchOp("!")) p.required = true;
         // invocant marker:  method m ($self: $arg)  — ':' separates invocant from rest
         if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
         // where / is / returns / of trait clauses
@@ -1189,8 +1436,18 @@ std::vector<Param> Parser::parseSignature() {
         }
         if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
         params.push_back(std::move(p));
-        if (matchOp("-->")) { if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); break; } // return type
-        if (!matchKind(Tok::Comma)) break;
+        if (matchOp("-->")) { // return type — discarded; skip to end of signature (smileys, params)
+            int depth = 0;
+            while (!isKind(Tok::End)) {
+                if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
+                if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
+                else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
+                advance();
+            }
+            break;
+        }
+        // `,` or `;` (multi-frame separator, e.g. `$;$ = Str`) both separate params
+        if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
     }
     return params;
 }
@@ -1256,11 +1513,28 @@ StmtPtr Parser::parseSub(bool isMulti) {
     if (isOp("!")) advance(); // private method `method !name` — stored under its bare name
     if (isKind(Tok::Ident)) s->name = advance().text;
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
+    // operator declaration: sub infix:<avg> / prefix:<§> / postfix:<²>
+    if ((s->name == "infix" || s->name == "prefix" || s->name == "postfix" ||
+         s->name == "circumfix" || s->name == "postcircumfix") && isOp(":")) {
+        std::string cat = s->name;
+        advance(); // :
+        std::string opname;
+        if (isOp("<")) { advance(); auto w = readAngleWords(">"); opname = w.empty() ? "" : w[0]; }
+        else if (isOp("\xC2\xAB")) { advance(); auto w = readAngleWords("\xC2\xBB"); opname = w.empty() ? "" : w[0]; }
+        if (!opname.empty()) {
+            s->name = cat + ":<" + opname + ">";
+            if (cat == "infix") userInfix_.insert(opname);
+            else if (cat == "prefix") userPrefix_.insert(opname);
+            else if (cat == "postfix") userPostfix_.insert(opname);
+        }
+    }
     if (isKind(Tok::LParen)) { advance(); s->params = parseSignature(); expectKind(Tok::RParen, ")"); }
     // optional return type / traits up to block: skip until '{'
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
     if (isKind(Tok::LBrace)) {
+        bool saved = inReactBlock_; inReactBlock_ = false; // whenever in a nested sub is out of scope
         auto blk = parseBlock();
+        inReactBlock_ = saved;
         s->body = std::move(blk->stmts);
     }
     return s;
@@ -1325,10 +1599,12 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
         return cd;
     }
     while (isIdent("is") || isIdent("does")) {
+        bool isDoes = isIdent("does");
         advance();
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             std::string t = advance().text;
-            if (cd->parent.empty()) cd->parent = t;
+            if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }
+            else cd->roles.push_back(t); // extra `does Role` — composed in
         }
         // skip type params / extra
         while (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
@@ -1342,8 +1618,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
         if (matchKind(Tok::Semicolon)) continue;
         if (isIdent("has")) {
             advance();
-            // 'is rw' style applies-to-all? skip leading traits
-            if (isKind(Tok::Ident) && peek().kind == Tok::Var) advance(); // type
+            // optional type before the attribute var: `has Int $.x`, `has Int:D $.x`,
+            // `has Array[Int] $.x` — consume the type name, any :D/:U/:_ smiley, and [..] params.
+            if (isKind(Tok::Ident)) {
+                advance(); // type name
+                if (isOp(":") && (peek().kind == Tok::Ident)) { advance(); advance(); } // :D / :U / :_ smiley
+                if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+            }
             if (isKind(Tok::Var)) {
                 std::string vn = advance().text;
                 AttrDecl a;
@@ -1355,6 +1636,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
                 while (isIdent("is") || isIdent("of") || isIdent("does") || isIdent("where")) {
                     std::string tr = advance().text;
                     if (tr == "where") { parseExpr(BP_ASSIGN); continue; }
+                    if (tr == "is" && isIdent("rw")) a.rw = true;
                     if (isKind(Tok::Ident) || isKind(Tok::Var)) advance();
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
                 }
@@ -1367,19 +1649,23 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
             continue;
         }
         if (isIdent("method") || isIdent("submethod")) {
+            bool sub = isIdent("submethod");
             advance();
             auto s = parseSub(false);
             static_cast<SubDecl*>(s.get())->isMethod = true;
+            static_cast<SubDecl*>(s.get())->isSubmethod = sub;
             cd->methods.push_back(std::unique_ptr<SubDecl>(static_cast<SubDecl*>(s.release())));
             continue;
         }
-        if (isIdent("multi") || isIdent("proto")) {
+        if ((isIdent("multi") || isIdent("proto")) &&
+            !(peek(1).text == "token" || peek(1).text == "rule" || peek(1).text == "regex")) {
             advance();
-            bool isM = false;
-            if (isIdent("method") || isIdent("submethod")) { advance(); isM = true; }
+            bool isM = false, isSub = false;
+            if (isIdent("method") || isIdent("submethod")) { isSub = isIdent("submethod"); advance(); isM = true; }
             else if (isIdent("sub")) advance();
             auto s = parseSub(true);
             static_cast<SubDecl*>(s.get())->isMethod = isM;
+            static_cast<SubDecl*>(s.get())->isSubmethod = isSub;
             cd->methods.push_back(std::unique_ptr<SubDecl>(static_cast<SubDecl*>(s.release())));
             continue;
         }
@@ -1397,7 +1683,20 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
                     std::string kind = advance().text;
                     std::string nm = isKind(Tok::Ident) ? advance().text : "";
                     std::string pat = isKind(Tok::RegexLit) ? advance().text : "";
-                    if (!nm.empty()) cd->rules.push_back({nm, pat, kind});
+                    // split a captured signature `NAME(Str $indent, …)` → name + param var names
+                    std::vector<std::string> params;
+                    auto lp = nm.find('(');
+                    if (lp != std::string::npos) {
+                        std::string sig = nm.substr(lp);
+                        nm = nm.substr(0, lp);
+                        for (size_t i = 0; i < sig.size(); i++)
+                            if (sig[i] == '$' || sig[i] == '@' || sig[i] == '%') {
+                                std::string v(1, sig[i]);
+                                for (size_t j = i + 1; j < sig.size() && (std::isalnum((unsigned char)sig[j]) || sig[j] == '_' || sig[j] == '-'); j++) v += sig[j];
+                                if (v.size() > 1) params.push_back(v);
+                            }
+                    }
+                    if (!nm.empty()) cd->rules.push_back({nm, pat, kind, params});
                     continue;
                 }
             }
@@ -1514,11 +1813,15 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
 
 StmtPtr Parser::parseStatement() {
     while (matchKind(Tok::Semicolon)) {}
-    // statement label:  LABEL: for ...   (ident followed by a single ':')
+    // statement label:  LABEL: for ...   (ident + a colon with no space before it,
+    // so `say :adverb` — space before the ':' — is a listop call, not a label)
     if (cur().kind == Tok::Ident && peek().kind == Tok::Op && peek().text == ":" &&
-        !kBlockKeywords.count(cur().text)) {
+        !peek().spaceBefore && !kBlockKeywords.count(cur().text)) {
+        std::string lbl = cur().text;
         advance(); advance(); // consume LABEL and ':'
-        return parseStatement();
+        auto st = parseStatement();
+        if (st) st->label = lbl;
+        return st;
     }
     const Token& t = cur();
 
@@ -1544,15 +1847,16 @@ StmtPtr Parser::parseStatement() {
         }
         if (kw == "method" || kw == "submethod") { advance(); return parseSub(false); }
         if (kw == "token" || kw == "rule" || kw == "regex") {
-            advance();
-            if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); // name
-            while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
-            if (isKind(Tok::LBrace)) {
-                int d = 0;
-                do { if (isKind(Tok::LBrace)) d++; else if (isKind(Tok::RBrace)) d--; advance(); }
-                while (d > 0 && !isKind(Tok::End));
+            std::string knd = advance().text;
+            auto nr = std::make_unique<NamedRegexDecl>();
+            nr->kind = knd;
+            if (isKind(Tok::Ident) || isKind(Tok::Var)) nr->name = advance().text; // name
+            if (isKind(Tok::RegexLit)) nr->pattern = advance().text; // lexer captured the body as a RegexLit
+            else { // fallback: skip a brace body we couldn't capture
+                while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
+                if (isKind(Tok::LBrace)) { int d = 0; do { if (isKind(Tok::LBrace)) d++; else if (isKind(Tok::RBrace)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
             }
-            return std::make_unique<Block>(); // parse-only: regex body discarded
+            return nr;
         }
         if (kw == "use" || kw == "no" || kw == "need") {
             advance();
@@ -1601,12 +1905,21 @@ StmtPtr Parser::parseStatement() {
             ws->body = parseBlock();
             return ws;
         }
-        if (kw == "given" || kw == "with" || kw == "without") {
+        if (kw == "given" || kw == "with" || kw == "without" || kw == "orwith" || kw == "orwithout") {
+            bool isWith = (kw == "with" || kw == "orwith");
+            bool isWithout = (kw == "without" || kw == "orwithout");
             advance();
             auto g = std::make_unique<GivenStmt>();
-            g->defGuard = (kw == "with") ? 1 : (kw == "without") ? 2 : 0;
+            g->defGuard = isWith ? 1 : isWithout ? 2 : 0;
             g->topic = parseExpression();
             g->body = parseBlock();
+            // orwith/orwithout chain:  with A {} orwith B {}  ==  with A {} else { with B {} }
+            if (g->defGuard && (isIdent("orwith") || isIdent("orwithout"))) {
+                auto blk = std::make_unique<Block>();
+                blk->stmts.push_back(parseStatement());
+                g->hasElse = true; g->elseBody = std::move(blk);
+                return g;
+            }
             g->hasElse = (g->defGuard && isIdent("else"));
             if (g->hasElse) { advance(); g->elseBody = parseBlock(); }
             return g;
@@ -1656,13 +1969,14 @@ StmtPtr Parser::parseStatement() {
         }
         if (kw == "last" || kw == "next" || kw == "redo") {
             advance();
-            // optional loop label (we target innermost regardless)
+            // optional loop label:  `last OUTER`
+            std::string tgt;
             if (cur().kind == Tok::Ident && !kBlockKeywords.count(cur().text) &&
-                peek().kind != Tok::Op) advance();
+                peek().kind != Tok::Op) { tgt = cur().text; advance(); }
             StmtPtr cs;
-            if (kw == "last") cs = std::make_unique<LastStmt>();
-            else if (kw == "next") cs = std::make_unique<NextStmt>();
-            else cs = std::make_unique<RedoStmt>();
+            if (kw == "last") { auto c = std::make_unique<LastStmt>(); c->target = tgt; cs = std::move(c); }
+            else if (kw == "next") { auto c = std::make_unique<NextStmt>(); c->target = tgt; cs = std::move(c); }
+            else { auto c = std::make_unique<RedoStmt>(); c->target = tgt; cs = std::move(c); }
             return applyModifiers(std::move(cs));
         }
         if (kw == "class" || kw == "role" || kw == "monitor" ||
@@ -1679,16 +1993,15 @@ StmtPtr Parser::parseStatement() {
             return blk;
         }
         if (kw == "BEGIN" || kw == "END" || kw == "INIT" || kw == "CHECK" ||
-            kw == "ENTER" || kw == "LEAVE" || kw == "FIRST" || kw == "DOC") {
+            kw == "ENTER" || kw == "LEAVE" || kw == "FIRST" || kw == "NEXT" ||
+            kw == "LAST" || kw == "KEEP" || kw == "UNDO" || kw == "PRE" ||
+            kw == "POST" || kw == "DOC") {
             advance();
-            if (isKind(Tok::LBrace)) {
-                auto blk = parseBlock();
-                auto b = std::make_unique<Block>();
-                b->stmts = std::move(blk->stmts);
-                b->phaser = kw; // BEGIN/CHECK/INIT/END/... — run-timing handled by the interpreter
-                return b;
-            }
-            return parseStatement(); // phaser on a single statement: run in place
+            auto b = std::make_unique<Block>();
+            b->phaser = kw; // run-timing handled by the interpreter
+            if (isKind(Tok::LBrace)) { auto blk = parseBlock(); b->stmts = std::move(blk->stmts); }
+            else b->stmts.push_back(parseStatement()); // PHASER statement; — same, just a 1-statement block
+            return b;
         }
     }
 

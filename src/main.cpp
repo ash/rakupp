@@ -194,15 +194,57 @@ int main(int argc, char** argv) {
     std::string exePath = argv[0] ? argv[0] : "rakupp";
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }
 
-    // --dump-ast FILE | --dump-ast -e CODE : print the parsed AST and exit
-    if (argc >= 2 && std::string(argv[1]) == "--dump-ast") {
+    // --help / -h : print usage and exit.  --version / -V : print the version.
+    if (argc >= 2) {
+        std::string a1 = argv[1];
+        if (a1 == "--help" || a1 == "-h") {
+            std::cout <<
+"Raku++ — a Raku interpreter and compiler in C++\n"
+"\n"
+"Usage:\n"
+"  rakupp FILE [ARGS...]        Run a Raku program from a file\n"
+"  rakupp -e 'CODE' [ARGS...]   Run a one-liner\n"
+"  rakupp                       Read a program from standard input\n"
+"\n"
+"Options:\n"
+"  -I <path>                    Add a directory to the module search path\n"
+"                               (repeatable; -I<path> also works)\n"
+"\n"
+"Compile to a standalone binary (each takes FILE or -e CODE, plus -o OUT):\n"
+"  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
+"  rakupp --aot    SRC -o OUT   Parse ahead of time, embed the AST\n"
+"  rakupp --exe    SRC -o OUT   Native-compile to C++ (fastest; falls back to\n"
+"                               bundling for constructs it can't compile yet)\n"
+"\n"
+"Inspection:\n"
+"  rakupp --ast SRC             Print the parsed AST as an indented tree\n"
+"  rakupp --help, -h            Show this help\n"
+"  rakupp --version, -V         Show the version\n"
+"\n"
+"Environment:\n"
+"  RAKULIB=dir1:dir2            Extra module search dirs (like -I)\n"
+"  RAKUPP_DUMPTOKENS=1          Dump the lexer token stream before running\n"
+"\n"
+"Run the spec-test harness (self-hosted, in Raku):\n"
+"  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n";
+            return 0;
+        }
+        if (a1 == "--version" || a1 == "-V") {
+            std::cout << "Raku++ (rakupp) — a Raku interpreter and compiler in C++\n";
+            return 0;
+        }
+    }
+
+    // --ast FILE | --ast -e CODE : print the parsed AST and exit
+    // (--dump-ast is kept as a backward-compatible alias)
+    if (argc >= 2 && (std::string(argv[1]) == "--ast" || std::string(argv[1]) == "--dump-ast")) {
         std::string src, fname = "-e";
         if (argc >= 4 && std::string(argv[2]) == "-e") src = argv[3];
         else if (argc >= 3) {
             std::ifstream in(argv[2]);
             if (!in) { std::cerr << "Cannot open file: " << argv[2] << "\n"; return 4; }
             std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = argv[2];
-        } else { std::cerr << "Usage: rakupp --dump-ast FILE | --dump-ast -e CODE\n"; return 4; }
+        } else { std::cerr << "Usage: rakupp --ast FILE | --ast -e CODE\n"; return 4; }
         try {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
@@ -246,28 +288,44 @@ int main(int argc, char** argv) {
     std::string src;
     std::string fileName = "-e";
     std::vector<std::string> args;
-    if (argc >= 2 && std::string(argv[1]).rfind("-e", 0) == 0) {
-        std::string a1 = argv[1];
+    // Collect leading -I <path> / -I<path> lib dirs (rakudo-compatible), then
+    // treat everything from the first non -I token as the program + its args.
+    std::vector<std::string> libPaths;
+    std::vector<std::string> rest; // argv[1..], with -I options removed
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "-I") {           // `-I PATH` : path is the next argument
+            if (i + 1 < argc) libPaths.push_back(argv[++i]);
+        } else if (a.rfind("-I", 0) == 0) { // `-IPATH` : path attached to the flag
+            libPaths.push_back(a.substr(2));
+        } else {
+            for (int j = i; j < argc; j++) rest.push_back(argv[j]);
+            break;
+        }
+    }
+    size_t nrest = rest.size();
+    if (nrest >= 1 && rest[0].rfind("-e", 0) == 0) {
+        std::string a1 = rest[0];
         if (a1 == "-e") {              // `-e CODE` : code is the next argument
-            if (argc < 3) { std::cerr << "No code given for -e\n"; return 4; }
-            src = argv[2];
-            for (int i = 3; i < argc; i++) args.push_back(argv[i]);
+            if (nrest < 2) { std::cerr << "No code given for -e\n"; return 4; }
+            src = rest[1];
+            for (size_t i = 2; i < nrest; i++) args.push_back(rest[i]);
         } else {                       // `-e'CODE'` / `-eCODE` : code attached to the flag
             src = a1.substr(2);
-            for (int i = 2; i < argc; i++) args.push_back(argv[i]);
+            for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
         }
-    } else if (argc >= 2) {
-        std::ifstream in(argv[1]);
-        if (!in) { std::cerr << "Cannot open file: " << argv[1] << "\n"; return 4; }
+    } else if (nrest >= 1) {
+        std::ifstream in(rest[0]);
+        if (!in) { std::cerr << "Cannot open file: " << rest[0] << "\n"; return 4; }
         std::ostringstream ss;
         ss << in.rdbuf();
         src = ss.str();
-        fileName = argv[1];
-        for (int i = 2; i < argc; i++) args.push_back(argv[i]);
+        fileName = rest[0];
+        for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
     } else {
         std::ostringstream ss;
         ss << std::cin.rdbuf();
         src = ss.str();
     }
-    return rakuppRunBigStack(src, std::move(args), fileName, exePath);
+    return rakuppRunBigStack(src, std::move(args), fileName, exePath, libPaths);
 }

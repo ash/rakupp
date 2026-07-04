@@ -132,4 +132,4 @@ The harness compiles each program with `--exe` for the native column; the
 benchmark programs are plain, readable Raku in `tools/bench/*.raku` (edit or add
 freely).
 
-_Snapshot taken with Raku++ at 185 / 1,464 Roast files fully passing._
+_Snapshot taken with Raku++ at 220 / 1,464 Roast files fully passing._

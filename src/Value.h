@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,7 @@ struct Callable {
     std::vector<Value> candidates;                 // multi-dispatch candidates
     bool isMultiDispatcher = false;
     bool isWhateverCode = false;                    // produced by * currying (composes further)
+    long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
 };
 
@@ -50,13 +52,19 @@ struct Value {
     std::shared_ptr<std::map<std::string, Value>> hash;
     std::shared_ptr<Callable> code;
     std::shared_ptr<Value> pairVal; // for Pair value
+    std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
     std::shared_ptr<ObjectData> obj; // for VT::Object
+    std::shared_ptr<void> ext;       // opaque runtime handle: Promise/Channel/Lock/Supplier state (concurrency)
     std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
     std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
+    bool fatRat = false; // VT::Rat tagged as FatRat (type identity; arithmetic stays FatRat)
     // range
     long long rFrom = 0, rTo = 0;
     bool rExFrom = false, rExTo = false;
-    std::string enumName; // non-empty for enum values (e.g. Order: Less/Same/More)
+    std::string enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
+    std::string enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
+    int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
+    bool natSigned = false;
 
     Value() : t(VT::Any) {}
 
@@ -143,6 +151,7 @@ struct ClassAttr {
     std::string name;
     char sigil = '$';
     bool pub = true;
+    bool rw = false;  // `is rw` — the public accessor is a writable lvalue
     const Expr* def = nullptr; // borrowed from AST
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`
@@ -155,6 +164,7 @@ struct ClassInfo {
     std::map<std::string, Value> methods; // Code values (closures)
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
+    std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     bool isGrammar = false;
 
     Value* findMethod(const std::string& m) {
@@ -167,6 +177,12 @@ struct ClassInfo {
         auto it = rules.find(n);
         if (it != rules.end()) return &it->second;
         if (parent) return parent->findRule(n);
+        return nullptr;
+    }
+    const std::vector<std::string>* findRuleParams(const std::string& n) const {
+        auto it = ruleParams.find(n);
+        if (it != ruleParams.end()) return &it->second;
+        if (parent) return parent->findRuleParams(n);
         return nullptr;
     }
     const ClassAttr* findAttr(const std::string& n) const {

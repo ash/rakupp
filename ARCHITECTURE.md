@@ -54,7 +54,7 @@ The AST is deliberately simple and uniform — one `NK` switch drives both the
 interpreter's `eval`/`exec` and the code generator.
 
 You can see both stages directly: `RAKUPP_DUMPTOKENS=1 rakupp prog.raku` prints
-the token stream, and `rakupp --dump-ast prog.raku` prints the parsed AST as an
+the token stream, and `rakupp --ast prog.raku` prints the parsed AST as an
 indented text tree (`src/AstDump.cpp`).
 
 ---
@@ -74,8 +74,8 @@ This is the heart. Key pieces:
 | `Runtime.{h,cpp}` | Shared entry points: `rakuppRun` (lex+parse+interpret) and `rakuppRunProgram` (interpret a prebuilt AST, for `--aot`). |
 | `Codegen.*` | `--exe` back end: transpiles the AST to native C++. |
 | `AstEmit.cpp` | `--aot` back end: emits C++ that rebuilds the AST. |
-| `AstDump.cpp` | `--dump-ast` AST printer. |
-| `main.cpp` | CLI: interpret, `-e`, `--dump-ast`, `--bundle`, `--aot`, `--exe`. |
+| `AstDump.cpp` | `--ast` AST printer. |
+| `main.cpp` | CLI: interpret, `-e`, `--ast`, `--bundle`, `--aot`, `--exe`. |
 
 ### The `Value` type
 

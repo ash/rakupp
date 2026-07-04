@@ -46,19 +46,19 @@ implementation. Against the full Roast suite of **1,464 `.t` files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **185** | **13%** |
-| Partially passing | 508 | 35% |
-| No TAP output (parse error / unimplemented) | 752 | 51% |
-| Timeouts | 19 | 1% |
+| **Fully passing** | **251** | **17%** |
+| Partially passing | 567 | 39% |
+| No TAP output (parse error / unimplemented) | 639 | 44% |
+| Timeouts | 7 | 0.5% |
 
 Two numbers describe where Raku++ stands, and they measure different things:
 
-- **Coverage — 185 / 1,464 files fully pass (~13%).** This is the headline: how
-  much of Roast runs end-to-end. Over half the suite produces no TAP at all yet
+- **Coverage — 251 / 1,464 files fully pass (~17%).** This is the headline: how
+  much of Roast runs end-to-end. Nearly half the suite produces no TAP at all yet
   (a parse error or unimplemented construct aborts the file before any assertion
   runs), so those files are unmeasured, not passing.
-- **Correctness on what runs — 96,059 / 111,360 assertions pass.** This counts
-  only assertions in files that produce TAP. The 752 no-TAP files contribute
+- **Correctness on what runs — 119,868 / 164,298 assertions pass.** This counts
+  only assertions in files that produce TAP. The 643 no-TAP files contribute
   none to the denominator, and one subsystem (S15, Unicode) is ~88k of the
   total. It measures how much of the attempted subset is correct — a
   regression signal, on a different denominator than the coverage figure.
@@ -117,10 +117,12 @@ battery.
 
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
 - **[EXAMPLES.md](EXAMPLES.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
+- **[ASYNC.md](ASYNC.md)** — concurrency & async cookbook: promises, supplies, channels, threads.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
 - **[ROAST.md](ROAST.md)** — Roast suite overview and per-section statistics.
 - **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
+- **[JOURNEY.md](JOURNEY.md)** — a memoir of how this was built: the Roast / real-project / docs loops, the clean-room stance on Rakudo, and reaching `--exe`.
 
 ## Building
 
@@ -138,13 +140,18 @@ after adding new source files.)
 build/rakupp path/to/program.raku     # run a file
 build/rakupp -e 'say "hello"'         # run a one-liner
 echo 'say 42' | build/rakupp          # run from stdin
+build/rakupp -I lib program.raku      # add lib dirs to the module search path
 ```
+
+`-I <path>` (or `-I<path>`, repeatable) prepends directories to the module
+search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's
+`-I`. `RAKULIB` (colon-separated) does the same via the environment.
 
 To inspect how a program parses, dump its AST as an indented text tree:
 
 ```sh
-build/rakupp --dump-ast program.raku
-build/rakupp --dump-ast -e 'say 2 + 2 * 3'
+build/rakupp --ast program.raku
+build/rakupp --ast -e 'say 2 + 2 * 3'
 ```
 
 (`RAKUPP_DUMPTOKENS=1` similarly dumps the lexer's token stream.)
@@ -199,21 +206,31 @@ correct binary. Compiled natively:
 - scalars, `@`-arrays and `%`-hashes, indexing and autovivification;
 - arithmetic / string / comparison / logical / chained-comparison operators,
   ranges, reductions (`[+]`), postfix `++`/`--`, ternary, string interpolation;
-- `if`/`unless`/`while`/`until`/`loop`/`repeat`, `for` over ranges and lists,
-  `given`/`when`/`default`, list-destructuring `my ($a, $b) = …`, `enum`s;
-- subroutines and calls, **`multi` dispatch** (by type & arity), `&sub`
-  references, closures / pointy blocks, and `WhateverCode` (`* + 1`, `*.method`);
+- `if`/`unless`/`while`/`until`/`loop`/`repeat`, `for` over ranges and lists
+  (incl. multiple loop vars `-> $x, $y`), `given`/`when`/`default`,
+  `with`/`without`, `if EXPR -> $x`, list-destructuring `my ($a, $b) = …`,
+  `:=` binding, `enum`s;
+- subroutines and calls with **full signatures** — positional, named `:$x`,
+  optional/default, slurpy `*@`/`*%` — **`multi` dispatch** (by type & arity),
+  `&sub` references, closures / pointy blocks, `WhateverCode` (`* + 1`,
+  `*.method`, `~*`, `@a[*-1]`), user operators (`sub postfix:<!>` → `5!`);
 - **classes** — attributes (`$.`/`$!`, incl. `@`/`%` attributes), defaults,
   methods, `self`, accessors, single inheritance;
 - method calls (so the whole method library — `.map`, `.grep`, `.sort`,
   `.subst`, `.comb`, string/Unicode methods, …), `say`/`print`/`put`,
-  regex match & substitution, `@*ARGS`, type objects, junctions;
+  regex match & substitution, `@*ARGS`, type objects (any bareword), junctions,
+  and deterministic dynamic vars (`$*CWD`, `$*DISTRO`, `$*OUT`, `$*RAKU`, …);
+- **concurrency** — `Promise`/`start`/`await`, `Supply`, `Supplier`,
+  `react`/`whenever`/`supply` (the synchronous model);
 - `do`, `try`, `gather`/`take`, `EVAL`, phasers
   (`BEGIN`/`INIT`/`ENTER`/`LEAVE`/`END`), and `CATCH` blocks (`when`/`default`).
 
 The main remaining fallback is **grammars** — where an interpreter-in-a-box is
-the right tool (they *are* the grammar engine). A few niche cases also bundle
-(`CATCH` inside a sub body, `X::`-qualified type names). See [ROADMAP.md](ROADMAP.md).
+the right tool (they *are* the grammar engine). A few other constructs still
+bundle: `where`-constrained parameters, `multi` *methods*, index adverbs
+(`:exists`/`:delete`), state-dependent dynamic vars (`$*EXECUTABLE`, `$*PROGRAM`),
+and `CATCH` inside a sub body. Fallback is always safe — it produces a correct
+binary that bundles the interpreter. See [ROADMAP.md](ROADMAP.md).
 
 ## Measuring against Roast
 

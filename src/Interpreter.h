@@ -1,13 +1,20 @@
 #pragma once
 #include "Ast.h"
 #include "Value.h"
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 namespace rakupp {
+
+double randDouble(); // uniform random in [0,1)
 
 struct Env {
     std::unordered_map<std::string, Value> vars;
@@ -25,11 +32,67 @@ struct Env {
 // control-flow signals
 struct ReturnEx { Value v; };
 struct ExitEx { int code = 0; };
-struct LastEx {};
-struct NextEx {};
-struct RedoEx {};
+struct LastEx { std::string label; };
+struct NextEx { std::string label; };
+struct RedoEx { std::string label; };
 struct BreakGivenEx {}; // `when`/`succeed` exits the enclosing given/loop
+struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 struct RakuError { Value payload; std::string message; };
+
+// Per-thread execution "registers": the state that belongs to a single thread
+// of Raku execution — its current lexical scope, the dynamic-variable ($*foo)
+// caller chain, recursion depth, and the gather/supply/make collectors that are
+// active on its call stack. The interpreter keeps ONE live copy of these as
+// members. When a real thread parks (e.g. inside `await`) or another thread is
+// scheduled onto the interpreter, saveCtx/loadCtx swap the live registers with
+// the parked thread's stash. Because only one thread runs interpreter code at a
+// time (guarded by the GIL), the live members always reflect the running thread.
+// This is the Stage-1 foundation for real concurrency; nothing swaps yet.
+struct ExecContext {
+    std::shared_ptr<Env> cur;
+    std::vector<Env*> dynStack;
+    int callDepth = 0;
+    Env* curStateEnv = nullptr;
+    std::vector<std::shared_ptr<ValueList>> gatherStack;
+    std::vector<ValueList*> supplyStack;
+    std::vector<Value*> makeTargets;
+    std::string pkgPrefix;
+};
+
+// Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
+// holds the materialised prefix in its `arr`; `appendNext` computes one more element
+// on demand (returns false when exhausted). Reached via Value::ext.
+struct LazySeqState {
+    std::function<bool(ValueList&)> appendNext;
+};
+
+// Shared state behind a real (thread-backed) Promise. Copies of the Promise
+// Value all reference the same PromiseState via Value::ext, so a worker thread
+// keeping/breaking it is observed by every awaiter. `done`/`result`/`cause` are
+// guarded by `m`; `cv` wakes threads blocked in awaitPromise.
+struct PromiseState {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false;
+    bool broken = false;
+    Value result;        // the kept value
+    Value cause;         // exception payload when broken
+    std::string causeMsg; // exception message when broken
+    std::vector<std::function<void()>> thens; // `.then` continuations, fired once on settle
+};
+
+// One active `react` block. `whenever` on a live Supplier registers a tap that
+// enqueues events here; the react loop drains `queue` until every live source is
+// done (or `done`/`last` closes it), releasing the GIL to wait for events pushed
+// by other threads. from-list Supplies stay eager and never touch this.
+struct ReactEvent { Value handler; Value value; bool isDone = false; };
+struct ReactCtx {
+    std::deque<ReactEvent> queue;
+    int liveSources = 0;   // live taps not yet done
+    bool closed = false;   // `done`/`last` called
+    std::mutex m;
+    std::condition_variable cv;
+};
 
 class Interpreter {
 public:
@@ -41,13 +104,18 @@ public:
     Value eval(Expr* e);
     Value exec(Stmt* s);           // returns last value (for implicit return)
     Value execBlock(Block* b, std::shared_ptr<Env> scope);
-    bool runLoopBody(Block* b, std::shared_ptr<Env> scope); // handles redo/next/last; false => last
+    bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = ""); // handles redo/next/last; false => last
 
     // calling
-    Value callCallable(const Value& codeVal, ValueList args);
+    Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
     Value getArgs(); // @*ARGS as a List value (used by codegen)
+    Value dynVar(const std::string& name); // $* / $? magical variables (used by codegen)
+    Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
+    void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
     Value methodCall(Value inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+    std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
+    std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
     Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs, bool methodCtx);
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
@@ -56,6 +124,7 @@ public:
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
     void runLeavePhasers(const std::vector<StmtPtr>& stmts); // LEAVE/KEEP/UNDO at block exit (reverse order)
+    void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
     Value evalString(const std::string& src); // EVAL
     void loadModule(const std::string& name);  // `use Foo::Bar` -> compile lib file into global scope
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
@@ -67,11 +136,50 @@ public:
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
 
+    // Concurrency. saveCtx moves the live execution registers into `c`; loadCtx
+    // moves them back out. The GIL serialises Raku execution across real threads:
+    // only its holder may touch interpreter state; a thread drops it while blocked
+    // (await) so another can run, handing over the live registers via save/loadCtx.
+    void saveCtx(ExecContext& c);
+    void loadCtx(ExecContext& c);
+    std::mutex gil_;                       // global interpreter lock (held while running Raku)
+    bool gilHeld_ = false;                 // is the GIL currently engaged (any thread spawned)?
+    std::vector<std::thread> workers_;     // outstanding `start`/async worker threads
+    // Cooperative handoff. gilYieldNotify() releases the GIL AND wakes a thread
+    // parked in yieldToWorker (which the spawner uses to let a fresh worker run up
+    // to its first blocking point — sleep/await — so pure-compute blocks finish
+    // eagerly while blocking ones run concurrently).
+    std::condition_variable gilReleased_;
+    std::mutex gilRelMutex_;
+    long gilReleaseCount_ = 0;
+    void gilYieldNotify();                 // gil_.unlock() + bump the release counter + notify
+    void yieldToWorker();                  // drop the GIL until some worker makes progress, then reacquire
+    void sleepYield(double secs);          // sleep with the GIL released so other threads run concurrently
+    // Spawn a worker running `code` (no args); returns a Promise Value backed by
+    // a PromiseState. awaitPromise blocks the caller until `ps` completes, dropping
+    // the GIL so the worker can run. drainWorkers joins everything at program end.
+    Value spawnPromise(Value code);
+    void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);
+    void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
+    void engageGil();                      // lazily lock the GIL on first async use
+    void drainWorkers();
+
     std::shared_ptr<Env> cur_;
     std::shared_ptr<Env> global_;
+    int langRev_ = 2; // language revision: 0=6.c, 1=6.d, 2=6.e (default). Affects e.g. sqrt/roots of negatives -> Complex
+    std::vector<Env*> dynStack_; // caller envs (borrowed, alive during the call), for dynamic ($*foo) lookup
+    // Redispatch chain for callsame/callwith/nextsame/nextwith: each entry knows how to
+    // invoke the NEXT candidate (e.g. a built-in shadowed by a user method) and the
+    // current routine's args (for the *same variants).
+    struct RedispatchCtx { std::function<Value(ValueList)> next; ValueList sameArgs; };
+    std::vector<RedispatchCtx> redispatchStack_;
+    std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
     Env* curStateEnv_ = nullptr; // persistent env for `state` vars in the current sub call
     std::vector<std::string> argv_;
     std::vector<std::shared_ptr<ValueList>> gatherStack_; // active gather collectors
+    std::vector<ValueList*> supplyStack_; // active `supply {}` emit collectors
+    std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
+    int threadDepth_ = 0; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
     std::vector<Value*> makeTargets_; // current Match being acted on (for `make`)
     std::string pkgPrefix_;           // current package/module qualified-name prefix
 public:
@@ -120,5 +228,22 @@ Value  rtReduce(const std::string& op, const Value& list);  // [+] / [*] / … r
 Value  rtAttrGet(const Value& self, const std::string& name);   // $!attr / $.attr read (codegen)
 Value& rtAttrRef(Value& self, const std::string& name);         // $!attr write (codegen)
 bool   rtTypeMatch(const Value& v, const std::string& type);    // nominal type check for multi-dispatch (codegen)
+// argument-binding helpers used by native codegen for flexible signatures
+Value  rtPos(const ValueList& a, size_t idx);        // idx-th positional (non-Pair) arg, or Any
+bool   rtHasPos(const ValueList& a, size_t idx);     // is an idx-th positional present?
+Value  rtNamed(const ValueList& a, const std::string& key);    // named arg's value, or Any
+bool   rtHasNamed(const ValueList& a, const std::string& key); // is a named arg present?
+Value  rtSlurpyPos(const ValueList& a, size_t from);           // positional args [from..] as an Array
+Value  rtSlurpyNamed(const ValueList& a);                      // all named args as a Hash
+Value  rtCoerceHash(const Value& v);                           // pair/kv list → Hash (`my %h = a=>1,…`)
+
+// IO::Spec::{Unix,QNX,Win32,Cygwin} class-method dispatch — pure path-string
+// algorithms. Returns true (and sets `out`) when (cls, m) is handled.
+bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, ValueList& args, Value& out);
+
+// Proleptic-Gregorian day count <-> civil date (for Date arithmetic).
+long long civilToDays(long long y, long long m, long long d);
+void daysToCivil(long long z, long long& y, long long& m, long long& d);
+Value makeDate(long long days); // build a Date hash (hashKind="Date") from a day count
 
 } // namespace rakupp

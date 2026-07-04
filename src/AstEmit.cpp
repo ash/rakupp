@@ -62,7 +62,8 @@ struct Emit {
                 b << "  auto n = std::make_unique<IntLit>(" << n->v << "LL);\n";
                 if (!n->big.empty()) b << "  n->big=" << S(n->big) << ";\n"; break; }
             case NK::NumLit: { auto* n = static_cast<const NumLit*>(e); std::ostringstream v; v.precision(17); v << n->v;
-                b << "  auto n = std::make_unique<NumLit>(" << v.str() << ");\n  n->imaginary=" << B(n->imaginary) << ";\n"; break; }
+                b << "  auto n = std::make_unique<NumLit>(" << v.str() << ");\n  n->imaginary=" << B(n->imaginary) << ";\n";
+                if (n->isRat) b << "  n->isRat=true; n->ratNum=" << n->ratNum << "LL; n->ratDen=" << n->ratDen << "LL;\n"; break; }
             case NK::StrLit: b << "  auto n = std::make_unique<StrLit>(" << S(static_cast<const StrLit*>(e)->v) << ");\n"; break;
             case NK::BoolLit: b << "  auto n = std::make_unique<BoolLit>(" << B(static_cast<const BoolLit*>(e)->v) << ");\n"; break;
             case NK::RegexLit: b << "  auto n = std::make_unique<RegexLit>(" << S(static_cast<const RegexLit*>(e)->pattern) << ");\n"; break;

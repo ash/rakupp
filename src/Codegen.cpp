@@ -154,6 +154,7 @@ struct Codegen {
             case NK::NumLit: {
                 auto* n = static_cast<NumLit*>(e);
                 if (n->imaginary) unsupported("imaginary literal");
+                if (n->isRat) { std::ostringstream s; s << "Value::rat(BigInt(" << n->ratNum << "LL), BigInt(" << n->ratDen << "LL))"; return s.str(); }
                 std::ostringstream s; s.precision(17); s << "Value::number(" << n->v << ")";
                 return s.str();
             }
@@ -175,10 +176,17 @@ struct Codegen {
                     std::string nm = v->name.substr(1);
                     auto it = userSubs.find(nm);
                     if (it == userSubs.end()) unsupported("reference to non-local routine '" + v->name + "'");
-                    std::string callArgs;
-                    for (int k = 0; k < it->second; k++) { if (k) callArgs += ", ";
-                        callArgs += "(__a.size()>" + std::to_string(k) + "?__a[" + std::to_string(k) + "]:Value::any())"; }
-                    return "Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(" + callArgs + "); })";
+                    return "Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(__a); })";
+                }
+                if (v->name == "$?LINE") return "Value::integer(" + std::to_string(v->line) + ")";
+                {
+                    // deterministic magicals compile natively; state-dependent ones
+                    // ($*EXECUTABLE/$*PROGRAM/$?FILE — need runtime paths the compiled
+                    //  binary doesn't carry) fall back to the (correct) interpreter bundle.
+                    static const std::set<std::string> dyn = {
+                        "$*CWD","$*RAKU","$*PERL","$?RAKU","$?PERL","$*OUT","$*ERR","$*IN",
+                        "$*DISTRO","$*KERNEL","$*VM","$*SPEC","$*TMPDIR"};
+                    if (dyn.count(v->name)) return "RT.dynVar(" + cesc(v->name) + ")";
                 }
                 if (v->name.size() > 1 && (v->name[1] == '*' || v->name[1] == '?' || v->name[1] == '!'))
                     unsupported("special/dynamic variable '" + v->name + "'");
@@ -202,7 +210,8 @@ struct Codegen {
             case NK::Index: {
                 auto* ix = static_cast<Index*>(e);
                 if (!ix->adverb.empty()) unsupported("index adverb (:exists/:delete/…)");
-                return "rtIndexGet(" + ex(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
+                std::string fn = hasWhatever(ix->index.get()) ? "RT.idxW" : "rtIndexGet"; // @a[*-1] / @a[*]
+                return fn + "(" + ex(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
                      + (ix->isHash ? "true" : "false") + ")";
             }
             case NK::NameTerm: {
@@ -213,17 +222,11 @@ struct Codegen {
                 if (n == "pi" || n == "\xcf\x80")  return "Value::number(3.14159265358979323846)";
                 if (n == "e")     return "Value::number(2.71828182845904523536)";
                 if (n == "tau")   return "Value::number(6.28318530717958647692)";
+                if (n == "rand")  return "Value::number(randDouble())";
                 if (enumKeys.count(n)) return mangleVar(n); // enum value (bound as a global)
-                if (classNames.count(n)) return "Value::typeObj(" + cesc(n) + ")"; // class -> type object
-                {
-                    static const std::set<std::string> builtinTypes = {
-                        "Int","Str","Num","Rat","Complex","Bool","Any","Mu","Cool","Numeric","Real",
-                        "Array","List","Hash","Map","Pair","Range","Code","Sub","Block","Callable","Routine",
-                        "Junction","Set","Bag","Mix","Seq","Nil","Stringy","Positional","Associative","Iterable",
-                        "IO","Date","DateTime","Version","Whatever","Instant","Duration"};
-                    if (builtinTypes.count(n)) return "Value::typeObj(" + cesc(n) + ")";
-                }
-                unsupported("bareword term '" + n + "'");
+                // Any other bareword is a type object (Int, Str, Supply, a user class, …) —
+                // matching the interpreter, which resolves an unknown bareword to typeObj(n).
+                return "Value::typeObj(" + cesc(n) + ")";
             }
             case NK::Ternary: {
                 auto* t = static_cast<Ternary*>(e);
@@ -272,6 +275,7 @@ struct Codegen {
                 if (u->op == "-")  return "applyArith(\"-\", Value::integer(0), " + x + ")";
                 if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
                 if (u->op == "~")  return "Value::str((" + x + ").toStr())";
+                if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
                 unsupported("prefix operator '" + u->op + "'");
             }
             case NK::Binary: {
@@ -281,6 +285,17 @@ struct Codegen {
                     std::string m = "RT.regexMatch((" + ex(b->lhs.get()) + ").toStr(), "
                                   + cesc(static_cast<RegexLit*>(b->rhs.get())->pattern) + ")";
                     return b->op == "~~" ? m : "Value::boolean(!(" + m + ").truthy())";
+                }
+                if (b->op == "xx") {
+                    // list repetition thunks its left side (re-evaluate per copy)
+                    std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
+                    return "([&]()->Value{ long long _n=(" + R + ").toInt(); Value _o=Value::array(); _o.isList=true; "
+                           "for(long long _i=0;_i<_n;_i++) _o.arr->push_back(" + L + "); return _o; }())";
+                }
+                if (b->op.size() > 1 && b->op[0] == 'R' && !std::isalnum((unsigned char)b->op[1])) {
+                    // reverse metaop `a R/ b` == `b / a`
+                    std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
+                    return "applyArith(" + cesc(b->op.substr(1)) + ", " + R + ", " + L + ")";
                 }
                 std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
                 if (b->op == "&&" || b->op == "and")
@@ -306,7 +321,7 @@ struct Codegen {
                 std::string args = argList(c->args);
                 if (c->callee) return "RT.callCallable(" + ex(c->callee.get()) + ", {" + args + "})";
                 if (multiNames.count(c->name)) return mangleSub(c->name) + "(ValueList{" + args + "})"; // multi dispatcher
-                if (userSubs.count(c->name)) return mangleSub(c->name) + "(" + args + ")";
+                if (userSubs.count(c->name)) return mangleSub(c->name) + "(ValueList{" + args + "})";
                 return "RT.callBuiltin(" + cesc(c->name) + ", {" + args + "})";
             }
             case NK::MethodCall: {
@@ -416,6 +431,30 @@ struct Codegen {
             case NK::ClassDecl: return; // subs/enums/classes emitted separately
             case NK::ExprStmt: {
                 Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                // my ($a, $b) = LIST — declaration-list assignment: declare each, bind from the flat RHS
+                if (e->kind == NK::Assign && static_cast<Assign*>(e)->op == "=" &&
+                    static_cast<Assign*>(e)->target->kind == NK::ListExpr) {
+                    auto* a = static_cast<Assign*>(e);
+                    auto* lst = static_cast<ListExpr*>(a->target.get());
+                    // only all-scalar targets: `my ($a, $b, $c) = …` (a slurpy @rest tail
+                    // has different semantics — leave that to the bundling fallback)
+                    bool allDecl = !lst->items.empty();
+                    for (auto& it : lst->items) {
+                        if (it->kind != NK::VarExpr) { allDecl = false; break; }
+                        auto* v = static_cast<VarExpr*>(it.get());
+                        if (!v->declare || v->name.empty() || v->name[0] != '$') { allDecl = false; break; }
+                    }
+                    if (allDecl) {
+                        std::string tmp = gensym("__la");
+                        line(ind, "Value " + tmp + " = Value::array((" + exArg(a->value.get()) + ").flatten());");
+                        for (size_t k = 0; k < lst->items.size(); k++) {
+                            auto* v = static_cast<VarExpr*>(lst->items[k].get());
+                            line(ind, "Value " + mangleVar(v->name) + " = rtIndexGet(" + tmp +
+                                      ", Value::integer(" + std::to_string(k) + "), false);");
+                        }
+                        return;
+                    }
+                }
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
                     const std::string& nm = static_cast<VarExpr*>(e)->name;
@@ -522,6 +561,7 @@ struct Codegen {
         if (tgt->kind == NK::VarExpr) {
             const std::string& n = static_cast<VarExpr*>(tgt)->name;
             if (!n.empty() && n[0] == '@') return "Value::array((" + rhs + ").flatten())";
+            if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…
         }
         return rhs;
     }
@@ -530,7 +570,12 @@ struct Codegen {
         Expr* tgt = a->target.get();
         if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare)   // `my $x = ..`
             return "Value " + mangleVar(static_cast<VarExpr*>(tgt)->name) + " = " + coerceFor(tgt, exArg(a->value.get()));
-        if (a->op == ":=") unsupported("binding (:=)");
+        // Scalar `:=` binds ≈ assigns natively; container aliasing isn't modeled, so bundle that.
+        if (a->op == ":=") {
+            if (tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->name.empty() && static_cast<VarExpr*>(tgt)->name[0] == '$')
+                return lvalueExpr(tgt) + " = " + exArg(a->value.get());
+            unsupported("binding (:=) of a non-scalar");
+        }
         std::string rhs = exArg(a->value.get());
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs);
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
@@ -549,7 +594,19 @@ struct Codegen {
     }
 
     void ifStmt(IfStmt* f, int ind) {
-        if (!f->thenVar.empty()) unsupported("if EXPR -> $x");
+        if (!f->thenVar.empty()) { // if EXPR -> $x { … } — bind the condition value; only a single branch
+            if (f->branches.size() != 1) unsupported("if EXPR -> $x with elsif");
+            std::string v = mangleVar(f->thenVar);
+            line(ind, "{");
+            line(ind + 1, "Value " + v + " = " + ex(f->branches[0].first.get()) + ";");
+            std::string c = "RT.boolify(" + v + ")";
+            line(ind + 1, (f->isUnless ? "if (!" : "if (") + c + ") {");
+            block(f->branches[0].second.get(), ind + 2);
+            line(ind + 1, "}");
+            if (f->elseBlock) { line(ind + 1, "else {"); block(f->elseBlock.get(), ind + 2); line(ind + 1, "}"); }
+            line(ind, "}");
+            return;
+        }
         for (size_t i = 0; i < f->branches.size(); i++) {
             std::string c = "RT.boolify(" + ex(f->branches[i].first.get()) + ")";
             if (f->isUnless) c = "!" + c;
@@ -561,7 +618,21 @@ struct Codegen {
     }
 
     void forStmt(ForStmt* f, int ind) {
-        if (f->destructure || f->vars.size() > 1) unsupported("for with destructuring / multiple loop vars");
+        if (f->destructure) unsupported("for with destructuring");
+        if (f->vars.size() > 1) { // for @a -> $x, $y { … } : take vars.size() elements per iteration
+            size_t n = f->vars.size();
+            std::string lst = gensym("__lst"), i = gensym("__fi");
+            line(ind, "{");
+            line(ind + 1, "Value " + lst + " = Value::array((" + ex(f->list.get()) + ").flatten());");
+            line(ind + 1, "for (size_t " + i + " = 0; " + i + " < " + lst + ".arr->size(); " + i + " += " + std::to_string(n) + ") {");
+            for (size_t k = 0; k < n; k++)
+                line(ind + 2, "Value " + mangleVar(f->vars[k]) + " = (" + i + "+" + std::to_string(k) + " < " + lst +
+                              ".arr->size() ? (*" + lst + ".arr)[" + i + "+" + std::to_string(k) + "] : Value::any());");
+            block(f->body.get(), ind + 2);
+            line(ind + 1, "}");
+            line(ind, "}");
+            return;
+        }
         std::string topic = f->vars.empty() ? gensym("v__t") : mangleVar(f->vars[0]);
         line(ind, "{");
         if (f->list->kind == NK::Range) {
@@ -589,7 +660,25 @@ struct Codegen {
     }
 
     void givenStmt(GivenStmt* g, int ind) {
-        if (g->defGuard != 0) unsupported("with / without");
+        if (g->defGuard != 0) {
+            // with / without EXPR { body } [else { elseBody }]: run guarded on (un)definedness
+            std::string topic = gensym("v__w");
+            line(ind, "{");
+            line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
+            std::string def = "(" + topic + ".t != VT::Nil && " + topic + ".t != VT::Any && " + topic + ".t != VT::Type)";
+            line(ind + 1, "if (" + (g->defGuard == 1 ? def : "!" + def) + ") {");
+            topics.push_back(topic);
+            block(g->body.get(), ind + 2);
+            topics.pop_back();
+            line(ind + 1, "}");
+            if (g->hasElse && g->elseBody) {
+                line(ind + 1, "else {");
+                block(g->elseBody.get(), ind + 2);
+                line(ind + 1, "}");
+            }
+            line(ind, "}");
+            return;
+        }
         std::string topic = gensym("v__g"), done = gensym("__gdone");
         line(ind, "{");
         line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
@@ -612,17 +701,30 @@ struct Codegen {
     }
 
     // ---- sub definitions ----
-    std::string params(const std::vector<Param>& ps) {
-        std::string s;
-        for (size_t i = 0; i < ps.size(); i++) {
-            const Param& p = ps[i];
-            if (p.sigil != '$') unsupported("a non-scalar parameter");
-            if (p.slurpy || p.named || p.optional || p.defaultVal || p.whereExpr || p.invocant)
-                unsupported("an optional/slurpy/named/default/where parameter");
-            if (i) s += ", ";
-            s += "Value " + (p.name.empty() ? "__p" + std::to_string(i) : mangleVar(p.name)); // anon typed param
+    // Emit binding lines that pull each parameter out of the call's `__a`
+    // ValueList — handling positional, named, optional/default, and slurpy.
+    // hasSelf: `__a[0]` is the invocant (methods), so positionals start at 1.
+    void bindParams(const std::vector<Param>& ps, int ind, bool hasSelf) {
+        size_t pi = hasSelf ? 1 : 0;
+        int anon = 0;
+        for (const Param& p : ps) {
+            std::string nm = p.name.empty() ? "__anon" + std::to_string(anon++) : mangleVar(p.name);
+            std::string pos = std::to_string(pi);
+            if (p.invocant) { line(ind, "Value " + nm + " = __self;"); continue; }
+            if (p.slurpy) {
+                line(ind, "Value " + nm + " = " + (p.sigil == '%' ? "rtSlurpyNamed(__a);" : "rtSlurpyPos(__a, " + pos + ");"));
+                continue;
+            }
+            if (p.named) {
+                std::string key = p.name.size() > 1 ? cesc(p.name.substr(1)) : cesc("");
+                if (p.defaultVal) line(ind, "Value " + nm + " = rtHasNamed(__a, " + key + ") ? rtNamed(__a, " + key + ") : (" + ex(p.defaultVal.get()) + ");");
+                else line(ind, "Value " + nm + " = rtNamed(__a, " + key + ");");
+                continue;
+            }
+            if (p.defaultVal) line(ind, "Value " + nm + " = rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ");");
+            else line(ind, "Value " + nm + " = rtPos(__a, " + pos + ");");
+            pi++;
         }
-        return s;
     }
 
     // ---- classes ----
@@ -641,14 +743,7 @@ struct Codegen {
             if (md->isMulti) unsupported("a multi method");
             line(0, "static Value " + methodFn(cd->name, md->name) + "(ValueList& __a) {");
             line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
-            for (size_t k = 0; k < md->params.size(); k++) {
-                const Param& p = md->params[k];
-                if (p.invocant) { line(1, "Value " + mangleVar(p.name) + " = __self;"); continue; }
-                if (p.sigil != '$' || p.slurpy || p.named || p.optional || p.defaultVal || p.whereExpr)
-                    unsupported("a method parameter form");
-                line(1, "Value " + mangleVar(p.name) + " = (__a.size() > " + std::to_string(k + 1) +
-                        " ? __a[" + std::to_string(k + 1) + "] : Value::any());");
-            }
+            bindParams(md->params, 1, true);
             std::string saved = self_; self_ = "__self";
             for (size_t i = 0; i < md->body.size(); i++) {
                 Stmt* s = md->body[i].get();
@@ -681,7 +776,8 @@ struct Codegen {
 
     // Emit a sub/candidate body given its C++ function name.
     void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body) {
-        line(0, "static Value " + fnName + "(" + params(ps) + ") {");
+        line(0, "static Value " + fnName + "(ValueList __a) {");
+        bindParams(ps, 1, false);
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
@@ -709,17 +805,14 @@ struct Codegen {
         line(0, "static Value " + mangleSub(name) + "(ValueList __a) {");
         for (SubDecl* c : cands) {
             std::string guard = "__a.size() == " + std::to_string(c->params.size());
-            std::string args;
             for (size_t k = 0; k < c->params.size(); k++) {
                 const Param& p = c->params[k];
                 if (p.litVal)
                     guard += " && applyArith(\"eqv\", __a[" + std::to_string(k) + "], " + ex(p.litVal.get()) + ").truthy()";
                 else if (!p.type.empty())
                     guard += " && rtTypeMatch(__a[" + std::to_string(k) + "], " + cesc(p.type) + ")";
-                if (k) args += ", ";
-                args += "__a[" + std::to_string(k) + "]";
             }
-            line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(" + args + ");");
+            line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
         }
         line(1, "throw RakuError{Value::nil(), \"No matching multi candidate for " + name + "\"};");
         line(0, "}");
@@ -777,7 +870,7 @@ std::string transpileToCpp(Program& prog) {
 
     // forward declarations (subs + multis + class methods)
     for (SubDecl* d : subs)
-        g.out << "static Value " << mangleSub(d->name) << "(" << g.params(d->params) << ");\n";
+        g.out << "static Value " << mangleSub(d->name) << "(ValueList);\n";
     for (auto& mc : multiCands)
         g.out << "static Value " << mangleSub(mc.first) << "(ValueList);\n";
     for (ClassDecl* cd : classes)

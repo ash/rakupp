@@ -14,7 +14,7 @@ enum class NK {
     // statements
     ExprStmt, VarDecl, SubDecl, IfStmt, WhileStmt, ForStmt, LoopStmt,
     Block, ReturnStmt, LastStmt, NextStmt, RedoStmt, UseStmt, EmptyStmt,
-    GivenStmt, WhenStmt, RepeatStmt, Whatever, ClassDecl, SelfTerm, EnumDecl,
+    GivenStmt, WhenStmt, RepeatStmt, Whatever, ClassDecl, SelfTerm, EnumDecl, NamedRegexDecl,
 };
 
 struct Node {
@@ -28,12 +28,16 @@ using NodePtr = std::unique_ptr<Node>;
 struct Expr : Node { using Node::Node; };
 using ExprPtr = std::unique_ptr<Expr>;
 
-struct Stmt : Node { using Node::Node; };
+struct Stmt : Node { using Node::Node; std::string label; };
 using StmtPtr = std::unique_ptr<Stmt>;
 
 // ---- Expressions ----
 struct IntLit : Expr { long long v; std::string big; explicit IntLit(long long x): Expr(NK::IntLit), v(x){} };
-struct NumLit : Expr { double v; bool imaginary = false; explicit NumLit(double x): Expr(NK::NumLit), v(x){} };
+struct NumLit : Expr {
+    double v; bool imaginary = false;
+    bool isRat = false; long long ratNum = 0, ratDen = 1; // decimal literal `3.14` is a Rat (num/den)
+    explicit NumLit(double x): Expr(NK::NumLit), v(x){}
+};
 struct StrLit : Expr { std::string v; explicit StrLit(std::string s): Expr(NK::StrLit), v(std::move(s)){} };
 struct RegexLit : Expr { std::string pattern; explicit RegexLit(std::string p): Expr(NK::RegexLit), pattern(std::move(p)){} };
 struct ChainExpr : Expr { std::vector<ExprPtr> operands; std::vector<std::string> ops; ChainExpr(): Expr(NK::ChainExpr){} };
@@ -65,8 +69,9 @@ struct ListExpr : Expr {
     ListExpr(): Expr(NK::ListExpr) {}
 };
 
-struct ArrayLit : Expr { // [ ... ]
+struct ArrayLit : Expr { // [ ... ]  or a word-list < ... > / qw
     std::vector<ExprPtr> items;
+    bool isList = false; // word-lists are flattening Lists; bracket [..] literals are not
     ArrayLit(): Expr(NK::ArrayLit) {}
 };
 
@@ -105,6 +110,7 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
 struct MethodCall : Expr {
     ExprPtr inv;
     std::string method;
+    ExprPtr methodExpr; // indirect call $obj."$name"() — method name computed at runtime
     std::vector<ExprPtr> args;
     bool maybe = false; // .?
     bool mutate = false; // .= mutating call
@@ -146,9 +152,12 @@ struct Param {
     ExprPtr whereExpr;  // `where` constraint (checked in multi-dispatch)
     ExprPtr litVal;     // literal parameter, e.g. MAIN('population') — arg must equal this
     ExprPtr defaultVal; // may be null
+    std::string namedKey; // external name for `:name($var)` (else = var name)
+    char slurpyKind = 0;  // 'f'=*@ (flatten), 'n'=**@ (no-flatten), '1'=+@ (single-arg rule)
     bool named = false;
     bool slurpy = false;
     bool optional = false;
+    bool required = false; // explicit `!` on a named param
     bool invocant = false; // declared before ':' in signature
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     bool isRw = false;     // `is rw` — writes copy back to the caller's lvalue
@@ -166,6 +175,11 @@ struct ExprStmt : Stmt {
     ExprStmt(): Stmt(NK::ExprStmt) {}
 };
 
+struct NamedRegexDecl : Stmt { // lexical `my regex/token/rule NAME { … }`, callable as <NAME>
+    std::string name, pattern, kind;
+    NamedRegexDecl(): Stmt(NK::NamedRegexDecl) {}
+};
+
 struct VarDecl : Stmt {
     std::string scope; // my, our, has, state
     std::vector<std::string> names; // for `my ($a,$b)`
@@ -180,6 +194,7 @@ struct SubDecl : Stmt {
     std::vector<StmtPtr> body;
     bool isMulti = false;
     bool isMethod = false;
+    bool isSubmethod = false;
     SubDecl(): Stmt(NK::SubDecl) {}
 };
 
@@ -187,17 +202,20 @@ struct AttrDecl {
     std::string name;   // bare name, no sigil/twigil
     char sigil = '$';
     bool pub = true;    // has $.x (public accessor) vs has $!x (private)
+    bool rw = false;    // `is rw` — public accessor is writable
     ExprPtr def;        // optional default
 };
 
-struct GrammarRuleDecl { std::string name, pattern, kind; };
+struct GrammarRuleDecl { std::string name, pattern, kind; std::vector<std::string> params; };
 struct ClassDecl : Stmt {
     std::string name;
-    std::string parent; // `is Parent`
+    std::string parent; // first `is Parent` / `does Role`
+    std::vector<std::string> roles; // additional `does Role` (methods composed in)
     std::vector<AttrDecl> attrs;
     std::vector<std::unique_ptr<SubDecl>> methods;
     std::vector<GrammarRuleDecl> rules; // grammar token/rule/regex
     bool isRole = false;
+    bool parentIsDoes = false; // the first inheritance target came from `does` (composition), not `is`
     bool isGrammar = false;
     bool isPackage = false;        // package / module: body runs in a namespace
     std::vector<StmtPtr> body;     // package/module body statements
@@ -248,9 +266,9 @@ struct ReturnStmt : Stmt {
     ReturnStmt(): Stmt(NK::ReturnStmt) {}
 };
 
-struct LastStmt : Stmt { LastStmt(): Stmt(NK::LastStmt) {} };
-struct NextStmt : Stmt { NextStmt(): Stmt(NK::NextStmt) {} };
-struct RedoStmt : Stmt { RedoStmt(): Stmt(NK::RedoStmt) {} };
+struct LastStmt : Stmt { std::string target; LastStmt(): Stmt(NK::LastStmt) {} };
+struct NextStmt : Stmt { std::string target; NextStmt(): Stmt(NK::NextStmt) {} };
+struct RedoStmt : Stmt { std::string target; RedoStmt(): Stmt(NK::RedoStmt) {} };
 
 struct UseStmt : Stmt {
     std::string module;

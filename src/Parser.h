@@ -3,6 +3,7 @@
 #include "Token.h"
 #include <stdexcept>
 #include <vector>
+#include <set>
 
 namespace rakupp {
 
@@ -20,6 +21,8 @@ public:
 private:
     std::vector<Token> toks_;
     size_t pos_ = 0;
+    std::set<std::string> userInfix_, userPrefix_, userPostfix_; // user-declared operators (sub infix:<…>)
+    bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
 
     const Token& cur() const { return toks_[pos_]; }
     const Token& peek(int off = 1) const;
@@ -58,6 +61,7 @@ private:
     ExprPtr parseColonPair();                     // :name / :!name / :name(x) / :$var
     std::vector<ExprPtr> parseCallArgs();         // after '('
     ExprPtr parseInterpString(const std::string& raw);
+    std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)
 };
 
 } // namespace rakupp

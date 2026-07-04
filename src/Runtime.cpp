@@ -10,7 +10,8 @@
 namespace rakupp {
 
 int rakuppRun(const std::string& src, std::vector<std::string> args,
-              const std::string& fileName, const std::string& exePath) {
+              const std::string& fileName, const std::string& exePath,
+              const std::vector<std::string>& libPaths) {
     try {
         Lexer lexer(src);
         auto tokens = lexer.tokenize();
@@ -30,6 +31,8 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         interp.finishData_ = finish;
         interp.srcFile_ = fileName;
         interp.execPath_ = exePath;
+        // -I <path> lib dirs take priority over the built-in / env-derived ones.
+        interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
         return interp.run(prog);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
@@ -79,8 +82,9 @@ static int onBigStack(const std::function<int()>& fn) {
 }
 
 int rakuppRunBigStack(const std::string& src, std::vector<std::string> args,
-                      const std::string& fileName, const std::string& exePath) {
-    return onBigStack([&]() { return rakuppRun(src, std::move(args), fileName, exePath); });
+                      const std::string& fileName, const std::string& exePath,
+                      const std::vector<std::string>& libPaths) {
+    return onBigStack([&]() { return rakuppRun(src, std::move(args), fileName, exePath, libPaths); });
 }
 
 int rakuppRunProgramBigStack(Program& prog, std::vector<std::string> args,

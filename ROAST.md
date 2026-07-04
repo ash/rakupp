@@ -32,29 +32,29 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **185** | **13%** |
-| Partially passing | 508 | 35% |
-| No TAP output | 752 | 51% |
-| Timeouts | 19 | 1% |
+| **Fully passing** | **251** | **17%** |
+| Partially passing | 567 | 39% |
+| No TAP output | 639 | 44% |
+| Timeouts | 7 | 0.5% |
 
-**Coverage ≈ 13% of files.** That is the number to quote. Over half the suite
+**Coverage ≈ 17% of files.** That is the number to quote. Nearly half the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
 construct and abort before any assertion runs — so they are entirely unmeasured
 territory, not "passing" and not "failing."
 
 ### The assertion count
 
-Among the files that *do* run, **96,059 of 111,360** assertions pass. This
+Among the files that *do* run, **119,645 of 164,029** assertions pass. This
 number measures correctness on the attempted subset — how much of what we run is
 right — and is the signal we watch for regressions. Two facts define its scope:
 
-1. **Its denominator is only the reached assertions.** The 752 no-TAP files emit
-   nothing, so they are not in the 111,360. This is a different denominator than
+1. **Its denominator is only the reached assertions.** The 643 no-TAP files emit
+   nothing, so they are not in the 164,029. This is a different denominator than
    the coverage figure (files, over 1,464).
-2. **S15 (Unicode) is ~88k of the 111k**, passing at ~95%, so it dominates the
+2. **S15 (Unicode) is ~88k of the 112k**, passing at ~95%, so it dominates the
    blended figure.
 
-Coverage is the 13% of files; correctness-on-what-runs is this 96,059/111,360.
+Coverage is the 17% of files; correctness-on-what-runs is this 119,645/164,029.
 They are two different measurements, quoted for two different purposes.
 
 ## By synopsis
@@ -67,37 +67,37 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 13 | 53 | 0 | 81 | 684/1048 | 65% |
-| S03 | Operators | 11 | 39 | 1 | 74 | 594/980 | 61% |
-| S04 | Blocks, statements, phasers | 12 | 33 | 0 | 32 | 242/342 | 71% |
-| S05 | Regexes & grammars | 13 | 53 | 0 | 32 | 2565/4165 | 62% |
-| S06 | Subroutines & signatures | 5 | 33 | 0 | 56 | 182/435 | 42% |
-| S07 | Iterators | 0 | 0 | 0 | 6 | 0/0 | — |
-| S09 | Data structures | 0 | 5 | 0 | 17 | 37/87 | 43% |
+| S02 | Literals, types, magicals | 18 | 49 | 0 | 80 | 729/999 | 73% |
+| S03 | Operators | 13 | 37 | 1 | 74 | 634/1018 | 62% |
+| S04 | Blocks, statements, phasers | 13 | 35 | 0 | 29 | 287/425 | 68% |
+| S05 | Regexes & grammars | 14 | 56 | 0 | 28 | 2595/4200 | 62% |
+| S06 | Subroutines & signatures | 6 | 35 | 0 | 53 | 225/509 | 44% |
+| S07 | Iterators | 0 | 1 | 0 | 5 | 8/8 | 100% |
+| S09 | Data structures | 0 | 6 | 0 | 16 | 49/115 | 43% |
 | S10 | Packages | 1 | 2 | 0 | 6 | 12/14 | 86% |
-| S11 | Modules | 5 | 7 | 0 | 10 | 40/65 | 62% |
-| S12 | Objects & classes | 6 | 38 | 0 | 57 | 177/285 | 62% |
-| S13 | Overloading | 0 | 2 | 0 | 5 | 3/7 | 43% |
-| S14 | Roles | 4 | 9 | 0 | 12 | 47/65 | 72% |
-| S15 | Unicode / strings / NFG | 40 | 29 | 0 | 12 | 83395/88219 | 95% |
-| S16 | I/O | 1 | 9 | 0 | 27 | 24/79 | 30% |
-| S17 | Concurrency (supply/promise/async) | 2 | 41 | 0 | 56 | 59/67 | 88% |
-| S19 | Command-line | 0 | 0 | 0 | 8 | 0/0 | — |
+| S11 | Modules | 6 | 7 | 0 | 9 | 41/60 | 68% |
+| S12 | Objects & classes | 11 | 36 | 1 | 53 | 213/320 | 67% |
+| S13 | Overloading | 0 | 3 | 0 | 4 | 4/10 | 40% |
+| S14 | Roles | 4 | 10 | 0 | 11 | 66/92 | 72% |
+| S15 | Unicode / strings / NFG | 40 | 29 | 0 | 12 | 83698/88219 | 95% |
+| S16 | I/O | 2 | 13 | 0 | 22 | 42/136 | 31% |
+| S17 | Concurrency (supply/promise/async) | 10 | 57 | 1 | 31 | 264/505 | 52% |
+| S19 | Command-line | 0 | 6 | 0 | 2 | 1/18 | 6% |
 | S22 | Package format | 0 | 0 | 0 | 1 | 0/0 | — |
-| S24 | Testing | 5 | 2 | 0 | 10 | 10/40 | 25% |
-| S26 | Documentation (POD) | 1 | 9 | 0 | 17 | 6/91 | 7% |
+| S24 | Testing | 6 | 7 | 0 | 4 | 24/74 | 32% |
+| S26 | Documentation (POD) | 1 | 12 | 0 | 14 | 6/100 | 6% |
 | S28 | Special variables | 0 | 2 | 0 | 1 | 1/6 | 17% |
-| S29 | Builtins & context | 2 | 6 | 0 | 6 | 271/274 | 99% |
-| S32 | Standard types (str/list/num/…) | 27 | 85 | 8 | 143 | 7226/7868 | 92% |
-| integration | Cross-feature programs | 16 | 40 | 0 | 63 | 224/354 | 63% |
+| S29 | Builtins & context | 2 | 7 | 0 | 5 | 265/279 | 95% |
+| S32 | Standard types (str/list/num/…) | 30 | 89 | 8 | 136 | 7418/8095 | 92% |
+| integration | Cross-feature programs | 21 | 48 | 0 | 50 | 309/438 | 71% |
 | 6.c | v6.c language snapshot | 1 | 4 | 0 | 13 | 44/74 | 59% |
-| 6.d | v6.d language snapshot | 4 | 5 | 8 | 1 | 114/6687 | 2% |
-| APPENDICES | — | 1 | 1 | 2 | 2 | 12/17 | 71% |
-| MISC / t | — | 1 | 1 | 0 | 4 | 1/2 | 50% |
+| 6.d | v6.d language snapshot | 4 | 5 | 8 | 1 | 116/6702 | 2% |
+| APPENDICES | — | 1 | 2 | 2 | 1 | 24/29 | 83% |
+| MISC / t | — | 1 | 2 | 0 | 3 | 4/12 | 33% |
 
 ### Reading the table
 
-- **S15 (Unicode)** dominates the assertion count — ~88k of 111k assertions
+- **S15 (Unicode)** dominates the assertion count — ~88k of 112k assertions
   live here (grapheme-break and normalization tables are enormous). Raku++'s
   generated UCD 15.1 tables clear **95%** of it, which is why the overall
   assertion rate is high.
@@ -121,6 +121,6 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 185 / 1,464 files fully passing (~13% coverage); 508 partial,
-752 no-TAP, 19 timeout. Reached-assertion pass rate 96,059 / 111,360 (see
+_Snapshot: 251 / 1,464 files fully passing (~17% coverage); 567 partial,
+639 no-TAP, 7 timeout. Reached-assertion pass rate 119,868 / 164,298 (see
 caveat above — not a coverage figure)._

@@ -1,11 +1,29 @@
 #pragma once
 #include <functional>
 #include <map>
+#include <cstdint>
+#include <unordered_map>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace rakupp {
+
+// Interpreter callbacks that let the grammar matcher evaluate embedded Raku at
+// match time — code assertions, `:my`/`{…}` side-effects, runtime `$var` atoms,
+// and `** { … }` quantifier bounds — all against the interpreter's live scope.
+struct GrammarHooks {
+    using NamedMap = std::map<std::string, std::pair<long, long>>; // named-capture byte spans, for $/ / $<x>
+    using ParamMap = std::map<std::string, std::string>;           // current rule params, e.g. $indent
+    std::function<bool(const std::string&, long, long, const NamedMap&, const ParamMap&)> assertPass; // <?{…}>
+    std::function<void(const std::string&, long, long, const NamedMap&, const ParamMap&)> run;        // :my / {…}
+    std::function<std::string(const std::string&, const NamedMap&, const ParamMap&)> str;             // $var atom
+    std::function<std::pair<long,long>(const std::string&, const NamedMap&, const ParamMap&)> range;  // ** {…}
+    // Save/restore interpreter side-effect state (`:my` vars, deferred makes) so an LTM
+    // collect pass can measure branch lengths without polluting the commit pass.
+    std::function<std::shared_ptr<void>()> saveState;
+    std::function<void(std::shared_ptr<void>)> restoreState;
+};
 
 // Result of a regex match against a subject string (byte offsets).
 struct RxMatch {
@@ -19,6 +37,16 @@ struct RxMatch {
 // Resolver for grammar subrule calls <name>: match rule `name` against `subj`
 // anchored at `pos`; on success fill `out` (with out.to = end offset) and return true.
 using SubResolver = std::function<bool(const std::string& name, const std::string& subj, long pos, RxMatch& out)>;
+
+// A node of the parse tree recorded by the backtracking GrammarMatcher: which rule
+// matched which span, its positional captures ($0..) and named/subrule children.
+struct ParseNode {
+    std::string name;
+    long from = 0, to = 0;
+    std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
+    std::map<std::string, std::pair<long, long>> named;   // named-capture spans ($<x>)
+    std::map<std::string, std::vector<ParseNode>> children; // named subrule sub-trees; a vector collates repeated captures
+};
 
 // A compiled Raku regex supporting a pragmatic core of the language:
 //   literals, '.' , quoted '...', \d \w \s (+negated), \n \t \r escapes,
@@ -40,7 +68,7 @@ public:
     bool matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r) const;
 
 private:
-    enum class K { Lit, Any, Class, Seq, Alt, Rep, Group, AnchorStart, AnchorEnd, Nop, Subrule };
+    enum class K { Lit, Any, Class, Seq, Alt, Rep, Group, AnchorStart, AnchorEnd, Nop, Subrule, Look, Code, VarMatch };
     struct Node {
         K k;
         std::string lit;                 // Lit
@@ -53,12 +81,23 @@ private:
         // Rep
         long min = 0, max = -1;          // max = -1 => unbounded
         bool greedy = true;
+        std::unique_ptr<Node> sep;       // `X+ % Y` / `X+ %% Y` separator (null if none)
+        std::string repCode;             // `** { … }` — evaluate this at match time for (min,max)
+        // Code / VarMatch: `lit` holds the code / variable expression; `runOnly` = `:my`/`{…}` (execute, always pass)
+        bool runOnly = false;
+        // Alt
+        bool firstMatch = false;         // `||` (sequential first-match) vs `|` (LTM, longest wins)
         // Group
         int capIndex = -1;               // -1 => non-capturing
         std::string capName;
         // Subrule
         std::string ruleName;
+        std::string ruleArgs;            // raw args of a parameterised call <name($x, '')>
+        std::string ruleAlias;           // capture key for <alias=rule> (else = ruleName)
         bool ruleCapture = true;         // <name> captures as $<name>; <.name> does not
+        // Look: zero-width assertion — kids[0] is the inner pattern; `negate` = <!…>,
+        // `behind` = lookbehind (<?after…>) vs lookahead (<?before…>/<?…>).
+        bool behind = false;
     };
     using NodePtr = std::unique_ptr<Node>;
 
@@ -68,6 +107,8 @@ private:
     bool ok_ = true;
     bool icase_ = false;
     bool sigspace_ = false;
+    bool ratchet_ = false; // `token`/`rule`: quantifiers are possessive, matches commit (no backtracking)
+    int assertDepth_ = 0; // >0 while parsing an assertion inner (so parseSeq stops at `>`)
     NodePtr root_;
 
     // parser
@@ -80,16 +121,78 @@ private:
     char peek(size_t o = 0) const { return pos_ + o < pat_.size() ? pat_[pos_ + o] : '\0'; }
     bool eof() const { return pos_ >= pat_.size(); }
 
-    // matcher
+public:
+    // matcher state — captures for the rule currently being matched
     struct MState {
         const std::string& s;
         std::vector<std::pair<long, long>> caps;
         std::map<std::string, std::pair<long, long>> named;
         std::map<std::string, std::pair<long, long>> subs; // subrule names matched
-        const SubResolver* resolver = nullptr;
+        std::map<std::string, std::vector<ParseNode>> children; // named subrule sub-trees (grammar path)
+        const SubResolver* resolver = nullptr;             // plain-regex subrule path (atomic)
+        class GrammarMatcher* grammar = nullptr;           // grammar path (backtrackable)
+        long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
+        const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
     };
     bool matchNode(const Node* n, MState& st, long pos, const std::function<bool(long)>& k) const;
+    const Node* root() const { return root_.get(); }
+    int ncaps() const { return ncaps_; }
+    // Fast path for a rule whose whole body is a single character matcher (e.g.
+    // `token space { <[\ \t]> }`): returns true if this regex is exactly that.
+    bool rootIsSingleChar() const;
+    // If rootIsSingleChar(), test it at `pos`: returns pos+1 on match, -1 on no match.
+    long trySingleChar(const std::string& s, long pos) const;
+private:
     bool classMatch(const Node* n, char c) const;
+};
+
+// Backtrackable grammar engine: matches a table of named rules with the
+// continuation threaded THROUGH subrule calls, so `<a> <b>` can backtrack into
+// <a> when <b> fails. Supports parameterised rules `<r($x)>`, per-rule capture
+// frames, and records a ParseNode tree the interpreter turns into Match values.
+class GrammarMatcher {
+public:
+    struct Rule { std::string pattern, kind; std::vector<std::string> params; };
+    std::map<std::string, Rule> rules;
+    std::map<std::string, std::vector<std::string>> protos; // proto name -> candidate rule names (`x:<sym>`)
+    GrammarHooks hooks; // interpreter callbacks for match-time evaluation (set by grammarParse)
+
+    // Parse `input` from rule `top`. On success fills `out` (the tree) and returns
+    // the end offset in `endOut`; requires a full match unless `subparse`.
+    bool parse(const std::string& input, const std::string& top, bool subparse, ParseNode& out, long& endOut);
+
+    // Called by Regex::matchNode for a `<name(args)>` subrule; threads `k` through
+    // the callee. `capKey` (empty for <.name>) is the parent-frame capture key.
+    bool matchSub(const std::string& name, const std::string& args, const std::string& capKey,
+                  Regex::MState& st, long pos, const std::function<bool(long)>& k);
+
+    // The parameter bindings of the rule currently being matched (for code-block access).
+    const std::map<std::string, std::string>& currentParams() const;
+
+    // Packrat memo of a ratchet (token/rule) subrule's deterministic match at a given
+    // (rule, params, pos): tokens don't backtrack, so their first complete match is THE
+    // match — caching it collapses the exponential re-descent of recursive LTM probing.
+    struct MemoEntry {
+        bool matched = false;
+        long end = 0;
+        std::vector<std::pair<long, long>> caps;
+        std::map<std::string, std::pair<long, long>> named;
+        std::map<std::string, std::vector<ParseNode>> children;
+    };
+    void clearMemo() { memo_.clear(); }
+
+    struct NameMeta { bool ratchet; int id; Regex* singleChar; }; // singleChar!=null: body is one char matcher
+    const NameMeta& nameMeta(const std::string& name);      // cached ratchet-ness + dense id per rule name
+
+private:
+    std::unordered_map<uint64_t, MemoEntry> memo_;          // ratchet-token packrat cache (per parse), integer-keyed
+    std::unordered_map<std::string, NameMeta> nameMeta_;    // per-name metadata cache (avoids repeated rules.find)
+    std::map<std::string, std::unique_ptr<Regex>> cache_;   // interpolated-pattern → compiled
+    std::vector<std::map<std::string, std::string>> scope_; // parameterised-rule param bindings
+    Regex* compiled(const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);
+    std::string evalArg(const std::string& e) const;
+    std::vector<std::string> splitArgs(const std::string& s) const;
+    std::string interpParams(const std::string& pat, const std::map<std::string, std::string>& sc) const;
 };
 
 } // namespace rakupp
