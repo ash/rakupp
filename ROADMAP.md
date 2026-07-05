@@ -39,7 +39,7 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
   assignment, default `.new(:attr(v))`, single inheritance (`is`), `BUILD`.
 - Identity & equivalence: `===`, `!==`, `eqv`, `before`/`after`; argument
   flattening / slip with prefix `|` (`f(|@args)`).
-- `Order` enum (`<=>`/`cmp` → `Less`/`Same`/`More`), `$^a` placeholder params
+- `Order` enum (`<=>`/`cmp` -> `Less`/`Same`/`More`), `$^a` placeholder params
   (2-arg blocks used as sort comparators), magic string increment (`$s++`,
   `.succ`, string ranges `'a'..'z'`), `\x`/`\o` escapes, zen-slice `[]`/`.[]`,
   `q//`/`qq//`/`Q//` quote forms, sigilless `my \x` and pointy `\T`/trait params,
@@ -51,22 +51,59 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
   negative/Int exponents, `%`/`div`/`mod`/`%%`, and all comparisons are exact.
   Big integer literals and `+"big"` numification.
 
-## Next (high value, roughly ordered)
+## Landed since the MVP
 
-1. **Robustness of the core** — drive up the *partial→full* and *no-TAP→partial*
-   counts in S02–S04, S06, S32. Each fix typically unlocks many files.
-   - `given`/`when`, `do {}`, `try {}`/`CATCH`, `loop` (C-style), `repeat`.
-   - Better number tower: `Rat`, bigint `Int`, `Complex`, proper `/` semantics.
-   - Hash literals `{ ... }`, `%(...)`, adverbs (`:exists`, `:delete`, `:k/:v`).
-   - `Whatever` (`*`) and `WhateverCode` (`* + 1`), `&`-references.
-2. **Regex & grammars** (S05) — a regex engine and `Grammar`/`token`/`rule`,
-   `~~` matching, `Match`/`$/`, substitution. Large but unlocks a whole synopsis.
-3. **OO & MOP** (S12, S14) — `class`/`role`/`has`/method dispatch, `multi`
-   dispatch resolution, `enum`, `subset`, type checking against constraints.
-4. **Exceptions** (S04) — `X::` hierarchy, `try`/`CATCH`/`throws-like`, `fail`.
-5. **Junctions, lazy lists, feeds, hyperops** (S03, S07, S09).
-6. **Unicode correctness** — graphemes, `NFC`, proper `.chars`/`.codes`/`.ords`.
-7. **Module system** (S11) — `use`/`module`/`EXPORT`, `EVAL`.
+All of the original "next" list has landed; the interpreter now covers whole
+synopses rather than isolated features. Current standing: **252 / 1,464 Roast
+files fully pass**, 119,873 assertions on the files that run (run the harness for
+live numbers). Major subsystems now in:
+
+- **Regex & grammars** (S05) — a CPS backtracking engine, `token`/`rule`/`regex`,
+  `.parse`/`.subparse`/actions, `Match`/`$/`/`$0…`, substitution, and Unicode
+  property classes. Parses the full Raku-course TOC grammar in ~0.55 s (≈2×
+  faster than Rakudo).
+- **OO & MOP** (S12/S14) — `class`/`role`/`grammar`, attributes, `multi method`,
+  single inheritance/`does`, `bless`/`BUILD`, `enum`, and a working metamodel
+  (`.^name`/`.^methods`/`.^add_method`/`.^find_method`, `.WHAT`/`.WHICH`/`.HOW`).
+- **Signatures & dispatch** — `where`/literal/`:D`/`:U` multi-dispatch, plus
+  sub-signature **destructuring** (`[$a,$b]` / `|c($x,$y)` / `*[…]`) with dispatch
+  on the destructured arity.
+- **Exceptions** (S04) — `die`/`try`/`CATCH`, `X::*`, `throws-like`/`fails-like`.
+- **Junctions, lazy lists, hyperops, feeds** (S03/S07/S09).
+- **Unicode** (S15, ~95% of assertions) — NFC/NFD/NFKC/NFKD, grapheme-correct
+  `.chars` (UAX #29), names + numeric values, and category/script property
+  classes, all from UCD 15.1 tables.
+- **Modules** (S11) — `use`/`need`/`EXPORT`, `use lib`, resolving real
+  zef-installed modules via the Rakudo CURI `short/` index.
+- **Concurrency** (S17) — real `std::thread`s under a CPython-style GIL: promises
+  (`start`/`await`/combinators/`.then`), `Supply`/`Supplier`/`react`/`whenever`,
+  `Channel`, `Thread`, `Lock`/`Semaphore`. Blocking ops (`sleep`/`await`/
+  subprocess waits) release the GIL, and **`RAKUPP_PARALLEL=1`** opts into true
+  CPU parallelism (thread-local execution state, frozen symbol tables, real
+  locks; ~3× on 8 cores, 0 Roast regressions, ThreadSanitizer-clean).
+- **Tooling** — a parse-aware syntax highlighter (`--highlight`, HTML + ANSI, a
+  `pygmentize` drop-in) and a self-hosted Roast harness written in Raku.
+
+## Next
+
+The cheap Roast wins are largely spent; moving the full-pass count now takes
+*whole features* (parse + runtime + dispatch together), as sub-signature
+destructuring showed. Roughly ordered:
+
+1. **Redispatch** — `callsame`/`nextsame`/`callwith`/`nextwith` and proto `{*}`
+   (unblocks a cluster of S06/S12 multi tests).
+2. **More signature binding** — `is rw`/`is copy` inside sub-signatures,
+   `-> [$a,$b]` pointy destructure, `($x,$y)` as a single list argument.
+3. **Symbolic references** — `::('name')`, compile-time `::?CLASS`/`::?ROLE`.
+4. **POD subsystem** (S26) — `=begin/=end`, `$=pod`, `.pod` — a self-contained
+   chunk of no-TAP files.
+5. **Test/subprocess helpers** — `is_run`/`tap-ok` (Test::Util), the last
+   blockers on a set of otherwise-passing files.
+6. **Widen native `--exe` codegen** toward the constructs that still fall back to
+   bundling (see below).
+7. **Real-application hardening** — keep driving
+   [covid.observer](https://github.com/ash/covid.observer) and the Raku-course
+   generator toward running unmodified; each surfaces gaps Roast doesn't.
 
 ## Compiler backend
 
@@ -105,6 +142,8 @@ tiny body, exactly what an optimizing JIT specializes best.
 
 ## How to make progress efficiently
 
-Run `build/rakupp tools/run-roast.raku <synopsis>` to find the cheapest wins: files that are
-*partial* (a single missing builtin/operator) or *no-TAP* with a one-line parse
-error. Fixing parser/runtime gaps tends to unlock files in bulk.
+Run `build/rakupp tools/run-roast.raku <synopsis>` to find the cheapest wins:
+files that are *partial* (a single missing builtin/operator) or *no-TAP* with a
+one-line parse error. Fixing parser/runtime gaps tends to unlock files in bulk.
+At the current standing, though, most full-pass gains come from implementing a
+whole feature end to end (see **Next**), not one-line patches.

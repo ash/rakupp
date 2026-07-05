@@ -7,7 +7,7 @@ Divergences found are fixed in the same pass (Roast-verified) unless noted.
 
 **Legend:** ✅ conforms · ⚠️ partial / minor divergence · ❌ diverges (fixed = ✅🔧) · 📝 note
 
-This walks [FEATURES.md](FEATURES.md) section by section.
+This walks [FEATURES.md](../FEATURES.md) section by section.
 
 ---
 

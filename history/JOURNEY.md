@@ -225,11 +225,11 @@ dependency — which is a different and useful shape for a Raku program to take.
 
 ## Where the frontier is now
 
-At the time of writing, Raku++ fully passes **251 of 1,464** Roast files (~17%),
-with **119,831 / 164,239** reached assertions passing. Those numbers are a
+At the time of writing, Raku++ fully passes **252 of 1,464** Roast files (~17%),
+with **119,873 / 164,321** reached assertions passing. Those numbers are a
 coverage figure and a correctness-on-what-runs figure respectively; they measure
 different things and are quoted for different purposes (see
-[ROAST.md](ROAST.md)).
+[ROAST.md](../ROAST.md)).
 
 The live frontier is grammars in the large. The course generator reads its TOC
 through `YAMLish`, an indentation-sensitive YAML grammar that exercises nearly
