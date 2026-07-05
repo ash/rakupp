@@ -118,6 +118,10 @@ public:
     std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
     Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+    // Invoke method `name` found from `startCls`, pushing a redispatch context so
+    // callsame/nextsame reach the same method on the owning class's parent (recursively).
+    Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
+                            ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs, bool methodCtx);
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
@@ -203,11 +207,13 @@ public:
     // static thread_local is safe. Access via the tctx_.<field> members below.
     static thread_local ExecContext tctx_;
     std::shared_ptr<Env> global_;
-    int langRev_ = 2; // language revision: 0=6.c, 1=6.d, 2=6.e (default). Affects e.g. sqrt/roots of negatives -> Complex
+    int langRev_ = 1; // language revision: 0=6.c, 1=6.d (default, matches Rakudo), 2=6.e (via `use v6.e.PREVIEW`). Affects e.g. sqrt/roots of negatives -> Complex
     // Redispatch chain for callsame/callwith/nextsame/nextwith: each entry knows how to
     // invoke the NEXT candidate (e.g. a built-in shadowed by a user method) and the
     // current routine's args (for the *same variants).
-    struct RedispatchCtx { std::function<Value(ValueList)> next; ValueList sameArgs; };
+    // next: the next-less-specific candidate (callsame/nextsame/callwith/nextwith).
+    // restart: re-dispatch the SAME routine from scratch with new args (samewith).
+    struct RedispatchCtx { std::function<Value(ValueList)> next; std::function<Value(ValueList)> restart; ValueList sameArgs; };
     // These three are per-thread call-stack state (a worker builds its own redispatch
     // chain / react stack / thread-depth). Left as plain members in step 1 because they
     // weren't in the swapped ExecContext set; made `static thread_local` here (step 3a)
@@ -258,6 +264,7 @@ private:
 Value listToArray(const ValueList& items);
 ValueList argsToPositional(ValueList& args, std::map<std::string, Value>& named);
 Value applyArith(const std::string& op, const Value& l, const Value& r); // binary op dispatch (also used by codegen)
+std::string doSprintf(const std::string& fmt, const ValueList& args); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);

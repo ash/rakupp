@@ -121,6 +121,6 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 252 / 1,464 files fully passing (~17% coverage); 568 partial,
-638 no-TAP, 9 timeout. Reached-assertion pass rate 119,873 / 164,321 (see
+_Snapshot: 254 / 1,464 files fully passing (~17% coverage); 575 partial,
+626 no-TAP, 9 timeout. Reached-assertion pass rate 129,105 / 185,047 (see
 caveat above — not a coverage figure)._

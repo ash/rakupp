@@ -1149,6 +1149,17 @@ Value Interpreter::exec(Stmt* s) {
                         "Class '" + cd->name + "' cannot inherit from '" + cd->parent +
                         "' because it is unknown"};
             }
+            // additional `is Parent` targets — multiple inheritance
+            for (auto& pn : cd->extraParents) {
+                if (pn == cd->name)
+                    throw RakuError{Value::typeObj("X::Inheritance::SelfInherit"),
+                        "Class '" + cd->name + "' cannot inherit from itself"};
+                auto it = classes_.find(pn);
+                if (it != classes_.end()) ci->extraParents.push_back(it->second);
+                else if (!isKnownTypeName(pn))
+                    throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
+                        "Class '" + cd->name + "' cannot inherit from '" + pn + "' because it is unknown"};
+            }
             // compose additional `does Role`s: flatten their methods/attrs in (the
             // class's own methods, registered below, override by key)
             for (auto& rn : cd->roles) {
@@ -1556,7 +1567,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
         if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
         if (p->defConstraint) score++; // a smiley is more specific
-        if (!p->type.empty() && p->type != "Any" && p->type != "Mu") score++;
+        if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
+            score++;                                   // constrained at all beats unconstrained
+            if (p->type == pos[i].typeName()) score++; // exact type is more specific than a supertype
+                                                       // (so multi f(Int) beats multi f(Numeric) for an Int)
+        }
         if (p->whereExpr) {
             auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
             if (!p->name.empty()) env->define(p->name, pos[i]);
@@ -1779,19 +1794,49 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
 }
 
 Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
+    if (codeVal.t == VT::Hash && codeVal.hashKind == "Format") {
+        std::string fmt = codeVal.hash && codeVal.hash->count("fmt") ? (*codeVal.hash)["fmt"].toStr() : "";
+        return Value::str(doSprintf(fmt, args));
+    }
     if (codeVal.t != VT::Code || !codeVal.code)
         throw RakuError{Value::str("Not callable"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code;
     if (c.isMultiDispatcher) {
-        const Value* best = nullptr; int bestScore = -1;
-        for (auto& cand : c.candidates) {
-            int s = scoreCandidate(cand, args);
-            if (s > bestScore) { bestScore = s; best = &cand; }
-        }
-        if (best && bestScore >= 0) return callCallable(*best, args, rwArgs);
-        throw RakuError{Value::str("X::Multi::NoMatch"),
-                        "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
+        // Dispatch to the best-scoring candidate not already tried for the given args,
+        // pushing a redispatch context so callsame/nextsame (same args) and callwith/
+        // nextwith (new args) re-dispatch to the next candidate. A `visited` set (shared
+        // across the chain) picks the next-less-specific candidate and prevents loops.
+        auto visited = std::make_shared<std::vector<const Value*>>();
+        std::function<Value(ValueList)> dispatch = [this, &c, &codeVal, rwArgs, visited, &dispatch](ValueList as) -> Value {
+            const Value* best = nullptr; int bestScore = -1;
+            for (auto& cand : c.candidates) {
+                bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
+                if (seen) continue;
+                int s = scoreCandidate(cand, as);
+                if (s > bestScore) { bestScore = s; best = &cand; }
+            }
+            if (!best || bestScore < 0) {
+                // Initial dispatch with no candidate → NoMatch. A redispatch (callsame/
+                // nextsame) that runs past the last candidate → Nil, not an error.
+                if (!visited->empty()) return Value::nil();
+                throw RakuError{Value::str("X::Multi::NoMatch"),
+                                "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
+            }
+            visited->push_back(best);
+            RedispatchCtx rc;
+            rc.sameArgs = as;
+            rc.next = [&dispatch](ValueList na) -> Value { return dispatch(std::move(na)); };
+            rc.restart = [this, codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
+            redispatchStack_.push_back(std::move(rc));
+            Value r;
+            try { r = callCallable(*best, as, rwArgs); }
+            catch (...) { redispatchStack_.pop_back(); throw; }
+            redispatchStack_.pop_back();
+            return r;
+        };
+        return dispatch(args);
     }
     if (c.builtin) return c.builtin(*this, args);
 
@@ -1908,6 +1953,35 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         }
         pi++;
     }
+}
+
+Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
+                                     ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    ClassInfo* owner = nullptr;
+    Value* um = startCls ? startCls->findMethod(name, &owner) : nullptr;
+    if (!um)
+        throw RakuError{Value::typeObj("X::Method::NotFound"),
+                        "No next method '" + name + "' to redispatch to (callsame/nextsame)"};
+    // Only set up a redispatch frame when an ancestor also defines this method — most
+    // calls have no override chain and shouldn't pay for a pushed closure.
+    ClassInfo* nextStart = owner ? owner->parent.get() : nullptr;
+    if (!nextStart || !nextStart->findMethod(name))
+        return invokeMethod(*um, self, args, rwArgs);
+    RedispatchCtx rc;
+    rc.sameArgs = args;
+    Value selfCopy = self;
+    rc.next = [this, name, nextStart, selfCopy, rwArgs](ValueList na) -> Value {
+        return invokeMethodChain(name, nextStart, selfCopy, std::move(na), rwArgs);
+    };
+    rc.restart = [this, name, selfCopy, rwArgs](ValueList na) -> Value {
+        return methodCall(selfCopy, name, std::move(na), rwArgs);  // samewith: re-dispatch from the top
+    };
+    redispatchStack_.push_back(std::move(rc));
+    Value r;
+    try { r = invokeMethod(*um, self, args, rwArgs); }
+    catch (...) { redispatchStack_.pop_back(); throw; }
+    redispatchStack_.pop_back();
+    return r;
 }
 
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs) {
@@ -2042,22 +2116,29 @@ Value Interpreter::evalAssign(Assign* a) {
         Value rhs = eval(a->value.get());
         // one-level list flattening (Raku): a List/Range spreads, but an itemized
         // `[...]` Array stays one element — so `my ($a,$b) = M, [7,8]` gives $b = [7,8].
-        ValueList vals;
-        if (rhs.t == VT::Array && rhs.arr) {
-            for (auto& it : *rhs.arr) {
-                if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
-                else if (it.t == VT::Array && it.isList && it.arr) { for (auto& e : *it.arr) vals.push_back(e); }
-                else vals.push_back(it);
+        auto spread = [](const Value& r) -> ValueList {
+            ValueList vals;
+            if (r.t == VT::Array && r.arr) {
+                for (auto& it : *r.arr) {
+                    if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
+                    else if (it.t == VT::Array && it.isList && it.arr) { for (auto& e : *it.arr) vals.push_back(e); }
+                    else vals.push_back(it);
+                }
+            } else if (r.t == VT::Range) vals = r.flatten();
+            else vals.push_back(r);
+            return vals;
+        };
+        // Bind positionally; a nested list target (`my (\a, (\b, \c))`) recursively
+        // destructures the corresponding element.
+        std::function<void(ListExpr*, const Value&)> bind = [&](ListExpr* L, const Value& r) {
+            ValueList vals = spread(r);
+            for (size_t i = 0; i < L->items.size(); i++) {
+                Value v = (i < vals.size()) ? vals[i] : Value::any();
+                if (L->items[i]->kind == NK::ListExpr) bind(static_cast<ListExpr*>(L->items[i].get()), v);
+                else { Value* lv = lvalue(L->items[i].get()); *lv = v; }
             }
-        } else if (rhs.t == VT::Range) {
-            vals = rhs.flatten();
-        } else {
-            vals.push_back(rhs);
-        }
-        for (size_t i = 0; i < lst->items.size(); i++) {
-            Value* lv = lvalue(lst->items[i].get());
-            *lv = (i < vals.size()) ? vals[i] : Value::any();
-        }
+        };
+        bind(lst, rhs);
         return rhs;
     }
 

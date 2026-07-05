@@ -26,3 +26,4 @@
 # Editor / OS cruft
 .DS_Store
 *.swp
+/build-tsan/

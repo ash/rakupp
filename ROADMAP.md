@@ -54,8 +54,8 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing: **252 / 1,464 Roast
-files fully pass**, 119,873 assertions on the files that run (run the harness for
+synopses rather than isolated features. Current standing: **254 / 1,464 Roast
+files fully pass**, 129,105 assertions on the files that run (run the harness for
 live numbers). Major subsystems now in:
 
 - **Regex & grammars** (S05) — a CPS backtracking engine, `token`/`rule`/`regex`,

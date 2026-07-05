@@ -276,6 +276,27 @@ Token Lexer::lexQuoted(char quote) {
                 raw += '\\';
                 if (!eof()) raw += advance();
             }
+        } else if (c == '{' && quote != '\'') {
+            // Interpolation code block: capture the balanced { … } as a unit so a
+            // nested string ("…"/'…') inside it doesn't prematurely close the outer
+            // string. The interpolation parser re-lexes the captured content later.
+            raw += c;
+            int depth = 1;
+            while (!eof() && depth > 0) {
+                char b = advance();
+                raw += b;
+                if (b == '\\') { if (!eof()) raw += advance(); continue; }
+                if (b == '{') depth++;
+                else if (b == '}') depth--;
+                else if (b == '"' || b == '\'') { // skip a nested string literal whole
+                    char qq = b;
+                    while (!eof() && peek() != qq) {
+                        char s = advance(); raw += s;
+                        if (s == '\\' && !eof()) raw += advance();
+                    }
+                    if (!eof()) raw += advance();
+                }
+            }
         } else {
             raw += c;
         }
@@ -394,6 +415,9 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     bool interp = (w == "qq");
     out = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
+    // q:o/…/ and q:format/…/ (6.e) build a Format object, not a plain string.
+    if (adverbs.find(":o ") != std::string::npos || adverbs.find(":format ") != std::string::npos)
+        out.flag = true;
     return true;
 }
 

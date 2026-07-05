@@ -245,7 +245,10 @@ ExprPtr Parser::parseExpr(int minbp) {
         if (in.isComma) {
             advance();
             std::unique_ptr<ListExpr> list;
-            if (lhs->kind == NK::ListExpr) {
+            // Extend the running comma-chain, but only if lhs is an un-parenthesised
+            // list. A `( … )` list is a distinct nested element (so `(1,2),(3,4)` is a
+            // 2-element list of lists, not a flat 1,2,3,4).
+            if (lhs->kind == NK::ListExpr && !static_cast<ListExpr*>(lhs.get())->parenned) {
                 list.reset(static_cast<ListExpr*>(lhs.release()));
             } else {
                 list = std::make_unique<ListExpr>();
@@ -416,6 +419,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base) {
             // word-key hash subscript: %h<key>  (and $<name>/@<name>/%<name> capture sugar for $/<name>)
             advance();
             std::vector<std::string> words = readAngleWords(">");
+            if (words.empty()) continue; // `$x<>` / `@x<>`: zen-slice / decontainerize — the value itself
             char sigilCtx = 0;
             if (base->kind == NK::VarExpr) {
                 auto* ve = static_cast<VarExpr*>(base.get());
@@ -575,17 +579,38 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     std::string type;
     if (isKind(Tok::Ident)) {
         bool looksType = peek().kind == Tok::Var || peek().kind == Tok::LParen ||
-                         peek().kind == Tok::LBracket || (peek().kind == Tok::Op && peek().text == ":");
+                         peek().kind == Tok::LBracket ||
+                         (peek().kind == Tok::Op && (peek().text == ":" || peek().text == "\\"));
         if (looksType) {
             type = advance().text;
             if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D / :U / :_ smiley
             if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
         }
     }
+    // sigilless after an optional type:  my Mu \x = …   (bare `my \x` handled above)
+    if (matchOp("\\")) {
+        std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
+        auto ve = std::make_unique<VarExpr>(nm);
+        ve->declare = true; ve->declScope = scope; ve->declType = type;
+        return ve;
+    }
     if (isKind(Tok::LParen)) {
         advance();
         auto list = std::make_unique<ListExpr>();
         while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
+            if (isKind(Tok::LParen)) { // nested destructure:  my (\a, (\b, \c)) = …
+                list->items.push_back(parseDeclarator(scope));
+                if (!matchKind(Tok::Comma)) break;
+                continue;
+            }
+            if (matchOp("\\")) { // sigilless item:  my (\x, $y) = …
+                std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
+                auto ve = std::make_unique<VarExpr>(nm);
+                ve->declare = true; ve->declScope = scope;
+                list->items.push_back(std::move(ve));
+                if (!matchKind(Tok::Comma)) break;
+                continue;
+            }
             std::string t2;
             if (isKind(Tok::Ident) && peek().kind == Tok::Var) t2 = advance().text;
             if (!isKind(Tok::Var)) error("expected variable in declaration");
@@ -725,8 +750,16 @@ ExprPtr Parser::parsePrimary() {
             }
             return e;
         }
-        case Tok::StrLit: { auto e = std::make_unique<StrLit>(advance().text); return e; }
-        case Tok::StrInterp: { std::string raw = advance().text; return parseInterpString(raw); }
+        case Tok::StrLit: {
+            bool fmt = cur().flag; auto e = std::make_unique<StrLit>(advance().text);
+            if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
+            return e;
+        }
+        case Tok::StrInterp: {
+            bool fmt = cur().flag; std::string raw = advance().text; auto e = parseInterpString(raw);
+            if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
+            return e;
+        }
         case Tok::RegexLit: { auto e = std::make_unique<RegexLit>(advance().text); return e; }
         case Tok::SubstLit: { const Token& t = advance(); return std::make_unique<SubstLit>(t.text, t.text2, t.flag); }
         case Tok::QwList: { // qw<...> : split raw content on whitespace into a list of strings
@@ -778,6 +811,7 @@ ExprPtr Parser::parsePrimary() {
                 e = std::move(call);
             }
             expectKind(Tok::RParen, ")");
+            if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
             return e;
         }
         case Tok::LBracket: {
@@ -1023,9 +1057,10 @@ ExprPtr Parser::parsePrimary() {
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur());
             if (listopOk && cur().kind == Tok::Op &&
-                (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|") &&
+                (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|" || cur().text == "!!") &&
                 peek(1).spaceBefore)
-                listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip vs `x | y` junction
+                listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip;
+                                   // and `Nil !! Any` (space after !!) is a ternary else-marker, not `Nil(!!Any)`
             if (listopOk) {
                 auto c = std::make_unique<Call>();
                 c->name = name;
@@ -1678,7 +1713,8 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             std::string t = advance().text;
             if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }
-            else cd->roles.push_back(t); // extra `does Role` — composed in
+            else if (isDoes) cd->roles.push_back(t);      // extra `does Role` — composed in
+            else cd->extraParents.push_back(t);            // extra `is Class` — multiple inheritance
         }
         // skip type params / extra
         while (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }

@@ -35,6 +35,34 @@ namespace rakupp {
 struct LockState { std::recursive_mutex m; };            // Raku Lock (used reentrantly by protect)
 struct SemaphoreState { std::mutex m; std::condition_variable cv; long count = 0; };
 
+// A small hardcoded slice of the built-in type lattice (narrowest-first, widest-last),
+// used by `.are` to find the narrowest common type of a list's elements.
+static const std::vector<std::string>& typeAncestry(const std::string& t) {
+    static const std::map<std::string, std::vector<std::string>> A = {
+        {"Int",     {"Int","Real","Numeric","Cool","Any","Mu"}},
+        {"Rat",     {"Rat","Real","Numeric","Cool","Any","Mu"}},
+        {"FatRat",  {"FatRat","Rat","Real","Numeric","Cool","Any","Mu"}},
+        {"Num",     {"Num","Real","Numeric","Cool","Any","Mu"}},
+        {"Complex", {"Complex","Numeric","Cool","Any","Mu"}},
+        {"Real",    {"Real","Numeric","Cool","Any","Mu"}},
+        {"Numeric", {"Numeric","Cool","Any","Mu"}},
+        {"Str",     {"Str","Cool","Any","Mu"}},
+        {"Bool",    {"Bool","Cool","Any","Mu"}},
+        {"Cool",    {"Cool","Any","Mu"}},
+        {"Date",    {"Date","Dateish","Any","Mu"}},
+        {"DateTime",{"DateTime","Dateish","Any","Mu"}},
+    };
+    static const std::vector<std::string> fallback = {"Any","Mu"};
+    auto it = A.find(t);
+    return it != A.end() ? it->second : fallback;
+}
+static std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s : v.typeName(); }
+static std::string lubType(const std::string& a, const std::string& b) {
+    if (a == b) return a;
+    for (auto& x : typeAncestry(a)) for (auto& y : typeAncestry(b)) if (x == y) return x;
+    return "Mu";
+}
+
 // Spawn a child process, capture its stdout, with an optional wall-clock timeout.
 // `gil` (if non-null) is the interpreter: the GIL is released for the child-process
 // WAIT so sibling worker threads run — and spawn their own children — concurrently.
@@ -373,7 +401,7 @@ static ValueList flattenArgs(ValueList& args) {
 }
 
 // simple sprintf supporting %s %d %i %x %o %b %c %f %g %e %%
-static std::string doSprintf(const std::string& fmt, const ValueList& args) {
+std::string doSprintf(const std::string& fmt, const ValueList& args) {
     std::string out;
     size_t ai = 0;
     for (size_t i = 0; i < fmt.size(); i++) {
@@ -456,6 +484,19 @@ static Value makeBaggy(const ValueList& items, const std::string& kind) {
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // 6.e `.snitch`: run a tap (default: note the value) and return self — for
+    // sticking a peek into a method chain. Universal, so handle it up front.
+    if (m == "snitch") {
+        if (!args.empty() && args[0].t == VT::Code) callCallable(args[0], {inv});
+        else std::cerr << gistOf(inv) << "\n";
+        return inv;
+    }
+    // `.are`/`.snip` on a type object or lone scalar treat it as a 1-element list
+    // (so `Int.are` → Int, `42.are` → Int).
+    if ((m == "are" || m == "snip") && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash) {
+        Value one = Value::array(); one.isList = true; one.arr->push_back(inv);
+        return methodCall(one, m, args, rwArgs);
+    }
 
     // an undefined invocant in list context is an empty list (e.g. an unmatched
     // named capture used as `@<x>».ast` or `@<x>.map(...)`).
@@ -473,6 +514,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (mm == "name") return Value::str(inv.typeName());
         if (mm == "WHAT") return Value::typeObj(inv.typeName());
         return methodCall(inv, mm, args, rwArgs);
+    }
+
+    // Pair.new($key, $value) or Pair.new(:key(...), :value(...)) — same shape as `=>`.
+    if (inv.t == VT::Type && inv.s == "Pair" && m == "new") {
+        Value key = Value::any(), val = Value::any();
+        std::vector<Value> pos;
+        for (auto& x : args) {
+            if (x.t == VT::Pair && x.s == "key")        key = x.pairVal ? *x.pairVal : Value::any();
+            else if (x.t == VT::Pair && x.s == "value") val = x.pairVal ? *x.pairVal : Value::any();
+            else pos.push_back(x);
+        }
+        if (!pos.empty())      key = pos[0];
+        if (pos.size() >= 2)   val = pos[1];
+        Value p = Value::pair(key.toStr(), val);
+        if (key.t != VT::Str) p.pairKey = std::make_shared<Value>(key);
+        return p;
     }
 
     // Lock / Semaphore. No-ops under the GIL (it already serialises); backed by real
@@ -498,16 +555,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && (inv.hashKind == "Raku" || inv.hashKind == "Compiler")) {
         bool isComp = inv.hashKind == "Compiler";
         std::string nm = isComp ? "Raku++" : "Raku";
+        // Language revision the program is running under (6.c/6.d/6.e), from any
+        // `use v6.*` pragma; the compiler object keeps its own version string.
+        std::string langVer = langRev_ == 0 ? "6.c" : (langRev_ == 1 ? "6.d" : "6.e");
         if (m == "compiler") { Value c = Value::makeHash(); c.hashKind = "Compiler"; return c; }
         if (m == "backend") return Value::str("cpp"); // rakupp's engine is a C++ tree-walking interpreter, not MoarVM
         if (m == "name") return Value::str(nm);
-        if (m == "version" || m == "lang-version") { Value v = Value::str("6.d"); v.hashKind = "Version"; return v; }
+        if (m == "version" || m == "lang-version") { Value v = Value::str(isComp ? "6.d" : langVer); v.hashKind = "Version"; return v; }
         if (m == "auth" || m == "authority") return Value::str("The Raku Community");
         if (m == "desc") return Value::str("Raku++ — a C++ Raku interpreter");
         if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob
         if (m == "id" || m == "release") return Value::str("2026.07");
         if (m == "codename") return Value::str("Raku++");
-        if (m == "gist" || m == "Str" || m == "raku" || m == "perl") return Value::str(nm + " (6.d)");
+        if (m == "gist" || m == "Str" || m == "raku" || m == "perl") return Value::str(nm + " (" + (isComp ? "6.d" : langVer) + ")");
     }
     if (inv.t == VT::Type && (inv.s == "ThreadPoolScheduler" || inv.s == "CurrentThreadScheduler")) {
         if (m == "new") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str(inv.s); return s; }
@@ -1051,7 +1111,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 // A user-defined `method parse`/`subparse` (e.g. YAMLish wires :actions via nextwith)
                 // runs first; the built-in is its redispatch target.
                 if (Value* um = ci->findMethod(m)) {
-                    redispatchStack_.push_back({builtinParse, args});
+                    RedispatchCtx prc; prc.next = builtinParse; prc.sameArgs = args;
+                    redispatchStack_.push_back(std::move(prc));
                     Value r;
                     try { r = invokeMethod(*um, inv, args, rwArgs); }
                     catch (...) { redispatchStack_.pop_back(); throw; }
@@ -1084,7 +1145,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             if (m == "mro") { // method resolution order: self, ancestors, then Any, Mu
                 Value out = Value::array(); out.isList = true;
-                for (auto c = ci; c; c = c->parent) out.arr->push_back(Value::typeObj(c->name));
+                // Depth-first over the primary + additional (multiple-inheritance) parents,
+                // then dedup keeping the LAST occurrence — the C3 order for simple diamonds
+                // (D is B is C, B/C is A → D, B, C, A).
+                std::vector<std::string> lin;
+                std::function<void(ClassInfo*)> visit = [&](ClassInfo* c) {
+                    if (!c) return;
+                    lin.push_back(c->name);
+                    if (c->parent) visit(c->parent.get());
+                    for (auto& p : c->extraParents) visit(p.get());
+                };
+                visit(ci.get());
+                for (size_t i = 0; i < lin.size(); i++) {
+                    bool later = false;
+                    for (size_t j = i + 1; j < lin.size(); j++) if (lin[j] == lin[i]) { later = true; break; }
+                    if (!later) out.arr->push_back(Value::typeObj(lin[i]));
+                }
                 out.arr->push_back(Value::typeObj("Any"));
                 out.arr->push_back(Value::typeObj("Mu"));
                 return out;
@@ -1106,8 +1182,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                         if (scoreCandidate(cand, args) >= 0) { useCustom = true; break; }
                 }
                 if (useCustom) return invokeMethod(*um, inv, args, rwArgs);
-            } else if (Value* um = ci->findMethod(m)) {
-                return invokeMethod(*um, inv, args, rwArgs);
+            } else if (ci->findMethod(m)) {
+                return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
             }
             // accessing an attribute (public accessor) on a type object is illegal
             if (const ClassAttr* at = ci->findAttr(m)) {
@@ -1148,7 +1224,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
         auto ci = inv.obj->cls;
-        if (Value* um = ci->findMethod(m)) return invokeMethod(*um, inv, args, rwArgs);
+        if (ci->findMethod(m)) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
         // a grammar INSTANCE (`Grammar.new`) parses just like the type object
         if ((m == "parse" || m == "subparse" || m == "parsefile") && (ci->isGrammar || ci->findRule("TOP")))
             return methodCall(Value::typeObj(ci->name), m, args, rwArgs);
@@ -1977,6 +2053,45 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return out;
         }
+        if (m == "snip") { // 6.e: split into sublists — each predicate consumes the
+            // leading run it matches; leftovers form the final sublist. The predicate
+            // arg is one Callable/type-object, or a list of them.
+            std::vector<Value> preds;
+            for (auto& p : args) {
+                if (p.t == VT::Array && p.arr) for (auto& q : *p.arr) preds.push_back(q); // a (p1,p2) list of preds
+                else preds.push_back(p);
+            }
+            auto matches = [&](const Value& pred, const Value& el) -> bool {
+                if (pred.t == VT::Code) return boolify(callCallable(pred, {el}));
+                if (pred.t == VT::Type) return rtTypeMatch(el, pred.s);
+                return deepEq(pred, el);
+            };
+            Value out = Value::array(); out.isList = true;
+            size_t idx = 0;
+            for (auto& pred : preds) {
+                Value sub = Value::array(); sub.isList = true;
+                while (idx < items.size() && matches(pred, items[idx])) sub.arr->push_back(items[idx++]);
+                out.arr->push_back(sub);
+            }
+            if (idx < items.size()) {
+                Value sub = Value::array(); sub.isList = true;
+                while (idx < items.size()) sub.arr->push_back(items[idx++]);
+                out.arr->push_back(sub);
+            }
+            return out;
+        }
+        if (m == "are") { // 6.e: narrowest common type, or `.are(T)` = all-conform check
+            if (!args.empty()) {
+                std::string t = typeOfVal(args[0]);
+                for (auto& el : items) if (!rtTypeMatch(el, t))
+                    throw RakuError{Value::typeObj("X::AdHoc"), "Not all list elements are of type " + t};
+                return Value::boolean(true);
+            }
+            if (items.empty()) return Value::nil();
+            std::string lub = typeOfVal(items[0]);
+            for (size_t k = 1; k < items.size(); k++) lub = lubType(lub, typeOfVal(items[k]));
+            return Value::typeObj(lub);
+        }
         if (m == "min" || m == "max") {
             if (items.empty()) return Value::any();
             bool wantMax = (m == "max");
@@ -2293,6 +2408,12 @@ void Interpreter::registerBuiltins() {
     B["nextsame"] = [](Interpreter& I, ValueList&) -> Value {
         if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextsame with no dispatcher in scope"};
         throw ReturnEx{I.redispatchStack_.back().next(I.redispatchStack_.back().sameArgs)};
+    };
+    B["samewith"] = [](Interpreter& I, ValueList& a) -> Value {
+        // re-dispatch the CURRENT routine from scratch with new args, returning its result
+        if (I.redispatchStack_.empty() || !I.redispatchStack_.back().restart)
+            throw RakuError{Value::typeObj("X::NoDispatcher"), "samewith with no dispatcher in scope"};
+        return I.redispatchStack_.back().restart(a);
     };
     B["nextwith"] = [](Interpreter& I, ValueList& a) -> Value {
         if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextwith with no dispatcher in scope"};
@@ -2872,10 +2993,25 @@ void Interpreter::registerBuiltins() {
         ValueList rest = sprintfArgs(a);
         return Value::str(doSprintf(a[0].toStr(), rest));
     };
+    // Format object (6.e `q:o/…/` / `q:format/…/`): a callable sprintf template that
+    // stringifies to its format string. Built by the parser from a flagged literal.
+    B["__format__"] = [](Interpreter&, ValueList& a) -> Value {
+        Value f = Value::makeHash(); f.hashKind = "Format";
+        (*f.hash)["fmt"] = Value::str(a.empty() ? "" : a[0].toStr());
+        return f;
+    };
     B["printf"] = [sprintfArgs](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(true);
         ValueList rest = sprintfArgs(a);
         std::cout << doSprintf(a[0].toStr(), rest); return Value::boolean(true);
+    };
+    // 6.e sub form: snip(PRED(s), *@list) — first arg is the predicate or a (p1,p2)
+    // list of predicates; the rest is the list. Delegates to the .snip method.
+    B["snip"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::array();
+        Value list = Value::array(); list.isList = true;
+        for (size_t k = 1; k < a.size(); k++) for (auto& v : toList(a[k])) list.arr->push_back(v);
+        return I.methodCall(list, "snip", {a[0]});
     };
     B["map"] = [](Interpreter& I, ValueList& a) -> Value {
         Value out = Value::array();

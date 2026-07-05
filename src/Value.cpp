@@ -139,6 +139,7 @@ std::string Value::toStr() const {
             return out;
         }
         case VT::Hash: {
+            if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
             if ((hashKind == "Date" || hashKind == "DateTime") && hash) return dateGist(*hash, hashKind == "Date");
             std::string out;
             if (hash) { bool first = true;

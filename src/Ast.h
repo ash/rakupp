@@ -66,6 +66,7 @@ struct NameTerm : Expr {
 
 struct ListExpr : Expr {
     std::vector<ExprPtr> items;
+    bool parenned = false; // came from `( … )` → a distinct nested list, not a comma-chain to merge into
     ListExpr(): Expr(NK::ListExpr) {}
 };
 
@@ -213,6 +214,7 @@ struct GrammarRuleDecl { std::string name, pattern, kind; std::vector<std::strin
 struct ClassDecl : Stmt {
     std::string name;
     std::string parent; // first `is Parent` / `does Role`
+    std::vector<std::string> extraParents; // additional `is Parent` (multiple inheritance)
     std::vector<std::string> roles; // additional `does Role` (methods composed in)
     std::vector<AttrDecl> attrs;
     std::vector<std::unique_ptr<SubDecl>> methods;

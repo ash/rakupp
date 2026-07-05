@@ -166,6 +166,7 @@ struct ClassAttr {
 struct ClassInfo {
     std::string name;
     std::shared_ptr<ClassInfo> parent;
+    std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
     std::vector<ClassAttr> attrs;
     std::map<std::string, Value> methods; // Code values (closures)
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
@@ -173,10 +174,15 @@ struct ClassInfo {
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     bool isGrammar = false;
 
-    Value* findMethod(const std::string& m) {
+    Value* findMethod(const std::string& m) { return findMethod(m, nullptr); }
+    // `owner` (if given) receives the ClassInfo the method was found in — used to seed
+    // the next method (that class's parent) for callsame/nextsame.
+    Value* findMethod(const std::string& m, ClassInfo** owner) {
         auto it = methods.find(m);
-        if (it != methods.end()) return &it->second;
-        if (parent) return parent->findMethod(m);
+        if (it != methods.end()) { if (owner) *owner = this; return &it->second; }
+        if (parent) { if (Value* r = parent->findMethod(m, owner)) return r; }
+        for (auto& p : extraParents) if (p) { if (Value* r = p->findMethod(m, owner)) return r; }
+        if (owner) *owner = nullptr;
         return nullptr;
     }
     const std::string* findRule(const std::string& n) const {
@@ -193,7 +199,8 @@ struct ClassInfo {
     }
     const ClassAttr* findAttr(const std::string& n) const {
         for (auto& a : attrs) if (a.name == n) return &a;
-        if (parent) return parent->findAttr(n);
+        if (parent) { if (const ClassAttr* r = parent->findAttr(n)) return r; }
+        for (auto& p : extraParents) if (p) { if (const ClassAttr* r = p->findAttr(n)) return r; }
         return nullptr;
     }
 };

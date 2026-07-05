@@ -6,7 +6,36 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **252 / 1,464 files fully pass (~17%)**; 568 partial, 635 no-TAP, 9 timeout. (Among files that run, 119,873 / 164,321 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **254 / 1,464 files fully pass (~17%)**; 575 partial, 626 no-TAP, 9 timeout. (Among files that run, 129,105 / 185,047 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+
+## Language versions (6.c / 6.d / 6.e)
+
+Raku++ **defaults to Raku 6.d**, matching Rakudo (6.e is still `PREVIEW`, opt-in). The
+version pragma selects a revision, and `$*RAKU.version` reflects it:
+
+```raku
+say $*RAKU.version;                       # 6.d   (the default)
+use v6.e.PREVIEW;  say $*RAKU.version;    # 6.e
+use v6.c;          say $*RAKU.version;    # 6.c
+```
+
+In practice Raku++ is **largely version-agnostic**: the revision changes essentially
+one runtime behaviour — `sqrt` (and `.sqrt`) of a negative returns a `Complex` under
+6.e but `NaN` under 6.c/6.d. Everything else in the language behaves the same across
+revisions.
+
+**6.e-specific syntax that works today:** the **`Format` type** — `q:o/…/` and
+`q:format/…/` build a callable `sprintf` template (`my $f = q:o/%5s/; $f("foo")` →
+`"  foo"`). Raku++ accepts it in *any* version rather than gating it to
+`use v6.e.PREVIEW` — a deliberate leniency (`:o`/`:format` aren't valid adverbs in
+6.c/6.d anyway, so it never mis-parses older code). (Features like sub-signature
+destructuring and multiple inheritance also work but aren't 6.e-specific — they're
+part of the common language and are listed in their own sections.)
+
+**6.e features not yet implemented:** `.are` / `.snip` / `.snitch`, multi-dimensional
+subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
+(`SETTING::`, `::<$x>`), parametric roles (`my role R[::T]`), role versioning
+(`role R:ver<…>`), and nested sigilless destructuring (`my (\a, (\b, \c))`).
 
 ## Lexical & Literals
 - Int (arbitrary precision / bignum), Num, Rat, **Complex** (`3+4i`); FatRat ~
