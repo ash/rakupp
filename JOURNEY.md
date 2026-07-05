@@ -152,6 +152,37 @@ a particular satisfaction in a system that can be turned to measure itself.
 
 ---
 
+## A highlighter that reads the language
+
+A late addition made a point the whole project had been circling. The course
+renders its Raku code blocks with Pygments — a Python syntax highlighter that,
+like almost every highlighter, works by *lexing*: it matches words against
+patterns and colours them. That is enough until it isn't. In a class with a
+method called `role`, Pygments paints `role` as the `role` keyword — because
+lexically it cannot tell a method name from a language keyword. The word is the
+same; only the *structure* distinguishes them, and a lexer has no structure.
+
+But rakupp already knows the structure — telling a method call from a keyword is
+exactly what a parser does. So `rakupp --highlight` emits the same CSS classes
+Pygments does (the course's stylesheet works unchanged) but assigns them with the
+compiler's own knowledge: a name after `.` or `method` is a method, never a
+keyword. It is a drop-in — same input on stdin, same class-based HTML out — that
+is simply *more correct*, and as a bonus it removes a Python dependency from a
+project whose whole premise is not depending on anyone else's implementation.
+
+There is a discipline worth naming here too. The highlighter is a *separate*,
+lossless scanner, not the parser proper — because highlighting has a requirement
+the parser doesn't: it must never fail. Course snippets include deliberate
+fragments (`{ . . . }` placeholders) that are not valid programs; a highlighter
+that threw on them would be useless. So it reuses the parser's *knowledge* — the
+keyword set, the sigil rules, what counts as a builtin — without inheriting its
+intolerance for malformed input. Every byte of the input reappears in the output,
+coloured or not, a property checked by round-tripping hundreds of real course
+blocks. That is what makes it safe to swap in — and it does the job in ~13 ms of
+startup where the Python tool took ~110 ms.
+
+---
+
 ## Reaching `--exe`: from interpreter to compiler
 
 The project was always "a tree-walking interpreter today, designed to grow a
@@ -194,8 +225,8 @@ dependency — which is a different and useful shape for a Raku program to take.
 
 ## Where the frontier is now
 
-At the time of writing, Raku++ fully passes **249 of 1,464** Roast files (~17%),
-with **119,851 / 164,290** reached assertions passing. Those numbers are a
+At the time of writing, Raku++ fully passes **251 of 1,464** Roast files (~17%),
+with **119,831 / 164,239** reached assertions passing. Those numbers are a
 coverage figure and a correctness-on-what-runs figure respectively; they measure
 different things and are quoted for different purposes (see
 [ROAST.md](ROAST.md)).

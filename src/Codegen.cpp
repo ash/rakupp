@@ -259,9 +259,9 @@ struct Codegen {
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
                         body = capture([&]() { for (auto& s : be->body) stmt(s.get(), 0); });
                     } else body = exArg(u->operand.get()) + ";\n";
-                    return "([&]()->Value{ auto __c = std::make_shared<ValueList>(); RT.gatherStack_.push_back(__c);\n"
-                           "try {\n" + body + "} catch (...) { RT.gatherStack_.pop_back(); throw; }\n"
-                           "RT.gatherStack_.pop_back(); return Value::array(*__c); }())";
+                    return "([&]()->Value{ auto __c = std::make_shared<ValueList>(); RT.tctx_.gatherStack.push_back(__c);\n"
+                           "try {\n" + body + "} catch (...) { RT.tctx_.gatherStack.pop_back(); throw; }\n"
+                           "RT.tctx_.gatherStack.pop_back(); return Value::array(*__c); }())";
                 }
                 if (u->postfix) { // $x++ / $x-- as an expression: yield the old value
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);

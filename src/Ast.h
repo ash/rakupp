@@ -161,6 +161,9 @@ struct Param {
     bool invocant = false; // declared before ':' in signature
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     bool isRw = false;     // `is rw` — writes copy back to the caller's lvalue
+    // destructuring sub-signature: `[$a,$b]` / `($a,$b)` / `|c($x)` — the inner
+    // params the argument is unpacked into (null when not a destructuring param).
+    std::shared_ptr<std::vector<Param>> subSig;
 };
 
 struct BlockExpr : Expr {

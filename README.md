@@ -46,19 +46,19 @@ implementation. Against the full Roast suite of **1,464 `.t` files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **251** | **17%** |
-| Partially passing | 567 | 39% |
-| No TAP output (parse error / unimplemented) | 639 | 44% |
-| Timeouts | 7 | 0.5% |
+| **Fully passing** | **252** | **17%** |
+| Partially passing | 566 | 39% |
+| No TAP output (parse error / unimplemented) | 638 | 44% |
+| Timeouts | 9 | 0.6% |
 
 Two numbers describe where Raku++ stands, and they measure different things:
 
-- **Coverage — 251 / 1,464 files fully pass (~17%).** This is the headline: how
+- **Coverage — 252 / 1,464 files fully pass (~17%).** This is the headline: how
   much of Roast runs end-to-end. Nearly half the suite produces no TAP at all yet
   (a parse error or unimplemented construct aborts the file before any assertion
   runs), so those files are unmeasured, not passing.
-- **Correctness on what runs — 119,868 / 164,298 assertions pass.** This counts
-  only assertions in files that produce TAP. The 643 no-TAP files contribute
+- **Correctness on what runs — 119,873 / 164,321 assertions pass.** This counts
+  only assertions in files that produce TAP. The 638 no-TAP files contribute
   none to the denominator, and one subsystem (S15, Unicode) is ~88k of the
   total. It measures how much of the attempted subset is correct — a
   regression signal, on a different denominator than the coverage figure.
@@ -117,7 +117,7 @@ battery.
 
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
 - **[EXAMPLES.md](EXAMPLES.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
-- **[ASYNC.md](ASYNC.md)** — concurrency & async cookbook: promises, supplies, channels, threads.
+- **[ASYNC.md](ASYNC.md)** — concurrency & async cookbook: promises, supplies, channels, threads, and the two execution modes (GIL by default, opt-in true CPU parallelism via `RAKUPP_PARALLEL`).
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
 - **[ROAST.md](ROAST.md)** — Roast suite overview and per-section statistics.
@@ -155,6 +155,17 @@ build/rakupp --ast -e 'say 2 + 2 * 3'
 ```
 
 (`RAKUPP_DUMPTOKENS=1` similarly dumps the lexer's token stream.)
+
+By default rakupp runs concurrency under a GIL (correct semantics, no CPU
+parallelism for pure-Raku work). Set `RAKUPP_PARALLEL=1` to let `start`/worker
+threads run interpreter code on all cores — CPU-bound fan-out scales ~3× on 8
+cores, 0 Roast regressions. See [ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism)
+for the trade-offs (chiefly: guard your own shared mutable data with a `Lock`).
+
+```sh
+build/rakupp program.raku                 # GIL mode (default)
+RAKUPP_PARALLEL=1 build/rakupp program.raku   # true CPU parallelism
+```
 
 ## Four ways to run a program
 

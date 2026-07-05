@@ -502,25 +502,35 @@ static bool isUnicodeSpace(uint32_t cp) {
 }
 
 bool Regex::classMatch(const Node* n, char ch) const {
-    auto test = [&](unsigned char c) -> bool {
-        for (auto& r : n->ranges) if (c >= r.first && c <= r.second) return true;
-        for (char f : n->classFlags) {
-            switch (f) {
-                case 'd': if (std::isdigit(c)) return true; break;
-                case 'w': if (std::isalnum(c) || c == '_') return true; break;
-                case 's': if (std::isspace(c)) return true; break;
-                case 'a': if (std::isalpha(c)) return true; break;
-                case 'u': if (std::isupper(c)) return true; break;
-                case 'l': if (std::islower(c)) return true; break;
-                case 'x': if (std::isxdigit(c)) return true; break;
+    // The per-byte result (ranges + flags + icase + negate) is pure per node —
+    // build a 256-bit table on first use, then every test is one bit probe.
+    if (!n->bytesetReady) {
+        auto test = [&](unsigned char c) -> bool {
+            for (auto& r : n->ranges) if (c >= r.first && c <= r.second) return true;
+            for (char f : n->classFlags) {
+                switch (f) {
+                    case 'd': if (std::isdigit(c)) return true; break;
+                    case 'w': if (std::isalnum(c) || c == '_') return true; break;
+                    case 's': if (std::isspace(c)) return true; break;
+                    case 'a': if (std::isalpha(c)) return true; break;
+                    case 'u': if (std::isupper(c)) return true; break;
+                    case 'l': if (std::islower(c)) return true; break;
+                    case 'x': if (std::isxdigit(c)) return true; break;
+                }
             }
+            return false;
+        };
+        for (int i = 0; i < 8; i++) n->byteset[i] = 0;
+        for (int v = 0; v < 256; v++) {
+            unsigned char c = (unsigned char)v;
+            bool in = test(c);
+            if (!in && icase_) in = test((unsigned char)std::tolower(c)) || test((unsigned char)std::toupper(c));
+            if (n->negate ? !in : in) n->byteset[v >> 5] |= (1u << (v & 31));
         }
-        return false;
-    };
+        n->bytesetReady = true;
+    }
     unsigned char c = (unsigned char)ch;
-    bool in = test(c);
-    if (!in && icase_) in = test((unsigned char)std::tolower(c)) || test((unsigned char)std::toupper(c));
-    return n->negate ? !in : in;
+    return (n->byteset[c >> 5] >> (c & 31)) & 1;
 }
 
 
@@ -538,7 +548,63 @@ long Regex::trySingleChar(const std::string& s, long pos) const {
     return classMatch(n, s[pos]) ? pos + 1 : -1; // Class
 }
 
-bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<bool(long)>& k) const {
+std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
+    const long UNB = -1, CAP = 1000000000;
+    switch (n->k) {
+        case K::Lit: return {(long)n->lit.size(), (long)n->lit.size()};
+        case K::Any: return {1, 1};
+        case K::Class:
+            // uprop and \s classes decode whole codepoints — up to 4 bytes
+            if (!n->uprop.empty() || n->classFlags.find('s') != std::string::npos) return {1, 4};
+            return {1, 1};
+        case K::Seq: {
+            long lo = 0, hi = 0;
+            for (auto& kd : n->kids) {
+                auto w = nodeWidth(kd.get(), st);
+                lo += w.first;
+                if (hi >= 0) hi = (w.second < 0 || hi + w.second > CAP) ? UNB : hi + w.second;
+            }
+            return {lo, hi};
+        }
+        case K::Alt: {
+            if (n->kids.empty()) return {0, 0};
+            long lo = -1, hi = 0;
+            for (auto& kd : n->kids) {
+                auto w = nodeWidth(kd.get(), st);
+                lo = lo < 0 ? w.first : std::min(lo, w.first);
+                if (hi >= 0) hi = w.second < 0 ? UNB : std::max(hi, w.second);
+            }
+            return {lo, hi};
+        }
+        case K::Rep: {
+            auto w = nodeWidth(n->kids[0].get(), st);
+            long mn = n->min > 0 ? n->min : 0;
+            long lo = w.first * mn;
+            long hi = (n->repCode.empty() && n->max >= 0 && w.second >= 0 && w.second * n->max <= CAP)
+                    ? w.second * n->max : UNB;
+            if (n->sep) {
+                auto ws = nodeWidth(n->sep.get(), st);
+                if (mn > 1) lo += ws.first * (mn - 1);
+                if (hi >= 0) hi = (n->max > 1 && (ws.second < 0 || hi + ws.second * (n->max - 1) > CAP)) ? UNB
+                                : (n->max > 1 ? hi + ws.second * (n->max - 1) : hi);
+            }
+            return {lo, hi};
+        }
+        case K::Group: return nodeWidth(n->kids[0].get(), st);
+        case K::AnchorStart: case K::AnchorEnd: case K::Nop: case K::Code: case K::Look:
+            return {0, 0};
+        case K::Subrule:
+            if (st.grammar) {
+                if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
+                if (n->metaCache->singleChar || !n->metaCache->builtinClass.empty()) return {1, 1};
+            }
+            return {0, UNB};
+        case K::VarMatch: return {0, UNB};
+    }
+    return {0, UNB};
+}
+
+bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const {
     long len = (long)st.s.size();
     switch (n->k) {
         case K::Nop: return k(pos);
@@ -552,7 +618,16 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
                 sub.hooks = st.hooks; sub.startPos = pos; // propagate hooks so embedded {code}/$var work
                 m = matchNode(child, sub, pos, [](long) { return true; });
             } else {
-                for (long j = pos; j >= 0 && !m; j--) {
+                // A lookbehind inner can only match ending at `pos` if it starts within
+                // its own width of it — bound the scan window (O(width), not O(pos)).
+                if (!n->lookWidthReady) {
+                    auto w = nodeWidth(child, st);
+                    n->lookMin = w.first; n->lookMax = w.second; n->lookWidthReady = true;
+                }
+                long hi = pos - n->lookMin;
+                long lo = n->lookMax < 0 ? 0 : pos - n->lookMax;
+                if (lo < 0) lo = 0;
+                for (long j = hi; j >= lo && !m; j--) {
                     MState sub{st.s, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, st.resolver, st.grammar};
                     sub.hooks = st.hooks; sub.startPos = j;
                     if (matchNode(child, sub, j, [&](long e) { return e == pos; })) m = true;
@@ -561,11 +636,15 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
             return (m != n->negate) ? k(pos) : false; // zero-width; negate flips
         }
         case K::Subrule: {
-            // Grammar path: backtrackable — thread `k` through the callee.
-            if (st.grammar)
-                return st.grammar->matchSub(n->ruleName, n->ruleArgs,
+            // Grammar path: backtrackable — thread `k` through the callee. The name→meta
+            // resolution is cached on the node (compiled Regexes live in the matcher's cache,
+            // so node and matcher share a lifetime).
+            if (st.grammar) {
+                if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
+                return st.grammar->matchSubMeta(*n->metaCache, n->ruleName, n->ruleArgs,
                                             n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),
                                             st, pos, k);
+            }
             if (!st.resolver) return k(pos); // no grammar context: lenient zero-width
             RxMatch sub;
             // pass a parameterised call's args to the resolver, encoded after \x1f
@@ -631,11 +710,12 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
             if (pos == len || st.s[pos] == '\n') return k(pos);
             return false;
         case K::Seq: {
-            std::function<bool(size_t, long)> go = [&](size_t i, long p) -> bool {
+            auto go = [&](auto&& self, size_t i, long p) -> bool {
                 if (i == n->kids.size()) return k(p);
-                return matchNode(n->kids[i].get(), st, p, [&, i](long np) { return go(i + 1, np); });
+                auto cont = [&, i](long np) { return self(self, i + 1, np); };
+                return matchNode(n->kids[i].get(), st, p, cont);
             };
-            return go(0, pos);
+            return go(go, 0, pos);
         }
         case K::Code: { // <?{…}>/<!{…}> assertion, or `:my …`/bare `{…}` side-effect (runOnly)
             static const GrammarHooks::ParamMap noParams;
@@ -686,8 +766,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
             if (snap && st.hooks->restoreState) st.hooks->restoreState(snap);
             std::stable_sort(order.begin(), order.end(),
                              [](const auto& a, const auto& b) { return a.first > b.first; });
-            for (auto& pr : order)
+            for (auto& pr : order) {
                 if (matchNode(n->kids[pr.second].get(), st, pos, k)) return true;
+            }
             return false;
         }
         case K::Rep: {
@@ -699,11 +780,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
                 const auto& params = st.grammar ? st.grammar->currentParams() : noParams;
                 auto rng = st.hooks->range(n->repCode, st.named, params); mn = rng.first; mx = rng.second;
             }
-            std::function<bool(long, long)> rep = [&](long count, long p) -> bool {
+            auto rep = [&](auto&& self, long count, long p) -> bool {
                 // match one more `child`, preceded by `sep` on all but the first iteration
-                auto matchOne = [&](long q, const std::function<bool(long)>& kk) -> bool {
-                    if (count > 0 && sep)
-                        return matchNode(sep, st, q, [&](long sp) { return matchNode(child, st, sp, kk); });
+                auto matchOne = [&](long q, const FnRef& kk) -> bool {
+                    if (count > 0 && sep) {
+                        auto viaSep = [&](long sp) { return matchNode(child, st, sp, kk); };
+                        return matchNode(sep, st, q, viaSep);
+                    }
                     return matchNode(child, st, q, kk);
                 };
                 if (greedy && ratchet_) {
@@ -715,13 +798,14 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
                     long cnt = count, q = p;
                     while (mx < 0 || cnt < mx) {
                         long np = -1;
-                        auto grab = [&](long start) {
-                            matchNode(child, st, start, [&](long r) { np = r; return true; });
-                        };
-                        if (cnt > 0 && sep)
-                            matchNode(sep, st, q, [&](long sp) { grab(sp); return true; });
-                        else
-                            grab(q);
+                        auto grab = [&](long r) { np = r; return true; };
+                        if (cnt > 0 && sep) {
+                            // commit the separator at its first (greedy) end even if the
+                            // child then fails — matches the pre-FnRef behavior exactly
+                            auto viaSep = [&](long sp) { matchNode(child, st, sp, grab); return true; };
+                            matchNode(sep, st, q, viaSep);
+                        } else
+                            matchNode(child, st, q, grab);
                         if (np < 0 || np == q) break;
                         q = np; cnt++;
                     }
@@ -729,18 +813,22 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
                     return false;
                 }
                 if (greedy) {
-                    if (mx < 0 || count < mx)
-                        if (matchOne(p, [&](long np) { return np != p && rep(count + 1, np); })) return true;
+                    if (mx < 0 || count < mx) {
+                        auto more = [&](long np) { return np != p && self(self, count + 1, np); };
+                        if (matchOne(p, more)) return true;
+                    }
                     if (count >= mn) return k(p);
                     return false;
                 } else {
                     if (count >= mn && k(p)) return true;
-                    if (mx < 0 || count < mx)
-                        return matchOne(p, [&](long np) { return np != p && rep(count + 1, np); });
+                    if (mx < 0 || count < mx) {
+                        auto more = [&](long np) { return np != p && self(self, count + 1, np); };
+                        return matchOne(p, more);
+                    }
                     return false;
                 }
             };
-            return rep(0, pos);
+            return rep(rep, 0, pos);
         }
         case K::Group: {
             const Node* child = n->kids[0].get();
@@ -749,10 +837,20 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const std::function<b
             return matchNode(child, st, pos, [&](long np) -> bool {
                 std::pair<long,long> savedC{-1,-1}, savedN{-1,-1}; bool hadN = false;
                 if (ci >= 0 && ci < (long)st.caps.size()) { savedC = st.caps[ci]; st.caps[ci] = {pos, np}; }
-                if (!cn.empty()) { hadN = st.named.count(cn); if (hadN) savedN = st.named[cn]; st.named[cn] = {pos, np}; }
+                if (!cn.empty()) {
+                    hadN = st.named.count(cn); if (hadN) savedN = st.named[cn]; st.named[cn] = {pos, np};
+                    // also collate the occurrence (empty name = plain capture, not a rule),
+                    // so a capture repeated under a quantifier yields a list like Rakudo's
+                    ParseNode leaf; leaf.from = pos; leaf.to = np;
+                    st.children[cn].push_back(std::move(leaf));
+                }
                 if (k(np)) return true;
                 if (ci >= 0 && ci < (long)st.caps.size()) st.caps[ci] = savedC;
-                if (!cn.empty()) { if (hadN) st.named[cn] = savedN; else st.named.erase(cn); }
+                if (!cn.empty()) {
+                    if (hadN) st.named[cn] = savedN; else st.named.erase(cn);
+                    st.children[cn].pop_back();
+                    if (st.children[cn].empty()) st.children.erase(cn);
+                }
                 return false;
             });
         }
@@ -772,6 +870,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
         if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
             out.matched = true; out.from = start; out.to = endPos;
             out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+            out.children = st.children;
             return true;
         }
     }
@@ -785,6 +884,7 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
     if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
         out.matched = true; out.from = pos; out.to = endPos;
         out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+        out.children = st.children;
         return true;
     }
     return false;
@@ -885,24 +985,32 @@ std::string GrammarMatcher::interpParams(const std::string& pat, const std::map<
 }
 
 // Compile a rule for a given call (interpolating parameter values into the body),
-// caching by the interpolated pattern. Also returns the param bindings to push.
+// caching by name + evaluated arg VALUES (short) — never by the pattern text, so a
+// cache hit costs no pattern-length copies or compares. Returns the bindings to push.
 Regex* GrammarMatcher::compiled(const std::string& name, const std::string& argstr,
                                 std::map<std::string, std::string>& boundOut) {
     auto it = rules.find(name);
     if (it == rules.end()) return nullptr;
-    const Rule& rule = it->second;
-    std::string ipat = rule.pattern;
+    return compiledFor(it->second, name, argstr, boundOut);
+}
+
+Regex* GrammarMatcher::compiledFor(const Rule& rule, const std::string& name, const std::string& argstr,
+                                   std::map<std::string, std::string>& boundOut) {
+    std::string key = name;
     if (!rule.params.empty()) {
         auto args = splitArgs(argstr);
-        for (size_t i = 0; i < rule.params.size(); i++)
-            boundOut[rule.params[i]] = i < args.size() ? evalArg(args[i]) : std::string();
-        ipat = interpParams(rule.pattern, boundOut);
+        for (size_t i = 0; i < rule.params.size(); i++) {
+            std::string v = i < args.size() ? evalArg(args[i]) : std::string();
+            key += '\x1f'; key += v;
+            boundOut[rule.params[i]] = std::move(v);
+        }
     }
-    std::string key = name + "\x1f" + ipat + "\x1f" + rule.kind;
     auto cit = cache_.find(key);
-    if (cit == cache_.end())
-        cit = cache_.emplace(key, std::make_unique<Regex>(ipat,
+    if (cit == cache_.end()) {
+        const std::string& ipat = rule.params.empty() ? rule.pattern : interpParams(rule.pattern, boundOut);
+        cit = cache_.emplace(std::move(key), std::make_unique<Regex>(ipat,
             rule.kind == "rule" ? "sr" : rule.kind == "regex" ? "" : "r")).first; // token/rule ratchet; regex does not
+    }
     return cit->second.get();
 }
 
@@ -912,26 +1020,45 @@ Regex* GrammarMatcher::compiled(const std::string& name, const std::string& args
 const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name) {
     auto it = nameMeta_.find(name);
     if (it != nameMeta_.end()) return it->second;
+    NameMeta m;
     auto rit = rules.find(name);
-    bool ratchet = rit != rules.end() && rit->second.kind != "regex";
-    int id = (int)nameMeta_.size();
+    const Rule* rule = rit != rules.end() ? &rit->second : nullptr;
+    m.rule = rule;
+    m.ratchet = rule && rule->kind != "regex";
+    m.id = (int)nameMeta_.size();
     // Rules with no params whose whole body is a single-character class (space, break,
     // plainfirst-ish …) get inlined at call sites — they dominate call volume.
-    Regex* single = nullptr;
-    if (ratchet && rit != rules.end() && rit->second.params.empty()) {
+    // Every parameterless rule keeps its compiled body in `noArg` so the per-call
+    // path never touches the key/cache machinery.
+    if (rule && rule->params.empty()) {
         std::map<std::string, std::string> b;
-        Regex* re = compiled(name, "", b);
-        if (re && re->rootIsSingleChar()) single = re;
+        m.noArg = compiled(name, "", b);
+        if (m.ratchet && m.noArg && m.noArg->rootIsSingleChar()) m.singleChar = m.noArg;
     }
-    return nameMeta_.emplace(name, NameMeta{ratchet, id, single}).first->second;
+    auto pit = protos.find(name);
+    if (pit != protos.end()) m.proto = &pit->second;
+    m.isWs = (name == "ws");
+    if (!rule) { // built-in char-class fallbacks for names the grammar doesn't define
+        if (name == "digit") m.builtinClass = "d"; else if (name == "alpha") m.builtinClass = "a";
+        else if (name == "alnum" || name == "ident") m.builtinClass = "ad";
+        else if (name == "space" || name == "blank") m.builtinClass = "s";
+        else if (name == "upper") m.builtinClass = "u"; else if (name == "lower") m.builtinClass = "l";
+        else if (name == "xdigit") m.builtinClass = "x";
+    }
+    return nameMeta_.emplace(name, std::move(m)).first->second;
 }
 
 bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, const std::string& capKey,
-                              Regex::MState& st, long pos, const std::function<bool(long)>& k) {
+                              Regex::MState& st, long pos, const FnRef& k) {
+    return matchSubMeta(nameMeta(name), name, args, capKey, st, pos, k);
+}
+
+bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string& name,
+                                  const std::string& args, const std::string& capKey,
+                                  Regex::MState& st, long pos, const FnRef& k) {
     // protoregex: `<element>` dispatches to its `element:<sym>` candidates, longest wins (LTM)
-    auto pit = protos.find(name);
-    if (pit != protos.end()) {
-        const auto& cands = pit->second;
+    if (meta.proto) {
+        const auto& cands = *meta.proto;
         std::set<long, std::greater<long>> ends;
         for (auto& cand : cands) matchSub(cand, args, "", st, pos, [&](long e) { ends.insert(e); return false; });
         for (long e : ends)
@@ -939,18 +1066,13 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
                 if (matchSub(cand, args, capKey, st, pos, [&](long ee) { return ee == e && k(ee); })) return true;
         return false;
     }
-    if (name == "ws") { // built-in optional whitespace
+    if (meta.isWs) { // built-in optional whitespace
         long p = pos; while (p < (long)st.s.size() && std::isspace((unsigned char)st.s[p])) p++;
         return k(p);
     }
     // built-in char-class rules (<.alpha> …) when the grammar doesn't redefine them
-    if (rules.find(name) == rules.end()) {
-        std::string fl;
-        if (name == "digit") fl = "d"; else if (name == "alpha") fl = "a";
-        else if (name == "alnum" || name == "ident") fl = "ad";
-        else if (name == "space" || name == "blank") fl = "s";
-        else if (name == "upper") fl = "u"; else if (name == "lower") fl = "l";
-        else if (name == "xdigit") fl = "x";
+    if (!meta.rule) {
+        const std::string& fl = meta.builtinClass;
         if (!fl.empty()) {
             if (pos >= (long)st.s.size()) return false;
             unsigned char c = (unsigned char)st.s[pos]; bool ok = false;
@@ -963,7 +1085,6 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
         }
         return false; // unknown subrule
     }
-    const NameMeta& meta = nameMeta(name);
     // Inline single-character rules (space, break, …): a bare char test, no memo/record
     // machinery. These are the overwhelming majority of subrule calls.
     if (meta.singleChar && args.empty()) {
@@ -985,12 +1106,13 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
 
     // Record a completed sub-match (span + subtree) under `capKey` in the caller frame,
     // then run the caller's continuation `k`; on failure, roll the recording back.
+    // `kids` is a frozen subtree — sharing it is O(1), which is what makes memo replays cheap.
     auto record = [&](long end, const std::vector<std::pair<long,long>>& caps,
                       const std::map<std::string, std::pair<long,long>>& named,
-                      const std::map<std::string, std::vector<ParseNode>>& children) -> bool {
+                      std::shared_ptr<const ChildMap> kids) -> bool {
         if (capKey.empty()) return k(end);
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = end;
-        pn.caps = caps; pn.named = named; pn.children = children;
+        pn.caps = caps; pn.named = named; pn.kids = std::move(kids);
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
         st.named[capKey] = {pos, end};
         st.children[capKey].push_back(std::move(pn)); // collate repeated captures into a list
@@ -1015,10 +1137,11 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
         if (mit != memo_.end()) {
             if (!mit->second.matched) return false;
             const MemoEntry& me = mit->second;
-            return record(me.end, me.caps, me.named, me.children);
+            return record(me.end, me.caps, me.named, me.kids);
         }
         std::map<std::string, std::string> bound;
-        Regex* re = compiled(name, args, bound);
+        Regex* re = (args.empty() && meta.noArg) ? meta.noArg
+                  : compiledFor(*static_cast<const Rule*>(meta.rule), name, args, bound);
         if (!re || !re->ok()) { memo_[mkey].matched = false; return false; }
         Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
         sub.startPos = pos; sub.hooks = st.hooks;
@@ -1026,18 +1149,22 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
         MemoEntry me;
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
             me.matched = true; me.end = end;
-            me.caps = sub.caps; me.named = sub.named; me.children = sub.children;
+            me.caps = sub.caps; me.named = sub.named;
+            // the frame is committed (ratchet) — freeze its subtree without copying
+            me.kids = sub.children.empty() ? nullptr
+                    : std::make_shared<const ChildMap>(std::move(sub.children));
             return true; // commit to the first complete match — ratchet never backtracks in
         });
         scope_.pop_back();
         auto& slot = (memo_[mkey] = std::move(me));
         if (!slot.matched) return false;
-        return record(slot.end, slot.caps, slot.named, slot.children);
+        return record(slot.end, slot.caps, slot.named, slot.kids);
     }
 
     // non-ratchet `regex`: thread `k` through so the caller can backtrack into the callee
     std::map<std::string, std::string> bound;
-    Regex* re = compiled(name, args, bound);
+    Regex* re = (args.empty() && meta.noArg) ? meta.noArg
+              : compiledFor(*static_cast<const Rule*>(meta.rule), name, args, bound);
     if (!re || !re->ok()) return false;
     Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
     sub.startPos = pos; sub.hooks = st.hooks; // $/ in the callee starts here; propagate hooks
@@ -1048,7 +1175,10 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
         // the duration of `k` (restore it so backtracking into the callee still works).
         auto calleeScope = std::move(scope_.back()); scope_.pop_back();
         auto finish = [&](bool r) { scope_.push_back(std::move(calleeScope)); return r; };
-        return finish(record(end, sub.caps, sub.named, sub.children));
+        // non-ratchet: the callee may complete again after backtracking, so its frame
+        // stays live — freeze a COPY of the subtree for this completion
+        return finish(record(end, sub.caps, sub.named,
+                             sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children)));
     });
     scope_.pop_back();
     return ok;
@@ -1071,7 +1201,8 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     scope_.pop_back();
     if (!ok) return false;
     out.name = top; out.from = 0; out.to = endPos;
-    out.caps = st.caps; out.named = st.named; out.children = st.children;
+    out.caps = st.caps; out.named = st.named;
+    out.kids = st.children.empty() ? nullptr : std::make_shared<const ChildMap>(std::move(st.children));
     endOut = endPos;
     return true;
 }

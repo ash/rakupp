@@ -23,12 +23,26 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <condition_variable>
+#include <mutex>
 
 namespace rakupp {
 
+// Real synchronization state behind a Lock / Semaphore, shared by every copy of the
+// Value via Value::ext. Only populated in parallel mode (RAKUPP_PARALLEL): under the
+// cooperative GIL these primitives stay no-ops (the GIL already serialises), and a
+// real lock held across a GIL-yield could deadlock the cooperative scheduler.
+struct LockState { std::recursive_mutex m; };            // Raku Lock (used reentrantly by protect)
+struct SemaphoreState { std::mutex m; std::condition_variable cv; long count = 0; };
+
 // Spawn a child process, capture its stdout, with an optional wall-clock timeout.
+// `gil` (if non-null) is the interpreter: the GIL is released for the child-process
+// WAIT so sibling worker threads run — and spawn their own children — concurrently.
+// The fork itself happens with the GIL held, so forks serialise (safe in a
+// multithreaded process); only the poll/read/reap loop runs GIL-free.
 static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
-                         std::string& out, int& exitCode, bool& timedout) {
+                         std::string& out, int& exitCode, bool& timedout,
+                         Interpreter* gil = nullptr) {
     out.clear(); exitCode = -1; timedout = false;
     if (argv.empty()) return;
     int pipefd[2];
@@ -49,37 +63,42 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     close(pipefd[1]);
     int fd = pipefd[0];
     fcntl(fd, F_SETFL, O_NONBLOCK);
+    bool parked = gil ? gil->gilPark() : false; // drop the GIL for the wait below
     auto start = std::chrono::steady_clock::now();
     char buf[8192];
-    bool done = false;
-    while (!done) {
+    // Read until the pipe reaches EOF — i.e. every write-end (the child AND any
+    // grandchildren it spawned) has closed. EOF, not the child's exit, is the only
+    // reliable "all output captured" signal: reaping the child with waitpid does not
+    // guarantee its final buffered write has been drained, so keying `done` off the
+    // exit races the last line away. The wall-clock timeout still bounds the wait.
+    bool eof = false;
+    while (!eof) {
         struct pollfd pfd{fd, POLLIN, 0};
         poll(&pfd, 1, 50);
-        ssize_t n;
-        while ((n = read(fd, buf, sizeof buf)) > 0) out.append(buf, (size_t)n);
-        int status;
-        pid_t w = waitpid(pid, &status, WNOHANG);
-        if (w == pid) {
-            while ((n = read(fd, buf, sizeof buf)) > 0) out.append(buf, (size_t)n);
-            exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-            done = true;
+        for (;;) {
+            ssize_t n = read(fd, buf, sizeof buf);
+            if (n > 0) { out.append(buf, (size_t)n); continue; }
+            if (n == 0) { eof = true; }   // all write-ends closed — output complete
+            break;                        // n<0 (EAGAIN): nothing more for now, poll again
         }
-        double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        if (!done && timeoutSec > 0 && elapsed > timeoutSec) {
-            kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
-            timedout = true;
-            done = true;
+        if (eof) break;
+        if (timeoutSec > 0) {
+            double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (elapsed > timeoutSec) { kill(pid, SIGKILL); timedout = true; break; }
         }
     }
+    int status;
+    waitpid(pid, &status, 0);            // reap; safe now that the pipe is drained (or we killed it)
+    if (!timedout) exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     close(fd);
+    if (parked) gil->gilUnpark(true);    // reacquire the GIL before touching interpreter state
 }
 
 // Spawn a child, feed `input` to its stdin, and capture its stdout. Uses poll on
 // both pipes so it won't deadlock when the child's output exceeds the pipe buffer
 // while we're still writing input (as pandoc can on a large page).
 static void spawnWithInput(const std::vector<std::string>& argv, const std::string& input,
-                           std::string& out, int& exitCode) {
+                           std::string& out, int& exitCode, Interpreter* gil = nullptr) {
     out.clear(); exitCode = -1;
     if (argv.empty()) return;
     int inPipe[2], outPipe[2];
@@ -104,6 +123,7 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
     fcntl(wfd, F_SETFL, O_NONBLOCK);
     fcntl(rfd, F_SETFL, O_NONBLOCK);
     signal(SIGPIPE, SIG_IGN);
+    bool parked = gil ? gil->gilPark() : false; // drop the GIL for the feed/read wait below
     size_t written = 0;
     char buf[8192];
     bool rOpen = true, wOpen = true;
@@ -130,6 +150,7 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
     int status;
     waitpid(pid, &status, 0);
     exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (parked) gil->gilUnpark(true); // reacquire the GIL before touching interpreter state
 }
 
 // Run a Proc::Async .start promise: spawn the process (with optional timeout), feed captured
@@ -143,7 +164,7 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     std::vector<std::string> argv;
     if (proc.hash->count("argv")) for (auto& x : *(*proc.hash)["argv"].arr) argv.push_back(x.toStr());
     std::string out; int code; bool timedout;
-    spawnCapture(argv, timeoutSec, out, code, timedout);
+    spawnCapture(argv, timeoutSec, out, code, timedout, this);
     auto taps = proc.hash->find("taps");
     if (taps != proc.hash->end() && taps->second.arr)
         for (auto& cb : *taps->second.arr) { ValueList ca{Value::str(out)}; callCallable(cb, ca); }
@@ -454,9 +475,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return methodCall(inv, mm, args, rwArgs);
     }
 
-    // Lock / Semaphore: no-op concurrency primitives (rakupp is single-threaded).
+    // Lock / Semaphore. No-ops under the GIL (it already serialises); backed by real
+    // primitives in parallel mode so mutual exclusion actually holds.
     if (inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Semaphore")) {
-        if (m == "new") { Value v = Value::makeHash(); v.hashKind = "Lock"; return v; }
+        if (m == "new") {
+            Value v = Value::makeHash();
+            if (inv.s == "Semaphore") {
+                v.hashKind = "Semaphore";
+                long n = args.empty() ? 1 : args[0].toInt();
+                (*v.hash)["count"] = Value::integer(n);
+                if (parallelMode_) { auto st = std::make_shared<SemaphoreState>(); st->count = n; v.ext = st; }
+            }
+            else {
+                v.hashKind = "Lock";
+                if (parallelMode_) v.ext = std::make_shared<LockState>();
+            }
+            return v;
+        }
     }
     // IO::String / Text::IO::String: an in-memory read handle over a string.
     // $*RAKU / $?RAKU and their .compiler — the runtime/implementation introspection object
@@ -756,7 +791,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             auto it = inv.hash->find("argv");
             if (it != inv.hash->end() && it->second.arr) for (auto& x : *it->second.arr) argv.push_back(x.toStr());
             std::string out; int code;
-            spawnWithInput(argv, input, out, code);
+            spawnWithInput(argv, input, out, code, this);
             (*inv.hash)["out-str"] = Value::str(out);      // shared hash: $proc.out.slurp sees this
             (*inv.hash)["exitcode"] = Value::integer(code);
             return Value::boolean(true);
@@ -902,10 +937,35 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Lock") {
-        if (m == "protect" || m == "protect-or-queue-on-recursion") // run the block, no locking
-            return args.empty() ? Value::any() : (args[0].t == VT::Code ? callCallable(args[0], {}) : args[0]);
-        if (m == "lock" || m == "unlock" || m == "acquire" || m == "release") return Value::boolean(true);
+        auto st = inv.ext ? std::static_pointer_cast<LockState>(inv.ext) : nullptr;
+        if (m == "protect" || m == "protect-or-queue-on-recursion") {
+            if (args.empty() || args[0].t != VT::Code) return args.empty() ? Value::any() : args[0];
+            if (st) { // real mutual exclusion, released even if the block throws
+                std::lock_guard<std::recursive_mutex> lk(st->m);
+                return callCallable(args[0], {});
+            }
+            return callCallable(args[0], {});
+        }
+        if (m == "lock" || m == "acquire") { if (st) st->m.lock(); return Value::boolean(true); }
+        if (m == "unlock" || m == "release") { if (st) st->m.unlock(); return Value::boolean(true); }
         if (m == "condition") { Value v = Value::makeHash(); v.hashKind = "Lock"; return v; }
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Semaphore") {
+        auto st = inv.ext ? std::static_pointer_cast<SemaphoreState>(inv.ext) : nullptr;
+        if (m == "acquire") {
+            if (st) { std::unique_lock<std::mutex> lk(st->m); st->cv.wait(lk, [&]{ return st->count > 0; }); st->count--; }
+            return Value::boolean(true);
+        }
+        if (m == "release") {
+            if (st) { std::lock_guard<std::mutex> lk(st->m); st->count++; st->cv.notify_one(); }
+            return Value::boolean(true);
+        }
+        if (m == "try_acquire" || m == "try-acquire") {
+            if (!st) return Value::boolean(true);
+            std::lock_guard<std::mutex> lk(st->m);
+            if (st->count > 0) { st->count--; return Value::boolean(true); }
+            return Value::boolean(false);
+        }
     }
 
     // user-defined class: type-object methods (.new and custom constructors)
@@ -1007,7 +1067,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 return um ? *um : Value::nil();
             }
             if (m == "add_method") { // .^add_method($name, $code)
-                if (args.size() >= 2) ci->methods[args[0].toStr()] = args[1];
+                if (args.size() >= 2) { noteSymbolMutation("runtime .^add_method"); ci->methods[args[0].toStr()] = args[1]; }
                 return args.size() >= 2 ? args[1] : Value::nil();
             }
             if (m == "can") {
@@ -1586,11 +1646,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
                     out += subj.substr(pos, mm.from - pos);
                     Value matchV = Value::matchVal(subj.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
-                    cur_->define("$/", matchV);
-                    Value saved = cur_->vars.count("$_") ? cur_->vars["$_"] : Value::any();
-                    cur_->define("$_", matchV);
+                    tctx_.cur->define("$/", matchV);
+                    Value saved = tctx_.cur->vars.count("$_") ? tctx_.cur->vars["$_"] : Value::any();
+                    tctx_.cur->define("$_", matchV);
                     out += callCallable(args[1], {matchV}).toStr();
-                    cur_->vars["$_"] = saved;
+                    tctx_.cur->vars["$_"] = saved;
                     pos = mm.to > mm.from ? mm.to : mm.to + 1;
                     if (!g) break;
                 }
@@ -1731,7 +1791,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         while (std::getline(is, w)) out.arr->push_back(Value::str(w));
         return out;
     }
-    if (m == "comb") { Value out = Value::array(); for (auto cp : utf8cp(inv.toStr())) out.arr->push_back(Value::str(cpToUtf8(cp))); return out; }
+    if (m == "comb") {
+        Value out = Value::array();
+        // .comb($needle): every non-overlapping occurrence of the literal substring
+        // (a regex needle is handled earlier); .comb() with no arg: one entry per codepoint.
+        if (!args.empty() && args[0].t != VT::Int) {
+            std::string subj = inv.toStr(), needle = args[0].toStr();
+            if (!needle.empty())
+                for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size()))
+                    out.arr->push_back(Value::str(needle));
+            return out;
+        }
+        for (auto cp : utf8cp(inv.toStr())) out.arr->push_back(Value::str(cpToUtf8(cp)));
+        return out;
+    }
     if (m == "fmt" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)
         return Value::str(doSprintf(args.empty() ? "%s" : a0().toStr(), {inv}));
 
@@ -2187,7 +2260,7 @@ void Interpreter::registerBuiltins() {
     B["die"] = [](Interpreter& I, ValueList& a) -> Value {
         Value payload = a.empty() ? Value::str("Died") : a[0];
         // die with no argument reuses the current $! ("Died" only if $! is undefined)
-        if (a.empty()) { Value* be = I.cur_->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be; }
+        if (a.empty()) { Value* be = I.tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) payload = *be; }
         std::string msg = payload.toStr();
         // exception objects: prefer a readable .message / .Str accessor
         if (payload.t == VT::Object && payload.obj) {
@@ -2402,6 +2475,26 @@ void Interpreter::registerBuiltins() {
         I.emitTest(threw, desc);
         return Value::boolean(threw);
     };
+    B["fails-like"] = [](Interpreter& I, ValueList& a) -> Value {
+        // Like throws-like, but the code is expected to RETURN a Failure (a soft
+        // `fail`) rather than throw outright. Either a returned Failure or a thrown
+        // error counts as failing. (The exception-type / matcher args are accepted
+        // but, as with throws-like, not deeply checked.)
+        bool failed = false;
+        if (!a.empty()) {
+            try {
+                Value r;
+                if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
+                else if (a[0].t == VT::Str) r = I.evalString(a[0].s);
+                if (r.t == VT::Type && r.s == "Failure") failed = true;
+            } catch (RakuError&) { failed = true; }
+        }
+        // description = the first Str positional after the exception type (index >= 2)
+        std::string desc;
+        for (size_t i = 2; i < a.size(); i++) if (a[i].t == VT::Str) { desc = a[i].s; break; }
+        I.emitTest(failed, desc);
+        return Value::boolean(failed);
+    };
     B["eval-lives-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool lived = true;
         try { if (!a.empty()) I.evalString(a[0].toStr()); } catch (RakuError&) { lived = false; }
@@ -2434,7 +2527,7 @@ void Interpreter::registerBuiltins() {
     B["..."] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::str("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
     B["???"] = [](Interpreter&, ValueList& a) -> Value { std::cerr << (a.empty() ? "Stub code executed" : a[0].toStr()) << "\n"; return Value::nil(); };
     // run(prog, *@args, :timeout(N)) -> { out => Str, exitcode => Int, timedout => Bool }
-    B["run"] = [](Interpreter&, ValueList& a) -> Value {
+    B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
@@ -2456,7 +2549,7 @@ void Interpreter::registerBuiltins() {
             return p;
         }
         std::string out; int code; bool timedout;
-        spawnCapture(argv, 0, out, code, timedout);
+        spawnCapture(argv, 0, out, code, timedout, &I);
         if (!wantOut) std::cout << out; // not capturing: echo child stdout (approximates inherit)
         (*p.hash)["exitcode"] = Value::integer(code);
         (*p.hash)["out-str"] = Value::str(out);
@@ -2465,16 +2558,23 @@ void Interpreter::registerBuiltins() {
     };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
-        if (!I.makeTargets_.empty()) I.makeTargets_.back()->pairVal = std::make_shared<Value>(v);
+        if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->pairVal = std::make_shared<Value>(v);
         return v;
     };
     B["take"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.size() == 1 ? a[0] : Value::array(a);
-        if (!I.gatherStack_.empty()) {
-            for (auto& x : a) I.gatherStack_.back()->push_back(x);
+        if (!I.tctx_.gatherStack.empty()) {
+            for (auto& x : a) I.tctx_.gatherStack.back()->push_back(x);
         }
         return v;
     };
+    // `succeed EXPR` exits the enclosing `when`/`given`, making the given evaluate to EXPR;
+    // `proceed` leaves the current `when` but keeps testing later ones.
+    B["succeed"] = [](Interpreter&, ValueList& a) -> Value {
+        Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
+        throw BreakGivenEx{v, !a.empty()};
+    };
+    B["proceed"] = [](Interpreter&, ValueList&) -> Value { throw ProceedEx{}; };
     B["dir"] = [](Interpreter&, ValueList& a) -> Value {
         std::string path = a.empty() ? "." : a[0].toStr();
         Value out = Value::array();
@@ -2560,6 +2660,12 @@ void Interpreter::registerBuiltins() {
 
     // --- utility functions ---
     B["abs"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "abs", none); };
+    // Comparison operators usable as subs: `cmp($a,$b)`, `$a leg $b`, etc.
+    for (auto op : {"cmp", "leg", "before", "after"})
+        B[op] = [op](Interpreter&, ValueList& a) -> Value { return a.size() >= 2 ? applyArith(op, a[0], a[1]) : Value::any(); };
+    // List routines that delegate to the method of the same name.
+    for (auto nm : {"permutations", "combinations", "unique", "repeated", "squish", "rotor", "flat"})
+        B[nm] = [nm](Interpreter& I, ValueList& a) -> Value { Value v = a.size() == 1 ? a[0] : Value::array(a); ValueList none; return I.methodCall(v, nm, none); };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) { auto r = std::sqrt(std::complex<double>(a[0].n, a[0].im)); return Value::complex(r.real(), r.imag()); }
         double x = numArg(I, a);
@@ -2741,14 +2847,14 @@ void Interpreter::registerBuiltins() {
     };
     B["supply"] = [](Interpreter& I, ValueList& a) -> Value {
         // supply { emit ...; done } : run the block now, collecting emitted values
-        ValueList vals; I.supplyStack_.push_back(&vals);
+        ValueList vals; I.tctx_.supplyStack.push_back(&vals);
         if (!a.empty() && a.back().t == VT::Code) I.callCallable(a.back(), {});
-        I.supplyStack_.pop_back();
+        I.tctx_.supplyStack.pop_back();
         Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v;
         return s;
     };
     B["emit"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (!I.supplyStack_.empty()) I.supplyStack_.back()->push_back(a.empty() ? Value::any() : a[0]);
+        if (!I.tctx_.supplyStack.empty()) I.tctx_.supplyStack.back()->push_back(a.empty() ? Value::any() : a[0]);
         return Value::boolean(true);
     };
     // printf/sprintf take **@args — a list/array argument flattens into the values,

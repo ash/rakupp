@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **249 / 1,464 files fully pass (~17%)**; 565 partial, 643 no-TAP, 7 timeout. (Among files that run, 119,645 / 164,029 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **252 / 1,464 files fully pass (~17%)**; 568 partial, 635 no-TAP, 9 timeout. (Among files that run, 119,873 / 164,321 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
 
 ## Lexical & Literals
 - Int (arbitrary precision / bignum), Num, Rat, **Complex** (`3+4i`); FatRat ~
@@ -42,8 +42,9 @@ Roast standing: **249 / 1,464 files fully pass (~17%)**; 565 partial, 643 no-TAP
 - `sub`, `multi`/`proto` dispatch (by type, arity, `where`, literal, `:D`/`:U` smileys)
 - Params: positional, named, optional `?`, slurpy `*@`/`*%` (single-argument rule), defaults
 - `is rw` / `is copy`, sigilless `\a`, capture `|c`, return-type `-->`, type-capture `::T`
+- Sub-signature destructuring: `[$a,$b]` / `($a,$b)` unpack a list arg, `|c($x,$y)` a capture, `*[$a,$b]` a slurpy — with `multi` dispatch on the destructured arity
 - Anonymous subs, closures, placeholder params `$^a`, sub/block as argument
-- **Gaps:** `callsame`/`nextsame`, sub-signature destructuring binding
+- **Gaps:** `callsame`/`nextsame`, `is rw` inside a sub-signature, `-> [$a,$b]` pointy destructure
 
 ## Objects, Classes, Roles
 - `class`/`role`/`grammar`, attributes `has $.x`/`$!x` (+ defaults), accessors
@@ -58,6 +59,7 @@ Roast standing: **249 / 1,464 files fully pass (~17%)**; 565 partial, 643 no-TAP
 - Unicode property classes `<:Nd> <:L> <:Alpha>` (general categories) and `<:!…>` negation
 - Script classes `<:Latin> <:Greek> <:Cyrillic> <:Han> …` (approximate, block-based)
 - Anchors `^ $ ^^`, quantifiers `* + ? ** {n..m}`, alternation, groups, named captures
+- Repeated named captures under a quantifier collate into a list (`@<content>`, `$<x>[1]`)
 - Subrules, grammars (`token`/`rule`/`regex`, `.parse`/`.subparse`/`.parsefile`), `$/ $0…`, actions
 - Capture interpolation `"$0/$1"`, callable `.subst` (`.subst(/…/, *.uc)`), non-mutating `S///`
 - **Gaps:** named-capture storage (`$<name>=(…)`), replacement `$0`-interp in `s///`, backtracking control, `:ratchet`
@@ -79,12 +81,12 @@ Roast standing: **249 / 1,464 files fully pass (~17%)**; 565 partial, 643 no-TAP
 ## I/O, System, Concurrency
 - `open`/FileHandle (`.lines .get .slurp .print .say .close`), `dir`, `make-temp-file`
 - `run` → standard `Proc` (`.out.slurp .exitcode .so`); bidirectional `run(:in,:out)` (`.in.spurt` / `.out.slurp`, e.g. piping through `pandoc`); `shell`
-- **Concurrency (real `std::thread`s + a GIL; blocking ops — `sleep`/`await` — release the lock so tasks interleave in time, e.g. sleep-sort actually sorts; correct semantics, no CPU parallelism):**
+- **Concurrency (real `std::thread`s + a GIL, CPython-style; blocking ops release the lock: `sleep`/`await` let tasks interleave in time (sleep-sort actually sorts), and external-process waits (`run`/`shell`) run in genuine parallel wall-clock — N concurrent `run('sleep','1')` finish in ~1s, not N s. Optional true CPU parallelism via `RAKUPP_PARALLEL=1`: worker threads run interpreter compute concurrently — per-thread registers/stacks are thread-local, the symbol tables freeze once concurrency engages, and `Lock`/`Semaphore` become real; ~3× on 8 workers, 0 Roast regressions, ThreadSanitizer-clean. Default (flag off) keeps the GIL. `start EXPR` correctly thunks EXPR to the worker):**
   - `Promise` — `start` (kept, or **broken** if the block dies), `await` (blocks, rethrows the cause), manual `Promise.new`/`.keep`/`.break`/`.vow`, `.result`/`.status` (a real `PromiseStatus` enum)/`.cause`/`.Bool`, deferred `.then`, `Promise.anyof`/`.allof` (with `X::Promise::Combinator`), `Proc::Async`
   - `Supply` (`from-list`/`tap`/`act`/`map`/`grep`/`unique`/`squish`/`head`/`tail`/`skip`/`reverse`/`sort`/`min`/`max` (running extremes)/…), live `Supplier` (`.emit`/`.done`/`.quit`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
   - `Channel` (`send`/`receive`/`poll`/`close`/`fail`/`closed`, `X::Channel::*`), `Thread` (`.start`/`.join`, `is-initial-thread`, `$*THREAD`), `Lock`/`Semaphore` (`.protect`/`.acquire`/`.release`), `sleep`
 - `$*CWD $*EXECUTABLE $*ARGS $*RAKU/$*PERL` (`.compiler.name` = "Raku++", backend "cpp"), `$*DISTRO $*KERNEL $*VM $*THREAD $*SCHEDULER`
-- **Gaps:** true CPU parallelism, real wall-clock timers (`Promise.in`/`.at` are capped), atomic-container ops (`atomic-fetch`/`cas`), stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
+- **Gaps:** true CPU parallelism is opt-in (`RAKUPP_PARALLEL`), off by default; real wall-clock timers (`Promise.in`/`.at` are capped), atomic-container ops (`atomic-fetch`/`cas`), stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
 
 ## Phasers, Modules, Exceptions, Special Vars, Testing
 - Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `CATCH`

@@ -11,12 +11,98 @@ A focused companion to [EXAMPLES.md](EXAMPLES.md) for the concurrency features.
 ## The model
 
 Raku++ runs concurrency on **real `std::thread`s coordinated by a global
-interpreter lock (GIL)** — only one thread executes Raku at a time, so semantics
-are correct but there is no CPU parallelism (which the test suite doesn't
-require). Blocking operations (`sleep`, `await`) *release* the GIL, so tasks
-genuinely interleave in time — enough for [sleep-sort](#concurrent-timing-sleep-sort)
-to actually sort. Promises, Supplies, Channels, and `react` loops all behave as
-specified; the work is *coordinated in time* rather than *parallel*.
+interpreter lock (GIL)**, CPython-style. By default only one thread executes Raku
+at a time, so semantics are correct and single-threaded code needs no locks.
+Blocking operations *release* the GIL, so tasks genuinely interleave in time:
+`sleep`/`await` let workers overlap (enough for [sleep-sort](#concurrent-timing-sleep-sort)
+to actually sort), and external-process waits (`run`/`shell`) run in real parallel
+wall-clock — N concurrent `run('sleep','1')` finish in ~1 s, not N:
+
+```raku
+# Sequential: four child sleeps back to back.
+my $t0 = now;
+run('sleep', '1', :out).out.slurp(:close) for ^4;
+say "sequential:  {(now - $t0).round(0.1)} s";      # → sequential:  4 s
+
+# Concurrent: four workers, each blocked on its own child process. Each waiting
+# `run` releases the GIL, so the four sleeps elapse at the same time.
+my $t1 = now;
+await (^4).map: { start { run('sleep', '1', :out).out.slurp(:close) } };
+say "concurrent:  {(now - $t1).round(0.1)} s";       # → concurrent:  1 s
+```
+
+This holds in the **default GIL mode** — no `RAKUPP_PARALLEL` needed — because the
+work being overlapped is *waiting on subprocesses*, not running Raku. It's also why
+a subprocess-heavy pipeline (e.g. shelling out to `pandoc` per page) is already
+near-parallel under the GIL, and gains little from `RAKUPP_PARALLEL`; that flag
+helps when the bottleneck is Raku-level CPU (see below).
+
+Promises, Supplies, Channels, and `react` loops all behave as specified. For work
+that is genuinely CPU-bound, an **opt-in mode drops the GIL entirely** so worker
+threads run interpreter code in parallel — see the next section.
+
+---
+
+## The two modes: GIL (default) and true parallelism
+
+There is exactly one knob — the **`RAKUPP_PARALLEL` environment variable** — and it
+is read once at startup. You don't change anything in your Raku code; the same
+program runs under either mode.
+
+| | **GIL mode** (default) | **Parallel mode** (`RAKUPP_PARALLEL=1`) |
+|---|---|---|
+| How to select | *(nothing — this is the default)* | set the env var |
+| Pure-Raku CPU work | one thread at a time | runs on all cores |
+| `sleep`/`await`/subprocess waits | overlap (GIL released) | overlap |
+| `Lock` / `Semaphore` | no-ops (the GIL already serialises) | real mutual exclusion |
+| Unsynchronised shared mutation | safe (serialised) | **your race** — guard it with a `Lock`, as in Rakudo |
+| Roast suite | 252 pass | 252 pass (0 regressions) |
+
+Select the mode from the shell:
+
+```sh
+rakupp myprogram.raku              # GIL mode (default)
+RAKUPP_PARALLEL=1 rakupp myprogram.raku   # true CPU parallelism
+```
+
+In parallel mode the runtime is safe because per-thread state (the current scope,
+dynamic-variable chain, gather/react/redispatch stacks) is thread-local, and the
+shared symbol tables (classes, subs, globals) are frozen once concurrency engages —
+so worker threads read them without locking. What is *not* protected for you is
+**your own** shared data: two `start` blocks writing the same array/hash/object
+without a `Lock` is a data race, exactly as it is under Rakudo.
+
+```raku
+# CPU-parallel fan-out. Under RAKUPP_PARALLEL this uses every core.
+sub work($n) { my $s = 0; $s += $_ for 1 .. 4_000_000; $s + $n }
+my @p = (^8).map(-> $n { start work($n) });
+say (await @p).elems;                     # → 8
+#   GIL mode: ~10.6 s   |   RAKUPP_PARALLEL=1: ~2.9 s  (3.6× on 8 cores)
+```
+
+`start EXPR` thunks `EXPR` and runs it *on the worker* (it is not evaluated eagerly
+on the spawning thread), so `start work($n)` parallelises just like `start { work($n) }`.
+
+### Sharing state safely
+
+```raku
+# A Lock actually enforces mutual exclusion in parallel mode (a no-op under the GIL).
+my $lock = Lock.new;
+my $total = 0;
+await (^8).map: { start { for ^10000 { $lock.protect({ $total++ }) } } };
+say $total;                               # → 80000   (no lost updates in either mode)
+```
+
+`Semaphore` likewise becomes a real counting semaphore under `RAKUPP_PARALLEL`.
+
+### When it helps
+
+CPU-bound fan-out (parsing, transforms, number crunching across `start` blocks)
+scales with the number of workers — roughly 3× on 8 cores. Work that is dominated
+by external processes or I/O already overlaps in the default GIL mode (the waits
+release the lock), so parallel mode adds less there. If a workload doesn't speed
+up, check that the parallel unit is a real `start` thunk and not a single
+serialised bottleneck.
 
 ---
 
@@ -186,3 +272,7 @@ computes runs to completion the moment it's spawned (its effects are visible
 immediately, as in a synchronous model), so only blocks that actually *wait*
 interleave. `sleep` is capped (so a runaway `sleep 10000` can't wedge things),
 which preserves small relative delays but not real wall-clock durations.
+
+Under `RAKUPP_PARALLEL=1` sleep-sort still sorts — the workers now run on
+independent threads outright rather than being handed off one at a time — but the
+observable result is the same. See [The two modes](#the-two-modes-gil-default-and-true-parallelism).

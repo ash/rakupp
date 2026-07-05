@@ -32,10 +32,10 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **251** | **17%** |
-| Partially passing | 567 | 39% |
-| No TAP output | 639 | 44% |
-| Timeouts | 7 | 0.5% |
+| **Fully passing** | **252** | **17%** |
+| Partially passing | 566 | 39% |
+| No TAP output | 638 | 44% |
+| Timeouts | 9 | 0.6% |
 
 **Coverage ≈ 17% of files.** That is the number to quote. Nearly half the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
@@ -121,6 +121,6 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 251 / 1,464 files fully passing (~17% coverage); 567 partial,
-639 no-TAP, 7 timeout. Reached-assertion pass rate 119,868 / 164,298 (see
+_Snapshot: 252 / 1,464 files fully passing (~17% coverage); 568 partial,
+638 no-TAP, 9 timeout. Reached-assertion pass rate 119,873 / 164,321 (see
 caveat above — not a coverage figure)._

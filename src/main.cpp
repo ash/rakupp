@@ -2,6 +2,7 @@
 #include "Codegen.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "Highlight.h"
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -218,6 +219,8 @@ int main(int argc, char** argv) {
 "\n"
 "Inspection:\n"
 "  rakupp --ast SRC             Print the parsed AST as an indented tree\n"
+"  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
+"                               reads stdin if no SRC), e.g. as a pygmentize drop-in\n"
 "  rakupp --help, -h            Show this help\n"
 "  rakupp --version, -V         Show the version\n"
 "\n"
@@ -233,6 +236,34 @@ int main(int argc, char** argv) {
             std::cout << "Raku++ (rakupp) — a Raku interpreter and compiler in C++\n";
             return 0;
         }
+    }
+
+    // --highlight [--html|--ansi] [FILE | -e CODE | -]  : syntax-highlight Raku
+    // and exit. Default format is html (the course consumer); `-`/no file reads stdin,
+    // so it drops in for `pygmentize -f html -l raku`.
+    if (argc >= 2 && std::string(argv[1]) == "--highlight") {
+        std::string fmt = "html", src, srcFile;
+        bool haveSrc = false;
+        for (int k = 2; k < argc; k++) {
+            std::string a = argv[k];
+            if (a == "--html") fmt = "html";
+            else if (a == "--ansi" || a == "--terminal") fmt = "ansi";
+            else if (a == "-e" && k + 1 < argc) { src = argv[++k]; haveSrc = true; }
+            else if (a == "-") { /* explicit stdin */ }
+            else if (!haveSrc && a[0] != '-') { srcFile = a; }
+        }
+        if (!haveSrc) {
+            std::istream* in = &std::cin;
+            std::ifstream f;
+            if (!srcFile.empty()) {
+                f.open(srcFile);
+                if (!f) { std::cerr << "Cannot open file: " << srcFile << "\n"; return 4; }
+                in = &f;
+            }
+            std::ostringstream ss; ss << in->rdbuf(); src = ss.str();
+        }
+        std::cout << highlight(src, fmt);
+        return 0;
     }
 
     // --ast FILE | --ast -e CODE : print the parsed AST and exit

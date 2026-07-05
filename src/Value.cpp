@@ -287,6 +287,14 @@ int valueCmp(const Value& a, const Value& b) {
         double x = a.toNum(), y = b.toNum();
         return x < y ? -1 : x > y ? 1 : 0;
     }
+    // Pairs compare by key first, then value (Rakudo's Pair cmp semantics).
+    if (a.t == VT::Pair && b.t == VT::Pair) {
+        int k = valueCmp(Value::str(a.s), Value::str(b.s));
+        if (k != 0) return k;
+        Value av = a.pairVal ? *a.pairVal : Value::any();
+        Value bv = b.pairVal ? *b.pairVal : Value::any();
+        return valueCmp(av, bv);
+    }
     std::string x = a.toStr(), y = b.toStr();
     return x < y ? -1 : x > y ? 1 : 0;
 }

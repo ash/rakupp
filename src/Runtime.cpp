@@ -74,7 +74,17 @@ static int onBigStack(const std::function<int()>& fn) {
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, (size_t)1 << 30); // 1 GiB
     pthread_t th;
-    auto entry = [](void* p) -> void* { auto* c = static_cast<Ctx*>(p); c->rc = (*c->fn)(); return nullptr; };
+    // Flush stdout/stderr on the worker thread itself, before it returns. Otherwise the
+    // only flush is std::cout's static destructor on the MAIN thread during process exit,
+    // which can race the C runtime closing fd 1 — dropping the last buffered line when our
+    // stdout is a pipe (e.g. a parent capturing us). Flushing here makes output complete
+    // and deterministic regardless of exit ordering.
+    auto entry = [](void* p) -> void* {
+        auto* c = static_cast<Ctx*>(p);
+        c->rc = (*c->fn)();
+        std::cout.flush(); std::cerr.flush();
+        return nullptr;
+    };
     if (pthread_create(&th, &attr, entry, &ctx) != 0) ctx.rc = fn(); // fallback: run inline
     else pthread_join(th, nullptr);
     pthread_attr_destroy(&attr);

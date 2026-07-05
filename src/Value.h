@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@ struct Callable {
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
     std::shared_ptr<Env> closure;
     std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)
+    std::once_flag stateInit;                      // stateEnv is created exactly once (thread-safe under parallel calls)
     BuiltinFn builtin;                             // set => builtin
     std::vector<std::string> placeholders;         // $^a auto-params (sorted)
     std::vector<Value> candidates;                 // multi-dispatch candidates
@@ -120,6 +122,10 @@ struct Value {
         v.hash = std::make_shared<std::map<std::string, Value>>();
         return v;
     }
+    // Writers use these so the containers stay valid even if matchVal is ever made lazy;
+    // with eager allocation above they simply return the existing container.
+    ValueList& arrRef() { if (!arr) arr = std::make_shared<ValueList>(); return *arr; }
+    std::map<std::string, Value>& hashRef() { if (!hash) hash = std::make_shared<std::map<std::string, Value>>(); return *hash; }
     static Value pair(std::string key, Value val) {
         Value v; v.t = VT::Pair; v.s = std::move(key);
         v.pairVal = std::make_shared<Value>(std::move(val)); return v;

@@ -11,10 +11,13 @@
 namespace rakupp {
 
 // binding powers (higher = tighter)
+// Raku orders these (tightest→loosest): additive `+ -` > replication `x xx` >
+// concatenation `~` > range. So `"-" x $n + 2` == `"-" x ($n + 2)` and
+// `"x" x 2 ~ "y"` == `("x" x 2) ~ "y"`. Each gets a distinct level.
 enum {
     BP_OR = 1, BP_AND = 2, BP_COMMA = 3, BP_ASSIGN = 4, BP_TERNARY = 5,
     BP_OROR = 6, BP_ANDAND = 7, BP_COMPARE = 8, BP_RANGE = 9,
-    BP_ADD = 10, BP_MUL = 11, BP_POW = 12, BP_PREFIX = 13
+    BP_CONCAT = 10, BP_REPLICATE = 11, BP_ADD = 12, BP_MUL = 13, BP_POW = 14, BP_PREFIX = 15
 };
 
 static const std::unordered_set<std::string> kAssignOps = {
@@ -76,7 +79,8 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "??") { in.valid = true; in.lbp = BP_TERNARY; in.isTernary = true; return in; }
         if (o == "**") { in.valid = true; in.lbp = BP_POW; in.rightAssoc = true; return in; }
         if (o == "*" || o == "/" || o == "%" || o == "%%" || o == "!%%") { in.valid = true; in.lbp = BP_MUL; return in; }
-        if (o == "+" || o == "-" || o == "~") { in.valid = true; in.lbp = BP_ADD; return in; }
+        if (o == "+" || o == "-") { in.valid = true; in.lbp = BP_ADD; return in; }
+        if (o == "~") { in.valid = true; in.lbp = BP_CONCAT; return in; } // concatenation: looser than x/xx
         if (o == ".." || o == "..^" || o == "^.." || o == "^..^") { in.valid = true; in.lbp = BP_RANGE; in.isRange = true; return in; }
         if (o == "..." || o == "...^") { in.valid = true; in.lbp = BP_COMMA; return in; } // sequence op: looser than comma, so `1,3 ... 19` seeds with (1,3)
         if (o == "==>" || o == "<==") { in.valid = true; in.lbp = BP_OR; return in; } // feed operators (very loose, left-assoc)
@@ -111,7 +115,8 @@ static InfixInfo classifyInfix(const Token& t) {
         in.op = o;
         if (o == "eq" || o == "ne" || o == "lt" || o == "gt" || o == "le" || o == "ge" ||
             o == "cmp" || o == "leg" || o == "eqv" || o == "before" || o == "after") { in.valid = true; in.lbp = BP_COMPARE; return in; }
-        if (o == "x" || o == "xx" || o == "div" || o == "mod" || o == "gcd" || o == "lcm") {
+        if (o == "x" || o == "xx") { in.valid = true; in.lbp = BP_REPLICATE; return in; }
+        if (o == "div" || o == "mod" || o == "gcd" || o == "lcm") {
             in.valid = true; in.lbp = BP_MUL; return in;
         }
         if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
@@ -155,6 +160,7 @@ static bool startsListopArg(const Token& t) {
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
                    t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
+                   (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB"; // ∞  and  «qw»
@@ -965,6 +971,30 @@ ExprPtr Parser::parsePrimary() {
                 }
                 return u;
             }
+            if (name == "start") {
+                // `start` thunks its argument so it runs on the worker, not eagerly on
+                // the current thread. `start { … }` already carries its block; `start EXPR`
+                // (e.g. `start render-page($d)`) must wrap EXPR in a deferred block, else
+                // it evaluates before the promise is even spawned (defeating parallelism).
+                advance();
+                auto call = std::make_unique<Call>();
+                call->name = "start";
+                auto be = std::make_unique<BlockExpr>();
+                if (isKind(Tok::LBrace)) {
+                    auto blk = parseBlock();
+                    be->body = std::move(blk->stmts);
+                } else if (isIdent("for") || isIdent("if") || isIdent("unless") || isIdent("while") ||
+                           isIdent("until") || isIdent("loop") || isIdent("repeat") || isIdent("given") ||
+                           isIdent("when") || isIdent("with") || isIdent("without")) {
+                    be->body.push_back(parseStatement());
+                } else {
+                    auto es = std::make_unique<ExprStmt>();
+                    es->e = parseExpr(BP_PREFIX);
+                    be->body.push_back(std::move(es));
+                }
+                call->args.push_back(std::move(be));
+                return call;
+            }
             if (name == "my" || name == "our" || name == "state" ||
                 name == "has" || name == "constant") {
                 advance();
@@ -993,9 +1023,9 @@ ExprPtr Parser::parsePrimary() {
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur());
             if (listopOk && cur().kind == Tok::Op &&
-                (cur().text == "+" || cur().text == "-" || cur().text == "?") &&
+                (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|") &&
                 peek(1).spaceBefore)
-                listopOk = false;
+                listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip vs `x | y` junction
             if (listopOk) {
                 auto c = std::make_unique<Call>();
                 c->name = name;
@@ -1302,9 +1332,9 @@ std::unique_ptr<Block> Parser::parseBlock() {
     return blk;
 }
 
-std::vector<Param> Parser::parseSignature() {
+std::vector<Param> Parser::parseSignature(Tok closeTok) {
     std::vector<Param> params;
-    while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
+    while (!isKind(closeTok) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue; // multi-frame separator `;` / `;;` in signatures
         Param p;
         // return-type constraint `--> Type` — always last; discarded. Skip to the
@@ -1327,9 +1357,38 @@ std::vector<Param> Parser::parseSignature() {
             if (!matchKind(Tok::Comma)) break;
             continue;
         }
+        // Destructuring / sub-signature parameter: `[$a, $b]` (array) or `($a, $b)`
+        // (list). Parse the inner signature and record it; bindParams unpacks the
+        // argument's elements into these inner params at call time.
+        if (isKind(Tok::LBracket) || isKind(Tok::LParen)) {
+            Tok close = isKind(Tok::LBracket) ? Tok::RBracket : Tok::RParen;
+            advance(); // consume '[' or '('
+            p.subSig = std::make_shared<std::vector<Param>>(parseSignature(close));
+            if (!matchKind(close)) error("expected closing bracket in sub-signature");
+            p.name = ""; p.sigil = '$';
+            if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
+            params.push_back(std::move(p));
+            if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
+            continue;
+        }
         if (matchOp("|")) {
-            // capture parameter `|c` — slurps remaining positional+named args
-            if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
+            // capture parameter `|c` — slurps remaining positional+named args. Don't
+            // swallow a trailing trait keyword (`| where …`) as the capture name.
+            if ((isKind(Tok::Ident) && !isIdent("where") && !isIdent("is") && !isIdent("of")) || isKind(Tok::Var))
+                p.name = advance().text;
+            // optional sub-signature `|c( … )` / `| ( … )` — parse it (destructures
+            // the capture's positionals into these inner params at call time)
+            if (isKind(Tok::LParen)) {
+                advance();
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in capture sub-signature");
+            }
+            // a capture can carry a `where`/trait constraint: `| where { … }`
+            while (isIdent("where") || isIdent("is") || isIdent("of")) {
+                std::string trait = advance().text;
+                if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
+                else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End)) advance();
+            }
             p.slurpy = true; p.sigil = '\\';
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma)) break;
@@ -1338,6 +1397,15 @@ std::vector<Param> Parser::parseSignature() {
         if (matchOp("**")) { p.slurpy = true; p.slurpyKind = 'n'; }      // **@a — no flatten
         else if (matchOp("*")) { p.slurpy = true; p.slurpyKind = 'f'; }  // *@a  — flatten iterables
         else if (matchOp("+")) { p.slurpy = true; p.slurpyKind = '1'; }  // +@a  — single-argument rule
+        // slurpy with a sub-signature: `*[$a,$b]` — destructure the slurped args
+        if (p.slurpy && isKind(Tok::LBracket)) {
+            advance();
+            p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RBracket));
+            if (!matchKind(Tok::RBracket)) error("expected ']' in slurpy sub-signature");
+            params.push_back(std::move(p));
+            if (!matchKind(Tok::Comma)) break;
+            continue;
+        }
         if (matchOp("\\")) {
             // sigilless capture parameter: \a  -> bound under bare name
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
@@ -1421,6 +1489,12 @@ std::vector<Param> Parser::parseSignature() {
             // anonymous type-only parameter, e.g. (Str:U) / (Int) — used for dispatch, no binding
             p.name = ""; p.sigil = '$';
         } else error("expected parameter variable");
+        // shaped-array parameter:  @a[3] / @a[3;3]  — skip the shape (parse-only)
+        if (isKind(Tok::LBracket) && !cur().spaceBefore) {
+            int depth = 0;
+            do { if (isKind(Tok::LBracket)) depth++; else if (isKind(Tok::RBracket)) depth--; advance(); }
+            while (depth > 0 && !isKind(Tok::End));
+        }
         if (matchOp("?")) p.optional = true;
         else if (matchOp("!")) p.required = true;
         // invocant marker:  method m ($self: $arg)  — ':' separates invocant from rest

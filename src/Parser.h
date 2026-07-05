@@ -47,7 +47,7 @@ private:
     StmtPtr parseIf(bool isUnless);
     StmtPtr parseWhile(bool isUntil);
     StmtPtr parseFor();
-    std::vector<Param> parseSignature();      // after '(' ... ')'
+    std::vector<Param> parseSignature(Tok closeTok = Tok::RParen); // after '(' … ')' (or '[' … ']' for a sub-signature)
     std::vector<Param> parsePointyParams();   // -> $a, \b { ... }  (stops at '{')
 
     // expressions

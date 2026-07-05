@@ -105,6 +105,34 @@ changes little.
 `fib` is the one benchmark where Rakudo's JIT stays level: a tiny function called
 1.6M times is exactly what a JIT specializes best, and native Raku++ ties it.
 
+### Real-world: grammar parsing (YAMLish)
+
+The benchmarks above are small kernels. This one is a whole real module doing
+real work: the zef-installed **YAMLish** grammar (unmodified) parsing the Raku
+course's table-of-contents YAML (`_data/toc/en.yaml`, 2471 lines) with
+`load-yamls`. It exercises the backtracking grammar engine — subrules, LTM `|`,
+lookbehind assertions, `:my` side-effects, indentation-parameterised rules, and
+action-method tree building — against the same source under both engines.
+
+Best of 5 runs, wall-clock (`time`), lower is better.
+
+| Workload | Raku++ (interp) | Rakudo | Faster |
+|---|---:|---:|---|
+| load-yamls, one parse per process | 0.55 s | 1.06 s | **Raku++ 1.9×** |
+| load-yamls, 10 parses in-process   | 5.46 s | 6.92 s | **Raku++ 1.3×** |
+
+The single-parse figure is the realistic one — `raku-pages.raku` (the course
+generator) reads the TOC once per invocation, and Raku++ regenerates the entire
+1,483-page course byte-for-byte identically to Rakudo. The gap narrows for
+repeated in-process parses because each `load-yamls` rebuilds and recompiles the
+grammar, so grammar-construction cost isn't amortised across calls; the
+per-parse matching itself is where Raku++'s lead comes from. Getting here took
+targeted work on the match engine — bounding the lookbehind scan window (the
+grammar had an O(N²) start-position rescan), caching per-rule name resolution on
+the compiled AST, resolving tail-position `return` without a C++ exception, and
+non-owning match continuations. An earlier build of this same parse took ~195 s;
+that was an unbounded lookbehind scan on a document this large.
+
 ## How to read this
 
 - **Startup wins are real and matter.** A ~13 ms cold start vs ~160 ms is the
@@ -132,4 +160,4 @@ The harness compiles each program with `--exe` for the native column; the
 benchmark programs are plain, readable Raku in `tools/bench/*.raku` (edit or add
 freely).
 
-_Snapshot taken with Raku++ at 220 / 1,464 Roast files fully passing._
+_Snapshot taken with Raku++ at 251 / 1,464 Roast files fully passing._

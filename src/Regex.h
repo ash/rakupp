@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <type_traits>
 #include <map>
 #include <cstdint>
 #include <unordered_map>
@@ -8,6 +9,17 @@
 #include <vector>
 
 namespace rakupp {
+
+// Non-owning callable reference for match continuations: two words, no heap, one
+// indirect call. Continuations only live for the duration of the match call chain
+// (they are never stored), so borrowing the callable from the caller's stack is safe.
+struct FnRef {
+    void* ctx;
+    bool (*fn)(void*, long);
+    template <class F, class = std::enable_if_t<!std::is_same_v<std::decay_t<F>, FnRef>>>
+    FnRef(F&& f) : ctx((void*)&f), fn([](void* c, long v) { return (*(std::remove_reference_t<F>*)c)(v); }) {}
+    bool operator()(long v) const { return fn(ctx, v); }
+};
 
 // Interpreter callbacks that let the grammar matcher evaluate embedded Raku at
 // match time — code assertions, `:my`/`{…}` side-effects, runtime `$var` atoms,
@@ -25,6 +37,21 @@ struct GrammarHooks {
     std::function<void(std::shared_ptr<void>)> restoreState;
 };
 
+// A node of the parse tree recorded by the backtracking GrammarMatcher: which rule
+// matched which span, its positional captures ($0..) and named/subrule children.
+// A leaf with an empty `name` records a plain named capture ($<x>=[…]), not a rule.
+// The child map is FROZEN behind a shared_ptr when the node is recorded, so
+// re-recording a memoized sub-match is a refcount bump, not a subtree copy.
+struct ParseNode;
+using ChildMap = std::map<std::string, std::vector<ParseNode>>;
+struct ParseNode {
+    std::string name;
+    long from = 0, to = 0;
+    std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
+    std::map<std::string, std::pair<long, long>> named;   // named-capture spans ($<x>)
+    std::shared_ptr<const ChildMap> kids;                 // frozen sub-trees (null = leaf); a vector collates repeated captures
+};
+
 // Result of a regex match against a subject string (byte offsets).
 struct RxMatch {
     bool matched = false;
@@ -32,20 +59,25 @@ struct RxMatch {
     std::vector<std::pair<long, long>> caps;            // positional captures ($0,$1,..); {-1,-1} = unset
     std::map<std::string, std::pair<long, long>> named; // named captures ($<name>) byte ranges
     std::map<std::string, std::pair<long, long>> subs;  // subrule names matched (for $<name> tree access)
+    std::map<std::string, std::vector<ParseNode>> children; // per-name occurrence list; repeated captures collate here
 };
 
 // Resolver for grammar subrule calls <name>: match rule `name` against `subj`
 // anchored at `pos`; on success fill `out` (with out.to = end offset) and return true.
 using SubResolver = std::function<bool(const std::string& name, const std::string& subj, long pos, RxMatch& out)>;
 
-// A node of the parse tree recorded by the backtracking GrammarMatcher: which rule
-// matched which span, its positional captures ($0..) and named/subrule children.
-struct ParseNode {
-    std::string name;
-    long from = 0, to = 0;
-    std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
-    std::map<std::string, std::pair<long, long>> named;   // named-capture spans ($<x>)
-    std::map<std::string, std::vector<ParseNode>> children; // named subrule sub-trees; a vector collates repeated captures
+// Per-rule-name metadata the GrammarMatcher caches once and subrule call sites
+// reuse on every call (via a pointer cached on the compiled AST node), so the
+// hot path never re-resolves the name through string-keyed maps.
+class Regex;
+struct GrammarRuleMeta {
+    bool ratchet = false; int id = 0;
+    Regex* singleChar = nullptr;   // !=null: body is one char matcher (inlined at call sites)
+    const void* rule = nullptr;    // the GrammarMatcher::Rule* this name resolves to (null = unknown)
+    Regex* noArg = nullptr;        // pre-compiled body for a parameterless rule
+    const std::vector<std::string>* proto = nullptr; // protoregex candidate names (if this name is a proto)
+    bool isWs = false;             // built-in <ws>
+    std::string builtinClass;      // unknown name: built-in char-class flags ("d","a",…), else empty
 };
 
 // A compiled Raku regex supporting a pragmatic core of the language:
@@ -78,6 +110,8 @@ private:
         std::string classFlags;          // subset of "dws" (positive), uppercase = negated
         std::string uprop;               // Unicode property for <:Nd>/<:L>/… (Class node, codepoint-aware)
         bool negate = false;
+        mutable uint32_t byteset[8];     // per-byte match result (incl. icase+negate), built on first use
+        mutable bool bytesetReady = false;
         // Rep
         long min = 0, max = -1;          // max = -1 => unbounded
         bool greedy = true;
@@ -95,9 +129,14 @@ private:
         std::string ruleArgs;            // raw args of a parameterised call <name($x, '')>
         std::string ruleAlias;           // capture key for <alias=rule> (else = ruleName)
         bool ruleCapture = true;         // <name> captures as $<name>; <.name> does not
+        mutable const GrammarRuleMeta* metaCache = nullptr; // per-node name resolution (grammar path)
         // Look: zero-width assertion — kids[0] is the inner pattern; `negate` = <!…>,
         // `behind` = lookbehind (<?after…>) vs lookahead (<?before…>/<?…>).
         bool behind = false;
+        // lookbehind scan window = the inner pattern's possible match width, computed
+        // once — bounds the start-position scan to O(width) instead of O(pos)
+        mutable long lookMin = 0, lookMax = -1;
+        mutable bool lookWidthReady = false;
     };
     using NodePtr = std::unique_ptr<Node>;
 
@@ -134,7 +173,9 @@ public:
         long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
     };
-    bool matchNode(const Node* n, MState& st, long pos, const std::function<bool(long)>& k) const;
+    bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;
+    // {min,max} byte width the pattern can match; max = -1 means unbounded/unknown.
+    std::pair<long, long> nodeWidth(const Node* n, MState& st) const;
     const Node* root() const { return root_.get(); }
     int ncaps() const { return ncaps_; }
     // Fast path for a rule whose whole body is a single character matcher (e.g.
@@ -164,7 +205,10 @@ public:
     // Called by Regex::matchNode for a `<name(args)>` subrule; threads `k` through
     // the callee. `capKey` (empty for <.name>) is the parent-frame capture key.
     bool matchSub(const std::string& name, const std::string& args, const std::string& capKey,
-                  Regex::MState& st, long pos, const std::function<bool(long)>& k);
+                  Regex::MState& st, long pos, const FnRef& k);
+    // Same, with the name already resolved (call sites cache the meta on the AST node).
+    bool matchSubMeta(const GrammarRuleMeta& meta, const std::string& name, const std::string& args,
+                      const std::string& capKey, Regex::MState& st, long pos, const FnRef& k);
 
     // The parameter bindings of the rule currently being matched (for code-block access).
     const std::map<std::string, std::string>& currentParams() const;
@@ -177,19 +221,20 @@ public:
         long end = 0;
         std::vector<std::pair<long, long>> caps;
         std::map<std::string, std::pair<long, long>> named;
-        std::map<std::string, std::vector<ParseNode>> children;
+        std::shared_ptr<const ChildMap> kids; // frozen once; replays share, never copy
     };
     void clearMemo() { memo_.clear(); }
 
-    struct NameMeta { bool ratchet; int id; Regex* singleChar; }; // singleChar!=null: body is one char matcher
-    const NameMeta& nameMeta(const std::string& name);      // cached ratchet-ness + dense id per rule name
+    using NameMeta = GrammarRuleMeta;
+    const NameMeta& nameMeta(const std::string& name);      // cached per-name metadata (see GrammarRuleMeta)
 
 private:
     std::unordered_map<uint64_t, MemoEntry> memo_;          // ratchet-token packrat cache (per parse), integer-keyed
     std::unordered_map<std::string, NameMeta> nameMeta_;    // per-name metadata cache (avoids repeated rules.find)
-    std::map<std::string, std::unique_ptr<Regex>> cache_;   // interpolated-pattern → compiled
+    std::map<std::string, std::unique_ptr<Regex>> cache_;   // name(+arg values) → compiled
     std::vector<std::map<std::string, std::string>> scope_; // parameterised-rule param bindings
     Regex* compiled(const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);
+    Regex* compiledFor(const Rule& rule, const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);
     std::string evalArg(const std::string& e) const;
     std::vector<std::string> splitArgs(const std::string& s) const;
     std::string interpParams(const std::string& pat, const std::map<std::string, std::string>& sc) const;

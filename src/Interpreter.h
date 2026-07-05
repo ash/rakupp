@@ -1,6 +1,7 @@
 #pragma once
 #include "Ast.h"
 #include "Value.h"
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -35,7 +36,7 @@ struct ExitEx { int code = 0; };
 struct LastEx { std::string label; };
 struct NextEx { std::string label; };
 struct RedoEx { std::string label; };
-struct BreakGivenEx {}; // `when`/`succeed` exits the enclosing given/loop
+struct BreakGivenEx { Value v; bool hasVal = false; }; // `when`/`succeed` exits the enclosing given/loop, carrying its value
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 struct RakuError { Value payload; std::string message; };
 
@@ -136,6 +137,18 @@ public:
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
 
+    // GIL-removal step 2: symbol-table freeze. The shared symbol tables (classes_,
+    // global_ vars, namedRegex_, loadedModules_, ClassInfo::methods) are mutated
+    // freely while the program is single-threaded, but once concurrency engages
+    // (engageGil) they must be treated as immutable so worker threads can READ them
+    // without a lock. `symbolsFrozen_` flips true at that point; noteSymbolMutation()
+    // is the tripwire wired into every structural writer — under RAKUPP_FREEZE_TRACE
+    // it reports any post-freeze mutation (and which thread did it), the empirical
+    // signal for whether lock-free reads are safe. Behaviour is otherwise unchanged.
+    std::atomic<bool> symbolsFrozen_{false};
+    std::thread::id mainThread_;
+    void noteSymbolMutation(const char* what);
+
     // Concurrency. saveCtx moves the live execution registers into `c`; loadCtx
     // moves them back out. The GIL serialises Raku execution across real threads:
     // only its holder may touch interpreter state; a thread drops it while blocked
@@ -144,6 +157,16 @@ public:
     void loadCtx(ExecContext& c);
     std::mutex gil_;                       // global interpreter lock (held while running Raku)
     bool gilHeld_ = false;                 // is the GIL currently engaged (any thread spawned)?
+    // GIL-removal step 3: opt-in true parallelism (RAKUPP_PARALLEL). When true, worker
+    // threads run interpreter compute concurrently instead of serialising on the GIL —
+    // safe now that registers/stacks are thread_local (steps 1/3a) and the symbol tables
+    // freeze once concurrency engages (step 2). The few genuinely-shared interpreter
+    // internals that a parallel worker can still touch (test counters + TAP output,
+    // workers_/keptPrograms_ vectors) are guarded by sharedMut_. User data mutated
+    // without a Lock is the user's race, as in Rakudo. Default false ⇒ the GIL path is
+    // byte-for-byte unchanged.
+    bool parallelMode_ = false;
+    std::mutex sharedMut_;
     std::vector<std::thread> workers_;     // outstanding `start`/async worker threads
     // Cooperative handoff. gilYieldNotify() releases the GIL AND wakes a thread
     // parked in yieldToWorker (which the spawner uses to let a fresh worker run up
@@ -155,6 +178,13 @@ public:
     void gilYieldNotify();                 // gil_.unlock() + bump the release counter + notify
     void yieldToWorker();                  // drop the GIL until some worker makes progress, then reacquire
     void sleepYield(double secs);          // sleep with the GIL released so other threads run concurrently
+    // Release the GIL around a blocking syscall (e.g. waiting on a child process),
+    // so sibling worker threads run — and spawn their OWN children — concurrently.
+    // gilPark() returns true if it actually released (only when async is engaged);
+    // gilUnpark(true) reacquires and restores this thread's registers. The parked
+    // window must touch no interpreter state (only thread-local buffers + syscalls).
+    bool gilPark();
+    void gilUnpark(bool wasParked);
     // Spawn a worker running `code` (no args); returns a Promise Value backed by
     // a PromiseState. awaitPromise blocks the caller until `ps` completes, dropping
     // the GIL so the worker can run. drainWorkers joins everything at program end.
@@ -164,30 +194,37 @@ public:
     void engageGil();                      // lazily lock the GIL on first async use
     void drainWorkers();
 
-    std::shared_ptr<Env> cur_;
+    // Per-thread execution registers — current scope, dyn-var chain, gather/supply/
+    // make collectors, call depth, package prefix. Held in a `static thread_local`
+    // so each real worker thread owns its own set: interpreter execution needs no
+    // per-handoff register swap (the GIL still serialises WHO runs; saveCtx/loadCtx
+    // now merely shuffle within a thread's own copy — a harmless round-trip). The
+    // moved fields live in ExecContext. NB one Interpreter is live per thread, so a
+    // static thread_local is safe. Access via the tctx_.<field> members below.
+    static thread_local ExecContext tctx_;
     std::shared_ptr<Env> global_;
     int langRev_ = 2; // language revision: 0=6.c, 1=6.d, 2=6.e (default). Affects e.g. sqrt/roots of negatives -> Complex
-    std::vector<Env*> dynStack_; // caller envs (borrowed, alive during the call), for dynamic ($*foo) lookup
     // Redispatch chain for callsame/callwith/nextsame/nextwith: each entry knows how to
     // invoke the NEXT candidate (e.g. a built-in shadowed by a user method) and the
     // current routine's args (for the *same variants).
     struct RedispatchCtx { std::function<Value(ValueList)> next; ValueList sameArgs; };
-    std::vector<RedispatchCtx> redispatchStack_;
+    // These three are per-thread call-stack state (a worker builds its own redispatch
+    // chain / react stack / thread-depth). Left as plain members in step 1 because they
+    // weren't in the swapped ExecContext set; made `static thread_local` here (step 3a)
+    // so true parallel execution can't corrupt them. Same access syntax (`X_`), so no
+    // call-site changes. Cross-thread emit uses the mutex-guarded ReactCtx, not reactStack_.
+    static thread_local std::vector<RedispatchCtx> redispatchStack_;
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
-    Env* curStateEnv_ = nullptr; // persistent env for `state` vars in the current sub call
     std::vector<std::string> argv_;
-    std::vector<std::shared_ptr<ValueList>> gatherStack_; // active gather collectors
-    std::vector<ValueList*> supplyStack_; // active `supply {}` emit collectors
-    std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
-    int threadDepth_ = 0; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
-    std::vector<Value*> makeTargets_; // current Match being acted on (for `make`)
-    std::string pkgPrefix_;           // current package/module qualified-name prefix
+    static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
+    static thread_local int threadDepth_; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
+    // (cur_/dynStack_/curStateEnv_/gatherStack_/supplyStack_/makeTargets_/pkgPrefix_/
+    //  callDepth_ moved into the thread_local tctx_ above.)
 public:
     std::string finishData_;          // $=finish data block of the module being run
     std::string srcFile_;             // source file path (for $?FILE)
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
 private:
-    int callDepth_ = 0; // guards against unbounded recursion (hang/stack overflow)
 
     // test harness state
     long planned_ = -1;
