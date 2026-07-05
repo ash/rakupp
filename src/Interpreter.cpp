@@ -3488,6 +3488,16 @@ Value Interpreter::evalIndex(Index* idx) {
         return o;
     }
 
+    // `@a[|| @dims]` / `%h{|| @keys}` — navigate nested dimensions from a runtime list
+    // (each element is the index/key for one level).
+    if (idx->index && idx->index->kind == NK::Unary && static_cast<const Unary*>(idx->index.get())->op == "dimslip") {
+        Value dims = eval(static_cast<const Unary*>(idx->index.get())->operand.get());
+        ValueList path = (dims.t == VT::Array && dims.arr) ? *dims.arr : (dims.t == VT::Range ? dims.flatten() : ValueList{dims});
+        Value cur = base;
+        for (auto& step : path) cur = rtIndexGet(cur, step, cur.t == VT::Hash);
+        return cur;
+    }
+
     // Match object indexing: $/[n] positional, $/{key} / $/<key> named
     if (base.t == VT::Match) {
         if (idx->isHash) {

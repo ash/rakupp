@@ -880,6 +880,9 @@ ExprPtr Parser::parsePrimary() {
             if (t.text == ":") return parseColonPair();
             if (t.text == "*") { advance(); return std::make_unique<WhateverExpr>(); }
             if (t.text == "**") { advance(); auto w = std::make_unique<WhateverExpr>(); w->hyper = true; return w; } // HyperWhatever (e.g. %h{**})
+            if (t.text == "||") { // slip-subscript `@a[|| @dims]` / `%h{|| @keys}`: navigate by a list of indices/keys
+                advance(); auto u = std::make_unique<Unary>(); u->op = "dimslip"; u->operand = parseExpr(BP_COMMA + 1); return u;
+            }
             if (t.text == "\xE2\x88\x9E") { advance(); return std::make_unique<NumLit>(std::numeric_limits<double>::infinity()); } // ∞
             if (t.text == ".") return std::make_unique<VarExpr>("$_"); // .method => $_.method
             if (t.text == "\\") { advance(); return parsePrefix(); } // capture/itemize: pass through
