@@ -11,6 +11,9 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
+# Single source of truth for the version — bump `project(... VERSION ...)` above.
+add_compile_definitions(RAKUPP_VERSION="${PROJECT_VERSION}")
+
 find_package(Threads REQUIRED)
 
 file(GLOB_RECURSE RAKUPP_SOURCES CONFIGURE_DEPENDS

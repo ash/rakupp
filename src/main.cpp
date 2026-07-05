@@ -235,7 +235,11 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (a1 == "--version" || a1 == "-V") {
-            std::cout << "Raku++ (rakupp) — a Raku interpreter and compiler in C++\n";
+#ifndef RAKUPP_VERSION
+#define RAKUPP_VERSION "0.0.0"
+#endif
+            std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
+                         " — a Raku interpreter and compiler in C++ (implements Raku 6.d)\n";
             return 0;
         }
     }
