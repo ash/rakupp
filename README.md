@@ -143,6 +143,33 @@ echo 'say 42' | build/rakupp          # run from stdin
 build/rakupp -I lib program.raku      # add lib dirs to the module search path
 ```
 
+### Command-line options
+
+`rakupp --help` prints the full list; the summary:
+
+| Option | Meaning |
+|---|---|
+| `FILE [ARGS…]` | Run a program from a file (extra args become `@*ARGS`) |
+| `-e 'CODE' [ARGS…]` | Run a one-liner |
+| *(no file)* | Read the program from standard input |
+| `-I <path>`, `-I<path>` | Add a directory to the module search path (repeatable) |
+| `--bundle SRC -o OUT` | Compile to a standalone binary: embed source + interpreter |
+| `--aot SRC -o OUT` | Compile: parse ahead of time, embed the AST |
+| `--exe SRC -o OUT` | Native-compile to C++ (fastest; falls back to bundling) |
+| `--ast SRC` | Print the parsed AST as an indented tree |
+| `--highlight [SRC]` | Syntax-highlight Raku — `--html` (default) or `--ansi`; a `pygmentize` drop-in |
+| `--help`, `-h` | Show help |
+| `--version`, `-V` | Show the version |
+
+The compile modes (`--bundle` / `--aot` / `--exe`) each accept `FILE` or `-e CODE`
+plus `-o OUT` — see [Four ways to run a program](#four-ways-to-run-a-program) below.
+
+| Environment variable | Meaning |
+|---|---|
+| `RAKULIB=dir1:dir2` | Extra module search dirs (like `-I`), colon-separated |
+| `RAKUPP_PARALLEL=1` | True CPU parallelism for `start`/worker threads (default: GIL) — see [ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism) |
+| `RAKUPP_DUMPTOKENS=1` | Dump the lexer token stream before running |
+
 `-I <path>` (or `-I<path>`, repeatable) prepends directories to the module
 search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's
 `-I`. `RAKULIB` (colon-separated) does the same via the environment.
