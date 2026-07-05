@@ -1639,9 +1639,11 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
                 : base.t == VT::Range ? (long long)base.flatten().size() : 0;
     if (key.t == VT::Code && key.code && key.code->isWhateverCode)
         key = callCallable(key, ValueList{Value::integer(n)});
-    if (key.t == VT::Whatever) { // @a[*] — the whole list
+    if (key.t == VT::Whatever) { // @a[*] — the whole list / %h{*} — all values
         Value o = Value::array(); o.isList = true;
-        if (base.t == VT::Array && base.arr) *o.arr = *base.arr; else *o.arr = base.flatten();
+        if (isHash && base.t == VT::Hash && base.hash) { for (auto& kv : *base.hash) o.arr->push_back(kv.second); }
+        else if (base.t == VT::Array && base.arr) *o.arr = *base.arr;
+        else *o.arr = base.flatten();
         return o;
     }
     return rtIndexGet(base, key, isHash);
@@ -3462,6 +3464,30 @@ Value Interpreter::evalIndex(Index* idx) {
         return code;
     }
 
+    // Hash whatever-slice `%h{*}` (all top-level values) and hyperslice `%h{**}`
+    // (all leaf values, descending nested hashes), with :k/:v/:kv/:p adverbs.
+    if (idx->isHash && base.t == VT::Hash && base.hash && idx->index && idx->index->kind == NK::Whatever) {
+        bool hyper = static_cast<const WhateverExpr*>(idx->index.get())->hyper;
+        std::vector<std::pair<std::string, Value>> leaves;
+        std::function<void(const Value&)> walk = [&](const Value& h) {
+            if (h.t != VT::Hash || !h.hash) return;
+            for (auto& kv : *h.hash) {
+                if (hyper && kv.second.t == VT::Hash && kv.second.hash) walk(kv.second);
+                else leaves.push_back({kv.first, kv.second});
+            }
+        };
+        walk(base);
+        const std::string& adv = idx->adverb;
+        Value o = Value::array(); o.isList = true;
+        for (auto& lv : leaves) {
+            if (adv == "k") o.arr->push_back(Value::str(lv.first));
+            else if (adv == "kv") { o.arr->push_back(Value::str(lv.first)); o.arr->push_back(lv.second); }
+            else if (adv == "p") o.arr->push_back(Value::pair(lv.first, lv.second));
+            else o.arr->push_back(lv.second); // :v or no adverb → the leaf values
+        }
+        return o;
+    }
+
     // Match object indexing: $/[n] positional, $/{key} / $/<key> named
     if (base.t == VT::Match) {
         if (idx->isHash) {
@@ -3867,7 +3893,7 @@ Value Interpreter::eval(Expr* e) {
             return Value::pair(p->key, eval(p->value.get()));
         }
         case NK::BlockExpr: return makeClosure(static_cast<BlockExpr*>(e));
-        case NK::Whatever: return Value::whatever();
+        case NK::Whatever: { Value w = Value::whatever(); if (static_cast<const WhateverExpr*>(e)->hyper) w.b = true; return w; } // `**` marked via .b
         default:
             return Value::any();
     }

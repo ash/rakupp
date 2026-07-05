@@ -284,7 +284,7 @@ struct UseStmt : Stmt {
 
 struct EmptyStmt : Stmt { EmptyStmt(): Stmt(NK::EmptyStmt) {} };
 
-struct WhateverExpr : Expr { WhateverExpr(): Expr(NK::Whatever) {} };
+struct WhateverExpr : Expr { bool hyper = false; WhateverExpr(): Expr(NK::Whatever) {} }; // hyper: `**` (HyperWhatever)
 
 struct GivenStmt : Stmt {
     ExprPtr topic;
