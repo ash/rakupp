@@ -1973,6 +1973,17 @@ StmtPtr Parser::parseStatement() {
             }
             return nr;
         }
+        if (kw == "require") {
+            // `require Module` / `require Module <&sym, &sym2>` — runtime load.
+            // loadModule() already publishes the module's subs globally, so the
+            // import list is accepted syntactically and ignored.
+            advance();
+            auto u = std::make_unique<UseStmt>();
+            if (isKind(Tok::Ident)) u->module = advance().text;
+            while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance(); // skip <...> import list
+            matchKind(Tok::Semicolon);
+            return u;
+        }
         if (kw == "use" || kw == "no" || kw == "need") {
             advance();
             auto u = std::make_unique<UseStmt>();
