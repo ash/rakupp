@@ -1077,9 +1077,27 @@ ExprPtr Parser::parsePrimary() {
             if (listopOk) {
                 auto c = std::make_unique<Call>();
                 c->name = name;
-                do {
+                ExprPtr firstArg = parseExpr(BP_ASSIGN);
+                // Indirect-object (dative): `print $*OUT: 'ok'` == `$*OUT.print('ok')`.
+                // The colon must be TIGHT against the invocant (no space before) — a
+                // space before ':' is an adverb (`slurp $p :bin`), not an invocant.
+                // Restricted to the IO writer verbs to keep colon parsing unambiguous.
+                static const std::set<std::string> dativeVerbs = {
+                    "print", "say", "put", "note", "printf", "write",
+                };
+                if (isOp(":") && !cur().spaceBefore && dativeVerbs.count(name)) {
+                    advance(); // consume the invocant-marking ':'
+                    auto mc = std::make_unique<MethodCall>();
+                    mc->inv = std::move(firstArg);
+                    mc->method = name;
+                    if (startsTermToken(cur()))
+                        do { mc->args.push_back(parseExpr(BP_ASSIGN)); } while (matchKind(Tok::Comma) && startsTermToken(cur()));
+                    return mc;
+                }
+                c->args.push_back(std::move(firstArg));
+                while (matchKind(Tok::Comma) && startsTermToken(cur())) {
                     c->args.push_back(parseExpr(BP_ASSIGN));
-                } while (matchKind(Tok::Comma) && startsTermToken(cur()));
+                }
                 // `say 1, 3 ... 19` — the gathered args are the seed of a sequence
                 if (isOp("...") || isOp("...^")) {
                     auto seq = std::make_unique<Binary>();
