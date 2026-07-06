@@ -839,10 +839,35 @@ void Interpreter::loadModule(const std::string& name) {
         auto saved = tctx_.cur;
         std::string savedFinish = finishData_;
         finishData_ = finish; // this module's $=finish data block
-        tctx_.cur = global_; // module definitions become globally visible (no real export yet)
+        // Load the module into its OWN scope (chained to global). Its subs see one
+        // another there; then everything is republished to global EXCEPT a
+        // non-`is export` sub whose name collides with a built-in — that one stays
+        // module-private so it can't shadow the built-in for the importer. This is
+        // what lets Test::Util's `our sub run` coexist with the built-in `run`:
+        // Test::Util's own `is_run` still resolves `run` (via its module closure),
+        // while an importer's bare `run(...)` reaches the built-in.
+        auto moduleEnv = std::make_shared<Env>(); moduleEnv->parent = global_;
+        std::set<std::string> exported;
+        for (auto& st : prog->stmts)
+            if (st->kind == NK::SubDecl) {
+                auto* sd = static_cast<SubDecl*>(st.get());
+                if (sd->isExport && !sd->name.empty()) exported.insert(sd->name);
+            }
+        tctx_.cur = moduleEnv;
+        auto publish = [&] {
+            for (auto& kv : moduleEnv->vars) {
+                const std::string& k = kv.first;
+                if (k.size() > 1 && k[0] == '&') {
+                    std::string bare = k.substr(1);
+                    if (!exported.count(bare) && builtins_.count(bare)) continue; // withhold shadower
+                }
+                global_->define(k, kv.second);
+            }
+        };
         // A runtime failure in a module's load-time code (often a deep dependency
         // using an unimplemented primitive, e.g. Lock) is non-fatal: warn and keep
-        // going so the importing program can still run paths that don't need it.
+        // going so the importing program can still run paths that don't need it —
+        // and still publish whatever the module managed to define before dying.
         try {
             hoistSubs(prog->stmts);
             for (auto& st : prog->stmts) {
@@ -852,11 +877,13 @@ void Interpreter::loadModule(const std::string& name) {
             }
         }
         catch (RakuError& e) {
+            publish();
             tctx_.cur = saved; finishData_ = savedFinish;
             std::cerr << "===WARNING=== Module " << name << " failed during load: " << e.message << "\n";
             return;
         }
         catch (...) { tctx_.cur = saved; finishData_ = savedFinish; throw; }
+        publish();
         tctx_.cur = saved; finishData_ = savedFinish;
     };
 

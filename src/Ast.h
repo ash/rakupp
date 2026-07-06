@@ -200,6 +200,7 @@ struct SubDecl : Stmt {
     bool isMulti = false;
     bool isMethod = false;
     bool isSubmethod = false;
+    bool isExport = false; // `is export` — visible to importers of the enclosing module
     SubDecl(): Stmt(NK::SubDecl) {}
 };
 

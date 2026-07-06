@@ -1,6 +1,7 @@
 #include "Lexer.h"
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -285,14 +286,45 @@ Token Lexer::lexNumber() {
 Token Lexer::lexQuoted(char quote) {
     advance(); // opening quote
     std::string raw;
+    // A single-quoted string is normally a plain StrLit. The `\qq[…]` (and `\q[…]`)
+    // escape embeds an interpolating fragment inside it, which promotes the whole
+    // token to StrInterp; once promoted, the literal (non-fragment) text must be
+    // escaped so its own $ @ % & { \ are NOT treated as interpolation triggers.
+    bool sqInterp = false;
+    auto escInterp = [](const std::string& s) {
+        std::string o;
+        for (char ch : s) { if (strchr("\\$@%&{", ch)) o += '\\'; o += ch; }
+        return o;
+    };
+    auto litAppend = [&](char ch) { if (sqInterp) raw += escInterp(std::string(1, ch)); else raw += ch; };
     while (!eof() && peek() != quote) {
         char c = advance();
         if (c == '\\') {
             char n = peek();
             if (quote == '\'') {
+                // \qq[…] / \q[…] : an embedded interpolation escape. The bracketed
+                // text (any of [] {} () <> delimiters) is processed as double-quoted.
+                if (n == 'q') {
+                    size_t k = (peek(1) == 'q') ? 2 : 1;   // \qq vs \q
+                    char open = peek(k);
+                    const char* opens = "[{(<", *closes = "]})>", *pp = open ? strchr(opens, open) : nullptr;
+                    if (pp) {
+                        char close = closes[pp - opens];
+                        for (size_t j = 0; j <= k; j++) advance(); // consume q[q] + opening bracket
+                        if (!sqInterp) { raw = escInterp(raw); sqInterp = true; }
+                        int depth = 1;
+                        while (!eof() && depth > 0) {
+                            char b = peek();
+                            if (b == open) depth++;
+                            else if (b == close && --depth == 0) { advance(); break; }
+                            raw += advance(); // fragment text stays raw for the interp parser
+                        }
+                        continue;
+                    }
+                }
                 // single quotes: only \' and \\ are special
-                if (n == '\'' || n == '\\') { raw += advance(); }
-                else { raw += '\\'; }
+                if (n == '\'' || n == '\\') { litAppend(advance()); }
+                else { raw += sqInterp ? "\\\\" : "\\"; }
             } else {
                 // double quotes: keep escape raw, parser/interp resolves
                 raw += '\\';
@@ -320,11 +352,11 @@ Token Lexer::lexQuoted(char quote) {
                 }
             }
         } else {
-            raw += c;
+            litAppend(c);
         }
     }
     if (!eof()) advance(); // closing quote
-    return make(quote == '\'' ? Tok::StrLit : Tok::StrInterp, raw);
+    return make((quote == '\'' && !sqInterp) ? Tok::StrLit : Tok::StrInterp, raw);
 }
 
 bool Lexer::tryQuoteForm(Token& out) {

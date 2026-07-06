@@ -1697,7 +1697,11 @@ StmtPtr Parser::parseSub(bool isMulti) {
         expectKind(Tok::RParen, ")");
     }
     // optional return type / traits up to block: skip until '{'
-    while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
+    // (note whether an `is export` trait is present — governs module visibility)
+    while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
+        if (isIdent("export")) s->isExport = true;
+        advance();
+    }
     if (isKind(Tok::LBrace)) {
         bool saved = inReactBlock_; inReactBlock_ = false; // whenever in a nested sub is out of scope
         auto blk = parseBlock();
@@ -1768,6 +1772,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
     while (isIdent("is") || isIdent("does")) {
         bool isDoes = isIdent("does");
         advance();
+        if (!isDoes && isIdent("export")) { advance(); continue; } // trait, not a parent class
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             std::string t = advance().text;
             if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }

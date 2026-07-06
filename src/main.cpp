@@ -371,6 +371,13 @@ int main(int argc, char** argv) {
         std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str();
         fileName = "-";
         for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
+    } else if (nrest >= 1 && rest[0].size() > 1 && rest[0][0] == '-') {
+        // an unrecognized command-line option (the known ones — -I, --doc, -e,
+        // -n/-p, -, --help/-h, --version — are handled above). Rakudo prints a
+        // usage banner to STDERR and exits 0 without attempting to run anything.
+        std::cerr << "Illegal option " << rest[0].substr(0, rest[0].find('=')) << "\n";
+        std::cerr << "  [switches] [--] [programfile] [arguments]\n";
+        return 0;
     } else if (nrest >= 1) {
         struct stat st;
         if (stat(rest[0].c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
