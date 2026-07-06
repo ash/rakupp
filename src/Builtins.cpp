@@ -3060,6 +3060,13 @@ void Interpreter::registerBuiltins() {
         for (size_t i = 1; i < a.size(); i++) { ValueList l = toList(a[i]); items.insert(items.end(), l.begin(), l.end()); }
         return Value::str(joinValues(items, sep));
     };
+    // split(SEP, STR, …) is the sub form of STR.split(SEP, …)
+    B["split"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::array();
+        ValueList margs; margs.push_back(a[0]);
+        for (size_t i = 2; i < a.size(); i++) margs.push_back(a[i]);
+        return I.methodCall(a[1], "split", margs, nullptr);
+    };
     B["reverse"] = [](Interpreter&, ValueList& a) -> Value {
         ValueList items; for (auto& v : a) { ValueList l = toList(v); items.insert(items.end(), l.begin(), l.end()); }
         std::reverse(items.begin(), items.end()); return Value::array(items);
