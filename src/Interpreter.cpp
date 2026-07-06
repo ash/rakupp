@@ -631,6 +631,7 @@ void Interpreter::drainWorkers() {
 int Interpreter::run(Program& prog) {
     int code = 0;
     bool crashed = false;
+    tctx_.curStateEnv = global_.get(); // mainline `state` vars persist here (e.g. across a top-level loop)
     {
         Value args = Value::array();
         for (auto& s : argv_) args.arr->push_back(Value::str(s));
