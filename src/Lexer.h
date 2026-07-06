@@ -11,10 +11,12 @@ public:
     explicit Lexer(std::string src);
     std::vector<Token> tokenize();
     const std::string& finishData() const { return finishData_; } // text after =finish ($=finish)
+    const std::string& podData() const { return podData_; } // rendered =pod content (for --doc)
 
 private:
     std::string src_;
     std::string finishData_; // captured =finish data block
+    std::string podData_;    // rendered content of =begin pod blocks
     size_t pos_ = 0;
     int line_ = 1;
     int col_ = 1;

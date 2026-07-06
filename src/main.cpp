@@ -335,6 +335,8 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) libPaths.push_back(argv[++i]);
         } else if (a.rfind("-I", 0) == 0) { // `-IPATH` : path attached to the flag
             libPaths.push_back(a.substr(2));
+        } else if (a == "--doc") { // render the program's POD to text after running
+            rakupp::rakuppSetDocMode(true);
         } else {
             for (int j = i; j < argc; j++) rest.push_back(argv[j]);
             break;

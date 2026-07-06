@@ -732,6 +732,7 @@ int Interpreter::run(Program& prog) {
                 callCallable(*mainSub, margs);
             }
         }
+        if (docMode_) std::cout << podData_; // --doc: print the rendered POD after the program runs
     } catch (ExitEx& e) {
         code = e.code;
     } catch (RakuError& e) {

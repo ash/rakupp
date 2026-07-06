@@ -233,6 +233,8 @@ public:
     //  callDepth_ moved into the thread_local tctx_ above.)
 public:
     std::string finishData_;          // $=finish data block of the module being run
+    std::string podData_;             // rendered =pod content (printed at end in --doc mode)
+    bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     std::string srcFile_;             // source file path (for $?FILE)
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
 private:

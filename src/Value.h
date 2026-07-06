@@ -33,6 +33,7 @@ struct Callable {
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
+    bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
 };
 
 enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };

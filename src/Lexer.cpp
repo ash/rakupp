@@ -2,9 +2,28 @@
 #include <cctype>
 #include <cstdlib>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace rakupp {
+
+// Minimal POD → text render for `--doc`: a `=headN TEXT` / `=item TEXT` line keeps
+// its text (the directive word is dropped); ordinary paragraph lines pass through.
+static std::string renderPod(const std::string& content) {
+    std::string out;
+    std::istringstream ss(content);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line[0] == '=') {
+            size_t sp = line.find_first_of(" \t");
+            out += (sp == std::string::npos ? std::string() : line.substr(sp + 1));
+            out += "\n";
+        } else {
+            out += line + "\n";
+        }
+    }
+    return out;
+}
 
 Lexer::Lexer(std::string src) : src_(std::move(src)) {}
 
@@ -165,6 +184,8 @@ void Lexer::skipWhitespaceAndComments() {
                 while (peek() == ' ' || peek() == '\t') advance();
                 while (isIdentCont(peek())) name += advance();
                 while (!eof() && peek() != '\n') advance();
+                bool capture = (name == "pod"); // collect pod block content for `$=pod` / --doc
+                size_t contentStart = eof() ? pos_ : pos_ + 1; // just after this line's newline
                 // skip until the matching =end <name> (nested =begin/=end of other names are skipped over)
                 for (;;) {
                     if (eof()) break;
@@ -178,6 +199,7 @@ void Lexer::skipWhitespaceAndComments() {
                             while (peek() == ' ' || peek() == '\t') advance();
                             while (isIdentCont(peek())) endName += advance();
                             if (endName == name) { // matching close
+                                if (capture) podData_ += renderPod(src_.substr(contentStart, s2 - contentStart));
                                 while (!eof() && peek() != '\n') advance();
                                 break;
                             }

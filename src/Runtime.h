@@ -6,6 +6,8 @@ namespace rakupp {
 
 struct Program;
 
+void rakuppSetDocMode(bool on); // enable --doc (run DOC phasers + print rendered POD)
+
 // Parse and interpret `src`. Returns the process exit code.
 // This is the shared entry point used both by the `rakupp` CLI and by
 // standalone executables produced by `rakupp --compile` (which embed their

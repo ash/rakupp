@@ -9,6 +9,9 @@
 
 namespace rakupp {
 
+static bool g_docMode = false;
+void rakuppSetDocMode(bool on) { g_docMode = on; } // set by main when --doc is passed
+
 int rakuppRun(const std::string& src, std::vector<std::string> args,
               const std::string& fileName, const std::string& exePath,
               const std::vector<std::string>& libPaths) {
@@ -24,11 +27,14 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
             }
         }
         std::string finish = lexer.finishData();
+        std::string pod = lexer.podData();
         Parser parser(std::move(tokens));
         Program prog = parser.parseProgram();
         Interpreter interp;
         interp.setArgs(std::move(args));
         interp.finishData_ = finish;
+        interp.podData_ = pod;
+        interp.docMode_ = g_docMode;
         interp.srcFile_ = fileName;
         interp.execPath_ = exePath;
         // -I <path> lib dirs take priority over the built-in / env-derived ones.
