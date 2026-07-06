@@ -1743,7 +1743,7 @@ void Parser::skipToStatementEnd() {
     }
 }
 
-StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
+StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isUnit) {
     // 'class'/'role'/'grammar'/'module'/'package' already consumed
     auto cd = std::make_unique<ClassDecl>();
     cd->isRole = isRole;
@@ -1782,12 +1782,15 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
         // skip type params / extra
         while (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
     }
-    if (!isKind(Tok::LBrace)) {
+    bool braced = isKind(Tok::LBrace);
+    if (!braced && !isUnit) { // forward declaration `class Foo;`
         while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance();
         return cd;
     }
-    advance(); // {
-    while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
+    // `unit class Foo;` — the remainder of the compilation unit is the class body.
+    if (braced) advance();          // {
+    else matchKind(Tok::Semicolon); // unit form
+    while (!isKind(Tok::End) && (!braced || !isKind(Tok::RBrace))) {
         if (matchKind(Tok::Semicolon)) continue;
         if (isIdent("has")) {
             advance();
@@ -1880,7 +1883,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage) {
         if (st && (st->kind == NK::ClassDecl || st->kind == NK::EnumDecl || st->kind == NK::SubDecl))
             cd->body.push_back(std::move(st));
     }
-    expectKind(Tok::RBrace, "}");
+    if (braced) expectKind(Tok::RBrace, "}");
     return cd;
 }
 
@@ -2014,6 +2017,13 @@ StmtPtr Parser::parseStatementImpl() {
             "grammar", "monitor", "constant", "enum", "subset", "package",
             "module", "token", "regex", "rule",
         };
+        // `unit class/role/grammar Foo;` — the rest of the file is the body.
+        if (kw == "unit" && peek().kind == Tok::Ident &&
+            (peek().text == "class" || peek().text == "role" || peek().text == "grammar")) {
+            advance(); // unit
+            std::string what = advance().text; // class/role/grammar
+            return parseClass(what == "role", what == "grammar", false, /*isUnit=*/true);
+        }
         if (kw == "my" || kw == "our" || kw == "state" || kw == "has" ||
             kw == "anon" || kw == "unit" || kw == "augment") {
             if (peek().kind == Tok::Ident && declKw.count(peek().text)) {

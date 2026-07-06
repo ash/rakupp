@@ -41,7 +41,7 @@ private:
     StmtPtr applyModifiers(StmtPtr s);
     std::unique_ptr<Block> parseBlock();
     StmtPtr parseSub(bool isMulti);
-    StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false);
+    StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false, bool isUnit = false);
     void skipToStatementEnd(); // advance to the next ; or class-body }, balancing ({[ ]})
     StmtPtr parseSubset();
     StmtPtr parseEnum();
