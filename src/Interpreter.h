@@ -253,6 +253,7 @@ private:
     std::string todoReason_; // reason for the pending TODO block
     int dieOnFail_ = -1;     // cached RAKU_TEST_DIE_ON_FAIL flag (-1 = not yet read)
     int todoSubtestDepth_ = 0; // inside a TODO-marked subtest: failures neither die nor count
+    std::vector<std::pair<Block*, std::shared_ptr<Env>>> deferredEnds_; // END blocks from EVAL, run at program end
     bool envFlag(const std::string& name); // truthiness of %*ENV<name>
     void maybeDieOnFail();   // if RAKU_TEST_DIE_ON_FAIL, stop the suite after a real failure
 

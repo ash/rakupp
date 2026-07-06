@@ -653,7 +653,20 @@ int Interpreter::run(Program& prog) {
     }
     auto runPhaser = [&](Block* b) { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); };
     // END phasers run in REVERSE source order, on any exit path.
-    auto runEnds = [&]() { for (auto it = endP.rbegin(); it != endP.rend(); ++it) { try { runPhaser(*it); } catch (...) {} } };
+    auto runEnds = [&]() {
+        for (auto it = endP.rbegin(); it != endP.rend(); ++it) {
+            try { runPhaser(*it); }
+            catch (ExitEx& e) { code = e.code; }  // `exit` in an END block sets the exit status
+            catch (...) {}
+        }
+        // END blocks registered from EVAL'd code, in reverse registration order
+        for (auto it = deferredEnds_.rbegin(); it != deferredEnds_.rend(); ++it) {
+            auto sc = std::make_shared<Env>(); sc->parent = it->second;
+            try { execBlock(it->first, sc); }
+            catch (ExitEx& e) { code = e.code; }
+            catch (...) {}
+        }
+    };
     // Extract a single top-level lexical declaration (name + whether it has an initializer).
     auto topDecl = [](Stmt* s, bool& hasInit) -> std::string {
         hasInit = true;
@@ -899,7 +912,15 @@ Value Interpreter::evalString(const std::string& src) {
     }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
     Value last = Value::any();
-    for (auto& s : prog->stmts) last = exec(s.get());
+    for (auto& s : prog->stmts) {
+        // An END block in EVAL'd code runs at the END of the whole program (not here),
+        // capturing the EVAL scope so it still sees this EVAL's lexicals.
+        if (s->kind == NK::Block && static_cast<Block*>(s.get())->phaser == "END") {
+            deferredEnds_.push_back({static_cast<Block*>(s.get()), tctx_.cur});
+            continue;
+        }
+        last = exec(s.get());
+    }
     return last;
 }
 
