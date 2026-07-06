@@ -1095,6 +1095,19 @@ ExprPtr Parser::parsePrimary() {
                 peek(1).spaceBefore)
                 listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip;
                                    // and `Nil !! Any` (space after !!) is a ternary else-marker, not `Nil(!!Any)`
+            // `foo < 1` (space after `<`) is infix less-than, not the word-list `foo(< 1 >)` —
+            // UNLESS a matching `>` actually closes a word-list first (`is < foo bar >, exp`).
+            if (listopOk && cur().kind == Tok::Op && cur().text == "<" && peek(1).spaceBefore) {
+                bool wordlist = false; int depth = 0;
+                for (size_t k = 1; peek(k).kind != Tok::End; k++) {
+                    const Token& tk = peek(k);
+                    if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket || tk.kind == Tok::LBrace) depth++;
+                    else if (tk.kind == Tok::RParen || tk.kind == Tok::RBracket || tk.kind == Tok::RBrace) { if (depth == 0) break; depth--; }
+                    else if (tk.kind == Tok::Semicolon && depth == 0) break;
+                    else if (tk.kind == Tok::Op && tk.text == ">" && depth == 0) { wordlist = true; break; }
+                }
+                if (!wordlist) listopOk = false;
+            }
             if (listopOk) {
                 auto c = std::make_unique<Call>();
                 c->name = name;
