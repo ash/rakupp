@@ -3017,8 +3017,15 @@ void Interpreter::registerBuiltins() {
     B["uc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), true, 0)); };
     B["lc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 0)); };
     B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 1)); };
-    B["so"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(!a.empty() && a[0].truthy()); };
-    B["not"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(a.empty() || !a[0].truthy()); };
+    B["so"] = [](Interpreter& I, ValueList& a) -> Value { return Value::boolean(!a.empty() && I.boolify(a[0])); };
+    B["not"] = [](Interpreter& I, ValueList& a) -> Value { return Value::boolean(a.empty() || !I.boolify(a[0])); };
+    // Junction constructors: all()/any()/one()/none() (also written via & | ^).
+    for (const char* jt : {"all", "any", "one", "none"})
+        B[jt] = [jt](Interpreter&, ValueList& a) -> Value {
+            Value j = Value::array(); j.enumName = jt;
+            for (auto& v : flattenArgs(a)) j.arr->push_back(v);
+            return j;
+        };
     B["ord"] = [](Interpreter&, ValueList& a) -> Value { auto c = a.empty() ? std::vector<uint32_t>{} : utf8cp(a[0].toStr()); return c.empty() ? Value::nil() : Value::integer(c[0]); };
     B["chr"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(cpToUtf8((uint32_t)(a.empty() ? 0 : a[0].toInt()))); };
     B["join"] = [](Interpreter&, ValueList& a) -> Value {

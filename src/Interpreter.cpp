@@ -1693,10 +1693,18 @@ struct DepthGuard {
     ~DepthGuard() { --d; }
 };
 
+static bool isJunction(const Value& v); // defined below
+
 bool Interpreter::boolify(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         if (Value* b = v.obj->cls->findMethod("Bool"))
             return invokeMethod(*b, v, {}).truthy();
+    }
+    if (isJunction(v)) { // collapse a junction to Bool per its kind
+        int t = 0, total = 0;
+        for (auto& e : *v.arr) { total++; if (boolify(e)) t++; }
+        return v.enumName == "any" ? t > 0 : v.enumName == "all" ? t == total
+             : v.enumName == "one" ? t == 1 : t == 0;
     }
     return v.truthy();
 }
@@ -4014,6 +4022,18 @@ Value Interpreter::eval(Expr* e) {
                 out.isList = true;
                 if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) { out.isList = false; *lv = out; } }
                 return out;
+            }
+            // Autothread a junction argument: `$s.contains(all("a","b"))` becomes
+            // all($s.contains("a"), $s.contains("b")) — a junction that collapses later.
+            if (!mc->meta) for (size_t ai = 0; ai < args.size(); ai++) {
+                if (isJunction(args[ai])) {
+                    Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
+                    for (auto& e : *args[ai].arr) {
+                        ValueList a2 = args; a2[ai] = e;
+                        jr.arr->push_back(methodCall(inv, mc->method, a2));
+                    }
+                    return jr;
+                }
             }
             Value res = methodCall(inv, mc->meta ? "^" + mc->method : mc->method, args, &mc->args);
             if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = res; }
