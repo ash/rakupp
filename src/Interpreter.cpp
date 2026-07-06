@@ -756,7 +756,10 @@ int Interpreter::run(Program& prog) {
             try { for (auto& s : topCatch->stmts) exec(s.get()); }
             catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
         } else {
-            std::cerr << e.message << "\n";
+            // RAKU_EXCEPTIONS_HANDLER=JSON serializes an uncaught exception as JSON
+            if (envStr("RAKU_EXCEPTIONS_HANDLER") == "JSON" && e.payload.t == VT::Object && e.payload.obj)
+                std::cerr << exceptionToJson(e.payload);
+            else std::cerr << e.message << "\n";
             code = 1;
             crashed = true;
         }
@@ -1751,6 +1754,43 @@ bool Interpreter::envFlag(const std::string& name) {
     if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return false;
     auto vit = it->second.hash->find(name);
     return vit != it->second.hash->end() && vit->second.truthy();
+}
+
+std::string Interpreter::envStr(const std::string& name) {
+    auto it = global_->vars.find("%*ENV");
+    if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return "";
+    auto vit = it->second.hash->find(name);
+    return vit != it->second.hash->end() ? vit->second.toStr() : "";
+}
+
+// Serialize an uncaught exception as JSON for RAKU_EXCEPTIONS_HANDLER=JSON:
+// { "Type::Name" : { "attr" : value, …, "message" : <msg-or-null> } }
+std::string Interpreter::exceptionToJson(const Value& ex) {
+    auto jstr = [](const std::string& s) {
+        std::string o = "\"";
+        for (char c : s) {
+            switch (c) { case '"': o += "\\\""; break; case '\\': o += "\\\\"; break;
+                         case '\n': o += "\\n"; break; case '\t': o += "\\t"; break;
+                         default: o += c; }
+        }
+        return o + "\"";
+    };
+    std::string tn = ex.obj && ex.obj->cls ? ex.obj->cls->name : "Exception";
+    std::string o = "{\n  " + jstr(tn) + " : {\n";
+    bool first = true;
+    if (ex.obj) for (auto& kv : ex.obj->attrs) {
+        if (kv.first == "message") continue; // message emitted last (may be null)
+        o += (first ? "" : ",\n"); first = false;
+        o += "    " + jstr(kv.first) + " : " + (kv.second.isNumeric() ? kv.second.toStr() : jstr(kv.second.toStr()));
+    }
+    // message: the value if present, else null
+    std::string msg;
+    bool hasMsg = ex.obj && ex.obj->attrs.count("message");
+    if (hasMsg) msg = ex.obj->attrs.at("message").toStr();
+    o += (first ? "" : ",\n");
+    o += "    \"message\" : " + (hasMsg ? jstr(msg) : std::string("null")) + "\n";
+    o += "  }\n}\n";
+    return o;
 }
 
 void Interpreter::syncEnvToProcess() {

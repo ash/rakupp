@@ -255,6 +255,8 @@ private:
     int todoSubtestDepth_ = 0; // inside a TODO-marked subtest: failures neither die nor count
     std::vector<std::pair<Block*, std::shared_ptr<Env>>> deferredEnds_; // END blocks from EVAL, run at program end
     bool envFlag(const std::string& name); // truthiness of %*ENV<name>
+    std::string envStr(const std::string& name); // %*ENV<name> as a string
+    std::string exceptionToJson(const Value& ex); // RAKU_EXCEPTIONS_HANDLER=JSON serialization
     void maybeDieOnFail();   // if RAKU_TEST_DIE_ON_FAIL, stop the suite after a real failure
 
     void emitTest(bool ok, const std::string& desc, const std::string& directive = "",
