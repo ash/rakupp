@@ -70,18 +70,21 @@ static std::string lubType(const std::string& a, const std::string& b) {
 // multithreaded process); only the poll/read/reap loop runs GIL-free.
 static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
                          std::string& out, int& exitCode, bool& timedout,
-                         Interpreter* gil = nullptr) {
+                         Interpreter* gil = nullptr, std::string* errOut = nullptr) {
     out.clear(); exitCode = -1; timedout = false;
+    if (errOut) errOut->clear();
     if (argv.empty()) return;
-    int pipefd[2];
+    int pipefd[2], errfd[2];
     if (pipe(pipefd) != 0) return;
+    if (errOut && pipe(errfd) != 0) { close(pipefd[0]); close(pipefd[1]); return; }
     pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return; }
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); if (errOut) { close(errfd[0]); close(errfd[1]); } return; }
     if (pid == 0) { // child
         dup2(pipefd[1], STDOUT_FILENO);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) dup2(devnull, STDERR_FILENO);
+        if (errOut) dup2(errfd[1], STDERR_FILENO);
+        else { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
         close(pipefd[0]); close(pipefd[1]);
+        if (errOut) { close(errfd[0]); close(errfd[1]); }
         std::vector<char*> cargv;
         for (auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
         cargv.push_back(nullptr);
@@ -91,25 +94,35 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     close(pipefd[1]);
     int fd = pipefd[0];
     fcntl(fd, F_SETFL, O_NONBLOCK);
+    int efd = -1;
+    if (errOut) { close(errfd[1]); efd = errfd[0]; fcntl(efd, F_SETFL, O_NONBLOCK); }
     bool parked = gil ? gil->gilPark() : false; // drop the GIL for the wait below
     auto start = std::chrono::steady_clock::now();
     char buf[8192];
-    // Read until the pipe reaches EOF — i.e. every write-end (the child AND any
+    // Read until the pipe(s) reach EOF — i.e. every write-end (the child AND any
     // grandchildren it spawned) has closed. EOF, not the child's exit, is the only
     // reliable "all output captured" signal: reaping the child with waitpid does not
     // guarantee its final buffered write has been drained, so keying `done` off the
     // exit races the last line away. The wall-clock timeout still bounds the wait.
-    bool eof = false;
-    while (!eof) {
-        struct pollfd pfd{fd, POLLIN, 0};
-        poll(&pfd, 1, 50);
-        for (;;) {
+    bool oEof = false, eEof = (efd < 0);
+    while (!oEof || !eEof) {
+        struct pollfd pfds[2]; int nf = 0, oi = -1, ei = -1;
+        if (!oEof) { pfds[nf] = {fd, POLLIN, 0}; oi = nf; nf++; }
+        if (!eEof) { pfds[nf] = {efd, POLLIN, 0}; ei = nf; nf++; }
+        poll(pfds, nf, 50);
+        if (!oEof) for (;;) {
             ssize_t n = read(fd, buf, sizeof buf);
             if (n > 0) { out.append(buf, (size_t)n); continue; }
-            if (n == 0) { eof = true; }   // all write-ends closed — output complete
-            break;                        // n<0 (EAGAIN): nothing more for now, poll again
+            if (n == 0) oEof = true;
+            break;
         }
-        if (eof) break;
+        if (!eEof) for (;;) {
+            ssize_t n = read(efd, buf, sizeof buf);
+            if (n > 0) { errOut->append(buf, (size_t)n); continue; }
+            if (n == 0) eEof = true;
+            break;
+        }
+        if (oEof && eEof) break;
         if (timeoutSec > 0) {
             double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
             if (elapsed > timeoutSec) { kill(pid, SIGKILL); timedout = true; break; }
@@ -119,6 +132,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     waitpid(pid, &status, 0);            // reap; safe now that the pipe is drained (or we killed it)
     if (!timedout) exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     close(fd);
+    if (efd >= 0) close(efd);
     if (parked) gil->gilUnpark(true);    // reacquire the GIL before touching interpreter state
 }
 
@@ -838,6 +852,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Proc") { // standard Proc from run()
         if (m == "exitcode" || m == "signal") return m == "exitcode" ? (*inv.hash)["exitcode"] : Value::integer(0);
         if (m == "so" || m == "Bool") return Value::boolean((*inv.hash)["exitcode"].toInt() == 0);
+        if (m == "command") { auto it = inv.hash->find("argv"); return it != inv.hash->end() ? it->second : Value::array(); }
         if (m == "in") { Value h = inv; h.hashKind = "ProcIn"; return h; } // writable stdin handle (shares hash)
         if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash)["buffer"] = (*inv.hash)[m == "out" ? "out-str" : "err-str"]; (*h.hash)["mode"] = Value::str("r"); (*h.hash)["captured"] = Value::boolean(true); return h; }
         if (m == "sink" || m == "self") return inv;
@@ -2690,52 +2705,58 @@ void Interpreter::registerBuiltins() {
     B["???"] = [](Interpreter&, ValueList& a) -> Value { std::cerr << (a.empty() ? "Stub code executed" : a[0].toStr()) << "\n"; return Value::nil(); };
     // run(prog, *@args, :timeout(N)) -> { out => Str, exitcode => Int, timedout => Bool }
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::vector<std::string> argv; bool wantOut = false, wantIn = false;
+        std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
                 if (v.s == "out") wantOut = v.pairVal ? v.pairVal->truthy() : true;
+                else if (v.s == "err") wantErr = v.pairVal ? v.pairVal->truthy() : true;
                 else if (v.s == "in") wantIn = v.pairVal ? v.pairVal->truthy() : true;
             }
             else argv.push_back(v.toStr());
         }
+        Value av = Value::array(); av.isList = true; for (auto& s : argv) av.arr->push_back(Value::str(s));
         Value p = Value::makeHash(); p.hashKind = "Proc"; // standard Proc object
+        (*p.hash)["argv"] = av; // for .command
+        I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         if (wantIn) {
             // Defer spawning: the process runs when its stdin is written via
             // `.in.spurt(...)`, so we can feed input and capture output together.
-            Value av = Value::array(); for (auto& s : argv) av.arr->push_back(Value::str(s));
-            (*p.hash)["argv"] = av;
             (*p.hash)["deferred"] = Value::boolean(true);
             (*p.hash)["out-str"] = Value::str("");
             (*p.hash)["err-str"] = Value::str("");
             (*p.hash)["exitcode"] = Value::integer(0);
             return p;
         }
-        std::string out; int code; bool timedout;
-        spawnCapture(argv, 0, out, code, timedout, &I);
+        std::string out, err; int code; bool timedout;
+        spawnCapture(argv, 0, out, code, timedout, &I, wantErr ? &err : nullptr);
         if (!wantOut) std::cout << out; // not capturing: echo child stdout (approximates inherit)
         (*p.hash)["exitcode"] = Value::integer(code);
         (*p.hash)["out-str"] = Value::str(out);
-        (*p.hash)["err-str"] = Value::str("");
+        (*p.hash)["err-str"] = Value::str(err);
         return p;
     };
     // shell(CMD, :out, :err) — run CMD through the system shell (`/bin/sh -c CMD`),
     // so redirections/pipes in CMD work. Returns a Proc; +$proc is the exit status.
     B["shell"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::string cmd; bool wantOut = false;
+        std::string cmd; bool wantOut = false, wantErr = false;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
                 if (v.s == "out") wantOut = v.pairVal ? v.pairVal->truthy() : true;
+                else if (v.s == "err") wantErr = v.pairVal ? v.pairVal->truthy() : true;
             }
             else if (cmd.empty()) cmd = v.toStr();
         }
         std::vector<std::string> argv = {"/bin/sh", "-c", cmd};
-        std::string out; int code = 0; bool timedout = false;
-        spawnCapture(argv, 0, out, code, timedout, &I);
+        I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
+        std::string out, err; int code = 0; bool timedout = false;
+        spawnCapture(argv, 0, out, code, timedout, &I, wantErr ? &err : nullptr);
         if (!wantOut) std::cout << out;
         Value p = Value::makeHash(); p.hashKind = "Proc";
+        Value av = Value::array(); av.isList = true; av.arr->push_back(Value::str(cmd));
+        (*p.hash)["argv"] = av; // .command — shell reports the command string
         (*p.hash)["exitcode"] = Value::integer(code);
         (*p.hash)["out-str"] = Value::str(out);
-        (*p.hash)["err-str"] = Value::str("");
+        (*p.hash)["err-str"] = Value::str(err);
         return p;
     };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {

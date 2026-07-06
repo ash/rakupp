@@ -27,7 +27,13 @@ bool Value::truthy() const {
         case VT::Rat:  return ratN && !ratN->isZero();
         case VT::Str:  return !s.empty(); // Raku: any non-empty string is true (incl. "0")
         case VT::Array: return arr && !arr->empty();
-        case VT::Hash:  return (hashKind == "Raku" || hashKind == "Compiler") // object-like: always defined/true
+        case VT::Hash:
+            // A Proc / Proc::Async is true iff it exited successfully (exit code 0).
+            if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash) {
+                auto it = hash->find("exitcode");
+                return it == hash->end() || it->second.toInt() == 0;
+            }
+            return (hashKind == "Raku" || hashKind == "Compiler") // object-like: always defined/true
                             || (hash && !hash->empty());
         case VT::Range: return true;
         case VT::Code:  return true;

@@ -112,6 +112,7 @@ public:
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
     Value getArgs(); // @*ARGS as a List value (used by codegen)
+    void syncEnvToProcess(); // push %*ENV into the real process environment, so children inherit it
     Value dynVar(const std::string& name); // $* / $? magical variables (used by codegen)
     Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
     void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)

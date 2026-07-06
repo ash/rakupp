@@ -1045,7 +1045,27 @@ static bool isKnownTypeName(const std::string& n) {
 
 Value Interpreter::exec(Stmt* s) {
     switch (s->kind) {
-        case NK::ExprStmt: return eval(static_cast<ExprStmt*>(s)->e.get());
+        case NK::ExprStmt: {
+            Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            Value r = eval(e);
+            // Rakudo sink semantics: a Proc from a bare `run`/`shell` statement that
+            // failed and is discarded (never stored or inspected) throws when sunk.
+            if (e->kind == NK::Call && r.t == VT::Hash && r.hashKind == "Proc") {
+                const std::string& nm = static_cast<Call*>(e)->name;
+                if (nm == "run" || nm == "shell") {
+                    long long ec = r.hash->count("exitcode") ? (*r.hash)["exitcode"].toInt() : 0;
+                    if (ec != 0) {
+                        std::string cmd;
+                        auto it = r.hash->find("argv");
+                        if (it != r.hash->end() && it->second.arr && !it->second.arr->empty()) cmd = (*it->second.arr)[0].toStr();
+                        throw RakuError{Value::typeObj("X::Proc::Unsuccessful"),
+                            "The spawned command '" + cmd + "' exited unsuccessfully (exit code: " +
+                            std::to_string(ec) + ", signal: 0)"};
+                    }
+                }
+            }
+            return r;
+        }
         case NK::EmptyStmt: return Value::any();
         case NK::NamedRegexDecl: {
             auto* nr = static_cast<NamedRegexDecl*>(s);
@@ -1649,6 +1669,17 @@ Value Interpreter::getArgs() {
     Value a = Value::array(); a.isList = true;
     for (auto& s : argv_) a.arr->push_back(Value::str(s));
     return a;
+}
+
+// Push the current %*ENV hash into the real process environment so a child
+// launched by run()/shell() inherits any variables the program set/changed.
+void Interpreter::syncEnvToProcess() {
+    auto it = global_->vars.find("%*ENV");
+    if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return;
+    for (auto& kv : *it->second.hash) {
+        std::string val = kv.second.toStr();
+        setenv(kv.first.c_str(), val.c_str(), 1);
+    }
 }
 
 // Index with a Whatever/WhateverCode key, for native codegen: `@a[*-1]` (call
