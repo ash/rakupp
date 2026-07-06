@@ -137,6 +137,18 @@ struct Scanner {
             if (c == '\'' || c == '"') { scanQuote(c); continue; }
             if (c == '<' && !lastWasValue && looksLikeQw()) { scanAngleQw(); continue; }
             if (c == '/' && !lastWasValue) { scanRegex(); continue; }
+            if (c == '/' && lastWasValue) {
+                // operator context after a term: division `/`, defined-or `//`, or
+                // their assign forms `/=` / `//=`. Consume the whole operator so the
+                // second slash of `//` is never mistaken for the start of a regex.
+                size_t j = i + 1;
+                if (j < s.size() && s[j] == '/') j++;     // //
+                if (j < s.size() && s[j] == '=') j++;     // /=  or  //=
+                emitText(s.substr(i, j - i));
+                lastWasValue = false; methodNext = false; declNext = false;
+                i = j;
+                continue;
+            }
             if (std::isdigit((unsigned char)c) ||
                 (c == '.' && std::isdigit((unsigned char)at(i + 1)) && !lastWasValue)) { scanNumber(); continue; }
             if (c == '$' || c == '@' || c == '%' || c == '&') { scanVariable(); continue; }
