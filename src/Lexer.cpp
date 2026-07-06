@@ -436,6 +436,18 @@ bool Lexer::tryQuoteForm(Token& out) {
         return true;
     }
     bool interp = (w == "qq");
+    // `q…` has single-quote semantics: collapse \\ → \ and \<delimiter> → <delimiter>
+    // (qq handles escapes at interpolation time; Q leaves everything literal).
+    if (w == "q") {
+        std::string s;
+        for (size_t k = 0; k < raw.size(); k++) {
+            if (raw[k] == '\\' && k + 1 < raw.size() &&
+                (raw[k + 1] == '\\' || raw[k + 1] == d || raw[k + 1] == close)) {
+                s += raw[k + 1]; k++;
+            } else s += raw[k];
+        }
+        raw = std::move(s);
+    }
     out = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
     // q:o/…/ and q:format/…/ (6.e) build a Format object, not a plain string.
     if (adverbs.find(":o ") != std::string::npos || adverbs.find(":format ") != std::string::npos)

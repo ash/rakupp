@@ -42,7 +42,7 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         return interp.run(prog);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
-        return 2;
+        return 1; // a compile-time (syntax) error exits 1, like Rakudo
     } catch (const RakuError& e) {
         std::cerr << e.message << "\n";
         return 1;

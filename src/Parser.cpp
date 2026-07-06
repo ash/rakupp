@@ -877,8 +877,10 @@ ExprPtr Parser::parsePrimary() {
                       a.kind == Tok::StrInterp || a.kind == Tok::IntLit) &&
                      b.kind == Tok::FatArrow)
                 isHash = true;
-            else if (a.kind == Tok::Op && a.text == ":" && b.kind == Tok::Ident)
-                isHash = true;
+            else if (a.kind == Tok::Op && a.text == ":" &&
+                     (b.kind == Tok::Ident || b.kind == Tok::IntLit || b.kind == Tok::Var ||
+                      (b.kind == Tok::Op && b.text == "!")))
+                isHash = true; // starts with a colon-pair: :name / :1n / :$v / :!flag
             else if (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
                      (b.kind == Tok::RBrace || b.kind == Tok::Comma))
                 isHash = true;
@@ -1140,7 +1142,7 @@ ExprPtr Parser::parsePrimary() {
             return std::make_unique<NameTerm>(name);
         }
         default:
-            error("unexpected token in expression");
+            error("Confused"); // Rakudo's generic "confused parse" message
     }
 }
 
