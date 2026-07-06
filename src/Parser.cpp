@@ -766,7 +766,13 @@ ExprPtr Parser::parsePrimary() {
             std::string txt = t.text;
             auto e = std::make_unique<NumLit>(advance().nval);
             e->imaginary = imag;
-            if (isRat) {
+            if (isRat && txt.find('/') != std::string::npos) {
+                // explicit numerator/denominator (a Unicode vulgar-fraction numeral)
+                size_t sl = txt.find('/');
+                e->isRat = true;
+                e->ratNum = std::strtoll(txt.substr(0, sl).c_str(), nullptr, 10);
+                e->ratDen = std::strtoll(txt.substr(sl + 1).c_str(), nullptr, 10);
+            } else if (isRat) {
                 // "15.8972" -> numerator 158972, denominator 10^(fractional digits)
                 size_t dot = txt.find('.');
                 std::string digits = txt.substr(0, dot) + txt.substr(dot + 1);

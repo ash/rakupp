@@ -230,34 +230,111 @@ void Lexer::skipWhitespaceAndComments() {
     }
 }
 
+// Decimal-digit (Unicode general category Nd) value of a codepoint, or -1.
+// Nd codepoints occur in contiguous runs of ten (0..9) per script; the table
+// lists each run's starting codepoint (the script's digit zero).
+static int ndDigitValue(uint32_t cp) {
+    static const uint32_t zeros[] = {
+        0x0030, 0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66,
+        0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040,
+        0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90, 0x1B50, 0x1BB0,
+        0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0,
+        0xFF10, 0x104A0, 0x10D30, 0x11066, 0x110F0, 0x11136, 0x111D0, 0x112F0,
+        0x11450, 0x114D0, 0x11650, 0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50,
+        0x11D50, 0x11DA0, 0x16A60, 0x16B50, 0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC,
+        0x1D7F6, 0x1E140, 0x1E2F0, 0x1E950, 0x1FBF0,
+    };
+    for (uint32_t z : zeros) if (cp >= z && cp <= z + 9) return (int)(cp - z);
+    return -1;
+}
+
+// Numeric value of a standalone numeral in category Nl (letter-numbers: Roman,
+// cuneiform, …) or No (other-numbers: fractions, circled, Ethiopic, …). Unlike Nd
+// digits these do not combine positionally; each is a complete literal. Returns
+// true and sets num/den (den>0) when `cp` is such a numeral.
+static bool unicodeNumeralValue(uint32_t cp, long long& num, long long& den) {
+    struct NV { uint32_t cp; long long n, d; };
+    static const NV tab[] = {
+        {0x2188, 100000, 1},  // ↈ ROMAN NUMERAL ONE HUNDRED THOUSAND (Nl)
+        {0x2187, 50000, 1},   // ↇ
+        {0x2186, 10000, 1},   // ↆ  (also 6, but modern = 10000)
+        {0x12400, 2, 1},      // 𒐀 CUNEIFORM NUMERIC SIGN TWO ASH (Nl)
+        {0x137C, 10000, 1},   // ፼ ETHIOPIC NUMBER TEN THOUSAND (No)
+        {0x24FF, 0, 1},       // ⓿ NEGATIVE CIRCLED DIGIT ZERO (No)
+        {0x2150, 1, 7},       // ⅐ VULGAR FRACTION ONE SEVENTH (No)
+        {0x2151, 1, 9},       // ⅑
+        {0x2152, 1, 10},      // ⅒
+        {0x00BD, 1, 2},       // ½
+        {0x00BC, 1, 4},       // ¼
+        {0x00BE, 3, 4},       // ¾
+        {0x2173, 4, 1},       // ⅳ SMALL ROMAN NUMERAL FOUR (Nl)
+        {0x0F33, -1, 2},      // ༳ TIBETAN DIGIT HALF ZERO = -1/2 (No)
+    };
+    for (auto& e : tab) if (e.cp == cp) { num = e.n; den = e.d; return true; }
+    return false;
+}
+
+// Fullwidth ASCII letter (Ａ-Ｚ / ａ-ｚ, U+FF21.., U+FF41..) folded to ASCII, or 0.
+static char fullwidthLetter(uint32_t cp) {
+    if (cp >= 0xFF21 && cp <= 0xFF3A) return (char)('A' + (cp - 0xFF21));
+    if (cp >= 0xFF41 && cp <= 0xFF5A) return (char)('a' + (cp - 0xFF41));
+    return 0;
+}
+
 Token Lexer::lexNumber() {
     std::string num;
     bool isFloat = false;
+    // A standalone Nl/No numeral (Roman ↈ, fraction ⅐, Tibetan half ༳, …) is a
+    // complete literal on its own — consume exactly this codepoint.
+    if ((unsigned char)peek() >= 0x80) {
+        long long nn, dd;
+        if (unicodeNumeralValue(codepointHere(), nn, dd)) {
+            for (int k = utf8Len((unsigned char)peek()); k > 0; k--) advance();
+            if (dd == 1) { Token t = make(Tok::IntLit, std::to_string(nn)); t.ival = nn; return t; }
+            Token t = make(Tok::NumLit, std::to_string(nn) + "/" + std::to_string(dd)); // Rat num/den
+            t.nval = (double)nn / (double)dd; t.flag = true; // flag => Rat
+            return t;
+        }
+    }
+    // Consume one decimal digit — ASCII or any Unicode Nd digit (folded to ASCII).
+    // Returns false if the current char is not a decimal digit.
+    auto takeDigit = [&](std::string& out) -> bool {
+        char c = peek();
+        if (std::isdigit((unsigned char)c)) { out += advance(); return true; }
+        if ((unsigned char)c >= 0x80) {
+            int v = ndDigitValue(codepointHere());
+            if (v >= 0) { out += (char)('0' + v); for (int k = utf8Len((unsigned char)c); k > 0; k--) advance(); return true; }
+        }
+        return false;
+    };
     if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b')) {
         char base = peek(1);
         advance(); advance();
         std::string digits;
-        while (isIdentCont(peek()) || peek() == '_') {
-            char c = advance();
-            if (c != '_') digits += c;
+        // radix digits: ASCII alnum, Unicode Nd digits, and fullwidth ASCII letters
+        while (isIdentCont(peek()) || peek() == '_' ||
+               ((unsigned char)peek() >= 0x80 && (ndDigitValue(codepointHere()) >= 0 || fullwidthLetter(codepointHere())))) {
+            char c = peek();
+            if (c == '_') { advance(); continue; }
+            if ((unsigned char)c >= 0x80) {
+                uint32_t cp = codepointHere();
+                int v = ndDigitValue(cp); char fw = fullwidthLetter(cp);
+                if (v >= 0) digits += (char)('0' + v);
+                else if (fw) digits += fw;
+                for (int k = utf8Len((unsigned char)c); k > 0; k--) advance();
+            } else digits += advance();
         }
         int b = base == 'x' ? 16 : base == 'o' ? 8 : 2;
         Token t = make(Tok::IntLit, digits);
         t.ival = std::strtoll(digits.c_str(), nullptr, b);
         return t;
     }
-    while (std::isdigit((unsigned char)peek()) || peek() == '_') {
-        char c = advance();
-        if (c != '_') num += c;
-    }
+    while (takeDigit(num) || peek() == '_') { if (peek() == '_') advance(); }
     bool hasDot = false, hasExp = false;
     if (peek() == '.' && std::isdigit((unsigned char)peek(1))) {
         isFloat = true; hasDot = true;
         num += advance(); // .
-        while (std::isdigit((unsigned char)peek()) || peek() == '_') {
-            char c = advance();
-            if (c != '_') num += c;
-        }
+        while (takeDigit(num) || peek() == '_') { if (peek() == '_') advance(); }
     }
     if (peek() == 'e' || peek() == 'E') {
         isFloat = true; hasExp = true;
@@ -799,8 +876,16 @@ std::vector<Token> Lexer::tokenize() {
         if (c == '.' && std::isdigit((unsigned char)peek(1))) {
             t = lexNumber(); t.spaceBefore = spaced; out.push_back(t); continue;
         }
-        if (std::isdigit((unsigned char)c)) {
-            t = lexNumber();
+        // A Unicode digit/numeral is NOT a number when it directly follows a bare
+        // sigil (`$১০kinds`): that is an invalid numeric-start identifier and must
+        // stay a parse error, not lex as `$` + 10.
+        bool afterBareSigil = !spaced && !out.empty() && out.back().kind == Tok::Var &&
+                              out.back().text.size() == 1 && strchr("$@%&", out.back().text[0]);
+        long long nvN, nvD;
+        if (std::isdigit((unsigned char)c) ||
+            (!afterBareSigil && (unsigned char)c >= 0x80 &&
+             (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {
+            t = lexNumber(); // ASCII digit, Unicode-Nd digit, or an Nl/No numeral
         } else if (c == '\'') {
             t = lexQuoted('\'');
         } else if (c == '"') {
