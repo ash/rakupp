@@ -3563,6 +3563,15 @@ Value Interpreter::evalUnary(Unary* u) {
         };
         return code;
     }
+    // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
+    if ((u->op == "+" || u->op == "-") && v.t == VT::Object && v.obj && v.obj->cls) {
+        for (const char* nm : {"Numeric", "Bridge", "Int"})
+            if (Value* m = v.obj->cls->findMethod(nm)) {
+                ValueList none; Value n = invokeMethod(*m, v, none);
+                if (u->op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+                return n;
+            }
+    }
     // Numeric context of a list/array/hash/range is its element count —
     // except a Proc / Proc::Async, which numifies to its exit status (+$proc).
     if ((u->op == "+" || u->op == "-") &&
@@ -3618,7 +3627,7 @@ std::string Interpreter::gistOf(const Value& v) {
 }
 std::string Interpreter::strOf(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->cls) {
-        for (const char* nm : {"Str", "gist"})
+        for (const char* nm : {"Str", "gist", "Stringy"}) // ~$o uses .Stringy, print uses .Str
             if (Value* m = v.obj->cls->findMethod(nm)) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
         // an Exception stringifies to its .message (Raku: Exception.Str is .message),
         // whether message is a method or a plain attribute.
@@ -3647,6 +3656,26 @@ Value Interpreter::evalCall(Call* c) {
                     Value ev = Value::enumVal(pr.s, want); ev.enumType = v->enumType; return ev;
                 }
             return Value::typeObj(v->enumType); // out of range -> the type object
+        }
+    }
+    // coercion-type functions: Str(x), Int(x), Num(x), Bool(x), … and the no-arg
+    // defaults Str()=='' / Int()==0 / Num()==0e0 / Bool()==False.
+    {
+        static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
+        if (coerce.count(c->name)) {
+            if (args.empty())
+                return c->name == "Str" ? Value::str("")
+                     : c->name == "Bool" ? Value::boolean(false)
+                     : c->name == "Num" ? Value::number(0) : Value::integer(0);
+            Value a0 = args[0];
+            if (c->name == "Str") return Value::str(strOf(a0));
+            if (c->name == "Bool") return Value::boolean(boolify(a0));
+            if (a0.t == VT::Object && a0.obj && a0.obj->cls) { // honour .Int/.Num/.Numeric
+                if (Value* m = a0.obj->cls->findMethod(c->name)) { ValueList none; a0 = invokeMethod(*m, a0, none); }
+            }
+            if (c->name == "Int") return Value::integer(a0.toInt());
+            if (c->name == "Num" || c->name == "Real") return Value::number(a0.toNum());
+            return a0.isNumeric() ? a0 : Value::number(a0.toNum()); // Numeric/Rat
         }
     }
     throw RakuError{Value::str("Undefined routine &" + c->name),
