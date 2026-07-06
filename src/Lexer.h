@@ -42,6 +42,7 @@ private:
     std::vector<std::tuple<std::string, size_t, bool>> pendingHeredocs_;
     std::string heredocMarker_;  // set by tryQuoteForm when a :to form is seen
     bool heredocInterp_ = false;
+    bool warnedLeadingZero_ = false; // emit the leading-0-isn't-octal warning once
     Token lexIdentOrVar();
     Token lexOperator();
 

@@ -1,7 +1,10 @@
 #include "Lexer.h"
+#include "Parser.h"   // ParseError
+#include "Unicode.h"  // uniGeneralCategory / uniNumValue
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -290,6 +293,13 @@ Token Lexer::lexNumber() {
         long long nn, dd;
         if (unicodeNumeralValue(codepointHere(), nn, dd)) {
             for (int k = utf8Len((unsigned char)peek()); k > 0; k--) advance();
+            // Nl/No numerals do not combine as digits: another numeral/digit
+            // immediately after is malformed (e.g. `𒐀𒐀`, `⓿⓿`).
+            if ((unsigned char)peek() >= 0x80) {
+                uint32_t nx = codepointHere(); long long a, b;
+                if (ndDigitValue(nx) >= 0 || unicodeNumeralValue(nx, a, b))
+                    throw ParseError("Malformed numeric literal", line_);
+            }
             if (dd == 1) { Token t = make(Tok::IntLit, std::to_string(nn)); t.ival = nn; return t; }
             Token t = make(Tok::NumLit, std::to_string(nn) + "/" + std::to_string(dd)); // Rat num/den
             t.nval = (double)nn / (double)dd; t.flag = true; // flag => Rat
@@ -311,20 +321,33 @@ Token Lexer::lexNumber() {
         char base = peek(1);
         advance(); advance();
         std::string digits;
-        // radix digits: ASCII alnum, Unicode Nd digits, and fullwidth ASCII letters
-        while (isIdentCont(peek()) || peek() == '_' ||
-               ((unsigned char)peek() >= 0x80 && (ndDigitValue(codepointHere()) >= 0 || fullwidthLetter(codepointHere())))) {
+        bool malformed = false;
+        // Consume the whole contiguous digit "word": ASCII alnum, Nd digits, and
+        // fullwidth ASCII letters (folded). Any other attached letter/numeral (an
+        // Nl/No numeral or a non-radix script — `0xC𐏓FE`, `0b¹0`, `0xΓαfe`) is
+        // consumed too but marks the literal malformed (X::Syntax::Confused).
+        while (true) {
             char c = peek();
             if (c == '_') { advance(); continue; }
-            if ((unsigned char)c >= 0x80) {
-                uint32_t cp = codepointHere();
-                int v = ndDigitValue(cp); char fw = fullwidthLetter(cp);
-                if (v >= 0) digits += (char)('0' + v);
-                else if (fw) digits += fw;
-                for (int k = utf8Len((unsigned char)c); k > 0; k--) advance();
-            } else digits += advance();
+            if ((unsigned char)c < 0x80) {
+                if (isIdentCont(c)) { digits += advance(); continue; }
+                break;
+            }
+            uint32_t cp = codepointHere();
+            int v = ndDigitValue(cp); char fw = fullwidthLetter(cp);
+            if (v >= 0) digits += (char)('0' + v);
+            else if (fw) digits += fw;
+            else {
+                std::string gc = uniGeneralCategory(cp);
+                if (!gc.empty() && (gc[0] == 'L' || gc[0] == 'N')) malformed = true; // attached letter/numeral
+                else break; // punctuation/space ends the literal
+            }
+            for (int k = utf8Len((unsigned char)c); k > 0; k--) advance();
         }
         int b = base == 'x' ? 16 : base == 'o' ? 8 : 2;
+        // No valid digit after the 0x/0o/0b prefix — e.g. an Nl/No numeral or a
+        // non-radix script (`0b¹0`, `0xΓαfe`) — is a malformed literal.
+        if (digits.empty() || malformed) throw ParseError("Malformed radix number", line_);
         Token t = make(Tok::IntLit, digits);
         t.ival = std::strtoll(digits.c_str(), nullptr, b);
         return t;
@@ -354,6 +377,16 @@ Token Lexer::lexNumber() {
         t.nval = std::strtod(num.c_str(), nullptr);
         t.flag = (hasDot && !hasExp); // a decimal literal with no exponent is a Rat (3.14), not a Num
         return t;
+    }
+    // A decimal integer written with a leading 0 (`069`) does not mean octal in
+    // Raku; warn like Rakudo does, suggesting the 0o form when the digits are octal.
+    if (num.size() > 1 && num[0] == '0' && !warnedLeadingZero_) {
+        warnedLeadingZero_ = true;
+        bool allOctal = true;
+        for (char c : num) if (c < '0' || c > '7') { allOctal = false; break; }
+        std::string suggest = allOctal ? ("0o" + num.substr(1)) : "0o";
+        std::cerr << "Potential difficulties:\n    Leading 0 does not indicate octal in Raku; "
+                  << "please use " << suggest << " if you meant that.\n";
     }
     Token t = make(Tok::IntLit, num);
     t.ival = std::strtoll(num.c_str(), nullptr, 10);

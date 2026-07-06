@@ -698,12 +698,28 @@ ExprPtr Parser::parseColonPair() {
         std::vector<std::string> words = readAngleWords(">");
         std::string digits = words.empty() ? "" : words[0];
         long long val = 0;
-        for (char c : digits) {
-            if (c == '_') continue;
-            long long d = (c >= '0' && c <= '9') ? c - '0'
-                        : (c >= 'a' && c <= 'z') ? c - 'a' + 10
-                        : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : -1;
-            if (d < 0 || d >= base) break; // stop at a fractional '.' or invalid digit
+        // Iterate codepoints: accept ASCII alnum, fullwidth ASCII letters (folded),
+        // and Nd digits (their 0-9 value). Nl/No numerals or non-radix scripts are
+        // a malformed radix number (X::Syntax::Malformed).
+        for (size_t bi = 0; bi < digits.size(); ) {
+            unsigned char b0 = digits[bi];
+            int len = b0 < 0x80 ? 1 : b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+            uint32_t cp = b0 < 0x80 ? b0 : (b0 & (0xFF >> (len + 1)));
+            for (int k = 1; k < len && bi + k < digits.size(); k++) cp = (cp << 6) | ((unsigned char)digits[bi + k] & 0x3F);
+            bi += len;
+            if (cp == '_') continue;
+            long long d = -1;
+            char fw = (cp >= 0xFF21 && cp <= 0xFF3A) ? (char)('A' + cp - 0xFF21)
+                    : (cp >= 0xFF41 && cp <= 0xFF5A) ? (char)('a' + cp - 0xFF41) : 0;
+            char c = fw ? fw : (cp < 0x80 ? (char)cp : 0);
+            if (c) d = (c >= '0' && c <= '9') ? c - '0'
+                     : (c >= 'a' && c <= 'z') ? c - 'a' + 10
+                     : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : -1;
+            else { // non-ASCII: only Nd digits are allowed
+                long long nn, dd;
+                if (uniGeneralCategory(cp) == "Nd" && uniNumValue(cp, nn, dd) && dd == 1) d = nn;
+            }
+            if (d < 0 || d >= base) error("Malformed radix number");
             val = val * base + d;
         }
         return std::make_unique<IntLit>(val);

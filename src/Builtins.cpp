@@ -1303,7 +1303,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "put") { std::cout << strOf(inv) << "\n"; return Value::boolean(true); }
     if (m == "note") { std::cerr << gistOf(inv) << "\n"; return Value::boolean(true); }
     if (m == "Str") return Value::str(inv.toStr());
-    if (m == "Int") return Value::integer(inv.toInt());
+    if (m == "Int") {
+        // Converting a string that carries an Nl/No numeral (Roman, circled,
+        // Tamil ௰, …) is not supported — only Nd digits are numeric. (X::Str::Numeric)
+        if (inv.t == VT::Str)
+            for (size_t bi = 0; bi < inv.s.size(); ) {
+                unsigned char b0 = inv.s[bi];
+                int len = b0 < 0x80 ? 1 : b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+                uint32_t cp = b0 < 0x80 ? b0 : (b0 & (0xFF >> (len + 1)));
+                for (int k = 1; k < len && bi + k < inv.s.size(); k++) cp = (cp << 6) | ((unsigned char)inv.s[bi + k] & 0x3F);
+                bi += len;
+                if (cp >= 0x80) { std::string gc = uniGeneralCategory(cp);
+                    if (gc == "Nl" || gc == "No")
+                        throw RakuError{Value::typeObj("X::Str::Numeric"), "Cannot convert string to number: a numeral in category '" + gc + "' is not a digit"}; }
+            }
+        return Value::integer(inv.toInt());
+    }
     if (m == "Num" || m == "Numeric" || m == "Real") return Value::number(inv.toNum());
     if (m == "Bool" || m == "so") return Value::boolean(inv.truthy());
     if (m == "not") return Value::boolean(!inv.truthy());
