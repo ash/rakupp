@@ -165,10 +165,18 @@ static bool startsListopArg(const Token& t) {
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB"; // ∞  and  «qw»
-        case Tok::Ident:
+        case Tok::Ident: {
+            // A word-infix operator right after a bareword term is an INFIX, not the
+            // start of a listop argument: `Seq eqv Seq`, `Int eq Int`, `$x div $y`.
+            static const std::set<std::string> wordInfix = {
+                "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after",
+                "x", "xx", "and", "or", "andthen", "orelse", "div", "mod", "gcd", "lcm",
+            };
+            if (wordInfix.count(t.text)) return false;
             // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start";
+        }
         default:
             return false;
     }
