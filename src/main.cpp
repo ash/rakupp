@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
 #define RAKUPP_VERSION "0.0.0"
 #endif
             std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
-                         " — a Raku interpreter and compiler in C++ (implements Raku 6.d)\n";
+                         " — a Raku interpreter and compiler in C++ (implements Raku 6.d, with 6.e features)\n";
             return 0;
         }
     }

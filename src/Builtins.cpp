@@ -18,6 +18,10 @@
 #include <vector>
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <poll.h>
 #include <csignal>
 #include <sys/stat.h>
@@ -544,6 +548,59 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // Pair.new($key, $value) or Pair.new(:key(...), :value(...)) — same shape as `=>`.
+    // IO::Socket::INET.new — a TCP client (:host/:port) or a listener (:listen).
+    if (inv.t == VT::Type && inv.s == "IO::Socket::INET" && m == "new") {
+        std::string host = "localhost", localhost; long port = 0, localport = 0; bool listen = false;
+        long family = -2; // -2 = unspecified
+        for (auto& a : args) {
+            if (a.t != VT::Pair) continue;
+            Value pv = a.pairVal ? *a.pairVal : Value::any();
+            if (a.s == "host") host = pv.toStr();
+            else if (a.s == "port") port = pv.toInt();
+            else if (a.s == "localhost") localhost = pv.toStr();
+            else if (a.s == "localport") localport = pv.toInt();
+            else if (a.s == "listen") listen = pv.truthy();
+            else if (a.s == "family") family = pv.toInt();
+        }
+        // Validate before touching the OS: port 0..65535, family a sane small value.
+        long usePort = listen ? localport : port;
+        if (usePort < 0 || usePort > 65535)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Invalid port: " + std::to_string(usePort)};
+        if (family != -2 && (family < 0 || family > 255))
+            throw RakuError{Value::typeObj("X::AdHoc"), "Invalid socket family: " + std::to_string(family)};
+        auto resolve = [](const std::string& h, sockaddr_in& addr) {
+            addr.sin_addr.s_addr = inet_addr(h.c_str());
+            if (addr.sin_addr.s_addr == INADDR_NONE) {
+                if (hostent* he = gethostbyname(h.c_str())) memcpy(&addr.sin_addr, he->h_addr, he->h_length);
+            }
+        };
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return Value::nil();
+        sockaddr_in addr{}; addr.sin_family = AF_INET;
+        if (listen) {
+            int yes = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+            addr.sin_port = htons((uint16_t)localport);
+            addr.sin_addr.s_addr = (localhost.empty() || localhost == "0.0.0.0") ? INADDR_ANY : inet_addr(localhost.c_str());
+            if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(fd, 128) < 0) { ::close(fd); return Value::nil(); }
+        } else {
+            addr.sin_port = htons((uint16_t)port);
+            resolve(host, addr);
+            bool p = gilPark(); int rc = ::connect(fd, (sockaddr*)&addr, sizeof(addr)); gilUnpark(p);
+            if (rc < 0) { ::close(fd); return Value::nil(); }
+        }
+        Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash)["fd"] = Value::integer(fd);
+        return s;
+    }
+    // Buf/Blob.new(byte, byte, …) — a byte buffer, stored as a Str of those bytes.
+    if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
+        std::string bytes;
+        std::function<void(const Value&)> add = [&](const Value& v) {
+            if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) add(e); }
+            else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
+        };
+        for (auto& a : args) add(a);
+        Value b = Value::str(bytes); b.hashKind = "Blob"; return b;
+    }
     if (inv.t == VT::Type && inv.s == "Pair" && m == "new") {
         Value key = Value::any(), val = Value::any();
         std::vector<Value> pos;
@@ -1296,6 +1353,35 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "name") return Value::str(inv.code->name);
     }
 
+    // IO::Socket::INET connection/listener methods.
+    if (inv.t == VT::Hash && inv.hashKind == "Socket") {
+        int fd = (int)(*inv.hash)["fd"].toInt();
+        if (m == "accept") {
+            bool p = gilPark(); int cfd = ::accept(fd, nullptr, nullptr); gilUnpark(p);
+            if (cfd < 0) return Value::nil();
+            Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash)["fd"] = Value::integer(cfd);
+            return s;
+        }
+        if (m == "recv" || m == "read") {
+            size_t want = 65536;
+            if (!args.empty() && args[0].isNumeric()) want = (size_t)args[0].toInt();
+            std::vector<char> buf(want ? want : 1);
+            bool p = gilPark(); ssize_t n = ::recv(fd, buf.data(), buf.size(), 0); gilUnpark(p);
+            if (n < 0) return Value::nil();
+            return Value::str(std::string(buf.data(), (size_t)n)); // n==0 => "" (peer closed)
+        }
+        if (m == "print" || m == "write" || m == "send" || m == "put") {
+            std::string data = args.empty() ? "" : args[0].toStr(); // Blob is a byte-Str
+            if (m == "put") data += "\n";
+            size_t off = 0;
+            bool p = gilPark();
+            while (off < data.size()) { ssize_t n = ::send(fd, data.data() + off, data.size() - off, 0); if (n <= 0) break; off += (size_t)n; }
+            gilUnpark(p);
+            return Value::boolean(true);
+        }
+        if (m == "close") { if (fd >= 0) ::close(fd); (*inv.hash)["fd"] = Value::integer(-1); return Value::boolean(true); }
+    }
+
     // universal
     bool isFH = (inv.t == VT::Hash && inv.hashKind == "FileHandle");
     if (m == "say" && !isFH) { std::cout << gistOf(inv) << "\n"; return Value::boolean(true); }
@@ -1520,10 +1606,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // ---- IO::Path (string-as-path) ----
     if (m == "IO") { Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p; }
     if (m == "slurp" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) { // FileHandle has its own slurp
-        std::ifstream in(inv.toStr());
+        std::ifstream in(inv.toStr(), std::ios::binary);
         if (!in) return Value::nil();
         std::ostringstream ss; ss << in.rdbuf();
-        return Value::str(ss.str());
+        Value v = Value::str(ss.str());
+        // slurp(:bin) yields a Blob (the raw bytes), not a decoded Str
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "bin" && a.pairVal && a.pairVal->truthy()) v.hashKind = "Blob";
+        return v;
     }
     if (m == "spurt") {
         std::ofstream out(inv.toStr());
@@ -1714,6 +1803,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // string
+    // Str/Blob byte views. rakupp stores a Blob/Buf as a Str tagged hashKind="Blob";
+    // its raw UTF-8 bytes are the buffer, so encode/decode are (tagged) identity.
+    if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
+    if (m == "encode" && inv.t == VT::Str) { Value b = Value::str(inv.s); b.hashKind = "Blob"; return b; }
+    if (m == "decode" && inv.t == VT::Str) return Value::str(inv.s);
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
         if (m == "chars") return Value::integer(graphemeCount(inv.toStr())); // graphemes
         if (m == "codes") return Value::integer(cpCount(inv.toStr()));       // codepoints
@@ -1786,25 +1880,43 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return p == std::string::npos ? Value::nil() : Value::integer((long long)p);
     }
     // ---- regex-argument string methods ----
+    // Find the Regex argument and the replacement — a named adverb (`:g`) may come
+    // before the regex (`.subst(:g, /re/, repl)`), so we can't assume positions.
+    int rxIdx = -1;
+    for (size_t i = 0; i < args.size(); i++) if (args[i].t == VT::Regex) { rxIdx = (int)i; break; }
     if ((m == "match" || m == "subst" || m == "comb" || m == "split" || m == "contains" || m == "subst-mutate")
-        && !args.empty() && args[0].t == VT::Regex) {
+        && rxIdx >= 0) {
         std::string subj = inv.toStr();
-        const std::string& pat = args[0].s;
+        const std::string& pat = args[rxIdx].s;
+        // the replacement is the first positional (non-Pair) arg that isn't the regex
+        Value* replArg = nullptr;
+        for (size_t i = 0; i < args.size(); i++)
+            if ((int)i != rxIdx && args[i].t != VT::Pair) { replArg = &args[i]; break; }
         if (m == "match") return regexMatch(subj, pat);
         if (m == "contains") { Regex re(pat); RxMatch mm; return Value::boolean(re.ok() && re.search(subj, 0, mm)); }
         if (m == "subst") {
             bool g = false;
             for (auto& a : args) if (a.t == VT::Pair && (a.s == "g" || a.s == "global") && a.pairVal && a.pairVal->truthy()) g = true;
             // closure replacement: call the block per match with $/ (and $_) bound to the Match
-            if (args.size() > 1 && args[1].t == VT::Code) {
+            if (replArg && replArg->t == VT::Code) {
                 Regex re(pat); std::string out; long pos = 0; RxMatch mm;
                 while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
                     out += subj.substr(pos, mm.from - pos);
                     Value matchV = Value::matchVal(subj.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
+                    // populate captures so the block sees $0/$1/… and $<name>
+                    for (auto& c : mm.caps) {
+                        if (c.first < 0) matchV.arrRef().push_back(Value::nil());
+                        else matchV.arrRef().push_back(Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
+                    }
+                    for (auto& kv : mm.named)
+                        matchV.hashRef()[kv.first] = Value::matchVal(subj.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
                     tctx_.cur->define("$/", matchV);
+                    // $0, $1, … capture vars (as the match path does) so `~$0` works
+                    if (matchV.arr) for (size_t k = 0; k < matchV.arr->size(); k++)
+                        tctx_.cur->define("$" + std::to_string(k), (*matchV.arr)[k]);
                     Value saved = tctx_.cur->vars.count("$_") ? tctx_.cur->vars["$_"] : Value::any();
                     tctx_.cur->define("$_", matchV);
-                    out += callCallable(args[1], {matchV}).toStr();
+                    out += callCallable(*replArg, {matchV}).toStr();
                     tctx_.cur->vars["$_"] = saved;
                     pos = mm.to > mm.from ? mm.to : mm.to + 1;
                     if (!g) break;
@@ -1812,7 +1924,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 out += subj.substr(std::min((size_t)pos, subj.size()));
                 return Value::str(out);
             }
-            std::string repl = args.size() > 1 ? args[1].toStr() : "";
+            std::string repl = replArg ? replArg->toStr() : "";
             std::string out; bool ch;
             regexSubst(subj, (g ? ":g " : "") + pat, repl, out, ch);
             return Value::str(out);
@@ -2640,6 +2752,13 @@ void Interpreter::registerBuiltins() {
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(lived);
     };
+    B["use-ok"] = [](Interpreter& I, ValueList& a) -> Value {
+        std::string mod = a.empty() ? "" : a[0].toStr();
+        bool ok = true;
+        try { I.loadModule(mod); } catch (...) { ok = false; }
+        I.emitTest(ok, a.size() > 1 ? a[1].toStr() : ("The module can be use-d ok: " + mod));
+        return Value::boolean(ok);
+    };
     B["isa-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string want = a.size() > 1 ? (a[1].t == VT::Type ? a[1].s : a[1].toStr()) : "";
         std::string got = a.empty() ? "Any" : a[0].typeName();
@@ -3074,6 +3193,22 @@ void Interpreter::registerBuiltins() {
         ValueList items;
         for (size_t i = 1; i < a.size(); i++) { ValueList l = toList(a[i]); items.insert(items.end(), l.begin(), l.end()); }
         return Value::str(joinValues(items, sep));
+    };
+    // :16("2e") radix conversion — the value's digits parsed in the given base.
+    B["__radix"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::integer(0);
+        int base = (int)a[0].toInt();
+        std::string s = a[1].toStr();
+        long long val = 0;
+        for (char c : s) {
+            if (c == '_') continue;
+            int d = (c >= '0' && c <= '9') ? c - '0'
+                  : (c >= 'a' && c <= 'z') ? c - 'a' + 10
+                  : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : -1;
+            if (d < 0 || d >= base) break;
+            val = val * base + d;
+        }
+        return Value::integer(val);
     };
     // split(SEP, STR, …) is the sub form of STR.split(SEP, …)
     B["split"] = [](Interpreter& I, ValueList& a) -> Value {

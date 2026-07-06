@@ -177,6 +177,8 @@ public:
     bool parallelMode_ = false;
     std::mutex sharedMut_;
     std::vector<std::thread> workers_;     // outstanding `start`/async worker threads
+    std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
+    bool abandonedWorkers_ = false;        // a fire-and-forget worker outlived the mainline (daemon)
     // Cooperative handoff. gilYieldNotify() releases the GIL AND wakes a thread
     // parked in yieldToWorker (which the spawner uses to let a fresh worker run up
     // to its first blocking point — sleep/await — so pure-compute blocks finish

@@ -521,6 +521,7 @@ Value Interpreter::spawnPromise(Value code) {
         // (fresh & empty on this new thread, steps 1/3a); the symbol tables are frozen
         // (step 2); the promise settle and the workers_ push are mutex-guarded.
         std::lock_guard<std::mutex> wlk(sharedMut_);
+        liveWorkers_++;
         workers_.emplace_back([self, code, ps]() mutable {
             Value r; bool broke = false; Value cause;
             try {
@@ -534,9 +535,11 @@ Value Interpreter::spawnPromise(Value code) {
                 ps->result = r; ps->cause = cause; ps->broken = broke; ps->done = true;
             }
             ps->cv.notify_all();
+            self->liveWorkers_--;
         });
         return p;
     }
+    liveWorkers_++;
     workers_.emplace_back([self, code, ps]() mutable {
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
@@ -553,6 +556,7 @@ Value Interpreter::spawnPromise(Value code) {
             std::lock_guard<std::mutex> lk(ps->m);
             ps->result = r; ps->cause = cause; ps->broken = broke; ps->done = true;
         }
+        self->liveWorkers_--;
         self->gilYieldNotify();            // release the GIL (waking any cooperative yielder)
         ps->cv.notify_all();
     });
@@ -617,14 +621,22 @@ void Interpreter::drainWorkers() {
         gilHeld_ = false;
         return;
     }
-    while (!workers_.empty()) {
-        std::vector<std::thread> batch;
-        batch.swap(workers_);
-        gil_.unlock();                     // let the batch run
-        for (auto& t : batch) if (t.joinable()) t.join();
-        gil_.lock();                       // re-inspect for newly spawned workers
+    gil_.unlock();                         // let workers run while we wait
+    // Wait for outstanding workers to finish, but not forever: a fire-and-forget
+    // `start {…}` that loops (a server's accept loop) is a daemon thread. Once the
+    // mainline is done we give such workers a short grace period, then abandon them
+    // so the program can exit — matching Rakudo's thread-pool (daemon) semantics.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    if (liveWorkers_.load() > 0) {
+        for (auto& t : workers_) t.detach();   // daemon: don't wait on it
+        workers_.clear();
+        abandonedWorkers_ = true;
+    } else {
+        for (auto& t : workers_) if (t.joinable()) t.join(); // reap the finished threads
+        workers_.clear();
     }
-    gil_.unlock();
     gilHeld_ = false;
 }
 
@@ -638,7 +650,9 @@ int Interpreter::run(Program& prog) {
         tctx_.cur->define("@*ARGS", args);
     }
     // Partition top-level phasers (BEGIN/CHECK/INIT run before mainline; END after).
-    std::vector<Block*> beginP, checkP, initP, endP;
+    // LEAVE/KEEP/UNDO of the compilation unit run when the mainline exits, so they
+    // are deferred here too rather than executed at their textual position.
+    std::vector<Block*> beginP, checkP, initP, endP, leaveP;
     std::vector<Stmt*> mainline;
     Block* topCatch = nullptr; // a CATCH in the mainline (the UNIT block) guards it
     for (auto& s : prog.stmts) {
@@ -649,6 +663,8 @@ int Interpreter::run(Program& prog) {
             if (b->phaser == "CHECK") { checkP.push_back(b); continue; }
             if (b->phaser == "INIT")  { initP.push_back(b);  continue; }
             if (b->phaser == "END")   { endP.push_back(b);   continue; }
+            if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
+                                      { leaveP.push_back(b); continue; }
         }
         mainline.push_back(s.get());
     }
@@ -769,6 +785,11 @@ int Interpreter::run(Program& prog) {
     } catch (RedoEx&) {
     }
     drainWorkers(); // join any outstanding async workers before we tear down
+    // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
+    // way out — after the mainline, before END.
+    for (auto it = leaveP.rbegin(); it != leaveP.rend(); ++it) {
+        try { runPhaser(*it); } catch (ExitEx& e) { code = e.code; } catch (...) {}
+    }
     runEnds(); // END phasers (reverse source order), after the mainline
     // Emit a trailing plan only on normal completion — never fabricate `1..0`
     // after an uncaught error (that would look like a passing empty/skip-all plan).
@@ -787,6 +808,10 @@ int Interpreter::run(Program& prog) {
         else if (failCount_ > 0) code = failCount_ > 254 ? 254 : (int)failCount_;
     }
     else if (failCount_ > 0 && code == 0) code = 1;
+    // A daemon `start {…}` (e.g. a server accept loop) was left running. We've
+    // emitted all output; flush and hard-exit so the detached thread can't wedge
+    // teardown (and isn't waited on), matching Rakudo abandoning thread-pool work.
+    if (abandonedWorkers_) { std::cout.flush(); std::cerr.flush(); std::_Exit(code); }
     return code;
 }
 

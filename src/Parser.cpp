@@ -724,6 +724,19 @@ ExprPtr Parser::parseColonPair() {
         }
         return std::make_unique<IntLit>(val);
     }
+    // radix conversion of a runtime value: :16("2e") / :2($bits) — the argument's
+    // string form parsed in the given base (an Int).
+    if (isKind(Tok::IntLit) && peek().kind == Tok::LParen && !peek().spaceBefore) {
+        int base = std::atoi(cur().text.c_str());
+        advance(); advance(); // radix and '('
+        ExprPtr arg = isKind(Tok::RParen) ? std::make_unique<StrLit>("") : parseExpression();
+        expectKind(Tok::RParen, ")");
+        auto c = std::make_unique<Call>();
+        c->name = "__radix";
+        c->args.push_back(std::make_unique<IntLit>(base));
+        c->args.push_back(std::move(arg));
+        return c;
+    }
     if (isKind(Tok::Ident) || isKind(Tok::IntLit)) {
         pair->key = cur().text;
         advance();
