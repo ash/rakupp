@@ -588,10 +588,12 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
     const Token& pv = out.back();
     switch (pv.kind) {
         case Tok::Op:
-            // postfix ++/-- and subscript/comparison closers => division follows, not a regex
+            // postfix ++/-- and subscript/comparison closers => division follows, not a regex.
+            // «…» is a quote-word list like <…>, so a `/` right after « is a word char.
             return pv.text != "++" && pv.text != "--" &&
                    pv.text != ">" && pv.text != "<" && pv.text != ">>" && pv.text != "<<" &&
-                   pv.text != ">=" && pv.text != "<=";
+                   pv.text != ">=" && pv.text != "<=" &&
+                   pv.text != "\xC2\xAB" && pv.text != "\xC2\xBB"; // « »
         case Tok::LParen: case Tok::LBrace: case Tok::LBracket:
         case Tok::Comma: case Tok::Semicolon: case Tok::FatArrow:
             return true;
