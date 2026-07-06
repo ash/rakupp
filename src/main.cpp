@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 #include <unistd.h>
 
@@ -366,9 +367,17 @@ int main(int argc, char** argv) {
             src = a1.substr(2);
             for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
         }
+    } else if (nrest >= 1 && rest[0] == "-") { // `-` : read the program from STDIN
+        std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str();
+        fileName = "-";
+        for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
     } else if (nrest >= 1) {
+        struct stat st;
+        if (stat(rest[0].c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            std::cerr << "Can not run directory " << rest[0] << "\n"; return 1;
+        }
         std::ifstream in(rest[0]);
-        if (!in) { std::cerr << "Cannot open file: " << rest[0] << "\n"; return 4; }
+        if (!in) { std::cerr << "Could not open " << rest[0] << "\n"; return 1; }
         std::ostringstream ss;
         ss << in.rdbuf();
         src = ss.str();
