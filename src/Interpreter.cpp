@@ -3302,6 +3302,22 @@ Value Interpreter::evalBinary(Binary* b) {
         Value r;
         try { r = eval(b->rhs.get()); } catch (...) { tctx_.cur->vars["$_"] = savedTopic; throw; }
         tctx_.cur->vars["$_"] = savedTopic;
+        if (isJunction(r)) {
+            // autothread the smartmatch over the junction's eigenstates (each matched
+            // with full ~~ semantics, so a junction of regexes / blocks works too)
+            int t = 0, total = 0;
+            for (auto& e : *r.arr) {
+                total++;
+                bool m;
+                if (e.t == VT::Regex) m = regexMatch(lTopic.toStr(), e.s).truthy();
+                else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
+                else m = applyArith("~~", lTopic, e).truthy();
+                if (m) t++;
+            }
+            bool res = r.enumName == "any" ? t > 0 : r.enumName == "all" ? t == total
+                     : r.enumName == "one" ? t == 1 : t == 0;
+            return Value::boolean(op == "~~" ? res : !res);
+        }
         if (r.t == VT::Regex) {
             Value m = regexMatch(lTopic.toStr(), r.s);
             if (op == "~~") return m.truthy() ? m : Value::nil();
@@ -3349,6 +3365,13 @@ Value Interpreter::evalBinary(Binary* b) {
         if (lt && rt) return Value::nil();
         if (lt) return l;
         return r; // only-right → r; neither → r (the last operand)
+    }
+    if (op == "&" || op == "|" || op == "^") {
+        // junction constructors: operands are values, so `rx/a/ & rx/b/` builds a
+        // junction of Regex objects (not two matches against $_).
+        Value l = evalValueOf(b->lhs.get());
+        Value r = evalValueOf(b->rhs.get());
+        return applyArith(op, l, r);
     }
     Value l = eval(b->lhs.get());
     Value r = eval(b->rhs.get());
