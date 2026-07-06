@@ -3345,9 +3345,11 @@ Value Interpreter::evalUnary(Unary* u) {
         };
         return code;
     }
-    // Numeric context of a list/array/hash/range is its element count.
+    // Numeric context of a list/array/hash/range is its element count —
+    // except a Proc / Proc::Async, which numifies to its exit status (+$proc).
     if ((u->op == "+" || u->op == "-") &&
-        (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range)) {
+        (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) &&
+        !(v.t == VT::Hash && (v.hashKind == "Proc" || v.hashKind == "Proc::Async"))) {
         long long n;
         if (v.t == VT::Array) n = (long long)v.arr->size();
         else if (v.t == VT::Hash) n = (long long)v.hash->size();

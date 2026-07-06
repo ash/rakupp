@@ -2375,9 +2375,13 @@ void Interpreter::registerBuiltins() {
         std::string out; for (auto& v : a) out += I.strOf(v); std::cout << out << "\n"; return Value::boolean(true);
     };
     B["note"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) { std::cerr << "Noted\n"; return Value::boolean(true); } // no-arg default
         for (auto& v : a) std::cerr << I.gistOf(v); std::cerr << "\n"; return Value::boolean(true);
     };
-    B["warn"] = B["note"];
+    B["warn"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) { std::cerr << "Warning: something's wrong\n"; return Value::boolean(true); }
+        for (auto& v : a) std::cerr << I.gistOf(v); std::cerr << "\n"; return Value::boolean(true);
+    };
     B["die"] = [](Interpreter& I, ValueList& a) -> Value {
         Value payload = a.empty() ? Value::str("Died") : a[0];
         // die with no argument reuses the current $! ("Died" only if $! is undefined)

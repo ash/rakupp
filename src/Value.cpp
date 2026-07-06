@@ -50,7 +50,13 @@ long long Value::toInt() const {
         case VT::Str:  { try { return std::stoll(s); } catch (...) { return 0; } }
         case VT::Match: { try { return std::stoll(s); } catch (...) { return 0; } } // matched text as a number
         case VT::Array: return arr ? (long long)arr->size() : 0;
-        case VT::Hash:  return hash ? (long long)hash->size() : 0;
+        case VT::Hash:
+            // A Proc / Proc::Async numifies to its exit status (+$proc), like Rakudo.
+            if (hash && (hashKind == "Proc" || hashKind == "Proc::Async")) {
+                auto it = hash->find("exitcode");
+                return it != hash->end() ? it->second.toInt() : 0;
+            }
+            return hash ? (long long)hash->size() : 0;
         default: return 0;
     }
 }
