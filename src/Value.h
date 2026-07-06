@@ -167,6 +167,7 @@ struct ClassAttr {
 struct ClassInfo {
     std::string name;
     std::shared_ptr<ClassInfo> parent;
+    std::string nativeParent; // a built-in parent (`is Str`/`is Cool`/…) that has no user ClassInfo
     std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
     std::vector<ClassAttr> attrs;
     std::map<std::string, Value> methods; // Code values (closures)

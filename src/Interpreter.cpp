@@ -1278,6 +1278,7 @@ Value Interpreter::exec(Stmt* s) {
                         std::string(cd->isRole ? "Role" : "Class") + " '" + cd->name + "' cannot inherit from / compose itself"};
                 auto it = classes_.find(cd->parent);
                 if (it != classes_.end()) ci->parent = it->second;
+                else if (isKnownTypeName(cd->parent)) ci->nativeParent = cd->parent; // is Str / is Cool / …
                 else if (!cd->isRole && !cd->parentIsDoes && !isKnownTypeName(cd->parent))
                     // deriving from an undeclared class is a compile-time error
                     throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),

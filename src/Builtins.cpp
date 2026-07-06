@@ -503,6 +503,14 @@ static Value makeBaggy(const ValueList& items, const std::string& kind) {
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // A class inheriting a built-in type answers that type's identity coercion with
+    // itself: `class D is Str {}` → D.new.Str === the D object (Str.Str is identity).
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls && !inv.obj->cls->findMethod(m)) {
+        static const std::set<std::string> idTypes = {"Str", "Int", "Num", "Rat", "Bool", "Real", "Numeric"};
+        if (idTypes.count(m))
+            for (ClassInfo* ci = inv.obj->cls.get(); ci; ci = ci->parent.get())
+                if (ci->nativeParent == m) return inv;
+    }
     // 6.e `.snitch`: run a tap (default: note the value) and return self — for
     // sticking a peek into a method chain. Universal, so handle it up front.
     if (m == "snitch") {
@@ -2633,9 +2641,21 @@ void Interpreter::registerBuiltins() {
             {"Compiler", {"Compiler", "Any", "Mu"}},
             {"Hash", {"Hash", "Map", "Any", "Mu", "Associative"}},
         };
-        bool c = (got == want);
-        auto it = isa.find(got);
-        if (!c && it != isa.end()) c = it->second.count(want) > 0;
+        // walk a class's ancestry: the built-in isa map, plus a user class's parent
+        // chain (incl. a native parent like `is Str`) and extra `is` parents.
+        std::function<bool(const std::string&)> ancestorHas = [&](const std::string& cn) -> bool {
+            if (cn == want) return true;
+            auto mit = isa.find(cn);
+            if (mit != isa.end() && mit->second.count(want)) return true;
+            auto cit = I.classes_.find(cn);
+            if (cit != I.classes_.end() && cit->second) {
+                if (cit->second->parent && ancestorHas(cit->second->parent->name)) return true;
+                if (!cit->second->nativeParent.empty() && ancestorHas(cit->second->nativeParent)) return true;
+                for (auto& ep : cit->second->extraParents) if (ep && ancestorHas(ep->name)) return true;
+            }
+            return false;
+        };
+        bool c = ancestorHas(got);
         I.emitTest(c, a.size() > 2 ? a[2].toStr() : "");
         return Value::boolean(c);
     };
