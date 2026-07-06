@@ -213,6 +213,21 @@ ExprPtr Parser::parseExpr(int minbp) {
                 continue;
             }
         }
+        // Space-separated colon-pairs form a list: `%( :a{1} :b{2} :c(3) )`.
+        // Only continue when we're already building a pair/list (so an adverb like
+        // `f() :flag` is not mistaken for a new list element).
+        if (minbp <= BP_COMMA && cur().kind == Tok::Op && cur().text == ":" &&
+            (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
+             (peek().kind == Tok::Op && peek().text == "!")) &&
+            (lhs->kind == NK::Pair || lhs->kind == NK::ListExpr)) {
+            std::unique_ptr<ListExpr> list;
+            if (lhs->kind == NK::ListExpr && !static_cast<ListExpr*>(lhs.get())->parenned)
+                list.reset(static_cast<ListExpr*>(lhs.release()));
+            else { list = std::make_unique<ListExpr>(); list->items.push_back(std::move(lhs)); }
+            list->items.push_back(parseColonPair());
+            lhs = std::move(list);
+            continue;
+        }
         InfixInfo in = classifyInfix(cur());
         if (!in.valid || in.lbp < minbp) break;
 
@@ -712,6 +727,10 @@ ExprPtr Parser::parseColonPair() {
         }
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
             pair->value = parsePrimary(); // parses [ ... ] as ArrayLit
+            return pair;
+        }
+        if (isKind(Tok::LBrace) && !cur().spaceBefore) {
+            pair->value = parsePrimary(); // :name{ … } — a Block (or Hash) value
             return pair;
         }
         pair->value = std::make_unique<BoolLit>(true);
