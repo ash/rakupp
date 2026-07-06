@@ -22,6 +22,7 @@ enum {
 
 static const std::unordered_set<std::string> kAssignOps = {
     "=", "+=", "-=", "*=", "/=", "~=", "%=", "**=", "//=", "||=", "&&=", "x=", ":=",
+    "div=", "mod=", "gcd=", "lcm=",
 };
 static const std::unordered_set<std::string> kBlockKeywords = {
     "if", "unless", "while", "until", "for", "else", "elsif", "given", "when",

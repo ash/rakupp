@@ -484,6 +484,12 @@ Token Lexer::lexIdentOrVar() {
         name += advance(); name += advance();
         consumeIdentChars(name);
     }
+    // word-operator compound assignment: `div= mod= gcd= lcm=` (one Op token, tight `=`)
+    if ((name == "div" || name == "mod" || name == "gcd" || name == "lcm") &&
+        peek() == '=' && peek(1) != '=' && peek(1) != ':') {
+        name += advance();
+        return make(Tok::Op, name);
+    }
     return make(Tok::Ident, name);
 }
 
