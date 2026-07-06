@@ -1604,20 +1604,50 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "slurp") {
             auto cap = inv.hash->find("captured"); // in-memory handle (e.g. Proc.out)
             if (cap != inv.hash->end() && cap->second.truthy()) return (*inv.hash)["buffer"];
+            if (inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in") {
+                std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); // $*IN.slurp
+            }
             std::ifstream in((*inv.hash)["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); return Value::str(ss.str());
         }
         // reading: lazily load the file into lines, track a cursor in "pos"
-        if (m == "get" || m == "getline" || m == "lines" || m == "eof") {
+        bool isStdin = inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in";
+        if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" || m == "slurp-rest") {
             if (inv.hash->find("lines") == inv.hash->end()) {
                 Value lines = Value::array();
-                std::ifstream in((*inv.hash)["path"].toStr());
                 std::string line;
-                while (std::getline(in, line)) {
-                    if (!line.empty() && line.back() == '\r') line.pop_back();
-                    lines.arr->push_back(Value::str(line));
+                if (isStdin) { // $*IN — read standard input
+                    while (std::getline(std::cin, line)) {
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        lines.arr->push_back(Value::str(line));
+                    }
+                } else {
+                    std::ifstream in((*inv.hash)["path"].toStr());
+                    while (std::getline(in, line)) {
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        lines.arr->push_back(Value::str(line));
+                    }
                 }
                 (*inv.hash)["lines"] = lines;
                 (*inv.hash)["pos"] = Value::integer(0);
+            }
+            if (m == "words") { // remaining input split on whitespace
+                auto& ln = *(*inv.hash)["lines"].arr;
+                long long p = (*inv.hash)["pos"].toInt();
+                std::string all;
+                for (long long i = p; i < (long long)ln.size(); i++) { if (!all.empty()) all += "\n"; all += ln[i].toStr(); }
+                (*inv.hash)["pos"] = Value::integer((long long)ln.size());
+                Value out = Value::array(); out.isList = true;
+                std::istringstream ws(all); std::string w;
+                while (ws >> w) out.arr->push_back(Value::str(w));
+                return out;
+            }
+            if (m == "slurp-rest") {
+                auto& ln = *(*inv.hash)["lines"].arr;
+                long long p = (*inv.hash)["pos"].toInt();
+                std::string all;
+                for (long long i = p; i < (long long)ln.size(); i++) { all += ln[i].toStr(); all += "\n"; }
+                (*inv.hash)["pos"] = Value::integer((long long)ln.size());
+                return Value::str(all);
             }
             auto& lines = *(*inv.hash)["lines"].arr;
             long long pos = (*inv.hash)["pos"].toInt();
@@ -2379,6 +2409,7 @@ void Interpreter::registerBuiltins() {
         for (auto& v : a) std::cerr << I.gistOf(v); std::cerr << "\n"; return Value::boolean(true);
     };
     B["warn"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (I.quietDepth_ > 0) return Value::boolean(true); // muted inside quietly {…}
         if (a.empty()) { std::cerr << "Warning: something's wrong\n"; return Value::boolean(true); }
         for (auto& v : a) std::cerr << I.gistOf(v); std::cerr << "\n"; return Value::boolean(true);
     };
@@ -2687,6 +2718,26 @@ void Interpreter::registerBuiltins() {
         (*p.hash)["err-str"] = Value::str("");
         return p;
     };
+    // shell(CMD, :out, :err) — run CMD through the system shell (`/bin/sh -c CMD`),
+    // so redirections/pipes in CMD work. Returns a Proc; +$proc is the exit status.
+    B["shell"] = [](Interpreter& I, ValueList& a) -> Value {
+        std::string cmd; bool wantOut = false;
+        for (auto& v : flattenArgs(a)) {
+            if (v.t == VT::Pair) {
+                if (v.s == "out") wantOut = v.pairVal ? v.pairVal->truthy() : true;
+            }
+            else if (cmd.empty()) cmd = v.toStr();
+        }
+        std::vector<std::string> argv = {"/bin/sh", "-c", cmd};
+        std::string out; int code = 0; bool timedout = false;
+        spawnCapture(argv, 0, out, code, timedout, &I);
+        if (!wantOut) std::cout << out;
+        Value p = Value::makeHash(); p.hashKind = "Proc";
+        (*p.hash)["exitcode"] = Value::integer(code);
+        (*p.hash)["out-str"] = Value::str(out);
+        (*p.hash)["err-str"] = Value::str("");
+        return p;
+    };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
         if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->pairVal = std::make_shared<Value>(v);
@@ -2744,11 +2795,46 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(true);
     };
     B["slurp"] = [](Interpreter&, ValueList& a) -> Value {
-        if (a.empty()) return Value::nil();
+        if (a.empty()) { std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); } // slurp() = $*IN.slurp
         std::ifstream in(a[0].toStr());
         if (!in) return Value::nil();
         std::ostringstream ss; ss << in.rdbuf();
         return Value::str(ss.str());
+    };
+    // lines() / get() / words() with no arg read from $*ARGFILES: the files named
+    // in @*ARGS (awk/perl -n style), or standard input when there are none.
+    B["lines"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value out = Value::array(); out.isList = true;
+        std::string line;
+        if (!a.empty() && a[0].t == VT::Str) { // lines("a\nb")
+            std::istringstream is(a[0].toStr());
+            while (std::getline(is, line)) out.arr->push_back(Value::str(line));
+            return out;
+        }
+        Value argv = I.getArgs();
+        if (argv.arr && !argv.arr->empty()) {
+            for (auto& fn : *argv.arr) {
+                std::ifstream in(fn.toStr());
+                while (std::getline(in, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr->push_back(Value::str(line)); }
+            }
+            return out;
+        }
+        while (std::getline(std::cin, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); out.arr->push_back(Value::str(line)); }
+        return out;
+    };
+    B["get"] = [](Interpreter&, ValueList&) -> Value {
+        std::string line; if (!std::getline(std::cin, line)) return Value::nil();
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        return Value::str(line);
+    };
+    B["words"] = [](Interpreter&, ValueList& a) -> Value {
+        Value out = Value::array(); out.isList = true;
+        std::string all, w;
+        if (!a.empty() && a[0].t == VT::Str) all = a[0].toStr();          // words("a b c")
+        else { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); } // words() = $*IN.words
+        std::istringstream ws(all);
+        while (ws >> w) out.arr->push_back(Value::str(w));
+        return out;
     };
     B["open"] = [](Interpreter&, ValueList& a) -> Value { // sub form: open($path, :r/:w/:a)
         std::string path = a.empty() ? "" : a[0].toStr();
@@ -3094,8 +3180,12 @@ void Interpreter::registerBuiltins() {
     };
     B["item"] = [](Interpreter&, ValueList& a) -> Value { return a.empty() ? Value::any() : a[0]; };
     B["VAR"] = [](Interpreter&, ValueList& a) -> Value { return a.empty() ? Value::any() : a[0]; }; // container introspection: value is its own container
-    B["quietly"] = [](Interpreter& I, ValueList& a) -> Value { // suppress warnings; run block/return arg
-        if (!a.empty() && a[0].t == VT::Code) return I.callCallable(a[0], {});
+    B["quietly"] = [](Interpreter& I, ValueList& a) -> Value { // suppress warn() output; run block/return arg
+        if (!a.empty() && a[0].t == VT::Code) {
+            I.quietDepth_++;
+            try { Value r = I.callCallable(a[0], {}); I.quietDepth_--; return r; }
+            catch (...) { I.quietDepth_--; throw; }
+        }
         return a.empty() ? Value::any() : a[0];
     };
     B["make-temp-file"] = [](Interpreter&, ValueList& a) -> Value {

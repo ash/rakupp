@@ -105,7 +105,8 @@ public:
     Value eval(Expr* e);
     Value exec(Stmt* s);           // returns last value (for implicit return)
     Value execBlock(Block* b, std::shared_ptr<Env> scope);
-    bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = ""); // handles redo/next/last; false => last
+    bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",
+                     bool isFirst = true, bool isLast = true); // handles redo/next/last + FIRST/LAST; false => last
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
@@ -128,8 +129,11 @@ public:
     void hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility)
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
+    void runFirstPhasers(const std::vector<StmtPtr>& stmts); // FIRST once before a loop's first iteration
+    void runLastPhasers(const std::vector<StmtPtr>& stmts);  // LAST once after a loop's last iteration
     void runLeavePhasers(const std::vector<StmtPtr>& stmts); // LEAVE/KEEP/UNDO at block exit (reverse order)
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
+    bool suppressLoopFirst_ = false; // set while running a loop body so execBlock skips FIRST
     Value evalString(const std::string& src); // EVAL
     void loadModule(const std::string& name);  // `use Foo::Bar` -> compile lib file into global scope
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
@@ -239,6 +243,7 @@ private:
     bool usedTest_ = false;
     int subtestDepth_ = 0;
     bool subtestFailed_ = false;
+    int quietDepth_ = 0; // inside a `quietly {…}`, warn() output is suppressed
 
     void emitTest(bool ok, const std::string& desc, const std::string& directive = "");
 

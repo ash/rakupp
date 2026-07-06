@@ -896,17 +896,21 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
     // thread; serialise the counters + TAP line so nothing interleaves or races.
     std::unique_lock<std::mutex> plk(sharedMut_, std::defer_lock);
     if (parallelMode_) plk.lock();
+    // Rakudo's proclaim always emits " - <description>" (description defaults to the
+    // empty string) for ok/is/etc.; only skip() suppresses it (it emits "# SKIP …").
+    bool isSkip = directive.rfind("SKIP", 0) == 0;
     if (subtestDepth_ > 0) {
         if (!ok && directive.empty()) subtestFailed_ = true;
         std::cout << "    " << (ok ? "ok" : "not ok");
-        if (!desc.empty()) std::cout << " - " << desc;
+        if (!isSkip) std::cout << " - " << desc;
+        if (!directive.empty()) std::cout << " # " << directive;
         std::cout << "\n";
         return;
     }
     testNum_++;
     std::ostringstream os;
     os << (ok ? "ok " : "not ok ") << testNum_;
-    if (!desc.empty()) os << " - " << desc;
+    if (!isSkip) os << " - " << desc;
     if (!directive.empty()) os << " # " << directive;
     std::cout << os.str() << "\n";
     if (!ok && directive.empty()) failCount_++;
@@ -926,7 +930,18 @@ void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_
 }
 void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "ENTER" || b->phaser == "FIRST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+        // ENTER fires on every block entry; FIRST fires once — in a loop body the loop
+        // drives FIRST (suppressLoopFirst_), elsewhere FIRST behaves like a one-shot ENTER.
+        if (b->phaser == "ENTER" || (b->phaser == "FIRST" && !suppressLoopFirst_)) {
+            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+}
+void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
+    for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
+        if (b->phaser == "FIRST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+}
+void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
+    for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
+        if (b->phaser == "LAST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
 void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts) {
     // reverse source order
@@ -978,13 +993,22 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope) {
     return last;
 }
 
-bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label) {
+bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
+                             bool isFirst, bool isLast) {
+    // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
+    auto inScope = [&](void (Interpreter::*ph)(const std::vector<StmtPtr>&)) {
+        auto saved = tctx_.cur; tctx_.cur = scope; try { (this->*ph)(body->stmts); } catch (...) { tctx_.cur = saved; throw; } tctx_.cur = saved;
+    };
+    if (isFirst) inScope(&Interpreter::runFirstPhasers); // FIRST {…}: once, before the first iteration
+    bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
+    auto runLast = [&]() { if (isLast) inScope(&Interpreter::runLastPhasers); }; // LAST {…}: once, after the last
     for (;;) {
-        try { execBlock(body, scope); runNextPhasers(body->stmts, scope); return true; }
-        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) throw; continue; }
-        catch (NextEx& e) { if (!e.label.empty() && e.label != label) throw; runNextPhasers(body->stmts, scope); return true; }
-        catch (BreakGivenEx&) { return true; }
-        catch (LastEx& e) { if (!e.label.empty() && e.label != label) throw; return false; }
+        try { execBlock(body, scope); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } continue; }
+        catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+        catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
+        catch (LastEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runLast(); suppressLoopFirst_ = savedSF; return false; }
+        catch (...) { suppressLoopFirst_ = savedSF; throw; }
     }
 }
 
@@ -1272,7 +1296,7 @@ Value Interpreter::exec(Stmt* s) {
                     for (long long k = lo; k <= hi; k++) {
                         freshScope();
                         scope->define(var, Value::integer(k));
-                        if (!runLoopBody(fs->body.get(), scope, fs->label)) break;
+                        if (!runLoopBody(fs->body.get(), scope, fs->label, k == lo, k == hi)) break;
                     }
                     return Value::any();
                 }
@@ -1281,7 +1305,7 @@ Value Interpreter::exec(Stmt* s) {
                     for (size_t i = 0; i < arr->size(); i++) {
                         freshScope();
                         scope->define(var, (*arr)[i]);
-                        if (!runLoopBody(fs->body.get(), scope, fs->label)) break;
+                        if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size())) break;
                     }
                     return Value::any();
                 }
@@ -1297,7 +1321,7 @@ Value Interpreter::exec(Stmt* s) {
                     ValueList row = items[i].t == VT::Array ? *items[i].arr : items[i].flatten();
                     for (size_t k = 0; k < fs->vars.size(); k++)
                         scope->define(fs->vars[k], k < row.size() ? row[k] : Value::any());
-                    if (!runLoopBody(fs->body.get(), scope, fs->label)) break;
+                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == items.size())) break;
                 }
                 return Value::any();
             }
@@ -1311,7 +1335,7 @@ Value Interpreter::exec(Stmt* s) {
                         scope->define(fs->vars[k], (i + k < items.size()) ? items[i + k] : Value::any());
                     }
                 }
-                if (!runLoopBody(fs->body.get(), scope, fs->label)) break;
+                if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + nvars >= items.size())) break;
             }
             return Value::any();
         }
@@ -3291,10 +3315,16 @@ Value Interpreter::evalUnary(Unary* u) {
             return Value::nil();
         }
     }
-    if (u->op == "quietly") { // suppress warnings (we don't emit any) — just run
-        if (u->operand->kind == NK::BlockExpr)
-            return callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {});
-        return eval(u->operand.get());
+    if (u->op == "quietly") { // suppress warn() output within the block
+        quietDepth_++;
+        try {
+            Value r = u->operand->kind == NK::BlockExpr
+                ? callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {})
+                : eval(u->operand.get());
+            quietDepth_--;
+            return r;
+        }
+        catch (...) { quietDepth_--; throw; }
     }
     if (u->op == "gather") {
         auto collector = std::make_shared<ValueList>();

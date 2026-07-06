@@ -340,6 +340,19 @@ int main(int argc, char** argv) {
             break;
         }
     }
+    // perl-style line-loop flags: -n (loop over $*IN.lines), -p (loop + print $_),
+    // combinable with -e as -ne / -pe / -np (the trailing 'e' means -e follows).
+    bool optN = false, optP = false;
+    while (!rest.empty()) {
+        const std::string& a = rest[0];
+        if (a.size() < 2 || a[0] != '-' || a[1] == '-') break;
+        if (a.find_first_not_of("npe", 1) != std::string::npos) break; // not a pure n/p/e combo
+        bool hasE = a.find('e') != std::string::npos;
+        if (a.find('n') != std::string::npos) optN = true;
+        if (a.find('p') != std::string::npos) optP = true;
+        if (hasE) { rest[0] = "-e"; break; }   // let the -e handling below take the code
+        rest.erase(rest.begin());              // pure -n / -p / -np : consume and continue
+    }
     size_t nrest = rest.size();
     if (nrest >= 1 && rest[0].rfind("-e", 0) == 0) {
         std::string a1 = rest[0];
@@ -364,5 +377,7 @@ int main(int argc, char** argv) {
         ss << std::cin.rdbuf();
         src = ss.str();
     }
+    if (optN || optP) // wrap the program in a line loop over $*ARGFILES (files in @*ARGS, else $*IN)
+        src = "for lines() -> $_ is copy {\n" + src + "\n" + (optP ? "$_.say;\n" : "") + "}\n";
     return rakuppRunBigStack(src, std::move(args), fileName, exePath, libPaths);
 }
