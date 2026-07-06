@@ -4086,8 +4086,10 @@ Value Interpreter::eval(Expr* e) {
             if (p->keyExpr) {
                 Value kv = eval(p->keyExpr.get());
                 Value pr = Value::pair(kv.toStr(), evalValueOf(p->value.get()));
-                // a non-string key (object, match, array, hash, code) is preserved so `.key` returns it
-                if (kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object ||
+                // a non-string key (number, object, match, array, hash, code) is preserved
+                // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
+                if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
+                    kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
                     kv.t == VT::Match || kv.t == VT::Code) pr.pairKey = std::make_shared<Value>(kv);
                 return pr;
             }

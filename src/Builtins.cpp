@@ -255,6 +255,11 @@ static std::string rakuRepr(const Value& v) {
             return std::to_string(v.rFrom) + (v.rExFrom ? "^" : "") + ".." + (v.rExTo ? "^" : "") + std::to_string(v.rTo);
         case VT::Pair: {
             Value val = v.pairVal ? *v.pairVal : Value::nil();
+            if (v.pairKey) { // non-string key (Int, nested Pair, …)
+                std::string krepr = rakuRepr(*v.pairKey);
+                if (v.pairKey->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
+                return krepr + " => " + rakuRepr(val);
+            }
             return rakuIdentKey(v.s) ? ":" + v.s + "(" + rakuRepr(val) + ")"
                                      : rakuStrLit(v.s) + " => " + rakuRepr(val);
         }
