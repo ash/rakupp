@@ -1506,6 +1506,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         Value p = Value::str(path); p.hashKind = "IO"; return p;
     }
+    if (m == "unlink") { // $path.IO.unlink — remove the file; True on success
+        return Value::boolean(::unlink(inv.toStr().c_str()) == 0);
+    }
+    if (m == "rmdir") { // $path.IO.rmdir — remove the (empty) directory
+        return Value::boolean(::rmdir(inv.toStr().c_str()) == 0);
+    }
     if (m == "path") return Value::str(inv.toStr());
     if (m == "basename") { std::string s = inv.toStr(); auto p = s.find_last_of('/'); return Value::str(p == std::string::npos ? s : s.substr(p + 1)); }
     // ---- more IO::Path methods (operate on the path string) ----
@@ -2721,6 +2727,10 @@ void Interpreter::registerBuiltins() {
             } else acc += path[i];
         }
         return Value::str(path);
+    };
+    B["rmdir"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) return Value::boolean(false);
+        return Value::boolean(::rmdir(a[0].toStr().c_str()) == 0);
     };
     B["spurt"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
