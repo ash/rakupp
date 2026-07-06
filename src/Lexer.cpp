@@ -506,7 +506,17 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     std::string name;
     if (isIdentStart(peek())) {
         while (isIdentCont(peek()) || ((peek() == '-' || peek() == '\'') && isIdentCont(peek(1)))) name += advance();
-        if (peek() == ':' && peek(1) == '<') { name += advance(); name += advance(); while (!eof() && peek() != '>') name += advance(); if (peek() == '>') name += advance(); }
+        // protoregex multi variant: `:sym<dec>`, `:<null>`, or `:foo('x')`
+        while (peek() == ':' && (peek(1) == '<' || isIdentStart(peek(1)))) {
+            name += advance(); // ':'
+            while (isIdentCont(peek())) name += advance(); // adverb key (e.g. sym)
+            char open = peek();
+            if (open == '<' || open == '(') {
+                char close = open == '<' ? '>' : ')';
+                int ad = 0;
+                do { char ch = peek(); if (ch == open) ad++; else if (ch == close) ad--; name += advance(); } while (!eof() && ad > 0);
+            }
+        }
     }
     while (!eof() && (peek() == ' ' || peek() == '\t' || peek() == '\n')) advance();
     // optional signature: `token NAME(Str $indent) { … }` — capture the balanced
