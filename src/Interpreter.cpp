@@ -757,6 +757,11 @@ int Interpreter::run(Program& prog) {
     if (usedTest_ && planned_ < 0 && !crashed && !bailedOut_) {
         std::cout << "1.." << testNum_ << "\n";
     }
+    // Rakudo's end-of-run summary when some tests failed.
+    if (usedTest_ && failCount_ > 0 && !crashed && !bailedOut_) {
+        std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")
+                  << " of " << testNum_ << "\n";
+    }
     // Rakudo test exit status: 255 ("dubious") if the ran count != the plan,
     // else the number of failed tests (capped at 254).
     if (usedTest_ && code == 0 && !crashed && !bailedOut_) {
@@ -897,20 +902,49 @@ Value Interpreter::evalString(const std::string& src) {
     return last;
 }
 
-void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& directive) {
+// If RAKU_TEST_DIE_ON_FAIL is a true value, a real (non-TODO) failure stops the
+// whole suite: emit the Rakudo diagnostics and exit 255.
+void Interpreter::maybeDieOnFail() {
+    if (dieOnFail_ < 0) dieOnFail_ = envFlag("RAKU_TEST_DIE_ON_FAIL") ? 1 : 0;
+    if (!dieOnFail_ || todoSubtestDepth_ > 0) return;
+    std::cerr << "Stopping test suite, because value of RAKU_TEST_DIE_ON_FAIL "
+                 "environment variable is set to a true value.\n";
+    if (planned_ >= 0)
+        std::cerr << "# You planned " << planned_ << " tests, but ran " << testNum_ << ".\n";
+    std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")
+              << " of " << testNum_ << "\n";
+    bailedOut_ = true; // suppress the trailing auto-plan
+    throw ExitEx{255};
+}
+
+void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& directive_,
+                           const std::string& extraDiag) {
     // In parallel mode a worker may emit test results concurrently with the main
     // thread; serialise the counters + TAP line so nothing interleaves or races.
     std::unique_lock<std::mutex> plk(sharedMut_, std::defer_lock);
     if (parallelMode_) plk.lock();
+    std::string directive = directive_;
+    // A bare `todo REASON, COUNT` statement marks the next COUNT tests TODO.
+    if (directive.empty() && todoRemaining_ > 0) {
+        directive = "TODO" + (todoReason_.empty() ? "" : " " + todoReason_);
+        todoRemaining_--;
+    }
     // Rakudo's proclaim always emits " - <description>" (description defaults to the
     // empty string) for ok/is/etc.; only skip() suppresses it (it emits "# SKIP …").
     bool isSkip = directive.rfind("SKIP", 0) == 0;
+    bool realFail = !ok && directive.empty(); // a genuine failure (not TODO/SKIP)
     if (subtestDepth_ > 0) {
-        if (!ok && directive.empty()) subtestFailed_ = true;
+        if (realFail) subtestFailed_ = true;
         std::cout << "    " << (ok ? "ok" : "not ok");
         if (!isSkip) std::cout << " - " << desc;
         if (!directive.empty()) std::cout << " # " << directive;
         std::cout << "\n";
+        if (realFail) {
+            std::cerr << "# Failed test" << (desc.empty() ? "" : " '" + desc + "'")
+                      << " at " << srcFile_ << " line " << curLine_ << "\n";
+            if (!extraDiag.empty()) std::cerr << extraDiag;
+            maybeDieOnFail();
+        }
         return;
     }
     testNum_++;
@@ -919,7 +953,13 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
     if (!isSkip) os << " - " << desc;
     if (!directive.empty()) os << " # " << directive;
     std::cout << os.str() << "\n";
-    if (!ok && directive.empty()) failCount_++;
+    if (realFail) {
+        failCount_++;
+        std::cerr << "# Failed test" << (desc.empty() ? "" : " '" + desc + "'")
+                  << " at " << srcFile_ << " line " << curLine_ << "\n";
+        if (!extraDiag.empty()) std::cerr << extraDiag;
+        maybeDieOnFail();
+    }
 }
 
 // ----------------- statements -----------------
@@ -1044,9 +1084,11 @@ static bool isKnownTypeName(const std::string& n) {
 }
 
 Value Interpreter::exec(Stmt* s) {
+    if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
     switch (s->kind) {
         case NK::ExprStmt: {
             Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            if (e->line > 0) curLine_ = e->line; // ExprStmt itself carries no line; use its expression's
             Value r = eval(e);
             // Rakudo sink semantics: a Proc from a bare `run`/`shell` statement that
             // failed and is discarded (never stored or inspected) throws when sunk.
@@ -1673,6 +1715,13 @@ Value Interpreter::getArgs() {
 
 // Push the current %*ENV hash into the real process environment so a child
 // launched by run()/shell() inherits any variables the program set/changed.
+bool Interpreter::envFlag(const std::string& name) {
+    auto it = global_->vars.find("%*ENV");
+    if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return false;
+    auto vit = it->second.hash->find(name);
+    return vit != it->second.hash->end() && vit->second.truthy();
+}
+
 void Interpreter::syncEnvToProcess() {
     auto it = global_->vars.find("%*ENV");
     if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return;
@@ -2173,6 +2222,14 @@ Value* Interpreter::lvalue(Expr* e) {
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
 
+// In value context (assignment RHS, colon-pair value), a bare `/pat/` is a Regex
+// OBJECT, not an immediate match against $_ — so `:err(/pat/)` and `my $rx = /pat/`
+// store a Regex that can be smartmatched later.
+Value Interpreter::evalValueOf(Expr* e) {
+    if (e && e->kind == NK::RegexLit) return Value::regex(static_cast<RegexLit*>(e)->pattern);
+    return eval(e);
+}
+
 Value Interpreter::evalAssign(Assign* a) {
     if (a->op == "=" && a->target->kind == NK::ListExpr) {
         auto* lst = static_cast<ListExpr*>(a->target.get());
@@ -2215,7 +2272,7 @@ Value Interpreter::evalAssign(Assign* a) {
     }
 
     if (a->op == "=" || a->op == ":=") {
-        Value rhs = eval(a->value.get());
+        Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         Value* lv = lvalue(a->target.get());
         int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
         if (sigil == '@') *lv = coerceArray(rhs);
@@ -3963,13 +4020,13 @@ Value Interpreter::eval(Expr* e) {
             auto* p = static_cast<PairExpr*>(e);
             if (p->keyExpr) {
                 Value kv = eval(p->keyExpr.get());
-                Value pr = Value::pair(kv.toStr(), eval(p->value.get()));
+                Value pr = Value::pair(kv.toStr(), evalValueOf(p->value.get()));
                 // a non-string key (object, match, array, hash, code) is preserved so `.key` returns it
                 if (kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object ||
                     kv.t == VT::Match || kv.t == VT::Code) pr.pairKey = std::make_shared<Value>(kv);
                 return pr;
             }
-            return Value::pair(p->key, eval(p->value.get()));
+            return Value::pair(p->key, evalValueOf(p->value.get())); // `:err(/pat/)` → Regex value
         }
         case NK::BlockExpr: return makeClosure(static_cast<BlockExpr*>(e));
         case NK::Whatever: { Value w = Value::whatever(); if (static_cast<const WhateverExpr*>(e)->hyper) w.b = true; return w; } // `**` marked via .b

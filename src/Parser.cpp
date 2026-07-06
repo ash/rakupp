@@ -1954,6 +1954,14 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
 
 StmtPtr Parser::parseStatement() {
     while (matchKind(Tok::Semicolon)) {}
+    int stmtLine = cur().line;
+    StmtPtr st = parseStatementImpl();
+    if (st && st->line == 0) st->line = stmtLine; // stamp the source line for diagnostics
+    return st;
+}
+
+StmtPtr Parser::parseStatementImpl() {
+    while (matchKind(Tok::Semicolon)) {}
     // statement label:  LABEL: for ...   (ident + a colon with no space before it,
     // so `say :adverb` — space before the ':' — is a listop call, not a label)
     if (cur().kind == Tok::Ident && peek().kind == Tok::Op && peek().text == ":" &&

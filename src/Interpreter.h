@@ -246,8 +246,16 @@ private:
     bool subtestFailed_ = false;
     int quietDepth_ = 0; // inside a `quietly {…}`, warn() output is suppressed
     bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan
+    int curLine_ = 0;        // source line of the statement currently executing (for test diagnostics)
+    int todoRemaining_ = 0;  // number of upcoming tests marked TODO by a bare `todo` statement
+    std::string todoReason_; // reason for the pending TODO block
+    int dieOnFail_ = -1;     // cached RAKU_TEST_DIE_ON_FAIL flag (-1 = not yet read)
+    int todoSubtestDepth_ = 0; // inside a TODO-marked subtest: failures neither die nor count
+    bool envFlag(const std::string& name); // truthiness of %*ENV<name>
+    void maybeDieOnFail();   // if RAKU_TEST_DIE_ON_FAIL, stop the suite after a real failure
 
-    void emitTest(bool ok, const std::string& desc, const std::string& directive = "");
+    void emitTest(bool ok, const std::string& desc, const std::string& directive = "",
+                  const std::string& extraDiag = "");
 
 private:
     std::unordered_map<std::string, BuiltinFn> builtins_;
@@ -257,6 +265,7 @@ private:
     Value* lvalue(Expr* e);
     ValueList evalArgs(const std::vector<ExprPtr>& exprs); // spreads `|@a`
     Value evalAssign(Assign* a);
+    Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
     Value evalBinary(Binary* b);
     Value evalUnary(Unary* u);
     Value evalCall(Call* c);

@@ -2537,8 +2537,8 @@ void Interpreter::registerBuiltins() {
             c = (std::isnan(g) && std::isnan(e)) || g == e; // is NaN, NaN passes (matches Rakudo string semantics)
         } else c = (got.toStr() == exp.toStr());
         std::string dir = testDirective(a);
-        I.emitTest(c, testDesc(a, 2), dir);
-        if (!c && dir.empty()) { std::cout << "# expected: '" << exp.toStr() << "'\n# got:      '" << got.toStr() << "'\n"; }
+        std::string diag = (!c && dir.empty()) ? "# expected: '" + exp.toStr() + "'\n# got:      '" + got.toStr() + "'\n" : "";
+        I.emitTest(c, testDesc(a, 2), dir, diag);
         return Value::boolean(c);
     };
     B["isnt"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -2557,8 +2557,8 @@ void Interpreter::registerBuiltins() {
         }
         bool c = (m == want);
         std::string dir = testDirective(a);
-        I.emitTest(c, testDesc(a, 2), dir);
-        if (!c && dir.empty()) std::cout << "# got: '" << got << "'\n";
+        std::string diag = (!c && dir.empty()) ? "# got: '" + got + "'\n" : "";
+        I.emitTest(c, testDesc(a, 2), dir, diag);
         return Value::boolean(c);
     };
     B["like"]   = [likeTest](Interpreter& I, ValueList& a) -> Value { return likeTest(I, a, true); };
@@ -2586,9 +2586,14 @@ void Interpreter::registerBuiltins() {
         I.emitTest(c, a.size() > 3 ? a[3].toStr() : "");
         return Value::boolean(c);
     };
+    B["todo"] = [](Interpreter& I, ValueList& a) -> Value { // todo($reason, $count=1): mark next tests TODO
+        I.todoReason_ = a.empty() ? "" : a[0].toStr();
+        I.todoRemaining_ = a.size() > 1 ? (int)a[1].toInt() : 1;
+        return Value::boolean(true);
+    };
     B["pass"] = [](Interpreter& I, ValueList& a) -> Value { I.emitTest(true, a.empty() ? "" : a[0].toStr()); return Value::boolean(true); };
     B["flunk"] = [](Interpreter& I, ValueList& a) -> Value { I.emitTest(false, a.empty() ? "" : a[0].toStr()); return Value::boolean(false); };
-    B["diag"] = [](Interpreter&, ValueList& a) -> Value { std::cout << "# " << (a.empty() ? "" : a[0].toStr()) << "\n"; return Value::boolean(true); };
+    B["diag"] = [](Interpreter&, ValueList& a) -> Value { std::cerr << "# " << (a.empty() ? "" : a[0].toStr()) << "\n"; return Value::boolean(true); };
     B["skip"] = [](Interpreter& I, ValueList& a) -> Value {
         long n = (a.size() > 1) ? a[1].toInt() : 1;
         std::string reason = a.empty() ? "" : a[0].toStr();
@@ -2885,14 +2890,23 @@ void Interpreter::registerBuiltins() {
     B["subtest"] = [](Interpreter& I, ValueList& a) -> Value {
         Value code; std::string desc;
         for (auto& v : a) { if (v.t == VT::Code) code = v; else if (v.t == VT::Str) desc = v.s; }
+        // A pending `todo` marks this whole subtest TODO: inner failures neither die nor count.
+        bool todod = false; std::string todoReason;
+        if (I.todoRemaining_ > 0) { todod = true; todoReason = I.todoReason_; I.todoRemaining_--; }
         bool savedFailed = I.subtestFailed_;
+        int savedPlanned = I.planned_, savedTestNum = I.testNum_; // a subtest has its own plan + numbering
+        long savedFailCount = I.failCount_;
         I.subtestDepth_++;
+        if (todod) I.todoSubtestDepth_++;
         I.subtestFailed_ = false;
+        I.planned_ = -1; I.testNum_ = 0;
         if (code.t == VT::Code) { try { I.callCallable(code, {}); } catch (RakuError&) { I.subtestFailed_ = true; } }
         bool ok = !I.subtestFailed_;
+        if (todod) I.todoSubtestDepth_--;
         I.subtestDepth_--;
         I.subtestFailed_ = savedFailed;
-        I.emitTest(ok, desc);
+        I.planned_ = savedPlanned; I.testNum_ = savedTestNum; I.failCount_ = savedFailCount;
+        I.emitTest(ok, desc, todod ? ("TODO" + (todoReason.empty() ? "" : " " + todoReason)) : "");
         return Value::boolean(ok);
     };
     B["done-testing"] = [](Interpreter& I, ValueList&) -> Value {

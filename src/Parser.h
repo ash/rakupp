@@ -37,6 +37,7 @@ private:
 
     // statements
     StmtPtr parseStatement();
+    StmtPtr parseStatementImpl();
     StmtPtr applyModifiers(StmtPtr s);
     std::unique_ptr<Block> parseBlock();
     StmtPtr parseSub(bool isMulti);
