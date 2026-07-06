@@ -195,6 +195,7 @@ struct VarDecl : Stmt {
 struct SubDecl : Stmt {
     std::string name; // empty for anon
     std::vector<Param> params;
+    std::vector<std::vector<Param>> altParams; // extra `(sig1) | (sig2)` signatures, share the body
     std::vector<StmtPtr> body;
     bool isMulti = false;
     bool isMethod = false;

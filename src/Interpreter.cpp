@@ -1167,27 +1167,44 @@ Value Interpreter::exec(Stmt* s) {
         }
         case NK::SubDecl: {
             auto* sd = static_cast<SubDecl*>(s);
-            Value code; code.t = VT::Code;
-            code.code = std::make_shared<Callable>();
-            code.code->name = sd->name;
-            code.code->params = &sd->params;
-            code.code->body = &sd->body;
-            code.code->closure = tctx_.cur;
-            if (sd->params.empty()) code.code->placeholders = computePlaceholders(sd->body);
+            auto makeCand = [&](const std::vector<Param>* prms) {
+                Value c; c.t = VT::Code; c.code = std::make_shared<Callable>();
+                c.code->name = sd->name;
+                c.code->params = prms;
+                c.code->body = &sd->body;
+                c.code->closure = tctx_.cur;
+                if (prms->empty()) c.code->placeholders = computePlaceholders(sd->body);
+                return c;
+            };
+            Value code = makeCand(&sd->params);
+            std::vector<Value> altCands;
+            for (auto& ap : sd->altParams) altCands.push_back(makeCand(&ap));
+            // `(sig1) | (sig2)` is ONE routine with alternative signatures — its
+            // candidates share a single `state`-variable store.
+            if (!sd->altParams.empty()) {
+                auto shared = std::make_shared<Env>(); shared->parent = tctx_.cur;
+                auto share = [&](Value& c) { std::call_once(c.code->stateInit, [&] { c.code->stateEnv = shared; }); };
+                share(code);
+                for (auto& c : altCands) share(c);
+            }
             if (!sd->name.empty()) {
-                if (sd->isMulti) {
+                if (sd->isMulti || !sd->altParams.empty()) {
                     std::string key = "&" + sd->name;
                     Value* existing = tctx_.cur->find(key);
+                    Callable* disp;
+                    Value dispVal;
                     if (existing && existing->t == VT::Code && existing->code && existing->code->isMultiDispatcher) {
-                        existing->code->candidates.push_back(code);
-                        return *existing;
+                        disp = existing->code.get(); dispVal = *existing;
+                    } else {
+                        dispVal.t = VT::Code; dispVal.code = std::make_shared<Callable>();
+                        dispVal.code->name = sd->name;
+                        dispVal.code->isMultiDispatcher = true;
+                        disp = dispVal.code.get();
+                        tctx_.cur->define(key, dispVal);
                     }
-                    Value disp; disp.t = VT::Code; disp.code = std::make_shared<Callable>();
-                    disp.code->name = sd->name;
-                    disp.code->isMultiDispatcher = true;
-                    disp.code->candidates.push_back(code);
-                    tctx_.cur->define(key, disp);
-                    return disp;
+                    disp->candidates.push_back(code);
+                    for (auto& c : altCands) disp->candidates.push_back(c);
+                    return dispVal;
                 }
                 tctx_.cur->define("&" + sd->name, code);
             }

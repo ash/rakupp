@@ -1690,6 +1690,12 @@ StmtPtr Parser::parseSub(bool isMulti) {
         }
     }
     if (isKind(Tok::LParen)) { advance(); s->params = parseSignature(); expectKind(Tok::RParen, ")"); }
+    // alternative signatures sharing one body: `sub f (sig1) | (sig2) | (sig3) { … }`
+    while (isOp("|") && peek().kind == Tok::LParen) {
+        advance(); advance(); // '|' '('
+        s->altParams.push_back(parseSignature());
+        expectKind(Tok::RParen, ")");
+    }
     // optional return type / traits up to block: skip until '{'
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
     if (isKind(Tok::LBrace)) {
