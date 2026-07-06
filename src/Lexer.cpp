@@ -358,9 +358,10 @@ bool Lexer::tryQuoteForm(Token& out) {
         case '/': case '|': case '!': close = d; bracket = false; break;
         default: return false;
     }
-    // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b]. If the
-    // second group is absent, this is really a call like S(5) or s($x) — not a
-    // substitution — so let it lex as an identifier instead.
+    // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
+    // assignment form s[pat] = repl. If neither follows, this is really a call like
+    // S(5) or s($x) — not a substitution — so let it lex as an identifier instead.
+    bool assignForm = false;
     if (isSubst && bracket) {
         int depth = 0; size_t q = p;
         for (; q < src_.size(); q++) {
@@ -368,7 +369,9 @@ bool Lexer::tryQuoteForm(Token& out) {
             else if (src_[q] == close) { depth--; if (depth == 0) { q++; break; } }
         }
         while (q < src_.size() && std::isspace((unsigned char)src_[q])) q++;
-        if (q >= src_.size() || src_[q] != d) return false;
+        if (q < src_.size() && src_[q] == '=' && (q + 1 >= src_.size() || src_[q + 1] != '=' && src_[q + 1] != '~'))
+            assignForm = true; // s[pat] = repl
+        else if (q >= src_.size() || src_[q] != d) return false;
     }
     bool patQuoteAware = (isRegex || isSubst) && !bracket; // regex/subst PATTERN: '...'/{...}/<...>/[...] protect the delimiter
     bool codeBlocks = (isRegex || isSubst); // regex/subst may contain { ... } embedded code
@@ -419,7 +422,20 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     if (isSubst || isTrans) {
         std::string repl;
-        if (bracket) { // s[..][..] / tr[..][..] : skip ws, expect a fresh bracket pair
+        if (assignForm) { // s[pat] = "repl" : the RHS string literal is the replacement
+            while (!eof() && std::isspace((unsigned char)peek())) advance();
+            if (peek() == '=') advance();
+            while (!eof() && std::isspace((unsigned char)peek())) advance();
+            char rq = peek();
+            if (rq == '"' || rq == '\'') {
+                advance(); // opening quote
+                while (!eof() && peek() != rq) {
+                    if (peek() == '\\') { repl += advance(); if (!eof()) repl += advance(); }
+                    else repl += advance();
+                }
+                if (peek() == rq) advance(); // closing quote
+            }
+        } else if (bracket) { // s[..][..] / tr[..][..] : skip ws, expect a fresh bracket pair
             while (!eof() && std::isspace((unsigned char)peek())) advance();
             if (peek() == d) { advance(); repl = readPart(false, !isTrans); }
         } else {
