@@ -754,10 +754,16 @@ int Interpreter::run(Program& prog) {
     runEnds(); // END phasers (reverse source order), after the mainline
     // Emit a trailing plan only on normal completion — never fabricate `1..0`
     // after an uncaught error (that would look like a passing empty/skip-all plan).
-    if (usedTest_ && planned_ < 0 && !crashed) {
+    if (usedTest_ && planned_ < 0 && !crashed && !bailedOut_) {
         std::cout << "1.." << testNum_ << "\n";
     }
-    if (failCount_ > 0 && code == 0) code = 1;
+    // Rakudo test exit status: 255 ("dubious") if the ran count != the plan,
+    // else the number of failed tests (capped at 254).
+    if (usedTest_ && code == 0 && !crashed && !bailedOut_) {
+        if (planned_ >= 0 && testNum_ != planned_) code = 255;
+        else if (failCount_ > 0) code = failCount_ > 254 ? 254 : (int)failCount_;
+    }
+    else if (failCount_ > 0 && code == 0) code = 1;
     return code;
 }
 

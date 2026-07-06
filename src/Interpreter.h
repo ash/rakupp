@@ -244,6 +244,7 @@ private:
     int subtestDepth_ = 0;
     bool subtestFailed_ = false;
     int quietDepth_ = 0; // inside a `quietly {…}`, warn() output is suppressed
+    bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan
 
     void emitTest(bool ok, const std::string& desc, const std::string& directive = "");
 

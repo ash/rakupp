@@ -2876,8 +2876,19 @@ void Interpreter::registerBuiltins() {
     };
     B["done-testing"] = [](Interpreter& I, ValueList&) -> Value {
         if (I.planned_ < 0) { std::cout << "1.." << I.testNum_ << "\n"; I.planned_ = I.testNum_; }
-        return Value::boolean(true);
+        // True only if every test passed and the ran count matched the plan.
+        return Value::boolean(I.failCount_ == 0 && I.planned_ == I.testNum_);
     };
+    B["done_testing"] = B["done-testing"];
+    // bail_out(reason?) — emit "Bail out!" and stop the whole test run immediately.
+    B["bail-out"] = [](Interpreter& I, ValueList& a) -> Value {
+        std::string reason;
+        for (auto& v : a) if (v.t != VT::Pair) { reason = v.toStr(); break; }
+        std::cout << "Bail out!" << (reason.empty() ? "" : " " + reason) << "\n" << std::flush;
+        I.bailedOut_ = true;
+        throw ExitEx{255};
+    };
+    B["bail_out"] = B["bail-out"];
 
     // --- utility functions ---
     B["abs"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "abs", none); };
