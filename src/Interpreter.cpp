@@ -2361,7 +2361,14 @@ Value Interpreter::evalAssign(Assign* a) {
     if (binop == "||") { if (!lv->truthy()) *lv = rhs; return *lv; }
     if (binop == "&&") { if (lv->truthy()) *lv = rhs; return *lv; }
     if (binop == "//") { if (!isDefined(*lv)) *lv = rhs; return *lv; }
-    *lv = applyArith(binop, *lv, rhs);
+    // `$obj OP= x` reuses a user `sub infix:<OP>` overload (Raku's `is deep` also
+    // auto-generates OP= from OP), falling back to the built-in operator.
+    bool overloaded = false;
+    if (lv->t == VT::Object || rhs.t == VT::Object)
+        if (Value* f = tctx_.cur->find("&infix:<" + binop + ">"))
+            try { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
+            catch (RakuError&) {}
+    if (!overloaded) *lv = applyArith(binop, *lv, rhs);
     if (nb) wrapNative(*lv, nb, ns);
     return *lv;
 }
@@ -3445,6 +3452,13 @@ Value Interpreter::evalBinary(Binary* b) {
     }
     Value l = eval(b->lhs.get());
     Value r = eval(b->rhs.get());
+    // operator overloading: a built-in operator on a user object dispatches to a
+    // user `sub infix:<op>` if one is in scope (falling back to the built-in when
+    // no candidate matches the operands).
+    if (l.t == VT::Object || r.t == VT::Object)
+        if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
+            try { return callCallable(*f, ValueList{l, r}); }
+            catch (RakuError&) {}
     return applyArith(op, l, r);
 }
 
