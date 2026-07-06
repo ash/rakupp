@@ -3542,7 +3542,7 @@ Value Interpreter::evalUnary(Unary* u) {
         return Value::number(-v.toNum());
     }
     if (u->op == "+") return v.isNumeric() ? v : (v.t == VT::Str ? numifyStr(v.s) : Value::number(v.toNum()));
-    if (u->op == "~") return Value::str(v.toStr());
+    if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
     if (u->op == "^") return Value::range(0, v.toInt(), false, true);
@@ -3576,9 +3576,15 @@ std::string Interpreter::gistOf(const Value& v) {
     return v.gist();
 }
 std::string Interpreter::strOf(const Value& v) {
-    if (v.t == VT::Object && v.obj && v.obj->cls)
+    if (v.t == VT::Object && v.obj && v.obj->cls) {
         for (const char* nm : {"Str", "gist"})
             if (Value* m = v.obj->cls->findMethod(nm)) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+        // an Exception stringifies to its .message (Raku: Exception.Str is .message),
+        // whether message is a method or a plain attribute.
+        if (Value* m = v.obj->cls->findMethod("message")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+        auto mit = v.obj->attrs.find("message");
+        if (mit != v.obj->attrs.end()) return strOf(mit->second);
+    }
     return v.toStr();
 }
 
