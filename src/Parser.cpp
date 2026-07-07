@@ -358,15 +358,17 @@ ExprPtr Parser::parseExpr(int minbp) {
     return lhs;
 }
 
-ExprPtr Parser::parsePrefix() {
+ExprPtr Parser::parsePrefix(bool tight) {
     if (cur().kind == Tok::Op) {
         const std::string& o = cur().text;
         if (o == "!" || o == "-" || o == "+" || o == "~" || o == "?" ||
             o == "++" || o == "--" || o == "^" || o == "|") {
             advance();
             auto u = std::make_unique<Unary>();
-            u->op = o; u->operand = parseExpr(BP_PREFIX);
-            return u;
+            // the operand parses "tight" (its own postfixes stop at a space-preceded
+            // `.method`), so `^30 .map` is (^30).map while `^30.map` stays ^(30.map).
+            u->op = o; u->operand = parsePrefix(true);
+            return parsePostfix(std::move(u), tight);
         }
         if (o == "!!") { // prefix double-negation == boolify
             advance();
@@ -383,7 +385,7 @@ ExprPtr Parser::parsePrefix() {
             return u;
         }
     }
-    return parsePostfix(parsePrimary());
+    return parsePostfix(parsePrimary(), tight);
 }
 
 std::vector<ExprPtr> Parser::parseCallArgs() {
@@ -400,9 +402,12 @@ std::vector<ExprPtr> Parser::parseCallArgs() {
     return args;
 }
 
-ExprPtr Parser::parsePostfix(ExprPtr base) {
+ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
     bool hyperNext = false;
     for (;;) {
+        // when parsing the operand of a prefix op, a space-preceded `.method` binds
+        // to the whole prefix expression, not the operand — stop here so the caller grabs it.
+        if (stopAtSpaceDot && isOp(".") && cur().spaceBefore) break;
         // hyper method call: @a>>.method / @a<<.method (»« multibyte too)
         if ((isOp(">>") || isOp("<<") || isOp("»") || isOp("«")) && peek().kind == Tok::Op && peek().text == ".") {
             advance(); hyperNext = true; continue;

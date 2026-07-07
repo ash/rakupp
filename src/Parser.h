@@ -60,8 +60,8 @@ private:
     // expressions
     ExprPtr parseExpression();          // full expr incl. commas/and/or
     ExprPtr parseExpr(int minbp);
-    ExprPtr parsePrefix();
-    ExprPtr parsePostfix(ExprPtr base);
+    ExprPtr parsePrefix(bool tight = false);
+    ExprPtr parsePostfix(ExprPtr base, bool stopAtSpaceDot = false);
     ExprPtr parsePrimary();
     ExprPtr parseDeclarator(const std::string& scope);
     void skipTraits();
