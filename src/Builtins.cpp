@@ -1831,6 +1831,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // string
     // Str/Blob byte views. rakupp stores a Blob/Buf as a Str tagged hashKind="Blob";
     // its raw UTF-8 bytes are the buffer, so encode/decode are (tagged) identity.
+    if (m == "new" && inv.t == VT::Str) return Value::str(""); // "literal".new — a fresh empty Str
     if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
     if (m == "encode" && inv.t == VT::Str) { Value b = Value::str(inv.s); b.hashKind = "Blob"; return b; }
     if (m == "decode" && inv.t == VT::Str) return Value::str(inv.s);
@@ -3182,6 +3183,7 @@ void Interpreter::registerBuiltins() {
     B["ords"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "ords", none); };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "sign", none); };
+    B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "is-prime", none); };
     B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };
     B["append"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "append", rest); };
     B["join"] = [](Interpreter&, ValueList& a) -> Value {
