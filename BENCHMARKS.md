@@ -127,7 +127,8 @@ With `-O`, `fib` flips from 1.4× behind Rakudo to **~5× ahead**. Method/loop-b
 kernels (`sortnums`/`arrayops`/`hash`/`regex`) are unaffected — their time is spent
 inside runtime methods (`.sort`/`.grep`/hashing), which `-O` doesn't touch.
 `-O` is opt-in and off by default; all benchmark programs produce identical output
-with it.
+with it. See [OPTIMIZATION.md](OPTIMIZATION.md) for what each pass emits, the C++
+optimization-level forwarding (`-O3`/`-Os`/`-Ofast`), and the correctness notes.
 
 ### Real-world: grammar parsing (YAMLish)
 
