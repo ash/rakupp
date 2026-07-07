@@ -794,7 +794,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Supply as a type object: constructors that build an eager, list-backed Supply.
     if (inv.t == VT::Type && inv.s == "Supply") {
         auto mkSupply = [&](ValueList vals) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v; return s; };
-        if (m == "from-list") return mkSupply(flattenArgs(args));
+        if (m == "from-list") { // each arg is one value; Ranges/Lists expand, but [..] items don't
+            ValueList out;
+            for (auto& a : args) {
+                if (a.t == VT::Range) { for (auto& x : a.flatten()) out.push_back(x); }
+                else if (a.t == VT::Array && a.isList && a.arr) { for (auto& x : *a.arr) out.push_back(x); }
+                else out.push_back(a);
+            }
+            return mkSupply(out);
+        }
         if (m == "merge" || m == "zip") { ValueList all; for (auto& a : flattenArgs(args)) { if (a.t == VT::Hash && a.hashKind == "Supply" && a.hash->count("values")) for (auto& x : *(*a.hash)["values"].arr) all.push_back(x); } return mkSupply(all); }
         if (m == "interval") { ValueList v; for (int i = 0; i < 5; i++) v.push_back(Value::integer(i)); return mkSupply(v); } // finite stand-in
         if (m == "empty") return mkSupply({});
@@ -3431,7 +3439,7 @@ void Interpreter::registerBuiltins() {
         return Value::any();
     };
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array();
+        Value out = Value::array(); out.isList = true; // flat is a List (flattens in list context)
         for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
         return out;
     };
