@@ -116,18 +116,24 @@ semantics-preserving codegen passes:
    the small-int case as native `int64` (overflow promotes to bignum), instead of
    the string-dispatched `applyArith`.
 
-Together these transform the two arithmetic/call-bound kernels:
+The fast-path covers `+ - * % %% ~ < <= > >= == !=`, so `-O` helps in proportion
+to how much of a kernel is arithmetic/string ops the codegen emits:
 
-| Benchmark | `--exe` | `--exe -O` | Rakudo | `-O` vs Rakudo |
-|---|---:|---:|---:|---|
-| fib     | 540 ms | **70 ms** | 383 ms | **Raku++ 5.5×** |
-| loopsum | 83 ms  | **20 ms** | 236 ms | **Raku++ 12×**  |
+| Benchmark | `--exe` | `--exe -O` | speed-up |
+|---|---:|---:|---:|
+| fib      | 540 ms | **70 ms** | 7.6× |
+| loopsum  | 83 ms  | **20 ms** | 4×   |
+| strcat   | 40 ms  | **20 ms** | 2×   |
+| arrayops | 90 ms  | **60 ms** | 1.5× |
+| hash     | 30 ms  | **20 ms** | 1.5× |
+| sortnums | 50 ms  | 40 ms  | ~1.2× |
+| regex / bigint | — | (unchanged) | — |
 
-With `-O`, `fib` flips from 1.4× behind Rakudo to **~5× ahead**. Method/loop-bound
-kernels (`sortnums`/`arrayops`/`hash`/`regex`) are unaffected — their time is spent
-inside runtime methods (`.sort`/`.grep`/hashing), which `-O` doesn't touch.
-`-O` is opt-in and off by default; all benchmark programs produce identical output
-with it. See [OPTIMIZATION.md](OPTIMIZATION.md) for what each pass emits, the C++
+With `-O`, `fib` flips from 1.4× behind Rakudo to **~5× ahead**. `regex` (the regex
+engine) and `bigint` (`BigInt` multiply) don't move — their time is inside a
+runtime method the codegen doesn't emit. `-O` is opt-in and off by default; all
+benchmark programs produce identical output with it — see
+[OPTIMIZATION.md](OPTIMIZATION.md) for details. See [OPTIMIZATION.md](OPTIMIZATION.md) for what each pass emits, the C++
 optimization-level forwarding (`-O3`/`-Os`/`-Ofast`), and the correctness notes.
 
 ### Real-world: grammar parsing (YAMLish)

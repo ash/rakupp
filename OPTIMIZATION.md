@@ -65,11 +65,17 @@ method calls are untouched.
 
 ### 2. Inline int64 arithmetic (skip the string dispatch and boxing)
 
-For `+ - * < <= > >= == !=`, the codegen emits inline helpers
-(`rtAdd`/`rtSub`/`rtMul`/`rtLt`/`rtLe`/`rtGt`/`rtGe`/`rtEq`/`rtNe`, declared
-`inline` in `Interpreter.h`) instead of `applyArith("…", …)`. Each inlines the
-**small-int** case as native `int64` and falls back to `applyArith` for
-everything else:
+For the common operators the codegen emits inline helpers (declared `inline` in
+`Interpreter.h`) instead of `applyArith("…", …)`:
+
+| ops | helper | fast path |
+|---|---|---|
+| `+` `-` `*` | `rtAdd`/`rtSub`/`rtMul` | native `int64`, overflow → bignum |
+| `<` `<=` `>` `>=` `==` `!=` | `rtLt`/… | `int64` compare |
+| `%` `%%` | `rtMod`/`rtDivides` | `int64` mod (sign follows divisor) / divisibility |
+| `~` | `rtConcat` | direct `std::string` concat when both are `Str` |
+
+Each inlines its fast case and falls back to `applyArith` for everything else:
 
 ```cpp
 inline Value rtAdd(const Value& l, const Value& r) {
@@ -122,18 +128,26 @@ default — it's for inspecting/debugging the generated C++, not for speed.
 ## Measured impact
 
 `--exe`, best of several runs, runtime-supplied input (so nothing is
-constant-folded); Rakudo v2026.06 for reference.
+constant-folded).
 
-| Benchmark | `--exe` | `--exe -O` | Rakudo | `-O` vs Rakudo |
+| Benchmark | `--exe` | `--exe -O` | speed-up | what `-O` reached |
 |---|---:|---:|---:|---|
-| fib     | 0.54 s | **0.07 s** | 0.38 s | **Raku++ ~5.5×** |
-| loopsum | 0.08 s | **0.02 s** | 0.24 s | **Raku++ ~12×** |
+| fib      | 0.53 s | **0.07 s** | 7.6× | calls + `+ - <` |
+| loopsum  | 0.08 s | **0.02 s** | 4×   | `+=` |
+| strcat   | 0.04 s | **0.02 s** | 2×   | `~=` |
+| arrayops | 0.09 s | **0.06 s** | 1.5× | `* %% 3` over 200k |
+| hash     | 0.03 s | **0.02 s** | 1.5× | `% 1000` |
+| sortnums | 0.05 s | 0.04 s | ~1.2× | map-body arithmetic |
+| regex    | 0.08 s | 0.08 s | — | (regex engine) |
+| bigint   | 0.04 s | 0.04 s | — | (`BigInt` multiply) |
 
 `fib` was the *only* kernel where Rakudo led at the default `--exe`; with `-O` it
-runs ~5× ahead. The other kernels (`sortnums`, `arrayops`, `hash`, `regex`,
-`strcat`, `bigint`) are essentially unchanged, because their time is spent
-**inside runtime methods** — `.sort`, `.grep`, hashing, `BigInt` multiply — which
-the codegen doesn't emit and `-O` therefore can't touch.
+runs ~5× ahead. `-O` helps in proportion to how much of a kernel's time is
+arithmetic/string ops the codegen emits. Where the time is **inside a runtime
+method** — the regex engine, `BigInt` multiply — `-O` can't reach it, so those two
+are unmoved. `sortnums`/`arrayops` move only partway: their arithmetic
+(`.map` bodies, the `grep` predicate) speeds up, but `.sort` and the per-element
+closure iteration dominate and stay in the runtime.
 
 ## Correctness
 
