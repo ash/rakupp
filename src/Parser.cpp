@@ -152,9 +152,11 @@ static bool startsTermToken(const Token& t) {
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
                    t.text == "$" || t.text == "@" || t.text == "%"; // contextualizers $( $[ @( %(
         case Tok::Ident:
-            // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords
+            // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords;
+            // my/our/state/has/constant begin a declaration expression (`ok my $x = 5, "d"`)
             return !kBlockKeywords.count(t.text) ||
-                   t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start";
+                   t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
+                   t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant";
         default:
             return false;
     }
@@ -182,9 +184,11 @@ static bool startsListopArg(const Token& t) {
                 "x", "xx", "and", "or", "andthen", "orelse", "div", "mod", "gcd", "lcm",
             };
             if (wordInfix.count(t.text)) return false;
-            // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords
+            // sub/method/do/start begin an expression (anonymous routine / do-block); my/our/state/has/
+            // constant begin a declaration expression that is a valid list-op argument (`ok my $x = 5, "d"`)
             return !kBlockKeywords.count(t.text) ||
-                   t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start";
+                   t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
+                   t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant";
         }
         default:
             return false;

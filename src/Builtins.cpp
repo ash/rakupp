@@ -591,6 +591,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash)["fd"] = Value::integer(fd);
         return s;
     }
+    // CompUnit::DependencySpecification.new(:short-name<Foo>, …) — a module dependency
+    // descriptor. Requires a Str short-name; the version/auth/api matchers default True.
+    if (inv.t == VT::Type && inv.s == "CompUnit::DependencySpecification" && m == "new") {
+        Value shortName; bool haveSN = false;
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "short-name") { shortName = a.pairVal ? *a.pairVal : Value::any(); haveSN = true; }
+        if (!haveSN || shortName.t != VT::Str)
+            throw RakuError{Value::typeObj("X::AdHoc"), "CompUnit::DependencySpecification requires a Str :short-name"};
+        Value o = Value::makeHash(); o.hashKind = "DependencySpec";
+        (*o.hash)["short-name"] = shortName;
+        for (const char* k : {"version-matcher", "auth-matcher", "api-matcher"}) {
+            Value v = Value::boolean(true);
+            for (auto& a : args) if (a.t == VT::Pair && a.s == k && a.pairVal) v = *a.pairVal;
+            (*o.hash)[k] = v;
+        }
+        return o;
+    }
     // Buf/Blob.new(byte, byte, …) — a byte buffer, stored as a Str of those bytes.
     if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
         std::string bytes;
@@ -1353,6 +1369,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "name") return Value::str(inv.code->name);
     }
 
+    // CompUnit::DependencySpecification accessors.
+    if (inv.t == VT::Hash && inv.hashKind == "DependencySpec") {
+        if (m == "short-name" || m == "version-matcher" || m == "auth-matcher" || m == "api-matcher")
+            return inv.hash->count(m) ? (*inv.hash)[m] : Value::any();
+    }
     // IO::Socket::INET connection/listener methods.
     if (inv.t == VT::Hash && inv.hashKind == "Socket") {
         int fd = (int)(*inv.hash)["fd"].toInt();
