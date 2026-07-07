@@ -202,6 +202,7 @@ struct SubDecl : Stmt {
     bool isMethod = false;
     bool isSubmethod = false;
     bool isExport = false; // `is export` — visible to importers of the enclosing module
+    std::string retType;   // `of Num` / `returns Int` / `--> T` return type (for .returns/.of)
     SubDecl(): Stmt(NK::SubDecl) {}
 };
 

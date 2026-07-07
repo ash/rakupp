@@ -1297,6 +1297,7 @@ Value Interpreter::exec(Stmt* s) {
                 c.code->params = prms;
                 c.code->body = &sd->body;
                 c.code->closure = tctx_.cur;
+                c.code->retType = sd->retType;
                 if (prms->empty()) c.code->placeholders = computePlaceholders(sd->body);
                 return c;
             };
@@ -1451,6 +1452,7 @@ Value Interpreter::exec(Stmt* s) {
                 code.code = std::make_shared<Callable>();
                 code.code->name = md->name;
                 code.code->params = &md->params;
+                code.code->retType = md->retType;
                 code.code->body = &md->body;
                 code.code->closure = tctx_.cur;
                 code.code->isMethod = true; // invoked via .() binds the 1st arg as self

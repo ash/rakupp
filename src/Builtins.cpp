@@ -513,6 +513,29 @@ static Value makeBaggy(const ValueList& items, const std::string& kind) {
     return h;
 }
 
+// Build a Signature introspection value from a routine's parameters.
+// Rendered as a Hash tagged "Signature" carrying its .raku text and arity/count.
+static Value makeSignature(const Callable* c) {
+    std::string sig = "(";
+    long long arity = 0, count = 0; bool slurpy = false, first = true;
+    if (c && c->params) for (auto& p : *c->params) {
+        if (p.invocant) continue;
+        if (!first) sig += ", ";
+        first = false;
+        if (!p.type.empty()) sig += p.type + " ";
+        sig += p.name.empty() ? std::string(1, p.sigil) : p.name;
+        if (p.named) sig += "!"; // marked as named; doesn't affect arity/count below
+        else if (p.optional) sig += "?";
+        if (!p.named) { if (p.slurpy) slurpy = true; else { count++; if (!p.optional) arity++; } }
+    }
+    sig += ")";
+    Value s = Value::makeHash(); s.hashKind = "Signature";
+    (*s.hash)["str"] = Value::str(sig);
+    (*s.hash)["arity"] = Value::integer(arity);
+    (*s.hash)["count"] = slurpy ? Value::number(1.0/0.0) : Value::integer(count);
+    return s;
+}
+
 // ---------------- method dispatch ----------------
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -558,6 +581,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // type (HOW), even when called on an instance.
         Value tobj = (inv.t == VT::Object && inv.obj && inv.obj->cls) ? Value::typeObj(inv.obj->cls->name) : inv;
         return methodCall(tobj, mm, args, rwArgs);
+    }
+
+    // Signature introspection value (from &routine.signature).
+    if (inv.t == VT::Hash && inv.hashKind == "Signature") {
+        if (m == "raku" || m == "gist" || m == "Str" || m == "perl")
+            return inv.hash->count("str") ? (*inv.hash)["str"] : Value::str("()");
+        if (m == "arity") return inv.hash->count("arity") ? (*inv.hash)["arity"] : Value::integer(0);
+        if (m == "count") return inv.hash->count("count") ? (*inv.hash)["count"] : Value::integer(0);
     }
 
     // A `but`/`does` mixin over a non-object base: a composed role/class method wins,
@@ -1309,8 +1340,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 return out;
             }
             if (m == "methods") {
+                // `:local` → only this class's own methods; otherwise walk the user
+                // inheritance chain (parents + roles), stopping before Any/Mu.
+                bool local = false;
+                for (auto& a : args) if (a.t == VT::Pair && a.s == "local")
+                    local = a.pairVal ? a.pairVal->truthy() : true;
                 Value out = Value::array(); out.isList = true;
-                for (auto& kv : ci->methods) out.arr->push_back(kv.second);
+                std::set<ClassInfo*> visited; // dedup by class (MRO), not by method name
+                std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
+                    if (!c || !visited.insert(c).second) return;
+                    for (auto& kv : c->methods) out.arr->push_back(kv.second);
+                    if (local) return;
+                    walk(c->parent.get());
+                    for (auto& p : c->extraParents) walk(p.get());
+                };
+                walk(ci.get());
                 return out;
             }
             if (m == "roles" || m == "role_typecheck_list") { // composed roles
@@ -1453,7 +1497,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             else n = (long long)inv.code->placeholders.size();
             return Value::integer(n);
         }
+        if (m == "count") { // required + optional positionals; a slurpy makes it Inf
+            long long n = 0; bool slurpy = false;
+            if (inv.code->params) for (auto& p : *inv.code->params) {
+                if (p.named) continue;
+                if (p.slurpy) slurpy = true; else n++;
+            } else n = (long long)inv.code->placeholders.size();
+            return slurpy ? Value::number(1.0/0.0) : Value::integer(n);
+        }
         if (m == "name") return Value::str(inv.code->name);
+        if (m == "returns" || m == "of")
+            return inv.code->retType.empty() ? Value::typeObj("Mu") : Value::typeObj(inv.code->retType);
+        if (m == "signature") return makeSignature(inv.code.get());
+        if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code->isMultiDispatcher);
+        if (m == "candidates") {
+            Value out = Value::array(); out.isList = true;
+            if (inv.code->isMultiDispatcher) for (auto& c : inv.code->candidates) out.arr->push_back(c);
+            else out.arr->push_back(inv);
+            return out;
+        }
     }
 
     // CompUnit::DependencySpecification accessors.

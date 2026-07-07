@@ -1802,9 +1802,15 @@ StmtPtr Parser::parseSub(bool isMulti) {
         expectKind(Tok::RParen, ")");
     }
     // optional return type / traits up to block: skip until '{'
-    // (note whether an `is export` trait is present — governs module visibility)
+    // (note whether an `is export` trait is present — governs module visibility;
+    //  capture `of T` / `returns T` / `--> T` as the return type)
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
         if (isIdent("export")) s->isExport = true;
+        if ((isIdent("of") || isIdent("returns")) && peek().kind == Tok::Ident) {
+            advance(); s->retType = cur().text;
+        } else if (isOp("-->") && peek().kind == Tok::Ident) {
+            advance(); s->retType = cur().text;
+        }
         advance();
     }
     if (isKind(Tok::LBrace)) {
