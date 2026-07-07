@@ -48,19 +48,19 @@ implementation. Against the full Roast suite of **1,464 `.t` files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **278** | **19%** |
+| **Fully passing** | **279** | **19%** |
 | Partially passing | 611 | 42% |
 | No TAP output (parse error / unimplemented) | 576 | 39% |
 | Timeouts | 2 | 0.1% |
 
 Two numbers describe where Raku++ stands, and they measure different things:
 
-- **Coverage — 278 / 1,464 files fully pass (~19%).** This is the headline: how
+- **Coverage — 279 / 1,464 files fully pass (~19%).** This is the headline: how
   much of Roast runs end-to-end. Over a third of the suite produces no TAP at all
   yet (a parse error or unimplemented construct aborts the file before any
   assertion runs), so those files are unmeasured, not passing.
-- **Correctness on what runs — 130,967 / 188,393 assertions pass.** This counts
-  only assertions in files that produce TAP. The 568 no-TAP files contribute
+- **Correctness on what runs — 131,007 / 188,451 assertions pass.** This counts
+  only assertions in files that produce TAP. The 565 no-TAP files contribute
   none to the denominator, and one subsystem (S15, Unicode) is ~88k of the
   total. It measures how much of the attempted subset is correct — a
   regression signal, on a different denominator than the coverage figure.

@@ -56,7 +56,7 @@ program runs under either mode.
 | `sleep`/`await`/subprocess waits | overlap (GIL released) | overlap |
 | `Lock` / `Semaphore` | no-ops (the GIL already serialises) | real mutual exclusion |
 | Unsynchronised shared mutation | safe (serialised) | **your race** — guard it with a `Lock`, as in Rakudo |
-| Roast suite | 278 pass | 278 pass (0 regressions) |
+| Roast suite | 279 pass | 279 pass (0 regressions) |
 
 Select the mode from the shell:
 
