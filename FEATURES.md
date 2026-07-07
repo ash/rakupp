@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **275 / 1,464 files fully pass (~19%)**; 611 partial, 576 no-TAP, 2 timeout. (Among files that run, 130,861 / 188,193 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **276 / 1,464 files fully pass (~19%)**; 610 partial, 576 no-TAP, 2 timeout. (Among files that run, 130,866 / 188,224 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
 
 ## Language versions (6.c / 6.d / 6.e)
 

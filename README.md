@@ -8,7 +8,7 @@ Unicode-correct strings. It is not a fork of Rakudo and shares no code with it;
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** **275 / 1,464 Roast files fully pass (~19%)**; 130,861 assertions
+**Status:** **276 / 1,464 Roast files fully pass (~19%)**; 130,866 assertions
 passing on the files that run. Early-stage, growing test-first. See
 [the full guide](GUIDE.md) for the complete picture.
 
