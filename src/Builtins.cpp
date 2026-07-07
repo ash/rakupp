@@ -400,6 +400,16 @@ static std::string joinValues(const ValueList& items, const std::string& sep) {
     return out;
 }
 
+// A lazy @-array over the integers from `start` upward (an infinite `…..Inf` range).
+static Value makeInfArray(long long start) {
+    Value a = Value::array(); a.isList = true;
+    auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+    auto next = std::make_shared<long long>(start);
+    st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
+    a.ext = st;
+    return a;
+}
+
 static ValueList toList(const Value& v) {
     if (v.t == VT::Array && v.arr) return *v.arr;
     if (v.t == VT::Range) return v.flatten();
@@ -2144,6 +2154,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // lazy list (infinite `… … *` or a lazy `.map` over one): keep `.map`/`.head`
     // lazy so consumers materialise only what they index.
     if (inv.t == VT::Array && inv.ext) {
+        bool infinite = std::static_pointer_cast<LazySeqState>(inv.ext)->infinite;
+        if (m == "is-lazy") return Value::boolean(true);
+        if (infinite) {
+            // operations that need the end of the list can't complete on an infinite source
+            if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
+                m == "sort" || m == "eager" || m == "List" || m == "Array" || m == "sum" ||
+                m == "min" || m == "max" || m == "join" || m == "Str" || m == "gist")
+                throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list onto an Array"};
+            if (m == "shift") { materializeLazy(inv, 1); if (inv.arr->empty()) return Value::nil(); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); return v; }
+        }
         if (m == "map" && !args.empty() && args[0].t == VT::Code && codeArity(args[0]) == 1) {
             Value fn = args[0], src = inv;                 // src shares arr+ext with inv
             Value out = Value::array(); out.isList = true; // 1:1 map → cache index == source index
@@ -2170,6 +2190,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // list / array / range
+    // an infinite range (…..Inf) must not materialise: only lazy views are defined
+    if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL) {
+        long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0);
+        if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
+        if (m == "head" && args.empty()) return Value::integer(lo); // scalar first element
+        if (m == "head") { long long n = std::max(0LL, args[0].toInt());
+            Value o = Value::array(); o.isList = true; for (long long i = 0; i < n; i++) o.arr->push_back(Value::integer(lo + i)); return o; }
+        if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo, false, inv.rExTo); }
+        if (m == "elems" || m == "Numeric" || m == "Int") return Value::number(INFINITY);
+        if (m == "min") return Value::integer(lo);
+        if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat" || m == "map" || m == "grep")
+            return (m == "map" || m == "grep") ? methodCall(makeInfArray(lo), m, args, rwArgs) : makeInfArray(lo);
+        if (m == "AT-POS" && !args.empty()) return Value::integer(lo + args[0].toInt()); // infRange[i]
+        if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" || m == "max" || m == "sum" ||
+            m == "Array" || m == "eager" || m == "join" || m == "Str" || m == "gist")
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " an infinite range"};
+    }
     if (inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Hash) {
         ValueList items = toList(inv);
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction
@@ -3434,10 +3471,13 @@ void Interpreter::registerBuiltins() {
         return Value::any();
     };
     B["pop"] = [](Interpreter&, ValueList& a) -> Value {
+        if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite)
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->back(); a[0].arr->pop_back(); return v; }
         return Value::any();
     };
-    B["shift"] = [](Interpreter&, ValueList& a) -> Value {
+    B["shift"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite) I.materializeLazy(a[0], 1);
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->front(); a[0].arr->erase(a[0].arr->begin()); return v; }
         return Value::any();
     };

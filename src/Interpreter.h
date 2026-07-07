@@ -71,6 +71,7 @@ struct ExecContext {
 // on demand (returns false when exhausted). Reached via Value::ext.
 struct LazySeqState {
     std::function<bool(ValueList&)> appendNext;
+    bool infinite = false; // a truly unbounded source (…..Inf): elems/pop/tail/[*-1] must die
 };
 
 // Shared state behind a real (thread-backed) Promise. Copies of the Promise

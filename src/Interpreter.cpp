@@ -322,7 +322,18 @@ Value listToArray(const ValueList& items) {
 
 static Value coerceArray(const Value& v) {
     if (v.t == VT::Array) { if (!v.isList) return v; Value r = v; r.isList = false; return r; } // @-container is an Array
-    if (v.t == VT::Range) return Value::array(v.flatten());
+    if (v.t == VT::Range) {
+        if (v.rTo >= 9000000000000000000LL) { // …..Inf : a lazy @-array, materialised on demand
+            long long start = v.rFrom + (v.rExFrom ? 1 : 0);
+            Value a = Value::array(); a.isList = false;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto next = std::make_shared<long long>(start);
+            st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
+            a.ext = st;
+            return a;
+        }
+        return Value::array(v.flatten());
+    }
     Value a = Value::array();
     if (v.t != VT::Nil && v.t != VT::Any) a.arr->push_back(v);
     return a;
@@ -1989,6 +2000,10 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
 }
 
 Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
+    // @a[*-1] / @a[*] against an infinite lazy array can't know the end
+    if (base.t == VT::Array && base.ext && std::static_pointer_cast<LazySeqState>(base.ext)->infinite
+        && (key.t == VT::Whatever || (key.t == VT::Code && key.code && key.code->isWhateverCode)))
+        throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
     long long n = (base.t == VT::Array && base.arr) ? (long long)base.arr->size()
                 : base.t == VT::Range ? (long long)base.flatten().size() : 0;
     if (key.t == VT::Code && key.code && key.code->isWhateverCode)
@@ -2033,6 +2048,10 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         return Value::nil();
     }
     if (base.t == VT::Range) {
+        if (base.rTo >= 9000000000000000000LL) { // infinite range: index directly, don't materialise
+            long long i = key.toInt(); if (i < 0) return Value::nil();
+            return Value::integer(base.rFrom + (base.rExFrom ? 1 : 0) + i);
+        }
         ValueList f = base.flatten();
         long long i = key.toInt(); if (i < 0) i += (long long)f.size();
         if (i >= 0 && i < (long long)f.size()) return f[i];
@@ -4261,11 +4280,19 @@ Value Interpreter::evalCall(Call* c) {
 
 Value Interpreter::evalIndex(Index* idx) {
     Value base = eval(idx->base.get());
+    // subscripting an infinite range (…..Inf) — index its lazy @-array form so
+    // nothing materialises the whole range.
+    if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash)
+        base = methodCall(base, "list", {});
 
     // A lazy list (infinite `… … *` / lazy `.map`): grow its prefix to cover the
     // requested index/slice before subscripting.
     if (base.t == VT::Array && base.ext && !idx->isHash) {
         Value iv = eval(idx->index.get());
+        // an infinite lazy array has no end: `@a[*-1]` / `@a[*]` can't be indexed
+        if (std::static_pointer_cast<LazySeqState>(base.ext)->infinite &&
+            (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)))
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
         long long maxi = -1;
         if (iv.t == VT::Int || iv.t == VT::Num || iv.t == VT::Bool) maxi = iv.toInt();
         else if (iv.t == VT::Range || iv.t == VT::Array) for (auto& e : iv.flatten()) if (e.t == VT::Int || e.t == VT::Num) maxi = std::max(maxi, e.toInt());
