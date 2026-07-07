@@ -2794,6 +2794,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (n2.isZero()) return Value::typeObj("Failure");
             return mkRat(n1 * d2, d1 * n2);
         }
+        if (op == "**" && (r.t == VT::Int || r.t == VT::Bool)) {
+            // a huge exponent produces an impractically large number: Rakudo throws
+            // rather than compute it (base 0/±1 are trivial and excepted).
+            bool baseTrivial = l.t == VT::Int && !l.big && (l.toInt() == 0 || l.toInt() == 1 || l.toInt() == -1);
+            bool hugeExp = (bool)r.big || std::llabs(r.toInt()) > 900000;
+            if (!baseTrivial && hugeExp) {
+                bool neg = !r.big && r.toInt() < 0;
+                throw RakuError{Value::typeObj(neg ? "X::Numeric::Underflow" : "X::Numeric::Overflow"),
+                                neg ? "Numeric underflow" : "Numeric overflow"};
+            }
+        }
         if (op == "**" && (r.t == VT::Int || r.t == VT::Bool) && !r.big) {
             long long e = r.toInt();
             BigInt bn = getN(l), bd = getD(l);
