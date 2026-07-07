@@ -1916,38 +1916,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "match") return regexMatch(subj, pat);
         if (m == "contains") { Regex re(pat); RxMatch mm; return Value::boolean(re.ok() && re.search(subj, 0, mm)); }
         if (m == "subst") {
-            bool g = false;
-            for (auto& a : args) if (a.t == VT::Pair && (a.s == "g" || a.s == "global") && a.pairVal && a.pairVal->truthy()) g = true;
-            // closure replacement: call the block per match with $/ (and $_) bound to the Match
-            if (replArg && replArg->t == VT::Code) {
-                Regex re(pat); std::string out; long pos = 0; RxMatch mm;
-                while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
-                    out += subj.substr(pos, mm.from - pos);
-                    Value matchV = Value::matchVal(subj.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
-                    // populate captures so the block sees $0/$1/… and $<name>
-                    for (auto& c : mm.caps) {
-                        if (c.first < 0) matchV.arrRef().push_back(Value::nil());
-                        else matchV.arrRef().push_back(Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
-                    }
-                    for (auto& kv : mm.named)
-                        matchV.hashRef()[kv.first] = Value::matchVal(subj.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
-                    tctx_.cur->define("$/", matchV);
-                    // $0, $1, … capture vars (as the match path does) so `~$0` works
-                    if (matchV.arr) for (size_t k = 0; k < matchV.arr->size(); k++)
-                        tctx_.cur->define("$" + std::to_string(k), (*matchV.arr)[k]);
-                    Value saved = tctx_.cur->vars.count("$_") ? tctx_.cur->vars["$_"] : Value::any();
-                    tctx_.cur->define("$_", matchV);
-                    out += callCallable(*replArg, {matchV}).toStr();
-                    tctx_.cur->vars["$_"] = saved;
-                    pos = mm.to > mm.from ? mm.to : mm.to + 1;
-                    if (!g) break;
-                }
-                out += subj.substr(std::min((size_t)pos, subj.size()));
-                return Value::str(out);
-            }
-            std::string repl = replArg ? replArg->toStr() : "";
-            std::string out; bool ch;
-            regexSubst(subj, (g ? ":g " : "") + pat, repl, out, ch);
+            long nsub = 0;
+            std::string out = substSelect(subj, pat, replArg, args, nsub);
             return Value::str(out);
         }
         if (m == "comb") {
@@ -1970,17 +1940,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
     if (m == "subst" && args.size() >= 1) { // literal (string) substitution
-        std::string s = inv.toStr(), from = a0().toStr(), to = args.size() > 1 ? args[1].toStr() : "";
-        bool g = false;
-        for (auto& a : args) if (a.t == VT::Pair && (a.s == "g" || a.s == "global") && a.pairVal && a.pairVal->truthy()) g = true;
+        std::string s = inv.toStr(), from = a0().toStr();
         if (from.empty()) return Value::str(s);
-        std::string out; size_t pos = 0, f;
-        while ((f = s.find(from, pos)) != std::string::npos) {
-            out += s.substr(pos, f - pos) + to; pos = f + from.size();
-            if (!g) break;
-        }
-        out += s.substr(pos);
-        return Value::str(out);
+        Value* replArg = nullptr;
+        for (size_t i = 1; i < args.size(); i++) if (args[i].t != VT::Pair) { replArg = &args[i]; break; }
+        long nsub = 0;
+        return Value::str(substSelect(s, from, replArg, args, nsub, /*literal=*/true));
     }
     if (m == "trans") { // $s.trans(@from => @to) / .trans('abc' => 'xyz') / .trans('a..c' => 'A..C')
         std::string s = inv.toStr();

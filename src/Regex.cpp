@@ -647,7 +647,27 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                                             n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),
                                             st, pos, k);
             }
-            if (!st.resolver) return k(pos); // no grammar context: lenient zero-width
+            if (!st.resolver) {
+                // built-in char-class fallback for <.alpha>/<.digit>/… with no grammar
+                const std::string& nm = n->ruleName;
+                std::string fl;
+                if (nm == "alpha") fl = "a"; else if (nm == "digit") fl = "d";
+                else if (nm == "alnum" || nm == "ident") fl = "ad";
+                else if (nm == "space" || nm == "blank") fl = "s";
+                else if (nm == "upper") fl = "u"; else if (nm == "lower") fl = "l";
+                else if (nm == "xdigit") fl = "x"; else if (nm == "word") fl = "w";
+                if (!fl.empty()) {
+                    if (pos >= len) return false;
+                    unsigned char c = st.s[pos]; bool ok = false;
+                    for (char f : fl) ok = ok ||
+                        (f == 'a' && std::isalpha(c)) || (f == 'd' && std::isdigit(c)) ||
+                        (f == 's' && std::isspace(c)) || (f == 'u' && std::isupper(c)) ||
+                        (f == 'l' && std::islower(c)) || (f == 'x' && std::isxdigit(c)) ||
+                        (f == 'w' && (std::isalnum(c) || c == '_'));
+                    return ok ? k(pos + 1) : false;
+                }
+                return k(pos); // unknown subrule: lenient zero-width
+            }
             RxMatch sub;
             // pass a parameterised call's args to the resolver, encoded after \x1f
             std::string call = n->ruleArgs.empty() ? n->ruleName : (n->ruleName + "\x1f" + n->ruleArgs);

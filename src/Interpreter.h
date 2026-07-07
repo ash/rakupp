@@ -150,6 +150,11 @@ public:
     Value regexMatch(const std::string& subject, const std::string& pattern); // sets $/ $0..
     Value regexSubst(const std::string& subject, const std::string& pattern,
                      const std::string& repl, std::string& out, bool& changed);
+    // .subst / s/// with occurrence-selection adverbs (:g/:x/:nth/:p/:c) and the
+    // sameX adverbs (:samecase/:samespace/:samemark). Sets nsub = # replacements.
+    std::string substSelect(const std::string& subj, const std::string& pat,
+                            Value* replArg, ValueList& args, long& nsub, bool literal = false,
+                            const std::string* tmplRepl = nullptr, Value* matchResult = nullptr);
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions);
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;

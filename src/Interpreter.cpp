@@ -3128,6 +3128,218 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     return last;
 }
 
+// Case pattern of `orig` applied to `repl` (`:samecase`): ALL-CAPS orig → upper,
+// Titlecase orig → capitalised, else lower.
+static std::string applySamecase(const std::string& orig, const std::string& repl) {
+    bool anyUpper = false, anyLower = false, firstUpper = false, seenLetter = false;
+    for (unsigned char c : orig) {
+        if (std::isalpha(c)) {
+            if (!seenLetter) firstUpper = std::isupper(c);
+            seenLetter = true;
+            if (std::isupper(c)) anyUpper = true; else anyLower = true;
+        }
+    }
+    std::string r = repl;
+    if (anyUpper && !anyLower) { for (auto& c : r) c = std::toupper((unsigned char)c); }
+    else if (firstUpper) { bool first = true; for (auto& c : r) { if (std::isalpha((unsigned char)c)) { c = first ? std::toupper((unsigned char)c) : std::tolower((unsigned char)c); first = false; } } }
+    else { for (auto& c : r) c = std::tolower((unsigned char)c); }
+    return r;
+}
+
+std::string Interpreter::substSelect(const std::string& subj, const std::string& pat,
+                                     Value* replArg, ValueList& args, long& nsub, bool literal,
+                                     const std::string* tmplRepl, Value* matchResult) {
+    nsub = 0;
+    bool global = false, samecase = false, samespace = false, samemark = false;
+    bool icase = false, sigspace = false;
+    bool haveX = false, haveNth = false, haveStart = false, posAnchored = false;
+    Value xVal, nthVal; long startPos = 0;
+    auto setAdverb = [&](const std::string& k, const Value& pv) {
+        // ordinal / count adverbs written as one token: :1st :2nd :3rd :5th, :2x
+        if (k.size() >= 2 && std::isdigit((unsigned char)k[0])) {
+            size_t d = 0; while (d < k.size() && std::isdigit((unsigned char)k[d])) d++;
+            std::string suf = k.substr(d);
+            long num = std::stol(k.substr(0, d));
+            if (suf == "st" || suf == "nd" || suf == "rd" || suf == "th") { haveNth = true; nthVal = Value::integer(num); return; }
+            if (suf == "x") { haveX = true; xVal = Value::integer(num); return; }
+        }
+        if ((k == "g" || k == "global") && pv.truthy()) global = true;
+        else if (k == "x") { haveX = true; xVal = pv; }
+        else if (k == "nth" || k == "st" || k == "nd" || k == "rd" || k == "th") { haveNth = true; nthVal = pv; }
+        else if (k == "p" || k == "pos") { haveStart = true; posAnchored = true; startPos = pv.toInt(); }
+        else if (k == "c" || k == "continue") { haveStart = true; startPos = pv.toInt(); }
+        else if (k == "i" || k == "ignorecase") icase = true;
+        else if (k == "samecase" || k == "ii") { samecase = true; icase = true; } // :ii implies :i
+        else if (k == "s" || k == "sigspace") sigspace = true;
+        else if (k == "samespace" || k == "ss") { sigspace = true; samespace = true; }
+        else if (k == "samemark" || k == "mm") samemark = true;
+    };
+    for (auto& a : args)
+        if (a.t == VT::Pair) setAdverb(a.s, a.pairVal ? *a.pairVal : Value::boolean(true));
+    // leading `:name` / `:name(arg)` adverbs baked into the pattern (s///, ss///)
+    std::string realPat = pat;
+    { size_t i = 0;
+      while (i < realPat.size() && realPat[i] == ':') {
+          size_t j = i + 1; std::string name;
+          while (j < realPat.size() && std::isalnum((unsigned char)realPat[j])) name += realPat[j++];
+          if (name.empty()) break;
+          Value argv = Value::boolean(true);
+          if (j < realPat.size() && realPat[j] == '(') {
+              int d = 0; std::string arg;
+              do { char c = realPat[j]; if (c == '(') d++; else if (c == ')') d--; arg += c; j++; } while (j < realPat.size() && d > 0);
+              try { argv = evalString(arg); } catch (...) {}
+          }
+          while (j < realPat.size() && realPat[j] == ' ') j++;
+          setAdverb(name, argv);
+          i = j;
+      }
+      realPat = realPat.substr(i);
+    }
+    (void)samemark;
+    std::vector<RxMatch> matches;
+    if (literal) {
+        // plain string pattern: exact byte search (control chars, no regex metachars)
+        std::string needle = realPat;
+        if (icase) for (auto& c : needle) c = std::tolower((unsigned char)c);
+        std::string hay = subj;
+        if (icase) for (auto& c : hay) c = std::tolower((unsigned char)c);
+        long pos = haveStart ? startPos : 0;
+        while (needle.size() && pos <= (long)hay.size()) {
+            size_t f = hay.find(needle, pos);
+            if (f == std::string::npos) break;
+            RxMatch mm; mm.matched = true; mm.from = (long)f; mm.to = (long)f + (long)needle.size();
+            matches.push_back(mm);
+            pos = mm.to > mm.from ? mm.to : mm.to + 1;
+        }
+    } else {
+        std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "");
+        Regex re(realPat, flags);
+        if (!re.ok()) return subj;
+        long pos = haveStart ? startPos : 0; RxMatch mm;
+        while (pos >= 0 && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
+            matches.push_back(mm);
+            pos = mm.to > mm.from ? mm.to : mm.to + 1;
+        }
+    }
+    // :p(n) anchors the FIRST match exactly at position n (`:c` merely searches from n).
+    if (posAnchored && (matches.empty() || matches[0].from != startPos)) matches.clear();
+    long total = (long)matches.size();
+    // occurrence selection (1-based). :x count, :nth indices, :g all, else first.
+    auto bounds = [&](const Value& v, long& lo, long& hi) {
+        if (v.t == VT::Range) { lo = v.rFrom + (v.rExFrom ? 1 : 0); hi = v.rTo - (v.rExTo ? 1 : 0); }
+        else if (v.t == VT::Whatever || std::isinf(v.toNum())) { lo = 1; hi = total; }
+        else { lo = hi = v.toInt(); }
+    };
+    std::set<long> sel;
+    if (haveNth) {
+        ValueList l = (nthVal.t == VT::Array && nthVal.arr) ? *nthVal.arr : nthVal.flatten();
+        long xcap = total;
+        if (haveX) { long lo, hi; bounds(xVal, lo, hi); xcap = hi; if ((long)l.size() < lo) l.clear(); }
+        long cnt = 0;
+        for (auto& v : l) { long i = v.toInt(); if (cnt >= xcap) break; if (i >= 1 && i <= total) { sel.insert(i); cnt++; } }
+    } else if (haveX) {
+        long lo, hi; bounds(xVal, lo, hi);
+        long count = std::min(total, hi);
+        if (count >= lo && count >= 1) for (long i = 1; i <= count; i++) sel.insert(i);
+    } else if (global) {
+        for (long i = 1; i <= total; i++) sel.insert(i);
+    } else if (total >= 1) sel.insert(1);
+    // Match value (positional + named captures) for one raw match.
+    auto build = [&](const RxMatch& mm) {
+        Value v = Value::matchVal(subj.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
+        for (auto& c : mm.caps) {
+            if (c.first < 0) v.arrRef().push_back(Value::nil());
+            else v.arrRef().push_back(Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
+        }
+        for (auto& kv : mm.named)
+            v.hashRef()[kv.first] = Value::matchVal(subj.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
+        return v;
+    };
+    auto interp = [&](const std::string& s, const Value& mv) -> std::string {
+        std::string r;
+        for (size_t i = 0; i < s.size(); i++) {
+            if (s[i] == '\\' && i + 1 < s.size()) { r += s[i + 1]; i++; continue; }
+            if (s[i] == '$' && i + 1 < s.size() && std::isdigit((unsigned char)s[i + 1])) {
+                size_t j = i + 1; std::string num; while (j < s.size() && std::isdigit((unsigned char)s[j])) num += s[j++];
+                long idx = std::stol(num); if (mv.arr && idx < (long)mv.arr->size()) r += (*mv.arr)[idx].toStr();
+                i = j - 1; continue;
+            }
+            if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '<') {
+                size_t j = s.find('>', i + 2);
+                if (j != std::string::npos) { std::string nm = s.substr(i + 2, j - i - 2);
+                    if (mv.hash && mv.hash->count(nm)) r += (*mv.hash)[nm].toStr(); i = j; continue; }
+            }
+            r += s[i];
+        }
+        return r;
+    };
+    auto replFor = [&](const RxMatch& mm) -> std::string {
+        std::string orig = subj.substr(mm.from, mm.to - mm.from);
+        std::string r;
+        Value matchV = build(mm);
+        auto bindCaps = [&]() {
+            tctx_.cur->define("$/", matchV);
+            if (matchV.arr) for (size_t k = 0; k < matchV.arr->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*matchV.arr)[k]);
+            for (auto& kv : *matchV.hash) tctx_.cur->define("$<" + kv.first + ">", kv.second);
+        };
+        if (replArg && replArg->t == VT::Code) {
+            bindCaps();
+            Value saved = tctx_.cur->vars.count("$_") ? tctx_.cur->vars["$_"] : Value::any();
+            tctx_.cur->define("$_", matchV);
+            r = callCallable(*replArg, ValueList{matchV}).toStr();
+            tctx_.cur->vars["$_"] = saved;
+        } else if (tmplRepl) {
+            // s/// replacement TEMPLATE: `{ code }` evaluated per match, else $N/$<name> interpolation
+            std::string rt = *tmplRepl;
+            size_t a = rt.find_first_not_of(" \t\n"), b = rt.find_last_not_of(" \t\n");
+            std::string t = a == std::string::npos ? "" : rt.substr(a, b - a + 1);
+            bindCaps();
+            if (t.size() >= 2 && t.front() == '{' && t.back() == '}') {
+                // a code replacement re-parsed here can't see caller-local custom infixes
+                // (`s[…] fromplus= …`); on failure keep the original so it can't abort.
+                try { r = evalString(t.substr(1, t.size() - 2)).toStr(); } catch (...) { r = orig; }
+            } else r = interp(*tmplRepl, matchV);
+        } else if (replArg) {
+            r = replArg->toStr();
+        }
+        if (samecase) r = applySamecase(orig, r);
+        if (samespace) {
+            // replace each whitespace run in r with the corresponding run in the match
+            std::vector<std::string> ws;
+            for (size_t i = 0; i < orig.size(); ) {
+                if (std::isspace((unsigned char)orig[i])) { std::string w; while (i < orig.size() && std::isspace((unsigned char)orig[i])) w += orig[i++]; ws.push_back(w); }
+                else i++;
+            }
+            std::string a; size_t wi = 0;
+            for (size_t i = 0; i < r.size(); ) {
+                if (std::isspace((unsigned char)r[i])) { while (i < r.size() && std::isspace((unsigned char)r[i])) i++; a += wi < ws.size() ? ws[wi++] : std::string(" "); }
+                else a += r[i++];
+            }
+            r = a;
+        }
+        return r;
+    };
+    std::string out; long last = 0, occ = 0;
+    std::vector<Value> selMatches;
+    for (auto& mm : matches) {
+        occ++;
+        out += subj.substr(last, mm.from - last);
+        if (sel.count(occ)) { out += replFor(mm); nsub++; selMatches.push_back(build(mm)); }
+        else out += subj.substr(mm.from, mm.to - mm.from);
+        last = mm.to;
+    }
+    out += subj.substr(last);
+    // $/ / the s/// return value: no match → falsey Nil; :g/:nth → a List of Matches;
+    // otherwise the single Match. (`.Str` = matched text, `+` of the :g List = count.)
+    Value result;
+    if (selMatches.empty()) result = Value::nil();
+    else if (global || haveNth) { result = Value::list(selMatches); }
+    else result = selMatches.back();
+    tctx_.cur->define("$/", result);
+    if (matchResult) *matchResult = result;
+    return out;
+}
+
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
                                 const std::string& startRule, Value actions) {
     bool haveActions = (actions.t == VT::Object || actions.t == VT::Type);
@@ -3496,11 +3708,11 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (Value* lv = lvalue(b->lhs.get())) *lv = Value::str(out);
                 return Value::integer(n);
             }
-            std::string out; bool changed;
-            Value m = regexSubst(l.toStr(), sub->pattern, sub->repl, out, changed);
+            long nsub = 0; ValueList noArgs; Value mres;
+            std::string out = substSelect(l.toStr(), sub->pattern, nullptr, noArgs, nsub, false, &sub->repl, &mres);
             if (sub->nonMut) return Value::str(out);        // S/// : return new string, leave lhs intact
             if (Value* lv = lvalue(b->lhs.get())) *lv = Value::str(out);
-            return m;
+            return mres;                                     // s/// returns the Match / List of matches
         }
         // `X ~~ Y` topicalizes: $_ is bound to X while Y is evaluated (so `$x ~~ .so` works)
         Value lTopic = eval(b->lhs.get());
@@ -4049,11 +4261,11 @@ Value Interpreter::eval(Expr* e) {
                 if (Value* p = tctx_.cur->find("$_")) *p = Value::str(out);
                 return Value::integer(n);
             }
-            std::string out; bool changed;
-            Value m = regexSubst(topic.toStr(), sl->pattern, sl->repl, out, changed);
+            long nsub = 0; ValueList noArgs; Value mres;
+            std::string out = substSelect(topic.toStr(), sl->pattern, nullptr, noArgs, nsub, false, &sl->repl, &mres);
             if (sl->nonMut) return Value::str(out);        // S/// : return new string, leave $_ intact
             if (Value* p = tctx_.cur->find("$_")) *p = Value::str(out);
-            return m;
+            return mres;                                    // s/// returns the Match / List of matches
         }
         case NK::BoolLit: return Value::boolean(static_cast<BoolLit*>(e)->v);
         case NK::InterpStr: return evalInterp(static_cast<InterpStr*>(e));
