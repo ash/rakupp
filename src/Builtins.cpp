@@ -1184,6 +1184,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "truncated-to" || m == "earlier" || m == "later") return inv; // best-effort (weeks/months etc.)
     }
 
+    if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq") && m == "new") {
+        Value v = Value::array(); v.isList = (inv.s != "Array"); for (auto& a : args) for (auto& x : toList(a)) v.arr->push_back(x); return v;
+    }
     if (inv.t == VT::Type) {
         if (inv.s.rfind("IO::Spec", 0) == 0) { Value r; if (ioSpecMethod(*this, inv.s, m, args, r)) return r; }
         auto cit = classes_.find(inv.s);
@@ -2079,7 +2082,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
          inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair) &&
         (m == "grep" || m == "map" || m == "first" || m == "sort" || m == "reverse" ||
-         m == "flat" || m == "reduce" || m == "grep-index" || m == "first-index" || m == "Supply")) {
+         m == "flat" || m == "reduce" || m == "grep-index" || m == "first-index" || m == "Supply" ||
+         m == "head" || m == "tail" || m == "skip" || m == "elems" || m == "end" ||
+         m == "keys" || m == "values" || m == "kv" || m == "pairs" || m == "batch" || m == "rotor")) {
         Value one = Value::array(); one.arr->push_back(inv); one.isList = true;
         return methodCall(one, m, args, rwArgs);
     }
@@ -2123,6 +2128,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = items; (*s.hash)["values"] = v; return s; }
         if (m == "chrs") { std::string r; for (auto& x : items) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); } // list of codepoints -> Str
+        if (m == "of") return Value::typeObj("Mu"); // element type of an untyped Array/List
         if (m == "elems") return Value::integer((long long)items.size());
         if (m == "end") return Value::integer((long long)items.size() - 1);
         if (m == "Bool") return Value::boolean(!items.empty());
@@ -2505,6 +2511,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
 
+    // an undefined scalar still reports as a 1-item list for .elems (Any.elems == 1)
+    if ((inv.t == VT::Any || inv.t == VT::Nil) && m == "elems") return Value::integer(1);
     // fallthrough: unknown method
     throw RakuError{Value::str("No method '" + m + "'"),
                     "No such method '" + m + "' for type " + inv.typeName()};
@@ -3184,6 +3192,8 @@ void Interpreter::registerBuiltins() {
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "sign", none); };
     B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "is-prime", none); };
+    B["end"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling end() requires an argument"}; ValueList none; return I.methodCall(a[0], "end", none); };
+    B["kv"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling kv() requires an argument"}; ValueList none; return I.methodCall(a[0], "kv", none); };
     B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };
     B["append"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "append", rest); };
     B["join"] = [](Interpreter&, ValueList& a) -> Value {
