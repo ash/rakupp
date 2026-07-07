@@ -474,7 +474,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     std::string w;
     while (p < src_.size() && std::isalpha((unsigned char)src_[p])) { w += src_[p]; p++; }
     bool isRegex = (w == "rx" || w == "m" || w == "ms" || w == "mm");
-    bool isSubst = (w == "s" || w == "S");
+    bool isSubst = (w == "s" || w == "S" || w == "ss" || w == "SS");
     bool isTrans = (w == "tr" || w == "y"); // transliteration tr/from/to/
     bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww"); // word-list quotes
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans) return false;
@@ -485,9 +485,18 @@ bool Lexer::tryQuoteForm(Token& out) {
         std::string a;
         while (q < src_.size() && std::isalnum((unsigned char)src_[q])) a += src_[q++];
         if (a.empty()) break;
-        adverbs += ":" + a + " ";
+        std::string arg; // parenthesized adverb argument: :x(2), :nth(3), :nth(1,3,5)
+        if (q < src_.size() && src_[q] == '(') {
+            int d = 0;
+            do { char c = src_[q]; if (c == '(') d++; else if (c == ')') d--; arg += c; q++; } while (q < src_.size() && d > 0);
+        }
+        adverbs += ":" + a + arg + " ";
         p = q;
     }
+    if (w == "ss" || w == "SS") adverbs = ":samespace " + adverbs; // ss/// == s:samespace///
+    // whitespace is allowed before a bracketing delimiter: `s:g [ pat ] = repl`
+    { size_t ws = p; while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t')) ws++;
+      if (ws < src_.size() && (src_[ws] == '(' || src_[ws] == '[' || src_[ws] == '{' || src_[ws] == '<')) p = ws; }
     if (p >= src_.size()) return false;
     char d = src_[p];
     char close;
@@ -504,6 +513,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     // assignment form s[pat] = repl. If neither follows, this is really a call like
     // S(5) or s($x) — not a substitution — so let it lex as an identifier instead.
     bool assignForm = false;
+    std::string assignOp; // s[pat] OP= repl : "" = plain `=`, else the op (`+`, `x`, …)
     if (isSubst && bracket) {
         int depth = 0; size_t q = p;
         for (; q < src_.size(); q++) {
@@ -511,8 +521,11 @@ bool Lexer::tryQuoteForm(Token& out) {
             else if (src_[q] == close) { depth--; if (depth == 0) { q++; break; } }
         }
         while (q < src_.size() && std::isspace((unsigned char)src_[q])) q++;
-        if (q < src_.size() && src_[q] == '=' && (q + 1 >= src_.size() || src_[q + 1] != '=' && src_[q + 1] != '~'))
-            assignForm = true; // s[pat] = repl
+        // any assignment operator: `=`, `+=`, `x=`, `~=`, `//=`, … (not `==`/`=~`/`=>`)
+        size_t r = q; std::string op;
+        while (r < src_.size() && (std::isalnum((unsigned char)src_[r]) || strchr("+-*/~%.|&^", src_[r]))) op += src_[r++];
+        if (r < src_.size() && src_[r] == '=' && (r + 1 >= src_.size() || (src_[r + 1] != '=' && src_[r + 1] != '~' && src_[r + 1] != '>')))
+            { assignForm = true; assignOp = op; }
         else if (q >= src_.size() || src_[q] != d) return false;
     }
     bool patQuoteAware = (isRegex || isSubst) && !bracket; // regex/subst PATTERN: '...'/{...}/<...>/[...] protect the delimiter
@@ -564,18 +577,41 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     if (isSubst || isTrans) {
         std::string repl;
-        if (assignForm) { // s[pat] = "repl" : the RHS string literal is the replacement
+        if (assignForm) { // s[pat] OP= repl : the RHS applied per match
             while (!eof() && std::isspace((unsigned char)peek())) advance();
+            for (size_t k = 0; k < assignOp.size() && !eof(); k++) advance(); // skip the op prefix
             if (peek() == '=') advance();
             while (!eof() && std::isspace((unsigned char)peek())) advance();
-            char rq = peek();
+            std::string rhs; bool wasStr = false; char rq = peek();
             if (rq == '"' || rq == '\'') {
-                advance(); // opening quote
+                wasStr = true; advance(); // opening quote
                 while (!eof() && peek() != rq) {
-                    if (peek() == '\\') { repl += advance(); if (!eof()) repl += advance(); }
-                    else repl += advance();
+                    if (peek() == '\\') { rhs += advance(); if (!eof()) rhs += advance(); }
+                    else rhs += advance();
                 }
                 if (peek() == rq) advance(); // closing quote
+            } else {
+                // capture the RHS expression up to a statement/argument boundary
+                int pd = 0, bd = 0, brd = 0;
+                while (!eof()) {
+                    char ch = peek();
+                    if (pd == 0 && bd == 0 && brd == 0 &&
+                        (ch == ',' || ch == ';' || ch == ')' || ch == '}' || ch == ']')) break;
+                    if (ch == '(') pd++; else if (ch == ')') pd--;
+                    else if (ch == '{') bd++; else if (ch == '}') bd--;
+                    else if (ch == '[') brd++; else if (ch == ']') brd--;
+                    rhs += advance();
+                }
+                while (!rhs.empty() && std::isspace((unsigned char)rhs.back())) rhs.pop_back();
+            }
+            if (assignOp.empty()) {
+                // plain `= "str"` keeps its raw content (which may be a `{…}` code
+                // replacement or an interpolated string); `= EXPR` becomes code.
+                repl = wasStr ? rhs : ("{" + rhs + "}");
+            } else {
+                // `OP= X` → `$/ OP (X)` per match; re-quote a string operand.
+                std::string operand = wasStr ? ("\"" + rhs + "\"") : rhs;
+                repl = "{ $/ " + assignOp + " (" + operand + ") }";
             }
         } else if (bracket) { // s[..][..] / tr[..][..] : skip ws, expect a fresh bracket pair
             while (!eof() && std::isspace((unsigned char)peek())) advance();
@@ -586,7 +622,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         // tr/y: tag the pattern with a sentinel so the interpreter transliterates
         out = make(Tok::SubstLit, (isTrans ? std::string("\x01") : std::string()) + adverbs + raw);
         out.text2 = repl;
-        out.flag = (w == "S"); // uppercase S/// : non-mutating, returns the new string
+        out.flag = (w == "S" || w == "SS"); // uppercase S/// : non-mutating, returns the new string
         return true;
     }
     if (isRegex) {

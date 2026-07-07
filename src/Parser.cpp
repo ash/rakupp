@@ -1132,6 +1132,15 @@ ExprPtr Parser::parsePrimary() {
             if (name == "my" || name == "our" || name == "state" ||
                 name == "has" || name == "constant") {
                 advance();
+                // `my class Foo {…}` / `my role …` as an expression — evaluates to the type
+                if (isIdent("class") || isIdent("role") || isIdent("grammar") ||
+                    isIdent("enum") || isIdent("subset")) {
+                    auto u = std::make_unique<Unary>(); u->op = "do";
+                    auto be = std::make_unique<BlockExpr>();
+                    be->body.push_back(parseStatement());
+                    u->operand = std::move(be);
+                    return u;
+                }
                 return parseDeclarator(name);
             }
             advance(); // consume the name
@@ -2194,6 +2203,11 @@ StmtPtr Parser::parseStatementImpl() {
             auto g = std::make_unique<GivenStmt>();
             g->defGuard = isWith ? 1 : isWithout ? 2 : 0;
             g->topic = parseExpression();
+            if (isOp("->") || isOp("<->")) { // `given X -> $y is copy { }`
+                advance();
+                auto ps = parsePointyParams();
+                if (!ps.empty() && !ps[0].name.empty() && ps[0].name != "$_") g->var = ps[0].name;
+            }
             g->body = parseBlock();
             // orwith/orwithout chain:  with A {} orwith B {}  ==  with A {} else { with B {} }
             if (g->defGuard && (isIdent("orwith") || isIdent("orwithout"))) {

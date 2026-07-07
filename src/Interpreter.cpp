@@ -1445,7 +1445,8 @@ Value Interpreter::exec(Stmt* s) {
             tctx_.cur->define(cd->name, Value::typeObj(cd->name));
             // register nested classes/enums (and static subs) declared in the body
             for (auto& st : cd->body) exec(st.get());
-            return Value::any();
+            // evaluate to the type object, so `my class Foo {…}` works as an expression
+            return cd->name.empty() ? Value::any() : Value::typeObj(cd->name);
         }
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
@@ -1567,6 +1568,7 @@ Value Interpreter::exec(Stmt* s) {
             bool skip = (g->defGuard == 1 && !isDefined(topic)) || (g->defGuard == 2 && isDefined(topic));
             auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
             scope->define("$_", topic);
+            if (!g->var.empty()) scope->define(g->var, topic);
             // `given`/`with` is an expression: it evaluates to the value of the matched
             // `when`/`default` block (delivered via BreakGivenEx), or, if nothing matches,
             // the value of the block's last statement.

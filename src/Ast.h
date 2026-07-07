@@ -292,6 +292,7 @@ struct WhateverExpr : Expr { bool hyper = false; WhateverExpr(): Expr(NK::Whatev
 
 struct GivenStmt : Stmt {
     ExprPtr topic;
+    std::string var; // `given X -> $y { }`: also bind $y to the topic
     std::unique_ptr<Block> body;
     int defGuard = 0; // 0=given (always), 1=with (run if defined), 2=without (run if undefined)
     bool hasElse = false;
