@@ -224,6 +224,11 @@ struct ClassInfo {
 struct ObjectData {
     std::shared_ptr<ClassInfo> cls;
     std::map<std::string, Value> attrs;
+    // For a `but`/`does` mixin over a non-object base (`5 but Role`, `{} does R`):
+    // the original value is kept here and the object delegates coercions,
+    // operators, and unfound methods to it.
+    Value boxed;
+    bool hasBoxed = false;
 };
 
 } // namespace rakupp

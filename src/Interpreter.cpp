@@ -2672,6 +2672,14 @@ static bool isJunction(const Value& v) {
 }
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
+    // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
+    // value — but identity/smartmatch/type ops must still see the object itself.
+    if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "=:=" && op != "eqv" &&
+        ((l.t == VT::Object && l.obj && l.obj->hasBoxed) || (r.t == VT::Object && r.obj && r.obj->hasBoxed))) {
+        Value lu = (l.t == VT::Object && l.obj && l.obj->hasBoxed) ? l.obj->boxed : l;
+        Value ru = (r.t == VT::Object && r.obj && r.obj->hasBoxed) ? r.obj->boxed : r;
+        return applyArith(op, lu, ru);
+    }
     if (op == "!%%") return Value::boolean(!applyArith("%%", l, r).truthy()); // negated divisibility
     if (isSetOpStr(op)) return setOp(op, l, r);
     // hyper binary metaop  >>OP>>  : element-wise apply OP over the two lists
@@ -4104,17 +4112,27 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     };
     collect(rhs);
 
-    if (base.t != VT::Object || !base.obj)
-        throw RakuError{Value::typeObj("X::NYI"),
-            "'" + std::string(copy ? "but" : "does") + "' mixin on a " + base.typeName() +
-            " is not yet implemented (only objects supported)"};
-
-    auto obj = base.obj;
-    if (copy) { // `but` works on a fresh copy; the original is untouched
-        auto nd = std::make_shared<ObjectData>();
-        nd->cls = obj->cls;
-        nd->attrs = obj->attrs;
-        obj = nd;
+    std::shared_ptr<ObjectData> obj;
+    if (base.t == VT::Object && base.obj) {
+        obj = base.obj;
+        if (copy) { // `but` works on a fresh copy; the original is untouched
+            auto nd = std::make_shared<ObjectData>();
+            nd->cls = obj->cls;
+            nd->attrs = obj->attrs;
+            nd->boxed = obj->boxed;
+            nd->hasBoxed = obj->hasBoxed;
+            obj = nd;
+        }
+    } else {
+        // non-object base (`5 but Role`, `{} does R`): box the value so the mixed
+        // object still coerces / dispatches to it. `does`/`but` are both copies here.
+        obj = std::make_shared<ObjectData>();
+        obj->boxed = base;
+        obj->hasBoxed = true;
+        auto bc = std::make_shared<ClassInfo>();
+        bc->name = base.typeName();
+        bc->nativeParent = base.typeName();
+        obj->cls = bc;
     }
     // A new anonymous class derived from the current one, composing the role(s).
     auto nc = std::make_shared<ClassInfo>();
@@ -4316,6 +4334,7 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
 std::string Interpreter::gistOf(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->cls)
         if (Value* m = v.obj->cls->findMethod("gist")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+    if (v.t == VT::Object && v.obj && v.obj->hasBoxed) return gistOf(v.obj->boxed);
     return v.gist();
 }
 std::string Interpreter::strOf(const Value& v) {
@@ -4327,6 +4346,7 @@ std::string Interpreter::strOf(const Value& v) {
         if (Value* m = v.obj->cls->findMethod("message")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
         auto mit = v.obj->attrs.find("message");
         if (mit != v.obj->attrs.end()) return strOf(mit->second);
+        if (v.obj->hasBoxed) return strOf(v.obj->boxed);
     }
     return v.toStr();
 }

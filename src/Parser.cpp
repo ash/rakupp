@@ -1886,6 +1886,24 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     else matchKind(Tok::Semicolon); // unit form
     while (!isKind(Tok::End) && (!braced || !isKind(Tok::RBrace))) {
         if (matchKind(Tok::Semicolon)) continue;
+        // `also is Parent` / `also does Role` inside the body — same effect as the
+        // header trait, added after the opening brace.
+        if (isIdent("also") && (peek().text == "is" || peek().text == "does")) {
+            advance(); // also
+            while (isIdent("is") || isIdent("does")) {
+                bool isDoes = isIdent("does");
+                advance();
+                if (isKind(Tok::Ident) || isKind(Tok::Var)) {
+                    std::string t = advance().text;
+                    if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }
+                    else if (isDoes) cd->roles.push_back(t);
+                    else cd->extraParents.push_back(t);
+                }
+                while (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+            }
+            matchKind(Tok::Semicolon);
+            continue;
+        }
         if (isIdent("has")) {
             advance();
             // optional type before the attribute var: `has Int $.x`, `has Int:D $.x`,

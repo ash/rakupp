@@ -560,6 +560,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return methodCall(tobj, mm, args, rwArgs);
     }
 
+    // A `but`/`does` mixin over a non-object base: a composed role/class method wins,
+    // object-identity/introspection methods stay on the object, and every other
+    // method (coercions, arithmetic-ish, base-type methods) delegates to the box.
+    if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
+        !inv.obj->cls->findMethod(m)) {
+        static const std::set<std::string> keepOnObj = {
+            "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE"};
+        if (!keepOnObj.count(m)) return methodCall(inv.obj->boxed, m, args, rwArgs);
+    }
+
     // Pair.new($key, $value) or Pair.new(:key(...), :value(...)) — same shape as `=>`.
     // IO::Socket::INET.new — a TCP client (:host/:port) or a listener (:listen).
     if (inv.t == VT::Type && inv.s == "IO::Socket::INET" && m == "new") {
