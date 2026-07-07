@@ -39,6 +39,12 @@ struct RedoEx { std::string label; };
 struct BreakGivenEx { Value v; bool hasVal = false; }; // `when`/`succeed` exits the enclosing given/loop, carrying its value
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 struct RakuError { Value payload; std::string message; };
+// Thrown at an interpreter safe point to unwind a background worker thread whose
+// result is no longer wanted (the mainline has finished). NOT a Raku-visible
+// exception — user CATCH handles RakuError, never this.
+struct WorkerAbortEx {};
+extern thread_local bool t_isWorker;     // true only on `start`/async worker threads
+extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
 
 // Per-thread execution "registers": the state that belongs to a single thread
 // of Raku execution — its current lexical scope, the dynamic-variable ($*foo)
@@ -179,6 +185,20 @@ public:
     std::vector<std::thread> workers_;     // outstanding `start`/async worker threads
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
     bool abandonedWorkers_ = false;        // a fire-and-forget worker outlived the mainline (daemon)
+    std::atomic<bool> workerAbort_{false}; // set at teardown: workers unwind at their next safe point
+    // Interpreter safe point: cheap check woven into the hot loop so a background
+    // `start {…}` worker doing pure compute (no I/O to yield at) can still be
+    // unwound when the program is shutting down. A no-op on the main thread and
+    // whenever no abort is pending — just a thread-local bool + relaxed atomic,
+    // inlined so hot loops pay ~nothing.
+    inline void safePoint() {
+        if (!t_isWorker) return; // main-thread loops never park or abort here
+        if (workerAbort_.load(std::memory_order_relaxed)) throw WorkerAbortEx{};
+        // Periodically hand the GIL back so a compute-bound worker can't starve the
+        // main thread (which may be parked in yieldToWorker waiting for exactly this).
+        if (++t_safePtCtr >= 4096) { t_safePtCtr = 0; workerYield(); }
+    }
+    void workerYield(); // out-of-line: brief GIL release so siblings/main make progress
     // Cooperative handoff. gilYieldNotify() releases the GIL AND wakes a thread
     // parked in yieldToWorker (which the spawner uses to let a fresh worker run up
     // to its first blocking point — sleep/await — so pure-compute blocks finish

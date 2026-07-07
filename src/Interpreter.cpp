@@ -505,6 +505,24 @@ void Interpreter::gilUnpark(bool wasParked) {
     loadCtx(g_gilParkCtx);
 }
 
+// True only on `start`/async worker threads — gates the safe-point abort (defined
+// inline in the header) so the main thread is never unwound.
+thread_local bool t_isWorker = false;
+thread_local unsigned t_safePtCtr = 0;
+
+// Called from a worker's safe point every few thousand loop iterations: release the
+// GIL (waking a main thread parked in yieldToWorker), give the scheduler a chance to
+// hand the mutex over, then reacquire — mirroring sleepYield's save/park/restore.
+void Interpreter::workerYield() {
+    if (!gilHeld_ || parallelMode_) return;
+    static thread_local ExecContext parked;
+    saveCtx(parked);
+    gilYieldNotify();            // unlock GIL + bump release counter + notify
+    std::this_thread::yield();   // let the woken thread actually take the mutex
+    gil_.lock();
+    loadCtx(parked);
+}
+
 // Spawn a real worker thread that runs `code` and keeps/breaks a Promise backed
 // by a PromiseState. The worker blocks on the GIL until the main thread yields
 // (inside awaitPromise) or the program drains, so nothing runs truly in parallel.
@@ -523,6 +541,7 @@ Value Interpreter::spawnPromise(Value code) {
         std::lock_guard<std::mutex> wlk(sharedMut_);
         liveWorkers_++;
         workers_.emplace_back([self, code, ps]() mutable {
+            t_isWorker = true;
             Value r; bool broke = false; Value cause;
             try {
                 ValueList noargs;
@@ -541,6 +560,7 @@ Value Interpreter::spawnPromise(Value code) {
     }
     liveWorkers_++;
     workers_.emplace_back([self, code, ps]() mutable {
+        t_isWorker = true;
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
         self->loadCtx(wctx);
@@ -621,6 +641,11 @@ void Interpreter::drainWorkers() {
         gilHeld_ = false;
         return;
     }
+    // Ask workers to unwind: a compute-bound worker (no I/O to yield at) hits the
+    // safe point in its next loop iteration and throws WorkerAbortEx, releasing the
+    // GIL and finishing. Workers blocked in a syscall (a server's accept/recv) can't
+    // see this — they're handled by the grace-period abandon below.
+    workerAbort_.store(true, std::memory_order_relaxed);
     gil_.unlock();                         // let workers run while we wait
     // Wait for outstanding workers to finish, but not forever: a fire-and-forget
     // `start {…}` that loops (a server's accept loop) is a daemon thread. Once the
@@ -1119,6 +1144,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope) {
 
 bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
                              bool isFirst, bool isLast) {
+    safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
     // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
     auto inScope = [&](void (Interpreter::*ph)(const std::vector<StmtPtr>&)) {
         auto saved = tctx_.cur; tctx_.cur = scope; try { (this->*ph)(body->stmts); } catch (...) { tctx_.cur = saved; throw; } tctx_.cur = saved;
