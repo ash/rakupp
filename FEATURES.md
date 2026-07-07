@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **254 / 1,464 files fully pass (~17%)**; 575 partial, 626 no-TAP, 9 timeout. (Among files that run, 129,105 / 185,047 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **275 / 1,464 files fully pass (~19%)**; 604 partial, 575 no-TAP, 10 timeout. (Among files that run, 130,480 / 187,331 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -103,7 +103,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise
-- String: `chars codes uc lc tc fc wordcase samecase index rindex substr split comb subst trans words lines flip trim starts-with~ ends-with~ contains sprintf` (`.trans` supports `a..z` ranges)
+- String: `chars codes uc lc tc fc wordcase samecase index rindex substr split comb subst trans words lines flip trim starts-with~ ends-with~ contains sprintf ords chrs ord chr` (`.trans` supports `a..z` ranges); `undefine($x)` resets a container
 - List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll`; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; list methods on scalars (`5.map`, `42.grep`); `roundrobin`
 - Hash: `push`/`append` (accumulate values under a key), `kv keys values pairs invert antipairs`
 - Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, `polymod`, `base`, `rand` / `.rand`, constants `pi tau e`
@@ -114,7 +114,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Line-processing: `-n` / `-p` command-line switches (awk/perl line loops over `$*ARGFILES`); `$*IN`/`$*ARGFILES` reading (`.lines .get .words .slurp`, bare `lines()`/`get()`/`words()`)
 - **Concurrency (real `std::thread`s + a GIL, CPython-style; blocking ops release the lock: `sleep`/`await` let tasks interleave in time (sleep-sort actually sorts), and external-process waits (`run`/`shell`) run in genuine parallel wall-clock — N concurrent `run('sleep','1')` finish in ~1s, not N s. Optional true CPU parallelism via `RAKUPP_PARALLEL=1`: worker threads run interpreter compute concurrently — per-thread registers/stacks are thread-local, the symbol tables freeze once concurrency engages, and `Lock`/`Semaphore` become real; ~3× on 8 workers, 0 Roast regressions, ThreadSanitizer-clean. Default (flag off) keeps the GIL. `start EXPR` correctly thunks EXPR to the worker):**
   - `Promise` — `start` (kept, or **broken** if the block dies), `await` (blocks, rethrows the cause), manual `Promise.new`/`.keep`/`.break`/`.vow`, `.result`/`.status` (a real `PromiseStatus` enum)/`.cause`/`.Bool`, deferred `.then`, `Promise.anyof`/`.allof` (with `X::Promise::Combinator`), `Proc::Async`
-  - `Supply` (`from-list`/`tap`/`act`/`map`/`grep`/`unique`/`squish`/`head`/`tail`/`skip`/`reverse`/`sort`/`min`/`max` (running extremes)/…), live `Supplier` (`.emit`/`.done`/`.quit`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
+  - `Supply` (`from-list` — args are values, `[..]` items stay unflattened / `tap`/`act`/`map`/`grep`/`do`/`grab`/`unique`/`squish`/`head`/`tail`/`skip`/`reverse`/`rotate`/`sort`/`min`/`max` (running extremes)/`minmax` (running Range)/`produce` (scan)/`reduce`/`wait`/…), `Tap.close`, live `Supplier` (`.emit`/`.done`/`.quit`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
   - `Channel` (`send`/`receive`/`poll`/`close`/`fail`/`closed`, `X::Channel::*`), `Thread` (`.start`/`.join`, `is-initial-thread`, `$*THREAD`), `Lock`/`Semaphore` (`.protect`/`.acquire`/`.release`), `sleep`
 - `$*CWD $*EXECUTABLE $*ARGS $*RAKU/$*PERL` (`.compiler.name` = "Raku++", backend "cpp"), `$*DISTRO $*KERNEL $*VM $*THREAD $*SCHEDULER`
 - **Gaps:** true CPU parallelism is opt-in (`RAKUPP_PARALLEL`), off by default; real wall-clock timers (`Promise.in`/`.at` are capped), atomic-container ops (`atomic-fetch`/`cas`), stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)

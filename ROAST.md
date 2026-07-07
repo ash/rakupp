@@ -32,12 +32,12 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **252** | **17%** |
-| Partially passing | 566 | 39% |
-| No TAP output | 638 | 44% |
-| Timeouts | 9 | 0.6% |
+| **Fully passing** | **275** | **19%** |
+| Partially passing | 604 | 41% |
+| No TAP output | 575 | 39% |
+| Timeouts | 10 | 0.7% |
 
-**Coverage ≈ 17% of files.** That is the number to quote. Nearly half the suite
+**Coverage ≈ 19% of files.** That is the number to quote. Over a third of the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
 construct and abort before any assertion runs — so they are entirely unmeasured
 territory, not "passing" and not "failing."
@@ -67,33 +67,33 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 18 | 49 | 0 | 80 | 729/999 | 73% |
-| S03 | Operators | 13 | 37 | 1 | 74 | 634/1018 | 62% |
-| S04 | Blocks, statements, phasers | 13 | 35 | 0 | 29 | 287/425 | 68% |
-| S05 | Regexes & grammars | 17 | 70 | 0 | 14 | 3133/4979 | 63% |
-| S06 | Subroutines & signatures | 6 | 35 | 0 | 53 | 225/509 | 44% |
+| S02 | Literals, types, magicals | 25 | 56 | 1 | 65 | 949/1785 | 53% |
+| S03 | Operators | 15 | 34 | 1 | 75 | 713/1075 | 66% |
+| S04 | Blocks, statements, phasers | 15 | 37 | 0 | 25 | 353/481 | 73% |
+| S05 | Regexes & grammars | 16 | 68 | 0 | 14 | 3117/4955 | 63% |
+| S06 | Subroutines & signatures | 7 | 40 | 0 | 47 | 294/547 | 54% |
 | S07 | Iterators | 0 | 1 | 0 | 5 | 8/8 | 100% |
-| S09 | Data structures | 0 | 6 | 0 | 16 | 49/115 | 43% |
-| S10 | Packages | 1 | 2 | 0 | 6 | 12/14 | 86% |
-| S11 | Modules | 6 | 7 | 0 | 9 | 41/60 | 68% |
-| S12 | Objects & classes | 11 | 36 | 1 | 53 | 213/320 | 67% |
-| S13 | Overloading | 0 | 3 | 0 | 4 | 4/10 | 40% |
-| S14 | Roles | 4 | 10 | 0 | 11 | 66/92 | 72% |
-| S15 | Unicode / strings / NFG | 40 | 29 | 0 | 12 | 83698/88219 | 95% |
-| S16 | I/O | 2 | 13 | 0 | 22 | 42/136 | 31% |
-| S17 | Concurrency (supply/promise/async) | 10 | 57 | 1 | 31 | 264/505 | 52% |
-| S19 | Command-line | 0 | 6 | 0 | 2 | 1/18 | 6% |
+| S09 | Data structures | 0 | 7 | 0 | 15 | 52/131 | 40% |
+| S10 | Packages | 2 | 2 | 0 | 5 | 15/35 | 43% |
+| S11 | Modules | 8 | 6 | 0 | 8 | 54/72 | 75% |
+| S12 | Objects & classes | 12 | 44 | 1 | 44 | 290/418 | 69% |
+| S13 | Overloading | 3 | 0 | 0 | 4 | 20/20 | 100% |
+| S14 | Roles | 4 | 11 | 0 | 10 | 67/93 | 72% |
+| S15 | Unicode / strings / NFG | 43 | 31 | 0 | 7 | 86700/91221 | 95% |
+| S16 | I/O | 4 | 16 | 0 | 17 | 138/264 | 52% |
+| S17 | Concurrency (supply/promise/async) | 17 | 52 | 0 | 30 | 361/660 | 55% |
+| S19 | Command-line | 6 | 1 | 0 | 1 | 21/24 | 88% |
 | S22 | Package format | 0 | 0 | 0 | 1 | 0/0 | — |
-| S24 | Testing | 6 | 7 | 0 | 4 | 24/74 | 32% |
-| S26 | Documentation (POD) | 1 | 12 | 0 | 14 | 6/100 | 6% |
+| S24 | Testing | 8 | 5 | 0 | 4 | 60/100 | 60% |
+| S26 | Documentation (POD) | 2 | 11 | 0 | 14 | 8/100 | 8% |
 | S28 | Special variables | 0 | 2 | 0 | 1 | 1/6 | 17% |
-| S29 | Builtins & context | 2 | 7 | 0 | 5 | 265/279 | 95% |
-| S32 | Standard types (str/list/num/…) | 30 | 89 | 8 | 136 | 7418/8095 | 92% |
-| integration | Cross-feature programs | 21 | 48 | 0 | 50 | 309/438 | 71% |
-| 6.c | v6.c language snapshot | 1 | 4 | 0 | 13 | 44/74 | 59% |
-| 6.d | v6.d language snapshot | 4 | 5 | 8 | 1 | 116/6702 | 2% |
-| APPENDICES | — | 1 | 2 | 2 | 1 | 24/29 | 83% |
-| MISC / t | — | 1 | 2 | 0 | 3 | 4/12 | 33% |
+| S29 | Builtins & context | 3 | 8 | 0 | 3 | 345/370 | 93% |
+| S32 | Standard types (str/list/num/…) | 38 | 102 | 5 | 118 | 36230/37031 | 98% |
+| integration | Cross-feature programs | 24 | 51 | 0 | 44 | 392/527 | 74% |
+| 6.c | v6.c language snapshot | 1 | 4 | 0 | 13 | 47/76 | 62% |
+| 6.d | v6.d language snapshot | 4 | 13 | 0 | 1 | 122/47202 | 0% |
+| APPENDICES | — | 1 | 2 | 2 | 1 | 22/29 | 76% |
+| MISC / t | — | 1 | 0 | 0 | 5 | 10/10 | 100% |
 
 ### Reading the table
 
@@ -103,14 +103,14 @@ while many of its files still don't run at all — read it alongside No-TAP.
   assertion rate is high.
 - **S01** is fully green: those files skip-all unless a Perl-5 interop bridge
   exists, and Raku++ handles the skip path spec-correctly.
-- **S32** (standard types) and **S03/S05** (operators, regexes) are the biggest
-  pools of *reachable* work — high partial counts mean the files run but trip a
-  long tail of individual assertions.
-- High **No-TAP** counts (S06, S12, S16, S17) mark constructs that abort before
-  any assertion runs — the frontier where a single parser/feature gap unlocks a
-  whole cluster of files.
-- The **6.d** snapshot has 8 timeouts (heavy generated tests) which drag its
-  assertion % down; it is not representative of feature coverage.
+- **S32** (standard types), **S05** (regexes) and **S17** (concurrency) are the
+  biggest pools of *reachable* work — high partial counts mean the files run but
+  trip a long tail of individual assertions.
+- High **No-TAP** counts (S02, S03, S06, S32, S12) mark constructs that abort
+  before any assertion runs — the frontier where a single parser/feature gap
+  unlocks a whole cluster of files.
+- The **6.d** snapshot's assertion total (47k) is dominated by a few heavy
+  generated files, so its % is not representative of feature coverage.
 
 ## Reproducing these numbers
 
@@ -121,7 +121,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 269 / 1,464 files fully passing (~18% coverage); 575 partial,
-626 no-TAP, 9 timeout. Reached-assertion pass rate 129,105 / 185,047 (see
+_Snapshot: 275 / 1,464 files fully passing (~19% coverage); 604 partial,
+575 no-TAP, 10 timeout. Reached-assertion pass rate 130,480 / 187,331 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._
