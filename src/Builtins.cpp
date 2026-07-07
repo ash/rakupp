@@ -920,10 +920,30 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return mkSupply(vals());
         }
+        if (listy && (m == "produce" || m == "reduce")) { // scan (produce) / fold (reduce) over the stream
+            Value op = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            ValueList out; Value acc; bool first = true;
+            for (auto& v : vals()) {
+                if (first) { acc = v; first = false; }
+                else if (op.t == VT::Code) { ValueList two{acc, v}; acc = callCallable(op, two); }
+                if (m == "produce") out.push_back(acc);
+            }
+            if (m == "reduce") return mkSupply(first ? ValueList{} : ValueList{acc});
+            return mkSupply(out);
+        }
+        if (listy && m == "minmax") { // emit the running (min..max) Range after each value
+            ValueList out; Value mn, mx; bool first = true;
+            for (auto& v : vals()) {
+                if (first) { mn = v; mx = v; first = false; }
+                else { if (valueCmp(v, mn) < 0) mn = v; if (valueCmp(v, mx) > 0) mx = v; }
+                out.push_back(Value::range(mn.toInt(), mx.toInt(), false, false));
+            }
+            return mkSupply(out);
+        }
         if (listy && (m == "map" || m == "grep" || m == "head" || m == "tail" || m == "skip" ||
                       m == "reverse" || m == "sort" || m == "unique" || m == "squish" || m == "rotor" ||
-                      m == "rotate" || m == "minmax" || m == "sum" || m == "reduce" ||
-                      m == "produce" || m == "batch" || m == "lines" || m == "words" || m == "flat" ||
+                      m == "rotate" || m == "sum" ||
+                      m == "batch" || m == "lines" || m == "words" || m == "flat" ||
                       m == "classify" || m == "categorize" || m == "start" || m == "schedule-on" ||
                       m == "stable" || m == "delayed" || m == "migrate" || m == "on-demand")) {
             // Delegate list-transform semantics to the Array method dispatcher, then re-wrap.
@@ -934,7 +954,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (r.t == VT::Array) return mkSupply(*r.arr);
             return mkSupply(ValueList{r});
         }
-        if (m == "done" || m == "close" || m == "quit") return Value::boolean(true);
+        if (m == "done" || m == "close" || m == "quit" || m == "wait") return Value::boolean(true);
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Tap") {
+        if (m == "close" || m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {
         std::string name = inv.hash->count("name") ? (*inv.hash)["name"].toStr() : "";
