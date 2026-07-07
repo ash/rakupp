@@ -1394,7 +1394,11 @@ Value Interpreter::exec(Stmt* s) {
                 return Value::any();
             }
             auto ci = std::make_shared<ClassInfo>();
-            ci->name = cd->name;
+            // anonymous `role {…}` / `class {…}` literals get a synthesized name so
+            // they can be registered, mixed in (`does`/`but`), and introspected.
+            std::string clsName = cd->name.empty()
+                ? "<anon|" + std::to_string(++anonTypeCounter_) + ">" : cd->name;
+            ci->name = clsName;
             if (!cd->parent.empty()) {
                 // a type may not inherit from / compose itself:  class A is A / role A does A
                 if (cd->parent == cd->name && !cd->name.empty())
@@ -1435,6 +1439,7 @@ Value Interpreter::exec(Stmt* s) {
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
             ci->isGrammar = cd->isGrammar;
             ci->isRole = cd->isRole;
+            ci->declEnv = tctx_.cur; // capture the declaration scope (attr-default closures)
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; }
             for (auto& a : cd->attrs) {
                 ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw;
@@ -1480,12 +1485,12 @@ Value Interpreter::exec(Stmt* s) {
                                 " because it is required by role '" + role->name + "'"};
             }
             noteSymbolMutation("class/role/grammar declaration");
-            classes_[cd->name] = ci;
-            tctx_.cur->define(cd->name, Value::typeObj(cd->name));
+            classes_[clsName] = ci;
+            if (!cd->name.empty()) tctx_.cur->define(cd->name, Value::typeObj(cd->name));
             // register nested classes/enums (and static subs) declared in the body
             for (auto& st : cd->body) exec(st.get());
-            // evaluate to the type object, so `my class Foo {…}` works as an expression
-            return cd->name.empty() ? Value::any() : Value::typeObj(cd->name);
+            // evaluate to the type object, so `my class Foo {…}` / anon `role {…}` work as expressions
+            return Value::typeObj(clsName);
         }
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
@@ -2006,6 +2011,9 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
 }
 
 Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
+    // a `but`/`does` mixin over a Hash/Array delegates subscripting to the box
+    if (base.t == VT::Object && base.obj && base.obj->hasBoxed)
+        return idxW(base.obj->boxed, std::move(key), isHash);
     // @a[*-1] / @a[*] against an infinite lazy array can't know the end
     if (base.t == VT::Array && base.ext && std::static_pointer_cast<LazySeqState>(base.ext)->infinite
         && (key.t == VT::Whatever || (key.t == VT::Code && key.code && key.code->isWhateverCode)))
@@ -2675,7 +2683,7 @@ static bool isJunction(const Value& v) {
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
     // value — but identity/smartmatch/type ops must still see the object itself.
-    if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "=:=" && op != "eqv" &&
+    if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "=:=" &&
         ((l.t == VT::Object && l.obj && l.obj->hasBoxed) || (r.t == VT::Object && r.obj && r.obj->hasBoxed))) {
         Value lu = (l.t == VT::Object && l.obj && l.obj->hasBoxed) ? l.obj->boxed : l;
         Value ru = (r.t == VT::Object && r.obj && r.obj->hasBoxed) ? r.obj->boxed : r;
@@ -3860,7 +3868,15 @@ Value Interpreter::evalBinary(Binary* b) {
     if (op == "does" || op == "but") {
         Value base = eval(b->lhs.get());
         Value rhs = eval(b->rhs.get());
-        return mixinValue(std::move(base), rhs, op == "but");
+        Value res = mixinValue(std::move(base), rhs, op == "but");
+        // `does` mutates the container in place; for a boxed non-object base the
+        // mixed value is a fresh object, so write it back to the LHS lvalue.
+        if (op == "does" && res.t == VT::Object && res.obj && res.obj->hasBoxed) {
+            NK k = b->lhs->kind;
+            if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
+                try { if (Value* lv = lvalue(b->lhs.get())) *lv = res; } catch (...) {}
+        }
+        return res;
     }
     if (op == "xx") {
         // list repetition THUNKS its left side: `EXPR xx N` re-evaluates EXPR once
@@ -4143,8 +4159,22 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     nc->name = obj->cls->name + "+{" + suffix + "}";
     for (ClassInfo* role : roleInfos) {
         for (auto& kv : role->methods) nc->methods[kv.first] = kv.second;
-        for (auto& a : role->attrs) nc->attrs.push_back(a);
         for (auto& sub : role->doneRoles) nc->doneRoles.insert(sub);
+        // compose attrs and initialize each to its default, evaluated in the role's
+        // own declaration scope (so `role { has $.x = $val }` captures $val).
+        for (auto& a : role->attrs) {
+            nc->attrs.push_back(a);
+            if (obj->attrs.count(a.name)) continue;
+            Value dv = Value::any();
+            if (a.hasDefVal) dv = a.defVal;
+            else if (a.def) {
+                auto saved = tctx_.cur;
+                if (role->declEnv) tctx_.cur = role->declEnv;
+                try { dv = eval(const_cast<Expr*>(a.def)); } catch (...) { dv = Value::any(); }
+                tctx_.cur = saved;
+            }
+            obj->attrs[a.name] = dv;
+        }
     }
     for (auto& rn : roleNames) nc->doneRoles.insert(rn);
     // `but :name(value)` — mix one attribute with a public read accessor.

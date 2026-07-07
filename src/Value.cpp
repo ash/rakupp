@@ -164,7 +164,9 @@ std::string Value::toStr() const {
         }
         case VT::Code: return "sub { ... }";
         case VT::Whatever: return "*";
-        case VT::Object: return obj && obj->cls ? obj->cls->name + "<obj>" : "Object";
+        case VT::Object:
+            if (obj && obj->hasBoxed) return obj->boxed.toStr(); // but/does mixin over a value
+            return obj && obj->cls ? obj->cls->name + "<obj>" : "Object";
         case VT::Regex: return s;
         case VT::Match: return s;
     }

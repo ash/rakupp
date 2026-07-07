@@ -40,6 +40,7 @@ enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, T
 
 struct ClassInfo;
 struct ObjectData;
+struct Env; // defined in Interpreter.h; ClassInfo keeps its declaration scope for defaults
 
 struct Value {
     VT t = VT::Any;
@@ -179,6 +180,7 @@ struct ClassInfo {
     bool isRole = false;
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
     std::set<std::string> doneRoles; // names of roles this class/role composes (for ~~ / .does)
+    std::shared_ptr<Env> declEnv; // scope the type was declared in (for evaluating attr defaults)
 
     // Does this class do a role named `rn` — directly, transitively via a
     // composed role, or through a parent? (A role also "does" itself.)

@@ -1011,8 +1011,10 @@ ExprPtr Parser::parsePrimary() {
                 auto u = std::make_unique<Unary>();
                 u->op = name;
                 bool retTerm = startsTermToken(cur()) && !kBlockKeywords.count(cur().text);
-                // sub/method/do/start blocks are valid expression operands too
+                // sub/method/do/start blocks are valid expression operands too, as is
+                // an anonymous type literal (`return role {…}`)
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;
+                if ((isIdent("role") || isIdent("class") || isIdent("grammar")) && peek().kind == Tok::LBrace) retTerm = true;
                 if (name == "return" && retTerm &&
                     !isKind(Tok::RParen) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace))
                     u->operand = parseExpr(BP_ASSIGN);
@@ -1026,6 +1028,16 @@ ExprPtr Parser::parsePrimary() {
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
                 if (isKind(Tok::LBrace)) { auto blk = parseBlock(); be->body = std::move(blk->stmts); }
                 return be;
+            }
+            // anonymous type as an expression term: `$x does role {…}`, `my $r = role {…}`
+            if ((name == "role" || name == "class" || name == "grammar") &&
+                peek().kind == Tok::LBrace) {
+                advance(); // consume the keyword (parseClass expects it already consumed)
+                auto decl = parseClass(name == "role", name == "grammar");
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(decl));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                return u; // `do { <anon type decl> }` — evals to the type object
             }
             // phaser in expression position: `my $x = BEGIN { … }` — run the block, yield its value
             if ((name == "BEGIN" || name == "INIT" || name == "CHECK" || name == "END" ||
@@ -2297,7 +2309,8 @@ StmtPtr Parser::parseStatementImpl() {
                 cur().kind != Tok::Ident) {
                 r->value = parseExpression();
             } else if ((startsTermToken(cur()) && !kBlockKeywords.count(cur().text)) ||
-                       isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) {
+                       isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") ||
+                       ((isIdent("role") || isIdent("class") || isIdent("grammar")) && peek().kind == Tok::LBrace)) {
                 r->value = parseExpression();
             }
             return applyModifiers(std::move(r));

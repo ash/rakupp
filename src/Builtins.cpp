@@ -564,7 +564,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // object-identity/introspection methods stay on the object, and every other
     // method (coercions, arithmetic-ish, base-type methods) delegates to the box.
     if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
-        !inv.obj->cls->findMethod(m)) {
+        !inv.obj->cls->findMethod(m) && !inv.obj->cls->findAttr(m)) {
         static const std::set<std::string> keepOnObj = {
             "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE"};
         if (!keepOnObj.count(m)) return methodCall(inv.obj->boxed, m, args, rwArgs);

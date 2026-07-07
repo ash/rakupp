@@ -159,6 +159,7 @@ public:
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions);
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
+    long anonTypeCounter_ = 0; // names anonymous `role {…}` / `class {…}` literals
 
     // GIL-removal step 2: symbol-table freeze. The shared symbol tables (classes_,
     // global_ vars, namedRegex_, loadedModules_, ClassInfo::methods) are mutated
