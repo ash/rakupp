@@ -1423,11 +1423,16 @@ Value Interpreter::exec(Stmt* s) {
             // compose additional `does Role`s: flatten their methods/attrs in (the
             // class's own methods, registered below, override by key)
             for (auto& rn : cd->roles) {
+                ci->doneRoles.insert(rn); // record membership (for ~~ Role / .does), even if unknown
                 auto it = classes_.find(rn);
                 if (it == classes_.end()) continue;
                 for (auto& kv : it->second->methods) ci->methods[kv.first] = kv.second;
                 for (auto& a : it->second->attrs) ci->attrs.push_back(a);
+                for (auto& sub : it->second->doneRoles) ci->doneRoles.insert(sub); // role-of-role
             }
+            // a role used as a parent (`class C does R` where R lands as parent) also counts
+            if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
+            for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
             ci->isGrammar = cd->isGrammar;
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; }
             for (auto& a : cd->attrs) {
@@ -2997,10 +3002,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 else if (r.s == "Stringy" && l.t == VT::Str) res = true;
                 else if (r.s == "Real" && l.isNumeric() && l.t != VT::Complex) res = true;
             }
-            // object: match against its class / ancestor names
+            // object: match against its class / ancestor names, then composed roles
             if (!res && l.t == VT::Object && l.obj)
                 for (ClassInfo* ci = l.obj->cls.get(); ci; ci = ci->parent.get())
                     if (ci->name == r.s) { res = true; break; }
+            if (!res && l.t == VT::Object && l.obj && l.obj->cls && l.obj->cls->doesRole(r.s))
+                res = true;
         } else if (r.t == VT::Bool) {
             res = r.b; // $x ~~ True/False
         } else if (r.t == VT::Hash) {
@@ -3841,6 +3848,11 @@ Value Interpreter::evalBinary(Binary* b) {
         if (l.t == VT::Object || r.t == VT::Object) return Value::str(strOf(l) + strOf(r));
         return applyArith("~", l, r);
     }
+    if (op == "does" || op == "but") {
+        Value base = eval(b->lhs.get());
+        Value rhs = eval(b->rhs.get());
+        return mixinValue(std::move(base), rhs, op == "but");
+    }
     if (op == "xx") {
         // list repetition THUNKS its left side: `EXPR xx N` re-evaluates EXPR once
         // per copy (so `rand xx 3` / `(…roll…) xx $N` yield independent results).
@@ -4071,6 +4083,62 @@ Value Interpreter::evalBinary(Binary* b) {
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError&) {}
     return applyArith(op, l, r);
+}
+
+Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
+    // Collect the role(s) and attribute Pair(s) from the RHS (a single role type,
+    // a list of them, or a `:name(value)` Pair mixing one attribute).
+    std::vector<ClassInfo*> roleInfos;
+    std::vector<std::string> roleNames;
+    std::vector<Value> pairs;
+    std::function<void(const Value&)> collect = [&](const Value& v) {
+        if (v.t == VT::Type) {
+            roleNames.push_back(v.s);
+            auto it = classes_.find(v.s);
+            if (it != classes_.end()) roleInfos.push_back(it->second.get());
+        } else if (v.t == VT::Pair) {
+            pairs.push_back(v);
+        } else if (v.t == VT::Array && v.arr) {
+            for (auto& e : *v.arr) collect(e);
+        }
+    };
+    collect(rhs);
+
+    if (base.t != VT::Object || !base.obj)
+        throw RakuError{Value::typeObj("X::NYI"),
+            "'" + std::string(copy ? "but" : "does") + "' mixin on a " + base.typeName() +
+            " is not yet implemented (only objects supported)"};
+
+    auto obj = base.obj;
+    if (copy) { // `but` works on a fresh copy; the original is untouched
+        auto nd = std::make_shared<ObjectData>();
+        nd->cls = obj->cls;
+        nd->attrs = obj->attrs;
+        obj = nd;
+    }
+    // A new anonymous class derived from the current one, composing the role(s).
+    auto nc = std::make_shared<ClassInfo>();
+    nc->parent = obj->cls;
+    std::string suffix;
+    for (auto& rn : roleNames) suffix += (suffix.empty() ? "" : ",") + rn;
+    nc->name = obj->cls->name + "+{" + suffix + "}";
+    for (ClassInfo* role : roleInfos) {
+        for (auto& kv : role->methods) nc->methods[kv.first] = kv.second;
+        for (auto& a : role->attrs) nc->attrs.push_back(a);
+        for (auto& sub : role->doneRoles) nc->doneRoles.insert(sub);
+    }
+    for (auto& rn : roleNames) nc->doneRoles.insert(rn);
+    // `but :name(value)` — mix one attribute with a public read accessor.
+    for (auto& p : pairs) {
+        ClassAttr ca; ca.name = p.s; ca.sigil = '$'; ca.pub = true;
+        nc->attrs.push_back(ca);
+        obj->attrs[p.s] = p.pairVal ? *p.pairVal : Value::any();
+    }
+    noteSymbolMutation("does/but mixin");
+    classes_[nc->name] = nc;
+    obj->cls = nc;
+    Value out; out.t = VT::Object; out.obj = obj;
+    return out;
 }
 
 Value Interpreter::evalUnary(Unary* u) {

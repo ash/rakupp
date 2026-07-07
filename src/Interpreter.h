@@ -302,6 +302,9 @@ private:
     Value evalAssign(Assign* a);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
     Value evalBinary(Binary* b);
+    // `$x does R` (in-place) / `$x but R` (copy) — mix role(s) or an attribute Pair
+    // into a value, producing an object that also does R.
+    Value mixinValue(Value base, const Value& rhs, bool copy);
     Value evalUnary(Unary* u);
     Value evalCall(Call* c);
     Value evalIndex(Index* idx);

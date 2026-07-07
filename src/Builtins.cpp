@@ -1551,6 +1551,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Object && inv.obj) { char buf[24]; std::snprintf(buf, sizeof buf, "|%p", (void*)inv.obj.get()); return Value::str(inv.typeName() + buf); }
         return Value::str(inv.typeName() + "|" + inv.toStr());
     }
+    if (m == "does") { // .does(Role/Type) — role/type membership introspection
+        if (args.empty()) return Value::boolean(false);
+        std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+        if (rn == "Any" || rn == "Mu") return Value::boolean(true);
+        bool res = inv.typeName() == rn;
+        ClassInfo* ci = nullptr;
+        if (inv.t == VT::Object && inv.obj) ci = inv.obj->cls.get();
+        else if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) ci = it->second.get(); }
+        if (!res && ci) {
+            for (ClassInfo* c = ci; c; c = c->parent.get()) if (c->name == rn) { res = true; break; }
+            if (!res) res = ci->doesRole(rn);
+        }
+        return Value::boolean(res);
+    }
     if (m == "name" || m == "^name") return Value::str(inv.typeName());
 
     // Set/Bag/Mix coercions and queries

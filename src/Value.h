@@ -178,6 +178,17 @@ struct ClassInfo {
     bool isGrammar = false;
     bool isRole = false;
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
+    std::set<std::string> doneRoles; // names of roles this class/role composes (for ~~ / .does)
+
+    // Does this class do a role named `rn` — directly, transitively via a
+    // composed role, or through a parent? (A role also "does" itself.)
+    bool doesRole(const std::string& rn) const {
+        if (isRole && name == rn) return true;
+        if (doneRoles.count(rn)) return true;
+        if (parent && parent->doesRole(rn)) return true;
+        for (auto& p : extraParents) if (p && p->doesRole(rn)) return true;
+        return false;
+    }
 
     Value* findMethod(const std::string& m) { return findMethod(m, nullptr); }
     // `owner` (if given) receives the ClassInfo the method was found in — used to seed
