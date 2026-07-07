@@ -101,13 +101,33 @@ times). It's a near no-op (1.0–1.4×) for the workloads whose time is spent
 especially `bigint`, which lives almost entirely in `BigInt` multiply. There the
 driving loop is trivial, so removing interpreter overhead changes little.
 
-`fib` is the one benchmark where Rakudo's JIT pulls ahead: a tiny function called
-1.6M times is exactly what a JIT specializes best, and native Raku++ lands ~1.4×
-behind it. The `native` column above is the default `--exe`; adding **`-O`** (the
-direct-arity-call pass — fixed-arity subs get direct `Value` params instead of a
-per-call `ValueList` allocation) takes `fib` from 548 ms to **~450 ms**, closing
-the Rakudo gap to ~1.18×. The remaining gap is boxed, string-dispatched
-arithmetic (`applyArith`) — int specialization is the next lever.
+`fib` is the one benchmark where Rakudo's JIT pulls ahead *at the default `--exe`
+level* — a tiny function called 1.6M times is what a JIT specializes best.
+
+### `-O` (the optimizer flag)
+
+The `native` column above is the default `--exe`. Adding **`-O`** enables two
+semantics-preserving codegen passes:
+
+1. **direct-arity calls** — a fixed-arity positional sub gets direct `Value`
+   parameters (plus a boxed adapter), skipping the per-call `ValueList` heap
+   allocation;
+2. **inline int arithmetic** — `+ - * < <= > >= == !=` emit inline helpers that do
+   the small-int case as native `int64` (overflow promotes to bignum), instead of
+   the string-dispatched `applyArith`.
+
+Together these transform the two arithmetic/call-bound kernels:
+
+| Benchmark | `--exe` | `--exe -O` | Rakudo | `-O` vs Rakudo |
+|---|---:|---:|---:|---|
+| fib     | 540 ms | **70 ms** | 383 ms | **Raku++ 5.5×** |
+| loopsum | 83 ms  | **20 ms** | 236 ms | **Raku++ 12×**  |
+
+With `-O`, `fib` flips from 1.4× behind Rakudo to **~5× ahead**. Method/loop-bound
+kernels (`sortnums`/`arrayops`/`hash`/`regex`) are unaffected — their time is spent
+inside runtime methods (`.sort`/`.grep`/hashing), which `-O` doesn't touch.
+`-O` is opt-in and off by default; all benchmark programs produce identical output
+with it.
 
 ### Real-world: grammar parsing (YAMLish)
 
