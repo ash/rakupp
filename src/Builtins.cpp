@@ -544,7 +544,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::string mm = m.substr(1);
         if (mm == "name") return Value::str(inv.typeName());
         if (mm == "WHAT") return Value::typeObj(inv.typeName());
-        return methodCall(inv, mm, args, rwArgs);
+        // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
+        // type (HOW), even when called on an instance.
+        Value tobj = (inv.t == VT::Object && inv.obj && inv.obj->cls) ? Value::typeObj(inv.obj->cls->name) : inv;
+        return methodCall(tobj, mm, args, rwArgs);
     }
 
     // Pair.new($key, $value) or Pair.new(:key(...), :value(...)) — same shape as `=>`.
