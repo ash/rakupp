@@ -3168,7 +3168,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else if (k == "p" || k == "pos") { haveStart = true; posAnchored = true; startPos = pv.toInt(); }
         else if (k == "c" || k == "continue") { haveStart = true; startPos = pv.toInt(); }
         else if (k == "i" || k == "ignorecase") icase = true;
-        else if (k == "samecase" || k == "ii") { samecase = true; icase = true; } // :ii implies :i
+        else if (k == "samecase") samecase = true; // implies :i for regex only (applied below)
+        else if (k == "ii") { samecase = true; icase = true; } // :ii always implies :i
         else if (k == "s" || k == "sigspace") sigspace = true;
         else if (k == "samespace" || k == "ss") { sigspace = true; samespace = true; }
         else if (k == "samemark" || k == "mm") samemark = true;
@@ -3188,6 +3189,10 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
           if (j < realPat.size() && realPat[j] == '(') {
               int d = 0; std::string arg;
               do { char c = realPat[j]; if (c == '(') d++; else if (c == ')') d--; arg += c; j++; } while (j < realPat.size() && d > 0);
+              // the value of a match-mode adverb (:i, :m) must be a compile-time constant
+              if ((name == "i" || name == "ignorecase" || name == "m" || name == "ignoremark")
+                  && arg.find_first_of("$@%") != std::string::npos)
+                  throw RakuError{Value::typeObj("X::Value::Dynamic"), "Value of :" + name + " must be known at compile time"};
               try { argv = evalString(arg); } catch (...) {}
           }
           while (j < realPat.size() && realPat[j] == ' ') j++;
@@ -3195,6 +3200,14 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
           i = j;
       }
       realPat = realPat.substr(i);
+    }
+    if (samecase && !literal) icase = true; // :samecase implies :i for a regex, not a Str pattern
+    if (!literal && realPat.empty())
+        throw RakuError{Value::typeObj("X::Syntax::Regex::NullRegex"), "Null regex not allowed"};
+    if (haveX) { // the :x count must be an Int, a Range, or Whatever
+        VT t = xVal.t;
+        if (!(t == VT::Int || t == VT::Num || t == VT::Rat || t == VT::Range || t == VT::Whatever || t == VT::Bool))
+            throw RakuError{Value::typeObj("X::Str::Match::x"), "Invalid :x argument"};
     }
     (void)samemark;
     std::vector<RxMatch> matches;
