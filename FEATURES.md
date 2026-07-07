@@ -91,7 +91,8 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Repeated named captures under a quantifier collate into a list (`@<content>`, `$<x>[1]`)
 - Subrules, grammars (`token`/`rule`/`regex`, `.parse`/`.subparse`/`.parsefile`), `$/ $0…`, actions
 - Capture interpolation `"$0/$1"`, callable `.subst` (`.subst(/…/, *.uc)`), non-mutating `S///`
-- **Gaps:** named-capture storage (`$<name>=(…)`), replacement `$0`-interp in `s///`, backtracking control, `:ratchet`
+- Substitution adverbs `:g :x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
+- **Gaps:** named-capture storage (`$<name>=(…)`), backtracking control, `:ratchet`
 
 ## Unicode (generated from UCD 15.1)
 - Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni` type

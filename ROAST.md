@@ -70,7 +70,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S02 | Literals, types, magicals | 18 | 49 | 0 | 80 | 729/999 | 73% |
 | S03 | Operators | 13 | 37 | 1 | 74 | 634/1018 | 62% |
 | S04 | Blocks, statements, phasers | 13 | 35 | 0 | 29 | 287/425 | 68% |
-| S05 | Regexes & grammars | 14 | 56 | 0 | 28 | 2595/4200 | 62% |
+| S05 | Regexes & grammars | 17 | 70 | 0 | 14 | 3133/4979 | 63% |
 | S06 | Subroutines & signatures | 6 | 35 | 0 | 53 | 225/509 | 44% |
 | S07 | Iterators | 0 | 1 | 0 | 5 | 8/8 | 100% |
 | S09 | Data structures | 0 | 6 | 0 | 16 | 49/115 | 43% |
@@ -121,6 +121,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 254 / 1,464 files fully passing (~17% coverage); 575 partial,
+_Snapshot: 269 / 1,464 files fully passing (~18% coverage); 575 partial,
 626 no-TAP, 9 timeout. Reached-assertion pass rate 129,105 / 185,047 (see
-caveat above — not a coverage figure)._
+caveat above — not a coverage figure). S05-substitution is a fully-passing
+subchapter (67222.t, match.t, subst.t)._
