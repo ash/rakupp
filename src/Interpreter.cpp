@@ -267,6 +267,16 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
         case NK::ArrayLit: for (auto& it : static_cast<const ArrayLit*>(e)->items) collectPHExpr(it.get(), out); break;
         case NK::HashLit: for (auto& it : static_cast<const HashLit*>(e)->items) collectPHExpr(it.get(), out); break;
         case NK::InterpStr: for (auto& it : static_cast<const InterpStr*>(e)->parts) collectPHExpr(it.get(), out); break;
+        case NK::SubstLit: { auto* sl = static_cast<const SubstLit*>(e); // $^a lives in the raw pattern/repl text
+            auto scan = [&](const std::string& str) {
+                for (size_t i = 0; i + 2 < str.size(); i++)
+                    if (str[i] == '$' && str[i + 1] == '^' && std::isalpha((unsigned char)str[i + 2])) {
+                        size_t j = i + 2; std::string nm = "$^";
+                        while (j < str.size() && (std::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
+                        out.insert(nm);
+                    }
+            };
+            scan(sl->pattern); scan(sl->repl); break; }
         default: break; // do NOT descend into nested BlockExpr (own scope)
     }
 }
@@ -3210,6 +3220,26 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             throw RakuError{Value::typeObj("X::Str::Match::x"), "Invalid :x argument"};
     }
     (void)samemark;
+    if (!literal) {
+        // interpolate scalar variables ($foo, $^a) into the regex as literal (quotemeta'd) text
+        std::string ip;
+        for (size_t i = 0; i < realPat.size(); i++) {
+            if (realPat[i] == '\\' && i + 1 < realPat.size()) { ip += realPat[i]; ip += realPat[i + 1]; i++; continue; }
+            if (realPat[i] == '$' && i + 1 < realPat.size()) {
+                size_t j = i + 1;
+                if (realPat[j] == '^' && j + 1 < realPat.size()) j++; // $^a is visible as $a
+                if (j < realPat.size() && (std::isalpha((unsigned char)realPat[j]) || realPat[j] == '_')) {
+                    std::string nm; while (j < realPat.size() && (std::isalnum((unsigned char)realPat[j]) || realPat[j] == '_')) nm += realPat[j++];
+                    if (Value* v = tctx_.cur->find("$" + nm)) {
+                        for (char c : v->toStr()) { if (std::strchr(".\\+*?[^]$(){}=!<>|:-#", c)) ip += '\\'; ip += c; }
+                        i = j - 1; continue;
+                    }
+                }
+            }
+            ip += realPat[i];
+        }
+        realPat = ip;
+    }
     std::vector<RxMatch> matches;
     if (literal) {
         // plain string pattern: exact byte search (control chars, no regex metachars)
@@ -3285,6 +3315,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 size_t j = s.find('>', i + 2);
                 if (j != std::string::npos) { std::string nm = s.substr(i + 2, j - i - 2);
                     if (mv.hash && mv.hash->count(nm)) r += (*mv.hash)[nm].toStr(); i = j; continue; }
+            }
+            if (s[i] == '$' && i + 2 < s.size() && s[i + 1] == '^' && (std::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
+                size_t j = i + 2; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+                if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr(); // $^a placeholder (also visible as $a)
+                i = j - 1; continue;
             }
             if (s[i] == '$' && i + 1 < s.size() && (std::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
                 size_t j = i + 1; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
@@ -4293,7 +4328,8 @@ Value Interpreter::eval(Expr* e) {
                 return Value::integer(n);
             }
             long nsub = 0; ValueList noArgs; Value mres;
-            std::string out = substSelect(topic.toStr(), sl->pattern, nullptr, noArgs, nsub, false, &sl->repl, &mres);
+            bool topicUndef = topic.t == VT::Nil || topic.t == VT::Any || topic.t == VT::Type;
+            std::string out = substSelect(topicUndef ? std::string() : topic.toStr(), sl->pattern, nullptr, noArgs, nsub, false, &sl->repl, &mres);
             if (sl->nonMut) return Value::str(out);        // S/// : return new string, leave $_ intact
             if (Value* p = tctx_.cur->find("$_")) *p = Value::str(out);
             return mres;                                    // s/// returns the Match / List of matches
@@ -4352,6 +4388,13 @@ Value Interpreter::eval(Expr* e) {
             }
             Value* p = tctx_.cur->find(ve->name);
             if (p) return *p;
+            // $0, $1, … are aliases for $/[N]; fall back to $/ when not directly bound
+            if (ve->name.size() >= 2 && ve->name[0] == '$' && std::isdigit((unsigned char)ve->name[1])) {
+                bool alldig = true;
+                for (size_t k = 1; k < ve->name.size(); k++) if (!std::isdigit((unsigned char)ve->name[k])) alldig = false;
+                if (alldig) if (Value* sl = tctx_.cur->find("$/"))
+                    if (sl->arr) { long idx = std::stol(ve->name.substr(1)); if (idx < (long)sl->arr->size()) return (*sl->arr)[idx]; }
+            }
             if (!isSpecialVar(ve->name))
                 throw RakuError{Value::typeObj("X::Undeclared"),
                                 "Variable '" + ve->name + "' is not declared"};
