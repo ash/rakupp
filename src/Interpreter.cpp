@@ -4033,8 +4033,9 @@ Value Interpreter::eval(Expr* e) {
             return Value::number(nl->v); }
         case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
         case NK::RegexLit: {
-            // standalone regex matches against $_
             auto* rl = static_cast<RegexLit*>(e);
+            // rx// is always the Regex object; bare /…/ and m// match against $_
+            if (rl->isRx) return Value::regex(rl->pattern);
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
             return regexMatch(topic.toStr(), rl->pattern);
         }

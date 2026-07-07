@@ -591,6 +591,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     if (isRegex) {
         out = make(Tok::RegexLit, adverbs + raw);
+        out.flag = (w == "rx"); // rx// is a Regex object, never an implicit $_ match
         return true;
     }
     bool interp = (w == "qq");
@@ -955,6 +956,9 @@ std::vector<Token> Lexer::tokenize() {
                 if (quote) { if (ch == quote) quote = 0; raw += advance(); continue; }
                 // '...'/"..." protect an inner '/', but inside a <[...]> char class they are literal chars
                 if ((ch == '\'' || ch == '"') && brack == 0) { quote = ch; raw += advance(); continue; }
+                // `<(` and `)>` are the match-capture markers, not balanced <…> groups
+                if (ch == '<' && peek(1) == '(') { raw += advance(); raw += advance(); continue; }
+                if (ch == ')' && peek(1) == '>') { raw += advance(); raw += advance(); continue; }
                 if (ch == '<') angle++;
                 else if (ch == '>' && angle > 0) angle--;
                 else if (ch == '[') brack++;

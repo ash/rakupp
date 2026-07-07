@@ -836,7 +836,7 @@ ExprPtr Parser::parsePrimary() {
             if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
             return e;
         }
-        case Tok::RegexLit: { auto e = std::make_unique<RegexLit>(advance().text); return e; }
+        case Tok::RegexLit: { Token tk = advance(); auto e = std::make_unique<RegexLit>(tk.text); e->isRx = tk.flag; return e; }
         case Tok::SubstLit: { const Token& t = advance(); return std::make_unique<SubstLit>(t.text, t.text2, t.flag); }
         case Tok::QwList: { // qw<...> : split raw content on whitespace into a list of strings
             std::string raw = advance().text;
