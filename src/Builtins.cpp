@@ -1596,7 +1596,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::number(std::round(inv.toNum() / scale) * scale);
     }
     if (m == "truncate") return Value::integer((long long)inv.toNum());
-    if (m == "sign") { double n = inv.toNum(); return Value::integer(n < 0 ? -1 : n > 0 ? 1 : 0); }
+    if (m == "sign") {
+        if (inv.t == VT::Complex) throw RakuError{Value::typeObj("X::Numeric::Real"), "Complex is not in the Real domain, so it has no sign"};
+        double n = inv.toNum();
+        if (std::isnan(n)) return Value::number(NAN); // sign(NaN) is NaN
+        return Value::integer(n < 0 ? -1 : n > 0 ? 1 : 0);
+    }
     if (m == "exp") return Value::number(std::exp(inv.toNum()));
     if (m == "log") return Value::number(std::log(inv.toNum()));
     if (m == "sin") return Value::number(std::sin(inv.toNum()));
@@ -2116,6 +2121,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return j;
         }
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = items; (*s.hash)["values"] = v; return s; }
+        if (m == "chrs") { std::string r; for (auto& x : items) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); } // list of codepoints -> Str
         if (m == "elems") return Value::integer((long long)items.size());
         if (m == "end") return Value::integer((long long)items.size() - 1);
         if (m == "Bool") return Value::boolean(!items.empty());
@@ -3173,6 +3179,11 @@ void Interpreter::registerBuiltins() {
         };
     B["ord"] = [](Interpreter&, ValueList& a) -> Value { auto c = a.empty() ? std::vector<uint32_t>{} : utf8cp(a[0].toStr()); return c.empty() ? Value::nil() : Value::integer(c[0]); };
     B["chr"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(cpToUtf8((uint32_t)(a.empty() ? 0 : a[0].toInt()))); };
+    B["ords"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "ords", none); };
+    B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
+    B["sign"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "sign", none); };
+    B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };
+    B["append"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "append", rest); };
     B["join"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
         std::string sep = a[0].toStr();
