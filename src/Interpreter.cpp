@@ -216,6 +216,12 @@ static Value typedDefault(const std::string& type, char sigil) {
         if (type == "str") return Value::str("");
         if (std::isupper((unsigned char)type[0])) return Value::typeObj(type); // my Int $x -> (Int)
     }
+    // typed containers: `my Int @a` -> Array[Int], `my Int %h` -> Hash[Int]
+    if ((sigil == '@' || sigil == '%') && !type.empty() && std::isupper((unsigned char)type[0])) {
+        Value v = defaultFor(sigil);
+        v.ofType = type;
+        return v;
+    }
     return defaultFor(sigil);
 }
 // Truncate an integer value to a native type's bit width (wraparound), keeping the tag.
@@ -2055,13 +2061,22 @@ Value Interpreter::dynVar(const std::string& name) {
 }
 
 // Value-level indexing for native codegen (no AST). Read returns Nil when absent.
+// The default value for a missing element of a (possibly typed) container:
+// a typed container answers its element type object, else Nil.
+static Value typedElemDefault(const Value& base) {
+    if (base.ofType.empty()) return Value::nil();
+    std::string first = base.ofType.substr(0, base.ofType.find(','));
+    if (!first.empty() && std::isupper((unsigned char)first[0])) return Value::typeObj(first);
+    return Value::nil();
+}
+
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     if (isHash) {
         if (base.t == VT::Hash && base.hash) {
             auto it = base.hash->find(key.toStr());
             if (it != base.hash->end()) return it->second;
         }
-        return Value::nil();
+        return typedElemDefault(base);
     }
     if (base.t == VT::Range) {
         if (base.rTo >= 9000000000000000000LL) { // infinite range: index directly, don't materialise
@@ -2078,7 +2093,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         if (i < 0) i += n;
         if (i >= 0 && i < n) return (*base.arr)[i];
     }
-    return Value::nil();
+    return typedElemDefault(base);
 }
 
 // Attribute access on `self` for native codegen ($!x / $.x inside a method).
@@ -2987,7 +3002,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         bool same;
         if (l.t != r.t) same = false;
         else if (l.t == VT::Object) same = (l.obj == r.obj);
-        else if (l.t == VT::Type) same = (l.s == r.s);
+        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType == r.ofType);
         else if (l.t == VT::Code) same = (l.code == r.code);
         else if (l.t == VT::Array) same = (l.arr == r.arr); // Lists/Arrays: reference identity
         else if (l.t == VT::Hash) same = l.hashKind.empty() ? (l.hash == r.hash) // plain Hash: reference
@@ -4574,6 +4589,7 @@ Value Interpreter::evalIndex(Index* idx) {
             }
             if (base.t == VT::Hash && !base.hashKind.empty()) // Set/Bag/Mix typed default
                 return base.hashKind.find("Set") == 0 ? Value::boolean(false) : Value::integer(0);
+            if (!base.ofType.empty()) return typedElemDefault(base); // Hash[Int] -> Int
             return Value::any();
         };
         // hash slice: %h{'a','b'} / %h<a b> — multiple keys yield a list of values
@@ -4620,7 +4636,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 long long i = iv.toInt();
                 if (base.t == VT::Str) { if (i < 0) i += (long long)base.s.size(); return (i >= 0 && i < (long long)base.s.size()) ? Value::str(std::string(1, base.s[i])) : Value::any(); }
                 if (i < 0) i += n;
-                return (i >= 0 && i < n) ? src[i] : Value::any();
+                return (i >= 0 && i < n) ? src[i] : (base.ofType.empty() ? Value::any() : typedElemDefault(base));
             }
         }
         if (isSlice) {
@@ -4750,6 +4766,9 @@ Value Interpreter::eval(Expr* e) {
         case NK::NameTerm: {
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
+            if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
+                Value ty = Value::typeObj(n); ty.ofType = nt->ofType; return ty;
+            }
             if (n == "next") throw NextEx{};
             if (n == "last") throw LastEx{};
             if (n == "redo") throw RedoEx{};

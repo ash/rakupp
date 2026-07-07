@@ -178,7 +178,7 @@ std::string Value::gist() const {
     switch (t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "(Any)";
-        case VT::Type: return "(" + s + ")";
+        case VT::Type: return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
         case VT::Array: {
             std::string out = isList ? "(" : "[";
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
@@ -229,7 +229,7 @@ std::string Value::typeName() const {
         case VT::Rat:   return fatRat ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
-        case VT::Type:  return s;
+        case VT::Type:  return ofType.empty() ? s : s + "[" + ofType + "]";
         case VT::Whatever: return "Whatever";
         case VT::Object: return obj && obj->cls ? obj->cls->name : "Object";
         case VT::Regex: return "Regex";

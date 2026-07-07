@@ -667,6 +667,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if (isKind(Tok::Var)) {
         auto ve = std::make_unique<VarExpr>(advance().text);
         ve->declare = true; ve->declScope = scope; ve->declType = type;
+        // `%a{Str}` — hash key-type shape declaration
+        std::string keyType;
+        if (isKind(Tok::LBrace) && peek().kind == Tok::Ident && peek(2).kind == Tok::RBrace) {
+            advance(); keyType = advance().text; advance();
+        }
+        // `of Type` postfix trait sets the value/element type
+        if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
+        // Hash[valueType,keyType]
+        if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
         skipTraits();
         return ve;
     }
@@ -1168,6 +1177,23 @@ ExprPtr Parser::parsePrimary() {
                 return parseDeclarator(name);
             }
             advance(); // consume the name
+            // parameterized type: `Array[Int]`, `Hash[Int,Str]`, `Foo[Bar]` — a capitalized
+            // bareword tight against `[` whose first arg is a (capitalized) type name.
+            if (!name.empty() && std::isupper((unsigned char)name[0]) &&
+                isKind(Tok::LBracket) && !cur().spaceBefore &&
+                peek().kind == Tok::Ident && !peek().text.empty() &&
+                std::isupper((unsigned char)peek().text[0])) {
+                advance(); // [
+                std::string params;
+                while (!isKind(Tok::RBracket) && !isKind(Tok::End)) {
+                    if (isKind(Tok::Ident)) { if (!params.empty()) params += ","; params += advance().text; }
+                    else advance(); // skip commas / smileys / whitespace tokens
+                }
+                expectKind(Tok::RBracket, "]");
+                auto nt = std::make_unique<NameTerm>(name);
+                nt->ofType = params;
+                return nt;
+            }
             // type smiley on a type name: Channel:U / Foo:D / Bar:_  (definedness ignored)
             if (!name.empty() && std::isupper((unsigned char)name[0]) &&
                 isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&

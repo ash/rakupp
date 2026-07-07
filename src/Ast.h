@@ -61,6 +61,7 @@ struct VarExpr : Expr {
 // bareword used as a term (type name, enum, sub w/o parens handled separately)
 struct NameTerm : Expr {
     std::string name;
+    std::string ofType; // type parameters for `Array[Int]` / `Hash[Int,Str]` (comma-joined)
     explicit NameTerm(std::string n): Expr(NK::NameTerm), name(std::move(n)) {}
 };
 

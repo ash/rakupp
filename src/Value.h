@@ -69,6 +69,8 @@ struct Value {
     bool rExFrom = false, rExTo = false;
     std::string enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
     std::string enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
+    std::string ofType;   // parameter/element type: `Array[Int]` type object, or a typed `my Int @a`/`%h`
+                          // (comma-joined for multiple params, e.g. Hash[Int,Str] -> "Int,Str")
     int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
     bool natSigned = false;
 
