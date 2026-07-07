@@ -1329,6 +1329,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
         auto ci = inv.obj->cls;
         if (ci->findMethod(m)) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
+        if (m == "clone") { // shallow copy, with :name(val) attribute overrides
+            Value nv = inv; auto ni = std::make_shared<ObjectData>();
+            ni->cls = inv.obj->cls; ni->attrs = inv.obj->attrs;
+            for (auto& a : args) if (a.t == VT::Pair) ni->attrs[a.s] = a.pairVal ? *a.pairVal : Value::any();
+            nv.obj = ni; return nv;
+        }
         // a grammar INSTANCE (`Grammar.new`) parses just like the type object
         if ((m == "parse" || m == "subparse" || m == "parsefile") && (ci->isGrammar || ci->findRule("TOP")))
             return methodCall(Value::typeObj(ci->name), m, args, rwArgs);
