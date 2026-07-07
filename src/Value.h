@@ -51,6 +51,7 @@ struct Value {
     std::string hashKind; // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/...
     bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
     bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
+    bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
     std::shared_ptr<ValueList> arr;
     std::shared_ptr<std::map<std::string, Value>> hash;
     std::shared_ptr<Callable> code;

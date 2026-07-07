@@ -1750,6 +1750,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             if (p.sigil == '@') v = coerceArray(v);
             else if (p.sigil == '%') v = coerceHash(v);
+            // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
+            if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;
             env->define(p.name, v);
         } else if (p.subSig) {
             bindParams(*p.subSig, positional, env); // no arg → bind inner to (), fills defaults
@@ -4454,6 +4456,8 @@ Value Interpreter::eval(Expr* e) {
             bool topicUndef = topic.t == VT::Nil || topic.t == VT::Any || topic.t == VT::Type;
             std::string out = substSelect(topicUndef ? std::string() : topic.toStr(), sl->pattern, nullptr, noArgs, nsub, false, &sl->repl, &mres);
             if (sl->nonMut) return Value::str(out);        // S/// : return new string, leave $_ intact
+            if (topic.readonly)                             // s/// on a readonly-bound $_ (a plain param) dies
+                throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify a readonly value"};
             if (Value* p = tctx_.cur->find("$_")) *p = Value::str(out);
             return mres;                                    // s/// returns the Match / List of matches
         }

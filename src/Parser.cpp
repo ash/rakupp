@@ -1607,7 +1607,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 std::string trait = advance().text;
                 if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
                 else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
-                    if (trait == "is" && (isIdent("rw") || isIdent("copy"))) p.isRw = (cur().text == "rw");
+                    if (trait == "is" && (isIdent("rw") || isIdent("copy"))) { p.isRw = (cur().text == "rw"); p.isCopy = (cur().text == "copy"); }
                     advance();
                 }
             }
