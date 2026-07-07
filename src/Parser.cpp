@@ -2333,10 +2333,31 @@ StmtPtr Parser::parseStatementImpl() {
             (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
              (b.kind == Tok::RBrace || b.kind == Tok::Comma));
         if (!looksHash) {
-            auto blk = parseBlock();
-            return applyModifiers(std::move(blk));
+            // If the matching } is immediately followed (no space) by a postfix,
+            // the block is an expression term — `{...}()`, `{...}.method`,
+            // `{...}[0]` — not a bare-block statement. Let parseExpression handle
+            // it so the postfix (and any trailing infix) applies.
+            bool exprBlock = false;
+            for (size_t i = pos_, depth = 0; i < toks_.size(); i++) {
+                Tok k = toks_[i].kind;
+                if (k == Tok::LBrace) depth++;
+                else if (k == Tok::RBrace && --depth == 0) {
+                    if (i + 1 < toks_.size()) {
+                        const Token& nx = toks_[i + 1];
+                        if (!nx.spaceBefore &&
+                            (nx.kind == Tok::LParen || nx.kind == Tok::LBracket ||
+                             (nx.kind == Tok::Op && nx.text == ".")))
+                            exprBlock = true;
+                    }
+                    break;
+                }
+            }
+            if (!exprBlock) {
+                auto blk = parseBlock();
+                return applyModifiers(std::move(blk));
+            }
         }
-        // else fall through: parseExpression -> parsePrimary builds a HashLit
+        // else fall through: parseExpression -> parsePrimary builds a HashLit/block
     }
 
     auto es = std::make_unique<ExprStmt>();

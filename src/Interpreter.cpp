@@ -2364,14 +2364,41 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code;
     if (c.isMultiDispatcher) {
-        const Value* best = nullptr; int bestScore = -1;
-        for (auto& cand : c.candidates) {
-            int s = scoreCandidate(cand, args);
-            if (s > bestScore) { bestScore = s; best = &cand; }
-        }
-        if (best && bestScore >= 0) return invokeMethod(*best, self, args, rwArgs);
-        throw RakuError{Value::str("X::Multi::NoMatch"),
-                        "No matching multi candidate for method " + c.name};
+        // Mirror the multi-sub dispatcher: push a redispatch frame around the
+        // chosen candidate so callsame/nextsame (→ next candidate) and
+        // samewith/nextwith (→ re-dispatch from the top) work inside multi methods.
+        auto visited = std::make_shared<std::vector<const Value*>>();
+        Value dispatcherVal = codeVal;
+        Value selfCopy = self;
+        std::function<Value(ValueList)> dispatch =
+            [this, &c, dispatcherVal, selfCopy, rwArgs, visited, &dispatch](ValueList as) -> Value {
+            const Value* best = nullptr; int bestScore = -1;
+            for (auto& cand : c.candidates) {
+                bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
+                if (seen) continue;
+                int s = scoreCandidate(cand, as);
+                if (s > bestScore) { bestScore = s; best = &cand; }
+            }
+            if (!best || bestScore < 0) {
+                if (!visited->empty()) return Value::nil();  // ran past the last candidate
+                throw RakuError{Value::str("X::Multi::NoMatch"),
+                                "No matching multi candidate for method " + c.name};
+            }
+            visited->push_back(best);
+            RedispatchCtx rc;
+            rc.sameArgs = as;
+            rc.next = [&dispatch](ValueList na) -> Value { return dispatch(std::move(na)); };
+            rc.restart = [this, dispatcherVal, selfCopy, rwArgs](ValueList na) -> Value {
+                return invokeMethod(dispatcherVal, selfCopy, std::move(na), rwArgs);
+            };
+            redispatchStack_.push_back(std::move(rc));
+            Value r;
+            try { r = invokeMethod(*best, selfCopy, as, rwArgs); }
+            catch (...) { redispatchStack_.pop_back(); throw; }
+            redispatchStack_.pop_back();
+            return r;
+        };
+        return dispatch(std::move(args));
     }
     if (c.builtin) { // native-codegen method: receives self as the first argument
         ValueList a2; a2.reserve(args.size() + 1);
