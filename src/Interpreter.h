@@ -315,6 +315,20 @@ private:
 Value listToArray(const ValueList& items);
 ValueList argsToPositional(ValueList& args, std::map<std::string, Value>& named);
 Value applyArith(const std::string& op, const Value& l, const Value& r); // binary op dispatch (also used by codegen)
+
+// -O fast-path binary ops for native codegen: inline the small-int (non-bignum)
+// case as native int64, else fall back to the general applyArith. Semantics are
+// identical — this only skips the string dispatch + boxing on the hot Int path.
+inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int && r.t == VT::Int && !l.big && !r.big; }
+inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !__builtin_add_overflow(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
+inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !__builtin_sub_overflow(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
+inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !__builtin_mul_overflow(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }
+inline Value rtLt(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i <  r.i); return applyArith("<",  l, r); }
+inline Value rtLe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i <= r.i); return applyArith("<=", l, r); }
+inline Value rtGt(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i >  r.i); return applyArith(">",  l, r); }
+inline Value rtGe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i >= r.i); return applyArith(">=", l, r); }
+inline Value rtEq(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i == r.i); return applyArith("==", l, r); }
+inline Value rtNe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i != r.i); return applyArith("!=", l, r); }
 std::string doSprintf(const std::string& fmt, const ValueList& args); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);

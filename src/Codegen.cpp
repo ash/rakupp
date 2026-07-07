@@ -306,6 +306,7 @@ struct Codegen {
                     return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?_a:(" + R + "); }())";
                 if (b->op == "//") // defined-or: Nil/Any/Type (incl. Failure) are undefined
                     return "([&]()->Value{ Value _a=(" + L + "); return (_a.t==VT::Nil||_a.t==VT::Any||_a.t==VT::Type)?(" + R + "):_a; }())";
+                if (std::string f = fastBin(b->op); !f.empty()) return f + "(" + L + ", " + R + ")"; // -O
                 return "applyArith(" + cesc(b->op) + ", " + L + ", " + R + ")";
             }
             case NK::InterpStr: {
@@ -590,14 +591,17 @@ struct Codegen {
         // compound assignment to an index binds the slot once (avoids double side effects)
         if (tgt->kind == NK::Index) {
             std::string ref = lvalueExpr(tgt);
+            std::string fb = fastBin(binop);
             std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
                            : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
+                           : !fb.empty() ? fb + "(__r, " + rhs + ")"
                            : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
             return "([&]()->Value{ Value& __r = " + ref + "; __r = " + nv + "; return __r; }())";
         }
         std::string lhs = lvalueExpr(tgt);
         if (binop == "||") return lhs + " = RT.boolify(" + lhs + ") ? " + lhs + " : (" + rhs + ")";
         if (binop == "&&") return lhs + " = RT.boolify(" + lhs + ") ? (" + rhs + ") : " + lhs;
+        if (std::string f = fastBin(binop); !f.empty()) return lhs + " = " + f + "(" + lhs + ", " + rhs + ")"; // -O
         return lhs + " = applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
     }
 
@@ -724,6 +728,15 @@ struct Codegen {
             if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") return false;
         }
         return true;
+    }
+    // -O: the inline int-fast-path helper for a binary op (empty = use applyArith)
+    std::string fastBin(const std::string& op) {
+        if (!optimize_) return "";
+        static const std::map<std::string, std::string> m = {
+            {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"},
+            {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"}};
+        auto it = m.find(op);
+        return it == m.end() ? "" : it->second;
     }
 
     // ---- sub definitions ----
