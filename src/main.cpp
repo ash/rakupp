@@ -111,7 +111,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
 // Fully compile a Raku program to a native executable by transpiling its AST to
 // C++ (no interpreter embedded) and linking against the runtime library. Falls
 // back with a clear message if the program uses an unsupported construct.
-static int compileNative(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe, bool optimize = false) {
+static int compileNative(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe, bool optimize = false, const std::string& ccOpt = "-O2") {
     if (outPath.empty()) outPath = defaultOut(srcName);
 
     std::string cpp;
@@ -144,7 +144,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
 
     const char* cxxEnv = std::getenv("CXX");
     std::string cxx = cxxEnv && *cxxEnv ? cxxEnv : "c++";
-    std::string cmd = cxx + " -std=c++17 -O2 -w -pthread -Wl,-w -I " + shq(inc) + " "
+    std::string cmd = cxx + " -std=c++17 " + shq(ccOpt) + " -w -pthread -Wl,-w -I " + shq(inc) + " "
                     + shq(genPath) + " " + shq(lib) + " -o " + shq(outPath);
     int rc = std::system(cmd.c_str());
     if (!std::getenv("RAKUPP_KEEPGEN")) std::remove(genPath.c_str());
@@ -216,8 +216,9 @@ int main(int argc, char** argv) {
 "  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
 "  rakupp --aot    SRC -o OUT   Parse ahead of time, embed the AST\n"
 "  rakupp --exe    SRC -o OUT   Native-compile to C++ (fastest; falls back to\n"
-"                               bundling for constructs it can't compile yet;\n"
-"                               add -O for direct-arity calls)\n"
+"                               bundling for constructs it can't compile yet).\n"
+"                               -O enables the codegen optimizer; a level\n"
+"                               (-O3/-Os/-Ofast/…) is forwarded to the C++ compiler\n"
 "\n"
 "Inspection:\n"
 "  rakupp --ast SRC             Print the parsed AST as an indented tree\n"
@@ -334,13 +335,15 @@ int main(int argc, char** argv) {
     {
         std::string mode = argc >= 2 ? argv[1] : "";
         if (mode == "--bundle" || mode == "--aot" || mode == "--exe") {
-            std::string src, srcName, outPath;
+            std::string src, srcName, outPath, ccOpt = "-O2";
             bool haveSrc = false, optimize = false;
             for (int i = 2; i < argc; i++) {
                 std::string a = argv[i];
                 if (a == "-o" && i + 1 < argc) { outPath = argv[++i]; }
                 else if (a.rfind("-o", 0) == 0 && a.size() > 2) { outPath = a.substr(2); }
-                else if (a == "-O" || a == "-O1") { optimize = true; }
+                // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/-Ofast/…)
+                // is forwarded to the C++ compiler for the generated binary.
+                else if (a.rfind("-O", 0) == 0) { optimize = true; if (a.size() > 2) ccOpt = a; }
                 else if (a == "-e" && i + 1 < argc) { src = argv[++i]; srcName = "-e"; haveSrc = true; }
                 else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); srcName = "-e"; haveSrc = true; }
                 else if (!haveSrc) { // a source file
@@ -349,8 +352,8 @@ int main(int argc, char** argv) {
                     std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); srcName = a; haveSrc = true;
                 }
             }
-            if (!haveSrc) { std::cerr << "Usage: rakupp " << mode << " (FILE | -e CODE) [-o OUT] [-O]\n"; return 4; }
-            if (mode == "--exe") return compileNative(src, srcName, outPath, exePath, optimize);
+            if (!haveSrc) { std::cerr << "Usage: rakupp " << mode << " (FILE | -e CODE) [-o OUT] [-O[level]]\n"; return 4; }
+            if (mode == "--exe") return compileNative(src, srcName, outPath, exePath, optimize, ccOpt);
             if (mode == "--aot") return compileAotAst(src, srcName, outPath, exePath);
             return compileToExe(src, srcName, outPath, exePath); // --bundle
         }
