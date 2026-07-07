@@ -3128,21 +3128,20 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     return last;
 }
 
-// Case pattern of `orig` applied to `repl` (`:samecase`): ALL-CAPS orig → upper,
-// Titlecase orig → capitalised, else lower.
+// `:samecase` — each replacement character takes the case of the positionally
+// aligned character of the match (`oO` → `au` gives `aU`); once the match runs
+// out, the last seen case carries on.
 static std::string applySamecase(const std::string& orig, const std::string& repl) {
-    bool anyUpper = false, anyLower = false, firstUpper = false, seenLetter = false;
-    for (unsigned char c : orig) {
-        if (std::isalpha(c)) {
-            if (!seenLetter) firstUpper = std::isupper(c);
-            seenLetter = true;
-            if (std::isupper(c)) anyUpper = true; else anyLower = true;
-        }
-    }
     std::string r = repl;
-    if (anyUpper && !anyLower) { for (auto& c : r) c = std::toupper((unsigned char)c); }
-    else if (firstUpper) { bool first = true; for (auto& c : r) { if (std::isalpha((unsigned char)c)) { c = first ? std::toupper((unsigned char)c) : std::tolower((unsigned char)c); first = false; } } }
-    else { for (auto& c : r) c = std::tolower((unsigned char)c); }
+    bool lastUpper = false, haveLast = false; size_t oi = 0;
+    for (size_t i = 0; i < r.size(); i++) {
+        if (oi < orig.size()) {
+            unsigned char oc = orig[oi++];
+            if (std::isalpha(oc)) { lastUpper = std::isupper(oc); haveLast = true; }
+        }
+        if (haveLast && std::isalpha((unsigned char)r[i]))
+            r[i] = lastUpper ? std::toupper((unsigned char)r[i]) : std::tolower((unsigned char)r[i]);
+    }
     return r;
 }
 
@@ -3173,6 +3172,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else if (k == "s" || k == "sigspace") sigspace = true;
         else if (k == "samespace" || k == "ss") { sigspace = true; samespace = true; }
         else if (k == "samemark" || k == "mm") samemark = true;
+        else if (k == "m" || k == "ignoremark") { /* accepted, mark-insensitive: no-op */ }
+        else throw RakuError{Value::typeObj("X::Syntax::Regex::Adverb"), "Unrecognized regex adverb: :" + k};
     };
     for (auto& a : args)
         if (a.t == VT::Pair) setAdverb(a.s, a.pairVal ? *a.pairVal : Value::boolean(true));
