@@ -1516,6 +1516,25 @@ Value Interpreter::exec(Stmt* s) {
             auto* fs = static_cast<ForStmt*>(s);
             ValueList collected; ValueList* col = fs->asExpr ? &collected : nullptr;
             auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::any(); };
+            // `EXPR for LIST` — a statement modifier makes no implicit block: the body
+            // runs in the enclosing scope (so `my $x = … for …` leaves $x declared),
+            // with $_ topicalized per iteration and restored afterward.
+            if (fs->modifier && fs->vars.empty() && !fs->destructure) {
+                Value lv = eval(fs->list.get());
+                ValueList items;
+                if (lv.t == VT::Array && lv.arr) items = *lv.arr;
+                else if (lv.t == VT::Range) items = lv.flatten();
+                else items.push_back(lv);
+                auto env = tctx_.cur;
+                bool hadTopic = env->vars.count("$_");
+                Value savedTopic = hadTopic ? env->vars["$_"] : Value::any();
+                for (size_t i = 0; i < items.size(); i++) {
+                    env->vars["$_"] = items[i];
+                    if (!runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == items.size(), col)) break;
+                }
+                if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
+                return forResult();
+            }
             Value listv = eval(fs->list.get());
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).

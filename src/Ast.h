@@ -268,6 +268,7 @@ struct ForStmt : Stmt {
     bool destructure = false;      // `-> ($a,$b,$c)`: unpack each element into vars
     std::unique_ptr<Block> body;
     bool asExpr = false; // used in value context: collect each iteration's value into a List
+    bool modifier = false; // `EXPR for LIST` — no implicit block (a `my` in EXPR leaks out)
     ForStmt(): Stmt(NK::ForStmt) {}
 };
 

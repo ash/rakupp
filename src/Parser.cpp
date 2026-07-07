@@ -2065,6 +2065,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
                     }
                 }
             }
+            fs->modifier = true; // plain `EXPR for LIST`: no implicit block
             fs->body = wrapStmt(std::move(s));
             return fs;
         }
