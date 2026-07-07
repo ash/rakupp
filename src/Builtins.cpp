@@ -908,9 +908,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return mkSupply(out);
         }
+        if (listy && m == "do") { // run a block per value for its side effect; pass values through
+            if (!args.empty() && args[0].t == VT::Code) for (auto& v : vals()) { ValueList one{v}; callCallable(args[0], one); }
+            return mkSupply(vals());
+        }
+        if (listy && m == "grab") { // hand the whole stream (as $_) to a collector, emit its result
+            if (!args.empty() && args[0].t == VT::Code) {
+                Value listArg = Value::array(); *listArg.arr = vals(); listArg.isList = true;
+                ValueList one{listArg}; Value r = callCallable(args[0], one);
+                return mkSupply(r.t == VT::Array ? *r.arr : r.flatten());
+            }
+            return mkSupply(vals());
+        }
         if (listy && (m == "map" || m == "grep" || m == "head" || m == "tail" || m == "skip" ||
                       m == "reverse" || m == "sort" || m == "unique" || m == "squish" || m == "rotor" ||
-                      m == "minmax" || m == "sum" || m == "reduce" ||
+                      m == "rotate" || m == "minmax" || m == "sum" || m == "reduce" ||
                       m == "produce" || m == "batch" || m == "lines" || m == "words" || m == "flat" ||
                       m == "classify" || m == "categorize" || m == "start" || m == "schedule-on" ||
                       m == "stable" || m == "delayed" || m == "migrate" || m == "on-demand")) {
@@ -2148,6 +2160,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "list" || m == "flat" || m == "cache" || m == "eager" || m == "Seq" || m == "List")
             return Value::list(items);
         if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }
+        if (m == "rotate") { long n = args.empty() ? 1 : args[0].toInt(); long sz = (long)items.size();
+            if (sz) { n = ((n % sz) + sz) % sz; std::rotate(items.begin(), items.begin() + n, items.end()); }
+            return Value::list(items); }
         if (m == "permutations") {
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             std::vector<size_t> idx(items.size());

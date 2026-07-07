@@ -2872,6 +2872,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "gcd") { long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x); }
     if (op == "lcm") { long long x = l.toInt(), y = r.toInt(); if (!x || !y) return Value::integer(0); long long g = std::llabs(x), h = std::llabs(y); while (h) { long long t = g % h; g = h; h = t; } return Value::integer(std::llabs(x / g * y)); }
+    if (op == "min") return valueCmp(l, r) <= 0 ? l : r;
+    if (op == "max") return valueCmp(l, r) >= 0 ? l : r;
 
     // comparisons -> Bool
     if (op == "==") return Value::boolean(l.toNum() == r.toNum());
