@@ -1313,6 +1313,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 for (auto& kv : ci->methods) out.arr->push_back(kv.second);
                 return out;
             }
+            if (m == "roles" || m == "role_typecheck_list") { // composed roles
+                Value out = Value::array(); out.isList = true;
+                for (auto& rn : ci->doneRoles) out.arr->push_back(Value::typeObj(rn));
+                return out;
+            }
+            if (m == "parents") { // immediate parents; composed roles are not parents
+                Value out = Value::array(); out.isList = true;
+                if (ci->parent && !ci->parent->isRole) out.arr->push_back(Value::typeObj(ci->parent->name));
+                for (auto& p : ci->extraParents) if (p && !p->isRole) out.arr->push_back(Value::typeObj(p->name));
+                if (out.arr->empty() && !ci->isRole) out.arr->push_back(Value::typeObj("Any"));
+                return out;
+            }
             if (m == "mro") { // method resolution order: self, ancestors, then Any, Mu
                 Value out = Value::array(); out.isList = true;
                 // Depth-first over the primary + additional (multiple-inheritance) parents,
@@ -1563,6 +1575,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "does") { // .does(Role/Type) — role/type membership introspection
         if (args.empty()) return Value::boolean(false);
+        // HOW form: `$obj.HOW.does($obj, Role)` — the metaclass takes (object, role)
+        if (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0 && args.size() >= 2)
+            return methodCall(args[0], "does", ValueList{args[1]}, rwArgs);
         std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);
         bool res = inv.typeName() == rn;

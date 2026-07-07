@@ -1434,6 +1434,7 @@ Value Interpreter::exec(Stmt* s) {
             if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
             ci->isGrammar = cd->isGrammar;
+            ci->isRole = cd->isRole;
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; }
             for (auto& a : cd->attrs) {
                 ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw;
