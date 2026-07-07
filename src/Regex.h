@@ -100,7 +100,7 @@ public:
     bool matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r) const;
 
 private:
-    enum class K { Lit, Any, Class, Seq, Alt, Rep, Group, AnchorStart, AnchorEnd, Nop, Subrule, Look, Code, VarMatch };
+    enum class K { Lit, Any, Class, Seq, Alt, Rep, Group, AnchorStart, AnchorEnd, Nop, Subrule, Look, Code, VarMatch, CapStart };
     struct Node {
         K k;
         std::string lit;                 // Lit
@@ -171,6 +171,7 @@ public:
         const SubResolver* resolver = nullptr;             // plain-regex subrule path (atomic)
         class GrammarMatcher* grammar = nullptr;           // grammar path (backtrackable)
         long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
+        long capFrom = -1;                                 // `<(` capture-start position (overall match .from), -1 = none
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
     };
     bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;

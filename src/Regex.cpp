@@ -209,6 +209,7 @@ Regex::NodePtr Regex::parseAtom() {
     }
     if (c == '<') {
         pos_++;
+        if (peek() == '(') { pos_++; auto n = std::make_unique<Node>(); n->k = K::CapStart; return n; } // <( match-capture start
         auto node = std::make_unique<Node>();
         node->k = K::Class;
         if (peek() == '[') { pos_++; node->negate = false; parseClassBodyMember(node.get()); }
@@ -591,7 +592,7 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
             return {lo, hi};
         }
         case K::Group: return nodeWidth(n->kids[0].get(), st);
-        case K::AnchorStart: case K::AnchorEnd: case K::Nop: case K::Code: case K::Look:
+        case K::AnchorStart: case K::AnchorEnd: case K::Nop: case K::Code: case K::Look: case K::CapStart:
             return {0, 0};
         case K::Subrule:
             if (st.grammar) {
@@ -608,6 +609,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
     long len = (long)st.s.size();
     switch (n->k) {
         case K::Nop: return k(pos);
+        case K::CapStart: { st.capFrom = pos; return k(pos); } // `<(`: zero-width, marks the .Str start
         case K::Look: {
             // zero-width assertion — match the inner in an isolated capture state
             const Node* child = n->kids.empty() ? nullptr : n->kids[0].get();
@@ -868,7 +870,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
         long endPos = -1;
         if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
-            out.matched = true; out.from = start; out.to = endPos;
+            out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = endPos;
             out.caps = st.caps; out.named = st.named; out.subs = st.subs;
             out.children = st.children;
             return true;
@@ -882,7 +884,7 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
     MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
     long endPos = -1;
     if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
-        out.matched = true; out.from = pos; out.to = endPos;
+        out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = endPos;
         out.caps = st.caps; out.named = st.named; out.subs = st.subs;
         out.children = st.children;
         return true;
