@@ -75,7 +75,7 @@ This is the heart. Key pieces:
 | `Codegen.*` | `--exe` back end: transpiles the AST to native C++. |
 | `AstEmit.cpp` | `--aot` back end: emits C++ that rebuilds the AST. |
 | `AstDump.cpp` | `--ast` AST printer. |
-| `main.cpp` | CLI: interpret, `-e`, `--ast`, `--bundle`, `--aot`, `--exe`. |
+| `main.cpp` | CLI: interpret, `-e`, `--ast`, `--cpp`, `--bundle`, `--aot`, `--exe`. |
 
 ### The `Value` type
 

@@ -159,6 +159,7 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 | `--aot SRC -o OUT` | Compile: parse ahead of time, embed the AST |
 | `--exe SRC -o OUT` | Native-compile to C++ (fastest; falls back to bundling) |
 | `--ast SRC` | Print the parsed AST as an indented tree |
+| `--cpp SRC` | Print the C++ that `--exe` transpiles to |
 | `--highlight [SRC]` | Syntax-highlight Raku — `--html` (default) or `--ansi`; a `pygmentize` drop-in |
 | `--help`, `-h` | Show help |
 | `--version`, `-V` | Show the version |
