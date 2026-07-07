@@ -790,6 +790,13 @@ ExprPtr Parser::parseColonPair() {
 }
 
 ExprPtr Parser::parsePrimary() {
+    // ::?CLASS / ::?ROLE / ::?PACKAGE — the lexically-enclosing type (compile-time)
+    if (isOp("::") && peek().text == "?" && peek(2).kind == Tok::Ident) {
+        advance(); advance(); // :: ?
+        advance();            // CLASS / ROLE / PACKAGE
+        std::string nm = typeStack_.empty() ? "" : typeStack_.back();
+        return std::make_unique<NameTerm>(nm.empty() ? "Mu" : nm);
+    }
     // symbolic name reference in term position: `::Foo::Bar` → the named type/package
     if (isOp("::") && peek().kind == Tok::Ident) {
         advance(); // ::
@@ -1902,6 +1909,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     // `unit class Foo;` — the remainder of the compilation unit is the class body.
     if (braced) advance();          // {
     else matchKind(Tok::Semicolon); // unit form
+    typeStack_.push_back(cd->name); // enclosing type for ::?CLASS in the body
     while (!isKind(Tok::End) && (!braced || !isKind(Tok::RBrace))) {
         if (matchKind(Tok::Semicolon)) continue;
         // `also is Parent` / `also does Role` inside the body — same effect as the
@@ -2014,6 +2022,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             cd->body.push_back(std::move(st));
     }
     if (braced) expectKind(Tok::RBrace, "}");
+    typeStack_.pop_back();
     return cd;
 }
 

@@ -29,6 +29,7 @@ private:
     size_t pos_ = 0;
     std::set<std::string> userInfix_, userPrefix_, userPostfix_; // user-declared operators (sub infix:<…>)
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
+    std::vector<std::string> typeStack_; // enclosing class/role/grammar names (for ::?CLASS)
 
     const Token& cur() const { return toks_[pos_]; }
     const Token& peek(int off = 1) const;
