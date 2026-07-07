@@ -117,21 +117,24 @@ semantics-preserving codegen passes:
    the string-dispatched `applyArith`.
 
 The fast-path covers `+ - * % %% ~ < <= > >= == !=`, so `-O` helps in proportion
-to how much of a kernel is arithmetic/string ops the codegen emits:
+to how much of a kernel is arithmetic/string ops the codegen emits. Best of 10
+runs; Rakudo (v2026.06) shown for reference — **with `-O`, every kernel beats it**:
 
-| Benchmark | `--exe` | `--exe -O` | speed-up |
-|---|---:|---:|---:|
-| fib      | 540 ms | **70 ms** | 7.6× |
-| loopsum  | 83 ms  | **20 ms** | 4×   |
-| strcat   | 40 ms  | **20 ms** | 2×   |
-| arrayops | 90 ms  | **60 ms** | 1.5× |
-| hash     | 30 ms  | **20 ms** | 1.5× |
-| sortnums | 50 ms  | 40 ms  | ~1.2× |
-| regex / bigint | — | (unchanged) | — |
+| Benchmark | `--exe` | `--exe -O` | Rakudo | `-O` vs Rakudo |
+|---|---:|---:|---:|---:|
+| fib      | 547 ms | **79 ms** | 383 ms | **4.8×** |
+| loopsum  | 85 ms  | **30 ms** | 236 ms | **7.9×** |
+| strcat   | 52 ms  | **28 ms** | 125 ms | **4.5×** |
+| hash     | 34 ms  | **25 ms** | 161 ms | **6.4×** |
+| arrayops | 96 ms  | **73 ms** | 225 ms | **3.1×** |
+| sortnums | 60 ms  | **51 ms** | 238 ms | **4.7×** |
+| regex    | 84 ms  | 83 ms  | 221 ms | 2.7× |
+| bigint   | 44 ms  | 44 ms  | 212 ms | 4.8× |
 
-With `-O`, `fib` flips from 1.4× behind Rakudo to **~5× ahead**. `regex` (the regex
-engine) and `bigint` (`BigInt` multiply) don't move — their time is inside a
-runtime method the codegen doesn't emit. `-O` is opt-in and off by default; all
+`fib` flips from 1.4× behind Rakudo (at the default `--exe`) to **~5× ahead**.
+`regex` (the regex engine) and `bigint` (`BigInt` multiply) don't move under `-O` —
+their time is inside a runtime method the codegen doesn't emit — but plain `--exe`
+already had them well ahead of Rakudo. `-O` is opt-in and off by default; all
 benchmark programs produce identical output with it — see
 [OPTIMIZATION.md](OPTIMIZATION.md) for details. See [OPTIMIZATION.md](OPTIMIZATION.md) for what each pass emits, the C++
 optimization-level forwarding (`-O3`/`-Os`/`-Ofast`), and the correctness notes.

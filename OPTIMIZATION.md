@@ -127,19 +127,19 @@ default — it's for inspecting/debugging the generated C++, not for speed.
 
 ## Measured impact
 
-`--exe`, best of several runs, runtime-supplied input (so nothing is
-constant-folded).
+`--exe`, best of 10 runs (startup-inclusive, as in
+[BENCHMARKS.md](BENCHMARKS.md)).
 
 | Benchmark | `--exe` | `--exe -O` | speed-up | what `-O` reached |
 |---|---:|---:|---:|---|
-| fib      | 0.53 s | **0.07 s** | 7.6× | calls + `+ - <` |
-| loopsum  | 0.08 s | **0.02 s** | 4×   | `+=` |
-| strcat   | 0.04 s | **0.02 s** | 2×   | `~=` |
-| arrayops | 0.09 s | **0.06 s** | 1.5× | `* %% 3` over 200k |
-| hash     | 0.03 s | **0.02 s** | 1.5× | `% 1000` |
-| sortnums | 0.05 s | 0.04 s | ~1.2× | map-body arithmetic |
-| regex    | 0.08 s | 0.08 s | — | (regex engine) |
-| bigint   | 0.04 s | 0.04 s | — | (`BigInt` multiply) |
+| fib      | 547 ms | **79 ms** | 6.9× | calls + `+ - <` |
+| loopsum  | 85 ms  | **30 ms** | 2.8× | `+=` |
+| strcat   | 52 ms  | **28 ms** | 1.9× | `~=` |
+| hash     | 34 ms  | **25 ms** | 1.4× | `% 1000` |
+| arrayops | 96 ms  | **73 ms** | 1.3× | `* %% 3` over 200k |
+| sortnums | 60 ms  | **51 ms** | 1.2× | map-body arithmetic |
+| regex    | 84 ms  | 83 ms | — | (regex engine) |
+| bigint   | 44 ms  | 44 ms | — | (`BigInt` multiply) |
 
 `fib` was the *only* kernel where Rakudo led at the default `--exe`; with `-O` it
 runs ~5× ahead. `-O` helps in proportion to how much of a kernel's time is
