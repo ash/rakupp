@@ -220,6 +220,7 @@ int main(int argc, char** argv) {
 "\n"
 "Inspection:\n"
 "  rakupp --ast SRC             Print the parsed AST as an indented tree\n"
+"  rakupp --cpp SRC             Print the C++ that --exe would transpile to\n"
 "  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in\n"
 "  rakupp --help, -h            Show this help\n"
@@ -291,6 +292,31 @@ int main(int argc, char** argv) {
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
+        }
+        return 0;
+    }
+
+    // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)
+    if (argc >= 2 && (std::string(argv[1]) == "--cpp" || std::string(argv[1]) == "--emit-cpp")) {
+        std::string src, fname = "-e";
+        if (argc >= 4 && std::string(argv[2]) == "-e") src = argv[3];
+        else if (argc >= 3) {
+            std::ifstream in(argv[2]);
+            if (!in) { std::cerr << "Cannot open file: " << argv[2] << "\n"; return 4; }
+            std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = argv[2];
+        } else { std::cerr << "Usage: rakupp --cpp FILE | --cpp -e CODE\n"; return 4; }
+        try {
+            Lexer lexer(src);
+            Parser parser(lexer.tokenize());
+            Program prog = parser.parseProgram();
+            std::cout << transpileToCpp(prog);
+        } catch (const ParseError& e) {
+            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            return 2;
+        } catch (const CodegenError& e) {
+            // a construct outside the native subset: `--exe` would fall back to AOT
+            std::cerr << "note: " << e.msg << " — not natively compilable; --exe would fall back to AOT (--aot)\n";
+            return 5;
         }
         return 0;
     }
