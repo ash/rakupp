@@ -2050,6 +2050,21 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             advance();
             auto fs = std::make_unique<ForStmt>();
             fs->list = parseExpression();
+            // `-> $i {...} for LIST` binds each topic to the pointy block's parameter(s)
+            if (s->kind == NK::ExprStmt) {
+                auto* es = static_cast<ExprStmt*>(s.get());
+                if (es->e && es->e->kind == NK::BlockExpr) {
+                    auto* be = static_cast<BlockExpr*>(es->e.get());
+                    if (!be->params.empty()) {
+                        if (be->params.size() == 1 && be->params[0].subSig) fs->destructure = true;
+                        for (auto& p : be->params) fs->vars.push_back(p.name);
+                        auto blk = std::make_unique<Block>();
+                        blk->stmts = std::move(be->body);
+                        fs->body = std::move(blk);
+                        return fs;
+                    }
+                }
+            }
             fs->body = wrapStmt(std::move(s));
             return fs;
         }
