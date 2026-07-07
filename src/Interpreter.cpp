@@ -3270,6 +3270,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 if (j != std::string::npos) { std::string nm = s.substr(i + 2, j - i - 2);
                     if (mv.hash && mv.hash->count(nm)) r += (*mv.hash)[nm].toStr(); i = j; continue; }
             }
+            if (s[i] == '$' && i + 1 < s.size() && (std::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
+                size_t j = i + 1; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+                if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr();
+                i = j - 1; continue; // interpolate a scalar variable in the replacement
+            }
             r += s[i];
         }
         return r;
@@ -3334,9 +3339,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     // otherwise the single Match. (`.Str` = matched text, `+` of the :g List = count.)
     Value result;
     if (selMatches.empty()) result = Value::nil();
-    else if (global || haveNth) { result = Value::list(selMatches); }
+    else if (global || haveNth || haveX) { result = Value::list(selMatches); } // multi-match adverbs → List
     else result = selMatches.back();
-    tctx_.cur->define("$/", result);
+    if (!literal) tctx_.cur->define("$/", result); // a literal (string) .subst leaves $/ untouched
     if (matchResult) *matchResult = result;
     return out;
 }
