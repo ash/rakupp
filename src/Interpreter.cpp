@@ -3249,8 +3249,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         ValueList l = (nthVal.t == VT::Array && nthVal.arr) ? *nthVal.arr : nthVal.flatten();
         long xcap = total;
         if (haveX) { long lo, hi; bounds(xVal, lo, hi); xcap = hi; if ((long)l.size() < lo) l.clear(); }
-        long cnt = 0;
-        for (auto& v : l) { long i = v.toInt(); if (cnt >= xcap) break; if (i >= 1 && i <= total) { sel.insert(i); cnt++; } }
+        long cnt = 0, prev = 0;
+        for (auto& v : l) { long i = v.toInt();
+            if (i <= prev) throw RakuError{Value::typeObj("X::AdHoc"), "Attempt to fetch matches out of order with :nth"};
+            prev = i;
+            if (cnt >= xcap) break; if (i >= 1 && i <= total) { sel.insert(i); cnt++; } }
     } else if (haveX) {
         long lo, hi; bounds(xVal, lo, hi);
         long count = std::min(total, hi);
@@ -3287,6 +3290,15 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 size_t j = i + 1; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
                 if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr();
                 i = j - 1; continue; // interpolate a scalar variable in the replacement
+            }
+            if (s[i] == '@' && i + 1 < s.size() && (std::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
+                size_t j = i + 1; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+                if (j + 1 < s.size() && s[j] == '[' && s[j + 1] == ']') j += 2; // whole-array zen slice
+                if (Value* v = tctx_.cur->find("@" + nm)) { // interpolate an array (space-joined)
+                    ValueList fl = v->flatten();
+                    for (size_t k = 0; k < fl.size(); k++) { if (k) r += ' '; r += fl[k].toStr(); }
+                }
+                i = j - 1; continue;
             }
             r += s[i];
         }
