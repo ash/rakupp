@@ -32,7 +32,7 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **276** | **19%** |
+| **Fully passing** | **277** | **19%** |
 | Partially passing | 611 | 42% |
 | No TAP output | 576 | 39% |
 | Timeouts | 2 | 0.1% |
@@ -44,17 +44,17 @@ territory, not "passing" and not "failing."
 
 ### The assertion count
 
-Among the files that *do* run, **130,866 of 188,224** assertions pass. This
+Among the files that *do* run, **130,931 of 188,311** assertions pass. This
 number measures correctness on the attempted subset — how much of what we run is
 right — and is the signal we watch for regressions. Two facts define its scope:
 
-1. **Its denominator is only the reached assertions.** The 576 no-TAP files emit
-   nothing, so they are not in the 188,224. This is a different denominator than
+1. **Its denominator is only the reached assertions.** The 574 no-TAP files emit
+   nothing, so they are not in the 188,311. This is a different denominator than
    the coverage figure (files, over 1,464).
 2. **S15 (Unicode) is ~87k of the total**, passing at ~95%, so it dominates the
    blended figure.
 
-Coverage is the 19% of files; correctness-on-what-runs is this 130,866/188,224.
+Coverage is the 19% of files; correctness-on-what-runs is this 130,931/188,311.
 They are two different measurements, quoted for two different purposes.
 
 ## By synopsis
@@ -121,7 +121,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 276 / 1,464 files fully passing (~19% coverage); 610 partial,
-576 no-TAP, 2 timeout. Reached-assertion pass rate 130,866 / 188,224 (see
+_Snapshot: 277 / 1,464 files fully passing (~19% coverage); 611 partial,
+574 no-TAP, 2 timeout. Reached-assertion pass rate 130,931 / 188,311 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._
