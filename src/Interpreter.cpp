@@ -4213,6 +4213,15 @@ Value Interpreter::evalCall(Call* c) {
         return callCallable(f, args, &c->args);
     }
     if (!c->name.empty()) {
+        // undefine($x) resets its argument container to the type's undefined value
+        if (c->name == "undefine" && !c->args.empty() && !tctx_.cur->find("&undefine")) {
+            Expr* t = c->args[0].get();
+            char sig = (t->kind == NK::VarExpr && !static_cast<VarExpr*>(t)->name.empty()) ? static_cast<VarExpr*>(t)->name[0] : '$';
+            if (sig != '$' && sig != '@' && sig != '%')
+                throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot undefine an immutable value"};
+            if (Value* lv = lvalue(t)) *lv = (sig == '@') ? Value::array() : (sig == '%') ? Value::makeHash() : Value::any();
+            return Value::any();
+        }
         if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args, &c->args);
         auto it = builtins_.find(c->name);
         if (it != builtins_.end()) return it->second(*this, args);
