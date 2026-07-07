@@ -733,7 +733,7 @@ struct Codegen {
     std::string fastBin(const std::string& op) {
         if (!optimize_) return "";
         static const std::map<std::string, std::string> m = {
-            {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"}, {"~", "rtConcat"},
+            {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"}, {"~", "rtConcat"}, {"%", "rtMod"}, {"%%", "rtDivides"},
             {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"}};
         auto it = m.find(op);
         return it == m.end() ? "" : it->second;
