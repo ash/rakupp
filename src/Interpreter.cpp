@@ -1143,7 +1143,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope) {
 }
 
 bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
-                             bool isFirst, bool isLast) {
+                             bool isFirst, bool isLast, ValueList* collect) {
     safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
     // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
     auto inScope = [&](void (Interpreter::*ph)(const std::vector<StmtPtr>&)) {
@@ -1153,7 +1153,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
     auto runLast = [&]() { if (isLast) inScope(&Interpreter::runLastPhasers); }; // LAST {…}: once, after the last
     for (;;) {
-        try { execBlock(body, scope); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+        try { Value v = execBlock(body, scope); if (collect) collect->push_back(v); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } continue; }
         catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
@@ -1449,6 +1449,7 @@ Value Interpreter::exec(Stmt* s) {
         }
         case NK::WhileStmt: {
             auto* ws = static_cast<WhileStmt*>(s);
+            ValueList collected; ValueList* col = ws->asExpr ? &collected : nullptr;
             for (;;) {
                 Value cv = eval(ws->cond.get());
                 bool c = boolify(cv);
@@ -1456,12 +1457,14 @@ Value Interpreter::exec(Stmt* s) {
                 if (!c) break;
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                 if (!ws->var.empty()) scope->define(ws->var, cv); // while EXPR -> $x { }
-                if (!runLoopBody(ws->body.get(), scope, ws->label)) break;
+                if (!runLoopBody(ws->body.get(), scope, ws->label, true, true, col)) break;
             }
-            return Value::any();
+            return ws->asExpr ? Value::list(std::move(collected)) : Value::any();
         }
         case NK::ForStmt: {
             auto* fs = static_cast<ForStmt*>(s);
+            ValueList collected; ValueList* col = fs->asExpr ? &collected : nullptr;
+            auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::any(); };
             Value listv = eval(fs->list.get());
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).
@@ -1486,18 +1489,18 @@ Value Interpreter::exec(Stmt* s) {
                     for (long long k = lo; k <= hi; k++) {
                         freshScope();
                         scope->define(var, Value::integer(k));
-                        if (!runLoopBody(fs->body.get(), scope, fs->label, k == lo, k == hi)) break;
+                        if (!runLoopBody(fs->body.get(), scope, fs->label, k == lo, k == hi, col)) break;
                     }
-                    return Value::any();
+                    return forResult();
                 }
                 if (listv.t == VT::Array && listv.arr) {
                     auto arr = listv.arr; // share, don't copy the elements
                     for (size_t i = 0; i < arr->size(); i++) {
                         freshScope();
                         scope->define(var, (*arr)[i]);
-                        if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size())) break;
+                        if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col)) break;
                     }
-                    return Value::any();
+                    return forResult();
                 }
             }
             ValueList items;
@@ -1511,9 +1514,9 @@ Value Interpreter::exec(Stmt* s) {
                     ValueList row = items[i].t == VT::Array ? *items[i].arr : items[i].flatten();
                     for (size_t k = 0; k < fs->vars.size(); k++)
                         scope->define(fs->vars[k], k < row.size() ? row[k] : Value::any());
-                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == items.size())) break;
+                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == items.size(), col)) break;
                 }
-                return Value::any();
+                return forResult();
             }
             size_t nvars = fs->vars.empty() ? 1 : fs->vars.size();
             for (size_t i = 0; i < items.size(); i += nvars) {
@@ -1525,9 +1528,9 @@ Value Interpreter::exec(Stmt* s) {
                         scope->define(fs->vars[k], (i + k < items.size()) ? items[i + k] : Value::any());
                     }
                 }
-                if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + nvars >= items.size())) break;
+                if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + nvars >= items.size(), col)) break;
             }
-            return Value::any();
+            return forResult();
         }
         case NK::GivenStmt: {
             auto* g = static_cast<GivenStmt*>(s);
@@ -1571,6 +1574,7 @@ Value Interpreter::exec(Stmt* s) {
         }
         case NK::LoopStmt: {
             auto* ls = static_cast<LoopStmt*>(s);
+            ValueList collected; ValueList* col = ls->asExpr ? &collected : nullptr;
             auto outer = std::make_shared<Env>(); outer->parent = tctx_.cur;
             auto saved = tctx_.cur; tctx_.cur = outer;
             try {
@@ -1578,12 +1582,12 @@ Value Interpreter::exec(Stmt* s) {
                 for (;;) {
                     if (ls->cond && !boolify(eval(ls->cond.get()))) break;
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                    if (!runLoopBody(ls->body.get(), scope, ls->label)) break;
+                    if (!runLoopBody(ls->body.get(), scope, ls->label, true, true, col)) break;
                     if (ls->incr) eval(ls->incr.get());
                 }
             } catch (...) { tctx_.cur = saved; throw; }
             tctx_.cur = saved;
-            return Value::any();
+            return ls->asExpr ? Value::list(std::move(collected)) : Value::any();
         }
         case NK::RepeatStmt: {
             auto* r = static_cast<RepeatStmt*>(s);

@@ -257,6 +257,7 @@ struct WhileStmt : Stmt {
     std::unique_ptr<Block> body;
     bool isUntil = false;
     std::string var; // `while EXPR -> $x { }` binds each cond value to $x
+    bool asExpr = false; // used in value context: collect each iteration's value into a List
     WhileStmt(): Stmt(NK::WhileStmt) {}
 };
 
@@ -265,6 +266,7 @@ struct ForStmt : Stmt {
     std::vector<std::string> vars; // loop variables ($_ if empty)
     bool destructure = false;      // `-> ($a,$b,$c)`: unpack each element into vars
     std::unique_ptr<Block> body;
+    bool asExpr = false; // used in value context: collect each iteration's value into a List
     ForStmt(): Stmt(NK::ForStmt) {}
 };
 
@@ -307,6 +309,7 @@ struct WhenStmt : Stmt {
 struct LoopStmt : Stmt {   // C-style: loop (init; cond; incr) { }
     ExprPtr init, cond, incr;
     std::unique_ptr<Block> body;
+    bool asExpr = false; // used in value context: collect each iteration's value into a List
     LoopStmt(): Stmt(NK::LoopStmt) {}
 };
 

@@ -112,7 +112,9 @@ public:
     Value exec(Stmt* s);           // returns last value (for implicit return)
     Value execBlock(Block* b, std::shared_ptr<Env> scope);
     bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",
-                     bool isFirst = true, bool isLast = true); // handles redo/next/last + FIRST/LAST; false => last
+                     bool isFirst = true, bool isLast = true,
+                     ValueList* collect = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
+                                                    // collect!=null: append each iteration's value (value context)
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);

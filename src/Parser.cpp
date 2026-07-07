@@ -129,6 +129,15 @@ static InfixInfo classifyInfix(const Token& t) {
     return in;
 }
 
+// A loop used in value context (`(for … {…})`, `do while … {…}`) collects each
+// iteration's value into a List — flag the parsed loop statement so exec knows.
+static void markLoopAsExpr(Stmt* s) {
+    if (!s) return;
+    if (s->kind == NK::ForStmt) static_cast<ForStmt*>(s)->asExpr = true;
+    else if (s->kind == NK::WhileStmt) static_cast<WhileStmt*>(s)->asExpr = true;
+    else if (s->kind == NK::LoopStmt) static_cast<LoopStmt*>(s)->asExpr = true;
+}
+
 static bool startsTermToken(const Token& t) {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
@@ -1067,11 +1076,27 @@ ExprPtr Parser::parsePrimary() {
                            isIdent("when") || isIdent("with") || isIdent("without")) {
                     // `gather for … {}` / `do if … {}` — the operand is a whole statement
                     auto be = std::make_unique<BlockExpr>();
-                    be->body.push_back(parseStatement());
+                    auto st = parseStatement();
+                    markLoopAsExpr(st.get()); // `do for …` collects the loop's values
+                    be->body.push_back(std::move(st));
                     u->operand = std::move(be);
                 } else {
                     u->operand = parseExpr(BP_PREFIX);
                 }
+                return u;
+            }
+            if (name == "for" || name == "while" || name == "until" ||
+                name == "loop" || name == "repeat") {
+                // a loop in term/value position: `(for … {…})».Str`, `my @x = while …`.
+                // parseStatement consumes the loop keyword; wrap it as a `do` so it
+                // evaluates to the collected List of per-iteration values.
+                auto u = std::make_unique<Unary>();
+                u->op = "do";
+                auto be = std::make_unique<BlockExpr>();
+                auto st = parseStatement();
+                markLoopAsExpr(st.get());
+                be->body.push_back(std::move(st));
+                u->operand = std::move(be);
                 return u;
             }
             if (name == "start") {
@@ -1089,7 +1114,9 @@ ExprPtr Parser::parsePrimary() {
                 } else if (isIdent("for") || isIdent("if") || isIdent("unless") || isIdent("while") ||
                            isIdent("until") || isIdent("loop") || isIdent("repeat") || isIdent("given") ||
                            isIdent("when") || isIdent("with") || isIdent("without")) {
-                    be->body.push_back(parseStatement());
+                    auto st = parseStatement();
+                    markLoopAsExpr(st.get());
+                    be->body.push_back(std::move(st));
                 } else {
                     auto es = std::make_unique<ExprStmt>();
                     es->e = parseExpr(BP_PREFIX);
