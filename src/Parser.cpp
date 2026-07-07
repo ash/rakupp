@@ -1829,6 +1829,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     cd->isGrammar = isGrammar;
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
+    else if (isOp("::")) advance(); // anonymous type: `class :: does R { … }`
     if (isPackage) {
         // package/module: the BRACED form `module Foo { ... }` runs its body in a
         // namespace (qualified symbols). The file-scoped `unit module Foo;` form

@@ -175,6 +175,8 @@ struct ClassInfo {
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     bool isGrammar = false;
+    bool isRole = false;
+    std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
 
     Value* findMethod(const std::string& m) { return findMethod(m, nullptr); }
     // `owner` (if given) receives the ClassInfo the method was found in — used to seed

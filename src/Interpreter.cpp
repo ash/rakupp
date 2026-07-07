@@ -384,6 +384,19 @@ Interpreter::Interpreter() {
         adhoc->attrs.push_back(a);
         classes_["X::AdHoc"] = adhoc;
     }
+    // CompUnit::Repository — a role a repository class must fully implement, and the
+    // $*REPO instance that does it.
+    {
+        auto repoRole = std::make_shared<ClassInfo>();
+        repoRole->name = "CompUnit::Repository"; repoRole->isRole = true;
+        repoRole->requiredMethods = {"id", "need", "load", "loaded"};
+        classes_["CompUnit::Repository"] = repoRole;
+        auto fs = std::make_shared<ClassInfo>();
+        fs->name = "CompUnit::Repository::FileSystem"; fs->parent = repoRole;
+        classes_["CompUnit::Repository::FileSystem"] = fs;
+        auto od = std::make_shared<ObjectData>(); od->cls = fs;
+        global_->define("$*REPO", Value::object(od));
+    }
     registerBuiltins();
 }
 
@@ -1411,6 +1424,21 @@ Value Interpreter::exec(Stmt* s) {
                 } else {
                     ci->methods[md->name] = code;
                 }
+            }
+            // role composition check: a non-role class that composes a role must
+            // implement every method the role requires (e.g. CompUnit::Repository).
+            if (!cd->isRole) {
+                std::vector<ClassInfo*> composed;
+                if (ci->parent && ci->parent->isRole) composed.push_back(ci->parent.get());
+                for (auto& p : ci->extraParents) if (p && p->isRole) composed.push_back(p.get());
+                for (auto& rn : cd->roles) { auto it = classes_.find(rn); if (it != classes_.end() && it->second->isRole) composed.push_back(it->second.get()); }
+                for (ClassInfo* role : composed)
+                    for (const std::string& req : role->requiredMethods)
+                        if (!ci->findMethod(req))
+                            throw RakuError{Value::typeObj("X::Role::Unimplemented"),
+                                "Method '" + req + "' must be implemented by " +
+                                (cd->name.empty() ? "<anon>" : "'" + cd->name + "'") +
+                                " because it is required by role '" + role->name + "'"};
             }
             noteSymbolMutation("class/role/grammar declaration");
             classes_[cd->name] = ci;
@@ -3943,9 +3971,14 @@ Value Interpreter::evalIndex(Index* idx) {
         bool isSlice = false;
         if (idx->index->kind == NK::Range) {
             auto* re = static_cast<RangeExpr*>(idx->index.get());
-            long long from = eval(re->from.get()).toInt();
-            Value toV = eval(re->to.get());
-            long long to = (toV.t == VT::Whatever || std::isinf(toV.toNum())) ? n - 1 : toV.toInt();
+            // `*` in an endpoint resolves to the list length: `@a[0 .. *-2]`, `@a[*-3 .. *-1]`.
+            auto resolveWhat = [&](Value v) -> long long {
+                if (v.t == VT::Code && v.code && v.code->isWhateverCode) return callCallable(v, ValueList{Value::integer(n)}).toInt();
+                if (v.t == VT::Whatever || std::isinf(v.toNum())) return n - 1;
+                return v.toInt();
+            };
+            long long from = resolveWhat(eval(re->from.get()));
+            long long to = resolveWhat(eval(re->to.get()));
             if (re->exTo) to--;
             if (from < 0) from += n;
             isSlice = true;
