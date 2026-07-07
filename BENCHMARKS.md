@@ -103,7 +103,11 @@ driving loop is trivial, so removing interpreter overhead changes little.
 
 `fib` is the one benchmark where Rakudo's JIT pulls ahead: a tiny function called
 1.6M times is exactly what a JIT specializes best, and native Raku++ lands ~1.4×
-behind it.
+behind it. The `native` column above is the default `--exe`; adding **`-O`** (the
+direct-arity-call pass — fixed-arity subs get direct `Value` params instead of a
+per-call `ValueList` allocation) takes `fib` from 548 ms to **~450 ms**, closing
+the Rakudo gap to ~1.18×. The remaining gap is boxed, string-dispatched
+arithmetic (`applyArith`) — int specialization is the next lever.
 
 ### Real-world: grammar parsing (YAMLish)
 
