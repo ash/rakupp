@@ -329,6 +329,7 @@ inline Value rtGt(const Value& l, const Value& r) { if (rtBothInt(l, r)) return 
 inline Value rtGe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i >= r.i); return applyArith(">=", l, r); }
 inline Value rtEq(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i == r.i); return applyArith("==", l, r); }
 inline Value rtNe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i != r.i); return applyArith("!=", l, r); }
+inline Value rtConcat(const Value& l, const Value& r) { if (l.t == VT::Str && r.t == VT::Str) return Value::str(l.s + r.s); return applyArith("~", l, r); }
 std::string doSprintf(const std::string& fmt, const ValueList& args); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
