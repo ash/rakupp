@@ -10,6 +10,7 @@ static char** rakupp_environ() { return environ; }
 #include "Regex.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "Unicode.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -1010,6 +1011,17 @@ Value Interpreter::evalString(const std::string& src) {
     auto prog = std::make_shared<Program>();
     try {
         Parser parser(lexer.tokenize());
+        // seed user-defined operators (sub infix:<…>) so EVAL'd custom operators parse
+        for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+            for (auto& kv : e->vars) {
+                const std::string& n = kv.first; // e.g. "&infix:<fromplus>"
+                size_t lt = n.find(":<");
+                if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
+                    std::string kind = n.substr(1, lt - 1);
+                    if (kind == "infix" || kind == "prefix" || kind == "postfix")
+                        parser.declareUserOp(kind, n.substr(lt + 2, n.size() - lt - 3));
+                }
+            }
         *prog = parser.parseProgram();
     } catch (ParseError& e) {
         throw RakuError{Value::str(e.what()), std::string("EVAL parse error: ") + e.what()};
@@ -3138,6 +3150,80 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     return last;
 }
 
+// ---- UTF-8 / grapheme helpers for :samemark / :ignoremark ----
+static std::vector<uint32_t> smDecode(const std::string& s) {
+    std::vector<uint32_t> out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = s[i]; uint32_t cp; int n;
+        if (c < 0x80) { cp = c; n = 1; }
+        else if ((c >> 5) == 0x6) { cp = c & 0x1F; n = 2; }
+        else if ((c >> 4) == 0xE) { cp = c & 0x0F; n = 3; }
+        else if ((c >> 3) == 0x1E) { cp = c & 0x07; n = 4; }
+        else { cp = c; n = 1; }
+        for (int k = 1; k < n && i + k < s.size(); k++) cp = (cp << 6) | (s[i + k] & 0x3F);
+        out.push_back(cp); i += n;
+    }
+    return out;
+}
+static std::string smEncode(uint32_t cp) {
+    std::string r;
+    if (cp < 0x80) r += (char)cp;
+    else if (cp < 0x800) { r += (char)(0xC0 | (cp >> 6)); r += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { r += (char)(0xE0 | (cp >> 12)); r += (char)(0x80 | ((cp >> 6) & 0x3F)); r += (char)(0x80 | (cp & 0x3F)); }
+    else { r += (char)(0xF0 | (cp >> 18)); r += (char)(0x80 | ((cp >> 12) & 0x3F)); r += (char)(0x80 | ((cp >> 6) & 0x3F)); r += (char)(0x80 | (cp & 0x3F)); }
+    return r;
+}
+static uint32_t smLower(uint32_t c) {
+    if (c < 128) return std::tolower((int)c);
+    if ((c >= 0xC0 && c <= 0xDE && c != 0xD7) ) return c + 0x20; // Latin-1 uppercase block
+    if ((c & 1) == 0 && ((c >= 0x100 && c <= 0x17F) || (c >= 0x1E00 && c <= 0x1EFF))) return c + 1; // Latin Ext-A/Additional even=upper
+    return c;
+}
+static uint32_t smUpper(uint32_t c) {
+    if (c < 128) return std::toupper((int)c);
+    if ((c >= 0xE0 && c <= 0xFE && c != 0xF7)) return c - 0x20;
+    if ((c & 1) == 1 && ((c >= 0x100 && c <= 0x17F) || (c >= 0x1E00 && c <= 0x1EFF))) return c - 1;
+    return c;
+}
+// Grapheme-aligned case (:samecase) and/or combining-mark (:samemark) transfer:
+// each replacement grapheme takes the case and/or the combining marks of the
+// positionally aligned grapheme of the match; the last seen case carries on.
+static std::string applyCaseMark(const std::string& orig, const std::string& repl, bool doCase, bool doMark) {
+    using namespace rakupp;
+    auto split = [](const std::vector<uint32_t>& cps) {
+        std::vector<std::vector<uint32_t>> gs;
+        for (size_t i = 0; i < cps.size();) {
+            std::vector<uint32_t> g; g.push_back(cps[i++]);
+            while (i < cps.size() && uniCombiningClass(cps[i]) != 0) g.push_back(cps[i++]);
+            gs.push_back(g);
+        }
+        return gs;
+    };
+    auto og = split(smDecode(orig));
+    struct GI { uint32_t base; bool hasCase, upper; std::vector<uint32_t> marks; };
+    std::vector<GI> oi;
+    for (auto& g : og) {
+        auto nfd = uniNormalize(g, 0); GI gi{}; gi.base = nfd.empty() ? 0 : nfd[0];
+        for (size_t k = 1; k < nfd.size(); k++) if (uniCombiningClass(nfd[k]) != 0) gi.marks.push_back(nfd[k]);
+        gi.hasCase = smLower(gi.base) != smUpper(gi.base);
+        gi.upper = gi.hasCase && gi.base == smUpper(gi.base);
+        oi.push_back(gi);
+    }
+    auto rg = split(smDecode(repl));
+    std::string out; bool lastUpper = false, haveLast = false;
+    for (size_t i = 0; i < rg.size(); i++) {
+        std::vector<uint32_t> g = rg[i];
+        const GI* o = i < oi.size() ? &oi[i] : nullptr;
+        if (doCase) {
+            if (o && o->hasCase) { lastUpper = o->upper; haveLast = true; }
+            if (haveLast) g[0] = lastUpper ? smUpper(g[0]) : smLower(g[0]);
+        }
+        if (doMark && o) for (uint32_t mk : o->marks) g.push_back(mk);
+        for (uint32_t cp : uniNormalize(g, 1)) out += smEncode(cp);
+    }
+    return out;
+}
+
 // `:samecase` — each replacement character takes the case of the positionally
 // aligned character of the match (`oO` → `au` gives `aU`); once the match runs
 // out, the last seen case carries on.
@@ -3160,7 +3246,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                                      const std::string* tmplRepl, Value* matchResult) {
     nsub = 0;
     bool global = false, samecase = false, samespace = false, samemark = false;
-    bool icase = false, sigspace = false;
+    bool icase = false, sigspace = false, ignoremark = false;
     bool haveX = false, haveNth = false, haveStart = false, posAnchored = false;
     Value xVal, nthVal; long startPos = 0;
     auto setAdverb = [&](const std::string& k, const Value& pv) {
@@ -3182,8 +3268,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else if (k == "ii") { samecase = true; icase = true; } // :ii always implies :i
         else if (k == "s" || k == "sigspace") sigspace = true;
         else if (k == "samespace" || k == "ss") { sigspace = true; samespace = true; }
-        else if (k == "samemark" || k == "mm") samemark = true;
-        else if (k == "m" || k == "ignoremark") { /* accepted, mark-insensitive: no-op */ }
+        else if (k == "samemark" || k == "mm") { samemark = true; ignoremark = true; } // :mm implies :m
+        else if (k == "m" || k == "ignoremark") ignoremark = true;
         else throw RakuError{Value::typeObj("X::Syntax::Regex::Adverb"), "Unrecognized regex adverb: :" + k};
     };
     for (auto& a : args)
@@ -3219,7 +3305,6 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         if (!(t == VT::Int || t == VT::Num || t == VT::Rat || t == VT::Range || t == VT::Whatever || t == VT::Bool))
             throw RakuError{Value::typeObj("X::Str::Match::x"), "Invalid :x argument"};
     }
-    (void)samemark;
     if (!literal) {
         // interpolate scalar variables ($foo, $^a) into the regex as literal (quotemeta'd) text
         std::string ip;
@@ -3253,6 +3338,42 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (f == std::string::npos) break;
             RxMatch mm; mm.matched = true; mm.from = (long)f; mm.to = (long)f + (long)needle.size();
             matches.push_back(mm);
+            pos = mm.to > mm.from ? mm.to : mm.to + 1;
+        }
+    } else if (ignoremark) {
+        // :m/:mm — fold subject & pattern to base characters (drop combining marks),
+        // match on the folded text, then map matched ranges back to original coordinates.
+        using namespace rakupp;
+        auto nextGrapheme = [](const std::vector<uint32_t>& cps, size_t& i) {
+            std::vector<uint32_t> g; g.push_back(cps[i++]);
+            while (i < cps.size() && uniCombiningClass(cps[i]) != 0) g.push_back(cps[i++]);
+            return g;
+        };
+        auto baseOf = [](const std::vector<uint32_t>& g) {
+            std::string b; for (uint32_t cp : uniNormalize(g, 0)) if (uniCombiningClass(cp) == 0) b += smEncode(cp); return b;
+        };
+        std::vector<uint32_t> scps = smDecode(subj);
+        std::string folded; std::vector<long> foldStart, origStart; long ob = 0;
+        for (size_t i = 0; i < scps.size();) {
+            foldStart.push_back((long)folded.size()); origStart.push_back(ob);
+            std::string gtext; { size_t s = i; auto g = nextGrapheme(scps, i);
+                for (uint32_t cp : g) gtext += smEncode(cp); folded += baseOf(g); (void)s; }
+            ob += (long)gtext.size();
+        }
+        foldStart.push_back((long)folded.size()); origStart.push_back(ob);
+        std::string fpat; { std::vector<uint32_t> pcps = smDecode(realPat);
+            for (size_t i = 0; i < pcps.size();) fpat += baseOf(nextGrapheme(pcps, i)); }
+        std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "");
+        Regex re(fpat, flags);
+        if (!re.ok()) return subj;
+        auto toOrig = [&](long fb) -> long {
+            size_t idx = std::lower_bound(foldStart.begin(), foldStart.end(), fb) - foldStart.begin();
+            return origStart[std::min(idx, origStart.size() - 1)];
+        };
+        long pos = 0; RxMatch mm;
+        while (pos >= 0 && pos <= (long)folded.size() && re.search(folded, pos, mm)) {
+            RxMatch om; om.matched = true; om.from = toOrig(mm.from); om.to = toOrig(mm.to);
+            matches.push_back(om);
             pos = mm.to > mm.from ? mm.to : mm.to + 1;
         }
     } else {
@@ -3368,9 +3489,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         } else if (replArg) {
             r = replArg->toStr();
         }
-        if (samecase) r = applySamecase(orig, r);
         if (samespace) {
             // replace each whitespace run in r with the corresponding run in the match
+            // (done first so grapheme positions line up for :samecase / :samemark)
             std::vector<std::string> ws;
             for (size_t i = 0; i < orig.size(); ) {
                 if (std::isspace((unsigned char)orig[i])) { std::string w; while (i < orig.size() && std::isspace((unsigned char)orig[i])) w += orig[i++]; ws.push_back(w); }
@@ -3383,6 +3504,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             }
             r = a;
         }
+        if (ignoremark) r = applyCaseMark(orig, r, samecase, true); // :m/:mm transfer marks (and case if :ii)
+        else if (samecase) r = applySamecase(orig, r);
         return r;
     };
     std::string out; long last = 0, occ = 0;

@@ -128,7 +128,11 @@ Regex::NodePtr Regex::parseQuant() {
     else if (peek() == '+' || peek() == '!') { pos_++; } // ratchet/possessive: treat greedy
     rep->kids.push_back(std::move(atom));
     // separator quantifier:  X+ % Y  (Y between items)  /  X+ %% Y  (trailing Y allowed)
+    size_t sepSave = pos_;
     skipWs();
+    // in a `rule`, whitespace after a quantifier is significant unless a `%` separator
+    // follows — restore it so parseSeq can insert the inter-atom `\s*`.
+    if (sigspace_ && peek() != '%') pos_ = sepSave;
     if (peek() == '%') {
         pos_++;
         if (peek() == '%') pos_++; // %% (trailing separator) — approximated as %

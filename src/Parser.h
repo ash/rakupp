@@ -17,6 +17,12 @@ public:
     explicit Parser(std::vector<Token> toks);
     Program parseProgram();
     ExprPtr parseExpressionPublic() { return parseExpression(); }
+    // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
+    void declareUserOp(const std::string& kind, const std::string& name) {
+        if (kind == "infix") userInfix_.insert(name);
+        else if (kind == "prefix") userPrefix_.insert(name);
+        else if (kind == "postfix") userPostfix_.insert(name);
+    }
 
 private:
     std::vector<Token> toks_;
