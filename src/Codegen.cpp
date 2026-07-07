@@ -59,6 +59,8 @@ std::string mangleSub(const std::string& name) {
 struct Codegen {
     std::ostringstream out;
     std::map<std::string, int> userSubs; // sub name -> arity (positional params)
+    std::map<std::string, int> fastSubs; // -O: fixed-arity subs with direct Value params (name -> arity)
+    bool optimize_ = false;              // -O codegen pass enabled
     std::set<std::string> enumKeys;      // enum value names (bound as globals)
     std::set<std::string> classNames;    // user class/role names (resolve as type objects)
     std::set<std::string> multiNames;    // names that are multi subs (dispatched at runtime)
@@ -321,7 +323,13 @@ struct Codegen {
                 std::string args = argList(c->args);
                 if (c->callee) return "RT.callCallable(" + ex(c->callee.get()) + ", {" + args + "})";
                 if (multiNames.count(c->name)) return mangleSub(c->name) + "(ValueList{" + args + "})"; // multi dispatcher
-                if (userSubs.count(c->name)) return mangleSub(c->name) + "(ValueList{" + args + "})";
+                if (userSubs.count(c->name)) {
+                    // -O: call the direct-Value overload when the arity/args line up
+                    auto fit = fastSubs.find(c->name);
+                    if (fit != fastSubs.end() && (int)c->args.size() == fit->second && simpleArgs(c->args))
+                        return mangleSub(c->name) + "(" + args + ")";
+                    return mangleSub(c->name) + "(ValueList{" + args + "})"; // boxed adapter
+                }
                 return "RT.callBuiltin(" + cesc(c->name) + ", {" + args + "})";
             }
             case NK::MethodCall: {
@@ -700,6 +708,24 @@ struct Codegen {
         line(ind, "}");
     }
 
+    // ---- -O fast-call eligibility ----
+    // A sub qualifies for direct `Value` parameters when every param is a plain
+    // required positional scalar (no named/slurpy/optional/default/destructuring).
+    static bool simpleSig(const std::vector<Param>& ps) {
+        for (const Param& p : ps)
+            if (p.named || p.slurpy || p.invocant || p.defaultVal || p.subSig || p.sigil != '$') return false;
+        return true;
+    }
+    // A call site can take the fast path only when it passes plain positional args
+    // (no `:name(…)` pairs, no `|@slurp`).
+    static bool simpleArgs(const std::vector<ExprPtr>& args) {
+        for (const ExprPtr& a : args) {
+            if (a->kind == NK::Pair) return false;
+            if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") return false;
+        }
+        return true;
+    }
+
     // ---- sub definitions ----
     // Emit binding lines that pull each parameter out of the call's `__a`
     // ValueList — handling positional, named, optional/default, and slurpy.
@@ -774,10 +800,8 @@ struct Codegen {
         line(1, "  RT.classes_[" + cesc(cd->name) + "] = " + ci + "; }");
     }
 
-    // Emit a sub/candidate body given its C++ function name.
-    void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body) {
-        line(0, "static Value " + fnName + "(ValueList __a) {");
-        bindParams(ps, 1, false);
+    // Emit the statements of a sub body (last ExprStmt becomes the return value).
+    void emitBody(const std::vector<StmtPtr>& body) {
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
@@ -785,9 +809,30 @@ struct Codegen {
             else stmt(s, 1);
         }
         line(1, "return Value::any();");
+    }
+    // Emit a sub/candidate body given its C++ function name.
+    void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false) {
+        if (fast) {
+            // -O: direct-Value signature (params are the C++ args themselves — no ValueList)
+            std::string sig, fwd;
+            for (size_t i = 0; i < ps.size(); i++) {
+                if (i) { sig += ", "; fwd += ", "; }
+                sig += "Value " + mangleVar(ps[i].name);
+                fwd += "rtPos(__a, " + std::to_string(i) + ")";
+            }
+            line(0, "static Value " + fnName + "(" + sig + ") {");
+            emitBody(body);
+            line(0, "}");
+            // boxed adapter so named/slurpy/multi call sites still resolve
+            line(0, "static Value " + fnName + "(ValueList __a) { return " + fnName + "(" + fwd + "); }");
+            return;
+        }
+        line(0, "static Value " + fnName + "(ValueList __a) {");
+        bindParams(ps, 1, false);
+        emitBody(body);
         line(0, "}");
     }
-    void subDef(SubDecl* d) { bodyDef(mangleSub(d->name), d->params, d->body); }
+    void subDef(SubDecl* d) { bodyDef(mangleSub(d->name), d->params, d->body, fastSubs.count(d->name) > 0); }
 
     // A multi: emit each candidate, then a dispatcher that tries candidates
     // most-specific first (most type constraints) and picks the first that matches.
@@ -821,8 +866,9 @@ struct Codegen {
 
 } // namespace
 
-std::string transpileToCpp(Program& prog) {
+std::string transpileToCpp(Program& prog, bool optimize) {
     Codegen g;
+    g.optimize_ = optimize;
     // pre-pass: collect top-level sub declarations (for forward refs) and enum
     // values (bound as globals so subs can see them).
     std::vector<SubDecl*> subs;
@@ -835,7 +881,10 @@ std::string transpileToCpp(Program& prog) {
             if (d->isMethod) throw CodegenError{"a method sub at statement level"};
             if (d->name.empty()) throw CodegenError{"an anonymous sub at statement level"};
             if (d->isMulti) { multiCands[d->name].push_back(d); g.multiNames.insert(d->name); }
-            else { g.userSubs[d->name] = (int)d->params.size(); subs.push_back(d); }
+            else {
+                g.userSubs[d->name] = (int)d->params.size(); subs.push_back(d);
+                if (optimize && Codegen::simpleSig(d->params)) g.fastSubs[d->name] = (int)d->params.size();
+            }
         } else if (s->kind == NK::ClassDecl) {
             auto* cd = static_cast<ClassDecl*>(s.get());
             if (cd->isRole || cd->isGrammar || cd->isPackage) throw CodegenError{"a role/grammar/package"};
@@ -869,8 +918,15 @@ std::string transpileToCpp(Program& prog) {
     if (!enumConsts.empty()) g.out << "\n";
 
     // forward declarations (subs + multis + class methods)
-    for (SubDecl* d : subs)
+    for (SubDecl* d : subs) {
+        auto fit = g.fastSubs.find(d->name);
+        if (fit != g.fastSubs.end()) { // -O: both the direct-Value overload and the boxed adapter
+            g.out << "static Value " << mangleSub(d->name) << "(";
+            for (int i = 0; i < fit->second; i++) g.out << (i ? ", Value" : "Value");
+            g.out << ");\n";
+        }
         g.out << "static Value " << mangleSub(d->name) << "(ValueList);\n";
+    }
     for (auto& mc : multiCands)
         g.out << "static Value " << mangleSub(mc.first) << "(ValueList);\n";
     for (ClassDecl* cd : classes)

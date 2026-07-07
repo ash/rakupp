@@ -12,6 +12,8 @@ struct CodegenError { std::string msg; };
 // Transpile a whole program into a self-contained C++ source string that
 // implements the program natively (calling the runtime for Value semantics).
 // Throws CodegenError on any unsupported construct.
-std::string transpileToCpp(Program& prog);
+// With optimize=true, fixed-arity positional subs get direct `Value` parameters
+// (skipping the per-call ValueList heap allocation) — the `-O` codegen pass.
+std::string transpileToCpp(Program& prog, bool optimize = false);
 
 }
