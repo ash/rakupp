@@ -3950,6 +3950,14 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     return mv;
 }
 
+Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
+    try { return applyArith(op, l, r); }
+    catch (RakuError&) {
+        if (Value* f = tctx_.cur->find("&infix:<" + op + ">")) return callCallable(*f, ValueList{l, r});
+        throw;
+    }
+}
+
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
     // Fast path for plain operators (`+ - * < == …`): skip the ~20 string compares
@@ -3968,6 +3976,17 @@ Value Interpreter::evalBinary(Binary* b) {
         if (l.t == VT::Object || r.t == VT::Object)
             if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
                 try { return callCallable(*f, ValueList{l, r}); } catch (RakuError&) {}
+        // hyper metaop `>>op<<` — element-wise, resolving a user inner operator
+        if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
+            (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
+            std::string inner = op.substr(2, op.size() - 4);
+            ValueList a = l.flatten(), bb = r.flatten();
+            Value out = Value::array(); out.isList = true;
+            size_t n = a.size() > bb.size() ? a.size() : bb.size();
+            if (!a.empty() && !bb.empty())
+                for (size_t i = 0; i < n; i++) out.arr->push_back(applyBinOp(inner, a[i % a.size()], bb[i % bb.size()]));
+            return out;
+        }
         return applyArith(op, l, r);
     }
     if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1])) {
@@ -4323,7 +4342,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return Value::any();
         }
         Value acc = items[0];
-        for (size_t k = 1; k < items.size(); k++) acc = applyArith(op, acc, items[k]);
+        for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
         return acc;
     }
     if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%") {

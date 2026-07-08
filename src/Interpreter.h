@@ -305,6 +305,9 @@ private:
     Value evalAssign(Assign* a, bool sink = false);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
     Value evalBinary(Binary* b);
+    // apply a binary operator by name, resolving a user `sub infix:<op>` when the
+    // operator isn't built-in (so meta-operators work over custom operators).
+    Value applyBinOp(const std::string& op, const Value& l, const Value& r);
     // `$x does R` (in-place) / `$x but R` (copy) — mix role(s) or an attribute Pair
     // into a value, producing an object that also does R.
     Value mixinValue(Value base, const Value& rhs, bool copy);
