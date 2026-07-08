@@ -334,8 +334,27 @@ inline Value rtGe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return 
 inline Value rtEq(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i == r.i); return applyArith("==", l, r); }
 inline Value rtNe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i != r.i); return applyArith("!=", l, r); }
 inline Value rtConcat(const Value& l, const Value& r) { if (l.t == VT::Str && r.t == VT::Str) return Value::str(l.s + r.s); return applyArith("~", l, r); }
+// In-place `~=` append: mutate the accumulator's buffer instead of building a new
+// string each step, turning repeated `$s ~= …` from O(n²) copying into O(n).
+inline void rtCatAssign(Value& l, const Value& r) {
+    if (l.t == VT::Str && r.t == VT::Str) { l.s += r.s; return; }
+    l = applyArith("~", l, r);
+}
 inline Value rtMod(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("%", l, r); }
 inline Value rtDivides(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) return Value::boolean(l.i % r.i == 0); return applyArith("%%", l, r); }
+// Fast integer power by squaring, with overflow → bignum fallback (matches applyArith).
+inline Value rtPow(const Value& l, const Value& r) {
+    if (rtBothInt(l, r) && r.i >= 0) {
+        long long base = l.i, e = r.i, res = 1; bool ovf = false;
+        while (e > 0) {
+            if ((e & 1) && __builtin_mul_overflow(res, base, &res)) { ovf = true; break; }
+            e >>= 1;
+            if (e && __builtin_mul_overflow(base, base, &base)) { ovf = true; break; }
+        }
+        if (!ovf) return Value::integer(res);
+    }
+    return applyArith("**", l, r);
+}
 std::string doSprintf(const std::string& fmt, const ValueList& args); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
