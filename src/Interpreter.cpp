@@ -4281,6 +4281,14 @@ Value Interpreter::evalBinary(Binary* b) {
         Value r;
         try { r = eval(b->rhs.get()); } catch (...) { tctx_.cur->vars["$_"] = savedTopic; throw; }
         tctx_.cur->vars["$_"] = savedTopic;
+        // `$path.IO ~~ :e` (and :d/:f/:r/:w/:x/:s/:z/:l) — a filetest adverb: call
+        // the matching method on the path and compare to the adverb's boolean.
+        if (r.t == VT::Pair && lTopic.hashKind == "IO" && !r.s.empty()) {
+            bool actual = boolify(methodCall(lTopic, r.s, {}));
+            bool want = r.pairVal ? boolify(*r.pairVal) : true;
+            bool ok = (actual == want);
+            return Value::boolean(op == "~~" ? ok : !ok);
+        }
         if (isJunction(r)) {
             // autothread the smartmatch over the junction's eigenstates (each matched
             // with full ~~ semantics, so a junction of regexes / blocks works too)

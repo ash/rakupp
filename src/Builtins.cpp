@@ -3347,6 +3347,20 @@ void Interpreter::registerBuiltins() {
         for (auto& f : a) ::unlink(f.toStr().c_str());
         return Value::boolean(true);
     };
+    B["close"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: close($fh)
+        if (a.empty()) return Value::boolean(true);
+        return I.methodCall(a[0], "close", {});
+    };
+    B["chmod"] = [](Interpreter&, ValueList& a) -> Value { // chmod MODE, @paths → the paths changed
+        Value out = Value::array(); out.isList = true;
+        if (a.empty()) return out;
+        mode_t mode = (mode_t)a[0].toInt();
+        for (size_t k = 1; k < a.size(); k++) {
+            std::string p = a[k].toStr();
+            if (::chmod(p.c_str(), mode) == 0) out.arr->push_back(a[k]);
+        }
+        return out;
+    };
     B["skip-rest"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string reason = a.empty() ? "" : a[0].toStr();
         long remaining = (I.planned_ > 0 ? I.planned_ : 0) - I.testNum_;
