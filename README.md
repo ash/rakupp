@@ -23,7 +23,15 @@ cmake --build build
 build/rakupp -e 'say "hello, world"'      # a one-liner
 build/rakupp path/to/program.raku         # a file
 echo 'say 42' | build/rakupp              # from stdin
+
+# Install onto $PATH (binary + the runtime that --exe links against)
+cmake --install build --prefix ~/.local   # → ~/.local/{bin,lib,include/rakupp}
 ```
+
+`rakupp` locates the runtime library `--exe` needs relative to its own binary, so
+it works from any directory whether run out of `build/` or from an install
+prefix. If you copy the binary somewhere on its own, point it back with
+`RAKUPP_HOME=<prefix>`.
 
 ```sh
 build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060

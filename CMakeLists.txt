@@ -32,4 +32,12 @@ target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
 add_executable(rakupp "${RAKUPP_MAIN}")
 target_link_libraries(rakupp PRIVATE rakupp_rt)
 
+# Install layout (so `--exe` works after `cmake --install`): the binary in bin/,
+# the runtime static library in lib/, and every header in include/rakupp/ — the
+# `--exe` compile step needs the headers to build the generated C++. findRuntime()
+# in main.cpp looks for exactly this <prefix>/{bin,lib,include/rakupp} layout.
 install(TARGETS rakupp RUNTIME DESTINATION bin)
+install(TARGETS rakupp_rt ARCHIVE DESTINATION lib)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/"
+        DESTINATION include/rakupp
+        FILES_MATCHING PATTERN "*.h")

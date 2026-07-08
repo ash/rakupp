@@ -4,6 +4,7 @@
 #include "Parser.h"
 #include "Highlight.h"
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -11,6 +12,9 @@
 #include <sys/stat.h>
 #include <vector>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 using namespace rakupp;
 
@@ -46,6 +50,54 @@ static std::string baseOf(const std::string& path) {
     return p == std::string::npos ? path : path.substr(p + 1);
 }
 
+// The absolute path of *this* rakupp binary. argv[0] is unreliable — when rakupp
+// is on $PATH it is just "rakupp", so the compile modes couldn't find their
+// runtime library. Resolve the real executable: OS-specific first, then argv[0]
+// (as a path, or searched on $PATH), so `--exe` works from any directory.
+static std::string selfExePath(const char* argv0) {
+    char buf[4096], rp[4096];
+#ifdef __APPLE__
+    uint32_t sz = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &sz) == 0 && realpath(buf, rp)) return rp;
+#else
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) { buf[n] = '\0'; return buf; }
+#endif
+    if (argv0 && *argv0) {
+        if (std::strchr(argv0, '/')) { if (realpath(argv0, rp)) return rp; return argv0; }
+        if (const char* path = std::getenv("PATH")) {           // bare name: search $PATH
+            std::string p(path);
+            for (size_t s = 0; s <= p.size(); ) {
+                size_t e = p.find(':', s);
+                std::string d = p.substr(s, e == std::string::npos ? std::string::npos : e - s);
+                if (!d.empty()) {
+                    std::string cand = d + "/" + argv0;
+                    if (::access(cand.c_str(), X_OK) == 0) { if (realpath(cand.c_str(), rp)) return rp; return cand; }
+                }
+                if (e == std::string::npos) break;
+                s = e + 1;
+            }
+        }
+    }
+    return argv0 && *argv0 ? argv0 : "rakupp";
+}
+
+// Locate the runtime static library and its headers relative to the binary,
+// trying: $RAKUPP_HOME, the build tree (lib beside the binary, headers in
+// ../src), and an installed prefix (bin/ + lib/ + include/rakupp). Returns the
+// first that has the library; `lib` is set to the best guess for error messages.
+static bool findRuntime(const std::string& selfExe, std::string& lib, std::string& inc) {
+    std::string d = dirOf(selfExe);
+    std::vector<std::pair<std::string, std::string>> cands;
+    if (const char* home = std::getenv("RAKUPP_HOME"))
+        cands.push_back({std::string(home) + "/lib/librakupp_rt.a", std::string(home) + "/include/rakupp"});
+    cands.push_back({d + "/librakupp_rt.a", d + "/../src"});                     // build tree
+    cands.push_back({d + "/../lib/librakupp_rt.a", d + "/../include/rakupp"});   // installed prefix
+    for (auto& c : cands) if (std::ifstream(c.first).good()) { lib = c.first; inc = c.second; return true; }
+    lib = cands.front().first;
+    return false;
+}
+
 // Default output path for a compiled program: the source name minus a Raku
 // extension, or `a.out` for `-e` code.
 static std::string defaultOut(const std::string& srcName) {
@@ -65,10 +117,10 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
     if (outPath.empty()) outPath = defaultOut(srcName);
 
     // The runtime static library sits next to this rakupp binary.
-    std::string lib = dirOf(selfExe) + "/librakupp_rt.a";
-    if (std::ifstream(lib).good() == false) {
-        std::cerr << "Cannot find runtime library: " << lib
-                  << "\n(build rakupp first: cmake --build build)\n";
+    std::string lib, inc;
+    if (!findRuntime(selfExe, lib, inc)) {
+        std::cerr << "Cannot find runtime library (looked for " << lib << ")\n"
+                  << "(build rakupp first: cmake --build build; or set RAKUPP_HOME)\n";
         return 5;
     }
 
@@ -131,11 +183,10 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         return compileToExe(src, srcName, outPath, selfExe);
     }
 
-    std::string dir = dirOf(selfExe);
-    std::string lib = dir + "/librakupp_rt.a";
-    std::string inc = dir + "/../src";
-    if (std::ifstream(lib).good() == false) {
-        std::cerr << "Cannot find runtime library: " << lib << "\n(build rakupp first)\n";
+    std::string lib, inc;
+    if (!findRuntime(selfExe, lib, inc)) {
+        std::cerr << "Cannot find runtime library (looked for " << lib << ")\n"
+                  << "(build rakupp first: cmake --build build; or set RAKUPP_HOME)\n";
         return 5;
     }
 
@@ -175,9 +226,12 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         return compileToExe(src, srcName, outPath, selfExe);
     }
 
-    std::string dir = dirOf(selfExe);
-    std::string lib = dir + "/librakupp_rt.a", inc = dir + "/../src";
-    if (std::ifstream(lib).good() == false) { std::cerr << "Cannot find runtime library: " << lib << "\n"; return 5; }
+    std::string lib, inc;
+    if (!findRuntime(selfExe, lib, inc)) {
+        std::cerr << "Cannot find runtime library (looked for " << lib << ")\n"
+                  << "(build rakupp first: cmake --build build; or set RAKUPP_HOME)\n";
+        return 5;
+    }
     std::string genPath = outPath + ".rakupp.ast.cpp";
     { std::ofstream g(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
     const char* cxxEnv = std::getenv("CXX");
@@ -193,7 +247,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
 // ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
-    std::string exePath = argv[0] ? argv[0] : "rakupp";
+    std::string exePath = selfExePath(argv[0]); // resolve the real binary (argv[0] may be a bare PATH name)
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }
 
     // --help / -h : print usage and exit.  --version / -V : print the version.
@@ -233,6 +287,8 @@ int main(int argc, char** argv) {
 "  RAKUPP_PARALLEL=1            Run start/worker threads on all cores (true CPU\n"
 "                               parallelism; default coordinates under a GIL)\n"
 "  RAKUPP_DUMPTOKENS=1          Dump the lexer token stream before running\n"
+"  RAKUPP_HOME=dir              Where --exe finds its runtime (dir/lib + dir/include/rakupp);\n"
+"                               only needed if rakupp is moved away from its build/install tree\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
 "  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n";
