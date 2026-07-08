@@ -92,6 +92,10 @@ struct Assign : Expr {
 struct Binary : Expr {
     std::string op;
     ExprPtr lhs, rhs;
+    // eval-dispatch cache: -1 unknown, 0 needs a special-cased handler, 1 is a
+    // plain operator that goes straight to eval-both-operands + applyArith.
+    // (Computed once; a benign same-value race under RAKUPP_PARALLEL.)
+    mutable signed char simpleOp = -1;
     Binary(): Expr(NK::Binary) {}
 };
 

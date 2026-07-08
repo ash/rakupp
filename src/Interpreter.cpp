@@ -3914,6 +3914,24 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
 
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
+    // Fast path for plain operators (`+ - * < == …`): skip the ~20 string compares
+    // for the special-cased forms below and go straight to eval-both + applyArith.
+    // The classification is computed once and cached on the node.
+    if (b->simpleOp < 0) {
+        static const std::set<std::string> special = {
+            "~", "does", "but", "xx", "==>", "<==", "...", "...^", "~~", "!~~",
+            "&&", "and", "||", "or", "andthen", "orelse", "//", "^^", "xor", "&", "|", "^"};
+        bool rmeta = op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]);
+        b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
+    }
+    if (b->simpleOp == 1) {
+        Value l = eval(b->lhs.get());
+        Value r = eval(b->rhs.get());
+        if (l.t == VT::Object || r.t == VT::Object)
+            if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
+                try { return callCallable(*f, ValueList{l, r}); } catch (RakuError&) {}
+        return applyArith(op, l, r);
+    }
     if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1])) {
         // reverse metaoperator: `a R/ b` computes `b / a`
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
