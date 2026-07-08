@@ -1152,10 +1152,21 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts) {
     for (auto it = leaves.rbegin(); it != leaves.rend(); ++it) { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; try { execBlock(*it, sc); } catch (...) {} }
 }
 
-Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope) {
+Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     auto saved = tctx_.cur;
     tctx_.cur = std::move(scope);
     Value last = Value::any();
+    // index of the last statement whose value becomes the block's value; earlier
+    // statements are always sink (their value is discarded either way).
+    size_t lastIdx = b->stmts.size();
+    for (size_t i = b->stmts.size(); i-- > 0; ) {
+        Stmt* s = b->stmts[i].get();
+        if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
+        if (isBlockPhaser(s)) continue;
+        if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
+            !static_cast<SubDecl*>(s)->isMethod) continue;
+        lastIdx = i; break;
+    }
     // a CATCH {} anywhere in the block handles exceptions from the whole block
     Block* catchBlk = nullptr;
     for (auto& s : b->stmts)
@@ -1163,12 +1174,15 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope) {
     hoistSubs(b->stmts);
     runEnterPhasers(b->stmts);
     try {
-        for (auto& s : b->stmts) {
+        for (size_t i = 0; i < b->stmts.size(); i++) {
+            auto& s = b->stmts[i];
             if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) continue;
             if (isBlockPhaser(s.get())) continue; // ENTER/LEAVE handled at entry/exit
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s.get())->name.empty() &&
                 !static_cast<SubDecl*>(s.get())->isMethod) continue; // hoisted
-            last = exec(s.get());
+            // sink every statement whose value is discarded: all but the block's
+            // final statement, and even that one when the whole block is sink.
+            last = exec(s.get(), sink || i != lastIdx);
         }
     } catch (RakuError& e) {
         if (catchBlk) {
@@ -1205,7 +1219,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
     auto runLast = [&]() { if (isLast) inScope(&Interpreter::runLastPhasers); }; // LAST {…}: once, after the last
     for (;;) {
-        try { Value v = execBlock(body, scope); if (collect) collect->push_back(v); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+        try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr); if (collect) collect->push_back(v); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } continue; }
         catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
@@ -1239,12 +1253,14 @@ static bool isKnownTypeName(const std::string& n) {
     return t.count(n) > 0;
 }
 
-Value Interpreter::exec(Stmt* s) {
+Value Interpreter::exec(Stmt* s, bool sink) {
     if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
     switch (s->kind) {
         case NK::ExprStmt: {
             Expr* e = static_cast<ExprStmt*>(s)->e.get();
             if (e->line > 0) curLine_ = e->line; // ExprStmt itself carries no line; use its expression's
+            // sink context: an assignment's result is discarded, so don't copy it
+            if (sink && e->kind == NK::Assign) return evalAssign(static_cast<Assign*>(e), true);
             Value r = eval(e);
             // Rakudo sink semantics: a Proc from a bare `run`/`shell` statement that
             // failed and is discarded (never stored or inspected) throws when sunk.
@@ -2551,7 +2567,7 @@ Value Interpreter::evalValueOf(Expr* e) {
     return eval(e);
 }
 
-Value Interpreter::evalAssign(Assign* a) {
+Value Interpreter::evalAssign(Assign* a, bool sink) {
     if (a->op == "=" && a->target->kind == NK::ListExpr) {
         auto* lst = static_cast<ListExpr*>(a->target.get());
         Value rhs = eval(a->value.get());
@@ -2600,7 +2616,7 @@ Value Interpreter::evalAssign(Assign* a) {
         else if (sigil == '%') *lv = coerceHash(rhs);
         else *lv = rhs;
         if (nb) wrapNative(*lv, nb, ns);
-        return *lv;
+        return sink ? Value::any() : *lv;
     }
 
     // compound assignment
@@ -2608,9 +2624,9 @@ Value Interpreter::evalAssign(Assign* a) {
     Value rhs = eval(a->value.get());
     int nb = lv->natBits; bool ns = lv->natSigned;
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
-    if (binop == "||") { if (!lv->truthy()) *lv = rhs; return *lv; }
-    if (binop == "&&") { if (lv->truthy()) *lv = rhs; return *lv; }
-    if (binop == "//") { if (!isDefined(*lv)) *lv = rhs; return *lv; }
+    if (binop == "||") { if (!lv->truthy()) *lv = rhs; return sink ? Value::any() : *lv; }
+    if (binop == "&&") { if (lv->truthy()) *lv = rhs; return sink ? Value::any() : *lv; }
+    if (binop == "//") { if (!isDefined(*lv)) *lv = rhs; return sink ? Value::any() : *lv; }
     // `$obj OP= x` reuses a user `sub infix:<OP>` overload (Raku's `is deep` also
     // auto-generates OP= from OP), falling back to the built-in operator.
     bool overloaded = false;
@@ -2618,9 +2634,15 @@ Value Interpreter::evalAssign(Assign* a) {
         if (Value* f = tctx_.cur->find("&infix:<" + binop + ">"))
             try { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
             catch (RakuError&) {}
+    // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
+    // string each step — O(n) string building instead of O(n²).
+    if (!overloaded && binop == "~" && lv->t == VT::Str && rhs.t == VT::Str) {
+        lv->s += rhs.s;
+        return sink ? Value::any() : *lv;
+    }
     if (!overloaded) *lv = applyArith(binop, *lv, rhs);
     if (nb) wrapNative(*lv, nb, ns);
-    return *lv;
+    return sink ? Value::any() : *lv;
 }
 
 static bool isSetOpStr(const std::string& o) {

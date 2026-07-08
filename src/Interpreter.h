@@ -110,8 +110,10 @@ public:
 
     // evaluation
     Value eval(Expr* e);
-    Value exec(Stmt* s);           // returns last value (for implicit return)
-    Value execBlock(Block* b, std::shared_ptr<Env> scope);
+    // `sink`: the statement's value is discarded (loop bodies etc.), so an
+    // assignment need not materialize its (possibly large) result — skips the copy.
+    Value exec(Stmt* s, bool sink = false); // returns last value (for implicit return)
+    Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false);
     bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",
                      bool isFirst = true, bool isLast = true,
                      ValueList* collect = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
@@ -300,7 +302,7 @@ private:
 
     Value* lvalue(Expr* e);
     ValueList evalArgs(const std::vector<ExprPtr>& exprs); // spreads `|@a`
-    Value evalAssign(Assign* a);
+    Value evalAssign(Assign* a, bool sink = false);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
     Value evalBinary(Binary* b);
     // `$x does R` (in-place) / `$x but R` (copy) — mix role(s) or an attribute Pair
