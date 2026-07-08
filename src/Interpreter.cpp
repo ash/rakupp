@@ -2720,6 +2720,27 @@ static bool isJunction(const Value& v) {
 }
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
+    // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
+    // overwhelmingly common case — dispatched by a single char, skipping the
+    // set-op / hyper-metaop / boxed-object string-compare machinery below. Any
+    // case it doesn't return (overflow, div-by-zero, other ops) falls through to
+    // the general path, so results are identical.
+    if (l.t == VT::Int && r.t == VT::Int && !l.big && !r.big && !op.empty() && op.size() <= 2) {
+        long long a = l.i, b = r.i, z;
+        char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
+        switch (c0) {
+            case '+': if (c1 == '\0' && !__builtin_add_overflow(a, b, &z)) return Value::integer(z); break;
+            case '-': if (c1 == '\0' && !__builtin_sub_overflow(a, b, &z)) return Value::integer(z); break;
+            case '*': if (c1 == '\0' && !__builtin_mul_overflow(a, b, &z)) return Value::integer(z); break;
+            case '<': if (c1 == '\0') return Value::boolean(a < b);
+                      if (c1 == '=') return Value::boolean(a <= b); break;
+            case '>': if (c1 == '\0') return Value::boolean(a > b);
+                      if (c1 == '=') return Value::boolean(a >= b); break;
+            case '=': if (c1 == '=') return Value::boolean(a == b); break;
+            case '!': if (c1 == '=') return Value::boolean(a != b); break;
+            case '%': if (c1 == '\0' && b != 0) { long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
+        }
+    }
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
     // value — but identity/smartmatch/type ops must still see the object itself.
     if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "=:=" &&
