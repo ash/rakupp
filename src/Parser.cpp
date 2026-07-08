@@ -362,6 +362,20 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
         }
 
+        // word-operator compound assignment: `$p x= 3`, `$n gcd= 12` — a textual
+        // infix tight against `=` (symbolic forms like `+=` are already one token).
+        if (in.valid && cur().kind == Tok::Ident &&
+            peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore) {
+            if (BP_ASSIGN < minbp) break;
+            std::string opname = advance().text; advance(); // the word op, then '='
+            auto a = std::make_unique<Assign>();
+            a->target = std::move(lhs);
+            a->op = opname + "=";
+            a->value = parseExpr(BP_ASSIGN);
+            lhs = std::move(a);
+            continue;
+        }
+
         advance(); // consume infix op
 
         // list assignment: `@a = 1,2,3` / `my ($a,$b) = ...` grabs the whole comma list
@@ -985,6 +999,18 @@ ExprPtr Parser::parsePrimary() {
                 peek(2).kind == Tok::RBracket && peek(1).text != "]") {
                 advance(); // [
                 std::string innerOp = advance().text; // operator
+                advance(); // ]
+                auto u = std::make_unique<Unary>();
+                u->op = "[" + innerOp + "]";
+                u->operand = parseExpr(BP_COMMA);
+                return u;
+            }
+            // reverse-metaop reduce: [R-] [R~] [R/] — `R` tight against the base op
+            if (peek(1).kind == Tok::Ident && peek(1).text == "R" &&
+                (peek(2).kind == Tok::Op || peek(2).kind == Tok::Ident) &&
+                !peek(2).spaceBefore && peek(3).kind == Tok::RBracket) {
+                advance(); // [
+                std::string innerOp = advance().text; innerOp += advance().text; // R + base op
                 advance(); // ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[" + innerOp + "]";

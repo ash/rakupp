@@ -4078,6 +4078,10 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
+    // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
+    // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
+    if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]))
+        return applyBinOp(op.substr(1), r, l);
     try { return applyArith(op, l, r); }
     catch (RakuError&) {
         if (Value* f = tctx_.cur->find("&infix:<" + op + ">")) return callCallable(*f, ValueList{l, r});
