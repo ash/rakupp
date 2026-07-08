@@ -19,6 +19,9 @@
 # Test-run temp files (created by the Roast I/O tests when run from the repo root)
 /temp-*
 /tempfile*
+/mkdir-t-testfile-*
+/buffer*
+/lib/
 
 # Rakudo precompilation cache (created when modules are loaded)
 **/.precomp/
