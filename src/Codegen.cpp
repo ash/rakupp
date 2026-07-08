@@ -117,6 +117,21 @@ struct Codegen {
         return s;
     }
 
+    // Expression in boolean context (if/while/ternary conditions). A plain
+    // comparison emits a native-bool helper directly, skipping the Bool Value +
+    // RT.boolify round-trip; anything else falls back to RT.boolify.
+    std::string exBool(Expr* e) {
+        if (e->kind == NK::Binary && !hasWhatever(e)) {
+            auto* b = static_cast<Binary*>(e);
+            static const std::map<std::string, std::string> cmp = {
+                {"<", "rtLtB"}, {"<=", "rtLeB"}, {">", "rtGtB"}, {">=", "rtGeB"}, {"==", "rtEqB"}, {"!=", "rtNeB"}};
+            auto it = cmp.find(b->op);
+            if (it != cmp.end())
+                return it->second + "(" + ex(b->lhs.get()) + ", " + ex(b->rhs.get()) + ")";
+        }
+        return "RT.boolify(" + ex(e) + ")";
+    }
+
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
     std::string emitBlockClosure(BlockExpr* be) {
         bool pushed = false; std::string topic;
@@ -232,7 +247,7 @@ struct Codegen {
             }
             case NK::Ternary: {
                 auto* t = static_cast<Ternary*>(e);
-                return "(RT.boolify(" + ex(t->cond.get()) + ") ? (" + ex(t->then.get()) + ") : (" + ex(t->els.get()) + "))";
+                return "(" + exBool(t->cond.get()) + " ? (" + ex(t->then.get()) + ") : (" + ex(t->els.get()) + "))";
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
@@ -512,14 +527,14 @@ struct Codegen {
             case NK::WhileStmt: {
                 auto* w = static_cast<WhileStmt*>(s);
                 if (!w->var.empty()) unsupported("while EXPR -> $x");
-                std::string c = "RT.boolify(" + ex(w->cond.get()) + ")";
+                std::string c = exBool(w->cond.get());
                 line(ind, "while (" + (w->isUntil ? "!" + c : c) + ") {");
                 block(w->body.get(), ind + 1); line(ind, "}");
                 return;
             }
             case NK::RepeatStmt: {
                 auto* r = static_cast<RepeatStmt*>(s);
-                std::string c = "RT.boolify(" + ex(r->cond.get()) + ")";
+                std::string c = exBool(r->cond.get());
                 line(ind, "do {"); block(r->body.get(), ind + 1);
                 line(ind, "} while (" + (r->isUntil ? "!" + c : c) + ");");
                 return;
@@ -528,7 +543,7 @@ struct Codegen {
                 auto* l = static_cast<LoopStmt*>(s);
                 line(ind, "{");
                 if (l->init) line(ind + 1, ex(l->init.get()) + ";");
-                std::string c = l->cond ? "RT.boolify(" + ex(l->cond.get()) + ")" : "true";
+                std::string c = l->cond ? exBool(l->cond.get()) : "true";
                 line(ind + 1, "for (; " + c + "; " + (l->incr ? ex(l->incr.get()) : std::string()) + ") {");
                 block(l->body.get(), ind + 2);
                 line(ind + 1, "}");
@@ -624,7 +639,7 @@ struct Codegen {
             return;
         }
         for (size_t i = 0; i < f->branches.size(); i++) {
-            std::string c = "RT.boolify(" + ex(f->branches[i].first.get()) + ")";
+            std::string c = exBool(f->branches[i].first.get());
             if (f->isUnless) c = "!" + c;
             line(ind, (i == 0 ? "if (" : "else if (") + c + ") {");
             block(f->branches[i].second.get(), ind + 1);
@@ -738,7 +753,7 @@ struct Codegen {
         if (!optimize_) return "";
         static const std::map<std::string, std::string> m = {
             {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"}, {"~", "rtConcat"}, {"%", "rtMod"}, {"%%", "rtDivides"},
-            {"**", "rtPow"},
+            {"**", "rtPow"}, {"div", "rtDiv"},
             {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"}};
         auto it = m.find(op);
         return it == m.end() ? "" : it->second;

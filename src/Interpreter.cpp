@@ -2959,7 +2959,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             BigInt a = l.toBig(), b = r.toBig();
             if (b.isZero()) return Value::typeObj("Failure");
             BigInt q, rem; BigInt::divmod(a, b, q, rem);
-            if (op == "div") return Value::bigint(q);
+            // Raku `div` floors (rounds toward -∞); BigInt::divmod truncates toward
+            // zero, so adjust when the remainder is nonzero and the signs differ.
+            if (op == "div") {
+                if (!rem.isZero() && ((a.sign < 0) != (b.sign < 0))) q = q - BigInt(1);
+                return Value::bigint(q);
+            }
             if (!rem.isZero() && ((rem.sign < 0) != (b.sign < 0))) rem = rem + b; // sign follows divisor
             if (op == "%%") return Value::boolean(rem.isZero());
             return Value::bigint(rem);
