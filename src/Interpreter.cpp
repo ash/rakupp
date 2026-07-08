@@ -4284,7 +4284,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // `$path.IO ~~ :e` (and :d/:f/:r/:w/:x/:s/:z/:l) — a filetest adverb: call
         // the matching method on the path and compare to the adverb's boolean.
         if (r.t == VT::Pair && lTopic.hashKind == "IO" && !r.s.empty()) {
-            bool actual = boolify(methodCall(lTopic, r.s, {}));
+            // a missing file makes the test False rather than propagating the throw
+            bool actual = false;
+            try { actual = boolify(methodCall(lTopic, r.s, {})); } catch (RakuError&) { actual = false; }
             bool want = r.pairVal ? boolify(*r.pairVal) : true;
             bool ok = (actual == want);
             return Value::boolean(op == "~~" ? ok : !ok);

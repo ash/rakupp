@@ -1927,7 +1927,30 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (stat(inv.toStr().c_str(), &st) != 0) return Value::boolean(false);
         if (m == "d") return Value::boolean(S_ISDIR(st.st_mode));
         if (m == "f") return Value::boolean(S_ISREG(st.st_mode));
-        return Value::boolean(true); // e/r/w/x
+        if (m == "r") return Value::boolean(::access(inv.toStr().c_str(), R_OK) == 0);
+        if (m == "w") return Value::boolean(::access(inv.toStr().c_str(), W_OK) == 0);
+        if (m == "x") return Value::boolean(::access(inv.toStr().c_str(), X_OK) == 0);
+        return Value::boolean(true); // e
+    }
+    if (m == "l" && inv.hashKind == "IO") { // symlink? (lstat, so broken links still count)
+        struct stat st;
+        return Value::boolean(::lstat(inv.toStr().c_str(), &st) == 0 && S_ISLNK(st.st_mode));
+    }
+    if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both fail if absent
+        struct stat st;
+        if (stat(inv.toStr().c_str(), &st) != 0)
+            throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
+                "Failed to stat '" + inv.toStr() + "': no such file or directory"};
+        if (m == "z") return Value::boolean(st.st_size == 0);
+        return Value::integer((long long)st.st_size);
+    }
+    if (m == "mode" && inv.hashKind == "IO") { // permission bits as a 4-digit octal string
+        struct stat st;
+        if (stat(inv.toStr().c_str(), &st) != 0)
+            throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
+                "Failed to stat '" + inv.toStr() + "': no such file or directory"};
+        char buf[8]; snprintf(buf, sizeof buf, "0%03o", st.st_mode & 07777);
+        return Value::str(buf);
     }
     if (m == "mkdir") { // $path.IO.mkdir(:parent) — create the directory (and parents)
         std::string path = inv.toStr();
@@ -1993,10 +2016,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
     }
-    if (m == "modified" || m == "created" || m == "accessed") {
+    if (m == "modified" || m == "created" || m == "accessed" || m == "changed") {
         struct stat st;
-        if (stat(inv.toStr().c_str(), &st) != 0) return Value::integer(0);
-        return Value::integer((long long)st.st_mtime);
+        if (stat(inv.toStr().c_str(), &st) != 0)
+            throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
+                "Failed to get the timestamp of '" + inv.toStr() + "': no such file or directory"};
+        // an Instant, at nanosecond precision so mtime/ctime/atime stay distinct
+        const struct timespec& ts = (m == "accessed") ? st.st_atimespec
+                                  : (m == "changed")  ? st.st_ctimespec
+                                                      : st.st_mtimespec; // modified/created
+        return Value::number((double)ts.tv_sec + (double)ts.tv_nsec / 1e9);
+    }
+    if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
+        ::chmod(inv.toStr().c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt()));
+        Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p;
     }
     if (m == "open") { // returns a buffered file handle
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
@@ -3384,7 +3417,9 @@ void Interpreter::registerBuiltins() {
     B["chmod"] = [](Interpreter&, ValueList& a) -> Value { // chmod MODE, @paths → the paths changed
         Value out = Value::array(); out.isList = true;
         if (a.empty()) return out;
-        mode_t mode = (mode_t)a[0].toInt();
+        // a permission string like IO.mode's "0777" is octal; an Int (0o644) is itself
+        mode_t mode = a[0].t == VT::Str ? (mode_t)strtol(a[0].s.c_str(), nullptr, 8)
+                                        : (mode_t)a[0].toInt();
         for (size_t k = 1; k < a.size(); k++) {
             std::string p = a[k].toStr();
             if (::chmod(p.c_str(), mode) == 0) out.arr->push_back(a[k]);
