@@ -591,7 +591,7 @@ struct Codegen {
         // compound assignment to an index binds the slot once (avoids double side effects)
         if (tgt->kind == NK::Index) {
             std::string ref = lvalueExpr(tgt);
-            if (binop == "~" && optimize_) // in-place append (O(n) string building)
+            if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
                 return "([&]()->Value{ Value& __r = " + ref + "; rtCatAssign(__r, " + rhs + "); return __r; }())";
             std::string fb = fastBin(binop);
             std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
@@ -603,7 +603,7 @@ struct Codegen {
         std::string lhs = lvalueExpr(tgt);
         if (binop == "||") return lhs + " = RT.boolify(" + lhs + ") ? " + lhs + " : (" + rhs + ")";
         if (binop == "&&") return lhs + " = RT.boolify(" + lhs + ") ? (" + rhs + ") : " + lhs;
-        if (binop == "~" && optimize_) // in-place append (O(n) string building)
+        if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
             return "([&]()->Value&{ rtCatAssign(" + lhs + ", " + rhs + "); return " + lhs + "; }())";
         if (std::string f = fastBin(binop); !f.empty()) return lhs + " = " + f + "(" + lhs + ", " + rhs + ")"; // -O
         return lhs + " = applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";

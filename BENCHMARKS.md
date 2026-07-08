@@ -26,13 +26,16 @@ tracks.
 - **Startup:** Raku++ is dramatically faster either way — ~3 ms cold vs
   Rakudo's ~100 ms. For one-liners, CLI glue, and small programs it feels instant.
 - **Native (`--exe`) beats Rakudo on every benchmark here except `fib`.**
-  Compiling removes interpreter overhead; on `loopsum` it's 2.9×, and on the
-  collection/hash workloads 2.4–4.9× ahead of Rakudo.
+  Compiling removes interpreter overhead; on `loopsum` it's 2.7×, on `strcat`
+  16.8×, and on the collection/hash workloads 2.3–5.0× ahead of Rakudo.
 - **`fib` is the one Rakudo win** — deep recursion of a tiny body is where an
-  optimizing JIT is hardest to beat; native Raku++ lands ~1.4× behind.
+  optimizing JIT is hardest to beat; native Raku++ lands ~1.5× behind.
 - Even the **interpreter** beats Rakudo on most of these — its startup and lean
   operations outweigh Rakudo's JIT except on the heaviest loops/recursion
   (`loopsum`, `fib`), where compiling (`--exe`) takes over.
+- **String building (`~=`) appends in place** in every mode (interp and `--exe`),
+  so `strcat` is now O(n) rather than O(n²) — the interpreter went from 82 ms to
+  13 ms, and it's no longer the interpreter's weakest row.
 
 ## Methodology
 
@@ -66,15 +69,15 @@ loop and recursion.
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| startup  | 2.5 ms    | 104.4 ms | **Raku++ 42×**  |
-| bigint   | 44.5 ms   | 211.7 ms | **Raku++ 4.8×** |
-| sortnums | 81.3 ms   | 238.2 ms | **Raku++ 2.9×** |
-| hash     | 63.5 ms   | 160.7 ms | **Raku++ 2.5×** |
-| arrayops | 97.8 ms   | 224.7 ms | **Raku++ 2.3×** |
-| regex    | 100.7 ms  | 221.4 ms | **Raku++ 2.2×** |
-| strcat   | 82.0 ms   | 124.6 ms | **Raku++ 1.5×** |
-| loopsum  | 325.1 ms  | 235.8 ms | Rakudo 1.4× |
-| fib      | 1576.9 ms | 382.8 ms | Rakudo 4.1× |
+| startup  | 4.1 ms    | 108.0 ms | **Raku++ 26×**  |
+| strcat   | 13.3 ms   | 127.5 ms | **Raku++ 9.6×** |
+| bigint   | 44.6 ms   | 213.8 ms | **Raku++ 4.8×** |
+| sortnums | 86.3 ms   | 244.1 ms | **Raku++ 2.8×** |
+| hash     | 65.6 ms   | 162.7 ms | **Raku++ 2.5×** |
+| regex    | 101.0 ms  | 228.3 ms | **Raku++ 2.3×** |
+| arrayops | 102.0 ms  | 227.1 ms | **Raku++ 2.2×** |
+| loopsum  | 328.8 ms  | 236.3 ms | Rakudo 1.4× |
+| fib      | 1644.2 ms | 385.2 ms | Rakudo 4.3× |
 
 ### Native (`--exe`) vs Rakudo
 
@@ -84,15 +87,15 @@ interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| startup  | 2.5 ms    | 104.4 ms | **Raku++ 42×**  | 1.0× |
-| bigint   | 42.4 ms   | 211.7 ms | **Raku++ 5.0×** | 1.0× |
-| hash     | 32.7 ms   | 160.7 ms | **Raku++ 4.9×** | 1.9× |
-| sortnums | 59.0 ms   | 238.2 ms | **Raku++ 4.0×** | 1.4× |
-| loopsum  | 82.7 ms   | 235.8 ms | **Raku++ 2.9×** | 3.9× |
-| regex    | 82.2 ms   | 221.4 ms | **Raku++ 2.7×** | 1.2× |
-| strcat   | 50.4 ms   | 124.6 ms | **Raku++ 2.5×** | 1.6× |
-| arrayops | 93.9 ms   | 224.7 ms | **Raku++ 2.4×** | 1.0× |
-| fib      | 548.8 ms  | 382.8 ms | Rakudo 1.4×     | 2.9× |
+| startup  | 2.4 ms    | 108.0 ms | **Raku++ 45×**  | 1.7× |
+| strcat   | 7.6 ms    | 127.5 ms | **Raku++ 16.8×** | 1.8× |
+| bigint   | 42.7 ms   | 213.8 ms | **Raku++ 5.0×** | 1.0× |
+| hash     | 33.4 ms   | 162.7 ms | **Raku++ 4.9×** | 2.0× |
+| sortnums | 62.0 ms   | 244.1 ms | **Raku++ 3.9×** | 1.4× |
+| regex    | 82.5 ms   | 228.3 ms | **Raku++ 2.8×** | 1.2× |
+| loopsum  | 88.7 ms   | 236.3 ms | **Raku++ 2.7×** | 3.7× |
+| arrayops | 100.8 ms  | 227.1 ms | **Raku++ 2.3×** | 1.0× |
+| fib      | 578.0 ms  | 385.2 ms | Rakudo 1.5×     | 2.8× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
 hurts — `loopsum` 3.9×, `fib` 2.9× (both re-dispatch a tiny body a huge number of
@@ -107,37 +110,39 @@ level* — a tiny function called 1.6M times is what a JIT specializes best.
 ### `-O` (the optimizer flag)
 
 The `native` column above is the default `--exe`. Adding **`-O`** enables two
-semantics-preserving codegen passes:
+speculative codegen passes:
 
 1. **direct-arity calls** — a fixed-arity positional sub gets direct `Value`
    parameters (plus a boxed adapter), skipping the per-call `ValueList` heap
    allocation;
-2. **inline int arithmetic** — `+ - * < <= > >= == !=` emit inline helpers that do
-   the small-int case as native `int64` (overflow promotes to bignum), instead of
-   the string-dispatched `applyArith`.
+2. **inline int arithmetic** — `+ - * ** % %% < <= > >= == !=` emit inline helpers
+   that do the small-int case as native `int64` (overflow promotes to bignum),
+   instead of the string-dispatched `applyArith`.
 
-The fast-path covers `+ - * % %% ~ < <= > >= == !=`, so `-O` helps in proportion
-to how much of a kernel is arithmetic/string ops the codegen emits. Best of 10
-runs; Rakudo (v2026.06) shown for reference — **with `-O`, every kernel beats it**:
+(In-place `~=` string building is *not* one of these — it is now the default in
+both the interpreter and `--exe`, which is why `strcat` no longer moves under
+`-O`.) Best of 10 runs; Rakudo (v2026.06) shown for reference — **with `-O`, every
+kernel beats it**:
 
 | Benchmark | `--exe` | `--exe -O` | Rakudo | `-O` vs Rakudo |
 |---|---:|---:|---:|---:|
-| fib      | 547 ms | **79 ms** | 383 ms | **4.8×** |
+| fib      | 547 ms | **79 ms** | 385 ms | **4.9×** |
 | loopsum  | 85 ms  | **30 ms** | 236 ms | **7.9×** |
-| strcat   | 52 ms  | **28 ms** | 125 ms | **4.5×** |
-| hash     | 34 ms  | **25 ms** | 161 ms | **6.4×** |
-| arrayops | 96 ms  | **73 ms** | 225 ms | **3.1×** |
-| sortnums | 60 ms  | **51 ms** | 238 ms | **4.7×** |
-| regex    | 84 ms  | 83 ms  | 221 ms | 2.7× |
-| bigint   | 44 ms  | 44 ms  | 212 ms | 4.8× |
+| hash     | 34 ms  | **25 ms** | 163 ms | **6.5×** |
+| arrayops | 96 ms  | **73 ms** | 227 ms | **3.1×** |
+| sortnums | 60 ms  | **51 ms** | 244 ms | **4.8×** |
+| regex    | 84 ms  | 83 ms  | 228 ms | 2.7× |
+| bigint   | 44 ms  | 44 ms  | 214 ms | 4.9× |
+| strcat   | 8 ms   | 7 ms   | 127 ms | 18× (already O(n) without `-O`) |
 
-`fib` flips from 1.4× behind Rakudo (at the default `--exe`) to **~5× ahead**.
+`fib` flips from 1.5× behind Rakudo (at the default `--exe`) to **~5× ahead**.
 `regex` (the regex engine) and `bigint` (`BigInt` multiply) don't move under `-O` —
 their time is inside a runtime method the codegen doesn't emit — but plain `--exe`
-already had them well ahead of Rakudo. `-O` is opt-in and off by default; all
-benchmark programs produce identical output with it — see
-[OPTIMIZATION.md](OPTIMIZATION.md) for details. See [OPTIMIZATION.md](OPTIMIZATION.md) for what each pass emits, the C++
-optimization-level forwarding (`-O3`/`-Os`/`-Ofast`), and the correctness notes.
+already had them well ahead of Rakudo. `strcat` is fast in every mode because the
+in-place append is default now. `-O` is opt-in and off by default; all benchmark
+programs produce identical output with it. See [OPTIMIZATION.md](OPTIMIZATION.md)
+for what each pass emits, the C++ optimization-level forwarding
+(`-O3`/`-Os`/`-Ofast`), and the correctness notes.
 
 ### Real-world: grammar parsing (YAMLish)
 
@@ -195,5 +200,5 @@ benchmark programs are plain, readable Raku in `tools/bench/*.raku` (edit or add
 freely).
 
 _Snapshot taken with Raku++ at 280 / 1,464 Roast files fully passing, on
-Darwin 25.5 against Rakudo v2026.06 (kernels: best of 3 harness runs; YAMLish:
+Darwin 25.5 against Rakudo v2026.06 (kernels: best of 6 harness runs; YAMLish:
 best of 5)._
