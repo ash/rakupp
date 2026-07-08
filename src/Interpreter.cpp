@@ -1736,6 +1736,31 @@ Value Interpreter::makeClosure(BlockExpr* be) {
 
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                              std::shared_ptr<Env>& env) {
+    // Fast path: every parameter is a plain mandatory positional scalar and no
+    // named arguments were passed — the overwhelmingly common signature. Bind
+    // positionally, skipping the named-map / explicit-named-set / substr /
+    // default-eval machinery below (all pure allocation for this case).
+    {
+        bool simple = true;
+        for (auto& p : params)
+            if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
+                p.isRw || p.isCopy || p.defaultVal || p.subSig || p.litVal ||
+                p.whereExpr || p.defConstraint) { simple = false; break; }
+        if (simple)
+            for (auto& a : args) if (a.t == VT::Pair) { simple = false; break; }
+        if (simple) {
+            for (size_t i = 0; i < params.size(); i++) {
+                if (i < args.size()) {
+                    Value v = args[i];
+                    v.readonly = true;               // plain scalar param is readonly
+                    env->define(params[i].name, std::move(v));
+                } else {
+                    env->define(params[i].name, typedDefault(params[i].type, '$'));
+                }
+            }
+            return;
+        }
+    }
     // split named vs positional
     ValueList positional;
     std::map<std::string, Value> named;
