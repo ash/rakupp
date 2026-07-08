@@ -1,0 +1,8 @@
+
+say "Started";
+while my $line = $*IN.get {
+    $line.substr(0,1) eq "2"
+      ?? note $line.substr(1)
+      !! say $line
+};
+say "Done";

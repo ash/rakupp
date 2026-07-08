@@ -576,6 +576,37 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         for (const std::string& anc : typeAncestry(tn))
             if (anc != tn) if (Value* f = lookup(anc)) return invokeMethod(*f, inv, std::move(args), rwArgs);
     }
+    // IterationBuffer — a low-level mutable element buffer (the iterator protocol's
+    // scratch space), a growable list under the hood. Handled up front so its
+    // `.elems`/`.List`/… win over the generic Hash methods (it is a hashKind Hash).
+    if (inv.t == VT::Hash && inv.hashKind == "IterationBuffer") {
+        auto& items = *(*inv.hash)["items"].arr;
+        auto asList = [&]() { Value o = Value::array(); o.isList = true; *o.arr = items; return o; };
+        if (m == "elems" || m == "Numeric" || m == "Int") return Value::integer((long long)items.size());
+        if (m == "AT-POS") { long i = a0().toInt(); return (i >= 0 && i < (long)items.size()) ? items[i] : Value::typeObj("Mu"); }
+        if (m == "push")    { items.push_back(a0()); return a0(); }
+        if (m == "unshift") { items.insert(items.begin(), a0()); return a0(); }
+        if (m == "BIND-POS") {
+            long i = args.empty() ? 0 : args[0].toInt();
+            Value val = args.size() > 1 ? args[1] : Value::any();
+            if ((long)items.size() <= i) items.resize(i + 1);
+            if (i >= 0) items[i] = val;
+            return val;
+        }
+        if (m == "List" || m == "Seq" || m == "Slip" || m == "list") return asList();
+        if (m == "append" || m == "prepend") {
+            ValueList add;
+            for (auto& a : args) {
+                if (a.t == VT::Hash && a.hashKind == "IterationBuffer") for (auto& x : *(*a.hash)["items"].arr) add.push_back(x);
+                else for (auto& x : toList(a)) add.push_back(x);
+            }
+            if (m == "append") items.insert(items.end(), add.begin(), add.end());
+            else items.insert(items.begin(), add.begin(), add.end());
+            return inv;
+        }
+        if (m == "clear") { items.clear(); return Value::nil(); }
+        if (m == "raku" || m == "gist" || m == "Str") return Value::str("IterationBuffer.new(...)");
+    }
     // A class inheriting a built-in type answers that type's identity coercion with
     // itself: `class D is Str {}` → D.new.Str === the D object (Str.Str is identity).
     if (inv.t == VT::Object && inv.obj && inv.obj->cls && !inv.obj->cls->findMethod(m)) {
@@ -1337,6 +1368,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (args[k].t == VT::Pair) (*v.hash)[args[k].s] = args[k].pairVal ? *args[k].pairVal : Value::any();
             else if (k + 1 < args.size()) { (*v.hash)[args[k].toStr()] = args[k + 1]; k++; }
         }
+        return v;
+    }
+    if (inv.t == VT::Type && inv.s == "IterationBuffer" && m == "new") {
+        Value v = Value::makeHash(); v.hashKind = "IterationBuffer";
+        Value items = Value::array();
+        for (auto& a : args) for (auto& x : toList(a)) items.arr->push_back(x);
+        (*v.hash)["items"] = items;
         return v;
     }
     if (inv.t == VT::Type) {
