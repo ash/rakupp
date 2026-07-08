@@ -37,6 +37,9 @@ private:
     bool isOp(const std::string& s) const;
     bool isIdent(const std::string& s) const;
     const Token& advance();
+    // token classifiers (member fns so they can recognise user-declared operators)
+    bool startsTermToken(const Token& t) const;
+    bool startsListopArg(const Token& t) const;
     bool matchOp(const std::string& s);
     bool matchKind(Tok k);
     void expectKind(Tok k, const char* what);

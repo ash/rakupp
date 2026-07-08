@@ -18,7 +18,7 @@ New operators are just subs named `<category>:<symbol>`.
 | `infix:<…>`         | ✓ | `sub infix:<avg>($a,$b){…}; 4 avg 10` | full: usable as an operator, as `&infix:<avg>`, and inside `EVAL` |
 | `postfix:<…>`       | ✓ | `sub postfix:<!>($n){…}; 5!` | |
 | `term:<…>`          | ✓ | `sub term:<π²>{ pi²  }; π²` | nullary custom term |
-| `prefix:<…>`        | ✗ | `sub prefix:<¬>($x){…}; ¬$x` | the *declaration* parses, but no call site consumes a user prefix (the parser tracks `userInfix_`/`userPostfix_` but has no `userPrefix_` hook) |
+| `prefix:<…>`        | ✓ | `sub prefix:<¬>($x){…}; ¬$x` | symbolic + word forms, in expressions, as listop args, and in EVAL |
 | `circumfix:<… …>`   | ✗ | `sub circumfix:<⟦ ⟧>($x){…}` | parse error |
 | `postcircumfix:<… …>` | ✗ | `sub postcircumfix:<¦ ¦>(\o,\k){…}` | parse error |
 

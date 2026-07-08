@@ -138,7 +138,7 @@ static void markLoopAsExpr(Stmt* s) {
     else if (s->kind == NK::LoopStmt) static_cast<LoopStmt*>(s)->asExpr = true;
 }
 
-static bool startsTermToken(const Token& t) {
+bool Parser::startsTermToken(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
         case Tok::QwList:
@@ -150,7 +150,8 @@ static bool startsTermToken(const Token& t) {
                    t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
-                   t.text == "$" || t.text == "@" || t.text == "%"; // contextualizers $( $[ @( %(
+                   t.text == "$" || t.text == "@" || t.text == "%" || // contextualizers $( $[ @( %(
+                   userPrefix_.count(t.text); // user-declared symbolic prefix op
         case Tok::Ident:
             // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords;
             // my/our/state/has/constant begin a declaration expression (`ok my $x = 5, "d"`)
@@ -162,7 +163,7 @@ static bool startsTermToken(const Token& t) {
     }
 }
 // what may begin a list-op argument (no parens; conservative on leading symbols)
-static bool startsListopArg(const Token& t) {
+bool Parser::startsListopArg(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
         case Tok::QwList:
@@ -175,7 +176,8 @@ static bool startsListopArg(const Token& t) {
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
-                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB"; // ∞  and  «qw»
+                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
+                   userPrefix_.count(t.text); // user-declared symbolic prefix op
         case Tok::Ident: {
             // A word-infix operator right after a bareword term is an INFIX, not the
             // start of a listop argument: `Seq eqv Seq`, `Int eq Int`, `$x div $y`.
@@ -384,6 +386,13 @@ ExprPtr Parser::parsePrefix(bool tight) {
             u->op = "ctx" + o; u->operand = parsePrefix();
             return u;
         }
+    }
+    // user-defined prefix operator: `sub prefix:<§>` — symbolic (Op) or word (Ident)
+    if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && userPrefix_.count(cur().text)) {
+        auto u = std::make_unique<Unary>();
+        u->op = advance().text;
+        u->operand = parsePrefix(true);
+        return parsePostfix(std::move(u), tight);
     }
     return parsePostfix(parsePrimary(), tight);
 }

@@ -4447,6 +4447,9 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "?") return Value::boolean(boolify(v));
     if (u->op == "^") return Value::range(0, v.toInt(), false, true);
     if (u->op == "|") return v; // slip: spread handled in evalArgs
+    // user-defined prefix operator: `sub prefix:<§>($x) { … }`
+    if (Value* f = tctx_.cur->find("&prefix:<" + u->op + ">"))
+        return callCallable(*f, ValueList{v});
     throw RakuError{Value::str("op"), "Unsupported prefix '" + u->op + "'"};
 }
 
