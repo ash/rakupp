@@ -4004,6 +4004,20 @@ Value Interpreter::evalBinary(Binary* b) {
                 for (size_t i = 0; i < n; i++) out.arr->push_back(applyBinOp(inner, a[i % a.size()], bb[i % bb.size()]));
             return out;
         }
+        // zip/cross metaop `Zop`/`Xop` — resolve a user inner operator via applyBinOp
+        if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
+            std::string sub = op.substr(1);
+            ValueList a = l.flatten(), bb = r.flatten();
+            Value out = Value::array(); out.isList = true;
+            auto emit = [&](const Value& x, const Value& y) {
+                if (sub.empty()) out.arr->push_back(Value::array({x, y}));
+                else if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
+                else out.arr->push_back(applyBinOp(sub, x, y));
+            };
+            if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
+            else { for (auto& x : a) for (auto& y : bb) emit(x, y); }
+            return out;
+        }
         return applyArith(op, l, r);
     }
     if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1])) {
