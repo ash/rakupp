@@ -25,12 +25,12 @@ tracks.
 
 - **Startup:** Raku++ is dramatically faster either way — ~3 ms cold vs
   Rakudo's ~100 ms. For one-liners, CLI glue, and small programs it feels instant.
-- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.1× on
+- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.4× on
   `fib` to 7.4× on `loopsum` and 17× on `strcat`. Compiling removes interpreter
   overhead; the collection/hash workloads land 2.4–6.7× ahead.
 - **`fib` used to be Rakudo's one win** — deep recursion of a tiny body is where
   an optimizing JIT is hardest to beat — but hot-pathing integer arithmetic in
-  the runtime pulled native Raku++ to ~2.1× *ahead*.
+  the runtime pulled native Raku++ to ~2.4× *ahead*.
 - Even the **interpreter** beats Rakudo on most of these — its startup and lean
   operations outweigh Rakudo's JIT except on the two heaviest loop/recursion
   kernels (`loopsum`, roughly even; `fib`), where compiling (`--exe`) takes over.
@@ -96,10 +96,10 @@ over interpreting the same program.
 | sortnums | 53.6 ms   | 246.0 ms | **Raku++ 4.6×** | 1.3× |
 | regex    | 80.3 ms   | 227.4 ms | **Raku++ 2.8×** | 1.2× |
 | arrayops | 97.6 ms   | 235.2 ms | **Raku++ 2.4×** | 1.0× |
-| fib      | 186.1 ms  | 391.0 ms | **Raku++ 2.1×** | 5.5× |
+| fib      | 165.0 ms  | 391.0 ms | **Raku++ 2.4×** | 6.2× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
-hurts — `loopsum` 8.1×, `fib` 5.5× (both re-dispatch a tiny body a huge number of
+hurts — `loopsum` 8.1×, `fib` 6.2× (both re-dispatch a tiny body a huge number of
 times). It's a near no-op (1.0–1.3×) for the workloads whose time is spent
 *inside* runtime methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and
 especially `bigint`, which lives almost entirely in `BigInt` multiply. There the
@@ -107,7 +107,7 @@ driving loop is trivial, so removing interpreter overhead changes little.
 
 `fib` — a tiny function called 1.6M times, the case a JIT specializes best — used
 to be the one place Rakudo led even the default `--exe`; hot-pathing integer
-arithmetic in the runtime (`applyArith`) closed that gap and put native ~2.1×
+arithmetic in the runtime (`applyArith`) closed that gap and put native ~2.4×
 ahead.
 
 ### `-O` (the optimizer flag)
@@ -128,7 +128,7 @@ reference:
 
 | Benchmark | `--exe` | `--exe -O` | Rakudo | `-O` vs `--exe` |
 |---|---:|---:|---:|---:|
-| fib      | 186 ms | **85 ms** | 391 ms | **2.2×** |
+| fib      | 165 ms | **66 ms** | 391 ms | **2.5×** |
 | arrayops | 97 ms  | **77 ms** | 235 ms | 1.3× |
 | loopsum  | 32 ms  | 30 ms  | 242 ms | 1.1× |
 | hash     | 24 ms  | 24 ms  | 165 ms | 1.0× |
@@ -141,7 +141,7 @@ reference:
 grew a char-dispatched `Int`/`Int` fast path — `--exe` links that runtime, so it
 no longer pays string-dispatch for `+ - * < … %`. What `-O` still
 buys is what it removes *entirely*: the per-call `ValueList` (direct-arity
-calls — the 2.2× on `fib`) and, in `arrayops`, the `Value` boxing in the map/grep
+calls — the 2.5× on `fib`) and, in `arrayops`, the `Value` boxing in the map/grep
 bodies. Every kernel here is already ahead of Rakudo at plain `--exe`; `-O`
 extends the lead where calls or boxing dominate. It's opt-in, off by default, and
 produces identical output. See [OPTIMIZATION.md](OPTIMIZATION.md) for what each

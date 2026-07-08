@@ -73,7 +73,7 @@ For the common operators the codegen emits inline helpers (declared `inline` in
 | `+` `-` `*` | `rtAdd`/`rtSub`/`rtMul` | native `int64`, overflow → bignum |
 | `**` | `rtPow` | integer power by squaring, overflow → bignum |
 | `<` `<=` `>` `>=` `==` `!=` | `rtLt`/… | `int64` compare |
-| `%` `%%` | `rtMod`/`rtDivides` | `int64` mod (sign follows divisor) / divisibility |
+| `%` `%%` `div` | `rtMod`/`rtDivides`/`rtDiv` | `int64` mod / divisibility / floor division |
 | `~` | `rtConcat` | direct `std::string` concat when both are `Str` |
 
 Each inlines its fast case and falls back to `applyArith` for everything else:
@@ -126,6 +126,13 @@ a loop body's value is discarded, so the assignment doesn't copy its (growing)
 result either. Because this is now the default in every mode, `-O` adds nothing
 on top of it — `strcat` looks flat between `--exe` and `--exe -O`.
 
+**Native-bool conditions** are the same idea. An `if`/`while`/ternary condition
+that is a comparison (`$n < 2`) used to compile to `RT.boolify(rtLt(…))` — build a
+`Bool` `Value`, then read it back. The codegen now emits a `bool`-returning helper
+(`rtLtB`/`rtLeB`/…) straight into the condition, skipping the round-trip. It is
+default (not `-O`-gated); on `fib`, whose ternary runs 1.6M times, it took `--exe`
+from 186 → 165 ms and `--exe -O` from 84 → 66 ms.
+
 ## Forwarding the C++ optimization level
 
 `--exe` compiles the generated C++ at **`-O2`** by default. A level on the `-O`
@@ -154,7 +161,7 @@ default — it's for inspecting/debugging the generated C++, not for speed.
 
 | Benchmark | `--exe` | `--exe -O` | speed-up | what `-O` reached |
 |---|---:|---:|---:|---|
-| fib      | 186 ms | **85 ms** | 2.2× | direct-arity calls |
+| fib      | 165 ms | **66 ms** | 2.5× | direct-arity calls + native-bool cond |
 | arrayops | 97 ms  | **77 ms** | 1.3× | map/grep-body boxing |
 | loopsum  | 32 ms  | 30 ms | 1.1× | `+=` |
 | hash     | 24 ms  | 24 ms | 1.0× | (`% 1000` already fast) |
