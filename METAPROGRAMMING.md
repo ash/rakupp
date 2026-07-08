@@ -56,7 +56,8 @@ Built-in operators that *transform* another operator.
 | zip `Z`             | ✓ | `(1,2) Z (3,4)` | |
 | reverse `R-`        | ✓ | `10 R- 3` → `-7` | |
 | `&infix:<op>` as a value | ✓ | `(1,2,3).reduce(&infix:<pl>)` | a user op passed as a callable works |
-| meta-op **over a user op** | ✗ | `[pl]`, `>>pl<<`, `pl=` | the meta-operator machinery only resolves built-in operators |
+| `$x userop= y` (assign metaop) | ✓ | `$m mns= 3` | user infix tight against `=`; works for any operands |
+| reduce/hyper **over a user op** | ✗ | `[pl]`, `>>pl<<` | the reduce/hyper machinery only resolves built-in operators |
 
 ## Runtime MOP (meta-object) mutation
 

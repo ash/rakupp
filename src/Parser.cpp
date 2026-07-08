@@ -205,6 +205,17 @@ ExprPtr Parser::parseExpr(int minbp) {
     for (;;) {
         // user-defined infix operator: `4 avg 10`  ==  infix:<avg>(4, 10)
         if (cur().kind == Tok::Ident && userInfix_.count(cur().text)) {
+            // meta-assignment `$x op= y` — the infix tight against `=`
+            if (peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore) {
+                if (BP_ASSIGN < minbp) break;
+                std::string opname = advance().text; advance(); // op then '='
+                auto a = std::make_unique<Assign>();
+                a->target = std::move(lhs);
+                a->op = opname + "=";
+                a->value = parseExpr(BP_ASSIGN); // right-associative
+                lhs = std::move(a);
+                continue;
+            }
             if (BP_ADD < minbp) break; // default (additive) precedence, left-assoc
             std::string opname = advance().text;
             auto call = std::make_unique<Call>();

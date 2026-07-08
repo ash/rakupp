@@ -2665,7 +2665,15 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         lv->s += rhs.s;
         return sink ? Value::any() : *lv;
     }
-    if (!overloaded) *lv = applyArith(binop, *lv, rhs);
+    if (!overloaded) {
+        // fall back to a user `sub infix:<OP>` when the operator isn't built-in
+        // (so `$m mx= 9` works for any operands, not just objects)
+        try { *lv = applyArith(binop, *lv, rhs); }
+        catch (RakuError&) {
+            if (Value* f = tctx_.cur->find("&infix:<" + binop + ">")) *lv = callCallable(*f, ValueList{*lv, rhs});
+            else throw;
+        }
+    }
     if (nb) wrapNative(*lv, nb, ns);
     return sink ? Value::any() : *lv;
 }
