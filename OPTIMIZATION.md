@@ -154,22 +154,27 @@ default — it's for inspecting/debugging the generated C++, not for speed.
 
 | Benchmark | `--exe` | `--exe -O` | speed-up | what `-O` reached |
 |---|---:|---:|---:|---|
-| fib      | 547 ms | **79 ms** | 6.9× | calls + `+ - <` |
-| loopsum  | 85 ms  | **30 ms** | 2.8× | `+=` |
-| hash     | 34 ms  | **25 ms** | 1.4× | `% 1000` |
-| arrayops | 96 ms  | **73 ms** | 1.3× | `* %% 3` over 200k |
-| sortnums | 60 ms  | **51 ms** | 1.2× | map-body arithmetic |
-| regex    | 84 ms  | 83 ms | — | (regex engine) |
-| bigint   | 44 ms  | 44 ms | — | (`BigInt` multiply) |
+| fib      | 186 ms | **85 ms** | 2.2× | direct-arity calls |
+| arrayops | 97 ms  | **77 ms** | 1.3× | map/grep-body boxing |
+| loopsum  | 32 ms  | 30 ms | 1.1× | `+=` |
+| hash     | 24 ms  | 24 ms | 1.0× | (`% 1000` already fast) |
+| sortnums | 53 ms  | 53 ms | 1.0× | (`.sort` dominates) |
+| regex    | 80 ms  | 80 ms | — | (regex engine) |
+| bigint   | 43 ms  | 43 ms | — | (`BigInt` multiply) |
 | strcat   | 8 ms   | 7 ms   | — | (`~=` already O(n) by default) |
 
-`fib` was the *only* kernel where Rakudo led at the default `--exe`; with `-O` it
-runs ~5× ahead. `-O` helps in proportion to how much of a kernel's time is
-arithmetic/string ops the codegen emits. Where the time is **inside a runtime
-method** — the regex engine, `BigInt` multiply — `-O` can't reach it, so those two
-are unmoved. `sortnums`/`arrayops` move only partway: their arithmetic
-(`.map` bodies, the `grep` predicate) speeds up, but `.sort` and the per-element
-closure iteration dominate and stay in the runtime.
+These `--exe` baselines are much lower than they once were: the runtime's
+`applyArith` now hot-paths `Int`/`Int` `+ - * < <= > >= == != %` with a char
+switch instead of a chain of `op == "…"` string compares, and `--exe` (which
+links that runtime) inherits it. So `-O`'s remaining edge is the boxing/allocation
+it removes *entirely* — the per-call `ValueList` (`fib` direct calls) and `Value`
+boxing in tight bodies (`arrayops`).
+
+Every kernel here is already ahead of Rakudo at plain `--exe` (fib included, now
+that the runtime hot-paths integer arithmetic). Where the time is **inside a
+runtime method** — the regex engine, `BigInt` multiply, `.sort` — `-O` can't reach
+it, so those are unmoved. `fib` is the standout: a tiny body called millions of
+times, where removing the per-call `ValueList` allocation still halves the time.
 
 ## Correctness
 
@@ -213,18 +218,22 @@ Best of 5 runs each, on this machine (macOS/Darwin 25.5, Rakudo v2026.06):
 
 | benchmark | `--exe` | `--exe -O` | `-O` speed-up | rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| powmod      | 748 ms  | 63 ms  | 11.9× | 605 ms | 1M `** 3` then `% 1000` |
-| fibcalls    | 2484 ms | 355 ms | 7.0×  | 1282 ms | fib(32) — calls + `< + -` |
-| intsum      | 1595 ms | 300 ms | 5.3×  | 852 ms | 5M `+= $_ * 2 - 1` |
-| sieve       | 3310 ms | 873 ms | 3.8×  | 1532 ms | primes <200k — `* <= %%` |
-| stringbuild | 32 ms   | 32 ms  | 1.0×  | 173 ms | 400k `~=` — already O(n) by default |
+| powmod      | 570 ms  | 62 ms  | 9.2× | 582 ms | 1M `** 3` then `% 1000` |
+| sieve       | 1191 ms | 479 ms | 2.5× | 1495 ms | primes <200k — `* <= %%` |
+| fibcalls    | 781 ms  | 351 ms | 2.2× | 1262 ms | fib(32) — calls + `< + -` |
+| intsum      | 342 ms  | 296 ms | 1.2× | 830 ms | 5M `+= $_ * 2 - 1` |
+| stringbuild | 32 ms   | 32 ms  | 1.0× | 170 ms | 400k `~=` — already O(n) by default |
 
-The first four are constant-factor removals of boxing and dispatch — that is what
-`-O` does. `stringbuild` is the odd one out: it's flat under `-O` because the
-in-place `~=` append is now the *default* (both `--exe` builds are O(n) and ~5×
-ahead of Rakudo already). It stays in the suite as the correctness/consistency
-check. As always, this is only the subset of Raku both engines run identically; it
-is not a coverage claim (see [BENCHMARKS.md](BENCHMARKS.md)).
+These deltas are smaller than they were, because plain `--exe` got a lot faster:
+the runtime's `applyArith` now hot-paths `Int`/`Int` `+ - * < <= > >= == != %` (a
+char switch instead of string dispatch), and `--exe` without `-O` links that
+runtime — so it already pays no string-dispatch cost for those ops. `-O`'s
+remaining edge is what it *removes entirely*: the per-call `ValueList` (direct
+calls — `fibcalls`), all `Value` boxing (`sieve`), and ops still outside the
+runtime fast-path like `**` (`powmod`, where `-O`'s `rtPow` still wins 9×).
+`stringbuild` is flat because in-place `~=` is default in both builds. As always
+this is only the subset of Raku both engines run identically — not a coverage
+claim (see [BENCHMARKS.md](BENCHMARKS.md)).
 
 ## See also
 
