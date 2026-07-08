@@ -2043,6 +2043,32 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             std::ifstream in((*inv.hash)["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); return Value::str(ss.str());
         }
+        // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".
+        if (m == "getc" || m == "readchars") {
+            if (inv.hash->find("cps") == inv.hash->end()) {
+                std::string path = (*inv.hash)["path"].toStr();
+                struct stat st;
+                if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                    throw RakuError{Value::typeObj("X::IO"), "Cannot read characters from a directory: " + path};
+                std::ifstream in(path); std::ostringstream ss; ss << in.rdbuf();
+                Value cps = Value::array();
+                for (auto cp : utf8cp(ss.str())) cps.arr->push_back(Value::str(cpToUtf8(cp)));
+                (*inv.hash)["cps"] = cps;
+                (*inv.hash)["cpos"] = Value::integer(0);
+            }
+            long pos = (*inv.hash)["cpos"].toInt();
+            auto& cps = *(*inv.hash)["cps"].arr;
+            if (m == "readchars") { // read up to N chars (default 65536), "" at EOF
+                long want = args.empty() ? 65536 : args[0].toInt();
+                std::string out; long got = 0;
+                for (; got < want && pos < (long)cps.size(); got++, pos++) out += cps[pos].toStr();
+                (*inv.hash)["cpos"] = Value::integer(pos);
+                return Value::str(out);
+            }
+            if (pos >= (long)cps.size()) return Value::nil(); // getc at EOF → Nil
+            (*inv.hash)["cpos"] = Value::integer(pos + 1);
+            return cps[pos];
+        }
         // reading: lazily load the file into lines, track a cursor in "pos"
         bool isStdin = inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in";
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" || m == "slurp-rest") {
@@ -3350,6 +3376,10 @@ void Interpreter::registerBuiltins() {
     B["close"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: close($fh)
         if (a.empty()) return Value::boolean(true);
         return I.methodCall(a[0], "close", {});
+    };
+    B["getc"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: getc($fh)
+        if (a.empty()) return Value::nil();
+        return I.methodCall(a[0], "getc", {});
     };
     B["chmod"] = [](Interpreter&, ValueList& a) -> Value { // chmod MODE, @paths → the paths changed
         Value out = Value::array(); out.isList = true;
