@@ -861,6 +861,10 @@ Token Lexer::lexOperator() {
         "==>", "<==", // feed operators (before == / <=)
         "!!!", "???", "...^", "...", "^..^", "..^", "^..",
         "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",
+        // bitwise/boolean (numeric +&/+|/+^, string ~&/~|/~^, boolean ?&/?|/?^) before single + ? ~.
+        // NB: the shift forms +</+>/~</~> are deliberately omitted — `<`/`>` collide with
+        // word-lists (`+<a b>`), operator-name brackets, and comparison in one-pass parsing.
+        "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^",
         "??", "!!", "**", "//", "||", "&&", "^^", "==", "!=", "<=", ">=", "~~", "=>",
         "-->", "->", "=:=", ":=", "++", "--", "+=", "-=", "*=", "/=", "~=", "%%", "%=",
         "x=", "..", "::", "<<", ">>", "andthen", // (textual handled elsewhere)

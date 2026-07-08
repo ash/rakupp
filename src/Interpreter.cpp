@@ -3135,6 +3135,28 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         a.isList = true; // `1 xx 5` is a flattening List, so `[1 xx 5]` spreads to 5 elems
         return a;
     }
+    // numeric bitwise / shift
+    if (op == "+&") return Value::integer(l.toInt() & r.toInt());
+    if (op == "+|") return Value::integer(l.toInt() | r.toInt());
+    if (op == "+^") return Value::integer(l.toInt() ^ r.toInt());
+    if (op == "+<") return Value::integer(l.toInt() << r.toInt());
+    if (op == "+>") return Value::integer(l.toInt() >> r.toInt());
+    // boolean bitwise (return Bool)
+    if (op == "?&") return Value::boolean(l.truthy() && r.truthy());
+    if (op == "?|") return Value::boolean(l.truthy() || r.truthy());
+    if (op == "?^") return Value::boolean(l.truthy() != r.truthy());
+    // string bitwise — per-character on codepoints; the longer string's tail is
+    // kept for | and ^, dropped for &
+    if (op == "~&" || op == "~|" || op == "~^") {
+        std::string a = l.toStr(), b = r.toStr(), out;
+        size_t n = (op == "~&") ? std::min(a.size(), b.size()) : std::max(a.size(), b.size());
+        for (size_t k = 0; k < n; k++) {
+            unsigned char ca = k < a.size() ? (unsigned char)a[k] : 0;
+            unsigned char cb = k < b.size() ? (unsigned char)b[k] : 0;
+            out += (char)(op == "~&" ? (ca & cb) : op == "~|" ? (ca | cb) : (ca ^ cb));
+        }
+        return Value::str(out);
+    }
     if (op == "gcd") { long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x); }
     if (op == "lcm") { long long x = l.toInt(), y = r.toInt(); if (!x || !y) return Value::integer(0); long long g = std::llabs(x), h = std::llabs(y); while (h) { long long t = g % h; g = h; h = t; } return Value::integer(std::llabs(x / g * y)); }
     if (op == "min") return valueCmp(l, r) <= 0 ? l : r;

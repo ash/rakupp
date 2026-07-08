@@ -83,6 +83,10 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "??") { in.valid = true; in.lbp = BP_TERNARY; in.isTernary = true; return in; }
         if (o == "**") { in.valid = true; in.lbp = BP_POW; in.rightAssoc = true; return in; }
         if (o == "*" || o == "/" || o == "%" || o == "%%" || o == "!%%") { in.valid = true; in.lbp = BP_MUL; return in; }
+        // bitwise/boolean: `+& ~& ?& +< +> ~< ~>` bind like `*` (multiplicative);
+        // `+| +^ ~| ~^ ?| ?^` bind like `+` (additive)
+        if (o == "+&" || o == "~&" || o == "?&" || o == "+<" || o == "+>" || o == "~<" || o == "~>") { in.valid = true; in.lbp = BP_MUL; return in; }
+        if (o == "+|" || o == "+^" || o == "~|" || o == "~^" || o == "?|" || o == "?^") { in.valid = true; in.lbp = BP_ADD; return in; }
         if (o == "+" || o == "-") { in.valid = true; in.lbp = BP_ADD; return in; }
         if (o == "~") { in.valid = true; in.lbp = BP_CONCAT; return in; } // concatenation: looser than x/xx
         if (o == ".." || o == "..^" || o == "^.." || o == "^..^") { in.valid = true; in.lbp = BP_RANGE; in.isRange = true; return in; }

@@ -2905,6 +2905,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (m == "prepend") { auto f = flattenArgs(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return Value::integer((long long)inv.arr->size()); }
             if (m == "pop") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->back(); inv.arr->pop_back(); return v; }
             if (m == "shift") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); return v; }
+            if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
+                long n = (long)inv.arr->size();
+                long start = args.size() > 0 ? args[0].toInt() : 0;
+                if (start < 0) start += n;
+                start = std::max(0L, std::min(start, n));
+                long count = args.size() > 1 ? args[1].toInt() : (n - start);
+                count = std::max(0L, std::min(count, n - start));
+                Value removed = Value::array(); removed.isList = true;
+                for (long k = 0; k < count; k++) removed.arr->push_back((*inv.arr)[start + k]);
+                ValueList repl;
+                for (size_t k = 2; k < args.size(); k++) for (auto& x : toList(args[k])) repl.push_back(x);
+                inv.arr->erase(inv.arr->begin() + start, inv.arr->begin() + start + count);
+                inv.arr->insert(inv.arr->begin() + start, repl.begin(), repl.end());
+                return removed;
+            }
         }
         if (inv.t == VT::Hash && inv.hash) {
             if (m == "exists") return Value::boolean(inv.hash->count(a0().toStr()) > 0);
@@ -3814,6 +3829,11 @@ void Interpreter::registerBuiltins() {
     };
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; // flat is a List (flattens in list context)
+        for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
+        return out;
+    };
+    B["slip"] = [](Interpreter&, ValueList& a) -> Value { // slip(4,5) spreads into the enclosing list
+        Value out = Value::array(); out.isList = true;
         for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
         return out;
     };
