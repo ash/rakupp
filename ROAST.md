@@ -37,24 +37,24 @@ Full suite — **1,464 files**:
 | No TAP output | 558 | 38% |
 | Timeouts | 1 | 0.1% |
 
-**Coverage ≈ 19% of files.** That is the number to quote. Over a third of the suite
+**Coverage ≈ 20% of files.** That is the number to quote. Over a third of the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
 construct and abort before any assertion runs — so they are entirely unmeasured
 territory, not "passing" and not "failing."
 
 ### The assertion count
 
-Among the files that *do* run, **131,012 of 188,451** assertions pass. This
+Among the files that *do* run, **131,208 of 188,685** assertions pass. This
 number measures correctness on the attempted subset — how much of what we run is
 right — and is the signal we watch for regressions. Two facts define its scope:
 
-1. **Its denominator is only the reached assertions.** The 565 no-TAP files emit
-   nothing, so they are not in the 188,451. This is a different denominator than
+1. **Its denominator is only the reached assertions.** The 558 no-TAP files emit
+   nothing, so they are not in the 188,685. This is a different denominator than
    the coverage figure (files, over 1,464).
 2. **S15 (Unicode) is ~87k of the total**, passing at ~95%, so it dominates the
    blended figure.
 
-Coverage is the 19% of files; correctness-on-what-runs is this 131,012/188,451.
+Coverage is the 20% of files; correctness-on-what-runs is this 131,208/188,685.
 They are two different measurements, quoted for two different purposes.
 
 ## By synopsis
@@ -68,37 +68,37 @@ while many of its files still don't run at all — read it alongside No-TAP.
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
 | S02 | Literals, types, magicals | 25 | 56 | 0 | 66 | 949/1785 | 53% |
-| S03 | Operators | 15 | 35 | 0 | 75 | 764/1582 | 48% |
-| S04 | Blocks, statements, phasers | 15 | 37 | 0 | 25 | 353/481 | 73% |
-| S05 | Regexes & grammars | 16 | 68 | 0 | 14 | 3117/4955 | 63% |
-| S06 | Subroutines & signatures | 7 | 40 | 0 | 47 | 294/547 | 54% |
+| S03 | Operators | 16 | 35 | 0 | 74 | 770/1586 | 48% |
+| S04 | Blocks, statements, phasers | 15 | 37 | 0 | 25 | 360/494 | 72% |
+| S05 | Regexes & grammars | 16 | 68 | 0 | 14 | 3119/4955 | 62% |
+| S06 | Subroutines & signatures | 8 | 39 | 0 | 47 | 304/576 | 52% |
 | S07 | Iterators | 0 | 1 | 0 | 5 | 8/8 | 100% |
-| S09 | Data structures | 0 | 7 | 0 | 15 | 52/131 | 40% |
-| S10 | Packages | 2 | 2 | 0 | 5 | 15/35 | 43% |
-| S11 | Modules | 8 | 6 | 0 | 8 | 54/72 | 75% |
-| S12 | Objects & classes | 12 | 44 | 1 | 44 | 290/418 | 69% |
+| S09 | Data structures | 0 | 7 | 0 | 15 | 52/131 | 39% |
+| S10 | Packages | 2 | 2 | 0 | 5 | 15/35 | 42% |
+| S11 | Modules | 8 | 8 | 0 | 6 | 54/84 | 64% |
+| S12 | Objects & classes | 14 | 49 | 0 | 38 | 378/553 | 68% |
 | S13 | Overloading | 3 | 0 | 0 | 4 | 20/20 | 100% |
-| S14 | Roles | 4 | 11 | 0 | 10 | 67/93 | 72% |
-| S15 | Unicode / strings / NFG | 43 | 31 | 0 | 7 | 86700/91221 | 95% |
-| S16 | I/O | 4 | 16 | 0 | 17 | 138/264 | 52% |
-| S17 | Concurrency (supply/promise/async) | 17 | 52 | 0 | 30 | 361/660 | 55% |
-| S19 | Command-line | 6 | 1 | 0 | 1 | 21/24 | 88% |
+| S14 | Roles | 5 | 11 | 0 | 9 | 112/159 | 70% |
+| S15 | Unicode / strings / NFG | 43 | 31 | 0 | 7 | 86701/91222 | 95% |
+| S16 | I/O | 11 | 15 | 0 | 11 | 211/348 | 60% |
+| S17 | Concurrency (supply/promise/async) | 17 | 52 | 0 | 30 | 372/680 | 54% |
+| S19 | Command-line | 6 | 1 | 0 | 1 | 21/24 | 87% |
 | S22 | Package format | 0 | 0 | 0 | 1 | 0/0 | — |
 | S24 | Testing | 8 | 5 | 0 | 4 | 60/100 | 60% |
 | S26 | Documentation (POD) | 2 | 11 | 0 | 14 | 8/100 | 8% |
-| S28 | Special variables | 0 | 2 | 0 | 1 | 1/6 | 17% |
+| S28 | Special variables | 2 | 0 | 0 | 1 | 6/6 | 100% |
 | S29 | Builtins & context | 3 | 8 | 0 | 3 | 345/370 | 93% |
-| S32 | Standard types (str/list/num/…) | 38 | 107 | 0 | 118 | 36560/37401 | 98% |
-| integration | Cross-feature programs | 24 | 51 | 0 | 44 | 392/527 | 74% |
-| 6.c | v6.c language snapshot | 1 | 4 | 0 | 13 | 47/76 | 62% |
+| S32 | Standard types (str/list/num/…) | 39 | 106 | 0 | 118 | 36639/37483 | 97% |
+| integration | Cross-feature programs | 25 | 52 | 0 | 42 | 401/545 | 73% |
+| 6.c | v6.c language snapshot | 1 | 4 | 0 | 13 | 47/76 | 61% |
 | 6.d | v6.d language snapshot | 4 | 13 | 0 | 1 | 122/47202 | 0% |
-| APPENDICES | — | 1 | 3 | 1 | 1 | 34/42 | 81% |
-| MISC / t | — | 1 | 0 | 0 | 5 | 10/10 | 100% |
+| APPENDICES | — | 1 | 3 | 1 | 1 | 33/42 | 78% |
+| MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
 
 ### Reading the table
 
-- **S15 (Unicode)** dominates the assertion count — ~88k of 112k assertions
-  live here (grapheme-break and normalization tables are enormous). Raku++'s
+- **S15 (Unicode)** dominates the assertion count — ~91k of ~189k reached
+  assertions live here (grapheme-break and normalization tables are enormous). Raku++'s
   generated UCD 15.1 tables clear **95%** of it, which is why the overall
   assertion rate is high.
 - **S01** is fully green: those files skip-all unless a Perl-5 interop bridge

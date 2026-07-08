@@ -24,14 +24,17 @@ New operators are just subs named `<category>:<symbol>`.
 
 ## Operator traits — precedence & associativity
 
-These reshape the grammar's operator-precedence table.
+These would reshape the grammar's operator-precedence table. Raku++ **parses**
+them without error but does not yet act on them: a user-defined `infix` always
+takes a single fixed (loose) precedence, so `is tighter`/`looser`/`equiv` do not
+change where it binds.
 
 | Feature | Status | Example |
 |---|:---:|---|
-| `is tighter(&infix:<+>)` | ✓ | binds tighter than a chosen operator |
-| `is looser(&infix:<*>)`  | ✓ | binds looser |
-| `is equiv(&infix:<+>)`   | ✓ | same precedence as a chosen operator |
-| `is assoc<left/right/non>` | ✓ | associativity of a custom operator |
+| `is tighter(&infix:<+>)` | ◑ | parsed, but binding is unaffected (custom infix stays loose) |
+| `is looser(&infix:<*>)`  | ◑ | parsed, but binding is unaffected |
+| `is equiv(&infix:<+>)`   | ◑ | parsed, but binding is unaffected |
+| `is assoc<left/right/non>` | ◑ | parsed, but associativity is not applied |
 
 ## Compile-time & staged evaluation
 
@@ -90,8 +93,9 @@ one incidental `RakuAST::` reference), so it is very low-yield to pursue.
 Raku++ covers most of what everyday syntax-extending Raku uses:
 
 - **All six custom-operator categories** — `infix`/`prefix`/`postfix`/`term`/
-  `circumfix`/`postcircumfix` — with the full precedence-trait system
-  (`is tighter`/`looser`/`equiv`/`assoc`). Real operator-table mutation.
+  `circumfix`/`postcircumfix` — declared as ordinary subs and dispatched in
+  expressions and as listop args. (Precedence/associativity traits parse but do
+  not yet reshape binding — see above.)
 - **Meta-operators over user operators** too — `[userop]` reduce, `>>userop<<`
   hyper, `Z§`/`X§` zip/cross, and `$x userop= y` meta-assignment.
 - **The whole phaser/`BEGIN`/`constant`/`EVAL` staging story**, including `EVAL`

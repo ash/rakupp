@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **291 / 1,464 files fully pass (~19%)**; 614 partial, 558 no-TAP, 1 timeout. (Among files that run, 131,208 / 188,685 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **291 / 1,464 files fully pass (~20%)**; 614 partial, 558 no-TAP, 1 timeout. (Among files that run, 131,208 / 188,685 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -56,9 +56,10 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Reduce `[+]`, zip `Z`, cross `X`, hyper `>>op>>` / `«op»`
 - Contextualizers `$( ) @( ) %( ) $[ ]`, ternary `?? !!`, assignment `= := += …`
 - Divisibility `%%` and negated `!%%` (both return `Bool`)
-- User-defined operators: `sub infix:<…>` / `postfix:<…>` (e.g. `sub postfix:<!>` → `5!`)
+- User-defined operators — all six categories: `infix`/`prefix`/`postfix`/`term`/`circumfix`/`postcircumfix` (`sub infix:<…>`, `sub postfix:<!>` → `5!`, `sub circumfix:<⟦ ⟧>`, `sub term:<TAU>`)
+- Meta-operators over user-defined operators: `[myop]` reduce, `>>myop<<` hyper, `Z§`/`X§` zip/cross, `$x myop= y` meta-assignment
 - Whatever-currying: infix `* + 1`, prefix `~* -* +*`, postcircumfix `*.<key>` `*[i]`, subscript `@a[*-1]` `@a[*]`
-- **Gaps:** other negated metaops, custom operator precedence (`is tighter`), user infix overriding built-ins
+- **Gaps:** operator-precedence traits (`is tighter`/`looser`/`equiv`) are parsed but don't yet reshape binding (a custom infix always binds loosely); other negated metaops; word-form of a user op in a meta-op (`Zpl`)
 
 ## Control Flow
 - `if/elsif/else`, `unless`, `while/until`, `for`, C-style `loop`, `repeat`
@@ -73,15 +74,17 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - `is rw` / `is copy`, sigilless `\a`, capture `|c`, return-type `-->`, type-capture `::T`
 - Sub-signature destructuring: `[$a,$b]` / `($a,$b)` unpack a list arg, `|c($x,$y)` a capture, `*[$a,$b]` a slurpy — with `multi` dispatch on the destructured arity
 - Anonymous subs, closures, placeholder params `$^a`, sub/block as argument
-- **Gaps:** `callsame`/`nextsame`, `is rw` inside a sub-signature, `-> [$a,$b]` pointy destructure
+- Redispatch: `callsame`/`callwith`/`nextsame`/`nextwith`/`samewith`; routine `.wrap`/`.unwrap` (wrapper `callsame`s to the original)
+- **Gaps:** `is rw` inside a sub-signature, `-> [$a,$b]` pointy destructure
 
 ## Objects, Classes, Roles
 - `class`/`role`/`grammar`, attributes `has $.x`/`$!x` (+ defaults), accessors
 - `method`/`multi method`/`submethod`, `self`, single inheritance `is`, `does`
 - `BUILD`, default `.new`, `bless`, enums
 - Metamodel: `.^name .^methods .^add_method .^find_method`, `.WHAT .WHICH .HOW`
+- `augment`/`supersede` reopen a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`); `does`/`but` runtime role mixins
 - Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
-- **Gaps:** `Metamodel::*` construction, submethod-not-inherited, `callsame`
+- **Gaps:** `Metamodel::*` construction, submethod-not-inherited
 
 ## Regexes & Grammars
 - `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`
@@ -109,7 +112,9 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, `polymod`, `base`, `rand` / `.rand`, constants `pi tau e`
 
 ## I/O, System, Concurrency
-- `open`/FileHandle (`.lines .get .slurp .print .say .close`), `dir`, `make-temp-file`
+- `open`/FileHandle (`.lines .get .slurp .print .say .put .getc .readchars .close`; `close`/`getc` sub forms), `dir`, `make-temp-file`
+- `IO::Path` tests & stat: `.e .f .d .r .w .x` (real `access()`), `.s` (size), `.z` (empty), `.l` (symlink), `.mode` (octal string), `.modified/.changed/.accessed` (distinct-precision Instants), `.chmod`; filetest-adverb smartmatch `$path.IO ~~ :e/:d/:f/:r/:w/:x/:s/:z/:l`; `chmod`/`unlink`/`mkdir` subs
+- `say`/`print`/`put`/`note` (and their method forms) honour a user-overridden dynamic `$*OUT`/`$*ERR` — assigning `my $*OUT = $mock-handle` reroutes output through its `.print`
 - `run` → standard `Proc` (`.out.slurp .exitcode .so`; `+$proc` is the exit status); bidirectional `run(:in,:out)` (`.in.spurt` / `.out.slurp`, e.g. piping through `pandoc`); `shell(CMD)` runs `CMD` through `/bin/sh -c` (redirections/pipes work)
 - Line-processing: `-n` / `-p` command-line switches (awk/perl line loops over `$*ARGFILES`); `$*IN`/`$*ARGFILES` reading (`.lines .get .words .slurp`, bare `lines()`/`get()`/`words()`)
 - **Concurrency (real `std::thread`s + a GIL, CPython-style; blocking ops release the lock: `sleep`/`await` let tasks interleave in time (sleep-sort actually sorts), and external-process waits (`run`/`shell`) run in genuine parallel wall-clock — N concurrent `run('sleep','1')` finish in ~1s, not N s. Optional true CPU parallelism via `RAKUPP_PARALLEL=1`: worker threads run interpreter compute concurrently — per-thread registers/stacks are thread-local, the symbol tables freeze once concurrency engages, and `Lock`/`Semaphore` become real; ~3× on 8 workers, 0 Roast regressions, ThreadSanitizer-clean. Default (flag off) keeps the GIL. `start EXPR` correctly thunks EXPR to the worker):**
