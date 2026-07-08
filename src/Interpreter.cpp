@@ -4454,6 +4454,8 @@ Value Interpreter::evalCall(Call* c) {
 
 Value Interpreter::evalIndex(Index* idx) {
     Value base = eval(idx->base.get());
+    // a native-container subclass / `but`/`does` mixin instance indexes through its box
+    if (base.t == VT::Object && base.obj && base.obj->hasBoxed) base = base.obj->boxed;
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
     // nothing materialises the whole range.
     if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash)

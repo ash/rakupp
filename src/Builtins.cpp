@@ -1426,6 +1426,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     "Cannot look up attributes in a " + inv.s + " type object"};
             }
             if (m == "new" || m == "bless") {
+                // A class subclassing a native container (`class A is Array`): the
+                // instance is an object backed by a native Array/Hash (via ObjectData.boxed),
+                // so it indexes/pushes natively while .WHAT answers the user type.
+                std::string nb;
+                for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
+                if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
+                    auto od = std::make_shared<ObjectData>();
+                    od->cls = ci; od->hasBoxed = true;
+                    if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
+                    else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
+                    od->boxed.ofType = inv.ofType; // A[Int] -> element type on the box
+                    for (auto& arg : args) if (arg.t == VT::Pair) od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
+                    Value self = Value::object(od);
+                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
+                    return self;
+                }
                 auto od = std::make_shared<ObjectData>();
                 od->cls = ci;
                 std::vector<ClassInfo*> chain;
@@ -1646,6 +1662,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return ty;
         }
         if (inv.t == VT::Type) return inv; // a (parameterized) type object is its own .WHAT
+        // native-container subclass instance parameterized as A[Int]
+        if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
+            !inv.obj->boxed.ofType.empty()) {
+            Value ty = Value::typeObj(inv.obj->cls->name); ty.ofType = inv.obj->boxed.ofType; return ty;
+        }
         return Value::typeObj(inv.typeName());
     }
     if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
