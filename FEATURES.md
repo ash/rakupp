@@ -56,6 +56,8 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Reduce `[+]`, zip `Z`, cross `X`, hyper `>>op>>` / `«op»`
 - Contextualizers `$( ) @( ) %( ) $[ ]`, ternary `?? !!`, assignment `= := += …`
 - Divisibility `%%` and negated `!%%` (both return `Bool`)
+- Bitwise / boolean: numeric `+& +| +^`, string `~& ~| ~^`, boolean `?& ?| ?^`
+- Compound assignment for word operators (`$x x= 3`, `$n gcd= 12`) and reverse-metaop reduce (`[R~]`, `[R-]`)
 - User-defined operators — all six categories: `infix`/`prefix`/`postfix`/`term`/`circumfix`/`postcircumfix` (`sub infix:<…>`, `sub postfix:<!>` → `5!`, `sub circumfix:<⟦ ⟧>`, `sub term:<TAU>`)
 - Meta-operators over user-defined operators: `[myop]` reduce, `>>myop<<` hyper, `Z§`/`X§` zip/cross, `$x myop= y` meta-assignment
 - Whatever-currying: infix `* + 1`, prefix `~* -* +*`, postcircumfix `*.<key>` `*[i]`, subscript `@a[*-1]` `@a[*]`
@@ -108,7 +110,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise
 - String: `chars codes uc lc tc fc wordcase samecase index rindex substr split comb subst trans words lines flip trim starts-with~ ends-with~ contains sprintf ords chrs ord chr` (`.trans` supports `a..z` ranges); `undefine($x)` resets a container
-- List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll`; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; list methods on scalars (`5.map`, `42.grep`); `roundrobin`
+- List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift splice keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll`; `slip(…)` spreads into the enclosing list; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; list methods on scalars (`5.map`, `42.grep`); `roundrobin`
 - Hash: `push`/`append` (accumulate values under a key), `kv keys values pairs invert antipairs`
 - Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, `polymod`, `base`, `rand` / `.rand`, constants `pi tau e`
 
