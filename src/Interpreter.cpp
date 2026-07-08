@@ -1950,6 +1950,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     std::vector<const Param*> positional;
     for (auto& p : params) {
         if (p.named) continue;
+        if (p.invocant) continue; // the invocant (`Foo:D:`) is matched by the dispatch, not a positional arg
         if (p.slurpy) { slurpy = true; continue; }
         positional.push_back(&p);
         total++;
@@ -4940,12 +4941,23 @@ Value Interpreter::eval(Expr* e) {
             auto* ve = static_cast<VarExpr*>(e);
             char sigil = ve->name.empty() ? '$' : ve->name[0];
             if (ve->name == "$=finish") return Value::str(finishData_); // =finish data block
+            if (ve->name == "$?LINE") return Value::integer(ve->line);
+            if (ve->name == "$?FILE") return Value::str(srcFile_);
+            // Built-in magic dynamic vars ($*OUT, $*CWD, …). A user binding
+            // (`my $*OUT = …`) or a fresh declaration takes precedence, so only
+            // fall back to the built-in default when the name is neither being
+            // declared nor already bound in this scope / the caller chain.
+            bool builtinDefault = !ve->declare;
+            if (builtinDefault && ve->name.size() > 1 && ve->name[1] == '*') {
+                if (tctx_.cur->find(ve->name)) builtinDefault = false;
+                else for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
+                    if ((*it)->find(ve->name)) { builtinDefault = false; break; }
+            }
+            if (builtinDefault) {
             if (ve->name == "$*CWD") { char buf[4096]; Value p = Value::str(getcwd(buf, sizeof buf) ? buf : "."); p.hashKind = "IO"; return p; }
             if (ve->name == "$*RAKU" || ve->name == "$*PERL" || ve->name == "$?RAKU" || ve->name == "$?PERL") {
                 Value r = Value::makeHash(); r.hashKind = "Raku"; return r;
             }
-            if (ve->name == "$?LINE") return Value::integer(ve->line);
-            if (ve->name == "$?FILE") return Value::str(srcFile_);
             if (ve->name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; } // running script, as IO::Path
             if (ve->name == "$*PROGRAM-NAME") return Value::str(srcFile_);
             if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
@@ -4962,6 +4974,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
             if (ve->name == "$*PID") return Value::integer((long long)::getpid());
             if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
+            }
             if (ve->declare) {
                 if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
                     if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));

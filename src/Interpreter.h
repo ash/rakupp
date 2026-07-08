@@ -123,6 +123,9 @@ public:
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs); // no wrap layer
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
+    // Emit text for say/print/put/note: route through a user-overridden $*OUT/$*ERR
+    // (call its .print), else write to the real stream.
+    Value ioEmit(const std::string& s, const char* dynVar, bool toErr);
     Value getArgs(); // @*ARGS as a List value (used by codegen)
     void syncEnvToProcess(); // push %*ENV into the real process environment, so children inherit it
     Value dynVar(const std::string& name); // $* / $? magical variables (used by codegen)

@@ -536,6 +536,26 @@ static Value makeSignature(const Callable* c) {
     return s;
 }
 
+// say/print/put/note honour a user-overridden $*OUT/$*ERR: if the dynamic
+// variable holds a user object (e.g. a mock IO capturing output), send the text
+// to its .print method; otherwise write straight to the real stream.
+Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) {
+    // Dynamic ($*) lookup: the current lexical scope, then the caller chain.
+    Value* h = nullptr;
+    if (tctx_.cur) {
+        h = tctx_.cur->find(dynVar);
+        if (!h)
+            for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
+                if (*it && (h = (*it)->find(dynVar))) break;
+    }
+    if (h && h->t == VT::Object) {
+        ValueList pa{Value::str(s)};
+        return methodCall(*h, "print", pa);
+    }
+    (toErr ? std::cerr : std::cout) << s;
+    return Value::boolean(true);
+}
+
 // ---------------- method dispatch ----------------
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -1630,10 +1650,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 
     // universal
     bool isFH = (inv.t == VT::Hash && inv.hashKind == "FileHandle");
-    if (m == "say" && !isFH) { std::cout << gistOf(inv) << "\n"; return Value::boolean(true); }
-    if (m == "print" && !isFH) { std::cout << strOf(inv); return Value::boolean(true); }
-    if (m == "put") { std::cout << strOf(inv) << "\n"; return Value::boolean(true); }
-    if (m == "note") { std::cerr << gistOf(inv) << "\n"; return Value::boolean(true); }
+    if (m == "say" && !isFH) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
+    if (m == "print" && !isFH) return ioEmit(strOf(inv), "$*OUT", false);
+    if (m == "put") return ioEmit(strOf(inv) + "\n", "$*OUT", false);
+    if (m == "note") return ioEmit(gistOf(inv) + "\n", "$*ERR", true);
     if (m == "Str") return Value::str(inv.toStr());
     if (m == "Int") {
         // Converting a string that carries an Nl/No numeral (Roman, circled,
@@ -2835,17 +2855,20 @@ void Interpreter::registerBuiltins() {
     B["say"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string out;
         for (auto& v : a) out += I.gistOf(v);
-        std::cout << out << "\n"; return Value::boolean(true);
+        out += "\n"; return I.ioEmit(out, "$*OUT", false);
     };
     B["print"] = [](Interpreter& I, ValueList& a) -> Value {
-        for (auto& v : a) std::cout << I.strOf(v); return Value::boolean(true);
+        std::string out; for (auto& v : a) out += I.strOf(v);
+        return I.ioEmit(out, "$*OUT", false);
     };
     B["put"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::string out; for (auto& v : a) out += I.strOf(v); std::cout << out << "\n"; return Value::boolean(true);
+        std::string out; for (auto& v : a) out += I.strOf(v); out += "\n";
+        return I.ioEmit(out, "$*OUT", false);
     };
     B["note"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.empty()) { std::cerr << "Noted\n"; return Value::boolean(true); } // no-arg default
-        for (auto& v : a) std::cerr << I.gistOf(v); std::cerr << "\n"; return Value::boolean(true);
+        if (a.empty()) return I.ioEmit("Noted\n", "$*ERR", true); // no-arg default
+        std::string out; for (auto& v : a) out += I.gistOf(v); out += "\n";
+        return I.ioEmit(out, "$*ERR", true);
     };
     B["warn"] = [](Interpreter& I, ValueList& a) -> Value {
         if (I.quietDepth_ > 0) return Value::boolean(true); // muted inside quietly {…}
