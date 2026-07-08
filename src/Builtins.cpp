@@ -1567,6 +1567,31 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             else out.arr->push_back(inv);
             return out;
         }
+        // &routine.wrap(&wrapper): push a wrapper in front of the routine. Because
+        // the Callable is shared (shared_ptr), every reference — including calls
+        // through the routine's name — sees the wrap. Returns a handle for .unwrap.
+        if (m == "wrap" && !args.empty()) {
+            inv.code->wrappers.push_back(args[0]);
+            noteSymbolMutation("routine .wrap");
+            Value h = Value::makeHash(); h.hashKind = "WrapHandle";
+            (*h.hash)["routine"] = inv;               // keep the Callable alive
+            (*h.hash)["wrapper"] = args[0];           // identity for targeted .unwrap
+            return h;
+        }
+        // &routine.unwrap($handle) / .unwrap — remove a wrapper. With a handle, remove
+        // that specific wrapper; otherwise pop the most-recent one (LIFO).
+        if (m == "unwrap") {
+            auto& ws = inv.code->wrappers;
+            if (!args.empty() && args[0].t == VT::Hash && args[0].hashKind == "WrapHandle" &&
+                args[0].hash->count("wrapper")) {
+                const Value& target = (*args[0].hash)["wrapper"];
+                for (size_t k = ws.size(); k-- > 0; )
+                    if (ws[k].code == target.code) { ws.erase(ws.begin() + k); break; }
+            }
+            else if (!ws.empty()) ws.pop_back();
+            noteSymbolMutation("routine .unwrap");
+            return inv;
+        }
     }
 
     // CompUnit::DependencySpecification accessors.

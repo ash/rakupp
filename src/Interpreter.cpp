@@ -2292,6 +2292,31 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
 }
 
 Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    // A wrapped routine (&r.wrap({…})) runs its wrapper stack first. Each wrapper's
+    // `callsame`/`nextsame` drops to the next inner wrapper, finally to the original
+    // routine body (callCallableRaw). Wrappers are consulted outermost-first.
+    if (codeVal.t == VT::Code && codeVal.code && !codeVal.code->wrappers.empty()) {
+        const auto& wraps = codeVal.code->wrappers;
+        std::function<Value(int, ValueList)> runLevel =
+            [&](int level, ValueList as) -> Value {
+                if (level < 0) return callCallableRaw(codeVal, std::move(as), rwArgs);
+                RedispatchCtx rc;
+                rc.sameArgs = as;
+                rc.next = [&runLevel, level](ValueList na) -> Value { return runLevel(level - 1, std::move(na)); };
+                rc.restart = [this, &codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
+                redispatchStack_.push_back(std::move(rc));
+                Value r;
+                try { r = callCallable(wraps[level], as, rwArgs); }
+                catch (...) { redispatchStack_.pop_back(); throw; }
+                redispatchStack_.pop_back();
+                return r;
+            };
+        return runLevel((int)wraps.size() - 1, std::move(args));
+    }
+    return callCallableRaw(codeVal, std::move(args), rwArgs);
+}
+
+Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
     if (codeVal.t == VT::Hash && codeVal.hashKind == "Format") {
         std::string fmt = codeVal.hash && codeVal.hash->count("fmt") ? (*codeVal.hash)["fmt"].toStr() : "";

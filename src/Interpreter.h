@@ -121,6 +121,7 @@ public:
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+    Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs); // no wrap layer
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
     Value getArgs(); // @*ARGS as a List value (used by codegen)
     void syncEnvToProcess(); // push %*ENV into the real process environment, so children inherit it

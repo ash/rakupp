@@ -1258,6 +1258,11 @@ ExprPtr Parser::parsePrimary() {
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur());
+            // callsame/nextsame are nullary redispatchers — they reuse the current
+            // args and take none of their own, so `"[" ~ callsame ~ "]"` must not read
+            // the trailing `~ "]"` (prefix ~) as an argument. (callwith/nextwith/
+            // samewith DO take args and are left alone.)
+            if (name == "callsame" || name == "nextsame") listopOk = false;
             if (listopOk && cur().kind == Tok::Op &&
                 (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|" || cur().text == "!!") &&
                 peek(1).spaceBefore)

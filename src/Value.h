@@ -35,6 +35,7 @@ struct Callable {
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
     bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
     std::string retType;                             // declared return type (`of`/`returns`/`-->`), "" = none
+    std::vector<Value> wrappers;                      // &routine.wrap({…}) stack (outermost last); .unwrap pops
 };
 
 enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };

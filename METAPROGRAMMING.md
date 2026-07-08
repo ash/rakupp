@@ -68,7 +68,7 @@ Built-in operators that *transform* another operator.
 | `.^add_method($name,$code)` | ✓ | inject a method at runtime | |
 | `$x does Role` / `$x but Role` | ✓ | runtime role mixin into a value | |
 | `.^methods` / `.^roles` / `.does` | ✓ | introspection (see [FEATURES.md](FEATURES.md)) | |
-| `&sub.wrap({…})` | ✗ | soft-routine wrapping | `No such method 'wrap'` |
+| `&sub.wrap({…})` / `.unwrap` | ✓ | soft-routine wrapping | wrapper runs in front of the routine; `callsame`/`callwith`/`nextsame` reach the original; wraps nest and `.unwrap` (LIFO or by handle) restores |
 
 ## Grammar & AST — the not-yet frontier
 
@@ -96,13 +96,13 @@ Raku++ covers most of what everyday syntax-extending Raku uses:
   of code that uses locally-defined operators.
 - **Runtime MOP mutation** — `augment`/`supersede` on user classes *and*
   `augment` on built-in types, `.^add_method`, `does`/`but` mixins,
-  `.^`-introspection.
+  routine `.wrap`/`.unwrap`, `.^`-introspection.
 - **Built-in meta-operators** — reduce, hyper, cross, zip, reverse.
 
 The remaining gaps:
 
-- **Small, self-contained**: routine `.wrap`, and the word-form of a user op
-  inside a meta-operator (`Zpl`, which lexes as one identifier).
+- **Small, self-contained**: the word-form of a user op inside a meta-operator
+  (`Zpl`, which lexes as one identifier).
 - **Large frontier** (compiler internals): `macro`/`quasi`, `RakuAST`, and slangs
   — the mechanisms by which a Raku program rewrites its own grammar.
 
