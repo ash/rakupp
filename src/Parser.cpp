@@ -151,7 +151,7 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
                    t.text == "$" || t.text == "@" || t.text == "%" || // contextualizers $( $[ @( %(
-                   userPrefix_.count(t.text); // user-declared symbolic prefix op
+                   userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident:
             // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords;
             // my/our/state/has/constant begin a declaration expression (`ok my $x = 5, "d"`)
@@ -177,7 +177,7 @@ bool Parser::startsListopArg(const Token& t) const {
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
-                   userPrefix_.count(t.text); // user-declared symbolic prefix op
+                   userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
             // A word-infix operator right after a bareword term is an INFIX, not the
             // start of a listop argument: `Seq eqv Seq`, `Int eq Int`, `$x div $y`.
@@ -428,6 +428,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         // when parsing the operand of a prefix op, a space-preceded `.method` binds
         // to the whole prefix expression, not the operand — stop here so the caller grabs it.
         if (stopAtSpaceDot && isOp(".") && cur().spaceBefore) break;
+        // user postcircumfix operator: `$x¦key¦` == postcircumfix:<¦ ¦>($x, key)
+        if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && !cur().spaceBefore &&
+            userPostcircumfix_.count(cur().text) && cur().text != pcfxClose_) {
+            std::string open = advance().text, close = userPostcircumfix_[open];
+            auto call = std::make_unique<Call>();
+            call->name = "postcircumfix:<" + open + " " + close + ">";
+            call->args.push_back(std::move(base));
+            std::string savedClose = pcfxClose_; pcfxClose_ = close; // don't reopen the close inside content
+            if (cur().text != close) call->args.push_back(parseExpression());
+            pcfxClose_ = savedClose;
+            if (cur().text == close) advance(); else error("expected postcircumfix closing '" + close + "'");
+            base = std::move(call);
+            continue;
+        }
         // hyper method call: @a>>.method / @a<<.method (»« multibyte too)
         if ((isOp(">>") || isOp("<<") || isOp("»") || isOp("«")) && peek().kind == Tok::Op && peek().text == ".") {
             advance(); hyperNext = true; continue;
@@ -819,6 +833,15 @@ ExprPtr Parser::parseColonPair() {
 }
 
 ExprPtr Parser::parsePrimary() {
+    // user circumfix operator: `⟦ … ⟧`  ==  circumfix:<⟦ ⟧>( … )
+    if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && userCircumfix_.count(cur().text)) {
+        std::string open = advance().text, close = userCircumfix_[open];
+        auto call = std::make_unique<Call>();
+        call->name = "circumfix:<" + open + " " + close + ">";
+        if (cur().text != close) call->args.push_back(parseExpression());
+        if (cur().text == close) advance(); else error("expected circumfix closing '" + close + "'");
+        return call;
+    }
     // ::?CLASS / ::?ROLE / ::?PACKAGE — the lexically-enclosing type (compile-time)
     if (isOp("::") && peek().text == "?" && peek(2).kind == Tok::Ident) {
         advance(); advance(); // :: ?
@@ -1837,10 +1860,16 @@ StmtPtr Parser::parseSub(bool isMulti) {
          s->name == "circumfix" || s->name == "postcircumfix") && isOp(":")) {
         std::string cat = s->name;
         advance(); // :
-        std::string opname;
-        if (isOp("<")) { advance(); auto w = readAngleWords(">"); opname = w.empty() ? "" : w[0]; }
-        else if (isOp("\xC2\xAB")) { advance(); auto w = readAngleWords("\xC2\xBB"); opname = w.empty() ? "" : w[0]; }
-        if (!opname.empty()) {
+        std::vector<std::string> w;
+        if (isOp("<")) { advance(); w = readAngleWords(">"); }
+        else if (isOp("\xC2\xAB")) { advance(); w = readAngleWords("\xC2\xBB"); }
+        std::string opname = w.empty() ? "" : w[0];
+        if ((cat == "circumfix" || cat == "postcircumfix") && w.size() >= 2) {
+            // two bracket words: `circumfix:<⟦ ⟧>` — name carries both, open→close registered
+            s->name = cat + ":<" + w[0] + " " + w[1] + ">";
+            if (cat == "circumfix") userCircumfix_[w[0]] = w[1];
+            else userPostcircumfix_[w[0]] = w[1];
+        } else if (!opname.empty()) {
             s->name = cat + ":<" + opname + ">";
             if (cat == "infix") userInfix_.insert(opname);
             else if (cat == "prefix") userPrefix_.insert(opname);

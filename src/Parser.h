@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <vector>
 #include <set>
+#include <map>
 
 namespace rakupp {
 
@@ -28,6 +29,8 @@ private:
     std::vector<Token> toks_;
     size_t pos_ = 0;
     std::set<std::string> userInfix_, userPrefix_, userPostfix_; // user-declared operators (sub infix:<…>)
+    std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
+    std::string pcfxClose_; // active postcircumfix close bracket (don't re-open it inside its own content)
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
     std::vector<std::string> typeStack_; // enclosing class/role/grammar names (for ::?CLASS)
 

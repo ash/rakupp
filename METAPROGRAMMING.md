@@ -19,8 +19,8 @@ New operators are just subs named `<category>:<symbol>`.
 | `postfix:<…>`       | ✓ | `sub postfix:<!>($n){…}; 5!` | |
 | `term:<…>`          | ✓ | `sub term:<π²>{ pi²  }; π²` | nullary custom term |
 | `prefix:<…>`        | ✓ | `sub prefix:<¬>($x){…}; ¬$x` | symbolic + word forms, in expressions, as listop args, and in EVAL |
-| `circumfix:<… …>`   | ✗ | `sub circumfix:<⟦ ⟧>($x){…}` | parse error |
-| `postcircumfix:<… …>` | ✗ | `sub postcircumfix:<¦ ¦>(\o,\k){…}` | parse error |
+| `circumfix:<… …>`   | ✓ | `sub circumfix:<⟦ ⟧>($x){…}; ⟦1,2,3⟧` | symbolic + word brackets, in expressions and as listop args |
+| `postcircumfix:<… …>` | ✓ | `sub postcircumfix:<¦ ¦>($o,$k){…}; $x¦7¦` | same- or distinct-delimiter brackets |
 
 ## Operator traits — precedence & associativity
 
