@@ -20,6 +20,15 @@ say "café".chars;         # → 4                                  (grapheme co
 say ∞;                    # → Inf
 ```
 
+Decimal literals are exact rationals (`Rat`), not floating-point — so the classic
+`0.1 + 0.2` rounding error simply doesn't happen:
+
+```raku
+say 0.1 + 0.2 - 0.3;      # → 0        (exact Rat arithmetic, not 5.55e-17)
+say (0.1 + 0.2).raku;     # → <3/10>   (a Rat, not a Num)
+say 0.1e0 + 0.2e0 - 0.3e0;  # → 5.551115123125783e-17   (opt into Num with e-notation)
+```
+
 ## Operators
 
 ```raku
@@ -39,6 +48,25 @@ say 5!;                   # → 120      (user-defined postfix operator)
 
 say <a b c d>[*-1];       # → d        (Whatever-star index)
 say (1, 5, 10, 2).sort(~*);  # → (1 10 2 5)   (prefix `~*` sorts as strings)
+```
+
+Custom operators come in all six categories, and a meta-operator (`[ ]`, `Z`, …)
+can drive a user-defined one:
+
+```raku
+sub infix:<avg>($a, $b) { ($a + $b) / 2 }
+say 10 avg 20;            # → 15       (user-defined infix)
+say [avg] 10, 20, 30;     # → 22.5     (reduce over a user operator)
+
+sub circumfix:<˹ ˺>($x) { $x * 10 }
+say ˹4˺;                  # → 40       (custom circumfix)
+```
+
+Precedence traits actually reshape binding — `foo` here binds tighter than `+`:
+
+```raku
+sub infix:<foo>($a, $b) is tighter(&infix:<+>) { $a * $b }
+say 2 + 3 foo 4;          # → 14       (parses as 2 + (3 foo 4), not (2+3) foo 4)
 ```
 
 ## Control Flow
@@ -67,6 +95,15 @@ say greet(name => "Raku");                # → hi Raku     (named param + defau
 say (1 .. 5).map(* ** 2);                 # → (1 4 9 16 25)  (Whatever)
 ```
 
+Wrap a routine — the wrapper runs in front of it and `callsame`s through to the
+original:
+
+```raku
+sub greet($n) { "hi $n" }
+&greet.wrap(-> $n { "[" ~ callsame ~ "]" });
+say greet("bob");                         # → [hi bob]    (wrapped)
+```
+
 ## Objects, Classes, Roles
 
 ```raku
@@ -81,6 +118,9 @@ enum Color <red green blue>;
 say green.value;                          # → 1
 
 say 42.^name;                             # → Int         (metamodel)
+
+augment class Int { method double { self * 2 } }
+say 21.double;                            # → 42          (augment a built-in type)
 ```
 
 ## Regexes & Grammars
@@ -134,6 +174,27 @@ say $p.out.slurp(:close).chomp;           # → hi          (capture subprocess 
 say $*RAKU.compiler.name;                 # → Raku++
 say $*RAKU.compiler.backend;              # → cpp
 say "/tmp/x.txt".IO.extension;            # → txt
+```
+
+Files: write, filetest, stat, remove:
+
+```raku
+my $p = "/tmp/rkpp-demo.txt".IO;
+$p.spurt("hello");
+say $p ~~ :e;                             # → True        (filetest adverb: exists)
+say $p.s;                                 # → 5           (size in bytes)
+$p.chmod(0o600);  say $p.mode;            # → 0600        (permission bits)
+$p.unlink;
+say $p ~~ :e;                             # → False       (gone)
+```
+
+`say`/`print` honour a dynamic `$*OUT` — bind it to any object with a `.print`
+method to capture or redirect output:
+
+```raku
+my $buf = class { has $.s = ""; method print(\a) { $!s ~= a } }.new;
+{ my $*OUT = $buf; say "hi"; say "there"; }   # captured, not printed to screen
+say $buf.s.lines.join("|");               # → hi|there
 ```
 
 ```raku
