@@ -73,13 +73,15 @@ Built-in operators that *transform* another operator.
 ## Grammar & AST — the not-yet frontier
 
 The deep end, where a program rewrites its own parser or manipulates the syntax
-tree. None of this is implemented — it is genuine compiler-internals work.
+tree. This is genuine compiler-internals work and is essentially unimplemented —
+and, notably, the Roast suite barely exercises it (no real `macro` declarations,
+one incidental `RakuAST::` reference), so it is very low-yield to pursue.
 
 | Feature | Status | Notes |
 |---|:---:|---|
 | `macro` / `quasi { … }` | ✗ | AST macros (`use experimental :macros`) |
 | `RakuAST::…`            | ✗ | programmatic AST construction / introspection |
-| slangs — `$~MAIN`, grammar derivation | ✗ | swapping the language grammar mid-parse |
+| slangs — `$~MAIN`, grammar derivation | ◑ | the slang language-objects (`$~MAIN`/`$~Quote`/`$~Regex`/`$~P5Regex`) exist as defined `Grammar` objects; the grammar can't actually be swapped mid-parse |
 | `no strict` / relaxing pragmas | ✗ | strictness can't be turned off |
 | `use experimental :…`  | ◑ | accepted syntactically; the feature itself is usually a no-op |
 

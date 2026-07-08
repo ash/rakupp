@@ -48,8 +48,8 @@ implementation. Against the full Roast suite of **1,464 `.t` files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **281** | **19%** |
-| Partially passing | 618 | 42% |
+| **Fully passing** | **282** | **19%** |
+| Partially passing | 617 | 42% |
 | No TAP output (parse error / unimplemented) | 563 | 38% |
 | Timeouts | 2 | 0.1% |
 

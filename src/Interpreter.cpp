@@ -425,6 +425,17 @@ Interpreter::Interpreter() {
         auto od = std::make_shared<ObjectData>(); od->cls = fs;
         global_->define("$*REPO", Value::object(od));
     }
+    // The slang language-objects ($~MAIN and friends) exist as defined Grammar
+    // objects. rakupp can't mutate its own grammar through them (that's the
+    // compiler-internals frontier), but they are present and introspectable.
+    {
+        auto slangCls = std::make_shared<ClassInfo>();
+        slangCls->name = "Grammar"; slangCls->isGrammar = true;
+        for (const char* nm : {"$~MAIN", "$~Quote", "$~Q", "$~Regex", "$~P5Regex"}) {
+            auto od = std::make_shared<ObjectData>(); od->cls = slangCls;
+            global_->define(nm, Value::object(od));
+        }
+    }
     registerBuiltins();
 }
 
