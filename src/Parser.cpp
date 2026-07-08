@@ -2421,7 +2421,10 @@ StmtPtr Parser::parseStatementImpl() {
         bool looksHash =
             ((a.kind == Tok::Ident || a.kind == Tok::StrLit || a.kind == Tok::StrInterp ||
               a.kind == Tok::IntLit) && b.kind == Tok::FatArrow) ||
-            (a.kind == Tok::Op && a.text == ":" && b.kind == Tok::Ident) ||
+            // colon-pair: :name / :$var / :1n / :!flag  (mirror parsePrimary's isHash)
+            (a.kind == Tok::Op && a.text == ":" &&
+             (b.kind == Tok::Ident || b.kind == Tok::Var || b.kind == Tok::IntLit ||
+              (b.kind == Tok::Op && b.text == "!"))) ||
             (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
              (b.kind == Tok::RBrace || b.kind == Tok::Comma));
         if (!looksHash) {
