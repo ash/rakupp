@@ -32,7 +32,7 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **279** | **19%** |
+| **Fully passing** | **280** | **19%** |
 | Partially passing | 611 | 42% |
 | No TAP output | 576 | 39% |
 | Timeouts | 2 | 0.1% |
@@ -44,7 +44,7 @@ territory, not "passing" and not "failing."
 
 ### The assertion count
 
-Among the files that *do* run, **131,007 of 188,451** assertions pass. This
+Among the files that *do* run, **131,012 of 188,451** assertions pass. This
 number measures correctness on the attempted subset — how much of what we run is
 right — and is the signal we watch for regressions. Two facts define its scope:
 
@@ -54,7 +54,7 @@ right — and is the signal we watch for regressions. Two facts define its scope
 2. **S15 (Unicode) is ~87k of the total**, passing at ~95%, so it dominates the
    blended figure.
 
-Coverage is the 19% of files; correctness-on-what-runs is this 131,007/188,451.
+Coverage is the 19% of files; correctness-on-what-runs is this 131,012/188,451.
 They are two different measurements, quoted for two different purposes.
 
 ## By synopsis
@@ -121,7 +121,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 279 / 1,464 files fully passing (~19% coverage); 618 partial,
-565 no-TAP, 2 timeout. Reached-assertion pass rate 131,007 / 188,451 (see
+_Snapshot: 280 / 1,464 files fully passing (~19% coverage); 617 partial,
+565 no-TAP, 2 timeout. Reached-assertion pass rate 131,012 / 188,451 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._

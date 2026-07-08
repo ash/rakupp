@@ -194,6 +194,6 @@ The harness compiles each program with `--exe` for the native column; the
 benchmark programs are plain, readable Raku in `tools/bench/*.raku` (edit or add
 freely).
 
-_Snapshot taken with Raku++ at 279 / 1,464 Roast files fully passing, on
+_Snapshot taken with Raku++ at 280 / 1,464 Roast files fully passing, on
 Darwin 25.5 against Rakudo v2026.06 (kernels: best of 3 harness runs; YAMLish:
 best of 5)._
