@@ -55,6 +55,7 @@ struct VarExpr : Expr {
     bool declare = false;        // `my $x` style declaration
     std::string declScope;       // my / our / state / constant
     std::string declType;        // optional type constraint (ignored at runtime for now)
+    std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
 };
 

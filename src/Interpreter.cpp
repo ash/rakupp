@@ -1898,6 +1898,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 ValueList inner = (v.t == VT::Array && v.arr) ? *v.arr
                                 : (v.t == VT::Range) ? v.flatten() : ValueList{v};
                 bindParams(*p.subSig, inner, env);
+                // a *named* destructuring param (`@a [$x, *@y]`) also binds the whole arg
+                if (!p.name.empty())
+                    env->define(p.name, p.sigil == '@' ? coerceArray(v) : p.sigil == '%' ? coerceHash(v) : v);
                 continue;
             }
             if (p.sigil == '@') v = coerceArray(v);
@@ -2723,6 +2726,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
 
     if (a->op == "=" || a->op == ":=") {
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
+        // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
+        if (a->op == "=" && a->target->kind == NK::VarExpr) {
+            const std::string& ct = static_cast<VarExpr*>(a->target.get())->declCoerce;
+            if (!ct.empty()) { ValueList none; rhs = methodCall(rhs, ct, none); }
+        }
         Value* lv = lvalue(a->target.get());
         int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
         if (sigil == '@') *lv = coerceArray(rhs);

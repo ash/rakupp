@@ -836,6 +836,38 @@ bool Lexer::trySetOp(Token& out) {
 }
 
 Token Lexer::lexOperator() {
+    // hyper metaop with guillemet brackets: »op« / «op» / »op» / «op«  (2-byte UTF-8
+    // « = C2 AB, » = C2 BB). Normalise to the ASCII >>op<< form the parser already
+    // understands. Only reached in operator position, so it never shadows a «…» word
+    // list (those are lexed where a term is expected).
+    auto guill = [&](int off, bool& right) -> bool {
+        if ((unsigned char)peek(off) != 0xC2) return false;
+        unsigned char c1 = (unsigned char)peek(off + 1);
+        if (c1 == 0xBB) { right = true;  return true; } // »
+        if (c1 == 0xAB) { right = false; return true; } // «
+        return false;
+    };
+    { bool ro;
+      // Only a *symbolic* inner counts as hyper (`«+»`); an alphanumeric inner is a
+      // guillemet word-list (`«x»`, `«ab»`), handled elsewhere — so require the first
+      // inner char to be non-word.
+      if (guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
+          !std::isalnum((unsigned char)peek(2)) && peek(2) != '_' && peek(2) != ' ') {
+        size_t save = pos_;
+        std::string open = ro ? ">>" : "<<";
+        advance(); advance(); // opening guillemet
+        std::string inner; bool rc;
+        while (!eof() && !guill(0, rc) && !std::isspace((unsigned char)peek()) &&
+               !std::isalnum((unsigned char)peek()) && inner.size() < 4)
+            inner += advance();
+        if (!inner.empty() && guill(0, rc)) {
+            std::string close = rc ? ">>" : "<<";
+            advance(); advance(); // closing guillemet
+            return make(Tok::Op, open + inner + close);
+        }
+        pos_ = save; // not a hyper — fall through to the generic multibyte op
+      }
+    }
     // multibyte (UTF-8) operator, e.g. set ops ∪ ∩ ∈ ⊆
     if ((unsigned char)peek() >= 0x80) {
         unsigned char c0 = (unsigned char)peek();

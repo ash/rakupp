@@ -1379,6 +1379,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Type) {
         if (inv.s.rfind("IO::Spec", 0) == 0) { Value r; if (ioSpecMethod(*this, inv.s, m, args, r)) return r; }
+        // .^mro / .mro on a built-in type → the class-only linearisation (roles like
+        // Real/Numeric are excluded, matching Rakudo's Int.^mro == (Int Cool Any Mu)).
+        if (m == "mro" && !classes_.count(inv.s)) {
+            static const std::set<std::string> roles = {"Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable", "Positional", "Associative"};
+            Value out = Value::array(); out.isList = true;
+            for (auto& a : typeAncestry(inv.s)) if (!roles.count(a)) out.arr->push_back(Value::typeObj(a));
+            if (out.arr->empty()) { out.arr->push_back(Value::typeObj(inv.s)); out.arr->push_back(Value::typeObj("Any")); out.arr->push_back(Value::typeObj("Mu")); }
+            return out;
+        }
         auto cit = classes_.find(inv.s);
         if (cit != classes_.end()) {
             auto ci = cit->second;

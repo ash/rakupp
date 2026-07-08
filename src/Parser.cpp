@@ -691,7 +691,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     }
     // type-capture declaration:  my ::T $x  (binds T to the type of $x; we just parse it)
     if (isOp("::") && peek().kind == Tok::Ident) { advance(); advance(); }
-    std::string type;
+    std::string type, coerceTo;
     if (isKind(Tok::Ident)) {
         bool looksType = peek().kind == Tok::Var || peek().kind == Tok::LParen ||
                          peek().kind == Tok::LBracket ||
@@ -700,6 +700,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             type = advance().text;
             if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D / :U / :_ smiley
             if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+            // coercion type `Int(Str)`: assigned values are coerced to `type`
+            if (isKind(Tok::LParen) && peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) {
+                advance(); advance(); advance(); // ( SourceType )
+                coerceTo = type;
+            }
         }
     }
     // sigilless after an optional type:  my Mu \x = …   (bare `my \x` handled above)
@@ -739,7 +744,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     }
     if (isKind(Tok::Var)) {
         auto ve = std::make_unique<VarExpr>(advance().text);
-        ve->declare = true; ve->declScope = scope; ve->declType = type;
+        ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
         // `%a{Str}` — hash key-type shape declaration
         std::string keyType;
         if (isKind(Tok::LBrace) && peek().kind == Tok::Ident && peek(2).kind == Tok::RBrace) {
@@ -1813,6 +1818,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // anonymous type-only parameter, e.g. (Str:U) / (Int) — used for dispatch, no binding
             p.name = ""; p.sigil = '$';
         } else error("expected parameter variable");
+        // destructuring sub-signature on a named param: `@a [$first, *@rest]` binds
+        // @a to the argument AND unpacks its elements. A space before `[` distinguishes
+        // it from the shaped-array form `@a[3]` handled just below.
+        if (isKind(Tok::LBracket) && cur().spaceBefore) {
+            advance(); // '['
+            p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RBracket));
+            if (!matchKind(Tok::RBracket)) error("expected ']' in sub-signature");
+        }
         // shaped-array parameter:  @a[3] / @a[3;3]  — skip the shape (parse-only)
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
             int depth = 0;
