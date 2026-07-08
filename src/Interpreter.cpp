@@ -3651,7 +3651,24 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             }
             if (s[i] == '@' && i + 1 < s.size() && (std::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
                 size_t j = i + 1; std::string nm; while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
-                if (j + 1 < s.size() && s[j] == '[' && s[j + 1] == ']') j += 2; // whole-array zen slice
+                // `@arr[expr]` — a non-empty subscript indexes one element (captures
+                // are already bound, so the subscript may use $0/$<name>).
+                if (j < s.size() && s[j] == '[') {
+                    int depth = 0; size_t k = j;
+                    for (; k < s.size(); k++) { if (s[k] == '[') depth++; else if (s[k] == ']' && --depth == 0) break; }
+                    std::string subx = s.substr(j + 1, k - j - 1);
+                    size_t ws = subx.find_first_not_of(" \t");
+                    if (k < s.size() && ws != std::string::npos) { // non-empty subscript
+                        long idx = 0; try { idx = evalString(subx).toInt(); } catch (...) {}
+                        if (Value* v = tctx_.cur->find("@" + nm)) {
+                            ValueList fl = v->flatten();
+                            if (idx < 0) idx += (long)fl.size();
+                            if (idx >= 0 && idx < (long)fl.size()) r += fl[idx].toStr();
+                        }
+                        i = k; continue;
+                    }
+                    if (k + 1 <= s.size()) j = k + 1; // empty `[]` zen slice → whole array
+                }
                 if (Value* v = tctx_.cur->find("@" + nm)) { // interpolate an array (space-joined)
                     ValueList fl = v->flatten();
                     for (size_t k = 0; k < fl.size(); k++) { if (k) r += ' '; r += fl[k].toStr(); }
