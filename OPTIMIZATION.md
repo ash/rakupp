@@ -44,7 +44,7 @@ For a hot recursive function this is two costs on every one of ~1.6M calls: a
 `ValueList` `malloc`, and several `applyArith` calls that compare the op *string*
 before touching the operands.
 
-## The two passes
+## The passes
 
 ### 1. Direct-arity calls (skip the per-call `ValueList`)
 
@@ -71,6 +71,7 @@ For the common operators the codegen emits inline helpers (declared `inline` in
 | ops | helper | fast path |
 |---|---|---|
 | `+` `-` `*` | `rtAdd`/`rtSub`/`rtMul` | native `int64`, overflow → bignum |
+| `**` | `rtPow` | integer power by squaring, overflow → bignum |
 | `<` `<=` `>` `>=` `==` `!=` | `rtLt`/… | `int64` compare |
 | `%` `%%` | `rtMod`/`rtDivides` | `int64` mod (sign follows divisor) / divisibility |
 | `~` | `rtConcat` | direct `std::string` concat when both are `Str` |
@@ -89,6 +90,25 @@ inline Value rtAdd(const Value& l, const Value& r) {
 overflow is detected with `__builtin_*_overflow` and promotes to bignum, exactly
 as `applyArith` does. This pass covers both binary operators and compound
 assignment (`$s += …`).
+
+### 3. In-place string append (`~=`)
+
+`$s ~= …` normally rebuilds the whole string each step — `$s = $s ~ "x"` copies
+the growing buffer every iteration, so a loop of *n* appends does O(n²) work.
+Under `-O` the compound `~=` compiles to `rtCatAssign`, which appends into the
+accumulator's existing buffer:
+
+```cpp
+inline void rtCatAssign(Value& l, const Value& r) {
+    if (l.t == VT::Str && r.t == VT::Str) { l.s += r.s; return; }  // O(1) amortized
+    l = applyArith("~", l, r);                                     // anything else
+}
+```
+
+That turns repeated string building from O(n²) into O(n) — an *algorithmic*
+change, so unlike the constant-factor passes above its win grows with the loop
+count (165× on the 400k-append showcase below). It applies to scalar and element
+(`@a[i] ~=`, `%h{k} ~=`) targets; non-`Str` operands fall back to `applyArith`.
 
 With both passes, `fib` transpiles to:
 
@@ -120,7 +140,7 @@ rakupp --exe -O3    prog.raku      # codegen opt + cc -O3
 rakupp --exe -Ofast prog.raku      # codegen opt + cc -Ofast
 ```
 
-**The two passes only pay off *with* C++ inlining.** The `rt*` helpers and the
+**The int passes only pay off *with* C++ inlining.** The `rt*` helpers and the
 direct-arity split are wins because the C++ compiler inlines them. At `-O0` they
 become real function calls with no fast path, so `-O0` is *slower* than the
 default — it's for inspecting/debugging the generated C++, not for speed.
@@ -134,7 +154,7 @@ default — it's for inspecting/debugging the generated C++, not for speed.
 |---|---:|---:|---:|---|
 | fib      | 547 ms | **79 ms** | 6.9× | calls + `+ - <` |
 | loopsum  | 85 ms  | **30 ms** | 2.8× | `+=` |
-| strcat   | 52 ms  | **28 ms** | 1.9× | `~=` |
+| strcat   | 51 ms  | **6 ms** | 8.7× | `~=` in-place append |
 | hash     | 34 ms  | **25 ms** | 1.4× | `% 1000` |
 | arrayops | 96 ms  | **73 ms** | 1.3× | `* %% 3` over 200k |
 | sortnums | 60 ms  | **51 ms** | 1.2× | map-body arithmetic |
@@ -173,9 +193,38 @@ and is the natural next `-O` pass. Beyond it: devirtualizing monomorphic method
 calls, constant-folding literal arithmetic, and specializing common list methods
 (`.map`/`.grep`/`.sort`) on native element types.
 
-None of that is here yet; `-O` today is the two passes above.
+None of that is here yet; `-O` today is the three passes above.
+
+## Showcase suite
+
+[`tools/optbench/`](tools/optbench) holds programs each written to lean on one
+pass, and [`tools/run-optbench.raku`](tools/run-optbench.raku) compiles every one
+twice — `--exe` and `--exe -O` — checks the two builds agree with the interpreter
+byte-for-byte, then times both and reports the `-O` speed-up (Rakudo shown for
+reference):
+
+```sh
+./build/rakupp tools/run-optbench.raku
+```
+
+Best of 5 runs each, on this machine (macOS/Darwin 25.5, Rakudo v2026.06):
+
+| benchmark | `--exe` | `--exe -O` | `-O` speed-up | rakudo | showcases |
+|---|---:|---:|---:|---:|---|
+| stringbuild | 5187 ms | 32 ms | 165× | 170 ms | 400k `~=` — in-place O(n) build |
+| powmod      | 731 ms  | 62 ms  | 11.8× | 580 ms | 1M `** 3` then `% 1000` |
+| fibcalls    | 2445 ms | 350 ms | 7.0×  | 1249 ms | fib(32) — calls + `< + -` |
+| intsum      | 1578 ms | 295 ms | 5.3×  | 820 ms | 5M `+= $_ * 2 - 1` |
+| sieve       | 3428 ms | 869 ms | 3.9×  | 1507 ms | primes <200k — `* <= %%` |
+
+`stringbuild` is the algorithmic case (its lead grows with the loop count); the
+rest are constant-factor removals of boxing and dispatch. All five `-O` builds
+also run ahead of Rakudo here — but, as always, this is only the subset of Raku
+both engines run identically; it is not a coverage claim (see
+[BENCHMARKS.md](BENCHMARKS.md)).
 
 ## See also
 
 - [BENCHMARKS.md](BENCHMARKS.md) — the full speed comparison across all modes.
+- [`tools/optbench/`](tools/optbench) + `tools/run-optbench.raku` — the showcase above.
 - `rakupp --cpp [-O] SRC` — inspect exactly what the transpiler emits.
