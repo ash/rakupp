@@ -20,7 +20,7 @@ public:
     ExprPtr parseExpressionPublic() { return parseExpression(); }
     // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
     void declareUserOp(const std::string& kind, const std::string& name) {
-        if (kind == "infix") userInfix_.insert(name);
+        if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;
         else if (kind == "prefix") userPrefix_.insert(name);
         else if (kind == "postfix") userPostfix_.insert(name);
     }
@@ -28,7 +28,9 @@ public:
 private:
     std::vector<Token> toks_;
     size_t pos_ = 0;
-    std::set<std::string> userInfix_, userPrefix_, userPostfix_; // user-declared operators (sub infix:<…>)
+    std::map<std::string, int> userInfix_;   // user infix name → left binding power (from is tighter/looser/equiv)
+    std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`
+    std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
     std::string pcfxClose_; // active postcircumfix close bracket (don't re-open it inside its own content)
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
@@ -43,6 +45,7 @@ private:
     // token classifiers (member fns so they can recognise user-declared operators)
     bool startsTermToken(const Token& t) const;
     bool startsListopArg(const Token& t) const;
+    int infixBpOf(const std::string& op) const;    // binding power of a named infix (builtin or user)
     bool matchOp(const std::string& s);
     bool matchKind(Tok k);
     void expectKind(Tok k, const char* what);

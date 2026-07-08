@@ -24,17 +24,16 @@ New operators are just subs named `<category>:<symbol>`.
 
 ## Operator traits — precedence & associativity
 
-These would reshape the grammar's operator-precedence table. Raku++ **parses**
-them without error but does not yet act on them: a user-defined `infix` always
-takes a single fixed (loose) precedence, so `is tighter`/`looser`/`equiv` do not
-change where it binds.
+These reshape the grammar's operator-precedence table. A custom `infix` defaults
+to additive precedence; a trait slots it to a fresh level relative to a chosen
+operator (levels are spaced so a new one fits *between* two built-ins).
 
 | Feature | Status | Example |
 |---|:---:|---|
-| `is tighter(&infix:<+>)` | ◑ | parsed, but binding is unaffected (custom infix stays loose) |
-| `is looser(&infix:<*>)`  | ◑ | parsed, but binding is unaffected |
-| `is equiv(&infix:<+>)`   | ◑ | parsed, but binding is unaffected |
-| `is assoc<left/right/non>` | ◑ | parsed, but associativity is not applied |
+| `is tighter(&infix:<+>)` | ✓ | binds tighter than `+` (`2 + 3 foo 4` → `2 + (3 foo 4)`) |
+| `is looser(&infix:<*>)`  | ✓ | binds looser than `*` |
+| `is equiv(&infix:<+>)`   | ✓ | same precedence as a chosen operator |
+| `is assoc<left/right/non>` | ✓ | `<right>` makes `a foo b foo c` group as `a foo (b foo c)` |
 
 ## Compile-time & staged evaluation
 
@@ -94,8 +93,8 @@ Raku++ covers most of what everyday syntax-extending Raku uses:
 
 - **All six custom-operator categories** — `infix`/`prefix`/`postfix`/`term`/
   `circumfix`/`postcircumfix` — declared as ordinary subs and dispatched in
-  expressions and as listop args. (Precedence/associativity traits parse but do
-  not yet reshape binding — see above.)
+  expressions and as listop args, with working precedence/associativity traits
+  (`is tighter`/`looser`/`equiv`/`assoc`).
 - **Meta-operators over user operators** too — `[userop]` reduce, `>>userop<<`
   hyper, `Z§`/`X§` zip/cross, and `$x userop= y` meta-assignment.
 - **The whole phaser/`BEGIN`/`constant`/`EVAL` staging story**, including `EVAL`

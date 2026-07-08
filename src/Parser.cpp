@@ -14,10 +14,13 @@ namespace rakupp {
 // Raku orders these (tightest→loosest): additive `+ -` > replication `x xx` >
 // concatenation `~` > range. So `"-" x $n + 2` == `"-" x ($n + 2)` and
 // `"x" x 2 ~ "y"` == `("x" x 2) ~ "y"`. Each gets a distinct level.
+// Levels are spaced by 10 so a user-defined operator's `is tighter`/`looser`
+// trait can slot a fresh precedence *between* two built-in levels (e.g. tighter
+// than `+` but looser than `*`).
 enum {
-    BP_OR = 1, BP_AND = 2, BP_COMMA = 3, BP_ASSIGN = 4, BP_TERNARY = 5,
-    BP_OROR = 6, BP_ANDAND = 7, BP_COMPARE = 8, BP_RANGE = 9,
-    BP_CONCAT = 10, BP_REPLICATE = 11, BP_ADD = 12, BP_MUL = 13, BP_POW = 14, BP_PREFIX = 15
+    BP_OR = 10, BP_AND = 20, BP_COMMA = 30, BP_ASSIGN = 40, BP_TERNARY = 50,
+    BP_OROR = 60, BP_ANDAND = 70, BP_COMPARE = 80, BP_RANGE = 90,
+    BP_CONCAT = 100, BP_REPLICATE = 110, BP_ADD = 120, BP_MUL = 130, BP_POW = 140, BP_PREFIX = 150
 };
 
 static const std::unordered_set<std::string> kAssignOps = {
@@ -129,6 +132,20 @@ static InfixInfo classifyInfix(const Token& t) {
     return in;
 }
 
+// The left binding power of a named infix — a user-declared one, or a built-in
+// (symbolic like `+` or word-form like `eqv`). Used to resolve `is tighter(&infix:<+>)`.
+int Parser::infixBpOf(const std::string& op) const {
+    auto it = userInfix_.find(op);
+    if (it != userInfix_.end()) return it->second;
+    Token t; t.text = op; t.kind = Tok::Op;
+    InfixInfo in = classifyInfix(t);
+    if (in.valid) return in.lbp;
+    t.kind = Tok::Ident; // word-form built-ins: eqv/cmp/x/xx/Z/X/and/or/…
+    in = classifyInfix(t);
+    if (in.valid) return in.lbp;
+    return BP_ADD; // unknown reference → additive default
+}
+
 // A loop used in value context (`(for … {…})`, `do while … {…}`) collects each
 // iteration's value into a List — flag the parsed loop statement so exec knows.
 static void markLoopAsExpr(Stmt* s) {
@@ -216,12 +233,16 @@ ExprPtr Parser::parseExpr(int minbp) {
                 lhs = std::move(a);
                 continue;
             }
-            if (BP_ADD < minbp) break; // default (additive) precedence, left-assoc
+            // precedence from the operator's declared trait (default additive);
+            // right-assoc if declared `is assoc<right>`
+            int bp = userInfix_[cur().text];
+            bool rightAssoc = userInfixRight_.count(cur().text) != 0;
+            if (bp < minbp) break;
             std::string opname = advance().text;
             auto call = std::make_unique<Call>();
             call->name = "infix:<" + opname + ">";
             call->args.push_back(std::move(lhs));
-            call->args.push_back(parseExpr(BP_ADD + 1));
+            call->args.push_back(parseExpr(rightAssoc ? bp : bp + 1));
             lhs = std::move(call);
             continue;
         }
@@ -1857,6 +1878,7 @@ StmtPtr Parser::parseSub(bool isMulti) {
     // 'sub' already consumed by caller
     auto s = std::make_unique<SubDecl>();
     s->isMulti = isMulti;
+    std::string declInfix; // set when this is an `infix:<…>` declaration (for precedence traits)
     if (isOp("!")) advance(); // private method `method !name` — stored under its bare name
     if (isKind(Tok::Ident)) s->name = advance().text;
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
@@ -1876,7 +1898,7 @@ StmtPtr Parser::parseSub(bool isMulti) {
             else userPostcircumfix_[w[0]] = w[1];
         } else if (!opname.empty()) {
             s->name = cat + ":<" + opname + ">";
-            if (cat == "infix") userInfix_.insert(opname);
+            if (cat == "infix") { userInfix_[opname] = BP_ADD; declInfix = opname; } // default precedence; traits may adjust
             else if (cat == "prefix") userPrefix_.insert(opname);
             else if (cat == "postfix") userPostfix_.insert(opname);
         }
@@ -1893,6 +1915,36 @@ StmtPtr Parser::parseSub(bool isMulti) {
     //  capture `of T` / `returns T` / `--> T` as the return type)
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
         if (isIdent("export")) s->isExport = true;
+        // precedence/associativity traits on a custom infix: `is tighter(&infix:<+>)`,
+        // `is looser(&infix:<*>)`, `is equiv(&infix:<+>)`, `is assoc<left|right|non>`.
+        if (!declInfix.empty() && isIdent("is") && peek().kind == Tok::Ident) {
+            const std::string& trait = peek().text;
+            if (trait == "tighter" || trait == "looser" || trait == "equiv") {
+                advance(); advance(); // `is` `trait`
+                std::string ref;
+                if (isKind(Tok::LParen)) { // ( &infix:<+> )
+                    advance();
+                    while (!isKind(Tok::RParen) && !isKind(Tok::End)) ref += advance().text;
+                    if (isKind(Tok::RParen)) advance();
+                }
+                // ref looks like `&infix:<+>` — pull the operator out of the <…>/«…»
+                auto lt = ref.find('<'), gt = ref.rfind('>');
+                if (lt == std::string::npos) { lt = ref.find("\xC2\xAB"); gt = ref.rfind("\xC2\xBB"); }
+                std::string refOp = (lt != std::string::npos && gt != std::string::npos && gt > lt)
+                                  ? ref.substr(lt + 1, gt - lt - 1) : ref;
+                int refBp = infixBpOf(refOp);
+                userInfix_[declInfix] = trait == "equiv" ? refBp : trait == "tighter" ? refBp + 5 : refBp - 5;
+                continue;
+            }
+            if (trait == "assoc") {
+                advance(); advance(); // `is` `assoc`
+                std::string kind;
+                if (isOp("<")) { advance(); auto w = readAngleWords(">"); if (!w.empty()) kind = w[0]; }
+                if (kind == "right") userInfixRight_.insert(declInfix);
+                else userInfixRight_.erase(declInfix);
+                continue;
+            }
+        }
         if ((isIdent("of") || isIdent("returns")) && peek().kind == Tok::Ident) {
             advance(); s->retType = cur().text;
         } else if (isOp("-->") && peek().kind == Tok::Ident) {

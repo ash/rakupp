@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **291 / 1,464 files fully pass (~20%)**; 614 partial, 558 no-TAP, 1 timeout. (Among files that run, 131,208 / 188,685 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **292 / 1,464 files fully pass (~20%)**; 613 partial, 558 no-TAP, 1 timeout. (Among files that run, 131,210 / 188,685 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -59,7 +59,8 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - User-defined operators — all six categories: `infix`/`prefix`/`postfix`/`term`/`circumfix`/`postcircumfix` (`sub infix:<…>`, `sub postfix:<!>` → `5!`, `sub circumfix:<⟦ ⟧>`, `sub term:<TAU>`)
 - Meta-operators over user-defined operators: `[myop]` reduce, `>>myop<<` hyper, `Z§`/`X§` zip/cross, `$x myop= y` meta-assignment
 - Whatever-currying: infix `* + 1`, prefix `~* -* +*`, postcircumfix `*.<key>` `*[i]`, subscript `@a[*-1]` `@a[*]`
-- **Gaps:** operator-precedence traits (`is tighter`/`looser`/`equiv`) are parsed but don't yet reshape binding (a custom infix always binds loosely); other negated metaops; word-form of a user op in a meta-op (`Zpl`)
+- Precedence/associativity traits on custom operators: `is tighter(&infix:<+>)` / `is looser(…)` / `is equiv(…)` / `is assoc<left|right|non>`
+- **Gaps:** other negated metaops; word-form of a user op in a meta-op (`Zpl`)
 
 ## Control Flow
 - `if/elsif/else`, `unless`, `while/until`, `for`, C-style `loop`, `repeat`
