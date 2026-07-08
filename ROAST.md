@@ -32,9 +32,9 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **280** | **19%** |
-| Partially passing | 611 | 42% |
-| No TAP output | 576 | 39% |
+| **Fully passing** | **281** | **19%** |
+| Partially passing | 618 | 42% |
+| No TAP output | 563 | 38% |
 | Timeouts | 2 | 0.1% |
 
 **Coverage ≈ 19% of files.** That is the number to quote. Over a third of the suite
@@ -121,7 +121,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 280 / 1,464 files fully passing (~19% coverage); 617 partial,
-565 no-TAP, 2 timeout. Reached-assertion pass rate 131,012 / 188,451 (see
+_Snapshot: 281 / 1,464 files fully passing (~19% coverage); 618 partial,
+563 no-TAP, 2 timeout. Reached-assertion pass rate 131,048 / 188,510 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._

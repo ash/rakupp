@@ -1378,6 +1378,57 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::ClassDecl: {
             auto* cd = static_cast<ClassDecl*>(s);
+            if (cd->isAugment) {
+                // Reopen an existing type and add methods. Build each method into a
+                // Callable Value (same shape as the main registration path).
+                auto buildMethod = [&](SubDecl* md) {
+                    Value code; code.t = VT::Code;
+                    code.code = std::make_shared<Callable>();
+                    code.code->name = md->name;
+                    code.code->params = &md->params;
+                    code.code->retType = md->retType;
+                    code.code->body = &md->body;
+                    code.code->closure = tctx_.cur;
+                    code.code->isMethod = true;
+                    if (md->params.empty()) code.code->placeholders = computePlaceholders(md->body);
+                    return code;
+                };
+                auto addTo = [&](auto& tbl, SubDecl* md) {
+                    Value code = buildMethod(md);
+                    if (md->isMulti) {
+                        auto it = tbl.find(md->name);
+                        if (it != tbl.end() && it->second.code && it->second.code->isMultiDispatcher) {
+                            it->second.code->candidates.push_back(code);
+                            return;
+                        }
+                        Value disp; disp.t = VT::Code; disp.code = std::make_shared<Callable>();
+                        disp.code->name = md->name; disp.code->isMultiDispatcher = true;
+                        disp.code->candidates.push_back(code);
+                        tbl[md->name] = disp;
+                        return;
+                    }
+                    tbl[md->name] = code;
+                };
+                auto existing = classes_.find(cd->name);
+                if (existing != classes_.end()) {
+                    // augment a user-declared type — merge into its ClassInfo
+                    ClassInfo* ci = existing->second.get();
+                    for (auto& md : cd->methods) addTo(ci->methods, md.get());
+                    for (auto& a : cd->attrs) {
+                        ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
+                        ca.pub = a.pub; ca.rw = a.rw; ca.def = a.def.get();
+                        ci->attrs.push_back(ca);
+                    }
+                    for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; }
+                    noteSymbolMutation("augment (user type)");
+                } else {
+                    // augment a built-in type — park methods in the extension table
+                    for (auto& md : cd->methods) addTo(builtinExt_[cd->name], md.get());
+                    noteSymbolMutation("augment (built-in type)");
+                }
+                for (auto& st : cd->body) exec(st.get()); // nested decls, if any
+                return Value::typeObj(cd->name);
+            }
             if (cd->isPackage) {
                 // file-scoped `unit module Foo;` (empty body): just register the name;
                 // the rest of the file runs in the enclosing scope.

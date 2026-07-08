@@ -2247,6 +2247,17 @@ StmtPtr Parser::parseStatementImpl() {
             "grammar", "monitor", "constant", "enum", "subset", "package",
             "module", "token", "regex", "rule",
         };
+        // `augment class/role/grammar Foo { … }` — reopen an existing type and
+        // merge in the new methods (works on user types and built-ins like Int).
+        if (kw == "augment" && peek().kind == Tok::Ident &&
+            (peek().text == "class" || peek().text == "role" ||
+             peek().text == "grammar" || peek().text == "monitor")) {
+            advance(); // augment
+            std::string what = advance().text; // class/role/grammar/monitor
+            auto st = parseClass(what == "role", what == "grammar");
+            if (st->kind == NK::ClassDecl) static_cast<ClassDecl*>(st.get())->isAugment = true;
+            return st;
+        }
         // `unit class/role/grammar Foo;` — the rest of the file is the body.
         if (kw == "unit" && peek().kind == Tok::Ident &&
             (peek().text == "class" || peek().text == "role" || peek().text == "grammar")) {

@@ -161,6 +161,9 @@ public:
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions);
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
+    // `augment class Int {…}` on a built-in type: extra methods keyed by type name.
+    // methodCall consults this for native values whose type has been augmented.
+    std::unordered_map<std::string, std::unordered_map<std::string, Value>> builtinExt_;
     long anonTypeCounter_ = 0; // names anonymous `role {…}` / `class {…}` literals
 
     // GIL-removal step 2: symbol-table freeze. The shared symbol tables (classes_,

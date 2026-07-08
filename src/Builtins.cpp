@@ -540,6 +540,22 @@ static Value makeSignature(const Callable* c) {
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // `augment class Int {…}`: methods added to a built-in type are parked in
+    // builtinExt_ (keyed by type name). Consult it — walking the native ancestry,
+    // so augmenting Cool/Any reaches Int/Str too — for native values and type
+    // objects, ahead of the built-in method table.
+    if (!builtinExt_.empty() && inv.t != VT::Object) {
+        std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
+        auto lookup = [&](const std::string& t) -> Value* {
+            auto ti = builtinExt_.find(t);
+            if (ti == builtinExt_.end()) return nullptr;
+            auto mi = ti->second.find(m);
+            return mi == ti->second.end() ? nullptr : &mi->second;
+        };
+        if (Value* f = lookup(tn)) return invokeMethod(*f, inv, std::move(args), rwArgs);
+        for (const std::string& anc : typeAncestry(tn))
+            if (anc != tn) if (Value* f = lookup(anc)) return invokeMethod(*f, inv, std::move(args), rwArgs);
+    }
     // A class inheriting a built-in type answers that type's identity coercion with
     // itself: `class D is Str {}` → D.new.Str === the D object (Str.Str is identity).
     if (inv.t == VT::Object && inv.obj && inv.obj->cls && !inv.obj->cls->findMethod(m)) {
@@ -1281,6 +1297,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "truncated-to" || m == "earlier" || m == "later") return inv; // best-effort (weeks/months etc.)
     }
 
+    // `.new` on a scalar built-in type object → that type's default value. This is
+    // what real Raku does (Str.new → "", Int.new → 0) and lets `augment class Str {…}`
+    // methods be reached via `Str.new.themethod`.
+    if (inv.t == VT::Type && m == "new") {
+        const std::string& t = inv.s;
+        if (t == "Str" || t == "Cool") return Value::str("");
+        if (t == "Int") return Value::integer(0);
+        if (t == "Num" || t == "Real" || t == "Numeric") return Value::number(0.0);
+        if (t == "Bool") return Value::boolean(false);
+    }
     if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq") && m == "new") {
         Value v = Value::array(); v.isList = (inv.s != "Array"); v.ofType = inv.ofType;
         for (auto& a : args) for (auto& x : toList(a)) v.arr->push_back(x); return v;

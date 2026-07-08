@@ -63,7 +63,7 @@ Built-in operators that *transform* another operator.
 
 | Feature | Status | Example | Notes |
 |---|:---:|---|---|
-| `augment class Foo {…}` | ◑ | adds methods to an existing **user** class | ✓ user types; ✗ built-ins (`augment class Int {…}` has no effect) |
+| `augment class Foo {…}` | ✓ | reopens a type and adds methods | ✓ user types (merged into the class) **and** built-ins — `augment class Int {…}` reaches `3.method`, walking the native ancestry so `augment class Cool` also covers Int/Str |
 | `supersede class Foo {…}` | ✓ | replaces a method on a user class | |
 | `.^add_method($name,$code)` | ✓ | inject a method at runtime | |
 | `$x does Role` / `$x but Role` | ✓ | runtime role mixin into a value | |
@@ -87,21 +87,22 @@ tree. None of this is implemented — it is genuine compiler-internals work.
 
 Raku++ covers most of what everyday syntax-extending Raku uses:
 
-- **Custom `infix`/`postfix`/`term` operators with the full precedence-trait
-  system** (`is tighter`/`looser`/`equiv`/`assoc`) — real operator-table mutation.
+- **All six custom-operator categories** — `infix`/`prefix`/`postfix`/`term`/
+  `circumfix`/`postcircumfix` — with the full precedence-trait system
+  (`is tighter`/`looser`/`equiv`/`assoc`). Real operator-table mutation.
+- **Meta-operators over user operators** too — `[userop]` reduce, `>>userop<<`
+  hyper, `Z§`/`X§` zip/cross, and `$x userop= y` meta-assignment.
 - **The whole phaser/`BEGIN`/`constant`/`EVAL` staging story**, including `EVAL`
   of code that uses locally-defined operators.
-- **Runtime MOP mutation** — `augment`/`supersede` on user classes,
-  `.^add_method`, `does`/`but` mixins, `.^`-introspection.
+- **Runtime MOP mutation** — `augment`/`supersede` on user classes *and*
+  `augment` on built-in types, `.^add_method`, `does`/`but` mixins,
+  `.^`-introspection.
 - **Built-in meta-operators** — reduce, hyper, cross, zip, reverse.
 
-The gaps fall into two tiers:
+The remaining gaps:
 
-- **Small, self-contained** (each a bounded feature): `prefix` custom operators
-  (the parser already has the sibling infix/postfix hooks — the cheapest fix),
-  `circumfix`/`postcircumfix` custom operators, meta-operators over *user-defined*
-  operators (`[userop]` / `>>userop<<` / `userop=`), `augment` on built-in types,
-  and routine `.wrap`.
+- **Small, self-contained**: routine `.wrap`, and the word-form of a user op
+  inside a meta-operator (`Zpl`, which lexes as one identifier).
 - **Large frontier** (compiler internals): `macro`/`quasi`, `RakuAST`, and slangs
   — the mechanisms by which a Raku program rewrites its own grammar.
 

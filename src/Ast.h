@@ -231,6 +231,7 @@ struct ClassDecl : Stmt {
     bool isRole = false;
     bool parentIsDoes = false; // the first inheritance target came from `does` (composition), not `is`
     bool isGrammar = false;
+    bool isAugment = false;        // augment class Foo { … } — merge methods into an existing type
     bool isPackage = false;        // package / module: body runs in a namespace
     std::vector<StmtPtr> body;     // package/module body statements
     ClassDecl(): Stmt(NK::ClassDecl) {}
