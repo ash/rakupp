@@ -81,6 +81,7 @@ my $noplan = 0;
 my $timeout = 0;
 my $tot-ran = 0;
 my $tot-pass = 0;
+my $tot-plan = 0;
 
 for @files -> $f {
     my $rel = $f.substr($ROOT.chars + 1);
@@ -93,6 +94,10 @@ for @files -> $f {
     my ($planned, $ran, $passed, $failed) = parse-tap($out);
     $tot-ran  += $ran;
     $tot-pass += $passed;
+    # "planned" denominator: how many tests the file *intended* to run. Where a plan
+    # is present we count it (so tests lost to a mid-file abort count as not-passed);
+    # where none was emitted we fall back to what ran.
+    $tot-plan += ($planned >= 0 ?? $planned !! $ran);
     my $mark;
     if $planned == 0 && $failed == 0 && $out.contains('# SKIP') {
         $pass++;              # genuine `plan skip-all` (emits `1..0 # SKIP …`) is a passing outcome
@@ -116,7 +121,12 @@ for @files -> $f {
     }
 }
 
+my $fpct  = @files.elems ?? 100 * $pass     / @files.elems !! 0;
+my $rpct  = $tot-ran     ?? 100 * $tot-pass / $tot-ran     !! 0;
+my $ppct  = $tot-plan    ?? 100 * $tot-pass / $tot-plan    !! 0;
 say "";
 say "Files: ", @files.elems, "   fully-pass: ", $pass,
     "   partial: ", $partial, "   no-TAP: ", $noplan, "   timeout: ", $timeout;
-say "Assertions: ", $tot-pass, "/", $tot-ran, " passed";
+say sprintf("Files fully passing:  %d / %d  (%.1f%%)", $pass, @files.elems, $fpct);
+say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests that ran", $tot-pass, $tot-ran, $rpct);
+say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned (counts mid-file aborts)", $tot-pass, $tot-plan, $ppct);
