@@ -57,6 +57,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Contextualizers `$( ) @( ) %( ) $[ ]`, ternary `?? !!`, assignment `= := += …`
 - Divisibility `%%` and negated `!%%` (both return `Bool`)
 - Bitwise / boolean: numeric `+& +| +^`, string `~& ~| ~^`, boolean `?& ?| ?^`
+- Function composition `∘` / `o` (`(f ∘ g)(x)` == `f(g(x))`); feed operators `==>` / `<==`
 - Compound assignment for word operators (`$x x= 3`, `$n gcd= 12`) and reverse-metaop reduce (`[R~]`, `[R-]`)
 - User-defined operators — all six categories: `infix`/`prefix`/`postfix`/`term`/`circumfix`/`postcircumfix` (`sub infix:<…>`, `sub postfix:<!>` → `5!`, `sub circumfix:<⟦ ⟧>`, `sub term:<TAU>`)
 - Meta-operators over user-defined operators: `[myop]` reduce, `>>myop<<` hyper, `Z§`/`X§` zip/cross, `$x myop= y` meta-assignment
@@ -97,6 +98,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Repeated named captures under a quantifier collate into a list (`@<content>`, `$<x>[1]`)
 - Subrules, grammars (`token`/`rule`/`regex`, `.parse`/`.subparse`/`.parsefile`), `$/ $0…`, actions
 - Capture interpolation `"$0/$1"`, callable `.subst` (`.subst(/…/, *.uc)`), non-mutating `S///`
+- `Match` accessors: `.from`/`.to`, `.orig`, `.prematch`/`.postmatch`, `.made`/`.ast`
 - Substitution adverbs `:g :x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
 - **Gaps:** named-capture storage (`$<name>=(…)`), backtracking control, `:ratchet`
 
