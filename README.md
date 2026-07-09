@@ -55,6 +55,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 
 ## Documentation
 
+- **[OVERVIEW.md](OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[GUIDE.md](GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
 - **[EXAMPLES.md](EXAMPLES.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
