@@ -19,12 +19,16 @@ a one-page tour, [the full guide](GUIDE.md) for the complete picture, or
 
 ## Install
 
-### Homebrew (macOS / Linux)
+### Homebrew (macOS)
 
 ```sh
 brew tap ash/rakupp
 brew install rakupp        # or: brew install --HEAD rakupp   (latest main)
 ```
+
+Apple Silicon installs a **prebuilt binary** (no compile); Intel builds from
+source. Homebrew itself requires the Xcode Command Line Tools — if `brew install`
+says to install them, run `xcode-select --install` first.
 
 ### Build from source
 
