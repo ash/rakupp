@@ -165,6 +165,12 @@ void Lexer::skipWhitespaceAndComments() {
             advance();
             continue;
         }
+        // atomic-operator marker ⚛ (U+269B): under the GIL, atomic ops are plain ops,
+        // so `$x⚛++`/`⚛$x`/`$x ⚛= v` reduce to `$x++`/`$x`/`$x = v` — just drop the ⚛.
+        if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x9A && (unsigned char)peek(2) == 0x9B) {
+            advance(); advance(); advance();
+            continue;
+        }
         // unspace: backslash followed by whitespace is ignored (token-joining)
         if (c == '\\' && (peek(1) == ' ' || peek(1) == '\t' || peek(1) == '\n' || peek(1) == '\r')) {
             advance();

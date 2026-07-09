@@ -4750,6 +4750,23 @@ Value Interpreter::evalCall(Call* c) {
             if (Value* lv = lvalue(t)) *lv = (sig == '@') ? Value::array() : (sig == '%') ? Value::makeHash() : Value::any();
             return Value::any();
         }
+        // atomic ops on an `atomicint` container. Under the GIL these are plain
+        // read-modify-write (the lock already serialises them); they take the
+        // container by reference, so operate on its lvalue.
+        if (c->name.rfind("atomic-", 0) == 0 && !c->args.empty() && !tctx_.cur->find("&" + c->name)) {
+            if (Value* lv = lvalue(c->args[0].get())) {
+                long long cur = lv->toInt();
+                auto argN = [&](size_t i) { return c->args.size() > i ? eval(c->args[i].get()).toInt() : 0; };
+                if (c->name == "atomic-fetch")     return *lv;
+                if (c->name == "atomic-fetch-inc") { *lv = Value::integer(cur + 1);        return Value::integer(cur); }
+                if (c->name == "atomic-fetch-dec") { *lv = Value::integer(cur - 1);        return Value::integer(cur); }
+                if (c->name == "atomic-inc-fetch") { *lv = Value::integer(cur + 1);        return *lv; }
+                if (c->name == "atomic-dec-fetch") { *lv = Value::integer(cur - 1);        return *lv; }
+                if (c->name == "atomic-fetch-add") { *lv = Value::integer(cur + argN(1));  return Value::integer(cur); }
+                if (c->name == "atomic-fetch-sub") { *lv = Value::integer(cur - argN(1));  return Value::integer(cur); }
+                if (c->name == "atomic-assign")    { Value v = c->args.size() > 1 ? eval(c->args[1].get()) : Value::any(); *lv = v; return v; }
+            }
+        }
         if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args, &c->args);
         auto it = builtins_.find(c->name);
         if (it != builtins_.end()) return it->second(*this, args);
