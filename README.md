@@ -10,11 +10,11 @@ it targets the *language*, measured against [**Roast**](https://github.com/Raku/
 the official Raku test suite.
 
 **Status:** **300 / 1,464 Roast files fully pass (~20%)** on the strict
-all-or-nothing bar; measured per individual test, **131,320 / 189,081 assertions
-pass (~69%)** — a fairer gauge of how much of the language works, since a file
-that passes 99 of 100 assertions still counts those 99. Early-stage, growing
-test-first. See [the overview](OVERVIEW.md) for a one-page tour, or
-[the full guide](GUIDE.md) for the complete picture.
+all-or-nothing bar. Measured per individual test it's **~57%** — 131,320 of
+~231,000 tests the suite declares — counting the tests in files that abort before
+running (their `plan N` is read from source). Of just the tests that *do* run,
+~69% pass. Early-stage, growing test-first. See [the overview](OVERVIEW.md) for a
+one-page tour, or [the full guide](GUIDE.md) for the complete picture.
 
 ## Quick start
 

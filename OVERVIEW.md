@@ -30,7 +30,7 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler |
 | **Startup** | ~3 ms cold (vs Rakudo's ~100 ms) |
-| **Correctness target** | the Roast suite — ~20% of files fully pass; ~69% of individual tests pass |
+| **Correctness target** | the Roast suite — ~20% of files fully pass; ~57% of all individual tests pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
 ## Goals & philosophy
@@ -126,14 +126,20 @@ implementation steadily growing toward the same language.
 
 ## Status & how it's measured
 
-Two numbers, measured two ways. The strict one is **Roast coverage: ~20% of files
-fully pass** (currently 300 / 1,464) — a file counts only if *every* assertion in
-it passes. The fairer one is per individual test: **~69% of assertions pass**
-(131,320 / 189,081 that run), because a file that passes 99 of 100 assertions
-still contributes those 99 instead of a flat zero. Coverage (the 20%) and
-correctness-on-what-runs (the 69%) mean different things — both are explained in
-[ROAST.md](ROAST.md), which also has the per-synopsis breakdown. Run the
-self-hosted harness for live numbers (it prints all three ratios):
+The same progress measured at three granularities:
+
+- **Files fully passing: ~20%** (300 / 1,464) — the strict bar; a file counts only
+  if *every* assertion in it passes.
+- **All declared tests: ~57%** (131,320 / ~231,000) — the honest per-test figure.
+  It counts every test the suite declares, including those in files that abort
+  before running (their `plan N` is read from source, all failing), so parse-error
+  files can't hide.
+- **Tests that ran: ~69%** (131,320 / 189,081) — of just the assertions files
+  actually emitted; useful for tracking regressions, but it ignores the ~31k tests
+  in aborting files, so it flatters.
+
+All three are explained in [ROAST.md](ROAST.md), which also has the per-synopsis
+breakdown. The self-hosted harness prints all of them:
 
 ```sh
 build/rakupp tools/run-roast.raku          # whole suite

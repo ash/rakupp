@@ -44,24 +44,30 @@ territory, not "passing" and not "failing."
 
 ### The assertion count
 
-Measured per individual test rather than per file, **131,320 of 189,081
-assertions pass — ~69%**. This is the fairer gauge of how much of the language
-works: a file that passes 99 of 100 assertions contributes those 99 here, instead
-of the flat zero it scores under the all-or-nothing file bar. It is also the
-signal we watch for regressions. Three facts define its scope:
+Measured per individual test rather than per file, the honest figure is
+**131,320 of ~231,092 declared tests — ~57%**. "Declared" means every test the
+suite intends to run: for files that ran, their emitted plan; for files that
+abort before emitting any TAP, the `plan N` count read straight from their
+source. Counting those aborting files (all their tests failing) is what keeps the
+number honest — a parse error can't make its tests vanish. The harness prints
+three denominators, widest-to-strictest:
 
-1. **Its denominator is only the reached assertions.** The 546 no-TAP files emit
-   nothing, so they are not in the 189,081. This is a different denominator than
-   the coverage figure (files, over 1,464).
-2. **A stricter variant counts planned tests.** Against tests each file *planned*
-   to run (~199,944), the rate is ~66% — the gap is tests lost when a file aborts
-   partway. The harness prints both (`of tests that ran` / `of tests planned`).
-3. **S15 (Unicode) is ~87k of the total**, passing at ~95%, so it dominates the
-   blended figure.
+| Denominator | Ratio | What it includes |
+|---|---|---|
+| tests that **ran** | 131,320 / 189,081 (~69%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 131,320 / 199,944 (~66%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 131,320 / 231,092 (~57%) | + tests in parse-error files, recovered from source |
 
-Coverage is the 20% of files; correctness-on-what-runs is this ~69%
-(131,320/189,081). They are two different measurements, quoted for two different
-purposes.
+The ~57% is the per-test analog of the ~20% file coverage. Two caveats on scope:
+
+1. **~31k of the denominator comes from no-TAP files** (385 of them, read from
+   source); 16 more no-TAP files use a dynamic `plan *` / `done-testing` and are
+   genuinely uncountable, so they sit outside even this figure.
+2. **S15 (Unicode) is ~87k of the reached total**, passing at ~95%, so it lifts
+   the blended rate; other synopses are lower (see the per-synopsis table).
+
+Coverage is the ~20% of files; per-test correctness across the whole suite is the
+~57%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
 
