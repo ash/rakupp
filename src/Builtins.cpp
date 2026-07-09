@@ -615,6 +615,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (ClassInfo* ci = inv.obj->cls.get(); ci; ci = ci->parent.get())
                 if (ci->nativeParent == m) return inv;
     }
+    // `.resume` inside a CATCH: unwind to the enclosing block, which continues
+    // execution at the statement after the one that threw.
+    if (m == "resume") throw ResumeEx{};
     // 6.e `.snitch`: run a tap (default: note the value) and return self — for
     // sticking a peek into a method chain. Universal, so handle it up front.
     if (m == "snitch") {

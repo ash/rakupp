@@ -1184,6 +1184,16 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
     hoistSubs(b->stmts);
     runEnterPhasers(b->stmts);
+    // Run the block's CATCH handler; returns true if `.resume` was called (so the
+    // block should carry on after the throwing statement).
+    auto runCatch = [&](RakuError& e) -> bool {
+        tctx_.cur->define("$_", e.payload);
+        tctx_.cur->define("$!", e.payload);
+        try { for (auto& s : catchBlk->stmts) exec(s.get()); }
+        catch (BreakGivenEx&) { /* when/default matched */ }
+        catch (ResumeEx&) { return true; }
+        return false;
+    };
     try {
         for (size_t i = 0; i < b->stmts.size(); i++) {
             auto& s = b->stmts[i];
@@ -1193,19 +1203,18 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                 !static_cast<SubDecl*>(s.get())->isMethod) continue; // hoisted
             // sink every statement whose value is discarded: all but the block's
             // final statement, and even that one when the whole block is sink.
-            last = exec(s.get(), sink || i != lastIdx);
+            if (catchBlk) {
+                // per-statement, so `.resume` can continue at the next statement
+                try { last = exec(s.get(), sink || i != lastIdx); }
+                catch (RakuError& e) {
+                    if (runCatch(e)) continue;           // .resume → next statement
+                    runLeavePhasers(b->stmts); tctx_.cur = saved; return Value::nil(); // handled
+                }
+            } else {
+                last = exec(s.get(), sink || i != lastIdx);
+            }
         }
     } catch (RakuError& e) {
-        if (catchBlk) {
-            tctx_.cur->define("$_", e.payload);
-            tctx_.cur->define("$!", e.payload);
-            try {
-                for (auto& s : catchBlk->stmts) exec(s.get());
-            } catch (BreakGivenEx&) { /* when/default matched */ }
-            runLeavePhasers(b->stmts);
-            tctx_.cur = saved;
-            return Value::nil();
-        }
         runLeavePhasers(b->stmts);
         tctx_.cur = saved;
         throw;

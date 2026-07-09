@@ -37,6 +37,7 @@ struct LastEx { std::string label; };
 struct NextEx { std::string label; };
 struct RedoEx { std::string label; };
 struct BreakGivenEx { Value v; bool hasVal = false; }; // `when`/`succeed` exits the enclosing given/loop, carrying its value
+struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the throw point
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 struct RakuError { Value payload; std::string message; };
 // Thrown at an interpreter safe point to unwind a background worker thread whose
