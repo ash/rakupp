@@ -5211,6 +5211,7 @@ Value Interpreter::eval(Expr* e) {
                     if ((*it)->find(ve->name)) { builtinDefault = false; break; }
             }
             if (builtinDefault) {
+            if (ve->name == "$=pod" || ve->name == "@=pod") { Value a = Value::array(); *a.arr = podDom_; return a; }
             if (ve->name == "$*CWD") { char buf[4096]; Value p = Value::str(getcwd(buf, sizeof buf) ? buf : "."); p.hashKind = "IO"; return p; }
             if (ve->name == "$*RAKU" || ve->name == "$*PERL" || ve->name == "$?RAKU" || ve->name == "$?PERL") {
                 Value r = Value::makeHash(); r.hashKind = "Raku"; return r;

@@ -223,7 +223,8 @@ std::string Value::typeName() const {
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             return (isList && s == "Seq") ? "Seq" : "Array";
-        case VT::Hash:  return (hashKind == "Date" || hashKind == "DateTime") && hash ? dateGist(*hash, hashKind == "Date")
+        case VT::Hash:  if (hashKind == "Pod" && hash && hash->count("podclass")) return hash->at("podclass").s;
+                        return (hashKind == "Date" || hashKind == "DateTime") && hash ? dateGist(*hash, hashKind == "Date")
                              : (hashKind.empty() ? "Hash" : hashKind);
         case VT::Code:  return "Sub";
         case VT::Rat:   return fatRat ? "FatRat" : "Rat";

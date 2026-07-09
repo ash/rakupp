@@ -2,6 +2,7 @@
 #include "Interpreter.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "Pod.h"
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -34,6 +35,7 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         interp.setArgs(std::move(args));
         interp.finishData_ = finish;
         interp.podData_ = pod;
+        interp.podDom_ = parsePod(src);   // $=pod structured DOM
         interp.docMode_ = g_docMode;
         interp.srcFile_ = fileName;
         interp.execPath_ = exePath;

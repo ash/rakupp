@@ -282,6 +282,7 @@ public:
 public:
     std::string finishData_;          // $=finish data block of the module being run
     std::string podData_;             // rendered =pod content (printed at end in --doc mode)
+    std::vector<Value> podDom_;       // $=pod structured DOM (Pod::Block values)
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     std::string srcFile_;             // source file path (for $?FILE)
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)

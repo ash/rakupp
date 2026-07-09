@@ -1345,6 +1345,27 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
         if (m == "close" || m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
     }
+    if (inv.t == VT::Hash && inv.hashKind == "Pod") {
+        auto& h = *inv.hash;
+        if (m == "name")     return h.count("name") ? h["name"] : Value::str("");
+        if (m == "contents") return h.count("contents") ? h["contents"] : Value::array();
+        if (m == "level")    return h.count("level") ? h["level"] : Value::integer(1);
+        if (m == "config")   return h.count("config") ? h["config"] : Value::makeHash();
+        if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s : "Pod::Block");
+        if (m == "defined" || m == "Bool") return Value::boolean(true);
+        if (m == "Str" || m == "gist" || m == "raku" || m == "perl") {
+            // stringify to the concatenated text of the contents (paragraphs/children)
+            std::function<std::string(const Value&)> flat = [&](const Value& v) -> std::string {
+                if (v.t == VT::Str) return v.s;
+                if (v.t == VT::Hash && v.hashKind == "Pod" && v.hash->count("contents")) {
+                    std::string o; for (auto& c : *(*v.hash)["contents"].arr) o += flat(c); return o;
+                }
+                if (v.t == VT::Array && v.arr) { std::string o; for (auto& c : *v.arr) o += flat(c); return o; }
+                return v.toStr();
+            };
+            return Value::str(flat(inv));
+        }
+    }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {
         std::string name = inv.hash->count("name") ? (*inv.hash)["name"].toStr() : "";
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
@@ -3510,6 +3531,15 @@ void Interpreter::registerBuiltins() {
             {"Blob", {"Blob", "Buf", "Positional", "Any", "Mu"}},
             {"Compiler", {"Compiler", "Any", "Mu"}},
             {"Hash", {"Hash", "Map", "Any", "Mu", "Associative"}},
+            {"Pod::Block", {"Pod::Block", "Any", "Mu"}},
+            {"Pod::Block::Named", {"Pod::Block::Named", "Pod::Block", "Any", "Mu"}},
+            {"Pod::Block::Para", {"Pod::Block::Para", "Pod::Block", "Any", "Mu"}},
+            {"Pod::Block::Code", {"Pod::Block::Code", "Pod::Block", "Any", "Mu"}},
+            {"Pod::Block::Comment", {"Pod::Block::Comment", "Pod::Block", "Any", "Mu"}},
+            {"Pod::Block::Table", {"Pod::Block::Table", "Pod::Block", "Any", "Mu"}},
+            {"Pod::Block::Declarator", {"Pod::Block::Declarator", "Pod::Block", "Any", "Mu"}},
+            {"Pod::Heading", {"Pod::Heading", "Pod::Block", "Any", "Mu"}},
+            {"Pod::Item", {"Pod::Item", "Pod::Block", "Any", "Mu"}},
         };
         // walk a class's ancestry: the built-in isa map, plus a user class's parent
         // chain (incl. a native parent like `is Str`) and extra `is` parents.
