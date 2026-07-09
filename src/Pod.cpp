@@ -27,6 +27,9 @@ static std::string firstWord(const std::string& s) {
     size_t e = s.find_first_of(" \t");
     return e == std::string::npos ? s : s.substr(0, e);
 }
+static int indentOf(const std::string& s) {
+    int n = 0; for (char c : s) { if (c == ' ' || c == '\t') n++; else break; } return n;
+}
 
 static Value mkPod(const std::string& cls) {
     Value v = Value::makeHash(); v.hashKind = "Pod";
@@ -89,11 +92,22 @@ static std::string classForBlock(const std::string& name, int& level) {
     return "Pod::Block::Named";
 }
 
-static void parseSeq(const std::vector<std::string>& lines, size_t& i,
-                     const std::string& closeName, bool inBlock, ValueList& out);
+// The block's virtual left margin: the indent of its first non-blank, non-directive
+// content line. Text at the margin is ordinary; text indented past it is a code block.
+static int blockMargin(const std::vector<std::string>& lines, size_t start) {
+    for (size_t j = start; j < lines.size(); j++) {
+        std::string kw, rest;
+        if (matchDirective(lines[j], kw, rest)) { if (kw == "end") return 0; continue; }
+        if (!strip(lines[j]).empty()) return indentOf(lines[j]);
+    }
+    return 0;
+}
 
 static void parseSeq(const std::vector<std::string>& lines, size_t& i,
-                     const std::string& closeName, bool inBlock, ValueList& out) {
+                     const std::string& closeName, bool inBlock, ValueList& out, int margin);
+
+static void parseSeq(const std::vector<std::string>& lines, size_t& i,
+                     const std::string& closeName, bool inBlock, ValueList& out, int margin) {
     while (i < lines.size()) {
         std::string kw, rest;
         if (matchDirective(lines[i], kw, rest)) {
@@ -109,7 +123,19 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 if (cls == "Pod::Block::Named") (*block.hash)["name"] = Value::str(name);
                 if (lv) (*block.hash)["level"] = Value::integer(lv);
                 ValueList inner;
-                parseSeq(lines, i, name, true, inner);
+                if (cls == "Pod::Block::Code") { // verbatim: the raw lines are the contents
+                    std::vector<std::string> code; std::string k2, r2;
+                    while (i < lines.size() && !(matchDirective(lines[i], k2, r2) && k2 == "end" && firstWord(r2) == name))
+                        { code.push_back(lines[i]); i++; }
+                    while (!code.empty() && strip(code.back()).empty()) code.pop_back();
+                    std::string text; for (size_t k = 0; k < code.size(); k++) { if (k) text += "\n"; text += code[k]; }
+                    Value cc = Value::array(); cc.arr->push_back(Value::str(text));
+                    (*block.hash)["contents"] = cc;
+                    if (i < lines.size()) i++;
+                    out.push_back(block);
+                    continue;
+                }
+                parseSeq(lines, i, name, true, inner, blockMargin(lines, i));
                 Value ic = Value::array(); *ic.arr = std::move(inner);
                 (*block.hash)["contents"] = ic;
                 if (i < lines.size()) i++; // consume the =end line
@@ -157,7 +183,7 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 std::string name = "pod"; i++;
                 Value block = mkPod("Pod::Block::Named");
                 (*block.hash)["name"] = Value::str(name);
-                ValueList inner; parseSeq(lines, i, name, true, inner);
+                ValueList inner; parseSeq(lines, i, name, true, inner, blockMargin(lines, i));
                 Value ic = Value::array(); *ic.arr = std::move(inner);
                 (*block.hash)["contents"] = ic;
                 if (i < lines.size()) i++;
@@ -178,8 +204,33 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
         }
         if (strip(lines[i]).empty()) { i++; continue; }
         if (inBlock) {
-            std::string para = collectPara(lines, i);
-            out.push_back(mkPara(para));
+            if (indentOf(lines[i]) > margin) {
+                // implicit code block: verbatim, may span internal blank lines; dedent by
+                // the least indent of its non-blank lines.
+                std::vector<std::string> code; std::string k2, r2;
+                while (i < lines.size()) {
+                    if (matchDirective(lines[i], k2, r2)) break;
+                    if (!strip(lines[i]).empty() && indentOf(lines[i]) <= margin) break;
+                    code.push_back(lines[i]); i++;
+                }
+                while (!code.empty() && strip(code.back()).empty()) code.pop_back();
+                int minInd = 1 << 30;
+                for (auto& l : code) if (!strip(l).empty()) minInd = std::min(minInd, indentOf(l));
+                if (minInd == (1 << 30)) minInd = 0;
+                std::string text;
+                for (size_t k = 0; k < code.size(); k++) {
+                    if (k) text += "\n";
+                    const std::string& l = code[k];
+                    text += (int)l.size() > minInd ? l.substr(minInd) : "";
+                }
+                Value cb = mkPod("Pod::Block::Code");
+                Value cc = Value::array(); cc.arr->push_back(Value::str(text));
+                (*cb.hash)["contents"] = cc;
+                out.push_back(cb);
+            } else {
+                std::string para = collectPara(lines, i);
+                out.push_back(mkPara(para));
+            }
         } else {
             i++; // top-level code between POD blocks
         }
@@ -190,7 +241,7 @@ std::vector<Value> parsePod(const std::string& src) {
     std::vector<std::string> lines;
     { std::stringstream ss(src); std::string ln; while (std::getline(ss, ln)) lines.push_back(ln); }
     ValueList top; size_t i = 0;
-    parseSeq(lines, i, "", false, top);
+    parseSeq(lines, i, "", false, top, 0);
     return top;
 }
 
