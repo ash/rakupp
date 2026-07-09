@@ -32,10 +32,10 @@ Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **294** | **20%** |
-| Partially passing | 614 | 42% |
-| No TAP output | 554 | 38% |
-| Timeouts | 2 | 0.1% |
+| **Fully passing** | **300** | **20%** |
+| Partially passing | 615 | 42% |
+| No TAP output | 546 | 37% |
+| Timeouts | 3 | 0.2% |
 
 **Coverage ≈ 20% of files.** That is the number to quote. Over a third of the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
@@ -44,17 +44,17 @@ territory, not "passing" and not "failing."
 
 ### The assertion count
 
-Among the files that *do* run, **131,152 of 188,602** assertions pass. This
+Among the files that *do* run, **131,320 of 189,081** assertions pass. This
 number measures correctness on the attempted subset — how much of what we run is
 right — and is the signal we watch for regressions. Two facts define its scope:
 
-1. **Its denominator is only the reached assertions.** The 554 no-TAP files emit
-   nothing, so they are not in the 188,602. This is a different denominator than
+1. **Its denominator is only the reached assertions.** The 546 no-TAP files emit
+   nothing, so they are not in the 189,081. This is a different denominator than
    the coverage figure (files, over 1,464).
 2. **S15 (Unicode) is ~87k of the total**, passing at ~95%, so it dominates the
    blended figure.
 
-Coverage is the 20% of files; correctness-on-what-runs is this 131,152/188,602.
+Coverage is the 20% of files; correctness-on-what-runs is this 131,320/189,081.
 They are two different measurements, quoted for two different purposes.
 
 ## By synopsis
@@ -69,7 +69,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
 | S02 | Literals, types, magicals | 25 | 56 | 0 | 66 | 949/1785 | 53% |
 | S03 | Operators | 16 | 35 | 0 | 74 | 770/1586 | 48% |
-| S04 | Blocks, statements, phasers | 15 | 37 | 0 | 25 | 360/494 | 72% |
+| S04 | Blocks, statements, phasers | 16 | 36 | 0 | 25 | 366/494 | 74% |
 | S05 | Regexes & grammars | 17 | 68 | 0 | 14 | 3119/4955 | 62% |
 | S06 | Subroutines & signatures | 8 | 39 | 0 | 47 | 304/576 | 52% |
 | S07 | Iterators | 1 | 1 | 0 | 4 | 42/42 | 100% |
@@ -81,7 +81,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S14 | Roles | 5 | 11 | 0 | 9 | 112/159 | 70% |
 | S15 | Unicode / strings / NFG | 43 | 31 | 0 | 7 | 86701/91222 | 95% |
 | S16 | I/O | 11 | 15 | 0 | 11 | 211/348 | 60% |
-| S17 | Concurrency (supply/promise/async) | 17 | 52 | 0 | 30 | 372/680 | 54% |
+| S17 | Concurrency (supply/promise/async) | 22 | 47 | 0 | 30 | 420/680 | 62% |
 | S19 | Command-line | 6 | 1 | 0 | 1 | 21/24 | 87% |
 | S22 | Package format | 0 | 0 | 0 | 1 | 0/0 | — |
 | S24 | Testing | 8 | 5 | 0 | 4 | 60/100 | 60% |
@@ -121,7 +121,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 294 / 1,464 files fully passing (~20% coverage); 614 partial,
-554 no-TAP, 2 timeout. Reached-assertion pass rate 131,152 / 188,602 (see
+_Snapshot: 300 / 1,464 files fully passing (~20% coverage); 615 partial,
+546 no-TAP, 3 timeout. Reached-assertion pass rate 131,320 / 189,081 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._

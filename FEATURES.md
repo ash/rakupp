@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: **294 / 1,464 files fully pass (~20%)**; 614 partial, 554 no-TAP, 2 timeout. (Among files that run, 131,152 / 188,602 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
+Roast standing: **300 / 1,464 files fully pass (~20%)**; 615 partial, 546 no-TAP, 3 timeout. (Among files that run, 131,320 / 189,081 reached assertions pass — a correctness signal, not a coverage figure; see [ROAST.md](ROAST.md).)
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -70,7 +70,8 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - `given/when/default`, `with/without`
 - Statement modifiers (`if unless while until for given when with`), including chained (`X if A for B`)
 - `last/next/redo` (incl. labeled: `LABEL: for … { last LABEL }`), `gather/take` (lazy — an infinite `gather { loop { take … } }` yields on demand), `do`
-- **Gaps:** `FIRST`/`NEXT`/`LAST` loop phasers
+- `FIRST` loop phaser (runs once, before the first iteration; `last` inside it breaks the loop)
+- **Gaps:** `NEXT`/`LAST` loop phaser ordering vs `LEAVE`
 
 ## Subs, Signatures & Dispatch
 - `sub`, `multi`/`proto` dispatch (by type, arity, `where`, literal, `:D`/`:U` smileys)
@@ -125,7 +126,8 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Line-processing: `-n` / `-p` command-line switches (awk/perl line loops over `$*ARGFILES`); `$*IN`/`$*ARGFILES` reading (`.lines .get .words .slurp`, bare `lines()`/`get()`/`words()`)
 - **Concurrency (real `std::thread`s + a GIL, CPython-style; blocking ops release the lock: `sleep`/`await` let tasks interleave in time (sleep-sort actually sorts), and external-process waits (`run`/`shell`) run in genuine parallel wall-clock — N concurrent `run('sleep','1')` finish in ~1s, not N s. Optional true CPU parallelism via `RAKUPP_PARALLEL=1`: worker threads run interpreter compute concurrently — per-thread registers/stacks are thread-local, the symbol tables freeze once concurrency engages, and `Lock`/`Semaphore` become real; ~3× on 8 workers, 0 Roast regressions, ThreadSanitizer-clean. Default (flag off) keeps the GIL. `start EXPR` correctly thunks EXPR to the worker):**
   - `Promise` — `start` (kept, or **broken** if the block dies), `await` (blocks, rethrows the cause), manual `Promise.new`/`.keep`/`.break`/`.vow`, `.result`/`.status` (a real `PromiseStatus` enum)/`.cause`/`.Bool`, deferred `.then`, `Promise.anyof`/`.allof` (with `X::Promise::Combinator`), `Proc::Async`
-  - `Supply` (`from-list` — args are values, `[..]` items stay unflattened / `tap`/`act`/`map`/`grep`/`do`/`grab`/`unique`/`squish`/`head`/`tail`/`skip`/`reverse`/`rotate`/`sort`/`min`/`max` (running extremes)/`minmax` (running Range)/`produce` (scan)/`reduce`/`wait`/…), `Tap.close`, live `Supplier` (`.emit`/`.done`/`.quit`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
+  - `Supply` (`from-list` — args are values, `[..]` items stay unflattened / `tap`/`act`/`map`/`grep`/`first`/`do`/`grab`/`unique`/`squish` (incl. `:as`/`:with`)/`head`/`tail`/`skip`/`reverse`/`rotate`/`sort`/`min`/`max` (running extremes, `&mapper`)/`minmax` (running Range)/`produce` (scan)/`reduce`/`zip` (`:with`)/`merge`/`list`/`wait`/…), `Tap.close`, live `Supplier` (`.emit`/`.done`/`.quit`) with combinators as a per-value transform tap-chain (`grep`/`map`/`head`/`first`/`skip`/`unique`/`squish`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
+  - Containers: `Proxy.new(:FETCH/:STORE)` (reads/writes run your code), `is rw` / `return-rw`, `$_` rw-aliased to array elements in `for` loops
   - `Channel` (`send`/`receive`/`poll`/`close`/`fail`/`closed`, `X::Channel::*`), `Thread` (`.start`/`.join`, `is-initial-thread`, `$*THREAD`), `Lock`/`Semaphore` (`.protect`/`.acquire`/`.release`), `sleep`
   - `atomicint` containers and the `⚛` operators (`$x⚛++`, `⚛$x`, `$x ⚛= v`) + `atomic-fetch`/`-fetch-inc`/`-fetch-dec`/`-fetch-add`/`atomic-assign` (correct under the GIL; true lock-free atomics only under `RAKUPP_PARALLEL`)
 - **NativeCall**: `sub … is native {*}` / `is native('lib')` / `is symbol('n')` calls a C function via `dlsym`. Integer/pointer args (`Str`→`char*`, the `int`/`uint`/`size_t`/`bool`/`Pointer` family) **and** floating-point args (`num`/`num32`/`num64`), with an integer/pointer/`Str`/float/void return — arguments coerce to their declared type (`sqrt(4)` works). Covers all of libc's integer functions and the whole `<math.h>` surface (`strlen`, `getenv`, `sqrt`, `pow`, …). No `libffi`, so **mixed int/float args, C structs, `CArray`, and callbacks** are unsupported (mixed args give a clear error).

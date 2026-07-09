@@ -127,7 +127,7 @@ implementation steadily growing toward the same language.
 ## Status & how it's measured
 
 The one number to quote is **Roast coverage: ~20% of files fully pass** (currently
-294 / 1,464). Separately, among files that *do* run, ~131k of ~189k assertions
+300 / 1,464). Separately, among files that *do* run, ~131k of ~189k assertions
 pass — a correctness signal on the attempted subset, not a coverage figure. The
 two mean different things and are explained in [ROAST.md](ROAST.md), which also
 has the per-synopsis breakdown. Run the self-hosted harness for live numbers:

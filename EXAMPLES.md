@@ -143,6 +143,30 @@ sub head-tail(@a [$first, *@rest]) { "$first | @rest[]" }
 say head-tail([1, 2, 3, 4]);              # → 1 | 2 3 4    (binds @a AND unpacks it)
 ```
 
+## Containers & Binding
+
+`$_` is rw-aliased to array elements in a `for` loop, so the loop mutates the
+array in place:
+
+```raku
+my @a = 1, 2, 3;
+$_ *= 10 for @a;
+say @a;                                   # → [10 20 30]   (elements written back)
+```
+
+A `Proxy` is a container whose reads and writes run your code — `FETCH` on read,
+`STORE` on write:
+
+```raku
+my $c = 0;
+my $p := Proxy.new(
+    FETCH => method ()   { $c },
+    STORE => method ($v) { $c = $v * 2 },
+);
+$p = 21;
+say $p;                                    # → 42          (STORE doubled, FETCH read back)
+```
+
 ## Objects, Classes, Roles
 
 ```raku
@@ -263,6 +287,21 @@ say @seen;                                # → [10 20 30]
 my $s = Supplier.new;
 $s.Supply.tap({ say "got $_" });
 $s.emit(42);                              # → got 42     (live push to the tap)
+```
+
+Combinators build a transforming tap-chain — on a list-backed supply or a live
+one — and `zip` pairs streams element-wise:
+
+```raku
+my @z;
+Supply.zip(Supply.from-list(1, 2, 3), Supply.from-list(<a b c>)).tap({ @z.push(.join) });
+say @z;                                   # → [1a 2b 3c]
+
+my @seen;
+my $sup = Supplier.new;
+$sup.Supply.grep(* %% 2).map(* + 100).tap({ @seen.push($_) });
+$sup.emit($_) for 1..6;
+say @seen;                                # → [102 104 106]   (grep→map runs per emit)
 ```
 
 ```raku
