@@ -3780,6 +3780,9 @@ void Interpreter::registerBuiltins() {
     B["max"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = a; Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) > 0) { best = v; s = true; } } return s ? best : Value::any(); };
     B["elems"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer(a.empty() ? 0 : (long long)toList(a[0]).size()); };
     B["defined"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(!a.empty() && defined(a[0])); };
+    // Prefix forms of the metamethods: WHAT($x) === $x.WHAT, etc.
+    for (const char* mm : {"WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY"})
+        B[mm] = [mm](Interpreter& I, ValueList& a) -> Value { ValueList none; return I.methodCall(a.empty() ? Value::any() : a[0], mm, none); };
     B["chars"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer(a.empty() ? 0 : graphemeCount(a[0].toStr())); };
     auto univalOf = [](uint32_t cp) -> Value {
         long long num, den; if (!uniNumValue(cp, num, den)) return Value::nil();
