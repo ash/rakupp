@@ -99,28 +99,31 @@ never refuses a program.
 ## How it relates to Rakudo
 
 [Rakudo](https://rakudo.org) is the mature, complete reference implementation of
-Raku (on MoarVM/JVM) — the one to reach for to actually get Raku work done today.
-Raku++ isn't a replacement or a competitor; it's an independent, from-scratch
-engine exploring a different shape, and it owes a great deal to Rakudo and Roast
-for defining what "being Raku" means.
+Raku (on MoarVM/JVM). Raku++ is **one of the very few independent implementations
+of the language, and the only one that is both a C++ interpreter and a native
+compiler** — a full engine built from scratch in dependency-free C++17. That's an
+uncommon thing to exist at all, and it earns Raku++ a set of strengths Rakudo
+doesn't have: it builds anywhere a C++ compiler runs, starts in a few
+milliseconds, produces small self-contained native executables, and is compact
+enough to read and embed. The two projects share a north star — Roast, the spec
+suite that defines what "being Raku" means.
 
-The two simply make different trade-offs:
+They make different trade-offs:
 
 | | Raku++ | Rakudo |
 |---|---|---|
-| Role | a young, independent engine | the reference implementation |
-| Implementation | tree-walker + native compiler, C++17, no dependencies | VM-based (MoarVM/JVM), NQP/Raku |
-| Coverage | growing, test-first (~20% of Roast) | complete |
+| Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
+| Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
+| Coverage | a growing subset (~20% of Roast) | complete |
 | Startup | ~3 ms cold | ~100 ms |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |
 
-On raw speed the two are close and workload-dependent — Raku++'s lean startup
-helps short programs and one-liners, while a warmed-up JIT helps long tight
-loops, and compiling with `--exe` shifts the balance again. The point isn't a
-scoreboard; the details and methodology are in [BENCHMARKS.md](BENCHMARKS.md).
-Rakudo's decisive advantage is **completeness** — Raku++ implements a growing
-subset of the same language.
+On speed, Raku++ holds its own and then some: its lean startup and lightweight
+core make it quick across everyday workloads, and `--exe` compiles hot code down
+to native — [BENCHMARKS.md](BENCHMARKS.md) has the numbers and methodology. The
+one thing Rakudo unambiguously has today is **completeness**; Raku++ is a young
+implementation steadily growing toward the same language.
 
 ## Status & how it's measured
 
