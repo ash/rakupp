@@ -69,6 +69,16 @@ sub infix:<foo>($a, $b) is tighter(&infix:<+>) { $a * $b }
 say 2 + 3 foo 4;          # → 14       (parses as 2 + (3 foo 4), not (2+3) foo 4)
 ```
 
+Bitwise/boolean operators, function composition, and feed pipelines:
+
+```raku
+say 6 +& 3;               # → 2        (numeric AND; also +| +^, ~& ~| ~^, ?& ?| ?^)
+my &f = (* + 1) ∘ (* * 2);
+say f(5);                 # → 11       (compose: f(x) = (x*2)+1; ASCII alias `o`)
+my @r <== sort() <== map(* + 1) <== (5, 3, 1);
+say @r;                   # → [2 4 6]  (feed: source flows right-to-left)
+```
+
 ## Control Flow
 
 ```raku
@@ -77,6 +87,25 @@ given 5 { when * > 3 { say "big" } }      # → big
 .say if $_ %% 3 for 1 .. 10;              # → 3 / 6 / 9   (chained modifiers)
 my @s = gather { take $_ for 1 .. 3 };
 say @s;                                   # → [1 2 3]     (gather/take)
+```
+
+A `gather` with an infinite `loop` is lazy — only as much runs as is demanded:
+
+```raku
+my $fib = gather { my ($a, $b) = 0, 1; loop { take $a; ($a, $b) = $b, $a + $b } };
+say $fib[^10];                            # → (0 1 1 2 3 5 8 13 21 34)
+```
+
+`CATCH` handles exceptions; `.resume` continues right after the throw:
+
+```raku
+class X::Retry is Exception { method message { "retry" } }
+{
+    X::Retry.new.throw;
+    say "continued";                      # ← reached via .resume
+    CATCH { when X::Retry { say "caught"; .resume } }
+}
+# → caught / continued
 ```
 
 ## Subs, Signatures & Dispatch
@@ -104,6 +133,16 @@ sub greet($n) { "hi $n" }
 say greet("bob");                         # → [hi bob]    (wrapped)
 ```
 
+Coercion-type container and a named destructuring parameter:
+
+```raku
+my Int(Str) $n = '42';
+say $n; say $n.WHAT;                      # → 42 / (Int)   (coerced on assignment)
+
+sub head-tail(@a [$first, *@rest]) { "$first | @rest[]" }
+say head-tail([1, 2, 3, 4]);              # → 1 | 2 3 4    (binds @a AND unpacks it)
+```
+
 ## Objects, Classes, Roles
 
 ```raku
@@ -121,6 +160,8 @@ say 42.^name;                             # → Int         (metamodel)
 
 augment class Int { method double { self * 2 } }
 say 21.double;                            # → 42          (augment a built-in type)
+
+say Int.^mro;                             # → ((Int) (Cool) (Any) (Mu))   (method resolution order)
 ```
 
 ## Regexes & Grammars
@@ -235,6 +276,26 @@ say $c.closed.status;                     # → Kept       (closed + drained)
 # Threads (is-initial-thread is False inside a spawned block)
 say Thread.is-initial-thread;             # → True
 Thread.start({ say Thread.is-initial-thread }).join;   # → False
+```
+
+`atomicint` and the ⚛ operators — a race-free shared counter across workers:
+
+```raku
+my atomicint $counter = 0;
+await (1..10).map: { start { atomic-fetch-inc($counter) for 1..1000 } };
+say $counter;                             # → 10000
+
+my atomicint $x = 0;
+$x⚛++; $x⚛++;
+say $x;                                   # → 2
+```
+
+Call a C function directly with `NativeCall`:
+
+```raku
+use NativeCall;
+sub strlen(Str is encoded('utf8') --> size_t) is native {*}
+say strlen("hello");                      # → 5   (libc's strlen, via dlsym)
 ```
 
 ## Phasers, State & Testing

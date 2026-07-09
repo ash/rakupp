@@ -69,14 +69,15 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - `if/elsif/else`, `unless`, `while/until`, `for`, C-style `loop`, `repeat`
 - `given/when/default`, `with/without`
 - Statement modifiers (`if unless while until for given when with`), including chained (`X if A for B`)
-- `last/next/redo` (incl. labeled: `LABEL: for … { last LABEL }`), `gather/take`, `do`
+- `last/next/redo` (incl. labeled: `LABEL: for … { last LABEL }`), `gather/take` (lazy — an infinite `gather { loop { take … } }` yields on demand), `do`
 - **Gaps:** `FIRST`/`NEXT`/`LAST` loop phasers
 
 ## Subs, Signatures & Dispatch
 - `sub`, `multi`/`proto` dispatch (by type, arity, `where`, literal, `:D`/`:U` smileys)
 - Params: positional, named, optional `?`, slurpy `*@`/`*%` (single-argument rule), defaults
 - `is rw` / `is copy`, sigilless `\a`, capture `|c`, return-type `-->`, type-capture `::T`
-- Sub-signature destructuring: `[$a,$b]` / `($a,$b)` unpack a list arg, `|c($x,$y)` a capture, `*[$a,$b]` a slurpy — with `multi` dispatch on the destructured arity
+- Sub-signature destructuring: `[$a,$b]` / `($a,$b)` unpack a list arg, `|c($x,$y)` a capture, `*[$a,$b]` a slurpy, and a *named* `@a [$first, *@rest]` (binds `@a` and unpacks it) — with `multi` dispatch on the destructured arity
+- Coercion-type containers: `my Int(Str) $n = '42'` coerces the value to the target type
 - Anonymous subs, closures, placeholder params `$^a`, sub/block as argument
 - Redispatch: `callsame`/`callwith`/`nextsame`/`nextwith`/`samewith`; routine `.wrap`/`.unwrap` (wrapper `callsame`s to the original)
 - **Gaps:** `is rw` inside a sub-signature, `-> [$a,$b]` pointy destructure
@@ -85,7 +86,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - `class`/`role`/`grammar`, attributes `has $.x`/`$!x` (+ defaults), accessors
 - `method`/`multi method`/`submethod`, `self`, single inheritance `is`, `does`
 - `BUILD`, default `.new`, `bless`, enums
-- Metamodel: `.^name .^methods .^add_method .^find_method`, `.WHAT .WHICH .HOW`
+- Metamodel: `.^name .^methods .^mro .^parents .^roles .^add_method .^find_method`, `.WHAT .WHICH .HOW`
 - `augment`/`supersede` reopen a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`); `does`/`but` runtime role mixins
 - Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
 - **Gaps:** `Metamodel::*` construction, submethod-not-inherited
@@ -126,12 +127,14 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
   - `Promise` — `start` (kept, or **broken** if the block dies), `await` (blocks, rethrows the cause), manual `Promise.new`/`.keep`/`.break`/`.vow`, `.result`/`.status` (a real `PromiseStatus` enum)/`.cause`/`.Bool`, deferred `.then`, `Promise.anyof`/`.allof` (with `X::Promise::Combinator`), `Proc::Async`
   - `Supply` (`from-list` — args are values, `[..]` items stay unflattened / `tap`/`act`/`map`/`grep`/`do`/`grab`/`unique`/`squish`/`head`/`tail`/`skip`/`reverse`/`rotate`/`sort`/`min`/`max` (running extremes)/`minmax` (running Range)/`produce` (scan)/`reduce`/`wait`/…), `Tap.close`, live `Supplier` (`.emit`/`.done`/`.quit`), a real `react` event loop / `whenever` (incl. `react whenever …`) / `supply { emit … }`
   - `Channel` (`send`/`receive`/`poll`/`close`/`fail`/`closed`, `X::Channel::*`), `Thread` (`.start`/`.join`, `is-initial-thread`, `$*THREAD`), `Lock`/`Semaphore` (`.protect`/`.acquire`/`.release`), `sleep`
+  - `atomicint` containers and the `⚛` operators (`$x⚛++`, `⚛$x`, `$x ⚛= v`) + `atomic-fetch`/`-fetch-inc`/`-fetch-dec`/`-fetch-add`/`atomic-assign` (correct under the GIL; true lock-free atomics only under `RAKUPP_PARALLEL`)
+- **NativeCall** (minimal): `sub … is native {*}` / `is native('lib')` / `is symbol('n')` calls a C function via `dlsym`; word-sized integer/pointer args (`Str`→`char*`, `Int`/`size_t`) and integer/pointer/void/`Str` returns (e.g. `strlen`, `getenv`). No `libffi`, so floating-point args/returns and structs are unsupported.
 - `$*CWD $*EXECUTABLE $*ARGS $*RAKU/$*PERL` (`.compiler.name` = "Raku++", backend "cpp"), `$*DISTRO $*KERNEL $*VM $*THREAD $*SCHEDULER`
-- **Gaps:** true CPU parallelism is opt-in (`RAKUPP_PARALLEL`), off by default; real wall-clock timers (`Promise.in`/`.at` are capped), atomic-container ops (`atomic-fetch`/`cas`), stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
+- **Gaps:** true CPU parallelism is opt-in (`RAKUPP_PARALLEL`), off by default; real wall-clock timers (`Promise.in`/`.at` are capped), `cas`, stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
 
 ## Phasers, Modules, Exceptions, Special Vars, Testing
 - Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `CATCH`
 - `state` variables (persistent), modules `use`/`need`/`no`, `use lib <expr>`, `$=finish` POD, sub hoisting, `EVAL`
-- Exceptions: `die`/`try`/`CATCH`, `throws-like`, `X::*` (partial)
+- Exceptions: `die`/`try`/`CATCH`, `throws-like`, `X::*` (partial), resumable via `.resume` inside a `CATCH`
 - Special vars: `$_ $/ $! @*ARGS $?LINE $?FILE`
 - Test API: `plan ok nok is isnt is-deeply like unlike cmp-ok isa-ok is-approx dies-ok lives-ok throws-like eval-lives-ok subtest skip todo pass flunk diag done-testing "plan skip-all"`
