@@ -29,6 +29,10 @@ add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
 target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
 
+if(WIN32)
+  target_link_libraries(rakupp_rt PUBLIC ws2_32)   # Winsock (sockets, WSAPoll)
+endif()
+
 add_executable(rakupp "${RAKUPP_MAIN}")
 target_link_libraries(rakupp PRIVATE rakupp_rt)
 

@@ -1,5 +1,6 @@
-# Build output
+# Build output (build/, and out-of-tree dirs build-win/ build-gcc/ build-tsan/ …)
 /build/
+/build-*/
 *.o
 *.a
 
@@ -29,4 +30,7 @@
 # Editor / OS cruft
 .DS_Store
 *.swp
-/build-tsan/
+
+# Claude Code local config / memory notes (kept on disk, not tracked)
+.claude/
+.claude-memory/

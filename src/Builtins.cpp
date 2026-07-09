@@ -82,6 +82,62 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
+#if defined(_WIN32)
+    // Windows: CreateProcess with inherited pipes; poll the read ends via
+    // PeekNamedPipe (bounded by the wall-clock timeout). Compile-verified under
+    // mingw g++; behaviour mirrors the POSIX path below.
+    SECURITY_ATTRIBUTES sa; sa.nLength = sizeof(sa); sa.lpSecurityDescriptor = nullptr; sa.bInheritHandle = TRUE;
+    HANDLE outR = nullptr, outW = nullptr, errR = nullptr, errW = nullptr;
+    if (!CreatePipe(&outR, &outW, &sa, 0)) return;
+    SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
+    if (errOut) {
+        if (!CreatePipe(&errR, &errW, &sa, 0)) { CloseHandle(outR); CloseHandle(outW); return; }
+        SetHandleInformation(errR, HANDLE_FLAG_INHERIT, 0);
+    }
+    HANDLE nul = errOut ? INVALID_HANDLE_VALUE : CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    std::string cmd; // quoted command line
+    for (size_t i = 0; i < argv.size(); i++) { if (i) cmd += ' '; cmd += '"'; for (char c : argv[i]) { if (c == '"') cmd += '\\'; cmd += c; } cmd += '"'; }
+    STARTUPINFOA si; ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = outW;
+    si.hStdError = errOut ? errW : nul;
+    PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
+    std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
+    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+    CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!started) { CloseHandle(outR); if (errR) CloseHandle(errR); return; }
+    bool parked = gil ? gil->gilPark() : false;
+    auto start = std::chrono::steady_clock::now();
+    char buf[8192]; bool oEof = false, eEof = (errR == nullptr);
+    auto drain = [&](HANDLE h, std::string* dst, bool& eof) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
+        while (avail > 0) {
+            DWORD want = avail > sizeof buf ? (DWORD)sizeof buf : avail, rd = 0;
+            if (!ReadFile(h, buf, want, &rd, nullptr) || rd == 0) { eof = true; return; }
+            dst->append(buf, rd);
+            if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) { eof = true; return; }
+        }
+    };
+    while (!oEof || !eEof) {
+        if (!oEof) drain(outR, &out, oEof);
+        if (!eEof) drain(errR, errOut, eEof);
+        if (oEof && eEof) break;
+        bool exited = WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0;
+        if (timeoutSec > 0) {
+            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (el > timeoutSec) { TerminateProcess(pi.hProcess, 1); timedout = true; break; }
+        }
+        if (!exited) Sleep(2);
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD ec = 0; if (!timedout && GetExitCodeProcess(pi.hProcess, &ec)) exitCode = (int)ec;
+    CloseHandle(outR); if (errR) CloseHandle(errR);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    if (parked) gil->gilUnpark(true);
+    return;
+#else
     int pipefd[2], errfd[2];
     if (pipe(pipefd) != 0) return;
     if (errOut && pipe(errfd) != 0) { close(pipefd[0]); close(pipefd[1]); return; }
@@ -142,6 +198,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     close(fd);
     if (efd >= 0) close(efd);
     if (parked) gil->gilUnpark(true);    // reacquire the GIL before touching interpreter state
+#endif
 }
 
 // Spawn a child, feed `input` to its stdin, and capture its stdout. Uses poll on
@@ -151,6 +208,52 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
                            std::string& out, int& exitCode, Interpreter* gil = nullptr) {
     out.clear(); exitCode = -1;
     if (argv.empty()) return;
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES sa; sa.nLength = sizeof(sa); sa.lpSecurityDescriptor = nullptr; sa.bInheritHandle = TRUE;
+    HANDLE inR = nullptr, inW = nullptr, outR = nullptr, outW = nullptr;
+    if (!CreatePipe(&inR, &inW, &sa, 0)) return;
+    SetHandleInformation(inW, HANDLE_FLAG_INHERIT, 0);
+    if (!CreatePipe(&outR, &outW, &sa, 0)) { CloseHandle(inR); CloseHandle(inW); return; }
+    SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    std::string cmd;
+    for (size_t i = 0; i < argv.size(); i++) { if (i) cmd += ' '; cmd += '"'; for (char c : argv[i]) { if (c == '"') cmd += '\\'; cmd += c; } cmd += '"'; }
+    STARTUPINFOA si; ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si); si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = inR; si.hStdOutput = outW; si.hStdError = nul;
+    PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
+    std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
+    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+    CloseHandle(inR); CloseHandle(outW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!started) { CloseHandle(inW); CloseHandle(outR); return; }
+    bool parked = gil ? gil->gilPark() : false;
+    size_t written = 0; char buf[8192]; bool wOpen = true, done = false;
+    while (!done) {
+        if (wOpen) {
+            if (written < input.size()) {
+                DWORD want = (DWORD)((input.size() - written < sizeof buf) ? input.size() - written : sizeof buf), wn = 0;
+                if (WriteFile(inW, input.data() + written, want, &wn, nullptr) && wn) written += wn;
+                else { CloseHandle(inW); wOpen = false; }
+            } else { CloseHandle(inW); wOpen = false; }
+        }
+        DWORD avail = 0;
+        if (!PeekNamedPipe(outR, nullptr, 0, nullptr, &avail, nullptr)) break; // child's write end closed
+        while (avail > 0) {
+            DWORD want = avail > sizeof buf ? (DWORD)sizeof buf : avail, rd = 0;
+            if (!ReadFile(outR, buf, want, &rd, nullptr) || rd == 0) { avail = 0; break; }
+            out.append(buf, rd);
+            if (!PeekNamedPipe(outR, nullptr, 0, nullptr, &avail, nullptr)) { done = true; break; }
+        }
+        if (!wOpen && !done && WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) {
+            DWORD a2 = 0; PeekNamedPipe(outR, nullptr, 0, nullptr, &a2, nullptr); if (a2 == 0) break;
+        } else if (!wOpen) Sleep(2);
+    }
+    if (wOpen) CloseHandle(inW);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD ec = 0; if (GetExitCodeProcess(pi.hProcess, &ec)) exitCode = (int)ec;
+    CloseHandle(outR); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+    if (parked) gil->gilUnpark(true);
+    return;
+#else
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) != 0) return;
     if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return; }
@@ -201,6 +304,7 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
     waitpid(pid, &status, 0);
     exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (parked) gil->gilUnpark(true); // reacquire the GIL before touching interpreter state
+#endif
 }
 
 // Run one emitted value through a live-Supply tap's transform chain (grep/map/head/…).
@@ -765,7 +869,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (fd < 0) return Value::nil();
         sockaddr_in addr{}; addr.sin_family = AF_INET;
         if (listen) {
-            int yes = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+            int yes = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
             addr.sin_port = htons((uint16_t)localport);
             addr.sin_addr.s_addr = (localhost.empty() || localhost == "0.0.0.0") ? INADDR_ANY : inet_addr(localhost.c_str());
             if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(fd, 128) < 0) { ::close(fd); return Value::nil(); }
@@ -2151,8 +2255,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::boolean(true); // e
     }
     if (m == "l" && inv.hashKind == "IO") { // symlink? (lstat, so broken links still count)
+#if defined(_WIN32)
+        return Value::boolean(false); // Windows: no POSIX symlink test here
+#else
         struct stat st;
         return Value::boolean(::lstat(inv.toStr().c_str(), &st) == 0 && S_ISLNK(st.st_mode));
+#endif
     }
     if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both fail if absent
         struct stat st;
@@ -2239,17 +2347,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (stat(inv.toStr().c_str(), &st) != 0)
             throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
                 "Failed to get the timestamp of '" + inv.toStr() + "': no such file or directory"};
-        // an Instant, at nanosecond precision so mtime/ctime/atime stay distinct.
-        // Field names differ: BSD/macOS spell them st_*timespec, POSIX/glibc st_*tim.
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec;
+        // an Instant. Sub-second field names differ by platform; Windows stat only
+        // carries second precision.
+        double secs;
+#if defined(_WIN32)
+        time_t t = (m == "accessed") ? st.st_atime : (m == "changed") ? st.st_ctime : st.st_mtime;
+        secs = (double)t;
 #else
+  #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec;
+  #else
         const struct timespec& ats = st.st_atim, &cts = st.st_ctim, &mts = st.st_mtim;
+  #endif
+        const struct timespec& ts = (m == "accessed") ? ats : (m == "changed") ? cts : mts;
+        secs = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 #endif
-        const struct timespec& ts = (m == "accessed") ? ats
-                                  : (m == "changed")  ? cts
-                                                      : mts; // modified/created
-        return Value::number((double)ts.tv_sec + (double)ts.tv_nsec / 1e9);
+        return Value::number(secs);
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
         ::chmod(inv.toStr().c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt()));
