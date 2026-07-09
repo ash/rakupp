@@ -91,7 +91,8 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "~") { in.valid = true; in.lbp = BP_CONCAT; return in; } // concatenation: looser than x/xx
         if (o == ".." || o == "..^" || o == "^.." || o == "^..^") { in.valid = true; in.lbp = BP_RANGE; in.isRange = true; return in; }
         if (o == "..." || o == "...^") { in.valid = true; in.lbp = BP_COMMA; return in; } // sequence op: looser than comma, so `1,3 ... 19` seeds with (1,3)
-        if (o == "==>" || o == "<==") { in.valid = true; in.lbp = BP_OR; return in; } // feed operators (very loose, left-assoc)
+        if (o == "==>") { in.valid = true; in.lbp = BP_OR; return in; } // forward feed (left-assoc: data flows L→R)
+        if (o == "<==") { in.valid = true; in.lbp = BP_OR; in.rightAssoc = true; return in; } // backward feed (right-assoc: the far-right source flows leftward)
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||
             o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "===" || o == "!==" ||
             o == "=~=" || o == "≅") { in.valid = true; in.lbp = BP_COMPARE; return in; }
@@ -116,6 +117,7 @@ static InfixInfo classifyInfix(const Token& t) {
         };
         if (setCombine.count(o)) { in.valid = true; in.lbp = BP_ADD; return in; }
         if (setCompare.count(o)) { in.valid = true; in.lbp = BP_COMPARE; return in; }
+        if (o == "\xE2\x88\x98") { in.valid = true; in.lbp = BP_MUL; return in; } // ∘ function composition
         return in;
     }
     if (t.kind == Tok::Ident) {
@@ -128,6 +130,7 @@ static InfixInfo classifyInfix(const Token& t) {
             in.valid = true; in.lbp = BP_MUL; return in;
         }
         if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
+        if (o == "o") { in.valid = true; in.lbp = BP_MUL; return in; } // ASCII alias for ∘ (function composition)
         if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ADD; return in; } // zip / cross
         if (o == "and" || o == "andthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }

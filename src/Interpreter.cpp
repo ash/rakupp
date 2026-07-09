@@ -3302,6 +3302,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     };
     auto build = [&](const RxMatch& m) {
         Value v = Value::matchVal(subject.substr(m.from, m.to - m.from), m.from, m.to);
+        v.ext = std::make_shared<std::string>(subject); // the original, for .prematch/.postmatch/.orig
         for (auto& c : m.caps) {
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(Value::matchVal(subject.substr(c.first, c.second - c.first), c.first, c.second));
@@ -3391,6 +3392,7 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     // Build a Match value (positional + named captures) for one raw match.
     auto build = [&](const RxMatch& mm) {
         Value v = Value::matchVal(subject.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
+        v.ext = std::make_shared<std::string>(subject); // the original, for .prematch/.postmatch/.orig
         for (auto& c : mm.caps) {
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(Value::matchVal(subject.substr(c.first, c.second - c.first), c.first, c.second));
@@ -4112,6 +4114,15 @@ Value Interpreter::evalBinary(Binary* b) {
     if (b->simpleOp == 1) {
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
+        // function composition `f ∘ g` / `f o g` → a callable computing f(g(...))
+        if (op == "\xE2\x88\x98" || op == "o") {
+            Value fV = l, gV = r;
+            Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+            code.code->builtin = [fV, gV](Interpreter& I, ValueList& a) -> Value {
+                return I.callCallable(fV, ValueList{ I.callCallable(gV, a) });
+            };
+            return code;
+        }
         if (l.t == VT::Object || r.t == VT::Object)
             if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
                 try { return callCallable(*f, ValueList{l, r}); } catch (RakuError&) {}

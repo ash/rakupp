@@ -1749,6 +1749,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Match && m == "Str") return Value::str(inv.s);
     if (inv.t == VT::Match && (m == "from")) return Value::integer(inv.rFrom);
     if (inv.t == VT::Match && (m == "to")) return Value::integer(inv.rTo);
+    if (inv.t == VT::Match && (m == "orig" || m == "prematch" || m == "postmatch")) {
+        std::string orig = inv.ext ? *std::static_pointer_cast<std::string>(inv.ext) : inv.s;
+        if (m == "orig") return Value::str(orig);
+        if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom, orig.size())));
+        return Value::str((size_t)inv.rTo <= orig.size() ? orig.substr(inv.rTo) : "");
+    }
     if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list" || m == "caps"
                                || m == "hash" || m == "pairs" || m == "kv" || m == "elems")) {
         if (m == "hash") { Value h = Value::makeHash(); if (inv.hash) *h.hash = *inv.hash; return h; }
