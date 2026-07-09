@@ -2346,12 +2346,35 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
     return callCallableRaw(codeVal, std::move(args), rwArgs);
 }
 
-// A minimal NativeCall (`is native`): resolve the C symbol and call it. Without
-// libffi, only word-sized integer/pointer arguments are supported — Str → char*,
-// Int/bool/size_t → long — with an integer/pointer/void return (Str return →
-// char*). Covers the common libc-style calls (strlen, abs, getpid, …). Num
-// (floating-point) arguments/returns use a different calling convention and are
-// rejected rather than silently miscalled.
+static bool ncIsFloatType(const std::string& t) {
+    return t == "num" || t == "num32" || t == "num64" || t == "Num" ||
+           t == "Rat" || t == "Real" || t == "double" || t == "Numeric";
+}
+
+// One dispatch switch, arities 0..8: R = C return type, AT = C arg type, SRC = the
+// arg array (`g` longs or `f` doubles), OUT = the result variable. The C++ compiler
+// emits the correct ABI for each typed function-pointer cast — no assembly needed.
+#define NC_DISPATCH(R, AT, SRC, OUT) switch (n) { \
+    case 0: OUT = ((R(*)())sym)(); break; \
+    case 1: OUT = ((R(*)(AT))sym)(SRC[0]); break; \
+    case 2: OUT = ((R(*)(AT,AT))sym)(SRC[0],SRC[1]); break; \
+    case 3: OUT = ((R(*)(AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2]); break; \
+    case 4: OUT = ((R(*)(AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3]); break; \
+    case 5: OUT = ((R(*)(AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4]); break; \
+    case 6: OUT = ((R(*)(AT,AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4],SRC[5]); break; \
+    case 7: OUT = ((R(*)(AT,AT,AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4],SRC[5],SRC[6]); break; \
+    case 8: OUT = ((R(*)(AT,AT,AT,AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4],SRC[5],SRC[6],SRC[7]); break; \
+    default: throw RakuError{Value::typeObj("X::NYI"), "NativeCall: too many arguments (max 8)"}; \
+}
+
+// NativeCall (`is native`): resolve the C symbol via dlsym and call it. Arguments
+// and the return are classified by their *declared* type — integer/pointer
+// (`Str`→`char*`, the `int*`/`uint*`/`size_t`/`bool`/`Pointer` family → 64-bit) or
+// floating-point (`num`/`num32`/`num64`) — so e.g. `sqrt(4)` correctly coerces its
+// `Int` argument to a `double`. A call must be uniform (all integer/pointer *or*
+// all floating-point) args; the return may be either. This covers all of libc's
+// integer functions and the whole `<math.h>` surface. Not supported (they need
+// libffi): mixed int/float arguments, C structs, `CArray`, and callbacks.
 Value Interpreter::callNative(Callable& c, ValueList& args) {
     void* handle = RTLD_DEFAULT;
     if (!c.nativeLib.empty()) {
@@ -2364,34 +2387,40 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
     }
     void* sym = dlsym(handle, c.nativeSym.c_str());
     if (!sym) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + c.nativeSym + "'"};
-    auto isNum = [](const std::string& t){ return t == "num" || t == "num32" || t == "num64" || t == "Num" || t == "Rat"; };
-    std::vector<std::string> keep; keep.reserve(args.size());
-    std::vector<long> a; a.reserve(args.size());
-    for (auto& v : args) {
-        if (isNum(v.typeName()) && v.t != VT::Str)
-            throw RakuError{Value::typeObj("X::NYI"), "NativeCall: floating-point arguments are not supported"};
-        if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) {
+
+    const std::vector<Param>* prm = c.params;
+    std::vector<std::string> keep; keep.reserve(args.size()); // keep Str buffers alive across the call
+    std::vector<long>   g;  // integer/pointer args
+    std::vector<double> f;  // floating-point args
+    bool anyFP = false, anyGP = false;
+    for (size_t i = 0; i < args.size(); i++) {
+        Value& v = args[i];
+        std::string pt = (prm && i < prm->size()) ? (*prm)[i].type : "";
+        bool fp = ncIsFloatType(pt) || (pt.empty() && (v.t == VT::Num || v.t == VT::Rat));
+        if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { // Str → char*
             keep.push_back(v.toStr());
-            a.push_back((long)(intptr_t)keep.back().c_str());
-        } else a.push_back(v.toInt());
+            g.push_back((long)(intptr_t)keep.back().c_str());
+            anyGP = true;
+        } else if (fp) { f.push_back(v.toNum()); anyFP = true; }
+        else          { g.push_back(v.toInt()); anyGP = true; }
     }
-    if (isNum(c.retType)) throw RakuError{Value::typeObj("X::NYI"), "NativeCall: floating-point return is not supported"};
-    long r = 0;
-    switch (a.size()) {
-        case 0: r = ((long(*)())sym)(); break;
-        case 1: r = ((long(*)(long))sym)(a[0]); break;
-        case 2: r = ((long(*)(long,long))sym)(a[0],a[1]); break;
-        case 3: r = ((long(*)(long,long,long))sym)(a[0],a[1],a[2]); break;
-        case 4: r = ((long(*)(long,long,long,long))sym)(a[0],a[1],a[2],a[3]); break;
-        case 5: r = ((long(*)(long,long,long,long,long))sym)(a[0],a[1],a[2],a[3],a[4]); break;
-        case 6: r = ((long(*)(long,long,long,long,long,long))sym)(a[0],a[1],a[2],a[3],a[4],a[5]); break;
-        default: throw RakuError{Value::typeObj("X::NYI"), "NativeCall: too many arguments (max 6)"};
-    }
+    if (anyFP && anyGP)
+        throw RakuError{Value::typeObj("X::NYI"), "NativeCall: mixed integer and floating-point arguments need libffi"};
+
     const std::string& rt = c.retType;
+    bool retFP = ncIsFloatType(rt);
+    size_t n = args.size();
+    long ri = 0; double rd = 0;
+    if (anyFP) { if (retFP) NC_DISPATCH(double, double, f, rd) else NC_DISPATCH(long, double, f, ri) }
+    else       { if (retFP) NC_DISPATCH(double, long,   g, rd) else NC_DISPATCH(long, long,   g, ri) }
+
     if (rt.empty() || rt == "void" || rt == "Nil") return Value::nil();
-    if (rt == "Str") return Value::str(r ? std::string((const char*)(intptr_t)r) : "");
-    return Value::integer(r);
+    if (rt == "Str") return Value::str(ri ? std::string((const char*)(intptr_t)ri) : "");
+    if (retFP) return Value::number(rd);
+    if (rt == "bool" || rt == "Bool") return Value::boolean(ri != 0);
+    return Value::integer(ri);
 }
+#undef NC_DISPATCH
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
