@@ -5,7 +5,11 @@ a source program** as it flows through the compiler in each of its run modes
 (interpret, bundle, AOT, native compile).
 
 For *what* the language supports see [FEATURES.md](FEATURES.md); for *how fast*
-it runs see [BENCHMARKS.md](BENCHMARKS.md). This file is about the *how*.
+it runs see [BENCHMARKS.md](BENCHMARKS.md) and, for the `--exe -O` code
+generator's optimizer, [OPTIMIZATION.md](OPTIMIZATION.md). Language-mutation
+(custom operators, precedence traits, phasers, the MOP) is in
+[METAPROGRAMMING.md](METAPROGRAMMING.md), and the concurrency/async model in
+[ASYNC.md](ASYNC.md). This file is about the *how*.
 
 ---
 
@@ -67,15 +71,17 @@ This is the heart. Key pieces:
 |---|---|
 | `Value.{h,cpp}` | The universal runtime value (see below), coercions, gist/Str. |
 | `BigInt.{h,cpp}` | Arbitrary-precision integers (base-1e9) for the exact number tower. |
-| `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, and codegen helpers. |
+| `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus the concurrency runtime (a CPython-style GIL, thread-local execution registers, and opt-in true parallelism via `RAKUPP_PARALLEL`; see [ASYNC.md](ASYNC.md)). |
 | `Builtins.cpp` | Named built-ins, the `Test` module (TAP), and the ~big method dispatcher `methodCall`. |
 | `Regex.{h,cpp}` | Recursive-descent regex/grammar engine with a backtracking matcher. |
 | `Unicode.*`, `unicode_gen.cpp`, `unicode_names.cpp` | Normalization, grapheme segmentation, properties, names — tables generated from UCD 15.1. |
+| `IOSpec.cpp` | `IO::Spec::*` path semantics (Unix/Win32). |
+| `Highlight.{h,cpp}` | The parse-aware syntax highlighter behind `--highlight` (HTML + ANSI). |
 | `Runtime.{h,cpp}` | Shared entry points: `rakuppRun` (lex+parse+interpret) and `rakuppRunProgram` (interpret a prebuilt AST, for `--aot`). |
-| `Codegen.*` | `--exe` back end: transpiles the AST to native C++. |
+| `Codegen.*` | `--exe` back end: transpiles the AST to native C++ (with an optional `-O` optimizer — see [OPTIMIZATION.md](OPTIMIZATION.md)). |
 | `AstEmit.cpp` | `--aot` back end: emits C++ that rebuilds the AST. |
 | `AstDump.cpp` | `--ast` AST printer. |
-| `main.cpp` | CLI: interpret, `-e`, `--ast`, `--cpp`, `--bundle`, `--aot`, `--exe`. |
+| `main.cpp` | CLI: interpret, `-e`, `--ast`, `--cpp`, `--highlight`, `--bundle`, `--aot`, `--exe`. |
 
 ### The `Value` type
 
@@ -244,6 +250,16 @@ runtime. The loop is a native `for`, the sub call is a direct C++ call, and only
 loops and recursion run several times faster than interpreted (fib ≈ level with
 Rakudo).
 
+Passing **`-O`** (`--exe -O`, also `-O2`/`-O3`/`-Os`) turns on `Codegen`'s own
+optimizer *before* the C++ compiler sees the source: direct-arity calls (no
+per-call `ValueList`), inline `int64` fast paths for arithmetic/comparison
+(skipping the string-dispatch and re-boxing `applyArith` would do), and
+native-bool conditions. Values stay boxed — the fast paths just avoid the slow
+machinery — and anything unrecognized falls back to `applyArith`, so results are
+identical. What each pass does and how much it buys (fib 165 → 66 ms) is in
+[OPTIMIZATION.md](OPTIMIZATION.md). (The `-O…` suffix also selects the backend
+C++ compiler's own optimization level.)
+
 #### How codegen reuses the runtime instead of reimplementing it
 
 The generator never rebuilds the object system or the built-ins in C++. It maps
@@ -276,11 +292,14 @@ binary.
 
 Raku has genuinely dynamic features (`EVAL`, runtime grammars, `BEGIN`-time
 code), so the reference implementation is VM-based and Raku++ started the same
-way: get the language correct under Roast first. Because Raku++ does **not**
-implement the grammar-mutating parts of Raku (custom slangs, parse-time operator
-definitions), the language it *does* handle is static enough to compile ahead of
-time — which is what mode 3 exploits. The remaining dynamic/heavy constructs
-(grammars) are exactly the ones that stay bundled.
+way: get the language correct under Roast first. User-defined operators (`sub
+infix:<…>` and friends, with precedence traits) *are* supported — they're
+resolved during the single parse pass — but the deeper grammar-mutating layer
+(macros, `RakuAST`, full slangs) is not (see
+[METAPROGRAMMING.md](METAPROGRAMMING.md)). That keeps the language rakupp handles
+static enough to compile ahead of time — which is what mode 3 exploits. The
+remaining dynamic/heavy constructs (grammars) are exactly the ones that stay
+bundled.
 
 ---
 
