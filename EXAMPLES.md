@@ -239,12 +239,15 @@ say $*RAKU.compiler.name;                 # → Raku++
 say $*RAKU.compiler.backend;              # → cpp
 ```
 
-Call a C function directly with `NativeCall`:
+Call a C function directly with `NativeCall` — integer and floating-point,
+including libc and `<math.h>`:
 
 ```raku
 use NativeCall;
 sub strlen(Str is encoded('utf8') --> size_t) is native {*}
-say strlen("hello");                      # → 5   (libc's strlen, via dlsym)
+sub pow(num64, num64 --> num64) is native {*}
+say strlen("hello");                      # → 5      (libc's strlen, via dlsym)
+say pow(2e0, 10e0);                       # → 1024   (math.h; floats)
 ```
 
 ## Concurrency & Async

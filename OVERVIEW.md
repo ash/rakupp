@@ -70,13 +70,15 @@ runnable snippets in [EXAMPLES.md](EXAMPLES.md).
 - **Concurrency** — real `std::thread`s under a CPython-style GIL: promises,
   `Supply`/`react`/`whenever`, `Channel`, `Thread`, `Lock`, `atomicint`. Opt into
   true CPU parallelism with `RAKUPP_PARALLEL=1`. (See [ASYNC.md](ASYNC.md).)
-- **I/O & system** — files, `IO::Path`, `run`/`shell` subprocesses, and a minimal
-  **NativeCall** C FFI (`is native` via `dlsym`).
+- **I/O & system** — files, `IO::Path`, `run`/`shell` subprocesses, and a
+  **NativeCall** C FFI (`is native` via `dlsym`) covering libc + `<math.h>`
+  (integer and floating-point scalars, no `libffi`).
 - **Tooling** — a parse-aware syntax highlighter (`--highlight`, HTML + ANSI) and
   a self-hosted Roast harness written in Raku and run *by* Raku++.
 
 **Not there yet:** macros / `RakuAST` / slangs, `libffi`-grade NativeCall
-(floats/structs), some `IO`/`POD` corners, and true lock-free parallel atomics.
+(structs / callbacks / mixed int+float signatures), some `IO`/`POD` corners, and
+true lock-free parallel atomics.
 
 ## Four ways to run a program
 
