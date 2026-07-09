@@ -109,13 +109,17 @@ be "better."
 | Dependencies | none | a toolchain + runtime |
 | Cold startup | ~3 ms | ~100 ms |
 | Native compile | yes (`--exe`) — **beats Rakudo on every benchmark**, 2.4×–17× | JIT at run time |
-| Interpreted speed | slower on hot loops | faster |
+| Interpreted speed | **faster on most workloads** (7/9 here) | JIT leads on the heaviest tight loops/recursion |
 | Grammar-mutation (macros/slangs) | not implemented | full |
 | Coverage | growing, test-first | complete |
 
-The honest summary: **Raku++ starts instantly and its compiled binaries are
-fast**, while **Rakudo is complete and faster in pure interpreted mode**. See
-[BENCHMARKS.md](BENCHMARKS.md) for the numbers and methodology.
+The honest summary: on the benchmark set, **Raku++ is faster than Rakudo on most
+workloads even when interpreting** — a ~3 ms start and lean operations outweigh
+the VM on startup, strings, regex, and collections — with Rakudo's JIT pulling
+ahead only on the heaviest tight loops and recursion. **Compiling with `--exe`
+reclaims those too**, putting every benchmark ahead. Rakudo's real edge is
+**completeness**, not raw speed. See [BENCHMARKS.md](BENCHMARKS.md) for the
+numbers and methodology.
 
 ## Status & how it's measured
 
