@@ -10,7 +10,8 @@ the official Raku test suite.
 
 **Status:** **294 / 1,464 Roast files fully pass (~20%)**; 131,152 assertions
 passing on the files that run. Early-stage, growing test-first. See
-[the full guide](GUIDE.md) for the complete picture.
+[the overview](OVERVIEW.md) for a one-page tour, or [the full guide](GUIDE.md)
+for the complete picture.
 
 ## Quick start
 
