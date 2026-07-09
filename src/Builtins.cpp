@@ -3368,7 +3368,11 @@ void Interpreter::registerBuiltins() {
     B["take"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.size() == 1 ? a[0] : Value::array(a);
         if (!I.tctx_.gatherStack.empty()) {
-            for (auto& x : a) I.tctx_.gatherStack.back()->push_back(x);
+            auto& coll = *I.tctx_.gatherStack.back();
+            for (auto& x : a) coll.push_back(x);
+            // a lazy gather stops the block once it has produced enough elements
+            size_t lim = I.tctx_.gatherLimits.empty() ? 0 : I.tctx_.gatherLimits.back();
+            if (lim && coll.size() >= lim) throw StopGatherEx{};
         }
         return v;
     };

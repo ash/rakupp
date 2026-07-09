@@ -457,6 +457,7 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.callDepth   = tctx_.callDepth;
     c.curStateEnv = tctx_.curStateEnv;
     c.gatherStack = std::move(tctx_.gatherStack);
+    c.gatherLimits = std::move(tctx_.gatherLimits);
     c.supplyStack = std::move(tctx_.supplyStack);
     c.makeTargets = std::move(tctx_.makeTargets);
     c.pkgPrefix   = std::move(tctx_.pkgPrefix);
@@ -468,6 +469,7 @@ void Interpreter::loadCtx(ExecContext& c) {
     tctx_.callDepth    = c.callDepth;
     tctx_.curStateEnv  = c.curStateEnv;
     tctx_.gatherStack  = std::move(c.gatherStack);
+    tctx_.gatherLimits = std::move(c.gatherLimits);
     tctx_.supplyStack  = std::move(c.supplyStack);
     tctx_.makeTargets  = std::move(c.makeTargets);
     tctx_.pkgPrefix    = std::move(c.pkgPrefix);
@@ -4575,15 +4577,44 @@ Value Interpreter::evalUnary(Unary* u) {
         catch (...) { quietDepth_--; throw; }
     }
     if (u->op == "gather") {
-        auto collector = std::make_shared<ValueList>();
-        tctx_.gatherStack.push_back(collector);
-        try {
-            if (u->operand->kind == NK::BlockExpr)
-                callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {});
-            else eval(u->operand.get());
-        } catch (...) { tctx_.gatherStack.pop_back(); throw; }
-        tctx_.gatherStack.pop_back();
-        return Value::array(*collector);
+        Unary* gu = u;
+        Value blockClosure;
+        if (u->operand->kind == NK::BlockExpr)
+            blockClosure = makeClosure(static_cast<BlockExpr*>(u->operand.get()));
+        // Run the gather block, collecting takes up to `limit` (0 = unlimited).
+        // Returns true if the limit was hit (the block may have more to give — i.e.
+        // it's infinite or larger than the limit).
+        auto runGather = [this, gu, blockClosure](size_t limit, ValueList& out) -> bool {
+            auto collector = std::make_shared<ValueList>();
+            tctx_.gatherStack.push_back(collector);
+            tctx_.gatherLimits.push_back(limit);
+            bool hit = false;
+            try {
+                if (gu->operand->kind == NK::BlockExpr) callCallable(blockClosure, {});
+                else eval(gu->operand.get());
+            } catch (StopGatherEx&) { hit = true; }
+              catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back(); throw; }
+            tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+            out = std::move(*collector);
+            return hit;
+        };
+        const size_t INITIAL = 10000;
+        ValueList prefix;
+        // finite gather (terminates within the cap): eager, exactly as before
+        if (!runGather(INITIAL, prefix)) return Value::array(std::move(prefix));
+        // hit the cap → treat as lazy: keep the prefix and extend on demand by
+        // re-running the block with a larger cap (re-run because there are no
+        // coroutines; fine for the usual pure generator `gather { loop { take … } }`).
+        Value arr = Value::array(prefix); arr.isList = true;
+        auto st = std::make_shared<LazySeqState>();
+        st->appendNext = [this, runGather](ValueList& out) -> bool {
+            ValueList grown;
+            bool more = runGather(out.size() + 4096, grown);
+            for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
+            return more;
+        };
+        arr.ext = st;
+        return arr;
     }
     if (u->op == "++" || u->op == "--") {
         Value* lv = lvalue(u->operand.get());
