@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: measured per individual test, **~57% of all declared tests pass** (131,320 / ~231,092, counting tests in files that abort before running); on the stricter file bar, **300 / 1,464 fully pass (~20%)** (615 partial, 546 no-TAP, 3 timeout). See [COUNTING.md](COUNTING.md) for how these are defined.
+Roast standing: measured per individual test, **~57% of all declared tests pass** (131,495 / ~231,092, counting tests in files that abort before running); on the stricter file bar, **305 / 1,464 fully pass (~21%)** (614 partial, 542 no-TAP, 3 timeout). See [COUNTING.md](COUNTING.md) for how these are defined.
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -135,8 +135,9 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - **Gaps:** true CPU parallelism is opt-in (`RAKUPP_PARALLEL`), off by default; real wall-clock timers (`Promise.in`/`.at` are capped), `cas`, stream-retokenizing Supply combinators (`split`/`comb`/`words`/`lines`)
 
 ## Phasers, Modules, Exceptions, Special Vars, Testing
-- Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `CATCH`
-- `state` variables (persistent), modules `use`/`need`/`no`, `use lib <expr>`, `$=finish` POD, sub hoisting, `EVAL`
-- Exceptions: `die`/`try`/`CATCH`, `throws-like`, `X::*` (partial), resumable via `.resume` inside a `CATCH`
+- Phasers: `BEGIN CHECK INIT END` (top-level ordering), `ENTER/LEAVE` (block entry/exit), `FIRST` (once per loop), `CATCH`; `BEGIN`/`ENTER` usable in value position
+- `state` variables (persistent), modules `use`/`need`/`no`, `use lib <expr>`, sub hoisting, `EVAL`
+- **POD DOM**: `$=pod` / `@=pod` as `Pod::Block` objects (`Pod::Block::Named`/`::Para`/`::Code`/`::Comment`, `Pod::Heading`, `Pod::Item`) with `.name`/`.contents`/`.level` — delimited/paragraph/abbreviated blocks, nesting, indent-based code blocks; plus `$=finish`
+- Exceptions: `die`/`try`/`CATCH`, `throws-like`, `X::*` (partial), resumable via `.resume` inside a `CATCH`; `fail`/`Failure.new` carry an exception (`.exception`), report undefined for `//`
 - Special vars: `$_ $/ $! @*ARGS $?LINE $?FILE`
 - Test API: `plan ok nok is isnt is-deeply like unlike cmp-ok isa-ok is-approx dies-ok lives-ok throws-like eval-lives-ok subtest skip todo pass flunk diag done-testing "plan skip-all"`

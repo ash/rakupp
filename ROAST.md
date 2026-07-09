@@ -31,17 +31,17 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~57% of all declared Roast tests pass** (131,320 / 231,092); on the
-stricter file bar, ~20% of files fully pass (300 / 1,464). The per-file breakdown
+**Headline: ~57% of all declared Roast tests pass** (131,495 / 231,092); on the
+stricter file bar, ~20% of files fully pass (305 / 1,464). The per-file breakdown
 comes first below, then the per-test figures.
 
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **300** | **20%** |
-| Partially passing | 615 | 42% |
-| No TAP output | 546 | 37% |
+| **Fully passing** | **305** | **21%** |
+| Partially passing | 614 | 42% |
+| No TAP output | 542 | 37% |
 | Timeouts | 3 | 0.2% |
 
 **Coverage ≈ 20% of files.** That is the number to quote. Over a third of the suite
@@ -52,7 +52,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**131,320 of ~231,092 declared tests — ~57%**. "Declared" means every test the
+**131,495 of ~231,092 declared tests — ~57%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -61,9 +61,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 131,320 / 189,081 (~69%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 131,320 / 199,944 (~66%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 131,320 / 231,092 (~57%) | + tests in parse-error files, recovered from source |
+| tests that **ran** | 131,495 / 189,204 (~69%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 131,495 / 199,944 (~66%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 131,495 / 231,092 (~57%) | + tests in parse-error files, recovered from source |
 
 The ~57% is the per-test analog of the ~20% file coverage. Two caveats on scope:
 
@@ -88,7 +88,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
 | S02 | Literals, types, magicals | 25 | 56 | 0 | 66 | 949/1785 | 53% |
 | S03 | Operators | 16 | 35 | 0 | 74 | 770/1586 | 48% |
-| S04 | Blocks, statements, phasers | 16 | 36 | 0 | 25 | 366/494 | 74% |
+| S04 | Blocks, statements, phasers | 17 | 36 | 0 | 25 | 396/541 | 73% |
 | S05 | Regexes & grammars | 17 | 68 | 0 | 14 | 3119/4955 | 62% |
 | S06 | Subroutines & signatures | 8 | 39 | 0 | 47 | 304/576 | 52% |
 | S07 | Iterators | 1 | 1 | 0 | 4 | 42/42 | 100% |
@@ -104,7 +104,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S19 | Command-line | 6 | 1 | 0 | 1 | 21/24 | 87% |
 | S22 | Package format | 0 | 0 | 0 | 1 | 0/0 | — |
 | S24 | Testing | 8 | 5 | 0 | 4 | 60/100 | 60% |
-| S26 | Documentation (POD) | 2 | 11 | 0 | 14 | 8/100 | 8% |
+| S26 | Documentation (POD) | 6 | 10 | 0 | 11 | 164/193 | 85% |
 | S28 | Special variables | 2 | 0 | 0 | 1 | 6/6 | 100% |
 | S29 | Builtins & context | 3 | 8 | 0 | 3 | 345/370 | 93% |
 | S32 | Standard types (str/list/num/…) | 39 | 106 | 0 | 118 | 36639/37483 | 97% |
@@ -140,7 +140,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 300 / 1,464 files fully passing (~20% coverage); 615 partial,
-546 no-TAP, 3 timeout. Reached-assertion pass rate 131,320 / 189,081 (see
+_Snapshot: 305 / 1,464 files fully passing (~21% coverage); 614 partial,
+542 no-TAP, 3 timeout. Reached-assertion pass rate 131,495 / 189,204 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._
