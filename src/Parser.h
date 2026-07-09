@@ -33,6 +33,7 @@ private:
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
     std::string pcfxClose_; // active postcircumfix close bracket (don't re-open it inside its own content)
+    std::string sigRetType_; // return type from an in-signature `--> T` (read by parseSub)
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
     std::vector<std::string> typeStack_; // enclosing class/role/grammar names (for ::?CLASS)
 

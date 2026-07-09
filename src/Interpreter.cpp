@@ -1,5 +1,6 @@
 #include "Interpreter.h"
 #include <unistd.h>
+#include <dlfcn.h>
 #ifdef __APPLE__
 #include <crt_externs.h>
 static char** rakupp_environ() { return *_NSGetEnviron(); }
@@ -1342,6 +1343,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code->body = &sd->body;
                 c.code->closure = tctx_.cur;
                 c.code->retType = sd->retType;
+                if (sd->isNative) { c.code->isNative = true; c.code->nativeLib = sd->nativeLib;
+                                    c.code->nativeSym = sd->nativeSym.empty() ? sd->name : sd->nativeSym; }
                 if (prms->empty()) c.code->placeholders = computePlaceholders(sd->body);
                 return c;
             };
@@ -2342,8 +2345,56 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
     return callCallableRaw(codeVal, std::move(args), rwArgs);
 }
 
+// A minimal NativeCall (`is native`): resolve the C symbol and call it. Without
+// libffi, only word-sized integer/pointer arguments are supported — Str → char*,
+// Int/bool/size_t → long — with an integer/pointer/void return (Str return →
+// char*). Covers the common libc-style calls (strlen, abs, getpid, …). Num
+// (floating-point) arguments/returns use a different calling convention and are
+// rejected rather than silently miscalled.
+Value Interpreter::callNative(Callable& c, ValueList& args) {
+    void* handle = RTLD_DEFAULT;
+    if (!c.nativeLib.empty()) {
+        // try the name as-is, then platform-decorated forms
+        const std::string& l = c.nativeLib;
+        for (const std::string& cand : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"}) {
+            if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
+        }
+        if (!handle) throw RakuError{Value::typeObj("X::Libc"), "Cannot load native library '" + c.nativeLib + "'"};
+    }
+    void* sym = dlsym(handle, c.nativeSym.c_str());
+    if (!sym) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + c.nativeSym + "'"};
+    auto isNum = [](const std::string& t){ return t == "num" || t == "num32" || t == "num64" || t == "Num" || t == "Rat"; };
+    std::vector<std::string> keep; keep.reserve(args.size());
+    std::vector<long> a; a.reserve(args.size());
+    for (auto& v : args) {
+        if (isNum(v.typeName()) && v.t != VT::Str)
+            throw RakuError{Value::typeObj("X::NYI"), "NativeCall: floating-point arguments are not supported"};
+        if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) {
+            keep.push_back(v.toStr());
+            a.push_back((long)(intptr_t)keep.back().c_str());
+        } else a.push_back(v.toInt());
+    }
+    if (isNum(c.retType)) throw RakuError{Value::typeObj("X::NYI"), "NativeCall: floating-point return is not supported"};
+    long r = 0;
+    switch (a.size()) {
+        case 0: r = ((long(*)())sym)(); break;
+        case 1: r = ((long(*)(long))sym)(a[0]); break;
+        case 2: r = ((long(*)(long,long))sym)(a[0],a[1]); break;
+        case 3: r = ((long(*)(long,long,long))sym)(a[0],a[1],a[2]); break;
+        case 4: r = ((long(*)(long,long,long,long))sym)(a[0],a[1],a[2],a[3]); break;
+        case 5: r = ((long(*)(long,long,long,long,long))sym)(a[0],a[1],a[2],a[3],a[4]); break;
+        case 6: r = ((long(*)(long,long,long,long,long,long))sym)(a[0],a[1],a[2],a[3],a[4],a[5]); break;
+        default: throw RakuError{Value::typeObj("X::NYI"), "NativeCall: too many arguments (max 6)"};
+    }
+    const std::string& rt = c.retType;
+    if (rt.empty() || rt == "void" || rt == "Nil") return Value::nil();
+    if (rt == "Str") return Value::str(r ? std::string((const char*)(intptr_t)r) : "");
+    return Value::integer(r);
+}
+
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
+    if (codeVal.t == VT::Code && codeVal.code && codeVal.code->isNative) return callNative(*codeVal.code, args);
     if (codeVal.t == VT::Hash && codeVal.hashKind == "Format") {
         std::string fmt = codeVal.hash && codeVal.hash->count("fmt") ? (*codeVal.hash)["fmt"].toStr() : "";
         return Value::str(doSprintf(fmt, args));

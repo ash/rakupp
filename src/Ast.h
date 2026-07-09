@@ -209,6 +209,9 @@ struct SubDecl : Stmt {
     bool isSubmethod = false;
     bool isExport = false; // `is export` — visible to importers of the enclosing module
     std::string retType;   // `of Num` / `returns Int` / `--> T` return type (for .returns/.of)
+    bool isNative = false;    // `is native` — a C FFI call
+    std::string nativeLib;    // `is native('lib')` — "" ⇒ the default namespace (libc etc.)
+    std::string nativeSym;    // `is symbol('name')` — "" ⇒ the sub's own name
     SubDecl(): Stmt(NK::SubDecl) {}
 };
 

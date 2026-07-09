@@ -125,6 +125,7 @@ public:
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs); // no wrap layer
+    Value callNative(Callable& c, ValueList& args); // `is native` C FFI
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
     // Emit text for say/print/put/note: route through a user-overridden $*OUT/$*ERR
     // (call its .print), else write to the real stream.

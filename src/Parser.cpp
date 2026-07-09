@@ -1673,6 +1673,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // end of the signature so smileys (IO::Path:D) and parametrised types
         // (Positional[Int], (Int, Str)) don't trip the `)`-expectation.
         if (matchOp("-->")) {
+            if (isKind(Tok::Ident)) sigRetType_ = cur().text; // remember the return type
             int depth = 0;
             while (!isKind(Tok::End)) {
                 if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
@@ -1845,12 +1846,18 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
             else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
                 if (trait == "is" && (isIdent("rw") || isIdent("copy"))) p.isRw = (cur().text == "rw");
-                advance();
+                advance(); // the trait word (rw/copy/encoded/…)
+                // a parenthesised trait argument: `is encoded('utf8')` — skip it
+                if (isKind(Tok::LParen)) {
+                    int d = 0;
+                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+                }
             }
         }
         if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
         params.push_back(std::move(p));
-        if (matchOp("-->")) { // return type — discarded; skip to end of signature (smileys, params)
+        if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
+            if (isKind(Tok::Ident)) sigRetType_ = cur().text;
             int depth = 0;
             while (!isKind(Tok::End)) {
                 if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
@@ -1949,7 +1956,14 @@ StmtPtr Parser::parseSub(bool isMulti) {
             else if (cat == "postfix") userPostfix_.insert(opname);
         }
     }
-    if (isKind(Tok::LParen)) { advance(); s->params = parseSignature(); expectKind(Tok::RParen, ")"); }
+    if (isKind(Tok::LParen)) {
+        sigRetType_.clear(); advance(); s->params = parseSignature();
+        // a `--> T` that follows a parameter (not comma-separated) is left for us
+        if (isOp("-->")) { advance(); if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+                           while (!isKind(Tok::RParen) && !isKind(Tok::End)) advance(); }
+        expectKind(Tok::RParen, ")");
+        if (!sigRetType_.empty()) s->retType = sigRetType_; // `--> T` inside the signature
+    }
     // alternative signatures sharing one body: `sub f (sig1) | (sig2) | (sig3) { … }`
     while (isOp("|") && peek().kind == Tok::LParen) {
         advance(); advance(); // '|' '('
@@ -1961,6 +1975,22 @@ StmtPtr Parser::parseSub(bool isMulti) {
     //  capture `of T` / `returns T` / `--> T` as the return type)
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
         if (isIdent("export")) s->isExport = true;
+        // NativeCall traits: `is native` / `is native('lib')` / `is symbol('name')`
+        if (isIdent("native")) {
+            s->isNative = true;
+            if (peek().kind == Tok::LParen) {
+                advance(); advance(); // native (
+                if (isKind(Tok::StrLit) || isKind(Tok::StrInterp)) s->nativeLib = cur().text;
+                int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                continue;
+            }
+        }
+        if (isIdent("symbol") && peek().kind == Tok::LParen) {
+            advance(); advance(); // symbol (
+            if (isKind(Tok::StrLit) || isKind(Tok::StrInterp)) s->nativeSym = cur().text;
+            int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+            continue;
+        }
         // precedence/associativity traits on a custom infix: `is tighter(&infix:<+>)`,
         // `is looser(&infix:<*>)`, `is equiv(&infix:<+>)`, `is assoc<left|right|non>`.
         if (!declInfix.empty() && isIdent("is") && peek().kind == Tok::Ident) {
