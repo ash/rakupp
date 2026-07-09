@@ -2,9 +2,10 @@
 
 A from-scratch implementation of the [Raku](https://raku.org) programming
 language in **C++17, with no third-party dependencies** — a hand-written lexer,
-parser, and tree-walking evaluator that runs real Raku: classes, roles, grammars,
-regexes, multi-dispatch, junctions, lazy sequences, a bignum tower, and
-Unicode-correct strings. It is not a fork of Rakudo and shares no code with it;
+parser, and tree-walking evaluator that runs real Raku (classes, roles, grammars,
+regexes, multi-dispatch, junctions, lazy sequences, a bignum tower,
+Unicode-correct strings, and concurrency) and can also **compile** a program to a
+standalone native binary. It is not a fork of Rakudo and shares no code with it;
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
