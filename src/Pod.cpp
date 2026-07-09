@@ -58,6 +58,16 @@ static bool matchDirective(const std::string& line, std::string& kw, std::string
     return true;
 }
 
+// Collect a paragraph verbatim (raw lines, joined with newlines, no whitespace
+// collapse). `trailingNL` adds a closing newline (comment blocks keep one).
+static std::string collectVerbatim(const std::vector<std::string>& lines, size_t& i, bool trailingNL) {
+    std::vector<std::string> body; std::string k2, r2;
+    while (i < lines.size() && !strip(lines[i]).empty() && !matchDirective(lines[i], k2, r2)) { body.push_back(lines[i]); i++; }
+    std::string text; for (size_t k = 0; k < body.size(); k++) { if (k) text += "\n"; text += body[k]; }
+    if (trailingNL && !text.empty()) text += "\n";
+    return text;
+}
+
 // Collect the text of a paragraph: consecutive non-blank, non-directive lines.
 static std::string collectPara(const std::vector<std::string>& lines, size_t& i) {
     std::string para; std::string kw, rest;
@@ -123,13 +133,14 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 if (cls == "Pod::Block::Named") (*block.hash)["name"] = Value::str(name);
                 if (lv) (*block.hash)["level"] = Value::integer(lv);
                 ValueList inner;
-                if (cls == "Pod::Block::Code") { // verbatim: the raw lines are the contents
+                if (cls == "Pod::Block::Code" || cls == "Pod::Block::Comment") { // verbatim contents
                     std::vector<std::string> code; std::string k2, r2;
                     while (i < lines.size() && !(matchDirective(lines[i], k2, r2) && k2 == "end" && firstWord(r2) == name))
                         { code.push_back(lines[i]); i++; }
                     while (!code.empty() && strip(code.back()).empty()) code.pop_back();
                     std::string text; for (size_t k = 0; k < code.size(); k++) { if (k) text += "\n"; text += code[k]; }
-                    Value cc = Value::array(); cc.arr->push_back(Value::str(text));
+                    if (cls == "Pod::Block::Comment" && !text.empty()) text += "\n"; // comments keep a trailing NL
+                    Value cc = Value::array(); if (!text.empty()) cc.arr->push_back(Value::str(text));
                     (*block.hash)["contents"] = cc;
                     if (i < lines.size()) i++;
                     out.push_back(block);
@@ -146,11 +157,17 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 std::string name = firstWord(rest);
                 int lv = 0; std::string cls = classForBlock(name, lv);
                 i++;
-                std::string para = collectPara(lines, i);
                 Value block = mkPod(cls);
                 if (cls == "Pod::Block::Named") (*block.hash)["name"] = Value::str(name);
                 if (lv) (*block.hash)["level"] = Value::integer(lv);
-                Value ic = Value::array(); if (!para.empty()) ic.arr->push_back(mkPara(para));
+                Value ic = Value::array();
+                if (cls == "Pod::Block::Comment" || cls == "Pod::Block::Code") {
+                    std::string v = collectVerbatim(lines, i, cls == "Pod::Block::Comment");
+                    if (!v.empty()) ic.arr->push_back(Value::str(v));
+                } else {
+                    std::string para = collectPara(lines, i);
+                    if (!para.empty()) ic.arr->push_back(mkPara(para));
+                }
                 (*block.hash)["contents"] = ic;
                 out.push_back(block);
                 continue;
@@ -178,7 +195,16 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                 out.push_back(it);
                 continue;
             }
-            if (kw == "comment") { i++; collectPara(lines, i); out.push_back(mkPod("Pod::Block::Comment")); continue; }
+            if (kw == "comment") { // abbreviated: verbatim body until a blank line
+                i++;
+                std::string v = collectVerbatim(lines, i, true);
+                if (!rest.empty()) v = rest + (v.empty() ? std::string("\n") : "\n" + v);
+                Value cm = mkPod("Pod::Block::Comment");
+                Value cc = Value::array(); if (!v.empty()) cc.arr->push_back(Value::str(v));
+                (*cm.hash)["contents"] = cc;
+                out.push_back(cm);
+                continue;
+            }
             if (kw == "pod") { // =pod … =end pod delimiter-less start OR abbreviated; treat like a named block
                 std::string name = "pod"; i++;
                 Value block = mkPod("Pod::Block::Named");
