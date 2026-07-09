@@ -206,22 +206,13 @@ say (1 .. 10).grep(* %% 2).sum;           # → 30
 say <the quick brown>.map(*.tc);          # → (The Quick Brown)
 ```
 
-## I/O, System, Concurrency
+## File & Path I/O
 
 ```raku
-my $p = run "echo", "hi", :out;
-say $p.out.slurp(:close).chomp;           # → hi          (capture subprocess output)
-
-say $*RAKU.compiler.name;                 # → Raku++
-say $*RAKU.compiler.backend;              # → cpp
 say "/tmp/x.txt".IO.extension;            # → txt
-```
 
-Files: write, filetest, stat, remove:
-
-```raku
 my $p = "/tmp/rkpp-demo.txt".IO;
-$p.spurt("hello");
+$p.spurt("hello");                        # write
 say $p ~~ :e;                             # → True        (filetest adverb: exists)
 say $p.s;                                 # → 5           (size in bytes)
 $p.chmod(0o600);  say $p.mode;            # → 0600        (permission bits)
@@ -237,6 +228,26 @@ my $buf = class { has $.s = ""; method print(\a) { $!s ~= a } }.new;
 { my $*OUT = $buf; say "hi"; say "there"; }   # captured, not printed to screen
 say $buf.s.lines.join("|");               # → hi|there
 ```
+
+## System & Native
+
+```raku
+my $p = run "echo", "hi", :out;
+say $p.out.slurp(:close).chomp;           # → hi          (capture subprocess output)
+
+say $*RAKU.compiler.name;                 # → Raku++
+say $*RAKU.compiler.backend;              # → cpp
+```
+
+Call a C function directly with `NativeCall`:
+
+```raku
+use NativeCall;
+sub strlen(Str is encoded('utf8') --> size_t) is native {*}
+say strlen("hello");                      # → 5   (libc's strlen, via dlsym)
+```
+
+## Concurrency & Async
 
 ```raku
 # Supplies, Supplier, react/whenever
@@ -288,14 +299,6 @@ say $counter;                             # → 10000
 my atomicint $x = 0;
 $x⚛++; $x⚛++;
 say $x;                                   # → 2
-```
-
-Call a C function directly with `NativeCall`:
-
-```raku
-use NativeCall;
-sub strlen(Str is encoded('utf8') --> size_t) is native {*}
-say strlen("hello");                      # → 5   (libc's strlen, via dlsym)
 ```
 
 ## Phasers, State & Testing
