@@ -30,7 +30,7 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler |
 | **Startup** | ~3 ms cold (vs Rakudo's ~100 ms) |
-| **Correctness target** | the Roast suite — ~20% of files fully pass; ~57% of all individual tests pass |
+| **Correctness target** | the Roast suite — ~57% of all individual tests pass; ~20% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
 ## Goals & philosophy
@@ -128,12 +128,12 @@ implementation steadily growing toward the same language.
 
 The same progress measured at three granularities:
 
-- **Files fully passing: ~20%** (300 / 1,464) — the strict bar; a file counts only
-  if *every* assertion in it passes.
-- **All declared tests: ~57%** (131,320 / ~231,000) — the honest per-test figure.
+- **All declared tests: ~57%** (131,320 / ~231,000) — the headline per-test figure.
   It counts every test the suite declares, including those in files that abort
   before running (their `plan N` is read from source, all failing), so parse-error
   files can't hide.
+- **Files fully passing: ~20%** (300 / 1,464) — the stricter bar; a file counts
+  only if *every* assertion in it passes.
 - **Tests that ran: ~69%** (131,320 / 189,081) — of just the assertions files
   actually emitted; useful for tracking regressions, but it ignores the ~31k tests
   in aborting files, so it flatters.

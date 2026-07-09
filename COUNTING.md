@@ -8,10 +8,10 @@ on every run.
 
 ## The one-line summary
 
-> **Coverage: ~20% of files fully pass. Per-test: ~57% of all declared tests pass.**
+> **Per-test: ~57% of all declared tests pass. Coverage: ~20% of files fully pass.**
 
-Quote both. The first is the strict all-or-nothing bar; the second is the fair
-per-test bar and is the primary correctness number.
+Quote both, per-test first. The ~57% is the primary correctness number (the fair
+per-test bar); the ~20% is the stricter all-or-nothing file bar.
 
 ## The measures
 

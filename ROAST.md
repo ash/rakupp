@@ -31,6 +31,10 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
+**Headline: ~57% of all declared Roast tests pass** (131,320 / 231,092); on the
+stricter file bar, ~20% of files fully pass (300 / 1,464). The per-file breakdown
+comes first below, then the per-test figures.
+
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
