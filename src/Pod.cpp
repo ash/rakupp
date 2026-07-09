@@ -77,6 +77,18 @@ static bool splitLeveled(const std::string& kw, const std::string& base, int& le
     return true;
 }
 
+// Map a block name to its Pod class (and level for head/item). `=begin item2`,
+// `=item2`, `=for item2` all become Pod::Item level 2, etc.
+static std::string classForBlock(const std::string& name, int& level) {
+    level = 0; int lv = 0;
+    if (splitLeveled(name, "head", lv)) { level = lv; return "Pod::Heading"; }
+    if (splitLeveled(name, "item", lv)) { level = lv; return "Pod::Item"; }
+    if (name == "code")    return "Pod::Block::Code";
+    if (name == "comment") return "Pod::Block::Comment";
+    if (name == "table")   return "Pod::Block::Table";
+    return "Pod::Block::Named";
+}
+
 static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                      const std::string& closeName, bool inBlock, ValueList& out);
 
@@ -91,9 +103,11 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
             }
             if (kw == "begin") {
                 std::string name = firstWord(rest);
+                int lv = 0; std::string cls = classForBlock(name, lv);
                 i++;
-                Value block = mkPod("Pod::Block::Named");
-                (*block.hash)["name"] = Value::str(name);
+                Value block = mkPod(cls);
+                if (cls == "Pod::Block::Named") (*block.hash)["name"] = Value::str(name);
+                if (lv) (*block.hash)["level"] = Value::integer(lv);
                 ValueList inner;
                 parseSeq(lines, i, name, true, inner);
                 Value ic = Value::array(); *ic.arr = std::move(inner);
@@ -104,10 +118,12 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
             }
             if (kw == "for") { // paragraph block: the following paragraph is its content
                 std::string name = firstWord(rest);
+                int lv = 0; std::string cls = classForBlock(name, lv);
                 i++;
                 std::string para = collectPara(lines, i);
-                Value block = mkPod("Pod::Block::Named");
-                (*block.hash)["name"] = Value::str(name);
+                Value block = mkPod(cls);
+                if (cls == "Pod::Block::Named") (*block.hash)["name"] = Value::str(name);
+                if (lv) (*block.hash)["level"] = Value::integer(lv);
                 Value ic = Value::array(); if (!para.empty()) ic.arr->push_back(mkPara(para));
                 (*block.hash)["contents"] = ic;
                 out.push_back(block);

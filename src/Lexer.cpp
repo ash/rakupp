@@ -230,8 +230,20 @@ void Lexer::skipWhitespaceAndComments() {
                 pos_ = src_.size();
                 continue;
             } else {
-                // single pod directive paragraph: skip until blank line
+                // A paragraph/abbreviated directive (`=for X`, `=head1 …`, `=foo …`):
+                // skip the directive line AND the paragraph body that follows it, up to
+                // the next blank line — otherwise that text leaks out as code.
                 while (!eof() && peek() != '\n') advance();
+                if (!eof()) advance(); // directive line's newline
+                for (;;) {
+                    if (eof()) break;
+                    // blank line? (whitespace-only up to newline) → stop, leave it
+                    size_t p = pos_; bool blank = true;
+                    while (p < src_.size() && src_[p] != '\n') { if (src_[p] != ' ' && src_[p] != '\t') { blank = false; break; } p++; }
+                    if (blank) break;
+                    while (!eof() && peek() != '\n') advance();
+                    if (!eof()) advance();
+                }
                 continue;
             }
             (void)save;
