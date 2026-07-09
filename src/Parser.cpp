@@ -1124,7 +1124,7 @@ ExprPtr Parser::parsePrimary() {
                 && !(peek().kind == Tok::LParen && !peek().spaceBefore))
                 { advance(); return std::make_unique<NameTerm>(name); }
             // control-flow in expression position: `... or return X`, `... or last`
-            if (name == "return" || name == "last" || name == "next" || name == "redo") {
+            if (name == "return" || name == "return-rw" || name == "last" || name == "next" || name == "redo") {
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = name;
@@ -1133,7 +1133,7 @@ ExprPtr Parser::parsePrimary() {
                 // an anonymous type literal (`return role {…}`)
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;
                 if ((isIdent("role") || isIdent("class") || isIdent("grammar")) && peek().kind == Tok::LBrace) retTerm = true;
-                if (name == "return" && retTerm &&
+                if ((name == "return" || name == "return-rw") && retTerm &&
                     !isKind(Tok::RParen) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace))
                     u->operand = parseExpr(BP_ASSIGN);
                 return u;
@@ -2536,9 +2536,10 @@ StmtPtr Parser::parseStatementImpl() {
             }
             return r;
         }
-        if (kw == "return") {
+        if (kw == "return" || kw == "return-rw") {
             advance();
             auto r = std::make_unique<ReturnStmt>();
+            r->isRw = (kw == "return-rw");
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace) &&
                 cur().kind != Tok::Ident) {
                 r->value = parseExpression();

@@ -927,7 +927,30 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return mkSupply(out);
         }
-        if (m == "merge" || m == "zip") { ValueList all; for (auto& a : flattenArgs(args)) { if (a.t == VT::Hash && a.hashKind == "Supply" && a.hash->count("values")) for (auto& x : *(*a.hash)["values"].arr) all.push_back(x); } return mkSupply(all); }
+        if (m == "list") { Value o = Value::array(); o.isList = true; o.arr->push_back(inv); return o; } // Supply type → (Supply,)
+        if (m == "merge") { ValueList all; for (auto& a : flattenArgs(args)) { if (a.t == VT::Hash && a.hashKind == "Supply" && a.hash->count("values")) for (auto& x : *(*a.hash)["values"].arr) all.push_back(x); } return mkSupply(all); }
+        if (m == "zip") {
+            // zip N list-backed supplies element-wise (stopping at the shortest); an
+            // optional :with(&op) combines each row instead of emitting a tuple List.
+            std::vector<Value> streams; Value withOp;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && (a.s == "with" || a.s == "as") && a.pairVal) { withOp = *a.pairVal; continue; }
+                if (!(a.t == VT::Hash && a.hashKind == "Supply" && a.hash->count("values")))
+                    throw RakuError{Value::typeObj("X::Supply::Combinator"), "zip requires Supply arguments"};
+                streams.push_back(a);
+            }
+            if (streams.size() == 1) return streams[0]; // zipping one supply is a === noop
+            size_t n = SIZE_MAX;
+            for (auto& s : streams) n = std::min(n, (*s.hash)["values"].arr->size());
+            if (streams.empty()) n = 0;
+            ValueList out;
+            for (size_t i = 0; i < n; i++) {
+                ValueList row; for (auto& s : streams) row.push_back((*(*s.hash)["values"].arr)[i]);
+                if (withOp.t == VT::Code) out.push_back(callCallable(withOp, row));
+                else { Value tup = Value::array(); tup.isList = true; *tup.arr = std::move(row); out.push_back(tup); }
+            }
+            return mkSupply(out);
+        }
         if (m == "interval") { ValueList v; for (int i = 0; i < 5; i++) v.push_back(Value::integer(i)); return mkSupply(v); } // finite stand-in
         if (m == "empty") return mkSupply({});
     }
@@ -1071,6 +1094,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 out.push_back(Value::range(mn.toInt(), mx.toInt(), false, false));
             }
             return mkSupply(out);
+        }
+        if (listy && (m == "zip" || m == "merge")) {
+            // $s.zip($other, …) — the invocant is the first stream; reuse the class-method logic.
+            ValueList a2; a2.push_back(inv); for (auto& a : args) a2.push_back(a);
+            return methodCall(Value::typeObj("Supply"), m, a2, rwArgs);
         }
         if (listy && (m == "map" || m == "grep" || m == "head" || m == "tail" || m == "skip" ||
                       m == "reverse" || m == "sort" || m == "unique" || m == "squish" || m == "rotor" ||
@@ -1354,6 +1382,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // `.new` on a scalar built-in type object → that type's default value. This is
     // what real Raku does (Str.new → "", Int.new → 0) and lets `augment class Str {…}`
     // methods be reached via `Str.new.themethod`.
+    if (inv.t == VT::Type && inv.s == "Proxy" && m == "new") {
+        // Proxy.new(:FETCH(method(){…}), :STORE(method($v){…})) — a container whose
+        // reads call FETCH and whose writes call STORE (see VarExpr eval / evalAssign).
+        Value p = Value::makeHash(); p.hashKind = "Proxy";
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal)
+            { if (a.s == "FETCH" || a.s == "STORE") (*p.hash)[a.s] = *a.pairVal; }
+        return p;
+    }
     if (inv.t == VT::Type && m == "new") {
         const std::string& t = inv.s;
         if (t == "Str" || t == "Cool") return Value::str("");

@@ -2845,6 +2845,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             if (!ct.empty()) { ValueList none; rhs = methodCall(rhs, ct, none); }
         }
         Value* lv = lvalue(a->target.get());
+        // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
+        if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
+            auto it = lv->hash->find("STORE");
+            if (it != lv->hash->end()) { Value r = callCallable(it->second, { rhs }); return sink ? Value::any() : r; }
+        }
         int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
         if (sigil == '@') *lv = coerceArray(rhs);
         else if (sigil == '%') *lv = coerceHash(rhs);
@@ -4614,7 +4619,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
 
 Value Interpreter::evalUnary(Unary* u) {
     // control-flow in expression position: return/last/next/redo
-    if (u->op == "return") throw ReturnEx{u->operand ? eval(u->operand.get()) : Value::any()};
+    if (u->op == "return" || u->op == "return-rw") throw ReturnEx{u->operand ? eval(u->operand.get()) : Value::any()};
     if (u->op == "last") throw LastEx{};
     if (u->op == "next") throw NextEx{};
     if (u->op == "redo") throw RedoEx{};
@@ -5214,7 +5219,13 @@ Value Interpreter::eval(Expr* e) {
                     if (Value* dp = (*it)->find(ve->name)) return *dp;
             }
             Value* p = tctx_.cur->find(ve->name);
-            if (p) return *p;
+            if (p) {
+                if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash) {
+                    auto it = p->hash->find("FETCH");
+                    if (it != p->hash->end()) return callCallable(it->second, { *p });
+                }
+                return *p;
+            }
             // $0, $1, … are aliases for $/[N]; fall back to $/ when not directly bound
             if (ve->name.size() >= 2 && ve->name[0] == '$' && std::isdigit((unsigned char)ve->name[1])) {
                 bool alldig = true;

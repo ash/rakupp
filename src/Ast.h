@@ -285,6 +285,7 @@ struct ForStmt : Stmt {
 
 struct ReturnStmt : Stmt {
     ExprPtr value; // may be null
+    bool isRw = false; // `return-rw` — return the container itself, not a decontainerized copy
     ReturnStmt(): Stmt(NK::ReturnStmt) {}
 };
 
