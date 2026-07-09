@@ -96,30 +96,31 @@ One front end, four back ends (details in [ARCHITECTURE.md](ARCHITECTURE.md)):
 transpile (mainly grammars) transparently falls back to bundling, so `--exe`
 never refuses a program.
 
-## How it compares to Rakudo
+## How it relates to Rakudo
 
-Rakudo is the mature, reference Raku implementation (on MoarVM/JVM). Raku++ is a
-young, independent engine with a different set of trade-offs — **not** a claim to
-be "better."
+[Rakudo](https://rakudo.org) is the mature, complete reference implementation of
+Raku (on MoarVM/JVM) — the one to reach for to actually get Raku work done today.
+Raku++ isn't a replacement or a competitor; it's an independent, from-scratch
+engine exploring a different shape, and it owes a great deal to Rakudo and Roast
+for defining what "being Raku" means.
+
+The two simply make different trade-offs:
 
 | | Raku++ | Rakudo |
 |---|---|---|
-| Maturity | early-stage (~20% of Roast) | the reference implementation |
-| Implementation | tree-walker + native compiler, C++17 | VM-based (MoarVM/JVM), NQP/Raku |
-| Dependencies | none | a toolchain + runtime |
-| Cold startup | ~3 ms | ~100 ms |
-| Native compile | yes (`--exe`) — **beats Rakudo on every benchmark**, 2.4×–17× | JIT at run time |
-| Interpreted speed | **faster on most workloads** (7/9 here) | JIT leads on the heaviest tight loops/recursion |
-| Grammar-mutation (macros/slangs) | not implemented | full |
-| Coverage | growing, test-first | complete |
+| Role | a young, independent engine | the reference implementation |
+| Implementation | tree-walker + native compiler, C++17, no dependencies | VM-based (MoarVM/JVM), NQP/Raku |
+| Coverage | growing, test-first (~20% of Roast) | complete |
+| Startup | ~3 ms cold | ~100 ms |
+| Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
+| Grammar-mutation (macros/slangs) | not yet | full |
 
-The honest summary: on the benchmark set, **Raku++ is faster than Rakudo on most
-workloads even when interpreting** — a ~3 ms start and lean operations outweigh
-the VM on startup, strings, regex, and collections — with Rakudo's JIT pulling
-ahead only on the heaviest tight loops and recursion. **Compiling with `--exe`
-reclaims those too**, putting every benchmark ahead. Rakudo's real edge is
-**completeness**, not raw speed. See [BENCHMARKS.md](BENCHMARKS.md) for the
-numbers and methodology.
+On raw speed the two are close and workload-dependent — Raku++'s lean startup
+helps short programs and one-liners, while a warmed-up JIT helps long tight
+loops, and compiling with `--exe` shifts the balance again. The point isn't a
+scoreboard; the details and methodology are in [BENCHMARKS.md](BENCHMARKS.md).
+Rakudo's decisive advantage is **completeness** — Raku++ implements a growing
+subset of the same language.
 
 ## Status & how it's measured
 
