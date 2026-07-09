@@ -126,6 +126,10 @@ public:
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs); // no wrap layer
     Value callNative(Callable& c, ValueList& args); // `is native` C FFI
+    // Live-Supply transform chain: run one emitted value through a tap's chain of
+    // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
+    // chain has finished (head/first reached its limit) so `done` should fire.
+    ValueList applyTapChain(Value& tap, const Value& in, bool& complete);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
     // Emit text for say/print/put/note: route through a user-overridden $*OUT/$*ERR
     // (call its .print), else write to the real stream.

@@ -5440,7 +5440,7 @@ Value Interpreter::eval(Expr* e) {
             Value from = eval(r->from.get());
             Value to = eval(r->to.get());
             if (from.t == VT::Str && to.t == VT::Str) {
-                Value arr = Value::array();
+                Value arr = Value::array(); arr.isList = true; // a string range is list-like (flattens)
                 std::string cur = from.s, end = to.s;
                 for (int g = 0; g < 1000000; g++) {
                     if (cur.length() > end.length()) break;

@@ -199,6 +199,65 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
     if (parked) gil->gilUnpark(true); // reacquire the GIL before touching interpreter state
 }
 
+// Run one emitted value through a live-Supply tap's transform chain (grep/map/head/…).
+// Threads the value(s) through each step in order; per-step mutable state lives in the
+// step's "state" hash. Sets `complete` when a head/first step reaches its limit.
+ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete) {
+    complete = false;
+    ValueList cur{in};
+    if (!(tap.t == VT::Hash && tap.hash->count("chain"))) return cur;
+    for (auto& step : *(*tap.hash)["chain"].arr) {
+        const std::string op = (*step.hash)["op"].toStr();
+        Value arg = step.hash->count("arg") ? (*step.hash)["arg"] : Value::nil();
+        Value& state = (*step.hash)["state"];
+        auto sInt = [&](const char* k) -> long long { auto it = state.hash->find(k); return it == state.hash->end() ? 0 : it->second.toInt(); };
+        ValueList next;
+        for (auto& v : cur) {
+            if (op == "map") { next.push_back(arg.t == VT::Code ? callCallable(arg, ValueList{v}) : v); }
+            else if (op == "grep") {
+                bool match;
+                if (arg.t == VT::Code) match = callCallable(arg, ValueList{v}).truthy();
+                else if (arg.t == VT::Regex) match = regexMatch(v.toStr(), arg.s).truthy();
+                else match = applyArith("~~", v, arg).truthy();
+                if (match) next.push_back(v);
+            }
+            else if (op == "skip") { long long n = arg.toInt(); long long c = sInt("c"); if (c < n) (*state.hash)["c"] = Value::integer(c + 1); else next.push_back(v); }
+            else if (op == "head") {
+                double lim = arg.t == VT::Nil ? 1 : (arg.t == VT::Whatever ? 1.0/0.0 : arg.toNum());
+                long long c = sInt("c");
+                if (c < lim) { next.push_back(v); (*state.hash)["c"] = Value::integer(c + 1); if (c + 1 >= lim) complete = true; }
+                else complete = true;
+            }
+            else if (op == "first") {
+                bool match = true;
+                if (arg.t == VT::Code) match = callCallable(arg, ValueList{v}).truthy();
+                else if (arg.t == VT::Regex) match = regexMatch(v.toStr(), arg.s).truthy();
+                else if (arg.t != VT::Nil) match = applyArith("~~", v, arg).truthy();
+                if (match) { next.push_back(v); complete = true; }
+            }
+            else if (op == "unique" || op == "squish") {
+                Value asF = step.hash->count("as") ? (*step.hash)["as"] : Value::nil();
+                Value key = asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v;
+                std::string ks = key.toStr();
+                if (op == "unique") {
+                    // remember seen keys as hash entries in state
+                    if (!state.hash->count("seen")) (*state.hash)["seen"] = Value::makeHash();
+                    Value& seen = (*state.hash)["seen"];
+                    if (!seen.hash->count(ks)) { (*seen.hash)[ks] = Value::boolean(true); next.push_back(v); }
+                } else { // squish: drop only if equal to the immediately preceding key
+                    bool same = state.hash->count("has") && (*state.hash)["prev"].toStr() == ks;
+                    if (!same) next.push_back(v);
+                    (*state.hash)["prev"] = Value::str(ks); (*state.hash)["has"] = Value::boolean(true);
+                }
+            }
+            else next.push_back(v);
+        }
+        cur = std::move(next);
+        if (complete) break;
+    }
+    return cur;
+}
+
 // Run a Proc::Async .start promise: spawn the process (with optional timeout), feed captured
 // stdout to the Supply taps, and mark the promise Kept (finished) or Broken (timed out).
 void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
@@ -901,7 +960,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Supplier") {
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash)["supplier"] = inv; return s; } // live (no "values")
         if (m == "emit") { Value v = args.empty() ? Value::any() : args[0];
-            if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) { if (t.t == VT::Hash && t.hash->count("emit") && (*t.hash)["emit"].t == VT::Code) { ValueList one{v}; callCallable((*t.hash)["emit"], one); } }
+            if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
+                if (t.t != VT::Hash) continue;
+                if (t.hash->count("closed") && (*t.hash)["closed"].truthy()) continue; // head/first already finished
+                bool complete = false;
+                ValueList outs = applyTapChain(t, v, complete);
+                if (t.hash->count("emit") && (*t.hash)["emit"].t == VT::Code)
+                    for (auto& o : outs) { ValueList one{o}; callCallable((*t.hash)["emit"], one); }
+                if (complete) { // head(n)/first done → fire the tap's done and release a react source
+                    (*t.hash)["closed"] = Value::boolean(true);
+                    if (t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
+                    if (t.ext) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+                }
+            }
             return Value::boolean(true); }
         if (m == "done") {
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
@@ -1037,6 +1108,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 // live Supply: register the callbacks with the Supplier; emit/done fan out later
                 Value tapRec = Value::makeHash();
                 (*tapRec.hash)["emit"] = emit; (*tapRec.hash)["done"] = done; (*tapRec.hash)["quit"] = quit;
+                // carry any transform chain, giving each step its own fresh mutable state
+                if (inv.hash->count("chain")) {
+                    Value chain = Value::array();
+                    for (auto& step : *(*inv.hash)["chain"].arr) {
+                        Value s2 = Value::makeHash(); *s2.hash = *step.hash;
+                        (*s2.hash)["state"] = Value::makeHash();
+                        chain.arr->push_back(s2);
+                    }
+                    (*tapRec.hash)["chain"] = chain;
+                }
                 Value sup = (*inv.hash)["supplier"];
                 if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -1118,7 +1199,26 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             ValueList a2; a2.push_back(inv); for (auto& a : args) a2.push_back(a);
             return methodCall(Value::typeObj("Supply"), m, a2, rwArgs);
         }
+        // Live-Supply combinators: build a lazy transform chain that runs per emitted
+        // value when the resulting Supply is tapped (see applyTapChain + emit fan-out).
+        if (!listy && inv.hash->count("supplier") &&
+            (m == "map" || m == "grep" || m == "head" || m == "skip" ||
+             m == "first" || m == "unique" || m == "squish")) {
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash)["supplier"] = (*inv.hash)["supplier"];
+            Value chain = Value::array();
+            if (inv.hash->count("chain")) *chain.arr = *(*inv.hash)["chain"].arr;
+            Value step = Value::makeHash();
+            (*step.hash)["op"] = Value::str(m);
+            for (auto& a : args) if (a.t != VT::Pair) { (*step.hash)["arg"] = a; break; }
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal && (a.s == "as" || a.s == "with")) (*step.hash)[a.s] = *a.pairVal;
+            (*step.hash)["state"] = Value::makeHash();
+            chain.arr->push_back(step);
+            (*s.hash)["chain"] = chain;
+            return s;
+        }
         if (listy && (m == "map" || m == "grep" || m == "head" || m == "tail" || m == "skip" ||
+                      m == "first" ||
                       m == "reverse" || m == "sort" || m == "unique" || m == "squish" || m == "rotor" ||
                       m == "rotate" || m == "sum" ||
                       m == "batch" || m == "lines" || m == "words" || m == "flat" ||
