@@ -1203,10 +1203,13 @@ ExprPtr Parser::parsePrimary() {
                 call->args.push_back(std::move(be));
                 return call;
             }
-            if (name == "do" || name == "try" || name == "gather" || name == "quietly") {
+            if (name == "do" || name == "try" || name == "gather" || name == "quietly" ||
+                name == "BEGIN" || name == "ENTER") {
                 advance();
                 auto u = std::make_unique<Unary>();
-                u->op = name;
+                // BEGIN/ENTER in value position evaluate their block/expr and yield it
+                // (a tree-walker has no separate compile phase, so `do` semantics suffice).
+                u->op = (name == "BEGIN" || name == "ENTER") ? "do" : name;
                 if (isKind(Tok::LBrace)) {
                     auto blk = parseBlock();
                     auto be = std::make_unique<BlockExpr>();
