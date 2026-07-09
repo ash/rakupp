@@ -1,25 +1,27 @@
 class Rakupp < Formula
   desc "From-scratch Raku implementation in C++17 (interpreter + native compiler)"
   homepage "https://github.com/ash/rakupp"
-  version "0.1.0"
+  url "https://github.com/ash/rakupp/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "56e5fefab6afa38b389196c4badf6caa9a8afcfea5d0f864f8b1dfbad2824fd2"
   license "Artistic-2.0"
 
   head "https://github.com/ash/rakupp.git", branch: "main" do
     depends_on "cmake" => :build
   end
 
-  on_macos do
-    on_arm do
-      # Prebuilt binary — no compiler or Command Line Tools needed.
+  # Apple Silicon installs a prebuilt binary (no compile); every other platform
+  # builds from the source tarball above.
+  on_linux do
+    depends_on "cmake" => :build
+  end
+  on_arm do
+    on_macos do
       url "https://github.com/ash/rakupp/releases/download/v0.1.0/rakupp-0.1.0-arm64-macos.tar.gz"
       sha256 "61834ad92b6c48935cb65609da128e48e00aa5156cd762581127e116ff9c8de7"
     end
-    on_intel do
-      # Built from source.
-      url "https://github.com/ash/rakupp/archive/refs/tags/v0.1.0.tar.gz"
-      sha256 "56e5fefab6afa38b389196c4badf6caa9a8afcfea5d0f864f8b1dfbad2824fd2"
-      depends_on "cmake" => :build
-    end
+  end
+  on_intel do
+    depends_on "cmake" => :build
   end
 
   def install
