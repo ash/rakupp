@@ -1239,7 +1239,10 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     auto inScope = [&](void (Interpreter::*ph)(const std::vector<StmtPtr>&)) {
         auto saved = tctx_.cur; tctx_.cur = scope; try { (this->*ph)(body->stmts); } catch (...) { tctx_.cur = saved; throw; } tctx_.cur = saved;
     };
-    if (isFirst) inScope(&Interpreter::runFirstPhasers); // FIRST {…}: once, before the first iteration
+    if (isFirst) { // FIRST {…}: once, before the first iteration; `last` in it breaks the loop
+        try { inScope(&Interpreter::runFirstPhasers); }
+        catch (LastEx& e) { if (!e.label.empty() && e.label != label) throw; return false; }
+    }
     bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
     auto runLast = [&]() { if (isLast) inScope(&Interpreter::runLastPhasers); }; // LAST {…}: once, after the last
     for (;;) {
@@ -1624,6 +1627,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::WhileStmt: {
             auto* ws = static_cast<WhileStmt*>(s);
             ValueList collected; ValueList* col = ws->asExpr ? &collected : nullptr;
+            bool firstIter = true;
             for (;;) {
                 Value cv = eval(ws->cond.get());
                 bool c = boolify(cv);
@@ -1631,7 +1635,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (!c) break;
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                 if (!ws->var.empty()) scope->define(ws->var, cv); // while EXPR -> $x { }
-                if (!runLoopBody(ws->body.get(), scope, ws->label, true, true, col)) break;
+                // FIRST runs on the first iteration only; LAST would need lookahead, so it
+                // is approximated as always-last (a single flag can't know the true last).
+                if (!runLoopBody(ws->body.get(), scope, ws->label, firstIter, true, col)) break;
+                firstIter = false;
             }
             return ws->asExpr ? Value::list(std::move(collected)) : Value::any();
         }
@@ -1794,10 +1801,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto saved = tctx_.cur; tctx_.cur = outer;
             try {
                 if (ls->init) eval(ls->init.get());
+                bool firstIter = true;
                 for (;;) {
                     if (ls->cond && !boolify(eval(ls->cond.get()))) break;
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                    if (!runLoopBody(ls->body.get(), scope, ls->label, true, true, col)) break;
+                    if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, true, col)) break;
+                    firstIter = false;
                     if (ls->incr) eval(ls->incr.get());
                 }
             } catch (...) { tctx_.cur = saved; throw; }
@@ -1806,9 +1815,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::RepeatStmt: {
             auto* r = static_cast<RepeatStmt*>(s);
+            bool firstIter = true;
             for (;;) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                if (!runLoopBody(r->body.get(), scope, r->label)) break;
+                if (!runLoopBody(r->body.get(), scope, r->label, firstIter, true)) break;
+                firstIter = false;
                 bool c = r->cond ? boolify(eval(r->cond.get())) : false;
                 if (r->isUntil) c = !c;
                 if (!c) break;
