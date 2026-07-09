@@ -994,15 +994,20 @@ void Interpreter::loadModule(const std::string& name) {
 
     std::string rel = name;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
-    // 1. local lib paths (project lib, ., rakupp rakulib)
+    // 1. local lib paths (project lib, ., rakupp rakulib). A `use lib` may point at a
+    // distribution root rather than its `lib/` dir (e.g. Roast's `use lib
+    // $*PROGRAM.parent(2).add("packages/Test-Helpers")`), so try `<base>/lib/` too —
+    // this is the common case Rakudo resolves via META6.json.
     static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
     for (auto& base : libPaths_) {
-        for (auto ext : exts) {
-            std::ifstream in(base + "/" + rel + ext);
-            if (!in) continue;
-            std::ostringstream ss; ss << in.rdbuf();
-            loadSource(ss.str());
-            return;
+        for (const std::string& dir : {base, base + "/lib"}) {
+            for (auto ext : exts) {
+                std::ifstream in(dir + "/" + rel + ext);
+                if (!in) continue;
+                std::ostringstream ss; ss << in.rdbuf();
+                loadSource(ss.str());
+                return;
+            }
         }
     }
     // 2. installed Rakudo/zef modules: resolve name via the CURI short/ index
