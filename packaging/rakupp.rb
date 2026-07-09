@@ -16,7 +16,7 @@ class Rakupp < Formula
   desc "From-scratch Raku implementation in C++17 (interpreter + native compiler)"
   homepage "https://github.com/ash/rakupp"
   url "https://github.com/ash/rakupp/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "56e5fefab6afa38b389196c4badf6caa9a8afcfea5d0f864f8b1dfbad2824fd2"
   license "Artistic-2.0"
   head "https://github.com/ash/rakupp.git", branch: "main"
 
