@@ -64,6 +64,19 @@ sub parse-tap($out) {
     return ($planned, $ran, $passed, $failed);
 }
 
+# Statically read a file's declared test count from its `plan N;` line, WITHOUT
+# running it — so a file that parse-errors before emitting any TAP still has its
+# intended test count known. Returns the N, or -1 for a dynamic/absent plan
+# (`plan *`, `done-testing`, or none). Anchored at line start to skip `plan`s
+# that appear inside quoted is_run bodies.
+sub static-plan($file) {
+    for $file.IO.lines -> $ln {
+        if $ln ~~ /^ \s* 'plan' <.ws> (\d+) / { return +$0 }
+        if $ln ~~ /^ \s* 'plan' <.ws> '*'   / { return -1 }  # dynamic — unknowable statically
+    }
+    return -1;
+}
+
 my @patterns = @*ARGS;
 my @files;
 for find-t($ROOT) -> $f {
@@ -82,6 +95,9 @@ my $timeout = 0;
 my $tot-ran = 0;
 my $tot-pass = 0;
 my $tot-plan = 0;
+my $notap-declared = 0;   # tests declared by no-TAP files that never emitted a plan (all failing)
+my $notap-counted  = 0;   # how many no-TAP files we recovered a static plan from
+my $notap-unknown  = 0;   # no-TAP files whose plan is dynamic/absent — uncountable
 
 for @files -> $f {
     my $rel = $f.substr($ROOT.chars + 1);
@@ -106,6 +122,13 @@ for @files -> $f {
     elsif $ran == 0 {
         $noplan++;
         $mark = '----';
+        # A no-TAP file's tests are all effectively failing. If it emitted a plan
+        # before dying, that N is already in $tot-plan; otherwise recover N from
+        # source so those tests count against us instead of vanishing.
+        if $planned < 0 {
+            my $sp = static-plan($f);
+            if $sp > 0 { $notap-declared += $sp; $notap-counted++ } else { $notap-unknown++ }
+        }
     }
     elsif $failed == 0 && ($planned < 0 || $planned == $ran) {
         $pass++;
@@ -121,12 +144,16 @@ for @files -> $f {
     }
 }
 
+my $declared = $tot-plan + $notap-declared;  # every test any file declares it will run
 my $fpct  = @files.elems ?? 100 * $pass     / @files.elems !! 0;
 my $rpct  = $tot-ran     ?? 100 * $tot-pass / $tot-ran     !! 0;
 my $ppct  = $tot-plan    ?? 100 * $tot-pass / $tot-plan    !! 0;
+my $dpct  = $declared    ?? 100 * $tot-pass / $declared    !! 0;
 say "";
 say "Files: ", @files.elems, "   fully-pass: ", $pass,
     "   partial: ", $partial, "   no-TAP: ", $noplan, "   timeout: ", $timeout;
 say sprintf("Files fully passing:  %d / %d  (%.1f%%)", $pass, @files.elems, $fpct);
 say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests that ran", $tot-pass, $tot-ran, $rpct);
-say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned (counts mid-file aborts)", $tot-pass, $tot-plan, $ppct);
+say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of tests planned by files that emitted a plan", $tot-pass, $tot-plan, $ppct);
+say sprintf("Assertions passed:    %d / %d  (%.1f%%)  of ALL declared tests (+%d from %d no-TAP files read from source; %d more have no static plan)",
+            $tot-pass, $declared, $dpct, $notap-declared, $notap-counted, $notap-unknown);
