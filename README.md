@@ -22,12 +22,9 @@ a one-page tour, [the full guide](GUIDE.md) for the complete picture, or
 ### Homebrew (macOS / Linux)
 
 ```sh
-brew install ash/rakupp/rakupp            # from the tap
-# …or track the main branch:
-brew install --HEAD ash/rakupp/rakupp
+brew tap ash/rakupp
+brew install rakupp        # or: brew install --HEAD rakupp   (latest main)
 ```
-
-`brew install rakupp` (no tap prefix) works once you've run `brew tap ash/rakupp`.
 
 ### Build from source
 
