@@ -17,20 +17,36 @@ in it passes. Early-stage, growing test-first. See [the overview](OVERVIEW.md) f
 a one-page tour, [the full guide](GUIDE.md) for the complete picture, or
 [COUNTING.md](COUNTING.md) for exactly how these are defined.
 
-## Quick start
+## Install
+
+### Homebrew (macOS / Linux)
 
 ```sh
-# Build (needs a C++17 compiler + CMake) → produces build/rakupp
+brew install ash/rakupp/rakupp            # from the tap
+# …or track the main branch:
+brew install --HEAD ash/rakupp/rakupp
+```
+
+`brew install rakupp` (no tap prefix) works once you've run `brew tap ash/rakupp`.
+
+### Build from source
+
+```sh
+# Needs a C++17 compiler + CMake → produces build/rakupp
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 
-# Run
-build/rakupp -e 'say "hello, world"'      # a one-liner
-build/rakupp path/to/program.raku         # a file
-echo 'say 42' | build/rakupp              # from stdin
-
 # Install onto $PATH (binary + the runtime that --exe links against)
 cmake --install build --prefix ~/.local   # → ~/.local/{bin,lib,include/rakupp}
+```
+
+## Quick start
+
+```sh
+# Run
+rakupp -e 'say "hello, world"'            # a one-liner  (build/rakupp if not installed)
+rakupp path/to/program.raku               # a file
+echo 'say 42' | rakupp                     # from stdin
 ```
 
 `rakupp` locates the runtime library `--exe` needs relative to its own binary, so
