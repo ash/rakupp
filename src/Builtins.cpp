@@ -20,16 +20,17 @@
 #include <sstream>
 #include <vector>
 #include <dirent.h>
+#include "Platform.h"   // POSIX headers on Unix; Winsock + shims on Windows
+#include <csignal>
+#include <sys/stat.h>
+#if !defined(_WIN32)
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <poll.h>
-#include <csignal>
-#include <sys/stat.h>
 #include <sys/wait.h>
-#include <unistd.h>
+#endif
 #include <condition_variable>
 #include <mutex>
 

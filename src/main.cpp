@@ -11,9 +11,9 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <sys/stat.h>
 #include <vector>
-#include <unistd.h>
+#include "Platform.h"
+#include <sys/stat.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -58,7 +58,10 @@ static std::string baseOf(const std::string& path) {
 // (as a path, or searched on $PATH), so `--exe` works from any directory.
 static std::string selfExePath(const char* argv0) {
     char buf[4096], rp[4096];
-#ifdef __APPLE__
+#if defined(_WIN32)
+    DWORD wn = ::GetModuleFileNameA(nullptr, buf, sizeof(buf));
+    if (wn > 0 && wn < sizeof(buf)) return buf;
+#elif defined(__APPLE__)
     uint32_t sz = sizeof(buf);
     if (_NSGetExecutablePath(buf, &sz) == 0 && realpath(buf, rp)) return rp;
 #else

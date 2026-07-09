@@ -2,11 +2,12 @@
 #include <functional>
 #include <memory>
 #include <cstring>
-#include <unistd.h>
-#include <dlfcn.h>
+#include "Platform.h"
 #ifdef __APPLE__
 #include <crt_externs.h>
 static char** rakupp_environ() { return *_NSGetEnviron(); }
+#elif defined(_WIN32)
+static char** rakupp_environ() { return _environ; }
 #else
 extern char** environ;
 static char** rakupp_environ() { return environ; }

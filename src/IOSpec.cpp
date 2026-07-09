@@ -5,7 +5,7 @@
 // resolves to a VT::Type value, and methodCall routes IO::Spec::* invocants
 // here. Semantics mirror Rakudo's IO::Spec and are pinned by S32-io/io-spec-*.t.
 #include "Interpreter.h"
-#include <unistd.h>
+#include "Platform.h"
 #include <cstdlib>
 #include <string>
 #include <vector>
