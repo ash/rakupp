@@ -386,7 +386,7 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     (*promise.hash)["status"] = Value::str(timedout ? "Broken" : "Kept");
 }
 
-static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type; }
+static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
 
 // `.raku` / `.perl` — an EVAL-round-trippable representation of a value (as opposed
 // to `.gist`, which is the human-readable form). Recursive over containers.
@@ -1345,6 +1345,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
         if (m == "close" || m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
     }
+    if (inv.t == VT::Hash && inv.hashKind == "Failure") {
+        Value ex = inv.hash->count("exception") ? (*inv.hash)["exception"] : Value::typeObj("Exception");
+        if (m == "exception") return ex;
+        if (m == "defined" || m == "Bool" || m == "so") return Value::boolean(false);
+        if (m == "not") return Value::boolean(true);
+        if (m == "handled") return Value::boolean(false);
+        if (m == "self" || m == "Failure") return inv;
+        if (m == "throw" || m == "sink") { if (ex.t == VT::Object) throw RakuError{ex, ex.toStr()}; throw RakuError{Value::typeObj("X::AdHoc"), ex.toStr()}; }
+        // delegate message/Str/gist and other queries to the carried exception
+        if (m == "message" || m == "Str" || m == "gist") return methodCall(ex, m, args, rwArgs);
+    }
     if (inv.t == VT::Hash && inv.hashKind == "Pod") {
         auto& h = *inv.hash;
         if (m == "name")     return h.count("name") ? h["name"] : Value::str("");
@@ -1629,6 +1640,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // `.new` on a scalar built-in type object → that type's default value. This is
     // what real Raku does (Str.new → "", Int.new → 0) and lets `augment class Str {…}`
     // methods be reached via `Str.new.themethod`.
+    if (inv.t == VT::Type && inv.s == "Failure" && m == "new") {
+        // Failure.new (no args) picks up the current $! as its exception.
+        Value ex; bool haveEx = false;
+        for (auto& a : args) if (a.t == VT::Object) { ex = a; haveEx = true; } // Failure.new($ex) / :exception
+        if (!haveEx) { Value* be = tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be; }
+        Value f = Value::makeHash(); f.hashKind = "Failure";
+        (*f.hash)["exception"] = ex;
+        return f;
+    }
     if (inv.t == VT::Type && inv.s == "Proxy" && m == "new") {
         // Proxy.new(:FETCH(method(){…}), :STORE(method($v){…})) — a container whose
         // reads call FETCH and whose writes call STORE (see VarExpr eval / evalAssign).
@@ -3372,10 +3392,26 @@ void Interpreter::registerBuiltins() {
         if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextwith with no dispatcher in scope"};
         throw ReturnEx{I.redispatchStack_.back().next(a)};
     };
-    B["fail"] = [](Interpreter&, ValueList&) -> Value {
-        // return an (undefined) Failure from the enclosing sub; `//` / .defined
-        // treat it as undefined, so a fallback value is chosen.
-        throw ReturnEx{Value::typeObj("Failure")};
+    B["fail"] = [](Interpreter& I, ValueList& a) -> Value {
+        // Return an (undefined) Failure from the enclosing sub carrying an exception:
+        // `fail $ex` / `fail "msg"` (→ X::AdHoc) / bare `fail` (picks up $!). `//` /
+        // .defined treat it as undefined, so a fallback value is chosen.
+        Value ex;
+        if (!a.empty() && a[0].t == VT::Object) {
+            ex = a[0];
+        } else if (!a.empty()) {
+            auto it = I.classes_.find("X::AdHoc");
+            if (it != I.classes_.end()) {
+                ex.t = VT::Object; ex.obj = std::make_shared<ObjectData>(); ex.obj->cls = it->second;
+                ex.obj->attrs["message"] = Value::str(a[0].toStr());
+            } else ex = Value::str(a[0].toStr());
+        } else {
+            Value* be = I.tctx_.cur->find("$!");
+            if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be;
+        }
+        Value f = Value::makeHash(); f.hashKind = "Failure";
+        (*f.hash)["exception"] = ex;
+        throw ReturnEx{f};
     };
     B["prompt"] = [](Interpreter&, ValueList& a) -> Value {
         if (!a.empty()) { std::cout << a[0].toStr(); std::cout.flush(); }

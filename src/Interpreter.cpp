@@ -83,7 +83,7 @@ static std::string sha1hex(const std::string& msg) {
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
 
-static bool isDefined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type; }
+static bool isDefined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
 
 // Howard Hinnant's days<->civil algorithms (proleptic Gregorian, day 0 = 1970-01-01).
 long long civilToDays(long long y, long long m, long long d) {
