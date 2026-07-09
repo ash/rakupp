@@ -2235,10 +2235,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (stat(inv.toStr().c_str(), &st) != 0)
             throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
                 "Failed to get the timestamp of '" + inv.toStr() + "': no such file or directory"};
-        // an Instant, at nanosecond precision so mtime/ctime/atime stay distinct
-        const struct timespec& ts = (m == "accessed") ? st.st_atimespec
-                                  : (m == "changed")  ? st.st_ctimespec
-                                                      : st.st_mtimespec; // modified/created
+        // an Instant, at nanosecond precision so mtime/ctime/atime stay distinct.
+        // Field names differ: BSD/macOS spell them st_*timespec, POSIX/glibc st_*tim.
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+        const struct timespec& ats = st.st_atimespec, &cts = st.st_ctimespec, &mts = st.st_mtimespec;
+#else
+        const struct timespec& ats = st.st_atim, &cts = st.st_ctim, &mts = st.st_mtim;
+#endif
+        const struct timespec& ts = (m == "accessed") ? ats
+                                  : (m == "changed")  ? cts
+                                                      : mts; // modified/created
         return Value::number((double)ts.tv_sec + (double)ts.tv_nsec / 1e9);
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
