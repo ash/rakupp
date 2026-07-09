@@ -102,11 +102,10 @@ never refuses a program.
 Raku (on MoarVM/JVM). Raku++ is **one of the very few independent implementations
 of the language, and the only one that both interprets Raku and compiles it to
 native binaries** — a full engine built from scratch in dependency-free C++17.
-That's an uncommon thing to exist at all, and it earns Raku++ a set of strengths
-Rakudo doesn't have: it builds anywhere a C++ compiler runs, starts in a few
-milliseconds, produces small self-contained native executables, and is compact
-enough to read and embed. The two projects share a north star — Roast, the spec
-suite that defines what "being Raku" means.
+That's an uncommon thing to exist at all, and it gives Raku++ a distinctive
+profile: it starts in a few milliseconds, produces small self-contained native
+executables, and is compact enough to read and embed. The two projects share a
+north star — Roast, the spec suite that defines what "being Raku" means.
 
 They make different trade-offs:
 
