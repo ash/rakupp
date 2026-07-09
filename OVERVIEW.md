@@ -153,6 +153,7 @@ build/rakupp tools/run-roast.raku S05      # filter by path
 - **[FEATURES.md](FEATURES.md)** / **[EXAMPLES.md](EXAMPLES.md)** — what works, with runnable snippets.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built and what each run mode does.
 - **[ROAST.md](ROAST.md)** — coverage, per-synopsis stats, and how the numbers are defined.
+- **[COUNTING.md](COUNTING.md)** — the authoritative definition of every pass-rate figure and how it's computed.
 - **[BENCHMARKS.md](BENCHMARKS.md)** / **[OPTIMIZATION.md](OPTIMIZATION.md)** — speed vs Rakudo; the `-O` optimizer.
 - **[ASYNC.md](ASYNC.md)** / **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — concurrency; language-mutation coverage.
 - **[ROADMAP.md](ROADMAP.md)** — done / next.

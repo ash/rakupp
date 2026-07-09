@@ -67,6 +67,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
 - **[ROAST.md](ROAST.md)** — Roast suite overview and per-section statistics.
+- **[COUNTING.md](COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
 - **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
 - **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.

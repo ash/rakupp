@@ -28,6 +28,9 @@ gauge of how much of the language actually works).
 
 ## Current standing
 
+The exact definition of every figure below — and how the harness computes it — is
+in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
+
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |

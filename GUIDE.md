@@ -69,8 +69,9 @@ Two numbers describe where Raku++ stands, and they measure different things:
   regression signal, on a different denominator than the coverage figure.
 
 Run the harness (below) for live numbers as features land. See
-[ROADMAP.md](ROADMAP.md) for what's done and what's next, and
-[ROAST.md](ROAST.md) for a per-section breakdown.
+[ROADMAP.md](ROADMAP.md) for what's done and what's next,
+[ROAST.md](ROAST.md) for a per-section breakdown, and
+[COUNTING.md](COUNTING.md) for exactly how every figure is defined and computed.
 
 ## Beyond Roast: running a real application
 
@@ -127,6 +128,7 @@ battery.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
 - **[ROAST.md](ROAST.md)** — Roast suite overview and per-section statistics.
+- **[COUNTING.md](COUNTING.md)** — authoritative definition of the pass-rate figures.
 - **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
 - **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: passes, C++ level forwarding, numbers.
 - **[history/JOURNEY.md](history/JOURNEY.md)** — a memoir of how this was built: the Roast / real-project / docs loops, the clean-room stance on Rakudo, and reaching `--exe`.
