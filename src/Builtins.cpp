@@ -1087,11 +1087,29 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return mkSupply(out);
         }
         if (listy && m == "minmax") { // emit the running (min..max) Range after each value
-            ValueList out; Value mn, mx; bool first = true;
+            Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            ValueList out; Value mn, mx, mnK, mxK; bool first = true;
             for (auto& v : vals()) {
-                if (first) { mn = v; mx = v; first = false; }
-                else { if (valueCmp(v, mn) < 0) mn = v; if (valueCmp(v, mx) > 0) mx = v; }
-                out.push_back(Value::range(mn.toInt(), mx.toInt(), false, false));
+                Value key = v;
+                if (mapper.t == VT::Code) { ValueList one{v}; key = callCallable(mapper, one); }
+                bool changed = first;
+                if (first) { mn = mx = v; mnK = mxK = key; first = false; }
+                else { if (valueCmp(key, mnK) < 0) { mn = v; mnK = key; changed = true; } if (valueCmp(key, mxK) > 0) { mx = v; mxK = key; changed = true; } }
+                if (!changed) continue; // only emit when the running min..max actually widens
+                // build the running Range from the actual endpoint values (Str or Int).
+                // rakupp has no string-Range value, so a string range is emitted eagerly
+                // flattened — matching how a `"a".."e"` literal evaluates on the other side.
+                if (mn.t == VT::Str || mx.t == VT::Str) {
+                    Value rg = Value::array();
+                    std::string cur = mn.toStr(), end = mx.toStr();
+                    for (int g = 0; g < 100000; g++) {
+                        if (cur.length() > end.length() || (cur.length() == end.length() && cur > end)) break;
+                        rg.arr->push_back(Value::str(cur));
+                        if (cur == end) break;
+                        cur = strSucc(cur);
+                    }
+                    out.push_back(rg);
+                } else out.push_back(Value::range(mn.toInt(), mx.toInt(), false, false));
             }
             return mkSupply(out);
         }
@@ -1773,7 +1791,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Type && (m == "raku" || m == "perl")) return Value::str(inv.s); // Int.raku -> "Int" (no parens)
     if (m == "gist") return Value::str(inv.gist());
     if (m == "raku" || m == "perl") return Value::str(rakuRepr(inv));
-    if (m == "Slip") return inv; // Slip flattens in list context; map/args already flatten arrays
+    if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
+        if (inv.t == VT::Array) { Value r = inv; r.isList = true; return r; }
+        if (inv.t == VT::Range) { Value r = Value::array(); *r.arr = inv.flatten(); r.isList = true; return r; }
+        return inv;
+    }
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
     // .VAR.name on an anonymous container is "element" in Rakudo; some code (Text::CSV)
     // uses `@x.VAR.name ne "element"` to detect an explicitly-passed array.
@@ -2820,9 +2842,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "unique") {
-            Value out = Value::array(); std::set<std::string> seen;
-            for (auto& v : items) if (seen.insert(v.toStr()).second) out.arr->push_back(v);
-            out.isList = true;
+            // :as(&mapper) compares mapped keys; :with(&eq) uses a custom equality (O(n²)).
+            Value asF, withF;
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal && a.pairVal->t == VT::Code) { if (a.s == "as") asF = *a.pairVal; else if (a.s == "with") withF = *a.pairVal; }
+            auto keyOf = [&](const Value& v) { return asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v; };
+            Value out = Value::array(); out.isList = true;
+            if (withF.t == VT::Code) {
+                ValueList kept;
+                for (auto& v : items) { Value k = keyOf(v); bool dup = false;
+                    for (auto& kk : kept) if (callCallable(withF, ValueList{k, kk}).truthy()) { dup = true; break; }
+                    if (!dup) { kept.push_back(k); out.arr->push_back(v); } }
+            } else {
+                std::set<std::string> seen;
+                for (auto& v : items) if (seen.insert(keyOf(v).toStr()).second) out.arr->push_back(v);
+            }
             return out;
         }
         if (m == "repeated") { // elements seen more than once (2nd+ occurrences)
@@ -2831,11 +2864,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             out.isList = true;
             return out;
         }
-        if (m == "squish") { // collapse adjacent duplicates
-            Value out = Value::array();
-            for (size_t i = 0; i < items.size(); i++)
-                if (i == 0 || items[i].toStr() != items[i-1].toStr()) out.arr->push_back(items[i]);
-            out.isList = true;
+        if (m == "squish") { // collapse adjacent duplicates (:as maps keys, :with compares them)
+            Value asF, withF;
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal && a.pairVal->t == VT::Code) { if (a.s == "as") asF = *a.pairVal; else if (a.s == "with") withF = *a.pairVal; }
+            auto keyOf = [&](const Value& v) { return asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v; };
+            Value out = Value::array(); out.isList = true;
+            bool first = true; Value prevKey;
+            for (auto& v : items) {
+                Value k = keyOf(v); bool same = false;
+                if (!first) same = withF.t == VT::Code ? callCallable(withF, ValueList{k, prevKey}).truthy() : (k.toStr() == prevKey.toStr());
+                if (first || !same) out.arr->push_back(v);
+                prevKey = k; first = false;
+            }
             return out;
         }
         if (m == "sort") {

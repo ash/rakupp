@@ -4343,6 +4343,24 @@ Value Interpreter::evalBinary(Binary* b) {
         Value out = Value::array(); out.isList = true;
         for (auto& s : seed) out.arr->push_back(s);
         if (out.arr->empty()) return out;
+        // String sequence: "a"..."e" climbs via strSucc, "E"..."A" descends via strPred.
+        if (!hasGen && !infinite && r.t == VT::Str && seed.back().t == VT::Str) {
+            std::string end = r.s, cur = seed.back().s;
+            bool desc = cur > end;
+            if (cur == end) { if (exclusive) out.arr->pop_back(); return out; }
+            const size_t SCAP = 1000000;
+            while (out.arr->size() < SCAP) {
+                bool ok = true;
+                std::string nxt = desc ? strPred(cur, ok) : strSucc(cur);
+                if (!ok) break;
+                if (!desc && (nxt.length() > end.length() || (nxt.length() == end.length() && nxt > end))) break;
+                if (desc && (nxt.length() < end.length() || (nxt.length() == end.length() && nxt < end))) break;
+                out.arr->push_back(Value::str(nxt));
+                cur = nxt;
+                if (cur == end) { if (exclusive) out.arr->pop_back(); break; }
+            }
+            return out;
+        }
         bool allInt = true; for (auto& s : seed) if (s.t != VT::Int && s.t != VT::Bool) allInt = false;
         double step = 1; bool geometric = false; double ratio = 1;
         if (!hasGen) {
@@ -5426,6 +5444,9 @@ Value Interpreter::eval(Expr* e) {
                 std::string cur = from.s, end = to.s;
                 for (int g = 0; g < 1000000; g++) {
                     if (cur.length() > end.length()) break;
+                    // a descending string range ("e".."a") is empty: succ only climbs, so
+                    // once we're past `end` at equal length there is nothing to yield.
+                    if (cur.length() == end.length() && cur > end) break;
                     if (cur == end) { if (!r->exTo) arr.arr->push_back(Value::str(cur)); break; }
                     arr.arr->push_back(Value::str(cur));
                     cur = strSucc(cur);
