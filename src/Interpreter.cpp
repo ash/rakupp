@@ -1030,7 +1030,8 @@ void Interpreter::loadModule(const std::string& name) {
     static const std::set<std::string> pragmas = {
         "strict", "fatal", "lib", "isms", "nqp", "soft", "worries", "experimental",
         "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
-        "MONKEY", "Test", "v6", "v6.c", "v6.d", "v6.e",
+        "MONKEY", "MONKEY-GUTS", "Test", "v6", "v6.c", "v6.d", "v6.e",
+        "NativeCall",  // its `is native` FFI is handled natively by the compiler
     };
     bool versionLit = name.size() >= 2 && name[0] == 'v' && std::isdigit((unsigned char)name[1]);
     if (!pragmas.count(name) && !versionLit)
