@@ -44,18 +44,24 @@ territory, not "passing" and not "failing."
 
 ### The assertion count
 
-Among the files that *do* run, **131,320 of 189,081** assertions pass. This
-number measures correctness on the attempted subset — how much of what we run is
-right — and is the signal we watch for regressions. Two facts define its scope:
+Measured per individual test rather than per file, **131,320 of 189,081
+assertions pass — ~69%**. This is the fairer gauge of how much of the language
+works: a file that passes 99 of 100 assertions contributes those 99 here, instead
+of the flat zero it scores under the all-or-nothing file bar. It is also the
+signal we watch for regressions. Three facts define its scope:
 
 1. **Its denominator is only the reached assertions.** The 546 no-TAP files emit
    nothing, so they are not in the 189,081. This is a different denominator than
    the coverage figure (files, over 1,464).
-2. **S15 (Unicode) is ~87k of the total**, passing at ~95%, so it dominates the
+2. **A stricter variant counts planned tests.** Against tests each file *planned*
+   to run (~199,944), the rate is ~66% — the gap is tests lost when a file aborts
+   partway. The harness prints both (`of tests that ran` / `of tests planned`).
+3. **S15 (Unicode) is ~87k of the total**, passing at ~95%, so it dominates the
    blended figure.
 
-Coverage is the 20% of files; correctness-on-what-runs is this 131,320/189,081.
-They are two different measurements, quoted for two different purposes.
+Coverage is the 20% of files; correctness-on-what-runs is this ~69%
+(131,320/189,081). They are two different measurements, quoted for two different
+purposes.
 
 ## By synopsis
 
