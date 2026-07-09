@@ -1,4 +1,8 @@
 #include "Regex.h"
+#include <cstdint>
+#include <memory>
+#include <cstring>
+#include <cstdlib>
 #include "Unicode.h"
 #include <algorithm>
 #include <cctype>

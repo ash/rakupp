@@ -1,4 +1,6 @@
 #include "BigInt.h"
+#include <cstdint>
+#include <cstdio>
 #include <algorithm>
 #include <cmath>
 

@@ -1,4 +1,7 @@
 #include "Codegen.h"
+#include <functional>
+#include <memory>
+#include <cstdio>
 #include <algorithm>
 #include <cctype>
 #include <map>

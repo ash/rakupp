@@ -1,4 +1,7 @@
 #include "Interpreter.h"
+#include <functional>
+#include <memory>
+#include <cstring>
 #include <unistd.h>
 #include <dlfcn.h>
 #ifdef __APPLE__

@@ -1,5 +1,6 @@
 #pragma once
 #include "Token.h"
+#include <cstdint>
 #include <string>
 #include <tuple>
 #include <vector>

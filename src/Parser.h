@@ -1,5 +1,6 @@
 #pragma once
 #include "Ast.h"
+#include <memory>
 #include "Token.h"
 #include <stdexcept>
 #include <vector>

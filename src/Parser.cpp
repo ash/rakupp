@@ -1,4 +1,6 @@
 #include "Parser.h"
+#include <cstdint>
+#include <memory>
 #include "Lexer.h"
 #include "Unicode.h"
 #include <cctype>

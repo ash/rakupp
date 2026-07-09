@@ -1,4 +1,5 @@
 #include "Unicode.h"
+#include <cstdint>
 #include <unordered_map>
 #include <algorithm>
 #include <cstring>

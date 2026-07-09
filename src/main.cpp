@@ -1,4 +1,6 @@
 #include "Runtime.h"
+#include <cstdint>
+#include <cstdio>
 #include "Codegen.h"
 #include "Lexer.h"
 #include "Parser.h"

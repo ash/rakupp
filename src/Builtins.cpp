@@ -1,4 +1,7 @@
 #include "Interpreter.h"
+#include <cstdint>
+#include <memory>
+#include <cstdlib>
 #include "Unicode.h"
 #include <complex>
 #include <functional>

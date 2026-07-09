@@ -1,4 +1,5 @@
 #include "Lexer.h"
+#include <cstdint>
 #include "Parser.h"   // ParseError
 #include "Unicode.h"  // uniGeneralCategory / uniNumValue
 #include <cctype>

@@ -2,6 +2,7 @@
 // identical AST at startup, then interprets it. So parsing happens ahead of time
 // (at `rakupp --aot` build time); the produced binary walks the embedded tree.
 #include "Ast.h"
+#include <cstdio>
 #include <ostream>
 #include <sstream>
 #include <string>
