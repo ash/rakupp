@@ -1644,16 +1644,30 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // with $_ topicalized per iteration and restored afterward.
             if (fs->modifier && fs->vars.empty() && !fs->destructure) {
                 Value lv = eval(fs->list.get());
-                ValueList items;
-                if (lv.t == VT::Array && lv.arr) items = *lv.arr;
-                else if (lv.t == VT::Range) items = lv.flatten();
-                else items.push_back(lv);
                 auto env = tctx_.cur;
                 bool hadTopic = env->vars.count("$_");
                 Value savedTopic = hadTopic ? env->vars["$_"] : Value::any();
-                for (size_t i = 0; i < items.size(); i++) {
-                    env->vars["$_"] = items[i];
-                    if (!runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == items.size(), col)) break;
+                // `$_ *= 10 for @a` rw-aliases $_ to @a's elements (mutable @-variable).
+                bool rw = lv.t == VT::Array && lv.arr && fs->list->kind == NK::VarExpr &&
+                          !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
+                          static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
+                if (rw) {
+                    auto arr = lv.arr;
+                    for (size_t i = 0; i < arr->size(); i++) {
+                        env->vars["$_"] = (*arr)[i];
+                        bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == arr->size(), col);
+                        (*arr)[i] = env->vars["$_"];
+                        if (!cont) break;
+                    }
+                } else {
+                    ValueList items;
+                    if (lv.t == VT::Array && lv.arr) items = *lv.arr;
+                    else if (lv.t == VT::Range) items = lv.flatten();
+                    else items.push_back(lv);
+                    for (size_t i = 0; i < items.size(); i++) {
+                        env->vars["$_"] = items[i];
+                        if (!runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == items.size(), col)) break;
+                    }
                 }
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                 return forResult();
@@ -1688,10 +1702,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 if (listv.t == VT::Array && listv.arr) {
                     auto arr = listv.arr; // share, don't copy the elements
+                    // `$_` is rw-aliased to the elements when the source is a mutable
+                    // `@`-variable, so `for @a { $_ *= 10 }` writes back into @a.
+                    bool rw = fs->vars.empty() && fs->list->kind == NK::VarExpr &&
+                              !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
+                              static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
                     for (size_t i = 0; i < arr->size(); i++) {
                         freshScope();
                         scope->define(var, (*arr)[i]);
-                        if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col)) break;
+                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col);
+                        if (rw) { auto it = scope->vars.find(var); if (it != scope->vars.end()) (*arr)[i] = it->second; }
+                        if (!cont) break;
                     }
                     return forResult();
                 }
