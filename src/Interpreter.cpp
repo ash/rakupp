@@ -4080,6 +4080,13 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     auto runAction = [&](const std::string& name, Value& mv) {
         if (!haveActions || !actCls) return;
         Value* method = actCls->findMethod(name);
+        if (!method) {
+            // A `:sym«baz»` candidate is acted on by `method X:sym<baz>` — normalise the
+            // guillemet sym to the canonical angle form and retry.
+            auto g = name.find(":sym\xC2\xAB");
+            if (g != std::string::npos) { auto e = name.find("\xC2\xBB", g + 6);
+                if (e != std::string::npos) method = actCls->findMethod(name.substr(0, g) + ":sym<" + name.substr(g + 6, e - (g + 6)) + ">" + name.substr(e + 2)); }
+        }
         if (!method) return;
         tctx_.makeTargets.push_back(&mv);
         try { invokeMethod(*method, actions, {mv}); }

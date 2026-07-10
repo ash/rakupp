@@ -228,6 +228,27 @@ Regex::NodePtr Regex::parseAtom() {
     if (c == '<') {
         pos_++;
         if (peek() == '(') { pos_++; auto n = std::make_unique<Node>(); n->k = K::CapStart; return n; } // <( match-capture start
+        // Enumerated string alternation: `< + - >` / `< foo bar >` (a LEADING space after
+        // `<` signals the quoted-word-list form) matches any of the literal words, longest first.
+        if (peek() == ' ' || peek() == '\t') {
+            std::vector<std::string> words;
+            while (!eof() && peek() != '>') {
+                while (peek() == ' ' || peek() == '\t') pos_++;
+                if (eof() || peek() == '>') break;
+                std::string w; while (!eof() && peek() != ' ' && peek() != '\t' && peek() != '>') w += pat_[pos_++];
+                if (!w.empty()) words.push_back(w);
+            }
+            if (peek() == '>') pos_++;
+            std::stable_sort(words.begin(), words.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+            auto alt = std::make_unique<Node>(); alt->k = K::Alt;
+            for (auto& w : words) {
+                if (w.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->lit = w; alt->kids.push_back(std::move(n)); }
+                else { auto seq = std::make_unique<Node>(); seq->k = K::Seq;
+                    for (char ch : w) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
+                    alt->kids.push_back(std::move(seq)); }
+            }
+            return alt;
+        }
         auto node = std::make_unique<Node>();
         node->k = K::Class;
         // char class, possibly composed: `[..]`, `-[..]`, `+[..]`, `<+alpha>`, `<+[A]+alpha>`.
@@ -1419,10 +1440,29 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
 
 bool GrammarMatcher::parse(const std::string& input, const std::string& top, bool subparse,
                            ParseNode& out, long& endOut) {
+    clearMemo(); // packrat memo is valid only within a single input parse
+    // A proto rule used as the entry point (`.parse(:rule('lit'))`) dispatches to its
+    // candidates with LTM, exactly as a `<lit>` subrule call would.
+    if (protos.count(top)) {
+        Regex::MState st{input, {}, {}, {}, {}, nullptr, this};
+        st.startPos = 0; st.hooks = &hooks;
+        long endPos = -1;
+        scope_.push_back({});
+        bool ok = matchSubMeta(nameMeta(top), top, "", "\x01proto", st, 0, [&](long e) {
+            if (!subparse && e != (long)input.size()) return false;
+            endPos = e; return true;
+        });
+        scope_.pop_back();
+        auto it = st.children.find("\x01proto");
+        if (!ok || it == st.children.end() || it->second.empty()) return false;
+        out = it->second.back();
+        out.name = top; out.from = 0; out.to = endPos;
+        endOut = endPos;
+        return true;
+    }
     std::map<std::string, std::string> bound;
     Regex* re = compiled(top, "", bound);
     if (!re || !re->ok()) return false;
-    clearMemo(); // packrat memo is valid only within a single input parse
     Regex::MState st{input, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
     st.startPos = 0; st.hooks = &hooks; // top-level match starts at 0; wire the interpreter hooks
     long endPos = -1;

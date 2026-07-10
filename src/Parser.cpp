@@ -2026,6 +2026,16 @@ StmtPtr Parser::parseSub(bool isMulti) {
             else if (cat == "postfix") userPostfix_.insert(opname);
         }
     }
+    // proto-regex/method candidate suffix: `method foo:sym<bar>` / `token foo:sym«bar»`.
+    // The :sym<…> adverb is part of the name (canonicalised to the angle form) so an
+    // action method matches the grammar candidate it acts on.
+    if (isOp(":") && peek().kind == Tok::Ident && peek().text == "sym") {
+        advance(); advance(); // : sym
+        std::vector<std::string> w;
+        if (isOp("<")) { advance(); w = readAngleWords(">"); }
+        else if (isOp("\xC2\xAB")) { advance(); w = readAngleWords("\xC2\xBB"); }
+        s->name += ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
+    }
     if (isKind(Tok::LParen)) {
         sigRetType_.clear(); advance(); s->params = parseSignature();
         // a `--> T` that follows a parameter (not comma-separated) is left for us
