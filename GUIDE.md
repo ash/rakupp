@@ -130,7 +130,7 @@ battery.
 - **[COUNTING.md](COUNTING.md)** — authoritative definition of the pass-rate figures.
 - **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
 - **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: passes, C++ level forwarding, numbers.
-- **[history/JOURNEY.md](history/JOURNEY.md)** — a memoir of how this was built: the Roast / real-project / docs loops, the clean-room stance on Rakudo, and reaching `--exe`.
+- **[docs/JOURNEY.md](docs/JOURNEY.md)** — a memoir of how this was built: the Roast / real-project / docs loops, the clean-room stance on Rakudo, and reaching `--exe`.
 
 ## Building
 

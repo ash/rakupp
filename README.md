@@ -89,7 +89,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 - **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
 - **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
-- **[history/JOURNEY.md](history/JOURNEY.md)** — a memoir of how this was built.
+- **[docs/JOURNEY.md](docs/JOURNEY.md)** — a memoir of how this was built.
 
 ## License
 

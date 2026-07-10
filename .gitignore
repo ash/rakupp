@@ -23,6 +23,14 @@
 /mkdir-t-testfile-*
 /buffer*
 /lib/
+/.tmp-test-file
+/async-print-tester
+/parse_and_parsefile_test
+/handle-between-threads-*
+
+# Homebrew packaging lives in the separate ash/homebrew-rakupp tap; kept here on
+# disk for convenience but not tracked in this repo.
+/packaging/
 
 # Rakudo precompilation cache (created when modules are loaded)
 **/.precomp/

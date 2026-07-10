@@ -157,4 +157,4 @@ build/rakupp tools/run-roast.raku S05      # filter by path
 - **[BENCHMARKS.md](BENCHMARKS.md)** / **[OPTIMIZATION.md](OPTIMIZATION.md)** — speed vs Rakudo; the `-O` optimizer.
 - **[ASYNC.md](ASYNC.md)** / **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — concurrency; language-mutation coverage.
 - **[ROADMAP.md](ROADMAP.md)** — done / next.
-- **[history/JOURNEY.md](history/JOURNEY.md)** — a memoir of how this was built.
+- **[docs/JOURNEY.md](docs/JOURNEY.md)** — a memoir of how this was built.
