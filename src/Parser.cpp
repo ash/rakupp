@@ -2147,14 +2147,16 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             advance();
             // optional type before the attribute var: `has Int $.x`, `has Int:D $.x`,
             // `has Array[Int] $.x` — consume the type name, any :D/:U/:_ smiley, and [..] params.
+            std::string attrType;
             if (isKind(Tok::Ident)) {
-                advance(); // type name
+                attrType = advance().text; // type name
                 if (isOp(":") && (peek().kind == Tok::Ident)) { advance(); advance(); } // :D / :U / :_ smiley
                 if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
             }
             if (isKind(Tok::Var)) {
                 std::string vn = advance().text;
                 AttrDecl a;
+                a.type = attrType;
                 a.sigil = vn[0];
                 size_t idx = 1;
                 if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }

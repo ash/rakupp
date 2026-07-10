@@ -220,6 +220,7 @@ struct AttrDecl {
     char sigil = '$';
     bool pub = true;    // has $.x (public accessor) vs has $!x (private)
     bool rw = false;    // `is rw` — public accessor is writable
+    std::string type;   // declared type name (`has Int $.x`), "" = none (Mu)
     ExprPtr def;        // optional default
 };
 

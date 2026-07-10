@@ -1454,7 +1454,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& md : cd->methods) addTo(ci->methods, md.get());
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
-                        ca.pub = a.pub; ca.rw = a.rw; ca.def = a.def.get();
+                        ca.pub = a.pub; ca.rw = a.rw; ca.def = a.def.get(); ca.type = a.type;
                         ci->attrs.push_back(ca);
                     }
                     for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; }
@@ -1554,7 +1554,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             ci->declEnv = tctx_.cur; // capture the declaration scope (attr-default closures)
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; }
             for (auto& a : cd->attrs) {
-                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw;
+                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.type = a.type;
                 ca.def = a.def.get();
                 ci->attrs.push_back(ca);
             }

@@ -1345,6 +1345,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
         if (m == "close" || m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
     }
+    if (inv.t == VT::Hash && inv.hashKind == "Attribute") {
+        auto& h = *inv.hash;
+        if (m == "name") return h.count("name") ? h["name"] : Value::str("");
+        if (m == "type" || m == "of" || m == "returns") return h.count("type") ? h["type"] : Value::typeObj("Mu");
+        if (m == "readonly") return h.count("readonly") ? h["readonly"] : Value::boolean(true);
+        if (m == "rw") return Value::boolean(h.count("readonly") && !h["readonly"].truthy());
+        if (m == "has_accessor") return h.count("has_accessor") ? h["has_accessor"] : Value::boolean(false);
+        if (m == "gist" || m == "Str") return h.count("name") ? h["name"] : Value::str("");
+        if (m == "defined" || m == "Bool") return Value::boolean(true);
+    }
     if (inv.t == VT::Hash && inv.hashKind == "Failure") {
         Value ex = inv.hash->count("exception") ? (*inv.hash)["exception"] : Value::typeObj("Exception");
         if (m == "exception") return ex;
@@ -1799,9 +1809,26 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 out.arr->push_back(Value::typeObj("Mu"));
                 return out;
             }
-            if (m == "attributes") { // local attributes (as $.name proxies)
+            if (m == "attributes") { // Attribute objects: .name ($!x), .type, .readonly
+                bool local = false;
+                for (auto& a : args) if (a.t == VT::Pair && a.s == "local") local = a.pairVal ? a.pairVal->truthy() : true;
                 Value out = Value::array(); out.isList = true;
-                for (auto& a : ci->attrs) out.arr->push_back(Value::typeObj(std::string(1, a.sigil) + "." + a.name));
+                std::set<ClassInfo*> visited;
+                std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
+                    if (!c || !visited.insert(c).second) return;
+                    for (auto& a : c->attrs) {
+                        Value at = Value::makeHash(); at.hashKind = "Attribute";
+                        (*at.hash)["name"] = Value::str(std::string(1, a.sigil) + "!" + a.name);
+                        (*at.hash)["type"] = Value::typeObj(a.type.empty() ? "Mu" : a.type);
+                        (*at.hash)["readonly"] = Value::boolean(!a.rw);
+                        (*at.hash)["has_accessor"] = Value::boolean(a.pub);
+                        out.arr->push_back(at);
+                    }
+                    if (local) return;
+                    walk(c->parent.get());
+                    for (auto& p : c->extraParents) walk(p.get());
+                };
+                walk(ci.get());
                 return out;
             }
             // `new`: a user-defined `new` (often a multi) coexists with the default
@@ -2028,6 +2055,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "Bool" || m == "so") return Value::boolean(inv.truthy());
     if (m == "not") return Value::boolean(!inv.truthy());
     if (m == "defined") return Value::boolean(defined(inv));
+    if (m == "DEFINITE") return Value::boolean(defined(inv)); // defined instance vs type/undef
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
         std::string mn = args.empty() ? "" : args[0].toStr();
         Value out = Value::array(); out.isList = true;
