@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: measured per individual test, **~57% of all declared tests pass** (132,692 / ~230,851, counting tests in files that abort before running); on the stricter file bar, **323 / 1,464 fully pass (~22%)** (608 partial, 524 no-TAP, 3 timeout). See [COUNTING.md](COUNTING.md) for how these are defined.
+Roast standing: measured per individual test, **~57% of all declared tests pass** (132,795 / ~230,851, counting tests in files that abort before running); on the stricter file bar, **325 / 1,464 fully pass (~22%)** (608 partial, 524 no-TAP, 3 timeout). See [COUNTING.md](COUNTING.md) for how these are defined.
 
 ## Language versions (6.c / 6.d / 6.e)
 
