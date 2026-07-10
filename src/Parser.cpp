@@ -629,15 +629,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             mc->meta = metaCall;
             mc->mutate = mutate;
             mc->hyper = hyperNext; hyperNext = false;
+            bool indirectName = false;
             if (cur().kind == Tok::Ident || cur().kind == Tok::Var) {
                 mc->method = advance().text;
             } else if (cur().kind == Tok::StrLit) {
-                mc->method = advance().text;           // ."literal-name"()
+                mc->method = advance().text; indirectName = true;   // ."literal-name"()
             } else if (cur().kind == Tok::StrInterp) {
-                mc->methodExpr = parsePrimary();       // ."$name"() — computed at runtime
+                mc->methodExpr = parsePrimary(); indirectName = true; // ."$name"() — computed at runtime
             } else {
                 error("expected method name after '.'");
             }
+            // An indirect (quoted/computed) method name must be immediately called:
+            // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
+            if (indirectName && !isKind(Tok::LParen))
+                error("indirect method call requires parentheses: $obj.'name'()");
             if (isKind(Tok::LParen)) { advance(); mc->args = parseCallArgs(); } // .method(args) or .method (args)
             else if (isOp(":") && (startsTermToken(peek()) ||
                      (peek().kind == Tok::Ident && (peek().text == "my" || peek().text == "our" || peek().text == "state")))) {
@@ -993,7 +998,16 @@ ExprPtr Parser::parsePrimary() {
             }
             return arr;
         }
-        case Tok::Var: { int ln = cur().line; auto e = std::make_unique<VarExpr>(advance().text); e->line = ln; return e; }
+        case Tok::Var: {
+            // `$.^name` / `$.?meth` etc.: a bare `$` glued to a `.` postfix is the
+            // `$.` self-shortcut (self followed by a method/meta call). `$.foo` is a
+            // single twigil token handled elsewhere; this only fires when the char
+            // after the dot isn't an identifier (so the lexer split off a lone `$`).
+            if (cur().text == "$" && peek().kind == Tok::Op && peek().text == "." && !peek().spaceBefore) {
+                int ln = cur().line; advance(); auto s = std::make_unique<SelfTerm>(); s->line = ln; return s;
+            }
+            int ln = cur().line; auto e = std::make_unique<VarExpr>(advance().text); e->line = ln; return e;
+        }
         case Tok::LParen: {
             advance();
             if (isKind(Tok::RParen)) { advance(); return std::make_unique<ListExpr>(); }
