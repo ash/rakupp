@@ -5365,8 +5365,8 @@ Value Interpreter::eval(Expr* e) {
             if (n == "proceed") throw ProceedEx{};   // leave when, keep matching
             if (n == "succeed") throw BreakGivenEx{}; // exit the enclosing given
             if (n == "Nil") return Value::nil();
-            if (n == "True") return Value::boolean(true);
-            if (n == "False") return Value::boolean(false);
+            if (n == "True" || n == "Bool::True") return Value::boolean(true);
+            if (n == "False" || n == "Bool::False") return Value::boolean(false);
             if (n == "Inf") return Value::number(INFINITY);
             if (n == "NaN") return Value::number(NAN);
             if (n == "Order::Same" || n == "Same") return Value::enumVal("Same", 0);
