@@ -1365,6 +1365,16 @@ ExprPtr Parser::parsePrimary() {
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur());
+            // Higher-order list builtins accept a pointy-block first arg without parens:
+            // `map -> $v {…}, @list` (a bare `{…}` already works via startsListopArg). Gated
+            // to these names so a general `bareword ->` isn't misread as a listop call.
+            if (!listopOk && (cur().text == "->" || cur().text == "<->")) {
+                static const std::set<std::string> blockListops = {
+                    "map", "grep", "first", "sort", "reduce", "produce",
+                    "classify", "categorize", "grep-index", "first-index",
+                };
+                if (blockListops.count(name)) listopOk = true;
+            }
             // callsame/nextsame are nullary redispatchers — they reuse the current
             // args and take none of their own, so `"[" ~ callsame ~ "]"` must not read
             // the trailing `~ "]"` (prefix ~) as an argument. (callwith/nextwith/
@@ -1440,9 +1450,16 @@ ExprPtr Parser::parsePrimary() {
 }
 
 // ---------------- string interpolation ----------------
-static ExprPtr parseEmbeddedExpr(const std::string& src) {
+ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     Lexer lx(src);
     Parser p(lx.tokenize());
+    // Inherit user-defined operators so `"{ 4! }"` sees this program's `postfix:<!>`
+    // (and custom infix/prefix/circumfix) just as top-level code does.
+    p.userInfix_ = userInfix_;
+    p.userPrefix_ = userPrefix_;
+    p.userPostfix_ = userPostfix_;
+    p.userCircumfix_ = userCircumfix_;
+    p.userPostcircumfix_ = userPostcircumfix_;
     Program prog = p.parseProgram();
     // a single bare expression interpolates directly
     if (prog.stmts.size() == 1 && prog.stmts[0]->kind == NK::ExprStmt)

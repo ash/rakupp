@@ -80,6 +80,7 @@ private:
     ExprPtr parseColonPair();                     // :name / :!name / :name(x) / :$var
     std::vector<ExprPtr> parseCallArgs();         // after '('
     ExprPtr parseInterpString(const std::string& raw);
+    ExprPtr parseEmbeddedExpr(const std::string& src); // parse a `{…}`/`$()` interpolation, inheriting user operators
     std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)
 };
 
