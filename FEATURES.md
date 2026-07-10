@@ -95,7 +95,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 ## Regexes & Grammars
 - `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`
 - Unicode property classes: general category short + long (`<:Nd>`/`<:L>`/`<:UppercaseLetter>`), `<:LC>`/`<:Assigned>`, **blocks** `<:InArabic>` (real 16.0 table), and **binary props** `<:Math>`/`<:Alphabetic>`/`<:Soft_Dotted>`/`<:White_Space>`/`<:Other_*>` (DerivedCoreProperties + PropList); negated `<:!…>` and inverted `<-:…>`
-- Script classes `<:Latin> <:Greek> <:Cyrillic> <:Han> …` (still approximate, block-based — real Scripts.txt table not yet wired)
+- Script classes `<:Latin> <:Syriac> <:Canadian_Aboriginal> …` (real 16.0 Scripts.txt) and `Bidi_Class` `<:bc<L>>`/`<:bc<EN>>`; zero-width property assertions `<?:prop>`/`<!:prop>`
 - Anchors `^ $ ^^`, quantifiers `* + ? ** {n..m}`, alternation, groups, named captures
 - Repeated named captures under a quantifier collate into a list (`@<content>`, `$<x>[1]`)
 - Subrules, grammars (`token`/`rule`/`regex`, `.parse`/`.subparse`/`.parsefile`), `$/ $0…`, actions
