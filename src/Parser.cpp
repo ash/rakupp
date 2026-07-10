@@ -1047,8 +1047,13 @@ ExprPtr Parser::parsePrimary() {
             return e;
         }
         case Tok::LBracket: {
-            // reduction metaoperator: [+] [*] [~] [max] [<] ...
-            if ((peek(1).kind == Tok::Op || peek(1).kind == Tok::Ident) &&
+            // reduction metaoperator: [+] [*] [~] [max] [<] [Z] [X] ...
+            // A named-operator reduce is either an infix symbol, a lowercase word op
+            // (max/min/gcd/…), or the meta bases Z/X. A capitalized type name — `[Any]`,
+            // `[Int]`, `[Foo]` — is NOT a reduce; it's a one-element array literal.
+            bool identReduce = peek(1).kind == Tok::Ident && !peek(1).text.empty() &&
+                (peek(1).text == "Z" || peek(1).text == "X" || std::islower((unsigned char)peek(1).text[0]));
+            if ((peek(1).kind == Tok::Op || identReduce) &&
                 peek(2).kind == Tok::RBracket && peek(1).text != "]") {
                 advance(); // [
                 std::string innerOp = advance().text; // operator

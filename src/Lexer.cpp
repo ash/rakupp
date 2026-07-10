@@ -526,6 +526,9 @@ bool Lexer::tryQuoteForm(Token& out) {
         case '[': close = ']'; break;
         case '<': close = '>'; break;
         case '/': case '|': case '!': close = d; bracket = false; break;
+        case '\'': case '"': // q'…' / q:to'END' — quote or heredoc terminator in quotes
+            if (isSubst || isTrans) return false; // s'…' isn't a substitution delimiter here
+            close = d; bracket = false; break;
         default: return false;
     }
     // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
