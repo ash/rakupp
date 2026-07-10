@@ -3402,6 +3402,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 else if (r.s == "Stringy" && l.t == VT::Str) res = true;
                 else if (r.s == "Real" && l.isNumeric() && l.t != VT::Complex) res = true;
             }
+            // native numeric types conform to Num/Int/Numeric/Real/Cool (`num64 ~~ Num`)
+            if (!res && l.t == VT::Type) {
+                static const std::set<std::string> natNum = {"num", "num32", "num64"};
+                static const std::set<std::string> natInt = {"int", "int8", "int16", "int32", "int64",
+                    "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
+                bool numeric = r.s == "Numeric" || r.s == "Real" || r.s == "Cool" || r.s == "Any" || r.s == "Mu";
+                if ((r.s == "Num" || numeric) && natNum.count(l.s)) res = true;
+                else if ((r.s == "Int" || numeric) && natInt.count(l.s)) res = true;
+            }
             // object: match against its class / ancestor names, then composed roles
             if (!res && l.t == VT::Object && l.obj)
                 for (ClassInfo* ci = l.obj->cls.get(); ci; ci = ci->parent.get())
@@ -3420,6 +3429,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             res = applyArith("==", l, r).truthy(); // numeric smartmatch incl. Complex (3 ~~ 3+0i)
         } else if (r.t == VT::Object) {
             res = (l.t == VT::Object && l.obj.get() == r.obj.get()); // object identity
+        } else if ((r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
+                   (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.t == VT::Str || l.t == VT::Bool)) {
+            res = applyArith("==", l, r).truthy(); // `$x ~~ 5` : numeric coercion ('05' ~~ 5 is True)
         } else {
             res = valueEq(l, r);
         }
