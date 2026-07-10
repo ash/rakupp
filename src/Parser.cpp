@@ -807,10 +807,10 @@ ExprPtr Parser::parseColonPair() {
         advance(); advance(); // radix and '<'
         std::vector<std::string> words = readAngleWords(">");
         std::string digits = words.empty() ? "" : words[0];
-        long long val = 0;
+        long long val = 0, frac = 0, fdiv = 1; bool infrac = false;
         // Iterate codepoints: accept ASCII alnum, fullwidth ASCII letters (folded),
-        // and Nd digits (their 0-9 value). Nl/No numerals or non-radix scripts are
-        // a malformed radix number (X::Syntax::Malformed).
+        // and Nd digits (their 0-9 value). A single `.` starts the fractional part
+        // (`:16<FF.F>` → a Rat). Nl/No numerals or non-radix scripts are malformed.
         for (size_t bi = 0; bi < digits.size(); ) {
             unsigned char b0 = digits[bi];
             int len = b0 < 0x80 ? 1 : b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
@@ -818,6 +818,7 @@ ExprPtr Parser::parseColonPair() {
             for (int k = 1; k < len && bi + k < digits.size(); k++) cp = (cp << 6) | ((unsigned char)digits[bi + k] & 0x3F);
             bi += len;
             if (cp == '_') continue;
+            if (cp == '.' && !infrac) { infrac = true; continue; }
             long long d = -1;
             char fw = (cp >= 0xFF21 && cp <= 0xFF3A) ? (char)('A' + cp - 0xFF21)
                     : (cp >= 0xFF41 && cp <= 0xFF5A) ? (char)('a' + cp - 0xFF41) : 0;
@@ -830,7 +831,13 @@ ExprPtr Parser::parseColonPair() {
                 if (uniGeneralCategory(cp) == "Nd" && uniNumValue(cp, nn, dd) && dd == 1) d = nn;
             }
             if (d < 0 || d >= base) error("Malformed radix number");
-            val = val * base + d;
+            if (infrac) { frac = frac * base + d; fdiv *= base; }
+            else val = val * base + d;
+        }
+        if (infrac) { // fractional radix → a Rat: (val*fdiv + frac) / fdiv
+            auto nl = std::make_unique<NumLit>((double)(val * fdiv + frac) / (double)fdiv);
+            nl->isRat = true; nl->ratNum = val * fdiv + frac; nl->ratDen = fdiv;
+            return nl;
         }
         return std::make_unique<IntLit>(val);
     }

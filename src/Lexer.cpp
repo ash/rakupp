@@ -336,7 +336,7 @@ Token Lexer::lexNumber() {
         }
         return false;
     };
-    if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b')) {
+    if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b' || peek(1) == 'd')) {
         char base = peek(1);
         advance(); advance();
         std::string digits;
@@ -363,7 +363,7 @@ Token Lexer::lexNumber() {
             }
             for (int k = utf8Len((unsigned char)c); k > 0; k--) advance();
         }
-        int b = base == 'x' ? 16 : base == 'o' ? 8 : 2;
+        int b = base == 'x' ? 16 : base == 'o' ? 8 : base == 'd' ? 10 : 2;
         // No valid digit after the 0x/0o/0b prefix — e.g. an Nl/No numeral or a
         // non-radix script (`0b¹0`, `0xΓαfe`) — is a malformed literal.
         if (digits.empty() || malformed) throw ParseError("Malformed radix number", line_);
