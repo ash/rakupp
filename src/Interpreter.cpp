@@ -2813,6 +2813,12 @@ Value* Interpreter::lvalue(Expr* e) {
             return &base->obj->attrs[mc->method];
         }
     }
+    // sigilless variable used as an lvalue (`my \a := $a; a = 10`): a bareword that
+    // resolves to a bound lexical is assignable through its slot.
+    if (e->kind == NK::NameTerm) {
+        auto* nt = static_cast<NameTerm*>(e);
+        if (Value* p = tctx_.cur->find(nt->name)) return p;
+    }
     throw RakuError{Value::str("Cannot assign"), "Target is not assignable"};
 }
 
@@ -5446,6 +5452,11 @@ Value Interpreter::eval(Expr* e) {
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
             Value inv = eval(mc->inv.get());
+            // `.DEFINITE` as a literal identifier is a metamodel macro: it always
+            // reports concreteness and never a user-declared DEFINITE method. The
+            // quoted `."DEFINITE"()` form (methodExpr set) still dispatches normally.
+            if (mc->method == "DEFINITE" && !mc->methodExpr && !mc->meta)
+                return Value::boolean(isDefined(inv));
             if (mc->methodExpr) mc->method = eval(mc->methodExpr.get()).toStr(); // indirect ."$name"()
             ValueList args = evalArgs(mc->args);
             // Autovivification: `%h{k}.push(...)` on an undefined element creates an
