@@ -2476,8 +2476,12 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "my" || kw == "our" || kw == "state" || kw == "has" ||
             kw == "anon" || kw == "unit" || kw == "augment") {
             if (peek().kind == Tok::Ident && declKw.count(peek().text)) {
+                bool wasOur = (kw == "our");
                 advance(); // strip scope/unit; re-dispatch on the declaration keyword
-                return parseStatement();
+                StmtPtr st = parseStatement();
+                // `our sub`/`our multi` — remember package scope so it installs globally.
+                if (wasOur && st && st->kind == NK::SubDecl) static_cast<SubDecl*>(st.get())->isOur = true;
+                return st;
             }
             // typed scoped decl:  my Int sub / my Num constant / our Str sub
             if (peek().kind == Tok::Ident && peek(2).kind == Tok::Ident && declKw.count(peek(2).text)) {

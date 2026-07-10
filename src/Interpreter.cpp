@@ -384,6 +384,7 @@ Interpreter::Interpreter() {
     mainThread_ = std::this_thread::get_id();
     parallelMode_ = std::getenv("RAKUPP_PARALLEL") != nullptr;
     global_ = std::make_shared<Env>();
+    curPkgEnv_ = global_;
     tctx_.cur = global_;
     // Module search paths. "lib"/"."/"rakulib" are relative to the CWD; the rest
     // come from the environment so a checkout works anywhere:
@@ -963,6 +964,7 @@ void Interpreter::loadModule(const std::string& name) {
                 if (sd->isExport && !sd->name.empty()) exported.insert(sd->name);
             }
         tctx_.cur = moduleEnv;
+        auto savedPkg = curPkgEnv_; curPkgEnv_ = moduleEnv; // `our sub` in the module installs here, not main's global
         auto publish = [&] {
             for (auto& kv : moduleEnv->vars) {
                 const std::string& k = kv.first;
@@ -987,13 +989,13 @@ void Interpreter::loadModule(const std::string& name) {
         }
         catch (RakuError& e) {
             publish();
-            tctx_.cur = saved; finishData_ = savedFinish;
+            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish;
             std::cerr << "===WARNING=== Module " << name << " failed during load: " << e.message << "\n";
             return;
         }
-        catch (...) { tctx_.cur = saved; finishData_ = savedFinish; throw; }
+        catch (...) { tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; throw; }
         publish();
-        tctx_.cur = saved; finishData_ = savedFinish;
+        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish;
     };
 
     std::string rel = name;
@@ -1392,6 +1394,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     return dispVal;
                 }
                 tctx_.cur->define("&" + sd->name, code);
+                // `our sub` is package-scoped: also install globally so a sibling block
+                // (or an `our &name;` re-declaration) can reach it.
+                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) curPkgEnv_->define("&" + sd->name, code);
             }
             return code;
         }
@@ -1482,8 +1487,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 auto pkgEnv = std::make_shared<Env>();
                 pkgEnv->parent = tctx_.cur;
                 auto saved = tctx_.cur; tctx_.cur = pkgEnv;
+                auto savedPkg = curPkgEnv_; curPkgEnv_ = pkgEnv; // `our` inside the package installs here (published qualified)
                 for (auto& st : cd->body) exec(st.get());
-                tctx_.cur = saved;
+                tctx_.cur = saved; curPkgEnv_ = savedPkg;
                 // Only `our`-declared sigil vars are visible by qualified name; `my` stays lexical.
                 std::set<std::string> ourVars;
                 for (auto& st : cd->body) {
@@ -5279,6 +5285,11 @@ Value Interpreter::eval(Expr* e) {
                     if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
                     return tctx_.curStateEnv->vars[ve->name];
                 }
+                // `our &foo;` re-declaration: bind to the existing package (global) code
+                // symbol — e.g. an `our sub` defined in a sibling block. Restricted to the
+                // `&` sigil so scalar/array/hash `our` vars keep their assignable containers.
+                if (ve->declScope == "our" && sigil == '&' && curPkgEnv_ && curPkgEnv_ != tctx_.cur)
+                    if (Value* g = curPkgEnv_->find(ve->name)) { tctx_.cur->define(ve->name, *g); return *g; }
                 tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
                 return tctx_.cur->vars[ve->name];
             }

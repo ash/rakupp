@@ -217,6 +217,7 @@ struct SubDecl : Stmt {
     bool isMethod = false;
     bool isSubmethod = false;
     bool isExport = false; // `is export` — visible to importers of the enclosing module
+    bool isOur = false;    // `our sub` — also installed in the package/global scope (visible to sibling blocks)
     std::string retType;   // `of Num` / `returns Int` / `--> T` return type (for .returns/.of)
     bool isNative = false;    // `is native` — a C FFI call
     std::string nativeLib;    // `is native('lib')` — "" ⇒ the default namespace (libc etc.)
