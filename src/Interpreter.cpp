@@ -1858,6 +1858,10 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     return code;
 }
 
+// A Pair argument counts as *named* only if it was written syntactically (k=>v / :k(v));
+// a Pair that arrived as a value (from a variable, list, iteration, or return) is positional.
+static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.namedArg; }
+
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                              std::shared_ptr<Env>& env) {
     // Fast path: every parameter is a plain mandatory positional scalar and no
@@ -1871,7 +1875,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 p.isRw || p.isCopy || p.defaultVal || p.subSig || p.litVal ||
                 p.whereExpr || p.defConstraint) { simple = false; break; }
         if (simple)
-            for (auto& a : args) if (a.t == VT::Pair) { simple = false; break; }
+            for (auto& a : args) if (isNamedArg(a)) { simple = false; break; }
         if (simple) {
             for (size_t i = 0; i < params.size(); i++) {
                 if (i < args.size()) {
@@ -1889,7 +1893,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     ValueList positional;
     std::map<std::string, Value> named;
     for (auto& a : args) {
-        if (a.t == VT::Pair) named[a.s] = a.pairVal ? *a.pairVal : Value::any();
+        if (isNamedArg(a)) named[a.s] = a.pairVal ? *a.pairVal : Value::any();
         else positional.push_back(a);
     }
     // names captured by explicit named params are NOT collected by a slurpy *%hash
@@ -2010,7 +2014,7 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     if (cand.t != VT::Code || !cand.code || !cand.code->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code->params;
-    ValueList pos; for (auto& a : args) if (a.t != VT::Pair) pos.push_back(a);
+    ValueList pos; for (auto& a : args) if (!isNamedArg(a)) pos.push_back(a);
     size_t required = 0, total = 0; bool slurpy = false;
     std::vector<const Param*> positional;
     for (auto& p : params) {
@@ -2317,29 +2321,29 @@ Value rtReduce(const std::string& op, const Value& list) {
 
 // --- argument binding for native codegen (flexible signatures) ---
 Value rtPos(const ValueList& a, size_t idx) {
-    size_t p = 0; for (auto& v : a) { if (v.t == VT::Pair) continue; if (p == idx) return v; p++; }
+    size_t p = 0; for (auto& v : a) { if (isNamedArg(v)) continue; if (p == idx) return v; p++; }
     return Value::any();
 }
 bool rtHasPos(const ValueList& a, size_t idx) {
-    size_t p = 0; for (auto& v : a) { if (v.t == VT::Pair) continue; if (p == idx) return true; p++; }
+    size_t p = 0; for (auto& v : a) { if (isNamedArg(v)) continue; if (p == idx) return true; p++; }
     return false;
 }
 Value rtNamed(const ValueList& a, const std::string& key) {
-    for (auto& v : a) if (v.t == VT::Pair && v.s == key) return v.pairVal ? *v.pairVal : Value::any();
+    for (auto& v : a) if (isNamedArg(v) && v.s == key) return v.pairVal ? *v.pairVal : Value::any();
     return Value::any();
 }
 bool rtHasNamed(const ValueList& a, const std::string& key) {
-    for (auto& v : a) if (v.t == VT::Pair && v.s == key) return true;
+    for (auto& v : a) if (isNamedArg(v) && v.s == key) return true;
     return false;
 }
 Value rtSlurpyPos(const ValueList& a, size_t from) {
     Value o = Value::array(); size_t p = 0;
-    for (auto& v : a) { if (v.t == VT::Pair) continue; if (p >= from) o.arr->push_back(v); p++; }
+    for (auto& v : a) { if (isNamedArg(v)) continue; if (p >= from) o.arr->push_back(v); p++; }
     return o;
 }
 Value rtSlurpyNamed(const ValueList& a) {
     Value o = Value::makeHash();
-    for (auto& v : a) if (v.t == VT::Pair) (*o.hash)[v.s] = v.pairVal ? *v.pairVal : Value::any();
+    for (auto& v : a) if (isNamedArg(v)) (*o.hash)[v.s] = v.pairVal ? *v.pairVal : Value::any();
     return o;
 }
 Value rtCoerceHash(const Value& v) {
@@ -4894,11 +4898,16 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             args.push_back(Value::regex(static_cast<RegexLit*>(a.get())->pattern));
         } else if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") {
             Value v = eval(static_cast<Unary*>(a.get())->operand.get());
+            // |@list slips positionally (Pair elements stay positional); |%hash slips as named args.
             if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
-            else if (v.t == VT::Hash && v.hash) { for (auto& kv : *v.hash) args.push_back(Value::pair(kv.first, kv.second)); }
+            else if (v.t == VT::Hash && v.hash) { for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); } }
             else args.push_back(v);
         } else {
-            args.push_back(eval(a.get()));
+            Value v = eval(a.get());
+            // Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) is a NAMED
+            // argument; a Pair value from a variable/call/list is positional.
+            if (v.t == VT::Pair && a->kind == NK::Pair) v.namedArg = true;
+            args.push_back(std::move(v));
         }
     }
     return args;

@@ -57,6 +57,7 @@ struct Value {
     bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
     bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
     bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
+    bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
     std::shared_ptr<ValueList> arr;
     std::shared_ptr<std::map<std::string, Value>> hash;
     std::shared_ptr<Callable> code;
