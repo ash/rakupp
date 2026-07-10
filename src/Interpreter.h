@@ -20,6 +20,7 @@ double randDouble(); // uniform random in [0,1)
 struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
+    std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
 
     Value* find(const std::string& name) {
         auto it = vars.find(name);

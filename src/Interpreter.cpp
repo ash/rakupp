@@ -1176,6 +1176,11 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO") leaves.push_back(b); }
     for (auto it = leaves.rbegin(); it != leaves.rend(); ++it) { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; try { execBlock(*it, sc); } catch (...) {} }
+    // `temp`-saved containers are restored on scope exit (reverse order), after LEAVE blocks.
+    if (tctx_.cur && !tctx_.cur->tempRestores.empty()) {
+        for (auto it = tctx_.cur->tempRestores.rbegin(); it != tctx_.cur->tempRestores.rend(); ++it) (*it)();
+        tctx_.cur->tempRestores.clear();
+    }
 }
 
 Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
@@ -4942,6 +4947,17 @@ Value Interpreter::evalCall(Call* c) {
         return callCallable(f, args, &c->args);
     }
     if (!c->name.empty()) {
+        // `temp $x` / `temp @a` — snapshot the container now, restore it when the current
+        // scope leaves (dynamic-scope save, like Perl's local). Modifications persist until then.
+        if (c->name == "temp" && c->args.size() == 1 && !tctx_.cur->find("&temp")) {
+            if (Value* lv = lvalue(c->args[0].get())) {
+                Value snapshot = *lv; // deep-copy containers so later mutation doesn't touch the snapshot
+                if (snapshot.t == VT::Array && snapshot.arr) snapshot.arr = std::make_shared<ValueList>(*snapshot.arr);
+                else if (snapshot.t == VT::Hash && snapshot.hash) snapshot.hash = std::make_shared<std::map<std::string, Value>>(*snapshot.hash);
+                tctx_.cur->tempRestores.push_back([lv, snapshot]() { *lv = snapshot; });
+                return *lv;
+            }
+        }
         // undefine($x) resets its argument container to the type's undefined value
         if (c->name == "undefine" && !c->args.empty() && !tctx_.cur->find("&undefine")) {
             Expr* t = c->args[0].get();
