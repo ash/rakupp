@@ -451,7 +451,7 @@ Regex::NodePtr Regex::parseAtom() {
                 return namedCp(t);
             };
             n->k = K::Class; n->negate = true;
-            auto addCp = [&](const std::string& t) { int32_t cp = cpOf(t); if (cp >= 0 && cp <= 0xFF) n->ranges.push_back({(unsigned char)cp, (unsigned char)cp}); };
+            auto addCp = [&](const std::string& t) { int32_t cp = cpOf(t); if (cp >= 0) n->cpRanges.push_back({(uint32_t)cp, (uint32_t)cp}); };
             if (peek() == '[') {
                 pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
                 for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); addCp(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
@@ -515,26 +515,27 @@ void Regex::parseClassBodyMember(Node* node) {
             else if (e == 'n') node->ranges.push_back({'\n', '\n'});
             else if (e == 't') node->ranges.push_back({'\t', '\t'});
             else if (e == 'r') node->ranges.push_back({'\r', '\r'});
-            else if (e == 'x') { // \xHH or \x[HH] hex codepoint
-                std::string hex;
-                if (peek() == '[') { pos_++; while (!eof() && peek() != ']') hex += pat_[pos_++]; if (peek() == ']') pos_++; }
-                else while (std::isxdigit((unsigned char)peek())) hex += pat_[pos_++];
-                unsigned long cp = hex.empty() ? 0 : std::strtoul(hex.c_str(), nullptr, 16);
-                node->ranges.push_back({(unsigned char)cp, (unsigned char)cp});
-            }
-            else if (e == 'c' && peek() == '[') { // \c[NAME] / \c[NAME1, NAME2] named char(s) (the ] is part of the escape)
-                pos_++; std::string names; while (!eof() && peek() != ']') names += pat_[pos_++]; if (peek() == ']') pos_++;
-                for (size_t s = 0; s <= names.size(); ) {
-                    size_t comma = names.find(',', s);
-                    std::string nm = names.substr(s, comma == std::string::npos ? std::string::npos : comma - s);
-                    size_t a = nm.find_first_not_of(" \t"), b = nm.find_last_not_of(" \t");
-                    nm = (a == std::string::npos) ? "" : nm.substr(a, b - a + 1);
-                    if (!nm.empty()) {
-                        int32_t cp = namedCp(nm);
-                        if (cp >= 0) node->ranges.push_back({(unsigned char)cp, (unsigned char)cp});
-                    }
-                    if (comma == std::string::npos) break; s = comma + 1;
+            else if (e == 'x' || e == 'X' || e == 'o' || e == 'O' || e == 'c' || e == 'C') {
+                // codepoint escapes in a class: \x[HH]/\xHH, \o[OO], \c[NAME,…]; uppercase
+                // (\X/\O/\C) negate the whole class. Codepoints go to cpRanges (any size).
+                bool neg = (e == 'X' || e == 'O' || e == 'C');
+                char le = (char)std::tolower((unsigned char)e);
+                std::vector<std::string> toks;
+                if (peek() == '[') {
+                    pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
+                    for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); toks.push_back(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
+                } else if (le != 'c') {
+                    std::string d; while (!eof() && std::isalnum((unsigned char)peek())) d += pat_[pos_++]; toks.push_back(d);
                 }
+                for (auto& tk : toks) {
+                    size_t a = tk.find_first_not_of(" \t"), b = tk.find_last_not_of(" \t");
+                    if (a == std::string::npos) continue;
+                    std::string t = tk.substr(a, b - a + 1);
+                    int32_t cp = le == 'x' ? (int32_t)std::strtol(t.c_str(), nullptr, 16)
+                               : le == 'o' ? (int32_t)std::strtol(t.c_str(), nullptr, 8) : namedCp(t);
+                    if (cp >= 0) node->cpRanges.push_back({(uint32_t)cp, (uint32_t)cp});
+                }
+                if (neg) node->negate = !node->negate;
             }
             else node->ranges.push_back({(unsigned char)e, (unsigned char)e}); // \: \# \- etc → literal
             continue;
@@ -773,6 +774,19 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         }
         case K::Class:
             if (pos >= len) return false;
+            if (!n->cpRanges.empty()) { // codepoint char class (chars/escapes beyond 0xFF, negated named/hex)
+                unsigned char c0 = (unsigned char)st.s[pos];
+                if (c0 >= 0x80 && c0 < 0xC0) return false;
+                int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+                uint32_t cp = (c0 < 0x80 || clen == 1) ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
+                for (int i = 1; i < clen && pos + i < (long)len; i++) cp = (cp << 6) | ((unsigned char)st.s[pos + i] & 0x3F);
+                bool in = false;
+                for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
+                if (!in) for (auto& r : n->ranges) if (cp >= r.first && cp <= r.second) { in = true; break; } // mixed class
+                if (n->negate) in = !in;
+                if (!in) return false;
+                return k(pos + clen);
+            }
             if (!n->uprop.empty()) { // Unicode property class: decode one codepoint
                 unsigned char c0 = (unsigned char)st.s[pos];
                 if (c0 >= 0x80 && c0 < 0xC0) return false; // mid-codepoint continuation byte: no match here
