@@ -122,6 +122,7 @@ private:
         std::string repCode;             // `** { … }` — evaluate this at match time for (min,max)
         // Code / VarMatch: `lit` holds the code / variable expression; `runOnly` = `:my`/`{…}` (execute, always pass)
         bool runOnly = false;
+        bool ltmStop = false; // a bare `{…}` code block — ends the LTM declarative prefix (`:my`/assertions do not)
         // Alt
         bool firstMatch = false;         // `||` (sequential first-match) vs `|` (LTM, longest wins)
         // Group
@@ -177,6 +178,7 @@ public:
         long capFrom = -1;                                 // `<(` capture-start position (overall match .from), -1 = none
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
         const std::string* curSym = nullptr;               // proto candidate's sym value, so `<sym>` matches it
+        long firstCode = -1;                               // string pos at the first bare `{…}` block (ends the LTM declarative prefix)
     };
     bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;
     // {min,max} byte width the pattern can match; max = -1 means unbounded/unknown.
@@ -224,10 +226,12 @@ public:
     struct MemoEntry {
         bool matched = false;
         long end = 0;
+        long declEnd = 0; // string pos where the LTM declarative prefix ends (first bare code block, else end)
         std::vector<std::pair<long, long>> caps;
         std::map<std::string, std::pair<long, long>> named;
         std::shared_ptr<const ChildMap> kids; // frozen once; replays share, never copy
     };
+    long candDeclEnd_ = -1; // set by matchSubMeta after a candidate match: its declarative-prefix end (for proto LTM)
     void clearMemo() { memo_.clear(); }
 
     using NameMeta = GrammarRuleMeta;

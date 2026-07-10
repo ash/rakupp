@@ -166,7 +166,7 @@ Regex::NodePtr Regex::parseAtom() {
         int depth = 1; pos_++;
         std::string code;
         while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '{') depth++; else if (d == '}') { depth--; if (!depth) break; } code += d; }
-        auto cn = std::make_unique<Node>(); cn->k = K::Code; cn->lit = code; cn->runOnly = true; return cn;
+        auto cn = std::make_unique<Node>(); cn->k = K::Code; cn->lit = code; cn->runOnly = true; cn->ltmStop = true; return cn;
     }
     if (c == ':' && pat_.compare(pos_, 3, ":my") == 0) { // :my $x [= …]; — a declaration statement
         pos_++; // ':'
@@ -947,6 +947,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             static const GrammarHooks::ParamMap noParams;
             const auto& params = st.grammar ? st.grammar->currentParams() : noParams;
             if (n->runOnly) { // execute for side effects, zero-width, always pass
+                if (n->ltmStop && st.firstCode < 0) st.firstCode = pos; // a bare code block ends the LTM declarative prefix
                 if (st.hooks && st.hooks->run) st.hooks->run(n->lit, st.startPos, pos, st.named, params);
                 return k(pos);
             }
@@ -1313,11 +1314,18 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     // protoregex: `<element>` dispatches to its `element:<sym>` candidates, longest wins (LTM)
     if (meta.proto) {
         const auto& cands = *meta.proto;
-        std::set<long, std::greater<long>> ends;
-        for (auto& cand : cands) matchSub(cand, args, "", st, pos, [&](long e) { ends.insert(e); return false; });
-        for (long e : ends)
-            for (auto& cand : cands)
-                if (matchSub(cand, args, capKey, st, pos, [&](long ee) { return ee == e && k(ee); })) return true;
+        // Longest-token-match ranks candidates by their DECLARATIVE-prefix length — the span
+        // matched before the first bare `{…}` code block (which ends the declarative part);
+        // a candidate with no code block ranks by its full match. First pass: measure each.
+        std::vector<std::pair<long, const std::string*>> ranked;
+        for (auto& cand : cands) {
+            candDeclEnd_ = -1;
+            if (matchSub(cand, args, "", st, pos, [&](long) { return true; }) && candDeclEnd_ >= 0)
+                ranked.push_back({candDeclEnd_, &cand});
+        }
+        std::stable_sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (auto& r : ranked)
+            if (matchSub(*r.second, args, capKey, st, pos, k)) return true;
         return false;
     }
     if (meta.isWs) { // built-in optional whitespace
@@ -1391,6 +1399,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         if (mit != memo_.end()) {
             if (!mit->second.matched) return false;
             const MemoEntry& me = mit->second;
+            candDeclEnd_ = me.declEnd;
             return record(me.end, me.caps, me.named, me.kids);
         }
         std::map<std::string, std::string> bound;
@@ -1403,6 +1412,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         MemoEntry me;
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
             me.matched = true; me.end = end;
+            me.declEnd = (sub.firstCode >= 0 ? sub.firstCode : end);
             me.caps = sub.caps; me.named = sub.named;
             // the frame is committed (ratchet) — freeze its subtree without copying
             me.kids = sub.children.empty() ? nullptr
@@ -1412,6 +1422,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         scope_.pop_back();
         auto& slot = (memo_[mkey] = std::move(me));
         if (!slot.matched) return false;
+        candDeclEnd_ = slot.declEnd;
         return record(slot.end, slot.caps, slot.named, slot.kids);
     }
 
@@ -1429,6 +1440,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // the duration of `k` (restore it so backtracking into the callee still works).
         auto calleeScope = std::move(scope_.back()); scope_.pop_back();
         auto finish = [&](bool r) { scope_.push_back(std::move(calleeScope)); return r; };
+        candDeclEnd_ = (sub.firstCode >= 0 ? sub.firstCode : end);
         // non-ratchet: the callee may complete again after backtracking, so its frame
         // stays live — freeze a COPY of the subtree for this completion
         return finish(record(end, sub.caps, sub.named,
