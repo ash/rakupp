@@ -95,6 +95,24 @@ for cp in range(0x110000):
     if val is not None:
         fr = Fraction(val).limit_denominator(1000000)
         numv.append((cp, fr.numerator, fr.denominator))
+# Control/format character name aliases (NULL, SOH, LF, NBSP, …). Python's
+# u.name() returns nothing for control chars, but NameAliases.txt names them,
+# and `\c[NAME]` must resolve them. Pinned to the same UCD version.
+_seen = set(n for n, _ in names)
+try:
+    for line in open("tools/ucd/NameAliases-16.0.0.txt"):
+        line = line.split('#', 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split(';')
+        if len(parts) < 3:
+            continue
+        cp = int(parts[0], 16)
+        alias, typ = parts[1].strip(), parts[2].strip()
+        if typ in ('control', 'abbreviation', 'alternate', 'correction', 'figment') and alias not in _seen:
+            names.append((alias, cp)); _seen.add(alias)
+except FileNotFoundError:
+    pass
 names.sort()  # by name, for binary search
 
 def cstr(s):
