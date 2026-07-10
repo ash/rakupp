@@ -317,6 +317,8 @@ Regex::NodePtr Regex::parseAtom() {
             // built-in class check so `<.space>` also resolves to `\s`.
             bool dotless = !name.empty() && name[0] == '.';
             if (dotless) name = name.substr(1);
+            // `<-:Prop>` — inverted Unicode property (a char NOT having Prop).
+            if (name.size() > 1 && name[0] == '-' && name[1] == ':') { node->negate = true; name = name.substr(1); }
             // Unicode property class: <:Nd> <:L> <:Alpha> <:!Upper> (codepoint-aware)
             if (!name.empty() && (name[0] == ':' || (name[0] == '!' && name.size() > 1 && name[1] == ':'))) {
                 std::string p = name;

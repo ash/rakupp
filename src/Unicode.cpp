@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 
 namespace rakupp {
 namespace ucd {
@@ -17,6 +18,21 @@ extern const NameEnt NAMES[];   extern const size_t NAMES_N;
 extern const int64_t NUMV[];    extern const size_t NUMV_N;
 extern const uint32_t GBPROP[]; extern const size_t GBPROP_N;
 extern const char* const CATNAMES[]; extern const uint32_t GCAT[]; extern const size_t GCAT_N;
+struct BlockEnt { uint32_t lo, hi; const char* name; };
+extern const BlockEnt BLOCKS[]; extern const size_t BLOCKS_N; // Unicode 15.1 Blocks.txt
+}
+
+// `<:InBlockName>` block property: normalized (lowercase, alnum-only) name of the
+// block containing cp, "" if none (an unassigned gap between blocks).
+static const char* uniBlockName(uint32_t cp) {
+    size_t lo = 0, hi = ucd::BLOCKS_N;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (cp < ucd::BLOCKS[mid].lo) hi = mid;
+        else if (cp > ucd::BLOCKS[mid].hi) lo = mid + 1;
+        else return ucd::BLOCKS[mid].name;
+    }
+    return "";
 }
 
 std::string uniGeneralCategory(uint32_t cp) {
@@ -82,7 +98,16 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
     static const char* K[] = {"Lu","Ll","Lt","Lm","Lo","Mn","Mc","Me","Nd","Nl","No","Pc","Pd",
         "Ps","Pe","Pi","Pf","Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn"};
     for (auto* k : K) if (p == k) return cat == p;
-    return true; // unknown property (e.g. a script like Latin/Greek — no data): lenient match
+    // block property `<:InArabic>` / `<:InLatin1Supplement>`: In-prefix + block name.
+    if (p.size() > 2 && p[0] == 'I' && p[1] == 'n' && std::isupper((unsigned char)p[2])) {
+        std::string q;
+        for (char ch : p) if (std::isalnum((unsigned char)ch)) q += (char)std::tolower((unsigned char)ch);
+        if (q.size() > 2 && q[0] == 'i' && q[1] == 'n') q = q.substr(2); // drop the In prefix
+        // legacy block-name aliases renamed in later Unicode versions
+        if (q == "cyrillicsupplementary") q = "cyrillicsupplement";
+        return q == uniBlockName(cp);
+    }
+    return true; // unknown property (e.g. an unmodelled script): lenient match
 }
 
 // UAX #29 grapheme-break properties
