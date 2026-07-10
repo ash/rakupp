@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# Generate src/unicode_blocks_gen.cpp from a PINNED Unicode Blocks.txt (15.1.0),
+# Generate src/unicode_blocks_gen.cpp from a PINNED Unicode Blocks.txt (16.0.0),
 # NOT from Python's unicodedata (which has no block data and tracks a different
 # version). Keeps the block table version-consistent with the rest of the 15.1
 # tables in unicode_gen.cpp.  Re-run: python3 tools/gen_unicode_blocks.py
 import re
 
-SRC = "tools/ucd/Blocks-15.1.0.txt"
-VER = "15.1.0"
+SRC = "tools/ucd/Blocks-16.0.0.txt"
+VER = "16.0.0"
 
 blocks = []  # (lo, hi, normalized-name)
 for line in open(SRC):
