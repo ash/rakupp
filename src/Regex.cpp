@@ -440,6 +440,24 @@ Regex::NodePtr Regex::parseAtom() {
         if (e == 'N') { n->k = K::Class; n->negate = true; n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); return n; }
         if (e == 'h' || e == 'H') { n->k = K::Class; n->negate = (e=='H'); n->ranges.push_back({' ',' '}); n->ranges.push_back({'\t','\t'}); return n; }
         if (e == 'v' || e == 'V') { n->k = K::Class; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'}); return n; }
+        // \X[HH] / \O[OO] / \C[NAME] — match ONE codepoint that is NOT the given one(s).
+        if ((e == 'X' || e == 'O' || e == 'C') && (peek() == '[' || (e != 'C' && std::isalnum((unsigned char)peek())))) {
+            char le = (char)std::tolower((unsigned char)e);
+            auto cpOf = [&](std::string t) -> int32_t {
+                size_t a = t.find_first_not_of(" \t"), b = t.find_last_not_of(" \t");
+                if (a == std::string::npos) return -1; t = t.substr(a, b - a + 1);
+                if (le == 'x') return (int32_t)std::strtol(t.c_str(), nullptr, 16);
+                if (le == 'o') return (int32_t)std::strtol(t.c_str(), nullptr, 8);
+                return namedCp(t);
+            };
+            n->k = K::Class; n->negate = true;
+            auto addCp = [&](const std::string& t) { int32_t cp = cpOf(t); if (cp >= 0 && cp <= 0xFF) n->ranges.push_back({(unsigned char)cp, (unsigned char)cp}); };
+            if (peek() == '[') {
+                pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
+                for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); addCp(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
+            } else { std::string d; while (!eof() && std::isalnum((unsigned char)peek())) d += pat_[pos_++]; addCp(d); }
+            return n;
+        }
         if ((e == 'x' || e == 'o' || e == 'c') && (peek() == '[' || (e != 'c' && std::isalnum((unsigned char)peek())))) {
             // \xHH / \x[HH] / \o[OO] / \c[NAME] / \c[A, B] — codepoint literal(s)
             auto encode = [](uint32_t cp) -> std::string { // minimal UTF-8 encoder
