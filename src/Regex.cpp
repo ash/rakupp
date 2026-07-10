@@ -177,6 +177,14 @@ Regex::NodePtr Regex::parseAtom() {
         pos_++; if (peek() == ':') pos_++; else if (peek() == '!') pos_++;
         auto nop = std::make_unique<Node>(); nop->k = K::Nop; return nop;
     }
+    // word-boundary anchors (zero-width): `<<` or `«` = left edge of a word,
+    // `>>` or `»` = right edge.  « = U+00AB (C2 AB), » = U+00BB (C2 BB).
+    if ((c == '<' && peek(1) == '<') || ((unsigned char)c == 0xC2 && (unsigned char)peek(1) == 0xAB)) {
+        pos_ += 2; auto n = std::make_unique<Node>(); n->k = K::WBLeft; return n;
+    }
+    if ((c == '>' && peek(1) == '>') || ((unsigned char)c == 0xC2 && (unsigned char)peek(1) == 0xBB)) {
+        pos_ += 2; auto n = std::make_unique<Node>(); n->k = K::WBRight; return n;
+    }
     if (c == '$' && peek(1) == '<') {
         // named capture: $<name>=(...) / $<name>=[...]
         size_t save = pos_;
@@ -501,6 +509,14 @@ void Regex::parseClassBodyMember(Node* node) {
     if (peek() == ']') pos_++;
 }
 
+// Word char for the `<<`/`>>` boundary anchors — matches \w (ASCII alnum + _),
+// plus any multibyte lead/continuation byte so boundaries land around Unicode words.
+static bool isWordChar(const std::string& s, long i) {
+    if (i < 0 || i >= (long)s.size()) return false;
+    unsigned char c = (unsigned char)s[i];
+    return std::isalnum(c) || c == '_' || c >= 0x80;
+}
+
 // Unicode whitespace codepoints beyond ASCII (for \s / \S on multibyte input).
 static bool isUnicodeSpace(uint32_t cp) {
     switch (cp) {
@@ -603,7 +619,8 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
             return {lo, hi};
         }
         case K::Group: return nodeWidth(n->kids[0].get(), st);
-        case K::AnchorStart: case K::AnchorEnd: case K::Nop: case K::Code: case K::Look: case K::CapStart:
+        case K::AnchorStart: case K::AnchorEnd: case K::WBLeft: case K::WBRight:
+        case K::Nop: case K::Code: case K::Look: case K::CapStart:
             return {0, 0};
         case K::Subrule:
             if (st.grammar) {
@@ -745,6 +762,20 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (n->multiline ? (pos == len || st.s[pos] == '\n')
                              : (pos == len || (pos + 1 == len && st.s[pos] == '\n'))) return k(pos);
             return false;
+        case K::WBLeft: {
+            // `<<` / `«` — left word boundary: non-word (or start) on the left, word char on the right.
+            bool prevW = pos > 0 && isWordChar(st.s, pos - 1);
+            bool curW  = pos < (long)len && isWordChar(st.s, pos);
+            if (!prevW && curW) return k(pos);
+            return false;
+        }
+        case K::WBRight: {
+            // `>>` / `»` — right word boundary: word char on the left, non-word (or end) on the right.
+            bool prevW = pos > 0 && isWordChar(st.s, pos - 1);
+            bool curW  = pos < (long)len && isWordChar(st.s, pos);
+            if (prevW && !curW) return k(pos);
+            return false;
+        }
         case K::Seq: {
             auto go = [&](auto&& self, size_t i, long p) -> bool {
                 if (i == n->kids.size()) return k(p);
