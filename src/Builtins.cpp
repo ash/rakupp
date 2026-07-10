@@ -3633,18 +3633,23 @@ void Interpreter::registerBuiltins() {
         }
         return scalarEq(got, exp);
     };
-    B["is"] = [isEq](Interpreter& I, ValueList& a) -> Value {
+    // An object argument (e.g. an exception in `is $!, 'msg'`) compares by its Str —
+    // which for an Exception is its .message, matching `~$!` (via strOf).
+    auto isStrify = [](Interpreter& I, Value& v) { if (v.t == VT::Object) v = Value::str(I.strOf(v)); };
+    B["is"] = [isEq, isStrify](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();
         Value exp = a.size() > 1 ? a[1] : Value::any();
+        isStrify(I, got); isStrify(I, exp);
         bool c = isEq(got, exp);
         std::string dir = testDirective(a);
         std::string diag = (!c && dir.empty()) ? "# expected: '" + exp.toStr() + "'\n# got:      '" + got.toStr() + "'\n" : "";
         I.emitTest(c, testDesc(a, 2), dir, diag);
         return Value::boolean(c);
     };
-    B["isnt"] = [isEq](Interpreter& I, ValueList& a) -> Value {
+    B["isnt"] = [isEq, isStrify](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();
         Value exp = a.size() > 1 ? a[1] : Value::any();
+        isStrify(I, got); isStrify(I, exp);
         bool c = !isEq(got, exp);
         I.emitTest(c, a.size() > 2 ? a[2].toStr() : "");
         return Value::boolean(c);
