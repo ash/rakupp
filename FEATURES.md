@@ -104,12 +104,12 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Substitution adverbs `:g :x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
 - **Gaps:** named-capture storage (`$<name>=(…)`), backtracking control, `:ratchet`
 
-## Unicode (generated from UCD 15.1)
+## Unicode (generated from UCD 16.0)
 - Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni` type
 - Grapheme-correct `.chars` (UAX #29: emoji, flags 🇦🇧, ZWJ sequences, Hangul)
-- Character names `\c[NAME]`, `uniname`; numeric values `unival`/`univals`
-- General category + script (`.uniprop`, `.uniprop('Script')`, `uniprop($c,'Script')`, `<:cat>`/`<:Script>` in regex)
-- **Gaps:** `uniprop` binary props, exact UCD scripts (current scripts are block-approximate), `unimatch`, full NFG grapheme-break suite
+- Character names `\c[NAME]` incl. control aliases (`\c[NULL]`, `\c[LF]`), `uniname`; numeric values `unival`/`univals`
+- Regex properties: general category (short `<:L>`/`<:Nd>` and long `<:UppercaseLetter>`/`<:SpaceSeparator>`), `<:LC>`, and **blocks** `<:InArabic>`/`<:InLatin1Supplement>` (real 16.0 Blocks table); negated/inverted `<:!P>`/`<-:P>`
+- **Gaps:** `uniprop` binary props, exact UCD scripts (still block-approximate — real Scripts.txt table not wired), bidi-class `<:bc<L>>`, derived/contributory props, `unimatch`, full NFG grapheme-break suite
 
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise

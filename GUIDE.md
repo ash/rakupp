@@ -101,7 +101,7 @@ yet, but it drives real-world hardening that Roast alone doesn't.
 Raku defines strings as sequences of *graphemes*, and getting that right is one
 of Raku++'s strongest areas — the Unicode synopsis (S15) is its highest
 assertion coverage, ~95% passing. Everything here is driven by tables generated
-from **Unicode 15.1**:
+from **Unicode 16.0**:
 
 - **Normalization** — NFC / NFD / NFKC / NFKD (canonical and compatibility,
   including algorithmic Hangul composition), plus the `Uni` type.
@@ -310,7 +310,7 @@ src/
   Interpreter.*          Tree-walking evaluator, scopes, calls, control flow.
   Builtins.cpp           Named builtins, the Test module (TAP), and method dispatch.
   Regex.*                Regex/grammar engine (recursive-descent + backtracking matcher).
-  Unicode.* / unicode_gen.cpp   Normalization, grapheme segmentation, properties (UCD 15.1).
+  Unicode.* / unicode_gen.cpp   Normalization, grapheme segmentation, properties (UCD 16.0).
   Runtime.*              Shared entry point (parse + interpret); the static library.
   Codegen.*              Native backend: transpiles the AST to C++ (`--exe`).
   main.cpp               CLI entry point (interpret, `-e`, `--aot`, `--exe`).

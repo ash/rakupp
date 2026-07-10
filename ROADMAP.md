@@ -72,7 +72,7 @@ live numbers). Major subsystems now in:
 - **Junctions, lazy lists, hyperops, feeds** (S03/S07/S09).
 - **Unicode** (S15, ~95% of assertions) — NFC/NFD/NFKC/NFKD, grapheme-correct
   `.chars` (UAX #29), names + numeric values, and category/script property
-  classes, all from UCD 15.1 tables.
+  classes, all from UCD 16.0 tables.
 - **Modules** (S11) — `use`/`need`/`EXPORT`, `use lib`, resolving real
   zef-installed modules via the Rakudo CURI `short/` index.
 - **Concurrency** (S17) — real `std::thread`s under a CPython-style GIL: promises

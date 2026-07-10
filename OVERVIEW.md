@@ -66,7 +66,7 @@ runnable snippets in [EXAMPLES.md](EXAMPLES.md).
 - **Signatures & dispatch** — `multi`/`proto`, `where`/type/literal constraints,
   sub-signature destructuring, `callsame`/`nextsame`, coercion-type params.
 - **Unicode** — NFC/NFD/NFKC/NFKD, grapheme-correct `.chars` (UAX #29), names and
-  numeric values, category/script properties — from generated UCD 15.1 tables.
+  numeric values, category/script properties — from generated UCD 16.0 tables.
 - **Concurrency** — real `std::thread`s under a CPython-style GIL: promises,
   `Supply`/`react`/`whenever`, `Channel`, `Thread`, `Lock`, `atomicint`. Opt into
   true CPU parallelism with `RAKUPP_PARALLEL=1`. (See [ASYNC.md](ASYNC.md).)

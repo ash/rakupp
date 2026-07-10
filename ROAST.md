@@ -118,7 +118,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 
 - **S15 (Unicode)** dominates the assertion count — ~91k of ~189k reached
   assertions live here (grapheme-break and normalization tables are enormous). Raku++'s
-  generated UCD 15.1 tables clear **95%** of it, which is why the overall
+  generated UCD 16.0 tables clear **95%** of it, which is why the overall
   assertion rate is high.
 - **S01** is fully green: those files skip-all unless a Perl-5 interop bridge
   exists, and Raku++ handles the skip path spec-correctly.
