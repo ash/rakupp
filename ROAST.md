@@ -31,18 +31,18 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~57% of all declared Roast tests pass** (133,509 / 231,038); on the
-stricter file bar, ~22% of files fully pass (334 / 1,464). The per-file breakdown
+**Headline: ~73% of all declared Roast tests pass** (136,841 / 187,661); on the
+stricter file bar, ~22% of files fully pass (343 / 1,464). The per-file breakdown
 comes first below, then the per-test figures.
 
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **326** | **22%** |
-| Partially passing | 614 | 42% |
-| No TAP output | 542 | 37% |
-| Timeouts | 3 | 0.2% |
+| **Fully passing** | **343** | **23%** |
+| Partially passing | 596 | 41% |
+| No TAP output | 514 | 35% |
+| Timeouts | 11 | 0.8% |
 
 **Coverage ≈ 20% of files.** That is the number to quote. Over a third of the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
@@ -52,7 +52,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**133,509 of ~231,038 declared tests — ~57%**. "Declared" means every test the
+**136,841 of ~187,661 declared tests — ~73%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -61,11 +61,11 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 133,509 / 189,825 (~70%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 133,509 / 200,911 (~66%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 133,509 / 231,038 (~57%) | + tests in parse-error files, recovered from source |
+| tests that **ran** | 136,841 / 146,536 (~93%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 136,841 / 157,534 (~87%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 136,841 / 187,661 (~73%) | + tests in parse-error files, recovered from source |
 
-The ~57% is the per-test analog of the ~20% file coverage. Two caveats on scope:
+The ~73% is the per-test analog of the ~20% file coverage. Two caveats on scope:
 
 1. **~31k of the denominator comes from no-TAP files** (385 of them, read from
    source); 16 more no-TAP files use a dynamic `plan *` / `done-testing` and are
@@ -74,7 +74,7 @@ The ~57% is the per-test analog of the ~20% file coverage. Two caveats on scope:
    the blended rate; other synopses are lower (see the per-synopsis table).
 
 Coverage is the ~20% of files; per-test correctness across the whole suite is the
-~57%. They are different measurements, quoted for different purposes.
+~73%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
 
@@ -107,16 +107,16 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S26 | Documentation (POD) | 6 | 10 | 0 | 11 | 164/193 | 85% |
 | S28 | Special variables | 2 | 0 | 0 | 1 | 6/6 | 100% |
 | S29 | Builtins & context | 3 | 8 | 0 | 3 | 345/370 | 93% |
-| S32 | Standard types (str/list/num/…) | 42 | 103 | 0 | 118 | 37190/38034 | 98% |
+| S32 | Standard types (str/list/num/…) | 45 | 112 | 0 | 118 | 20743/21665 | 96% |
 | integration | Cross-feature programs | 27 | 50 | 0 | 42 | 411/545 | 75% |
 | 6.c | v6.c language snapshot | 1 | 4 | 0 | 13 | 47/76 | 61% |
-| 6.d | v6.d language snapshot | 4 | 13 | 0 | 1 | 122/47202 | 0% |
+| 6.d | v6.d language snapshot | 10 | 7 | 0 | 1 | 19748/20279 | 97% |
 | APPENDICES | — | 1 | 3 | 1 | 1 | 33/42 | 78% |
 | MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
 
 ### Reading the table
 
-- **S15 (Unicode)** dominates the assertion count — ~91k of ~189k reached
+- **S15 (Unicode)** dominates the assertion count — ~87k of ~147k reached
   assertions live here (grapheme-break and normalization tables are enormous). Raku++'s
   generated UCD 16.0 tables clear **95%** of it, which is why the overall
   assertion rate is high.
@@ -128,8 +128,8 @@ while many of its files still don't run at all — read it alongside No-TAP.
 - High **No-TAP** counts (S02, S03, S06, S32, S12) mark constructs that abort
   before any assertion runs — the frontier where a single parser/feature gap
   unlocks a whole cluster of files.
-- The **6.d** snapshot's assertion total (47k) is dominated by a few heavy
-  generated files, so its % is not representative of feature coverage.
+- The **6.d** snapshot's assertion total (~20k) is dominated by the sprintf
+  format-conversion files (`sprintf-{b,c,d,e,f,o,s,u,x}.t`), now largely passing.
 
 ## Reproducing these numbers
 
@@ -140,7 +140,7 @@ build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by r
 It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
 with the summary. Filter by path substring: `build/rakupp tools/run-roast.raku S05`.
 
-_Snapshot: 334 / 1,464 files fully passing (~22% coverage); 608 partial,
-524 no-TAP, 3 timeout. Reached-assertion pass rate 133,509 / 189,825 (see
+_Snapshot: 343 / 1,464 files fully passing (~22% coverage); 596 partial,
+514 no-TAP, 11 timeout. Reached-assertion pass rate 136,841 / 146,536 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._

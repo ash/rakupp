@@ -601,41 +601,133 @@ static ValueList flattenArgs(ValueList& args) {
 }
 
 // simple sprintf supporting %s %d %i %x %o %b %c %f %g %e %%
+// Format an integer in an arbitrary radix honouring the printf flag/width/precision
+// grammar with Raku's conventions: sign-magnitude for negatives, `#` prefixes 0b/0o/0x,
+// precision = minimum digits (precision 0 of value 0 → empty), `0` flag ignored with a
+// precision or with left-justify.
+static std::string fmtRadix(long long val, int base, bool upper, const std::string& flags,
+                            int width, int prec, bool signFlags) {
+    bool neg = val < 0;
+    unsigned long long u = neg ? (unsigned long long)(0 - (unsigned long long)val)
+                               : (unsigned long long)val;
+    const char* dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    std::string digits;
+    if (u == 0) digits = "0";
+    else while (u) { digits = std::string(1, dig[u % base]) + digits; u /= base; }
+    if (prec >= 0) {
+        if (val == 0 && prec == 0) digits = "";
+        else if ((int)digits.size() < prec) digits = std::string(prec - digits.size(), '0') + digits;
+    }
+    // `#` prefix: 0b/0B for binary, 0x/0X for hex; octal forces a single leading 0
+    // (skipped when the digits already begin with 0, matching C/Raku).
+    std::string prefix;
+    if (flags.find('#') != std::string::npos && val != 0) {
+        if (base == 2)       prefix = upper ? "0B" : "0b";
+        else if (base == 16) prefix = upper ? "0X" : "0x";
+        else if (base == 8 && !digits.empty() && digits[0] != '0') prefix = "0";
+    }
+    // A radix value that formats to no digits (precision 0 of 0) drops sign/prefix entirely:
+    // sprintf("% .0b",0) → '' (only space width padding applies). Decimal is the exception —
+    // sprintf("% .0d",0) → ' ' — so it falls through to keep the sign flag.
+    if (digits.empty() && base != 10) {
+        if ((int)width > 0) return std::string(width, ' ');
+        return "";
+    }
+    // The +/space sign flags apply only to signed conversions (d/i/b); o/x/X/u ignore them.
+    std::string sign;
+    if (neg) sign = "-";
+    else if (signFlags && flags.find('+') != std::string::npos) sign = "+";
+    else if (signFlags && flags.find(' ') != std::string::npos) sign = " ";
+    // Octal/hex `#` prefixes sit ahead of the sign (Raku quirk: sprintf("%#o",-4) → "0-100",
+    // sprintf("%#x",-256) → "0x-100"); binary keeps the sign first ("-0b100").
+    bool prefixFirst = (base == 8 || base == 16);
+    std::string core = prefixFirst ? prefix + sign + digits : sign + prefix + digits;
+    if ((int)core.size() < width) {
+        int pad = width - (int)core.size();
+        if (flags.find('-') != std::string::npos) core += std::string(pad, ' ');
+        else if (flags.find('0') != std::string::npos && prec < 0)
+            // zero-pad: for o/x the fill sits after the prefix but BEFORE the sign
+            // (sprintf("%08o",-64) → "0000-100"); for d/b it sits after sign+prefix.
+            core = prefixFirst ? prefix + std::string(pad, '0') + sign + digits
+                               : sign + prefix + std::string(pad, '0') + digits;
+        else core = std::string(pad, ' ') + core;
+    }
+    return core;
+}
+
 std::string doSprintf(const std::string& fmt, const ValueList& args) {
     std::string out;
     size_t ai = 0;
+    auto nextArg = [&]() -> Value { return ai < args.size() ? args[ai++] : Value::any(); };
     for (size_t i = 0; i < fmt.size(); i++) {
         if (fmt[i] != '%') { out += fmt[i]; continue; }
         size_t j = i + 1;
-        std::string spec = "%";
-        while (j < fmt.size() && (std::strchr("-+ 0#", fmt[j]) || std::isdigit((unsigned char)fmt[j]) || fmt[j] == '.')) {
-            spec += fmt[j++];
+        std::string flags;
+        while (j < fmt.size() && std::strchr("-+ 0#", fmt[j])) flags += fmt[j++];
+        // width (digits or `*` = from argument; negative `*` implies left-justify)
+        int width = 0; bool hasWidth = false;
+        if (j < fmt.size() && fmt[j] == '*') { j++; long long w = nextArg().toInt();
+            if (w < 0) { flags += '-'; w = -w; } width = (int)w; hasWidth = true; }
+        else while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { width = width*10 + (fmt[j]-'0'); hasWidth = true; j++; }
+        // precision (.digits or .* ; a negative `.*` means "no precision")
+        int prec = -1;
+        if (j < fmt.size() && fmt[j] == '.') { j++; prec = 0;
+            if (j < fmt.size() && fmt[j] == '*') { j++; long long p = nextArg().toInt(); prec = p < 0 ? -1 : (int)p; }
+            else { prec = 0; while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { prec = prec*10 + (fmt[j]-'0'); j++; } }
         }
-        if (j >= fmt.size()) { out += spec; break; }
+        while (j < fmt.size() && std::strchr("lhqLVjzt", fmt[j])) j++; // length modifiers, ignored
+        if (j >= fmt.size()) break;
         char conv = fmt[j];
-        spec += conv;
-        char buf[256];
-        Value a = ai < args.size() ? args[ai] : Value::any();
         switch (conv) {
             case '%': out += '%'; break;
-            case 'd': case 'i': { std::string s2 = spec; s2.insert(s2.size()-1, "lld"); s2.pop_back();
-                                  snprintf(buf, sizeof(buf), s2.c_str(), a.toInt()); out += buf; ai++; break; }
-            case 'x': case 'X': case 'o': case 'b': {
-                if (conv == 'b') { // manual binary
-                    long long n = a.toInt(); std::string bin; bool neg = n < 0; unsigned long long u = neg ? -n : n;
-                    if (!u) bin = "0"; while (u) { bin = char('0' + (u & 1)) + bin; u >>= 1; }
-                    if (neg) bin = "-" + bin; out += bin;
-                } else { std::string s2 = spec; s2.insert(s2.size()-1, "ll");
-                         snprintf(buf, sizeof(buf), s2.c_str(), a.toInt()); out += buf; }
-                ai++; break;
+            case 'd': case 'i': out += fmtRadix(nextArg().toInt(), 10, false, flags, width, prec, true); break;
+            case 'u':           out += fmtRadix(nextArg().toInt(), 10, false, flags, width, prec, false); break;
+            case 'b':           out += fmtRadix(nextArg().toInt(), 2, false, flags, width, prec, true); break;
+            case 'B':           out += fmtRadix(nextArg().toInt(), 2, true,  flags, width, prec, true); break;
+            case 'o':           out += fmtRadix(nextArg().toInt(), 8, false, flags, width, prec, false); break;
+            case 'x':           out += fmtRadix(nextArg().toInt(), 16, false, flags, width, prec, false); break;
+            case 'X':           out += fmtRadix(nextArg().toInt(), 16, true,  flags, width, prec, false); break;
+            case 'c': { // codepoint → UTF-8; width counts characters, not bytes
+                uint32_t cp = (uint32_t)nextArg().toInt();
+                std::string s;
+                if (cp < 0x80) s += (char)cp;
+                else if (cp < 0x800) { s += (char)(0xC0 | (cp >> 6)); s += (char)(0x80 | (cp & 0x3F)); }
+                else if (cp < 0x10000) { s += (char)(0xE0 | (cp >> 12)); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
+                else { s += (char)(0xF0 | (cp >> 18)); s += (char)(0x80 | ((cp >> 12) & 0x3F)); s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F)); }
+                int pad = width - 1; // one character
+                if (pad > 0) { char fill = (flags.find('0') != std::string::npos && flags.find('-') == std::string::npos) ? '0' : ' ';
+                    s = (flags.find('-') != std::string::npos) ? s + std::string(pad,' ') : std::string(pad,fill) + s; }
+                out += s; break; }
+            case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case 'a': case 'A': {
+                // Raku ignores `#` for floats (no forced trailing dot): sprintf("%#.0f",0) → "0".
+                std::string ff; for (char c : flags) if (c != '#') ff += c;
+                std::string spec = "%" + ff;
+                if (hasWidth) spec += std::to_string(width);
+                if (prec >= 0) spec += "." + std::to_string(prec);
+                spec += conv;
+                std::vector<char> buf(std::max(64, width + prec + 64));
+                snprintf(buf.data(), buf.size(), spec.c_str(), nextArg().toNum());
+                out += buf.data(); break;
             }
-            case 'c': { out += (char)a.toInt(); ai++; break; }
-            case 'f': case 'F': case 'g': case 'G': case 'e': case 'E':
-                snprintf(buf, sizeof(buf), spec.c_str(), a.toNum()); out += buf; ai++; break;
-            case 's': { std::string sv = a.toStr(); std::string s2 = spec;
-                        // use %s with std::string
-                        snprintf(buf, sizeof(buf), s2.c_str(), sv.c_str()); out += buf; ai++; break; }
-            default: out += spec; break;
+            case 's': {
+                Value sa = nextArg();
+                std::string sv = (sa.t == VT::Any || sa.t == VT::Nil) ? "" : sa.toStr();
+                // Width/precision count characters (codepoints), not bytes, so multibyte
+                // text pads correctly: sprintf("%8s","🦋🦋🦋") → "     🦋🦋🦋".
+                auto cpCount = [](const std::string& s) { int n = 0; for (unsigned char c : s) if ((c & 0xC0) != 0x80) n++; return n; };
+                if (prec >= 0 && cpCount(sv) > prec) { // keep the first `prec` codepoints
+                    int n = 0; size_t bi = 0;
+                    while (bi < sv.size() && n < prec) { bi++; while (bi < sv.size() && (((unsigned char)sv[bi]) & 0xC0) == 0x80) bi++; n++; }
+                    sv = sv.substr(0, bi);
+                }
+                int chars = cpCount(sv);
+                if (chars < width) { int pad = width - chars;
+                    // `0` fill only applies without a precision (else spaces): %08.2s → "      Fo".
+                    char fill = (flags.find('0') != std::string::npos && flags.find('-') == std::string::npos && prec < 0) ? '0' : ' ';
+                    sv = (flags.find('-') != std::string::npos) ? sv + std::string(pad,' ') : std::string(pad,fill) + sv; }
+                out += sv; break;
+            }
+            default: { out += '%'; out += flags; if (hasWidth) out += std::to_string(width); out += conv; break; }
         }
         i = j;
     }
@@ -2073,6 +2165,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Range) { Value r = Value::array(); *r.arr = inv.flatten(); r.isList = true; return r; }
         return inv;
     }
+    // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
+    // yields a one-element list. Restricted to scalar types so list/array/range/seq values —
+    // which carry their own list semantics upstream — are never re-wrapped.
+    if ((m == "list" || m == "List" || m == "flat" || m == "eager") &&
+        (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
+         inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair || inv.t == VT::Type ||
+         inv.t == VT::Any || inv.t == VT::Nil)) {
+        Value o = Value::array(); o.isList = true; o.arr->push_back(inv); return o;
+    }
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
     // .VAR.name on an anonymous container is "element" in Rakudo; some code (Text::CSV)
     // uses `@x.VAR.name ne "element"` to detect an explicitly-passed array.
@@ -3287,9 +3388,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Array && inv.arr) {
             // push/unshift add each argument as one element; append/prepend flatten
             if (m == "push") { for (auto& a : args) inv.arr->push_back(a); return Value::integer((long long)inv.arr->size()); }
-            if (m == "append") { for (auto& a : flattenArgs(args)) inv.arr->push_back(a); return Value::integer((long long)inv.arr->size()); }
+            // append/prepend follow the single-argument rule: a lone Positional arg is
+            // treated as the list of values (flattened one level); multiple args are each
+            // added as-is (nested lists preserved, exactly like push).
+            auto appendValues = [](ValueList& args) -> ValueList {
+                if (args.size() == 1 && args[0].t == VT::Array && args[0].arr)
+                    return *args[0].arr;   // one-level: the sole list's own elements
+                return args;               // 2+ args: each as-is
+            };
+            if (m == "append") { for (auto& a : appendValues(args)) inv.arr->push_back(a); return Value::integer((long long)inv.arr->size()); }
             if (m == "unshift") { inv.arr->insert(inv.arr->begin(), args.begin(), args.end()); return Value::integer((long long)inv.arr->size()); }
-            if (m == "prepend") { auto f = flattenArgs(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return Value::integer((long long)inv.arr->size()); }
+            if (m == "prepend") { auto f = appendValues(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return Value::integer((long long)inv.arr->size()); }
             if (m == "pop") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->back(); inv.arr->pop_back(); return v; }
             if (m == "shift") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); return v; }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements

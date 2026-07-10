@@ -9,10 +9,10 @@ standalone native binary. It is not a fork of Rakudo and shares no code with it;
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** measured per individual test, **~57% of Roast passes** — 133,509 of
-~231,000 tests the suite declares, counting the tests in files that abort before
+**Status:** measured per individual test, **~73% of Roast passes** — 136,841 of
+~187,661 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
-**334 / 1,464 files fully pass (~22%)** — a file counts only if *every* assertion
+**343 / 1,464 files fully pass (~22%)** — a file counts only if *every* assertion
 in it passes. Early-stage, growing test-first. See [the overview](OVERVIEW.md) for
 a one-page tour, [the full guide](GUIDE.md) for the complete picture, or
 [COUNTING.md](COUNTING.md) for exactly how these are defined.
