@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#include <vector>
+#include <utility>
 
 namespace rakupp {
 namespace ucd {
@@ -19,7 +21,29 @@ extern const int64_t NUMV[];    extern const size_t NUMV_N;
 extern const uint32_t GBPROP[]; extern const size_t GBPROP_N;
 extern const char* const CATNAMES[]; extern const uint32_t GCAT[]; extern const size_t GCAT_N;
 struct BlockEnt { uint32_t lo, hi; const char* name; };
-extern const BlockEnt BLOCKS[]; extern const size_t BLOCKS_N; // Unicode 15.1 Blocks.txt
+extern const BlockEnt BLOCKS[]; extern const size_t BLOCKS_N; // Unicode Blocks.txt
+extern const char* const PROPNAMES[]; extern const size_t PROPNAMES_N;
+struct PropRange { uint32_t lo, hi; uint16_t prop; };
+extern const PropRange BINPROPS[]; extern const size_t BINPROPS_N; // DerivedCoreProperties + PropList
+}
+
+// Binary Unicode property membership (Math, Lowercase, Soft_Dotted, Other_Math, …).
+// `norm` is the already-normalized (lowercase, separator-stripped) property name.
+// Returns 1 = has, 0 = hasn't, -1 = not a known binary property.
+static int uniBinProp(uint32_t cp, const std::string& norm) {
+    static std::unordered_map<std::string, std::vector<std::pair<uint32_t, uint32_t>>> M = [] {
+        std::unordered_map<std::string, std::vector<std::pair<uint32_t, uint32_t>>> m;
+        for (size_t i = 0; i < ucd::BINPROPS_N; i++)
+            m[ucd::PROPNAMES[ucd::BINPROPS[i].prop]].push_back({ucd::BINPROPS[i].lo, ucd::BINPROPS[i].hi});
+        return m;
+    }();
+    auto it = M.find(norm);
+    if (it == M.end()) return -1;
+    const auto& v = it->second;
+    size_t lo = 0, hi = v.size();               // ranges are emitted sorted by lo
+    while (lo < hi) { size_t mid = (lo + hi) / 2;
+        if (cp < v[mid].first) hi = mid; else if (cp > v[mid].second) lo = mid + 1; else return 1; }
+    return 0;
 }
 
 // `<:InBlockName>` block property: normalized (lowercase, alnum-only) name of the
@@ -78,7 +102,8 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         p == "Devanagari" || p == "Armenian" || p == "Georgian" || p == "Common" || p == "Inherited")
         return uniScript(cp) == p;
     std::string cat = uniGeneralCategory(cp);
-    if (p == "alpha" || p == "Alpha" || p == "Alphabetic" || p == "Letter" || p == "L") return cat[0] == 'L';
+    if (p == "alpha" || p == "Alpha" || p == "Letter" || p == "L") return cat[0] == 'L'; // POSIX-ish; `Alphabetic` is the binary prop (L + Other_Alphabetic), handled below
+    if (p == "Assigned") return cat != "Cn";
     if (p == "digit" || p == "Nd" || p == "decimal") return cat == "Nd";
     if (p == "alnum" || p == "Alnum") return cat[0] == 'L' || cat[0] == 'N';
     if (p == "space" || p == "Space" || p == "White_Space" || p == "blank" || p == "ws")
@@ -113,6 +138,13 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         {"Surrogate","Cs"},{"PrivateUse","Co"},{"Unassigned","Cn"},
     };
     for (auto& lp : LONG) if (p == lp.first) return cat == lp.second;
+    // binary Unicode property (Math, Soft_Dotted, White_Space, Other_Math, …)
+    {
+        std::string norm;
+        for (char ch : p) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
+        int b = uniBinProp(cp, norm);
+        if (b >= 0) return b == 1;
+    }
     // block property `<:InArabic>` / `<:InLatin1Supplement>`: In-prefix + block name.
     if (p.size() > 2 && p[0] == 'I' && p[1] == 'n' && std::isupper((unsigned char)p[2])) {
         std::string q;
