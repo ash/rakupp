@@ -3609,23 +3609,35 @@ void Interpreter::registerBuiltins() {
         I.emitTest(c, testDesc(a, 1), testDirective(a));
         return Value::boolean(c);
     };
-    B["is"] = [](Interpreter& I, ValueList& a) -> Value {
+    // eq honouring a Junction expected value: `is $got, ("a"|"b")` autothreads the
+    // comparison and collapses per the junction's kind (any/all/one/none).
+    auto isEq = [](const Value& got, const Value& exp) -> bool {
+        auto scalarEq = [](const Value& g, const Value& e) {
+            if (g.isNumeric() && e.isNumeric()) { double a = g.toNum(), b = e.toNum(); return (std::isnan(a) && std::isnan(b)) || a == b; }
+            return g.toStr() == e.toStr();
+        };
+        if (exp.t == VT::Array && exp.arr &&
+            (exp.enumName == "any" || exp.enumName == "all" || exp.enumName == "one" || exp.enumName == "none")) {
+            int t = 0, total = (int)exp.arr->size();
+            for (auto& br : *exp.arr) if (scalarEq(got, br)) t++;
+            return exp.enumName == "any" ? t > 0 : exp.enumName == "all" ? t == total
+                 : exp.enumName == "one" ? t == 1 : t == 0;
+        }
+        return scalarEq(got, exp);
+    };
+    B["is"] = [isEq](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();
         Value exp = a.size() > 1 ? a[1] : Value::any();
-        bool c;
-        if (got.isNumeric() && exp.isNumeric()) {
-            double g = got.toNum(), e = exp.toNum();
-            c = (std::isnan(g) && std::isnan(e)) || g == e; // is NaN, NaN passes (matches Rakudo string semantics)
-        } else c = (got.toStr() == exp.toStr());
+        bool c = isEq(got, exp);
         std::string dir = testDirective(a);
         std::string diag = (!c && dir.empty()) ? "# expected: '" + exp.toStr() + "'\n# got:      '" + got.toStr() + "'\n" : "";
         I.emitTest(c, testDesc(a, 2), dir, diag);
         return Value::boolean(c);
     };
-    B["isnt"] = [](Interpreter& I, ValueList& a) -> Value {
+    B["isnt"] = [isEq](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();
         Value exp = a.size() > 1 ? a[1] : Value::any();
-        bool c = !((got.isNumeric() && exp.isNumeric()) ? (got.toNum() == exp.toNum()) : (got.toStr() == exp.toStr()));
+        bool c = !isEq(got, exp);
         I.emitTest(c, a.size() > 2 ? a[2].toStr() : "");
         return Value::boolean(c);
     };
