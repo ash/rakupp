@@ -3174,7 +3174,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (!args.empty() && args[0].t == VT::Code) {
                 Value blk = args[0];
                 size_t arity = blk.code->params && !blk.code->params->empty()
-                    ? blk.code->params->size() : blk.code->placeholders.size();
+                    ? blk.code->params->size()
+                    : (blk.code->placeholders.empty() ? (size_t)blk.code->whateverArity : blk.code->placeholders.size());
                 if (arity >= 2) {
                     std::stable_sort(items.begin(), items.end(), [&](const Value& x, const Value& y) {
                         return callCallable(blk, {x, y}).toInt() < 0;

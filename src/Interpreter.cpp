@@ -5265,6 +5265,26 @@ Value Interpreter::eval(Expr* e) {
                 }
                 return *p;
             }
+            // `&`-references that aren't user subs: built-in operators (&infix:<+>,
+            // &prefix:<->) and named builtins (&say) → a Callable that applies them.
+            if (ve->name.size() > 1 && ve->name[0] == '&') {
+                std::string bare = ve->name.substr(1);
+                if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
+                    std::string op = bare.substr(7, bare.size() - 8);
+                    Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
+                    code.code->whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
+                    code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {
+                        return a.size() >= 2 ? I.applyBinOp(op, a[0], a[1]) : Value::any();
+                    };
+                    return code;
+                }
+                auto bit = builtins_.find(bare);
+                if (bit != builtins_.end()) {
+                    Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
+                    code.code->builtin = bit->second;
+                    return code;
+                }
+            }
             // $0, $1, … are aliases for $/[N]; fall back to $/ when not directly bound
             if (ve->name.size() >= 2 && ve->name[0] == '$' && std::isdigit((unsigned char)ve->name[1])) {
                 bool alldig = true;
