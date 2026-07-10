@@ -174,6 +174,7 @@ bool Parser::startsTermToken(const Token& t) const {
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
+                   t.text == "&" || // operator-as-value `&[+]` (bare `&` in term position is only `&[OP]`)
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
                    t.text == "::" || // symbolic reference `::($name)` / `::Foo`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
@@ -1160,6 +1161,14 @@ ExprPtr Parser::parsePrimary() {
                 auto blk = parseBlock();
                 be->body = std::move(blk->stmts);
                 return be;
+            }
+            // `&[+]` / `&[!~~]` / `&[max]` — the infix operator as a value == `&infix:<OP>`.
+            if (t.text == "&" && peek().kind == Tok::LBracket) {
+                advance(); advance(); // & [
+                std::string op;
+                while (!isKind(Tok::RBracket) && !isKind(Tok::End)) op += advance().text;
+                matchKind(Tok::RBracket);
+                return std::make_unique<VarExpr>("&infix:<" + op + ">");
             }
             error("unexpected operator in term position");
         }
