@@ -2489,8 +2489,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (s > bestScore) { bestScore = s; best = &cand; }
             }
             if (!best || bestScore < 0) {
-                // Initial dispatch with no candidate → NoMatch. A redispatch (callsame/
-                // nextsame) that runs past the last candidate → Nil, not an error.
+                // A redispatch (callsame/nextsame) that runs past the last same-class
+                // candidate: for a METHOD multi, defer up the inheritance tree to the
+                // outer dispatcher (the parent class's method pushed by
+                // invokeMethodChain); otherwise → Nil.
                 if (!visited->empty()) return Value::nil();
                 throw RakuError{Value::str("X::Multi::NoMatch"),
                                 "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
@@ -2640,6 +2642,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
         return invokeMethod(*um, self, args, rwArgs);
     RedispatchCtx rc;
     rc.sameArgs = args;
+    rc.fromChain = true; // marks the parent-class deferral frame for multi-method exhaustion
     Value selfCopy = self;
     rc.next = [this, name, nextStart, selfCopy, rwArgs](ValueList na) -> Value {
         return invokeMethodChain(name, nextStart, selfCopy, std::move(na), rwArgs);
@@ -2666,8 +2669,15 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         auto visited = std::make_shared<std::vector<const Value*>>();
         Value dispatcherVal = codeVal;
         Value selfCopy = self;
+        // If we were reached via invokeMethodChain (a parent class also defines this
+        // method), that frame is on top of the stack now — capture its `next` so that
+        // when our same-class candidates are exhausted, nextsame/callsame defers up
+        // the inheritance tree instead of returning Nil.
+        std::function<Value(ValueList)> parentNext;
+        if (!redispatchStack_.empty() && redispatchStack_.back().fromChain && !redispatchStack_.back().lastcall)
+            parentNext = redispatchStack_.back().next;
         std::function<Value(ValueList)> dispatch =
-            [this, &c, dispatcherVal, selfCopy, rwArgs, visited, &dispatch](ValueList as) -> Value {
+            [this, &c, dispatcherVal, selfCopy, rwArgs, visited, parentNext, &dispatch](ValueList as) -> Value {
             const Value* best = nullptr; int bestScore = -1;
             for (auto& cand : c.candidates) {
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
@@ -2676,7 +2686,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (s > bestScore) { bestScore = s; best = &cand; }
             }
             if (!best || bestScore < 0) {
-                if (!visited->empty()) return Value::nil();  // ran past the last candidate
+                if (!visited->empty()) {                     // ran past the last same-class candidate
+                    if (parentNext) return parentNext(as);   // defer up the inheritance tree
+                    return Value::nil();
+                }
                 throw RakuError{Value::str("X::Multi::NoMatch"),
                                 "No matching multi candidate for method " + c.name};
             }

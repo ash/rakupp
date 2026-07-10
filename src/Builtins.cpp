@@ -3399,16 +3399,25 @@ void Interpreter::registerBuiltins() {
     };
     // Re-dispatch to the next candidate (currently: a built-in shadowed by a user method).
     // callsame/callwith return its result; nextsame/nextwith return it FROM the current routine.
+    // `lastcall` marks the current candidate as the final one: a subsequent
+    // callsame/nextsame finds no more candidates (returns Nil / an empty result).
+    B["lastcall"] = [](Interpreter& I, ValueList&) -> Value {
+        if (!I.redispatchStack_.empty()) I.redispatchStack_.back().lastcall = true;
+        return Value::boolean(true);
+    };
     B["callsame"] = [](Interpreter& I, ValueList&) -> Value {
         if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callsame with no dispatcher in scope"};
+        if (I.redispatchStack_.back().lastcall) return Value::nil(); // trimmed by lastcall
         return I.redispatchStack_.back().next(I.redispatchStack_.back().sameArgs);
     };
     B["callwith"] = [](Interpreter& I, ValueList& a) -> Value {
         if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callwith with no dispatcher in scope"};
+        if (I.redispatchStack_.back().lastcall) return Value::nil();
         return I.redispatchStack_.back().next(a);
     };
     B["nextsame"] = [](Interpreter& I, ValueList&) -> Value {
         if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextsame with no dispatcher in scope"};
+        if (I.redispatchStack_.back().lastcall) throw ReturnEx{Value::nil()};
         throw ReturnEx{I.redispatchStack_.back().next(I.redispatchStack_.back().sameArgs)};
     };
     B["samewith"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -3419,6 +3428,7 @@ void Interpreter::registerBuiltins() {
     };
     B["nextwith"] = [](Interpreter& I, ValueList& a) -> Value {
         if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextwith with no dispatcher in scope"};
+        if (I.redispatchStack_.back().lastcall) throw ReturnEx{Value::nil()};
         throw ReturnEx{I.redispatchStack_.back().next(a)};
     };
     B["fail"] = [](Interpreter& I, ValueList& a) -> Value {

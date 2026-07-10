@@ -266,7 +266,7 @@ public:
     // current routine's args (for the *same variants).
     // next: the next-less-specific candidate (callsame/nextsame/callwith/nextwith).
     // restart: re-dispatch the SAME routine from scratch with new args (samewith).
-    struct RedispatchCtx { std::function<Value(ValueList)> next; std::function<Value(ValueList)> restart; ValueList sameArgs; };
+    struct RedispatchCtx { std::function<Value(ValueList)> next; std::function<Value(ValueList)> restart; ValueList sameArgs; bool lastcall = false; bool fromChain = false; };
     // These three are per-thread call-stack state (a worker builds its own redispatch
     // chain / react stack / thread-depth). Left as plain members in step 1 because they
     // weren't in the swapped ExecContext set; made `static thread_local` here (step 3a)
