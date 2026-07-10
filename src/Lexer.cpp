@@ -1010,7 +1010,12 @@ std::vector<Token> Lexer::tokenize() {
         bool afterBareSigil = !spaced && !out.empty() && out.back().kind == Tok::Var &&
                               out.back().text.size() == 1 && strchr("$@%&", out.back().text[0]);
         long long nvN, nvD;
-        if (std::isdigit((unsigned char)c) ||
+        // Unicode ellipsis … (U+2026) is an alias for the sequence/yada operator `...`
+        // (checked before the Unicode-letter dispatch, which would otherwise eat it).
+        if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 && (unsigned char)peek(2) == 0xA6) {
+            advance(); advance(); advance();
+            t = make(Tok::Op, "...");
+        } else if (std::isdigit((unsigned char)c) ||
             (!afterBareSigil && (unsigned char)c >= 0x80 &&
              (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {
             t = lexNumber(); // ASCII digit, Unicode-Nd digit, or an Nl/No numeral
