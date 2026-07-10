@@ -2437,6 +2437,14 @@ StmtPtr Parser::parseStatementImpl() {
              peek().text == "grammar" || peek().text == "monitor")) {
             advance(); // augment
             std::string what = advance().text; // class/role/grammar/monitor
+            // A smiley (`:D`/`:U`) or `:auth`/`:ver`/`:api` adverb on an augment
+            // target is illegal — you can only augment a bare type name (S12).
+            if (cur().kind == Tok::Ident && peek().kind == Tok::Op && peek().text == ":" &&
+                peek(2).kind == Tok::Ident) {
+                const std::string& adv = peek(2).text;
+                if (adv == "D" || adv == "U" || adv == "_" || adv == "auth" || adv == "ver" || adv == "api")
+                    error("cannot augment a type with a '" + adv + "' adverb");
+            }
             auto st = parseClass(what == "role", what == "grammar");
             if (st->kind == NK::ClassDecl) static_cast<ClassDecl*>(st.get())->isAugment = true;
             return st;
