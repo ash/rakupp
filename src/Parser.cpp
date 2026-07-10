@@ -175,6 +175,7 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
+                   t.text == "::" || // symbolic reference `::($name)` / `::Foo`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
                    t.text == "$" || t.text == "@" || t.text == "%" || // contextualizers $( $[ @( %(
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
@@ -202,6 +203,7 @@ bool Parser::startsListopArg(const Token& t) const {
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
+                   t.text == "::" || // symbolic reference `say ::($name)` / `say ::Foo`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
@@ -904,6 +906,26 @@ ExprPtr Parser::parsePrimary() {
         advance();            // CLASS / ROLE / PACKAGE
         std::string nm = typeStack_.empty() ? "" : typeStack_.back();
         return std::make_unique<NameTerm>(nm.empty() ? "Mu" : nm);
+    }
+    // symbolic reference: `::($name)` — look up a symbol at runtime by string name
+    if (isOp("::") && peek().kind == Tok::LParen) {
+        advance(); advance(); // :: (
+        auto sr = std::make_unique<SymbolicRef>();
+        if (cur().kind != Tok::RParen) sr->nameExpr = parseExpression();
+        expectKind(Tok::RParen, "expected ')' after ::(");
+        return sr;
+    }
+    // sigil-prefixed symbolic deref: `$::($name)` / `@::(…)` / `%::(…)` / `&::(…)`
+    // → look up the variable named SIGIL ~ $name at runtime.
+    if (cur().kind == Tok::Var && cur().text.size() == 1 &&
+        std::strchr("$@%&", cur().text[0]) &&
+        peek().kind == Tok::Op && peek().text == "::" && peek(2).kind == Tok::LParen) {
+        auto sr = std::make_unique<SymbolicRef>();
+        sr->sigil = advance().text; // sigil
+        advance(); advance();       // :: (
+        if (cur().kind != Tok::RParen) sr->nameExpr = parseExpression();
+        expectKind(Tok::RParen, "expected ')' after sigil::(");
+        return sr;
     }
     // symbolic name reference in term position: `::Foo::Bar` → the named type/package
     if (isOp("::") && peek().kind == Tok::Ident) {
@@ -2422,6 +2444,14 @@ StmtPtr Parser::parseStatementImpl() {
             if (peek().kind == Tok::Ident && peek(2).kind == Tok::Ident && declKw.count(peek(2).text)) {
                 advance(); advance(); // strip scope and type
                 return parseStatement();
+            }
+            // typed scoped decl with a parameterized type: `my Foo::Bar[Ber::Meow] constant …`
+            if (peek().kind == Tok::Ident && peek(2).kind == Tok::LBracket) {
+                size_t save = pos_;
+                advance(); advance(); // scope, type ident
+                int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+                if (isKind(Tok::Ident) && declKw.count(cur().text)) return parseStatement();
+                pos_ = save; // not a typed scoped decl — restore
             }
         }
         if (kw == "method" || kw == "submethod") { advance(); return parseSub(false); }

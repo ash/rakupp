@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 305 / 1,464 (**~20%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 131,495 / 189,204 (~69%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 131,495 / 199,944 (~66%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 131,495 / 231,092 (**~57%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 307 / 1,464 (**~21%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 131,732 / 189,486 (~69%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 131,732 / 200,971 (~66%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 131,732 / 231,098 (**~57%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~20%)** and **measure 4 (all declared tests, ~57%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -37,8 +37,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (231,092) is
-~31k larger than 3's (199,944) — those 31,148 tests live in 385 parse-error
+source and counts all N as failing. That is why 4's denominator (231,098) is
+~31k larger than 3's (200,971) — those 31,148 tests live in 385 parse-error
 files, recovered from source. A parse error can no longer hide its tests.
 
 ## Exactly how the denominators are built
@@ -101,10 +101,10 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  305 / 1464   (20.8%)
-Assertions passed:    131495 / 189204  (69.5%)  of tests that ran
-Assertions passed:    131495 / 200107  (65.7%)  of tests planned by files that emitted a plan
-Assertions passed:    131495 / 231092  (56.9%)  of ALL declared tests (+30985 from 382 no-TAP files read from source; 16 more have no static plan)
+Files fully passing:  307 / 1464   (21.0%)
+Assertions passed:    131732 / 189486  (69.5%)  of tests that ran
+Assertions passed:    131732 / 200971  (65.5%)  of tests planned by files that emitted a plan
+Assertions passed:    131732 / 231098  (57.0%)  of ALL declared tests (+30127 from 365 no-TAP files read from source; 16 more have no static plan)
 ```
 
 (No `ROAST` env var is required — the tests' own `use lib` resolves the

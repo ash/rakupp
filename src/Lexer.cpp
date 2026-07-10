@@ -1020,6 +1020,7 @@ std::vector<Token> Lexer::tokenize() {
             if ((c == '%' || c == '&') &&
                 !(isIdentStart(peek(1)) || peek(1) == '*' || peek(1) == '.' ||
                   peek(1) == '!' || peek(1) == '^' ||
+                  (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
                   ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {
                 t = lexOperator();
             } else if (isIdentStart(c) && !quoteBlockedHere(out) && tryQuoteForm(t)) {

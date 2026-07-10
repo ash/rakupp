@@ -2769,6 +2769,16 @@ Value* Interpreter::lvalue(Expr* e) {
         tctx_.cur->define(ve->name, defaultFor(sigil));
         return &tctx_.cur->vars[ve->name];
     }
+    if (e->kind == NK::SymbolicRef) {
+        auto* sr = static_cast<SymbolicRef*>(e);
+        std::string nm;
+        if (sr->nameExpr) nm = eval(sr->nameExpr.get()).toStr();
+        if (!sr->sigil.empty()) nm = sr->sigil + nm;
+        if (nm.empty())
+            throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+        VarExpr tmp(nm); tmp.line = e->line;
+        return lvalue(&tmp);
+    }
     if (e->kind == NK::Index) {
         auto* idx = static_cast<Index*>(e);
         Value* base = lvalue(idx->base.get());
@@ -5296,6 +5306,29 @@ Value Interpreter::eval(Expr* e) {
                 throw RakuError{Value::typeObj("X::Undeclared"),
                                 "Variable '" + ve->name + "' is not declared"};
             return defaultFor(sigil);
+        }
+        case NK::SymbolicRef: {
+            auto* sr = static_cast<SymbolicRef*>(e);
+            std::string nm;
+            if (sr->nameExpr) nm = eval(sr->nameExpr.get()).toStr();
+            if (!sr->sigil.empty()) nm = sr->sigil + nm;
+            if (nm.empty())
+                throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+            char c0 = nm[0];
+            if (c0 == '$' || c0 == '@' || c0 == '%' || c0 == '&') {
+                // resolve exactly as if it were the variable/routine of that name
+                VarExpr tmp(nm); tmp.line = e->line;
+                try { return eval(&tmp); }
+                catch (RakuError&) {
+                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    (*f.hash)["exception"] = Value::str("No such symbol '" + nm + "'");
+                    return f; // soft failure: falsey / undefined
+                }
+            }
+            // sigilless: constant, then type / builtin resolution (NameTerm rules)
+            if (Value* p = tctx_.cur->find(nm)) return *p;
+            NameTerm tmp(nm); tmp.line = e->line;
+            return eval(&tmp);
         }
         case NK::SelfTerm: {
             Value* p = tctx_.cur->find("self");

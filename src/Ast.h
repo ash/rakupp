@@ -10,7 +10,7 @@ enum class NK {
     // expressions
     IntLit, NumLit, StrLit, InterpStr, BoolLit, VarExpr, ListExpr,
     Assign, Binary, Unary, Call, MethodCall, Index, Ternary, Range,
-    Pair, BlockExpr, ArrayLit, HashLit, NameTerm, RegexLit, SubstLit, ChainExpr,
+    Pair, BlockExpr, ArrayLit, HashLit, NameTerm, RegexLit, SubstLit, ChainExpr, SymbolicRef,
     // statements
     ExprStmt, VarDecl, SubDecl, IfStmt, WhileStmt, ForStmt, LoopStmt,
     Block, ReturnStmt, LastStmt, NextStmt, RedoStmt, UseStmt, EmptyStmt,
@@ -70,6 +70,15 @@ struct ListExpr : Expr {
     std::vector<ExprPtr> items;
     bool parenned = false; // came from `( … )` → a distinct nested list, not a comma-chain to merge into
     ListExpr(): Expr(NK::ListExpr) {}
+};
+
+// symbolic reference: `::($name)` — look up a symbol at runtime by its (string) name.
+// `pkg` holds an optional package qualifier: `Foo::($bar)` → pkg="Foo".
+struct SymbolicRef : Expr {
+    ExprPtr nameExpr;
+    std::string pkg;      // optional package qualifier `Foo::($bar)` → "Foo"
+    std::string sigil;    // sigil form `$::(…)`/`@::(…)`/`%::(…)`/`&::(…)`; empty = bare `::(…)`
+    SymbolicRef(): Expr(NK::SymbolicRef) {}
 };
 
 struct ArrayLit : Expr { // [ ... ]  or a word-list < ... > / qw
