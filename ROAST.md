@@ -86,32 +86,32 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 25 | 56 | 0 | 66 | 949/1785 | 53% |
-| S03 | Operators | 16 | 35 | 0 | 74 | 770/1586 | 48% |
-| S04 | Blocks, statements, phasers | 17 | 36 | 0 | 25 | 396/541 | 73% |
-| S05 | Regexes & grammars | 17 | 68 | 0 | 14 | 3119/4955 | 62% |
-| S06 | Subroutines & signatures | 8 | 39 | 0 | 47 | 304/576 | 52% |
+| S02 | Literals, types, magicals | 25 | 57 | 1 | 64 | 888/1991 | 45% |
+| S03 | Operators | 19 | 36 | 1 | 69 | 887/1694 | 52% |
+| S04 | Blocks, statements, phasers | 18 | 36 | 0 | 23 | 439/577 | 76% |
+| S05 | Regexes & grammars | 23 | 62 | 0 | 13 | 4270/5000 | 85% |
+| S06 | Subroutines & signatures | 10 | 38 | 0 | 46 | 377/664 | 57% |
 | S07 | Iterators | 1 | 1 | 0 | 4 | 42/42 | 100% |
-| S09 | Data structures | 0 | 7 | 0 | 15 | 52/131 | 39% |
-| S10 | Packages | 2 | 2 | 0 | 5 | 15/35 | 42% |
-| S11 | Modules | 8 | 8 | 0 | 6 | 54/84 | 64% |
-| S12 | Objects & classes | 14 | 49 | 0 | 38 | 378/553 | 68% |
+| S09 | Data structures | 0 | 8 | 0 | 14 | 80/187 | 43% |
+| S10 | Packages | 2 | 4 | 0 | 3 | 22/48 | 46% |
+| S11 | Modules | 8 | 9 | 0 | 5 | 54/86 | 63% |
+| S12 | Objects & classes | 19 | 48 | 0 | 34 | 454/646 | 70% |
 | S13 | Overloading | 3 | 0 | 0 | 4 | 20/20 | 100% |
-| S14 | Roles | 5 | 11 | 0 | 9 | 112/159 | 70% |
-| S15 | Unicode / strings / NFG | 43 | 31 | 0 | 7 | 86701/91222 | 95% |
-| S16 | I/O | 11 | 15 | 0 | 11 | 211/348 | 60% |
-| S17 | Concurrency (supply/promise/async) | 22 | 47 | 0 | 30 | 420/680 | 62% |
-| S19 | Command-line | 6 | 1 | 0 | 1 | 21/24 | 87% |
+| S14 | Roles | 5 | 11 | 0 | 9 | 111/158 | 70% |
+| S15 | Unicode / strings / NFG | 54 | 22 | 0 | 5 | 87103/91242 | 95% |
+| S16 | I/O | 11 | 12 | 3 | 11 | 153/232 | 66% |
+| S17 | Concurrency (supply/promise/async) | 22 | 52 | 2 | 23 | 488/792 | 62% |
+| S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
 | S22 | Package format | 0 | 0 | 0 | 1 | 0/0 | — |
-| S24 | Testing | 8 | 5 | 0 | 4 | 60/100 | 60% |
-| S26 | Documentation (POD) | 6 | 10 | 0 | 11 | 164/193 | 85% |
+| S24 | Testing | 8 | 6 | 0 | 3 | 61/108 | 57% |
+| S26 | Documentation (POD) | 6 | 9 | 0 | 12 | 164/192 | 85% |
 | S28 | Special variables | 2 | 0 | 0 | 1 | 6/6 | 100% |
-| S29 | Builtins & context | 3 | 8 | 0 | 3 | 345/370 | 93% |
-| S32 | Standard types (str/list/num/…) | 45 | 112 | 0 | 118 | 20743/21665 | 96% |
-| integration | Cross-feature programs | 27 | 50 | 0 | 42 | 411/545 | 75% |
-| 6.c | v6.c language snapshot | 1 | 4 | 0 | 13 | 47/76 | 61% |
+| S29 | Builtins & context | 3 | 7 | 1 | 3 | 309/329 | 94% |
+| S32 | Standard types (str/list/num/…) | 45 | 114 | 2 | 102 | 20776/21746 | 96% |
+| integration | Cross-feature programs | 31 | 57 | 0 | 31 | 544/697 | 78% |
+| 6.c | v6.c language snapshot | 1 | 5 | 0 | 12 | 49/79 | 62% |
 | 6.d | v6.d language snapshot | 10 | 7 | 0 | 1 | 19748/20279 | 97% |
-| APPENDICES | — | 1 | 3 | 1 | 1 | 33/42 | 78% |
+| APPENDICES | — | 1 | 3 | 1 | 1 | 31/42 | 74% |
 | MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
 
 ### Reading the table
