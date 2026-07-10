@@ -68,7 +68,7 @@ This loop drove the backbone of the language, roughly in this order:
   with a `long long` fast path) and an exact `Rat`, so `0.1 + 0.2 == 0.3` is
   `True` the way Raku promises;
 - **Unicode** — grapheme-correct `.chars` (UAX #29), NFC/NFD/NFKC/NFKD
-  normalization, character names, properties — all generated from UCD 15.1. This
+  normalization, character names, properties — all generated from UCD 16.0. This
   became, and remains, the strongest single area (~95% of the S15 assertions);
 - **operators and metaoperators** — reductions `[+]`, zip/cross `Z`/`X`, hypers,
   junctions, set operators (including the Unicode spellings `∪ ∩ ∈`);

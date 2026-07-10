@@ -150,7 +150,7 @@ Reference: [docs.raku.org/language/regexes](https://docs.raku.org/language/regex
 
 ## 7. Unicode
 
-Reference: [docs.raku.org/language/unicode](https://docs.raku.org/language/unicode). Generated from UCD 15.1 — Raku++'s strongest area (~95% of S15 assertions).
+Reference: [docs.raku.org/language/unicode](https://docs.raku.org/language/unicode). Generated from UCD 16.0 — Raku++'s strongest area (~95% of S15 assertions).
 
 | Feature | Docs intent | Raku++ | Verdict |
 |---|---|---|---|
