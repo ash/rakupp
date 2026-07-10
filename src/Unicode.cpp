@@ -93,11 +93,26 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
     if (p == "S" || p == "Symbol") return cat[0] == 'S';
     if (p == "Z" || p == "Separator") return cat[0] == 'Z';
     if (p == "C" || p == "Other") return cat[0] == 'C';
+    if (p == "LC" || p == "CasedLetter" || p == "Cased_Letter") return cat == "Ll" || cat == "Lu" || cat == "Lt";
     if (p.size() == 1) return cat[0] == p[0];   // single-letter category group
     // known 2-letter general category → exact check
     static const char* K[] = {"Lu","Ll","Lt","Lm","Lo","Mn","Mc","Me","Nd","Nl","No","Pc","Pd",
         "Ps","Pe","Pi","Pf","Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn"};
     for (auto* k : K) if (p == k) return cat == p;
+    // long general-category names: <:UppercaseLetter> == <:Lu> == <:!Cn> …
+    static const std::pair<const char*, const char*> LONG[] = {
+        {"UppercaseLetter","Lu"},{"LowercaseLetter","Ll"},{"TitlecaseLetter","Lt"},
+        {"ModifierLetter","Lm"},{"OtherLetter","Lo"},{"NonspacingMark","Mn"},
+        {"SpacingMark","Mc"},{"EnclosingMark","Me"},{"DecimalNumber","Nd"},
+        {"LetterNumber","Nl"},{"OtherNumber","No"},{"ConnectorPunctuation","Pc"},
+        {"DashPunctuation","Pd"},{"OpenPunctuation","Ps"},{"ClosePunctuation","Pe"},
+        {"InitialPunctuation","Pi"},{"FinalPunctuation","Pf"},{"OtherPunctuation","Po"},
+        {"MathSymbol","Sm"},{"CurrencySymbol","Sc"},{"ModifierSymbol","Sk"},
+        {"OtherSymbol","So"},{"SpaceSeparator","Zs"},{"LineSeparator","Zl"},
+        {"ParagraphSeparator","Zp"},{"Control","Cc"},{"Format","Cf"},
+        {"Surrogate","Cs"},{"PrivateUse","Co"},{"Unassigned","Cn"},
+    };
+    for (auto& lp : LONG) if (p == lp.first) return cat == lp.second;
     // block property `<:InArabic>` / `<:InLatin1Supplement>`: In-prefix + block name.
     if (p.size() > 2 && p[0] == 'I' && p[1] == 'n' && std::isupper((unsigned char)p[2])) {
         std::string q;
