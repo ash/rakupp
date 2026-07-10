@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 349 / 1,464 (**~22%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 137,167 / 146,982 (~93%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 137,167 / 157,967 (~87%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 137,167 / 187,714 (**~73%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 350 / 1,464 (**~22%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 137,199 / 146,982 (~93%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 137,199 / 157,967 (~87%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 137,199 / 187,714 (**~73%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~20%)** and **measure 4 (all declared tests, ~73%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -60,7 +60,7 @@ The numerator is the **same** in every ratio — only the denominator widens.
   with no count) have no static test count, so they are **excluded** from every
   denominator (16 such files at present). A file that skips-all at runtime is
   scored as a *passing file* contributing 0 tests.
-- **Timeouts** (3 files) are excluded from the assertion denominators.
+- **Timeouts** (11 files) are excluded from the assertion denominators.
 - **`# SKIP` / `# TODO`** lines that rakupp itself emits count as **passed** in
   the numerator — this is standard TAP (a skip/todo is not a failure), and it is
   how every TAP harness, Rakudo's included, scores.
@@ -109,10 +109,10 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  349 / 1464   (23.8%)
-Assertions passed:    137167 / 146982  (93.4%)  of tests that ran
-Assertions passed:    137167 / 157967  (86.9%)  of tests planned by files that emitted a plan
-Assertions passed:    137167 / 187714  (72.9%)  of ALL declared tests (+30127 from 365 no-TAP files read from source; 16 more have no static plan)
+Files fully passing:  350 / 1464   (23.9%)
+Assertions passed:    137199 / 146982  (93.3%)  of tests that ran
+Assertions passed:    137199 / 157967  (86.9%)  of tests planned by files that emitted a plan
+Assertions passed:    137199 / 187714  (73.1%)  of ALL declared tests (+29747 from 350 no-TAP files read from source; 16 more have no static plan)
 ```
 
 (No `ROAST` env var is required — the tests' own `use lib` resolves the
