@@ -4080,13 +4080,21 @@ void Interpreter::registerBuiltins() {
         B[nm] = [nm](Interpreter& I, ValueList& a) -> Value { Value v = a.size() == 1 ? a[0] : Value::array(a); ValueList none; return I.methodCall(v, nm, none); };
     // Same-named-method routines that forward the REMAINING args, invocant first:
     // rotate(@a,$n), substr($s,$f,$c), head(@a,$n), trim($s), samecase($s,$pat), …
-    for (auto nm : {"rotate", "roll", "head", "tail", "substr", "substr-rw", "trim", "trim-leading",
+    for (auto nm : {"rotate", "head", "tail", "substr", "substr-rw", "trim", "trim-leading",
                     "trim-trailing", "flip", "tc", "tclc", "wordcase", "pairs", "antipairs", "chop",
                     "samecase", "samemark", "chomp"})
         if (!B.count(nm)) B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
             if (a.empty()) return Value::nil();
             Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
             return I.methodCall(inv, nm, rest);
+        };
+    // pick/roll sub forms take the count FIRST: pick(3, @list) → @list.pick(3).
+    for (auto nm : {"pick", "roll"})
+        B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return Value::any();
+            Value n = a[0];
+            Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
+            ValueList ma{n}; return I.methodCall(list, nm, ma);
         };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) { auto r = std::sqrt(std::complex<double>(a[0].n, a[0].im)); return Value::complex(r.real(), r.imag()); }

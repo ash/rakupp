@@ -5504,6 +5504,16 @@ Value Interpreter::eval(Expr* e) {
                 return Value::boolean(isDefined(inv));
             if (mc->methodExpr) mc->method = eval(mc->methodExpr.get()).toStr(); // indirect ."$name"()
             ValueList args = evalArgs(mc->args);
+            // `$x.&foo(...)` — call the sub `foo` (not a method) with the invocant prepended:
+            // foo($x, ...). Used a lot for "method-ish" helpers, e.g. `@a.sort: { .&naturally }`.
+            if (mc->method.size() > 1 && mc->method[0] == '&' && !mc->meta) {
+                Value* f = tctx_.cur->find(mc->method);
+                if (f && f->t == VT::Code) {
+                    ValueList ca; ca.reserve(args.size() + 1);
+                    ca.push_back(inv); for (auto& a : args) ca.push_back(a);
+                    return callCallable(*f, ca);
+                }
+            }
             // Autovivification: `%h{k}.push(...)` on an undefined element creates an
             // Array in place (Raku semantics), so the mutation persists in the container.
             if ((inv.t == VT::Any || inv.t == VT::Nil || inv.t == VT::Type) &&
