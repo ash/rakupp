@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 322 / 1,464 (**~22%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 132,646 / 189,362 (~70%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 132,646 / 200,724 (~66%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 132,646 / 230,851 (**~57%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 323 / 1,464 (**~22%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 132,692 / 189,362 (~70%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 132,692 / 200,724 (~66%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 132,692 / 230,851 (**~57%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~20%)** and **measure 4 (all declared tests, ~57%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -101,10 +101,10 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  322 / 1464   (22.0%)
-Assertions passed:    132646 / 189362  (70.0%)  of tests that ran
-Assertions passed:    132646 / 200724  (66.1%)  of tests planned by files that emitted a plan
-Assertions passed:    132646 / 230851  (57.5%)  of ALL declared tests (+30127 from 365 no-TAP files read from source; 16 more have no static plan)
+Files fully passing:  323 / 1464   (22.0%)
+Assertions passed:    132692 / 189362  (70.0%)  of tests that ran
+Assertions passed:    132692 / 200724  (66.1%)  of tests planned by files that emitted a plan
+Assertions passed:    132692 / 230851  (57.5%)  of ALL declared tests (+30127 from 365 no-TAP files read from source; 16 more have no static plan)
 ```
 
 (No `ROAST` env var is required — the tests' own `use lib` resolves the
