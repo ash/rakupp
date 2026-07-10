@@ -2174,6 +2174,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
          inv.t == VT::Any || inv.t == VT::Nil)) {
         Value o = Value::array(); o.isList = true; o.arr->push_back(inv); return o;
     }
+    if (m == "sink") return Value::nil(); // Mu.sink: evaluate for side effects, yield Nil (user `sink` dispatched earlier)
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
     // .VAR.name on an anonymous container is "element" in Rakudo; some code (Text::CSV)
     // uses `@x.VAR.name ne "element"` to detect an explicitly-passed array.
@@ -2216,6 +2217,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
         }
         return o;
+    }
+    // `.of` on a typed container: `my Int @a` / `my Int %h` → Int (Mu when untyped).
+    // For Hash[V,K]/Array[T] the value/element type is the first parameter component.
+    if (m == "of" && (inv.t == VT::Array || inv.t == VT::Hash)) {
+        if (inv.ofType.empty()) return Value::typeObj("Mu");
+        std::string ot = inv.ofType; auto c = ot.find(','); if (c != std::string::npos) ot = ot.substr(0, c);
+        return Value::typeObj(ot);
     }
     if (m == "WHAT") {
         // typed container -> its parameterized type object (Array[Int] / Hash[Int,Str])
