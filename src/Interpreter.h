@@ -16,6 +16,7 @@
 namespace rakupp {
 
 double randDouble(); // uniform random in [0,1)
+void srandSeed(long long s); // reseed the RNG (srand)
 
 struct Env {
     std::unordered_map<std::string, Value> vars;

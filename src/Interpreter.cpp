@@ -34,20 +34,25 @@ static char** rakupp_environ() { return environ; }
 
 namespace rakupp {
 
-// Uniform random double in [0, 1). Seeded once from time+pid.
+// Thread-local RNG state: drand48's process-global state is not thread-safe, so
+// under parallel execution each thread keeps its own erand48 seed.
+static thread_local bool g_rand_seeded = false;
+static thread_local unsigned short g_rand_xs[3];
+// `srand($seed)` reseeds the generator (Raku returns the seed used). NB rakupp's PRNG
+// is erand48, not MoarVM's — the same seed does NOT reproduce Rakudo's exact sequence.
+void srandSeed(long long s) {
+    g_rand_seeded = true;
+    g_rand_xs[0] = (unsigned short)s; g_rand_xs[1] = (unsigned short)(s >> 16); g_rand_xs[2] = (unsigned short)(s >> 32);
+}
+// Uniform random double in [0, 1). Seeded once from time+pid if srand wasn't called.
 double randDouble() {
-    // Thread-local RNG state: drand48's process-global state is not thread-safe, so
-    // under parallel execution each thread keeps its own erand48 seed. Random output
-    // is nondeterministic anyway, so this changes no observable contract.
-    static thread_local bool seeded = false;
-    static thread_local unsigned short xs[3];
-    if (!seeded) {
-        seeded = true;
+    if (!g_rand_seeded) {
+        g_rand_seeded = true;
         unsigned long s = (unsigned long)::time(nullptr) ^ ((unsigned long)::getpid() << 16)
                         ^ (unsigned long)std::hash<std::thread::id>{}(std::this_thread::get_id());
-        xs[0] = (unsigned short)s; xs[1] = (unsigned short)(s >> 16); xs[2] = (unsigned short)(s >> 32);
+        g_rand_xs[0] = (unsigned short)s; g_rand_xs[1] = (unsigned short)(s >> 16); g_rand_xs[2] = (unsigned short)(s >> 32);
     }
-    return erand48(xs);
+    return erand48(g_rand_xs);
 }
 
 // SHA-1 (uppercase hex) — used to resolve module names against a Rakudo CURI `short/` index.

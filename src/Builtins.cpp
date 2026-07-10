@@ -4109,6 +4109,11 @@ void Interpreter::registerBuiltins() {
             Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
             ValueList ma{n}; return I.methodCall(list, nm, ma);
         };
+    B["srand"] = [](Interpreter&, ValueList& a) -> Value { // reseed the RNG; returns the seed
+        long long seed = a.empty() ? (long long)::time(nullptr) : a[0].toInt();
+        srandSeed(seed);
+        return Value::integer(seed);
+    };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) { auto r = std::sqrt(std::complex<double>(a[0].n, a[0].im)); return Value::complex(r.real(), r.imag()); }
         double x = numArg(I, a);

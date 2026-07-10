@@ -134,6 +134,7 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
         if (o == "o") { in.valid = true; in.lbp = BP_MUL; return in; } // ASCII alias for ∘ (function composition)
         if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ADD; return in; } // zip / cross
+        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
         if (o == "and" || o == "andthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
         return in;
