@@ -374,13 +374,16 @@ Regex::NodePtr Regex::parseAtom() {
         return seq;
     }
     if (c == '.') { pos_++; auto n = std::make_unique<Node>(); n->k = K::Any; return n; }
-    if (c == '^') { pos_++; if (peek() == '^') pos_++; auto n = std::make_unique<Node>(); n->k = K::AnchorStart; return n; }
+    if (c == '^') { pos_++; auto n = std::make_unique<Node>(); n->k = K::AnchorStart; if (peek() == '^') { pos_++; n->multiline = true; } return n; }
     if (c == '$') {
-        // end anchor only when not an interpolation/backref
+        // end anchor only when not an interpolation/backref. A following '$'
+        // means the `$$` end-of-line anchor (its own second char isn't a var).
         char nx = peek(1);
-        if (nx == '\0' || nx == ')' || nx == ']' || nx == '|' || std::isspace((unsigned char)nx)) {
-            pos_++; if (peek() == '$') pos_++;
-            auto n = std::make_unique<Node>(); n->k = K::AnchorEnd; return n;
+        if (nx == '\0' || nx == ')' || nx == ']' || nx == '|' || nx == '$' || std::isspace((unsigned char)nx)) {
+            pos_++;
+            auto n = std::make_unique<Node>(); n->k = K::AnchorEnd;
+            if (peek() == '$') { pos_++; n->multiline = true; } // `$$` = end-of-line, `$` = end-of-string
+            return n;
         }
         // $var — match the variable's current Str value literally at match time
         pos_++;
@@ -734,10 +737,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (!classMatch(n, st.s[pos])) return false;
             return k(pos + 1);
         case K::AnchorStart:
-            if (pos == 0 || (pos > 0 && st.s[pos - 1] == '\n')) return k(pos);
+            // `^^` (multiline): start of any line. `^`: start of the string only.
+            if (n->multiline ? (pos == 0 || st.s[pos - 1] == '\n') : (pos == 0)) return k(pos);
             return false;
         case K::AnchorEnd:
-            if (pos == len || st.s[pos] == '\n') return k(pos);
+            // `$$` (multiline): end of any line. `$`: end of string (or just before a final newline).
+            if (n->multiline ? (pos == len || st.s[pos] == '\n')
+                             : (pos == len || (pos + 1 == len && st.s[pos] == '\n'))) return k(pos);
             return false;
         case K::Seq: {
             auto go = [&](auto&& self, size_t i, long p) -> bool {

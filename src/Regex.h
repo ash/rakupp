@@ -110,6 +110,7 @@ private:
         std::string classFlags;          // subset of "dws" (positive), uppercase = negated
         std::string uprop;               // Unicode property for <:Nd>/<:L>/… (Class node, codepoint-aware)
         bool negate = false;
+        bool multiline = false;          // AnchorStart/AnchorEnd: `^^`/`$$` (line) vs `^`/`$` (string)
         mutable uint32_t byteset[8];     // per-byte match result (incl. icase+negate), built on first use
         mutable bool bytesetReady = false;
         // Rep
