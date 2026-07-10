@@ -3957,6 +3957,16 @@ void Interpreter::registerBuiltins() {
     // List routines that delegate to the method of the same name.
     for (auto nm : {"permutations", "combinations", "unique", "repeated", "squish", "rotor", "flat"})
         B[nm] = [nm](Interpreter& I, ValueList& a) -> Value { Value v = a.size() == 1 ? a[0] : Value::array(a); ValueList none; return I.methodCall(v, nm, none); };
+    // Same-named-method routines that forward the REMAINING args, invocant first:
+    // rotate(@a,$n), substr($s,$f,$c), head(@a,$n), trim($s), samecase($s,$pat), …
+    for (auto nm : {"rotate", "roll", "head", "tail", "substr", "substr-rw", "trim", "trim-leading",
+                    "trim-trailing", "flip", "tc", "tclc", "wordcase", "pairs", "antipairs", "chop",
+                    "samecase", "samemark", "chomp"})
+        if (!B.count(nm)) B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return Value::nil();
+            Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
+            return I.methodCall(inv, nm, rest);
+        };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) { auto r = std::sqrt(std::complex<double>(a[0].n, a[0].im)); return Value::complex(r.real(), r.imag()); }
         double x = numArg(I, a);
