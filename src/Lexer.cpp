@@ -30,7 +30,59 @@ static std::string renderPod(const std::string& content) {
     return out;
 }
 
-Lexer::Lexer(std::string src) : src_(std::move(src)) {}
+// Roast "fudge" directive: `#?rakudo[.moar] [<N>] todo '<reason>'` marks the next N
+// tests (default 1) as TODO for the Rakudo implementation. rakupp is a moar-like
+// backend, so it honours bare `#?rakudo` and `#?rakudo.moar` (never `.jvm`/`.js…`),
+// rewriting each such directive line into a `todo('<reason>', N);` call — the reason
+// stays a literal, line numbers are preserved (one line in, one line out). `skip`/
+// `emit`/other verbs and backend-specific variants are left as comments (ignored).
+static std::string applyRakudoFudge(const std::string& src) {
+    if (src.find("#?rakudo") == std::string::npos) return src; // fast path: no directives
+    std::string out; out.reserve(src.size());
+    size_t i = 0, n = src.size();
+    while (i <= n) {
+        size_t eol = src.find('\n', i);
+        size_t lineEnd = (eol == std::string::npos) ? n : eol;
+        std::string line = src.substr(i, lineEnd - i);
+        size_t p = 0; while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) p++;
+        bool replaced = false;
+        if (line.compare(p, 8, "#?rakudo") == 0) {
+            size_t q = p + 8;
+            std::string backend;
+            if (q < line.size() && line[q] == '.') {
+                q++; size_t b = q;
+                while (q < line.size() && line[q] != ' ' && line[q] != '\t') q++;
+                backend = line.substr(b, q - b);
+            }
+            if (backend.empty() || backend == "moar") {
+                while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
+                std::string count = "1";
+                if (q < line.size() && std::isdigit((unsigned char)line[q])) {
+                    size_t c = q; while (q < line.size() && std::isdigit((unsigned char)line[q])) q++;
+                    count = line.substr(c, q - c);
+                    while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
+                }
+                if (line.compare(q, 4, "todo") == 0 &&
+                    (q + 4 >= line.size() || line[q + 4] == ' ' || line[q + 4] == '\t')) {
+                    q += 4;
+                    while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
+                    std::string reason = line.substr(q);
+                    while (!reason.empty() && (reason.back() == ' ' || reason.back() == '\t' || reason.back() == '\r')) reason.pop_back();
+                    if (reason.empty() || (reason[0] != '\'' && reason[0] != '"')) reason = "\"\""; // require a string literal
+                    out += line.substr(0, p) + "todo(" + reason + ", " + count + ");";
+                    replaced = true;
+                }
+            }
+        }
+        if (!replaced) out += line;
+        if (eol == std::string::npos) break;
+        out += '\n';
+        i = lineEnd + 1;
+    }
+    return out;
+}
+
+Lexer::Lexer(std::string src) : src_(applyRakudoFudge(std::move(src))) {}
 
 char Lexer::peek(size_t off) const {
     size_t p = pos_ + off;
