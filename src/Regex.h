@@ -109,6 +109,7 @@ private:
         std::vector<std::pair<unsigned char, unsigned char>> ranges;
         std::vector<std::pair<uint32_t, uint32_t>> cpRanges; // codepoint ranges (>0xFF chars, named/hex escapes in classes)
         std::string classFlags;          // subset of "dws" (positive), uppercase = negated
+        std::string negClassFlags;       // `-rule` difference members: char must NOT match these
         std::string uprop;               // Unicode property for <:Nd>/<:L>/… (Class node, codepoint-aware)
         bool negate = false;
         bool multiline = false;          // AnchorStart/AnchorEnd: `^^`/`$$` (line) vs `^`/`$` (string)

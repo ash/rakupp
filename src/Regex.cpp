@@ -157,6 +157,8 @@ Regex::NodePtr Regex::parseQuant() {
     return rep;
 }
 
+static std::string ruleFlag(const std::string& nm); // built-in rule → classMatch flags
+
 Regex::NodePtr Regex::parseAtom() {
     skipWs();
     char c = peek();
@@ -228,9 +230,31 @@ Regex::NodePtr Regex::parseAtom() {
         if (peek() == '(') { pos_++; auto n = std::make_unique<Node>(); n->k = K::CapStart; return n; } // <( match-capture start
         auto node = std::make_unique<Node>();
         node->k = K::Class;
-        if (peek() == '[') { pos_++; node->negate = false; parseClassBodyMember(node.get()); }
-        else if (peek() == '-' && peek(1) == '[') { pos_ += 2; node->negate = true; parseClassBodyMember(node.get()); }
-        else if (peek() == '+' && peek(1) == '[') { pos_ += 2; node->negate = false; parseClassBodyMember(node.get()); }
+        // char class, possibly composed: `[..]`, `-[..]`, `+[..]`, `<+alpha>`, `<+[A]+alpha>`.
+        // (A bare `<-name>` is the negated-subrule branch further down, not this.)
+        if (peek() == '[' || ((peek() == '+' || peek() == '-') && peek(1) == '[') ||
+            (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.'))) {
+            node->negate = false;
+            bool first = true;
+            while (peek() == '[' || peek() == '+' || peek() == '-') {
+                char op = '+';
+                if (peek() == '+') { pos_++; op = '+'; }
+                else if (peek() == '-') { pos_++; op = '-'; }
+                if (peek() == '[') { pos_++; if (op == '-' && first) node->negate = true; parseClassBodyMember(node.get()); }
+                else { // +rule / -rule member
+                    if (peek() == '.') pos_++;
+                    std::string nm; while (!eof() && peek() != '>' && peek() != '+' && peek() != '-' && peek() != '[') nm += pat_[pos_++];
+                    size_t a = nm.find_first_not_of(" \t"), b = nm.find_last_not_of(" \t");
+                    if (a != std::string::npos) nm = nm.substr(a, b - a + 1);
+                    if (op == '+') node->classFlags += ruleFlag(nm);
+                    else node->negClassFlags += ruleFlag(nm); // `-rule` difference
+                }
+                first = false;
+                if (peek() == '>' || eof()) break;
+            }
+            if (peek() == '>') pos_++;
+            return node;
+        }
         else if (peek() == '-' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '.' || peek(1) == '_')) {
             // <-name> — negated subrule char class: one char NOT matched by rule `name`.
             // Equivalent to `[ <!name> . ]`.
@@ -358,7 +382,7 @@ Regex::NodePtr Regex::parseAtom() {
             if (!dotless) {
                 if (name == "digit") fl = "d";
                 else if (name == "alpha") fl = "a";
-                else if (name == "alnum" || name == "ident") fl = "ad";
+                else if (name == "alnum") fl = "ad"; // NB `ident` is multi-char → subrule path
                 else if (name == "space" || name == "blank") fl = "s";
                 else if (name == "upper") fl = "u";
                 else if (name == "lower") fl = "l";
@@ -553,6 +577,54 @@ void Regex::parseClassBodyMember(Node* node) {
     if (peek() == ']') pos_++;
 }
 
+// POSIX-ish built-in regex rules (<alpha>, <digit>, <ident>, <ws>, …) as char
+// matchers. Returns the new position after matching, -1 if it IS a built-in but
+// doesn't match here, or -2 if `nm` is not a built-in rule at all.
+static long builtinRuleMatch(const std::string& nm, const std::string& s, long pos, long len) {
+    if (nm == "ws") { long p = pos; while (p < len && std::isspace((unsigned char)s[p])) p++; return p; } // \s* (may be zero-width)
+    if (nm == "ident") {
+        if (pos >= len) return -1;
+        unsigned char c0 = (unsigned char)s[pos];
+        if (!(std::isalpha(c0) || c0 == '_')) return -1;
+        long p = pos + 1; while (p < len && (std::isalnum((unsigned char)s[p]) || s[p] == '_')) p++;
+        return p;
+    }
+    if (pos >= len) {
+        static const std::set<std::string> known = {"alpha","digit","space","blank","alnum","upper","lower",
+            "xdigit","word","punct","cntrl","graph","print"};
+        return known.count(nm) ? -1 : -2;
+    }
+    unsigned char c = (unsigned char)s[pos];
+    bool ok;
+    if (nm == "alpha") ok = std::isalpha(c);
+    else if (nm == "digit") ok = std::isdigit(c);
+    else if (nm == "space") ok = std::isspace(c);
+    else if (nm == "blank") ok = (c == ' ' || c == '\t');
+    else if (nm == "alnum") ok = std::isalnum(c);
+    else if (nm == "upper") ok = std::isupper(c);
+    else if (nm == "lower") ok = std::islower(c);
+    else if (nm == "xdigit") ok = std::isxdigit(c);
+    else if (nm == "word") ok = std::isalnum(c) || c == '_';
+    else if (nm == "punct") ok = std::ispunct(c);
+    else if (nm == "cntrl") ok = std::iscntrl(c);
+    else if (nm == "graph") ok = std::isgraph(c);
+    else if (nm == "print") ok = std::isprint(c);
+    else return -2;
+    return ok ? pos + 1 : -1;
+}
+
+// Built-in rule name → classMatch flag(s), for `<+alpha>` charset composition ("" = none).
+static std::string ruleFlag(const std::string& nm) {
+    if (nm == "alpha") return "a"; if (nm == "digit") return "d";
+    if (nm == "space") return "s"; if (nm == "blank") return "b";
+    if (nm == "alnum") return "ad"; if (nm == "upper") return "u";
+    if (nm == "lower") return "l"; if (nm == "xdigit") return "x";
+    if (nm == "word") return "w"; if (nm == "punct") return "p";
+    if (nm == "cntrl") return "k"; if (nm == "graph") return "g";
+    if (nm == "print") return "r";
+    return "";
+}
+
 // Word char for the `<<`/`>>` boundary anchors — matches \w (ASCII alnum + _),
 // plus any multibyte lead/continuation byte so boundaries land around Unicode words.
 static bool isWordChar(const std::string& s, long i) {
@@ -577,20 +649,23 @@ bool Regex::classMatch(const Node* n, char ch) const {
     // The per-byte result (ranges + flags + icase + negate) is pure per node —
     // build a 256-bit table on first use, then every test is one bit probe.
     if (!n->bytesetReady) {
-        auto test = [&](unsigned char c) -> bool {
-            for (auto& r : n->ranges) if (c >= r.first && c <= r.second) return true;
-            for (char f : n->classFlags) {
-                switch (f) {
-                    case 'd': if (std::isdigit(c)) return true; break;
-                    case 'w': if (std::isalnum(c) || c == '_') return true; break;
-                    case 's': if (std::isspace(c)) return true; break;
-                    case 'a': if (std::isalpha(c)) return true; break;
-                    case 'u': if (std::isupper(c)) return true; break;
-                    case 'l': if (std::islower(c)) return true; break;
-                    case 'x': if (std::isxdigit(c)) return true; break;
-                }
+        auto flagHit = [](char f, unsigned char c) -> bool {
+            switch (f) {
+                case 'd': return std::isdigit(c); case 'w': return std::isalnum(c) || c == '_';
+                case 's': return std::isspace(c); case 'a': return std::isalpha(c);
+                case 'u': return std::isupper(c); case 'l': return std::islower(c);
+                case 'x': return std::isxdigit(c); case 'p': return std::ispunct(c);
+                case 'k': return std::iscntrl(c); case 'g': return std::isgraph(c);
+                case 'r': return std::isprint(c); case 'b': return c == ' ' || c == '\t';
             }
             return false;
+        };
+        auto test = [&](unsigned char c) -> bool {
+            bool pos = false;
+            for (auto& r : n->ranges) if (c >= r.first && c <= r.second) { pos = true; break; }
+            if (!pos) for (char f : n->classFlags) if (flagHit(f, c)) { pos = true; break; }
+            if (pos) for (char f : n->negClassFlags) if (flagHit(f, c)) return false; // `-rule` difference
+            return pos;
         };
         for (int i = 0; i < 8; i++) n->byteset[i] = 0;
         for (int v = 0; v < 256; v++) {
@@ -719,27 +794,29 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                                             n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),
                                             st, pos, k);
             }
-            if (!st.resolver) {
-                // built-in char-class fallback for <.alpha>/<.digit>/… with no grammar
-                const std::string& nm = n->ruleName;
-                std::string fl;
-                if (nm == "alpha") fl = "a"; else if (nm == "digit") fl = "d";
-                else if (nm == "alnum" || nm == "ident") fl = "ad";
-                else if (nm == "space" || nm == "blank") fl = "s";
-                else if (nm == "upper") fl = "u"; else if (nm == "lower") fl = "l";
-                else if (nm == "xdigit") fl = "x"; else if (nm == "word") fl = "w";
-                if (!fl.empty()) {
-                    if (pos >= len) return false;
-                    unsigned char c = st.s[pos]; bool ok = false;
-                    for (char f : fl) ok = ok ||
-                        (f == 'a' && std::isalpha(c)) || (f == 'd' && std::isdigit(c)) ||
-                        (f == 's' && std::isspace(c)) || (f == 'u' && std::isupper(c)) ||
-                        (f == 'l' && std::islower(c)) || (f == 'x' && std::isxdigit(c)) ||
-                        (f == 'w' && (std::isalnum(c) || c == '_'));
-                    return ok ? k(pos + 1) : false;
-                }
-                return k(pos); // unknown subrule: lenient zero-width
+            // <at(N)> — zero-width position assertion: current offset must equal N.
+            if (n->ruleName == "at") {
+                long target = std::strtol(n->ruleArgs.c_str(), nullptr, 10);
+                return (pos == target) ? k(pos) : false;
             }
+            // built-in char-class rules (<.alpha>, <ident>, <ws>, …) resolve here and
+            // take precedence over an interpreter resolver that doesn't define them.
+            {
+                long e = builtinRuleMatch(n->ruleName, st.s, pos, len);
+                if (e >= 0) {
+                    if (n->ruleCapture && !n->ruleName.empty()) { // record $<name> for a capturing built-in
+                        auto saved = st.named.count(n->ruleName) ? st.named[n->ruleName] : std::pair<long, long>{-1, -1};
+                        bool had = st.named.count(n->ruleName);
+                        st.named[n->ruleName] = {pos, e};
+                        if (k(e)) return true;
+                        if (had) st.named[n->ruleName] = saved; else st.named.erase(n->ruleName);
+                        return false;
+                    }
+                    return k(e);
+                }
+                if (e == -1) return false;
+            }
+            if (!st.resolver) return k(pos); // unknown subrule, no resolver: lenient zero-width
             RxMatch sub;
             // pass a parameterised call's args to the resolver, encoded after \x1f
             std::string call = n->ruleArgs.empty() ? n->ruleName : (n->ruleName + "\x1f" + n->ruleArgs);
