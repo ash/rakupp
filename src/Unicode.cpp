@@ -8,6 +8,7 @@
 #include <cctype>
 #include <vector>
 #include <utility>
+#include <set>
 
 namespace rakupp {
 namespace ucd {
@@ -25,6 +26,22 @@ extern const BlockEnt BLOCKS[]; extern const size_t BLOCKS_N; // Unicode Blocks.
 extern const char* const PROPNAMES[]; extern const size_t PROPNAMES_N;
 struct PropRange { uint32_t lo, hi; uint16_t prop; };
 extern const PropRange BINPROPS[]; extern const size_t BINPROPS_N; // DerivedCoreProperties + PropList
+struct ScriptEnt { uint32_t lo, hi; const char* name; };
+extern const ScriptEnt SCRIPTS[]; extern const size_t SCRIPTS_N; // Scripts.txt
+struct BidiEnt { uint32_t lo, hi; const char* bc; };
+extern const BidiEnt BIDI[]; extern const size_t BIDI_N; // DerivedBidiClass.txt
+}
+
+// Bidi_Class of cp ("L", "EN", "WS", …); default "L" in the assigned ranges' gaps.
+static const char* uniBidiClass(uint32_t c) {
+    size_t lo = 0, hi = ucd::BIDI_N;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (c < ucd::BIDI[mid].lo) hi = mid;
+        else if (c > ucd::BIDI[mid].hi) lo = mid + 1;
+        else return ucd::BIDI[mid].bc;
+    }
+    return "L";
 }
 
 // Binary Unicode property membership (Math, Lowercase, Soft_Dotted, Other_Math, …).
@@ -70,37 +87,58 @@ std::string uniGeneralCategory(uint32_t cp) {
     return "Cn"; // unassigned
 }
 
-// Approximate script by Unicode block (exact Scripts.txt not available on this system).
+// Real Script property, from the pinned 16.0 Scripts.txt range table.
 std::string uniScript(uint32_t c) {
-    if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || c == 0xAA || c == 0xBA ||
-        (c >= 0xC0 && c <= 0xFF && c != 0xD7 && c != 0xF7) || (c >= 0x100 && c <= 0x2AF) ||
-        (c >= 0x1E00 && c <= 0x1EFF) || (c >= 0x2C60 && c <= 0x2C7F) || (c >= 0xA720 && c <= 0xA7FF) ||
-        (c >= 0xFF21 && c <= 0xFF3A) || (c >= 0xFF41 && c <= 0xFF5A)) return "Latin";
-    if ((c >= 0x370 && c <= 0x3FF && c != 0x374 && c != 0x375 && c != 0x37E && c != 0x384) ||
-        (c >= 0x1F00 && c <= 0x1FFF)) return "Greek";
-    if ((c >= 0x400 && c <= 0x52F) || (c >= 0x1C80 && c <= 0x1C8F) || (c >= 0x2DE0 && c <= 0x2DFF)) return "Cyrillic";
-    if ((c >= 0x2E80 && c <= 0x2EFF) || (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) ||
-        (c >= 0xF900 && c <= 0xFAFF) || (c >= 0x20000 && c <= 0x2A6DF)) return "Han";
-    if (c >= 0x3040 && c <= 0x309F) return "Hiragana";
-    if (c >= 0x30A0 && c <= 0x30FF) return "Katakana";
-    if ((c >= 0x1100 && c <= 0x11FF) || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0x3130 && c <= 0x318F)) return "Hangul";
-    if ((c >= 0x600 && c <= 0x6FF) || (c >= 0x750 && c <= 0x77F)) return "Arabic";
-    if (c >= 0x590 && c <= 0x5FF) return "Hebrew";
-    if (c >= 0xE00 && c <= 0xE7F) return "Thai";
-    if (c >= 0x900 && c <= 0x97F) return "Devanagari";
-    if (c >= 0x530 && c <= 0x58F) return "Armenian";
-    if (c >= 0x10A0 && c <= 0x10FF) return "Georgian";
-    std::string cat = uniGeneralCategory(c);
-    if (cat[0] == 'L' || cat[0] == 'M') return "Inherited"; // unknown letter/mark
-    return "Common"; // digits, punctuation, symbols, spaces
+    size_t lo = 0, hi = ucd::SCRIPTS_N;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (c < ucd::SCRIPTS[mid].lo) hi = mid;
+        else if (c > ucd::SCRIPTS[mid].hi) lo = mid + 1;
+        else return ucd::SCRIPTS[mid].name;
+    }
+    return "Unknown"; // unassigned / no script (Zzzz)
+}
+
+// normalize a property name/value for loose matching (lowercase, drop separators)
+static std::string normProp(const std::string& s) {
+    std::string n;
+    for (char ch : s) if (std::isalnum((unsigned char)ch)) n += (char)std::tolower((unsigned char)ch);
+    return n;
 }
 
 bool uniMatchesProp(uint32_t cp, const std::string& p) {
-    // script property: <:Latin> <:Greek> …
-    if (p == "Latin" || p == "Greek" || p == "Cyrillic" || p == "Han" || p == "Hiragana" ||
-        p == "Katakana" || p == "Hangul" || p == "Arabic" || p == "Hebrew" || p == "Thai" ||
-        p == "Devanagari" || p == "Armenian" || p == "Georgian" || p == "Common" || p == "Inherited")
-        return uniScript(cp) == p;
+    // property-with-value form: <:bc<L>> (Bidi_Class), <:sc<Latin>>/<:Script<…>>,
+    // <:gc<Lu>> (General_Category).  p arrives as e.g. "bc<L>".
+    size_t lt = p.find('<');
+    if (lt != std::string::npos && !p.empty() && p.back() == '>') {
+        std::string prop = normProp(p.substr(0, lt));
+        std::string val = p.substr(lt + 1, p.size() - lt - 2);
+        if (prop == "bc" || prop == "bidiclass")
+            return normProp(uniBidiClass(cp)) == normProp(val);
+        if (prop == "sc" || prop == "script" || prop == "gc" || prop == "generalcategory")
+            return uniMatchesProp(cp, val); // delegate to the bare-value handlers
+        return uniMatchesProp(cp, val);     // unknown property key: match on the value alone
+    }
+    // script property: <:Latin> <:Syriac> <:Canadian_Aboriginal> … (bare script
+    // value == <:Script<...>>). Loose-match p against the set of real script names.
+    {
+        static const std::set<std::string> scriptNames = [] {
+            std::set<std::string> s;
+            for (size_t i = 0; i < ucd::SCRIPTS_N; i++) {
+                std::string n;
+                for (const char* q = ucd::SCRIPTS[i].name; *q; q++) if (std::isalnum((unsigned char)*q)) n += (char)std::tolower((unsigned char)*q);
+                s.insert(n);
+            }
+            return s;
+        }();
+        std::string norm;
+        for (char ch : p) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
+        if (scriptNames.count(norm)) {
+            std::string sc = uniScript(cp), scn;
+            for (char ch : sc) if (std::isalnum((unsigned char)ch)) scn += (char)std::tolower((unsigned char)ch);
+            return scn == norm;
+        }
+    }
     std::string cat = uniGeneralCategory(cp);
     if (p == "alpha" || p == "Alpha" || p == "Letter" || p == "L") return cat[0] == 'L'; // POSIX-ish; `Alphabetic` is the binary prop (L + Other_Alphabetic), handled below
     if (p == "Assigned") return cat != "Cn";

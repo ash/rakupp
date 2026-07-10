@@ -293,6 +293,22 @@ Regex::NodePtr Regex::parseAtom() {
                 look->kids.push_back(std::move(sub));
                 return look;
             }
+            else if (peek() == ':') {
+                // <?:prop> / <!:prop> — zero-width Unicode-property assertion (balance
+                // an inner value like <!:bc<L>>). Wrap a Class{uprop} in a lookahead.
+                pos_++; // ':'
+                std::string nm; int adepth = 0;
+                while (!eof() && (peek() != '>' || adepth > 0)) {
+                    char ch = peek(); if (ch == '<') adepth++; else if (ch == '>') adepth--;
+                    nm += pat_[pos_++];
+                }
+                if (peek() == '>') pos_++;
+                auto cls = std::make_unique<Node>(); cls->k = K::Class; cls->uprop = nm;
+                auto look = std::make_unique<Node>();
+                look->k = K::Look; look->negate = neg; look->behind = false;
+                look->kids.push_back(std::move(cls));
+                return look;
+            }
             assertDepth_++;
             auto child = parseAlt();
             assertDepth_--;
@@ -309,9 +325,16 @@ Regex::NodePtr Regex::parseAtom() {
             while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '<') depth++; else if (d == '>') depth--; }
             auto nop = std::make_unique<Node>(); nop->k = K::Nop; return nop;
         } else {
-            // named char class or subrule
+            // named char class or subrule; balance inner <…> so a property value
+            // like `<:bc<L>>` (property `bc`, value `L`) reads as one unit.
             std::string name;
-            while (!eof() && peek() != '>') name += pat_[pos_++];
+            int adepth = 0;
+            while (!eof() && (peek() != '>' || adepth > 0)) {
+                char ch = peek();
+                if (ch == '<') adepth++;
+                else if (ch == '>') adepth--;
+                name += pat_[pos_++];
+            }
             if (peek() == '>') pos_++;
             // a leading `.` (<.space>) means a non-capturing call; strip it for the
             // built-in class check so `<.space>` also resolves to `\s`.
@@ -723,9 +746,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             }
             return k(pos + m);
         }
-        case K::Any:
+        case K::Any: {
             if (pos >= len) return false;
-            return k(pos + 1);
+            unsigned char c0 = (unsigned char)st.s[pos]; // `.` matches one whole codepoint, not one byte
+            int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+            if (pos + clen > len) clen = 1;
+            return k(pos + clen);
+        }
         case K::Class:
             if (pos >= len) return false;
             if (!n->uprop.empty()) { // Unicode property class: decode one codepoint
