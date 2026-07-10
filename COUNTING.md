@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 343 / 1,464 (**~22%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 136,841 / 146,536 (~93%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 136,841 / 157,534 (~87%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 136,841 / 187,661 (**~73%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 349 / 1,464 (**~22%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 137,167 / 146,982 (~93%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 137,167 / 157,967 (~87%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 137,167 / 187,714 (**~73%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~20%)** and **measure 4 (all declared tests, ~73%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -37,8 +37,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (187,661) is
-~31k larger than 3's (157,534) — those 30,127 tests live in 365 parse-error
+source and counts all N as failing. That is why 4's denominator (187,714) is
+~31k larger than 3's (157,967) — those 29,747 tests live in 350 parse-error
 files, recovered from source. A parse error can no longer hide its tests.
 
 ## Exactly how the denominators are built
@@ -65,25 +65,33 @@ The numerator is the **same** in every ratio — only the denominator widens.
   the numerator — this is standard TAP (a skip/todo is not a failure), and it is
   how every TAP harness, Rakudo's included, scores.
 
-## What we deliberately do NOT subtract
+## Fudge directives (`#?rakudo …`)
 
-Roast's raw files carry **fudge directives** — `#?rakudo skip`, `#?rakudo.jvm
-todo`, etc. Rakudo doesn't run the raw files; it preprocesses them with `fudge`,
-which converts those comments into real skip/todo for the target backend. So a
-`#?rakudo skip` marks a test the reference implementation is not expected to pass.
+Roast's raw files carry **fudge directives** — `#?rakudo skip`, `#?rakudo todo`,
+`#?rakudo.jvm todo`, etc. Rakudo doesn't run the raw files; it preprocesses them
+with `fudge`, converting those comments into real skip/todo for the target
+backend. A `#?rakudo todo` marks a test even the reference implementation cannot
+yet pass; a `#?rakudo.jvm …` marks one that fails only on the JVM backend.
 
-**Raku++ ignores fudge and attempts every test.** We do **not** subtract
-fudge-skipped or backend-specific (`#?rakudo.jvm …`) tests from the denominator:
+Raku++ is a **moar-like backend**, so it honours exactly the directives Rakudo-moar
+would — and only those:
 
-- an all-backends `#?rakudo skip` is Rakudo's limitation, not a reason we
-  shouldn't try — and if we pass it, that win should count;
-- a `#?rakudo.jvm skip` still runs and passes on Rakudo-moar (the real
-  reference), so it plainly belongs in the count.
+- **`#?rakudo todo` / `#?rakudo.moar todo` are honoured.** The lexer rewrites each
+  such line into a `todo('reason', N)` call, so those N tests emit `# TODO` and
+  their failures don't count — identical to what Rakudo's own harness does. These
+  are **Rakudo-compatibility passes, not genuine feature coverage**: they mark
+  tests the spec itself flags as not-yet-passable. Only a handful of files flip
+  on this (they had *no other* failure), and the effect on the assertion
+  numerators is a rounding error.
+- **`#?rakudo skip` is NOT honoured — we attempt the test.** Skipping a block
+  correctly needs its emitted-test count (which we can't know without running),
+  and, more importantly, if we *can* pass a skipped test that is a real win worth
+  counting. Same for backend-specific `#?rakudo.jvm …` / `#?rakudo.js …`: those
+  run and pass on Rakudo-moar, so they plainly belong in the count.
 
-There are ~1,088 such directives (489 skip + 599 todo) across 404 files —
-under ~1% of the 231k. Net effect: our denominator is **~1% stricter** than
-Rakudo's own effective target, which is the honest direction to err. We never
-pad the denominator down to flatter the percentage.
+So the denominator is **not** padded down: we still attempt every `skip`-marked
+and backend-specific test. The only concession is honouring `todo` exactly as the
+moar backend does — the honest, Rakudo-faithful direction to err.
 
 ## Zero-regression discipline
 
@@ -101,10 +109,10 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  343 / 1464   (23.4%)
-Assertions passed:    136841 / 146536  (93.4%)  of tests that ran
-Assertions passed:    136841 / 157534  (86.9%)  of tests planned by files that emitted a plan
-Assertions passed:    136841 / 187661  (72.9%)  of ALL declared tests (+30127 from 365 no-TAP files read from source; 16 more have no static plan)
+Files fully passing:  349 / 1464   (23.8%)
+Assertions passed:    137167 / 146982  (93.4%)  of tests that ran
+Assertions passed:    137167 / 157967  (86.9%)  of tests planned by files that emitted a plan
+Assertions passed:    137167 / 187714  (72.9%)  of ALL declared tests (+30127 from 365 no-TAP files read from source; 16 more have no static plan)
 ```
 
 (No `ROAST` env var is required — the tests' own `use lib` resolves the

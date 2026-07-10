@@ -128,13 +128,13 @@ implementation steadily growing toward the same language.
 
 The same progress measured at three granularities:
 
-- **All declared tests: ~73%** (136,841 / ~187,661) — the headline per-test figure.
+- **All declared tests: ~73%** (137,167 / ~187,714) — the headline per-test figure.
   It counts every test the suite declares, including those in files that abort
   before running (their `plan N` is read from source, all failing), so parse-error
   files can't hide.
-- **Files fully passing: ~22%** (343 / 1,464) — the stricter bar; a file counts
+- **Files fully passing: ~22%** (349 / 1,464) — the stricter bar; a file counts
   only if *every* assertion in it passes.
-- **Tests that ran: ~69%** (136,841 / 146,536) — of just the assertions files
+- **Tests that ran: ~69%** (137,167 / 146,982) — of just the assertions files
   actually emitted; useful for tracking regressions, but it ignores the ~31k tests
   in aborting files, so it flatters.
 
