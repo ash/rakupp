@@ -1700,9 +1700,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return forResult();
             }
             Value listv = eval(fs->list.get());
+            // A `$`-sigil scalar source (or an explicitly itemized value) is a single item:
+            // `for $scalar { }` runs once even when the scalar holds an Array/Range, because a
+            // scalar container does not flatten in list context. `@a`, ranges, and lists still flatten.
+            bool scalarItem = listv.itemized ||
+                (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
+                 && static_cast<VarExpr*>(fs->list.get())->name[0] == '$');
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).
-            if (!fs->destructure && fs->vars.size() <= 1) {
+            if (!scalarItem && !fs->destructure && fs->vars.size() <= 1) {
                 const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
                 // Reuse one Env across iterations for speed. This is only safe when
                 // nothing captured the previous iteration's scope (a closure would
@@ -1745,7 +1751,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
             }
             ValueList items;
-            if (listv.t == VT::Array && listv.arr) items = *listv.arr; // one-level
+            if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
+            else if (listv.t == VT::Array && listv.arr) items = *listv.arr; // one-level
             else if (listv.t == VT::Range) items = listv.flatten();
             else items.push_back(listv);
             // `-> ($a,$b,$c)`: each element is unpacked into the vars (one item/iteration).
