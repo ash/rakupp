@@ -1072,6 +1072,14 @@ std::vector<Token> Lexer::tokenize() {
         if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 && (unsigned char)peek(2) == 0xA6) {
             advance(); advance(); advance();
             t = make(Tok::Op, "...");
+        // Unicode operator aliases → ASCII: ≤ ≥ ≠ (U+2264/5/0) and × ÷ (U+00D7/F7).
+        } else if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x89 &&
+                   ((unsigned char)peek(2) == 0xA4 || (unsigned char)peek(2) == 0xA5 || (unsigned char)peek(2) == 0xA0)) {
+            unsigned char b = (unsigned char)peek(2); advance(); advance(); advance();
+            t = make(Tok::Op, b == 0xA4 ? "<=" : b == 0xA5 ? ">=" : "!=");
+        } else if ((unsigned char)c == 0xC3 && ((unsigned char)peek(1) == 0x97 || (unsigned char)peek(1) == 0xB7)) {
+            bool mul = (unsigned char)peek(1) == 0x97; advance(); advance();
+            t = make(Tok::Op, mul ? "*" : "/");
         } else if (std::isdigit((unsigned char)c) ||
             (!afterBareSigil && (unsigned char)c >= 0x80 &&
              (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {

@@ -1629,7 +1629,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value out = Value::array(); out.s = m; for (uint32_t c : norm) out.arr->push_back(Value::integer((long long)c));
             return out;
         }
-        if (m == "list" || m == "List" || m == "values" || m == "Seq") { Value out = Value::array(); out.isList = true; if (inv.arr) out.arr = inv.arr; return out; }
+        if (m == "list" || m == "List" || m == "values" || m == "Seq" || m == "cache") { Value out = Value::array(); out.isList = true; if (inv.arr) out.arr = inv.arr; return out; }
         if (m == "codes" || m == "elems") return Value::integer(inv.arr ? (long long)inv.arr->size() : 0);
         if (m == "Str" || m == "gist" || m == "Stringy") { std::string s; if (inv.arr) for (auto& x : *inv.arr) s += cpToUtf8((uint32_t)x.toInt()); return Value::str(s); }
     }
@@ -2168,7 +2168,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
     // yields a one-element list. Restricted to scalar types so list/array/range/seq values —
     // which carry their own list semantics upstream — are never re-wrapped.
-    if ((m == "list" || m == "List" || m == "flat" || m == "eager") &&
+    if ((m == "list" || m == "List" || m == "flat" || m == "eager" || m == "cache") &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
          inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair || inv.t == VT::Type ||
          inv.t == VT::Any || inv.t == VT::Nil)) {
