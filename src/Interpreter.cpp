@@ -4109,6 +4109,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // candidate of proto `element`; matching `<element>` tries them all (LTM).
     for (auto& r : gm.rules) {
         size_t c = r.first.find(":sym<");
+        if (c == std::string::npos) c = r.first.find(":sym\xC2\xAB"); // :sym«…»
         if (c == std::string::npos) c = r.first.find(":<");
         if (c != std::string::npos && c > 0) gm.protos[r.first.substr(0, c)].push_back(r.first);
     }

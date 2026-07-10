@@ -818,6 +818,11 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
                 char close = open == '<' ? '>' : ')';
                 int ad = 0;
                 do { char ch = peek(); if (ch == open) ad++; else if (ch == close) ad--; name += advance(); } while (!eof() && ad > 0);
+            } else if ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xAB) {
+                // guillemet «…» delimiter (e.g. `token a:sym«=>» { … }`): read to the matching »
+                name += advance(); name += advance(); // «
+                while (!eof() && !((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB)) name += advance();
+                if (!eof()) { name += advance(); name += advance(); } // »
             }
         }
     }

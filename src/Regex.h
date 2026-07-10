@@ -176,6 +176,7 @@ public:
         long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
         long capFrom = -1;                                 // `<(` capture-start position (overall match .from), -1 = none
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
+        const std::string* curSym = nullptr;               // proto candidate's sym value, so `<sym>` matches it
     };
     bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;
     // {min,max} byte width the pattern can match; max = -1 means unbounded/unknown.

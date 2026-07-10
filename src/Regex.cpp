@@ -1261,6 +1261,34 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
 bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string& name,
                                   const std::string& args, const std::string& capKey,
                                   Regex::MState& st, long pos, const FnRef& k) {
+    // `<sym>` inside a proto candidate (`token alt:sym<foo> { <sym> }`) matches that
+    // candidate's sym literal ("foo"), threaded in via st.curSym.
+    if (name == "sym" && args.empty()) {
+        if (st.curSym && !st.curSym->empty()) {
+            const std::string& sv = *st.curSym;
+            if (pos + (long)sv.size() <= (long)st.s.size() && st.s.compare(pos, sv.size(), sv) == 0) {
+                long np = pos + (long)sv.size();
+                if (capKey.empty()) return k(np);
+                ParseNode pn; pn.name = name; pn.from = pos; pn.to = np;
+                bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long,long>{-1,-1};
+                st.named[capKey] = {pos, np};
+                st.children[capKey].push_back(std::move(pn));
+                if (k(np)) return true;
+                st.children[capKey].pop_back();
+                if (st.children[capKey].empty()) st.children.erase(capKey);
+                if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
+                return false;
+            }
+        }
+        return false;
+    }
+    // If this call is a proto candidate `X:sym<VALUE>`, its body's `<sym>` matches VALUE;
+    // otherwise inherit the enclosing candidate's sym (if any).
+    std::string candSym; const std::string* symPtr = st.curSym;
+    { auto sp = name.find(":sym<");
+      if (sp != std::string::npos) { auto e = name.find('>', sp + 5); if (e != std::string::npos) { candSym = name.substr(sp + 5, e - (sp + 5)); symPtr = &candSym; } }
+      else { sp = name.find(":sym\xC2\xAB"); // :sym«…»
+             if (sp != std::string::npos) { auto e = name.find("\xC2\xBB", sp + 6); if (e != std::string::npos) { candSym = name.substr(sp + 6, e - (sp + 6)); symPtr = &candSym; } } } }
     // protoregex: `<element>` dispatches to its `element:<sym>` candidates, longest wins (LTM)
     if (meta.proto) {
         const auto& cands = *meta.proto;
@@ -1349,7 +1377,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                   : compiledFor(*static_cast<const Rule*>(meta.rule), name, args, bound);
         if (!re || !re->ok()) { memo_[mkey].matched = false; return false; }
         Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
-        sub.startPos = pos; sub.hooks = st.hooks;
+        sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr;
         scope_.push_back(std::move(bound));
         MemoEntry me;
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
@@ -1372,7 +1400,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
               : compiledFor(*static_cast<const Rule*>(meta.rule), name, args, bound);
     if (!re || !re->ok()) return false;
     Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
-    sub.startPos = pos; sub.hooks = st.hooks; // $/ in the callee starts here; propagate hooks
+    sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr; // propagate hooks + candidate sym
     scope_.push_back(std::move(bound));
     bool ok = re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
         // The callee has matched; the continuation `k` belongs to the CALLER, so its
