@@ -36,6 +36,7 @@ struct IntLit : Expr { long long v; std::string big; explicit IntLit(long long x
 struct NumLit : Expr {
     double v; bool imaginary = false;
     bool isRat = false; long long ratNum = 0, ratDen = 1; // decimal literal `3.14` is a Rat (num/den)
+    std::string bigNum, bigDen; // decimal strings when the exact Rat overflows long long
     explicit NumLit(double x): Expr(NK::NumLit), v(x){}
 };
 struct StrLit : Expr { std::string v; explicit StrLit(std::string s): Expr(NK::StrLit), v(std::move(s)){} };

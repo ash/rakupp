@@ -1986,9 +1986,29 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             continue;
         }
+        // destructure a value against p's sub-signature: positionals from the
+        // elements, named inner params (`:key($k)`) from the value's accessors
+        auto destructure = [&](const Param& sp, const Value& v) {
+            ValueList inner = (v.t == VT::Array && v.arr) ? *v.arr
+                            : (v.t == VT::Range) ? v.flatten() : ValueList{v};
+            for (auto& ip : *sp.subSig)
+                if (ip.named) {
+                    std::string key = ip.namedKey.empty()
+                        ? (ip.name.size() > 1 ? ip.name.substr(1) : ip.name) : ip.namedKey;
+                    try {
+                        Value got = methodCall(v, key, {});
+                        Value na = Value::pair(key, got); na.namedArg = true;
+                        inner.push_back(na);
+                    } catch (RakuError&) {} // absent accessor → param falls to its default
+                }
+            bindParams(*sp.subSig, inner, env);
+        };
         if (p.named) {
             auto it = named.find(bareName);
-            if (it != named.end()) env->define(p.name, it->second);
+            if (it != named.end()) {
+                if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
+                if (!p.name.empty() || !p.subSig) env->define(p.name, it->second);
+            }
             else if (p.defaultVal) env->define(p.name, evalDefault(p.defaultVal.get()));
             else if (p.required)
                 throw RakuError{Value::typeObj("X::Parameter::RequiredNamed"),
@@ -1999,10 +2019,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         if (pi < positional.size()) {
             Value v = positional[pi++];
             if (p.subSig) {
-                // destructuring `[$a,$b]` / `($a,$b)`: unpack v's elements into the inner sig
-                ValueList inner = (v.t == VT::Array && v.arr) ? *v.arr
-                                : (v.t == VT::Range) ? v.flatten() : ValueList{v};
-                bindParams(*p.subSig, inner, env);
+                destructure(p, v);
                 // a *named* destructuring param (`@a [$x, *@y]`) also binds the whole arg
                 if (!p.name.empty())
                     env->define(p.name, p.sigil == '@' ? coerceArray(v) : p.sigil == '%' ? coerceHash(v) : v);
@@ -2974,6 +2991,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         if (Value* f = tctx_.cur->find("&infix:<" + binop + ">"))
             try { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
             catch (RakuError&) {}
+    // An undefined target autovivifies with the operator's NEUTRAL element:
+    // `my $x; $x *= 2` is 1*2 == 2, `+=` starts from 0, `~=` from ''.
+    if (!overloaded && (lv->t == VT::Any || lv->t == VT::Nil || lv->t == VT::Type)) {
+        if (binop == "*" || binop == "**" || binop == "%%") *lv = Value::integer(1);
+        else if (binop == "~" || binop == "x") *lv = Value::str("");
+        else if (binop == "+" || binop == "-") *lv = Value::integer(0);
+    }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
     // string each step — O(n) string building instead of O(n²).
     if (!overloaded && binop == "~" && lv->t == VT::Str && rhs.t == VT::Str) {
@@ -3218,16 +3242,55 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (op == "**") return mk(std::pow(a, b));
         if (op == "==" || op == "===" || op == "eqv") return Value::boolean(a == b);
         if (op == "!=") return Value::boolean(a != b);
+        if (op == "=~=" || op == "≅") { // approx-equal in the complex plane
+            if (a == b) return Value::boolean(true);
+            double scale = std::max(std::abs(a), std::abs(b));
+            return Value::boolean(std::abs(a - b) <= 1e-15 * scale);
+        }
+        if (op == "cmp") { // by real part, then imaginary part; NaN sorts as More
+            auto ncmp = [](double x, double y) {
+                if (std::isnan(x)) return std::isnan(y) ? 0 : 1;
+                if (std::isnan(y)) return -1;
+                return x < y ? -1 : x > y ? 1 : 0;
+            };
+            int c = ncmp(a.real(), b.real()); if (!c) c = ncmp(a.imag(), b.imag());
+            return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c);
+        }
+        if (op == "<" || op == "<=" || op == ">" || op == ">=" || op == "<=>") {
+            // arithmetic comparison coerces to Real: ok when |im| is within
+            // $*TOLERANCE (relative), so exp(i*π) <=> -1 is Same — else it throws
+            double tol = Interpreter::toleranceDyn();
+            auto toReal = [&](const std::complex<double>& z, const Value& orig) -> double {
+                if (std::fabs(z.imag()) > tol * std::max(1.0, std::fabs(z.real())))
+                    throw RakuError{Value::typeObj("X::Numeric::Real"),
+                                    "Cannot convert " + orig.toStr() + " to Real: imaginary part not zero"};
+                return z.real();
+            };
+            return applyArith(op, Value::number(toReal(a, l)), Value::number(toReal(b, r)));
+        }
     }
 
     // ---- exact numeric tower: Int (bignum) and Rat ----
     auto isExact = [](const Value& v) { return v.t == VT::Int || v.t == VT::Bool || v.t == VT::Rat; };
+    // an undefined operand (Any/Nil/bare type object) numifies to 0 in arithmetic,
+    // keeping exactness: `my $a += 0.1` is a Rat, `my Int $x; $x += 5` works
+    if (op == "+" || op == "-" || op == "*" || op == "/" || op == "**") {
+        auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil || v.t == VT::Type; };
+        if (undef(l) && isExact(r)) return applyArith(op, Value::integer(0), r);
+        if (undef(r) && isExact(l)) return applyArith(op, l, Value::integer(0));
+    }
     if (isExact(l) && isExact(r)) {
         bool anyRat = (l.t == VT::Rat || r.t == VT::Rat);
         bool smallInt = !anyRat && !l.big && !r.big;
         // a FatRat operand keeps the result a FatRat (type identity is contagious)
         bool fat = (l.t == VT::Rat && l.fatRat) || (r.t == VT::Rat && r.fatRat);
-        auto mkRat = [&](BigInt n, BigInt d) { Value v = Value::rat(std::move(n), std::move(d)); v.fatRat = fat; return v; };
+        auto mkRat = [&](BigInt n, BigInt d) {
+            Value v = Value::rat(std::move(n), std::move(d)); v.fatRat = fat;
+            // Rat denominators are capped at uint64: arithmetic that would grow
+            // one past that spills to Num (FatRat is arbitrary-precision, never spills).
+            if (!fat && v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());
+            return v;
+        };
         auto getN = [](const Value& v) { return v.t == VT::Rat ? *v.ratN : v.toBig(); };
         auto getD = [](const Value& v) { return v.t == VT::Rat ? *v.ratD : BigInt(1); };
         if (op == "+" || op == "-" || op == "*") {
@@ -3248,7 +3311,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         if (op == "/") {
             BigInt n1 = getN(l), d1 = getD(l), n2 = getN(r), d2 = getD(r);
-            if (n2.isZero()) return Value::typeObj("Failure");
+            if (n2.isZero()) { // 1/0 is a zero-denominator Rat: Num → ±Inf, Str throws
+                Value v = Value::ratZ(n1 * d2, BigInt(0)); v.fatRat = fat; return v;
+            }
             return mkRat(n1 * d2, d1 * n2);
         }
         if (op == "**" && (r.t == VT::Int || r.t == VT::Bool)) {
@@ -3297,6 +3362,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" ||
             op == "<=>" || op == "cmp" || op == "leg") {
+            // zero-denominator Rats compare as their Num (±Inf / NaN; NaN == NaN is False)
+            auto zeroDen = [](const Value& v) { return v.t == VT::Rat && v.ratD && v.ratD->isZero(); };
+            if (zeroDen(l) || zeroDen(r))
+                return applyArith(op, Value::number(l.toNum()), Value::number(r.toNum()));
             int c;
             if (smallInt) { long long a = l.toInt(), b = r.toInt(); c = a < b ? -1 : a > b ? 1 : 0; }
             else c = BigInt::cmp(getN(l) * getD(r), getN(r) * getD(l));
@@ -3456,9 +3525,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (r.t == VT::Range) {
-            double v = l.toNum();
-            double lo = r.rFrom, hi = r.rTo;
-            res = v >= lo && (r.rExTo ? v < hi : v <= hi);
+            if (l.t == VT::Rat) { // exact endpoint compare: 4.99…(45 digits) ~~ 0..^5
+                res = applyArith(r.rExFrom ? ">" : ">=", l, Value::integer(r.rFrom)).truthy() &&
+                      applyArith(r.rExTo ? "<" : "<=", l, Value::integer(r.rTo)).truthy();
+            } else {
+                double v = l.toNum();
+                double lo = r.rFrom, hi = r.rTo;
+                res = v >= lo && (r.rExTo ? v < hi : v <= hi);
+            }
         } else if (r.t == VT::Type) {
             res = (l.typeName() == r.s) || r.s == "Any" || r.s == "Mu" ||
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
@@ -3498,8 +3572,23 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         } else if ((l.t == VT::Complex || r.t == VT::Complex) &&
                    (l.isNumeric() || l.t == VT::Complex) && (r.isNumeric() || r.t == VT::Complex)) {
             res = applyArith("==", l, r).truthy(); // numeric smartmatch incl. Complex (3 ~~ 3+0i)
+            if (!res) { // NaN ~~ NaN is True (ACCEPTS special-cases NaN, unlike ==)
+                auto isnanV = [](const Value& v) {
+                    return v.t == VT::Complex ? (std::isnan(v.n) || std::isnan(v.im))
+                                              : (v.t == VT::Num && std::isnan(v.n));
+                };
+                res = isnanV(l) && isnanV(r);
+            }
         } else if (r.t == VT::Object) {
             res = (l.t == VT::Object && l.obj.get() == r.obj.get()); // object identity
+        } else if ((r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) && l.t == VT::Range) {
+            // Range ~~ number: numeric smartmatch on the element count (+(2..4) == 3;
+            // 1..Inf counts Inf, so `1..Inf ~~ 1/0` is True)
+            double cnt;
+            if (l.rTo >= LLONG_MAX - 1 || l.rFrom <= LLONG_MIN + 1) cnt = INFINITY;
+            else { long long n = l.rTo - l.rFrom + 1 - (l.rExFrom ? 1 : 0) - (l.rExTo ? 1 : 0);
+                   cnt = n < 0 ? 0 : (double)n; }
+            res = applyArith("==", Value::number(cnt), r).truthy();
         } else if ((r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.t == VT::Str || l.t == VT::Bool)) {
             res = applyArith("==", l, r).truthy(); // `$x ~~ 5` : numeric coercion ('05' ~~ 5 is True)
@@ -4478,8 +4567,11 @@ Value Interpreter::evalBinary(Binary* b) {
         else seed = ValueList{l};
         Value gen; bool hasGen = false; // a trailing closure is the generator
         if (!seed.empty() && seed.back().t == VT::Code) { gen = seed.back(); seed.pop_back(); hasGen = true; }
-        bool infinite = (r.t == VT::Whatever) || (r.t == VT::Code) || (r.t == VT::Num && std::isinf(r.n));
-        double endVal = infinite ? 0 : r.toNum();
+        // a Code endpoint (`… * > 100`) terminates the sequence at the first
+        // element it accepts (included for `...`, dropped for `...^`)
+        bool endCode = (r.t == VT::Code);
+        bool infinite = (r.t == VT::Whatever) || (r.t == VT::Num && std::isinf(r.n));
+        double endVal = (infinite || endCode) ? 0 : r.toNum();
         Value out = Value::array(); out.isList = true;
         for (auto& s : seed) out.arr->push_back(s);
         if (out.arr->empty()) return out;
@@ -4517,8 +4609,14 @@ Value Interpreter::evalBinary(Binary* b) {
                 else if (geom) { geometric = true; ratio = r0; }
                 else step = seed.back().toNum() - seed[seed.size() - 2].toNum();
             } else if (seed.size() == 2) step = seed[1].toNum() - seed[0].toNum();
-            else if (!infinite && out.arr->back().toNum() > endVal) step = -1;
+            else if (!infinite && !endCode && out.arr->back().toNum() > endVal) step = -1;
         }
+        // Non-numeric seeds (Str / object with .succ) step via succ/pred when the
+        // endpoint is Whatever or Code: 'a' ... * ; H.new ... *.y > 10
+        bool succSeed = !hasGen && !seed.empty() && (infinite || endCode) &&
+                        (seed.back().t == VT::Str || seed.back().t == VT::Object);
+        bool succDesc = succSeed && seed.size() >= 2 &&
+                        seed[seed.size() - 2].toStr() > seed.back().toStr();
         bool ascending = hasGen ? true : (geometric ? ratio >= 1 : step >= 0);
         long long arity = 1;
         if (hasGen && gen.code) arity = gen.code->whateverArity > 0 ? gen.code->whateverArity
@@ -4528,7 +4626,8 @@ Value Interpreter::evalBinary(Binary* b) {
         if (infinite) {
             auto st = std::make_shared<LazySeqState>();
             Interpreter* self = this;
-            st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity](ValueList& cache) -> bool {
+            st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
+                              succSeed, succDesc](ValueList& cache) -> bool {
                 if (cache.empty()) return false;
                 double lastV = cache.back().toNum();
                 Value next;
@@ -4536,6 +4635,17 @@ Value Interpreter::evalBinary(Binary* b) {
                     ValueList args; size_t n = cache.size();
                     for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? cache[idx] : Value::integer(0)); }
                     next = self->callCallable(gen, args);
+                } else if (succSeed) { // 'a' ... * : step by succ/pred
+                    const Value& lastE = cache.back();
+                    if (lastE.t == VT::Str) {
+                        bool ok = true;
+                        std::string s = succDesc ? strPred(lastE.s, ok) : strSucc(lastE.s);
+                        if (!ok) return false;
+                        next = Value::str(s);
+                    } else {
+                        ValueList none;
+                        next = self->methodCall(lastE, succDesc ? "pred" : "succ", none);
+                    }
                 } else if (geometric) {
                     double nv = lastV * ratio;
                     next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
@@ -4549,15 +4659,37 @@ Value Interpreter::evalBinary(Binary* b) {
             out.ext = st;
             return out;
         }
+        // Code endpoint: the first accepted element ends the sequence — check the
+        // seeds themselves first (`1, 2, 4 ... * > 3` is (1 2 4))
+        auto endAccepts = [&](const Value& v) -> bool {
+            ValueList a{v}; return callCallable(r, a).truthy();
+        };
+        if (endCode)
+            for (size_t k = 0; k < out.arr->size(); k++)
+                if (endAccepts((*out.arr)[k])) {
+                    out.arr->resize(exclusive ? k : k + 1);
+                    return out;
+                }
         const size_t CAP = 1000000;
         while (out.arr->size() < CAP) {
             double lastV = out.arr->back().toNum();
-            if (!infinite && (ascending ? lastV >= endVal : lastV <= endVal)) break; // reached endpoint
+            if (!infinite && !endCode && (ascending ? lastV >= endVal : lastV <= endVal)) break; // reached endpoint
             Value next;
             if (hasGen) {
                 ValueList args; size_t n = out.arr->size();
                 for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? (*out.arr)[idx] : Value::integer(0)); }
                 next = callCallable(gen, args);
+            } else if (succSeed) { // H.new ... *.y > 10 : step by succ/pred
+                const Value& lastE = out.arr->back();
+                if (lastE.t == VT::Str) {
+                    bool ok = true;
+                    std::string s = succDesc ? strPred(lastE.s, ok) : strSucc(lastE.s);
+                    if (!ok) break;
+                    next = Value::str(s);
+                } else {
+                    ValueList none;
+                    next = methodCall(lastE, succDesc ? "pred" : "succ", none);
+                }
             } else if (geometric) {
                 double nv = lastV * ratio;
                 next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
@@ -4565,11 +4697,16 @@ Value Interpreter::evalBinary(Binary* b) {
                 double nv = lastV + step;
                 next = allInt ? Value::integer((long long)nv) : Value::number(nv);
             }
+            if (endCode) {
+                if (endAccepts(next)) { if (!exclusive) out.arr->push_back(next); break; }
+                out.arr->push_back(next);
+                continue;
+            }
             if (!infinite) { double nv = next.toNum(); if (ascending ? nv > endVal : nv < endVal) break; } // would overshoot
             out.arr->push_back(next);
             if (!infinite && next.toNum() == endVal) break; // hit endpoint exactly
         }
-        if (exclusive && !infinite && !out.arr->empty() && out.arr->back().toNum() == endVal) out.arr->pop_back();
+        if (exclusive && !infinite && !endCode && !out.arr->empty() && out.arr->back().toNum() == endVal) out.arr->pop_back();
         return out;
     }
     if (op == "~~" || op == "!~~") {
@@ -4940,6 +5077,8 @@ Value Interpreter::evalUnary(Unary* u) {
         };
         return code;
     }
+    // postfix:<i> — multiply by the imaginary unit: (3)i, (2i)i → -2
+    if (u->op == "i" && u->postfix) return postfixI(std::move(v));
     // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
     if ((u->op == "+" || u->op == "-") && v.t == VT::Object && v.obj && v.obj->cls) {
         for (const char* nm : {"Numeric", "Bridge", "Int"})
@@ -4994,9 +5133,17 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             else args.push_back(v);
         } else {
             Value v = eval(a.get());
-            // Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) is a NAMED
-            // argument; a Pair value from a variable/call/list is positional.
-            if (v.t == VT::Pair && a->kind == NK::Pair) v.namedArg = true;
+            // Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) whose key
+            // is a bare identifier is a NAMED argument; a Pair value from a variable/
+            // call/list — or with a non-identifier key (`3 => 4`) — is positional.
+            if (v.t == VT::Pair && a->kind == NK::Pair) {
+                const std::string& k = static_cast<PairExpr*>(a.get())->key;
+                bool ident = !k.empty() && (std::isalpha((unsigned char)k[0]) || k[0] == '_');
+                for (size_t ci = 1; ident && ci < k.size(); ci++)
+                    if (!std::isalnum((unsigned char)k[ci]) && k[ci] != '-' && k[ci] != '_' && k[ci] != '\'')
+                        ident = false;
+                if (ident) v.namedArg = true;
+            }
             args.push_back(std::move(v));
         }
     }
@@ -5111,6 +5258,13 @@ Value Interpreter::evalCall(Call* c) {
             return Value::typeObj(v->enumType); // out of range -> the type object
         }
     }
+    // operator-call form: infix:<+>(1,2) / postfix:<i>($x)
+    if (c->name.rfind("infix:<", 0) == 0 && c->name.back() == '>') {
+        std::string op = c->name.substr(7, c->name.size() - 8);
+        return args.size() >= 2 ? applyBinOp(op, args[0], args[1])
+             : args.size() == 1 ? args[0] : Value::any();
+    }
+    if (c->name == "postfix:<i>" && !args.empty()) return postfixI(args[0]);
     // coercion-type functions: Str(x), Int(x), Num(x), Bool(x), … and the no-arg
     // defaults Str()=='' / Int()==0 / Num()==0e0 / Bool()==False.
     {
@@ -5126,13 +5280,41 @@ Value Interpreter::evalCall(Call* c) {
             if (a0.t == VT::Object && a0.obj && a0.obj->cls) { // honour .Int/.Num/.Numeric
                 if (Value* m = a0.obj->cls->findMethod(c->name)) { ValueList none; a0 = invokeMethod(*m, a0, none); }
             }
+            if (a0.t == VT::Complex && (c->name == "Int" || c->name == "Num" ||
+                                        c->name == "Real" || c->name == "Rat"))
+                return methodCall(a0, c->name, {}); // $*TOLERANCE-aware imaginary-part check
             if (c->name == "Int") return Value::integer(a0.toInt());
             if (c->name == "Num" || c->name == "Real") return Value::number(a0.toNum());
-            return a0.isNumeric() ? a0 : Value::number(a0.toNum()); // Numeric/Rat
+            if (c->name == "Rat") return methodCall(a0, "Rat", {}); // CF approximation for Num
+            return a0.isNumeric() ? a0 : Value::number(a0.toNum()); // Numeric
         }
     }
     throw RakuError{Value::str("Undefined routine &" + c->name),
                     "Undefined routine '" + c->name + "'"};
+}
+
+double Interpreter::toleranceDyn() {
+    Value* tp = nullptr;
+    for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend() && !tp; ++it)
+        tp = (*it)->find("$*TOLERANCE");
+    if (!tp && tctx_.cur) tp = tctx_.cur->find("$*TOLERANCE"); // `my $*TOLERANCE` is lexical
+    return tp ? tp->toNum() : 1e-15;
+}
+
+// postfix:<i> — multiply by the imaginary unit; honours .Numeric/.Bridge on
+// objects and type objects (`postfix:<i>(class :: does Numeric {…})`).
+Value Interpreter::postfixI(Value v) {
+    if (v.t == VT::Complex) return Value::complex(-v.im, v.n);
+    if (!v.isNumeric()) {
+        ClassInfo* ci = nullptr;
+        if (v.t == VT::Object && v.obj) ci = v.obj->cls.get();
+        else if (v.t == VT::Type) { auto it = classes_.find(v.s); if (it != classes_.end()) ci = it->second.get(); }
+        if (ci)
+            for (const char* nm : {"Numeric", "Bridge"})
+                if (Value* m = ci->findMethod(nm)) { ValueList none; v = invokeMethod(*m, v, none); break; }
+        if (v.t == VT::Complex) return Value::complex(-v.im, v.n);
+    }
+    return Value::complex(0.0, v.toNum());
 }
 
 Value Interpreter::evalIndex(Index* idx) {
@@ -5373,7 +5555,10 @@ Value Interpreter::eval(Expr* e) {
         }
         case NK::NumLit: { auto* nl = static_cast<NumLit*>(e);
             if (nl->imaginary) return Value::complex(0, nl->v);
-            if (nl->isRat) return Value::rat(BigInt(nl->ratNum), BigInt(nl->ratDen)); // 3.14 is a Rat
+            if (nl->isRat) return nl->bigNum.empty()
+                ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))                 // 3.14 is a Rat
+                : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
+                // (ratZ: an explicit zero denominator — `<42/0>` — is preserved)
             return Value::number(nl->v); }
         case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
         case NK::RegexLit: {
@@ -5539,6 +5724,9 @@ Value Interpreter::eval(Expr* e) {
             }
             // sigilless: constant, then type / builtin resolution (NameTerm rules)
             if (Value* p = tctx_.cur->find(nm)) return *p;
+            // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
+            if (!classes_.count(nm) && !nm.empty() && std::islower((unsigned char)nm[0]))
+                throw RakuError{Value::typeObj("X::NoSuchSymbol"), "No such symbol '" + nm + "'"};
             NameTerm tmp(nm); tmp.line = e->line;
             return eval(&tmp);
         }

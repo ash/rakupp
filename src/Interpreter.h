@@ -332,6 +332,11 @@ private:
     // into a value, producing an object that also does R.
     Value mixinValue(Value base, const Value& rhs, bool copy);
     Value evalUnary(Unary* u);
+    Value postfixI(Value v); // postfix:<i> — multiply by the imaginary unit
+public:
+    // $*TOLERANCE (dynamic, then lexical), default 1e-15 — Complex→Real coercions
+    static double toleranceDyn();
+private:
     Value evalCall(Call* c);
     Value evalIndex(Index* idx);
     Value evalInterp(InterpStr* s);

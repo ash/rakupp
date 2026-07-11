@@ -692,9 +692,19 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 } while (matchKind(Tok::Comma) && startsTermToken(cur()));
             }
             base = std::move(mc);
-        } else if (isOp("++") || isOp("--")) {
+        } else if ((isOp("++") || isOp("--")) && !cur().spaceBefore) {
+            // postfix ++/-- binds tight only — `say ++$a` is prefix ++ on the argument
             auto u = std::make_unique<Unary>();
             u->op = advance().text; u->postfix = true; u->operand = std::move(base);
+            base = std::move(u);
+        } else if ((cur().kind == Tok::Ident && cur().text == "i" && !cur().spaceBefore) ||
+                   (isOp("\\") && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                    peek().text == "i" && !peek().spaceBefore)) {
+            // postfix:<i> — imaginary unit: (3)i, (2i)i, and the unspace form 3\i
+            if (isOp("\\")) advance();
+            advance(); // i
+            auto u = std::make_unique<Unary>();
+            u->op = "i"; u->postfix = true; u->operand = std::move(base);
             base = std::move(u);
         } else if (cur().kind == Tok::Op && userPostfix_.count(cur().text)) {
             // user-defined postfix operator:  5!  ==  postfix:<!>(5)
@@ -979,6 +989,85 @@ ExprPtr Parser::parseColonPair() {
     return pair;
 }
 
+// A single angle word that is a numeric literal is an allomorph in Raku
+// (<42> is IntStr, <1/3> RatStr, <1e5> NumStr); we produce the numeric part.
+// Returns nullptr when the word isn't (recognizably) numeric — stays a word.
+static ExprPtr angleWordNumeric(const std::string& w) {
+    // Complex allomorph <1+3i> / <3i> / <-2.5-1e3i> (the .raku form round-trips via EVAL)
+    if (!w.empty() && w.back() == 'i') {
+        const char* s = w.c_str();
+        char* end = nullptr;
+        double re = std::strtod(s, &end);
+        if (end != s && end < s + w.size() - 1 && (*end == '+' || *end == '-')) {
+            char* end2 = nullptr;
+            double im = std::strtod(end, &end2);
+            if (end2 == s + w.size() - 1) {
+                auto nl = std::make_unique<NumLit>(re);
+                auto ni = std::make_unique<NumLit>(im); ni->imaginary = true;
+                auto b = std::make_unique<Binary>(); b->op = "+";
+                b->lhs = std::move(nl); b->rhs = std::move(ni);
+                return b;
+            }
+        } else if (end == s + w.size() - 1 && end != s) { // pure imaginary <3i>
+            auto ni = std::make_unique<NumLit>(re); ni->imaginary = true;
+            return ni;
+        }
+    }
+    size_t i = 0; bool neg = false;
+    if (i < w.size() && (w[i] == '+' || w[i] == '-')) { neg = w[i] == '-'; i++; }
+    size_t d0 = i;
+    while (i < w.size() && std::isdigit((unsigned char)w[i])) i++;
+    std::string intPart = w.substr(d0, i - d0);
+    if (intPart.empty() && !(i < w.size() && w[i] == '.')) return nullptr; // allow <.5>
+    auto toLL = [](const std::string& ds, long long& out) -> bool {
+        if (ds.size() > 18) return false;
+        out = 0; for (char c : ds) out = out * 10 + (c - '0');
+        return true;
+    };
+    // build a Rat literal, falling back to big-decimal strings past long long
+    auto mkRat = [&](const std::string& numDigits, const std::string& denDigits, double approx) -> ExprPtr {
+        auto nl = std::make_unique<NumLit>(approx);
+        nl->isRat = true;
+        long long num, den;
+        if (toLL(numDigits, num) && toLL(denDigits, den)) { nl->ratNum = neg ? -num : num; nl->ratDen = den; }
+        else { nl->bigNum = (neg ? "-" : "") + numDigits; nl->bigDen = denDigits; }
+        return nl;
+    };
+    if (!intPart.empty() && i == w.size()) { // pure integer
+        long long v;
+        auto il = std::make_unique<IntLit>(0);
+        if (toLL(intPart, v)) il->v = neg ? -v : v;
+        else il->big = (neg ? "-" : "") + intPart;
+        return il;
+    }
+    if (!intPart.empty() && w[i] == '/') { // fraction  <1/3>
+        size_t j = ++i;
+        while (i < w.size() && std::isdigit((unsigned char)w[i])) i++;
+        if (i == j || i != w.size()) return nullptr;
+        std::string denPart = w.substr(j, i - j);
+        return mkRat(intPart, denPart,
+                     (neg ? -1.0 : 1.0) * std::strtod(intPart.c_str(), nullptr) /
+                     std::max(1.0, std::strtod(denPart.c_str(), nullptr)));
+    }
+    if (i < w.size() && w[i] == '.') { // decimal  <4.25> / <.5>
+        size_t j = ++i;
+        while (i < w.size() && std::isdigit((unsigned char)w[i])) i++;
+        if (i == j) return nullptr;
+        if (i == w.size()) {
+            std::string frac = w.substr(j, i - j);
+            return mkRat(intPart + frac, "1" + std::string(frac.size(), '0'),
+                         (neg ? -1.0 : 1.0) * std::strtod((intPart + "." + frac).c_str(), nullptr));
+        }
+    }
+    if (i < w.size() && (w[i] == 'e' || w[i] == 'E')) { // e-notation  <1e5> <4.5e-2>
+        errno = 0; char* end = nullptr;
+        double v = std::strtod(w.c_str(), &end);
+        if (end == w.c_str() + w.size() && errno != ERANGE)
+            return std::make_unique<NumLit>(v);
+    }
+    return nullptr;
+}
+
 ExprPtr Parser::parsePrimary() {
     // user circumfix operator: `⟦ … ⟧`  ==  circumfix:<⟦ ⟧>( … )
     if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && userCircumfix_.count(cur().text)) {
@@ -1027,7 +1116,11 @@ ExprPtr Parser::parsePrimary() {
         advance(); // ::
         std::string name = advance().text;
         while (isOp("::") && peek().kind == Tok::Ident) { advance(); name += "::" + advance().text; }
-        return std::make_unique<NameTerm>(name);
+        // via SymbolicRef so an unknown name is X::NoSuchSymbol (`::a`), while
+        // known types/classes resolve exactly as the bare NameTerm would
+        auto sr = std::make_unique<SymbolicRef>();
+        sr->nameExpr = std::make_unique<StrLit>(name);
+        return sr;
     }
     const Token& t = cur();
     switch (t.kind) {
@@ -1056,10 +1149,15 @@ ExprPtr Parser::parsePrimary() {
                 size_t dot = txt.find('.');
                 std::string digits = txt.substr(0, dot) + txt.substr(dot + 1);
                 long long fracLen = (long long)(txt.size() - dot - 1);
-                long long den = 1; for (long long k = 0; k < fracLen && den < 1000000000000000LL; k++) den *= 10;
                 e->isRat = true;
-                e->ratNum = std::strtoll(digits.c_str(), nullptr, 10);
-                e->ratDen = den;
+                if (digits.size() <= 18) {
+                    long long den = 1; for (long long k = 0; k < fracLen; k++) den *= 10;
+                    e->ratNum = std::strtoll(digits.c_str(), nullptr, 10);
+                    e->ratDen = den;
+                } else { // exact big Rat: 4.99…(45 digits) must not pick up f.p. noise
+                    e->bigNum = digits;
+                    e->bigDen = "1" + std::string((size_t)fracLen, '0');
+                }
             }
             return e;
         }
@@ -1086,6 +1184,8 @@ ExprPtr Parser::parsePrimary() {
                 while (i < n && !std::isspace((unsigned char)raw[i])) i++;
                 if (i > start) arr->items.push_back(std::make_unique<StrLit>(raw.substr(start, i - start)));
             }
+            if (arr->items.size() == 1) // <42> / <1/3> / <1e5>: numeric allomorph
+                if (ExprPtr num = angleWordNumeric(static_cast<StrLit*>(arr->items[0].get())->v)) return num;
             return arr;
         }
         case Tok::Var: {
@@ -1245,8 +1345,11 @@ ExprPtr Parser::parsePrimary() {
             if (t.text == "<") {
                 // qw word list  < a b c >
                 advance();
+                auto words = readAngleWords(">");
+                if (words.size() == 1)
+                    if (ExprPtr num = angleWordNumeric(words[0])) return num;
                 auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : readAngleWords(">")) arr->items.push_back(std::make_unique<StrLit>(w));
+                for (auto& w : words) arr->items.push_back(std::make_unique<StrLit>(w));
                 arr->isList = true;
                 return arr;
             }
@@ -1295,7 +1398,8 @@ ExprPtr Parser::parsePrimary() {
                 // sub/method/do/start blocks are valid expression operands too, as is
                 // an anonymous type literal (`return role {…}`)
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;
-                if ((isIdent("role") || isIdent("class") || isIdent("grammar")) && peek().kind == Tok::LBrace) retTerm = true;
+                if ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
+                    (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::"))) retTerm = true;
                 if ((name == "return" || name == "return-rw") && retTerm &&
                     !isKind(Tok::RParen) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace))
                     u->operand = parseExpr(BP_ASSIGN);
@@ -1311,9 +1415,11 @@ ExprPtr Parser::parsePrimary() {
                 if (isKind(Tok::LBrace)) { auto blk = parseBlock(); be->body = std::move(blk->stmts); }
                 return be;
             }
-            // anonymous type as an expression term: `$x does role {…}`, `my $r = role {…}`
+            // anonymous type as an expression term: `$x does role {…}`, `my $r = role {…}`,
+            // and the explicit form `class :: does R {…}`
             if ((name == "role" || name == "class" || name == "grammar") &&
-                peek().kind == Tok::LBrace) {
+                (peek().kind == Tok::LBrace ||
+                 (peek().kind == Tok::Op && peek().text == "::"))) {
                 advance(); // consume the keyword (parseClass expects it already consumed)
                 auto decl = parseClass(name == "role", name == "grammar");
                 auto be = std::make_unique<BlockExpr>();
@@ -1446,6 +1552,14 @@ ExprPtr Parser::parsePrimary() {
                 return parseDeclarator(name);
             }
             advance(); // consume the name
+            // operator-name call: infix:<+>(1,2) / postfix:<i>($x) — canonical op name
+            if ((name == "infix" || name == "prefix" || name == "postfix") &&
+                isOp(":") && !cur().spaceBefore &&
+                peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
+                advance(); advance(); // : <
+                auto w = readAngleWords(">");
+                name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
+            }
             // pseudo-package angle access: `MY::<$x>` / `CORE::<&not>` / `PROCESS::<$IN>`
             // (the lexer folds the trailing `::` into the identifier) — the symbol is
             // resolved through the ordinary scope chain.
@@ -1976,6 +2090,17 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (named && isKind(Tok::Ident) && peek().kind == Tok::LParen) {
             p.namedKey = advance().text;
             advance(); // (
+            if (isKind(Tok::LParen)) { // nested sub-signature:  :value((Str :key($d), …))
+                advance();
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in nested sub-signature");
+                p.name = ""; p.sigil = '$'; p.named = true;
+                if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
+                if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
+                params.push_back(std::move(p));
+                if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
+                continue;
+            }
             if (isKind(Tok::Ident)) p.type = advance().text; // optional inner type constraint
             matchOp(":"); // allow :name(:$var)
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
@@ -2011,7 +2136,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // optional type constraint: a bare Ident (possibly Foo::Bar, with :D/:U smiley, [..])
         if (isKind(Tok::Ident)) {
             p.type = advance().text; // type name (used for multi-dispatch)
-            if (isOp(":") && (peek().kind == Tok::Ident)) { // :D / :U / :_ smiley
+            if (isOp(":") && peek().kind == Tok::Ident &&
+                (peek().text == "D" || peek().text == "U" || peek().text == "_")) { // :D/:U/:_ smiley
                 advance();
                 std::string sm = advance().text;
                 if (sm == "D") p.defConstraint = 1;
@@ -2023,14 +2149,41 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 while (depth > 0 && !isKind(Tok::End));
             }
             // coercion type Str(Cool)  OR  destructuring sub-signature  Pair ( :key($k), … )
+            // Coercion is the tight single-ident form; anything else is a sub-signature.
             if (isKind(Tok::LParen)) {
-                int depth = 0;
-                do { if (isKind(Tok::LParen)) depth++; else if (isKind(Tok::RParen)) depth--; advance(); }
-                while (depth > 0 && !isKind(Tok::End));
+                bool coercion = !cur().spaceBefore &&
+                                peek().kind == Tok::Ident && peek(2).kind == Tok::RParen;
+                if (coercion) { advance(); advance(); advance(); } // skip (Type) — dispatch only
+                else {
+                    advance(); // (
+                    p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                    if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
+                }
             }
         }
+        // named alias following a type constraint:  Int:D :key($plan)  /
+        // Pair :value((Str:D :key($desc), :value(&tests)))  (nested sub-signature)
+        bool aliasBound = false;
+        if (!named && isOp(":") && peek().kind == Tok::Ident && peek(2).kind == Tok::LParen) {
+            advance(); // :
+            p.namedKey = advance().text;
+            advance(); // (
+            if (isKind(Tok::LParen)) { // nested sub-signature form
+                advance();
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in nested sub-signature");
+                p.name = ""; p.sigil = '$';
+            } else {
+                matchOp(":");
+                if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
+                else error("expected variable in named-parameter alias");
+            }
+            if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
+            p.named = true; named = true; aliasBound = true;
+        }
         if (!named && isOp(":") && peek().kind == Tok::Var) { advance(); named = true; } // Type :$named
-        if (matchOp("\\")) { // typed sigilless capture:  Iterator:D \iter
+        if (aliasBound) { // name (or nested sub-sig) already bound by the alias above
+        } else if (matchOp("\\")) { // typed sigilless capture:  Iterator:D \iter
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
             p.sigil = '\\';
             if (!p.name.empty()) sigilless_.insert(p.name);
@@ -2053,6 +2206,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             advance(); // '['
             p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RBracket));
             if (!matchKind(Tok::RBracket)) error("expected ']' in sub-signature");
+        }
+        // paren sub-signature after the variable:  Pair $p (Int :key($k), :value($v))
+        if (!p.subSig && isKind(Tok::LParen) && cur().spaceBefore) {
+            advance(); // '('
+            p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+            if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
         }
         // shaped-array parameter:  @a[3] / @a[3;3]  — skip the shape (parse-only)
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
@@ -2079,6 +2238,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
         }
         if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
+        // `is rw` cannot combine with a default value (X::Trait::Invalid):
+        // an rw param must bind a writable container, a default is a fresh value
+        if (p.isRw && p.defaultVal)
+            error("Cannot use trait 'is rw' on a parameter with a default value");
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
             if (isKind(Tok::Ident)) sigRetType_ = cur().text;
@@ -2810,7 +2973,8 @@ StmtPtr Parser::parseStatementImpl() {
                 r->value = parseExpression();
             } else if ((startsTermToken(cur()) && !kBlockKeywords.count(cur().text)) ||
                        isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") ||
-                       ((isIdent("role") || isIdent("class") || isIdent("grammar")) && peek().kind == Tok::LBrace)) {
+                       ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
+                        (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")))) {
                 r->value = parseExpression();
             }
             return applyModifiers(std::move(r));

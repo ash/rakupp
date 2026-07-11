@@ -425,7 +425,29 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             std::string n = v.ratN ? v.ratN->toString() : "0";
             std::string d = v.ratD ? v.ratD->toString() : "1";
             if (v.fatRat) return "FatRat.new(" + n + ", " + d + ")"; // FatRat.raku is explicit
-            return d == "1" ? n : "<" + n + "/" + d + ">";
+            // Terminating decimal (denominator 2^a·5^b) prints as a decimal literal
+            // with a fraction part kept, so EVAL round-trips to Rat: 0.25, -7.0, 0.1.
+            // Anything else (incl. zero-denominator) is the <n/d> form.
+            if (v.ratD && !v.ratD->isZero()) {
+                BigInt den = *v.ratD; int p2 = 0, p5 = 0; BigInt q, r;
+                while (true) { BigInt::divmod(den, BigInt(2), q, r); if (!r.isZero()) break; den = q; p2++; }
+                while (true) { BigInt::divmod(den, BigInt(5), q, r); if (!r.isZero()) break; den = q; p5++; }
+                if (den.fitsLL() && den.toLL() == 1) {
+                    int k = std::max(p2, p5);
+                    BigInt scaled = *v.ratN;
+                    for (int t = 0; t < k - p2; t++) scaled = scaled * BigInt(2);
+                    for (int t = 0; t < k - p5; t++) scaled = scaled * BigInt(5);
+                    std::string digits = scaled.toString();
+                    bool neg = !digits.empty() && digits[0] == '-';
+                    if (neg) digits.erase(0, 1);
+                    while ((int)digits.size() <= k) digits.insert(0, "0");
+                    std::string out = digits.substr(0, digits.size() - k) + "." +
+                                      (k ? digits.substr(digits.size() - k) : "0");
+                    if (!k) out = digits + ".0";
+                    return (neg ? "-" : "") + out;
+                }
+            }
+            return "<" + n + "/" + d + ">";
         }
         case VT::Complex: return "<" + v.gist() + ">";
         case VT::Range:
@@ -1827,6 +1849,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "new") return Value::complex(args.size() > 0 ? args[0].toNum() : 0.0,
                                               args.size() > 1 ? args[1].toNum() : 0.0);
     }
+    if (inv.t == VT::Type && m == "Range" &&
+        (inv.s == "Int" || inv.s == "Rat" || inv.s == "FatRat" || inv.s == "Num" || inv.s == "UInt")) {
+        // numeric type ranges: -Inf..Inf (UInt: 0..Inf); ranges are int-backed, so saturated
+        return Value::range(inv.s == "UInt" ? 0 : LLONG_MIN, LLONG_MAX, false, false);
+    }
+    if (inv.t == VT::Type && (inv.s == "Rat" || inv.s == "FatRat") && m == "new") {
+        BigInt n = args.size() > 0 ? args[0].toBig() : BigInt(0);
+        BigInt d = args.size() > 1 ? args[1].toBig() : BigInt(1);
+        Value v = Value::ratZ(std::move(n), std::move(d));
+        if (inv.s == "FatRat") v.fatRat = true;
+        return v;
+    }
     if (inv.t == VT::Type && (inv.s == "IO::String" || inv.s == "Text::IO::String")) {
         if (m == "new") {
             std::string data = args.empty() ? "" : args[0].toStr();
@@ -2317,7 +2351,35 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "put") return ioEmit(strOf(inv) + "\n", "$*OUT", false);
     if (m == "note") return ioEmit(gistOf(inv) + "\n", "$*ERR", true);
     if (m == "Str") return Value::str(inv.toStr());
+    if ((m == "Int" || m == "Num" || m == "Real" || m == "Rat" || m == "FatRat") && inv.t == VT::Complex) {
+        // Complex → Real conversions need |im| within $*TOLERANCE (default 1e-15),
+        // so Num(exp i*π) works but a tightened tolerance throws (X::Numeric::Real)
+        double tol = toleranceDyn();
+        if (std::fabs(inv.im) > tol * std::max(1.0, std::fabs(inv.n)))
+            throw RakuError{Value::typeObj("X::Numeric::Real"),
+                            "Cannot convert " + std::to_string(inv.n) + (inv.im < 0 ? "" : "+") +
+                            std::to_string(inv.im) + "i to " + m + ": imaginary part not zero"};
+        Value re = Value::number(inv.n);
+        if (m == "Int") return Value::integer((long long)inv.n);
+        if (m == "Rat" || m == "FatRat") return methodCall(re, m, {});
+        return re; // Num / Real
+    }
+    if (inv.t == VT::Complex && (m == "floor" || m == "ceiling" || m == "round" || m == "truncate")) {
+        auto f = [&](double x) {
+            return m == "floor" ? std::floor(x) : m == "ceiling" ? std::ceil(x)
+                 : m == "round" ? std::floor(x + 0.5) : std::trunc(x);
+        };
+        return Value::complex(f(inv.n), f(inv.im)); // per-component
+    }
     if (m == "Int") {
+        // ±Inf / NaN cannot convert to Int (X::Numeric::CannotConvert)
+        if (inv.t == VT::Num && !std::isfinite(inv.n))
+            throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                            "Cannot convert " + inv.toStr() + " to Int"};
+        // a zero-denominator Rat likewise dies on Int coercion
+        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero())
+            throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                            "Attempt to divide by zero when coercing Rational to Int"};
         // Converting a string that carries an Nl/No numeral (Roman, circled,
         // Tamil ௰, …) is not supported — only Nd digits are numeric. (X::Str::Numeric)
         if (inv.t == VT::Str)
@@ -2496,6 +2558,26 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "abs" || m == "magnitude") return Value::number(std::abs(z));
         if (m == "conj") return Value::complex(inv.n, -inv.im);
         if (m == "sqrt") { auto r = std::sqrt(z); return Value::complex(r.real(), r.imag()); }
+        if (m == "exp") { auto r = std::exp(z); return Value::complex(r.real(), r.imag()); }
+        if (m == "log") { // optional base argument: log(z) / log(base)
+            auto r = std::log(z);
+            if (!args.empty()) {
+                const Value& b = args[0];
+                r /= std::log(b.t == VT::Complex ? std::complex<double>(b.n, b.im)
+                                                 : std::complex<double>(b.toNum(), 0.0));
+            }
+            return Value::complex(r.real(), r.imag());
+        }
+        for (const char* tm : {"sin","cos","tan","asin","acos","atan",
+                               "sinh","cosh","tanh","asinh","acosh","atanh"})
+            if (m == tm) { // complex trigonometry
+                std::complex<double> r =
+                    m == "sin" ? std::sin(z) : m == "cos" ? std::cos(z) : m == "tan" ? std::tan(z)
+                  : m == "asin" ? std::asin(z) : m == "acos" ? std::acos(z) : m == "atan" ? std::atan(z)
+                  : m == "sinh" ? std::sinh(z) : m == "cosh" ? std::cosh(z) : m == "tanh" ? std::tanh(z)
+                  : m == "asinh" ? std::asinh(z) : m == "acosh" ? std::acosh(z) : std::atanh(z);
+                return Value::complex(r.real(), r.imag());
+            }
         if (m == "polar") return Value::array({Value::number(std::abs(z)), Value::number(std::arg(z))});
         if (m == "arg") return Value::number(std::arg(z));
         if (m == "Complex") return inv;
@@ -2516,8 +2598,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (numMeths.count(m)) {
             for (const char* acc : {"Bridge", "Numeric"}) {
                 try { ValueList none; Value nv = methodCall(inv, acc, none);
-                      if (nv.isNumeric()) { inv = nv; break; } } catch (...) {}
+                      if (nv.isNumeric() || nv.t == VT::Complex) { inv = nv; break; } } catch (...) {}
             }
+            if (inv.t == VT::Complex) return methodCall(inv, m, args); // re-enter the Complex path
         }
     }
     // numeric
@@ -2554,6 +2637,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // trigonometry as methods (radians): $x.sin, $x.asin, ... (Str is Cool -> numeric)
     if (inv.isNumeric() || inv.t == VT::Str) {
         double x = inv.toNum();
+        if (m == "cis") return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
+        if (m == "unpolar") { // $mag.unpolar($angle) — Complex from polar coordinates
+            double ang = args.empty() ? 0.0 : a0().toNum();
+            return Value::complex(x * std::cos(ang), x * std::sin(ang));
+        }
         if (m == "sin") return Value::number(std::sin(x));
         if (m == "cos") return Value::number(std::cos(x));
         if (m == "tan") return Value::number(std::tan(x));
@@ -2574,6 +2662,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "acosec" || m == "acsc") return Value::number(std::asin(1.0 / x));
         if (m == "acotan" || m == "acot") return Value::number(std::atan(1.0 / x));
     }
+    if (m == "floor" || m == "ceiling" || m == "round" || m == "truncate") {
+        // zero-denominator Rats cannot round (X::Numeric::DivideByZero)
+        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero())
+            throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                            "Attempt to divide by zero when coercing Rational to Int"};
+        // exact rounding for Rats/Ints (big-safe): floor = div, others derive from it
+        if (m != "round" && (inv.t == VT::Rat || inv.t == VT::Int || inv.t == VT::Bool)) {
+            BigInt n = inv.t == VT::Rat ? *inv.ratN : inv.toBig();
+            BigInt d = inv.t == VT::Rat ? *inv.ratD : BigInt(1);
+            BigInt q, r; BigInt::divmod(n, d, q, r);
+            if (m == "floor"   && !r.isZero() && n.sign < 0) q = q - BigInt(1);
+            if (m == "ceiling" && !r.isZero() && n.sign > 0) q = q + BigInt(1);
+            return Value::bigint(q); // truncate: q as-is
+        }
+    }
     if (m == "floor") return Value::integer((long long)std::floor(inv.toNum()));
     if (m == "ceiling") return Value::integer((long long)std::ceil(inv.toNum()));
     if (m == "round") {
@@ -2589,7 +2692,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::integer(n < 0 ? -1 : n > 0 ? 1 : 0);
     }
     if (m == "exp") return Value::number(std::exp(inv.toNum()));
-    if (m == "log") return Value::number(std::log(inv.toNum()));
+    if (m == "log") {
+        if (!args.empty() && args[0].t == VT::Complex) { // real.log(complex base)
+            std::complex<double> r = std::log(std::complex<double>(inv.toNum(), 0.0)) /
+                                     std::log(std::complex<double>(args[0].n, args[0].im));
+            return Value::complex(r.real(), r.imag());
+        }
+        if (!args.empty()) return Value::number(std::log(inv.toNum()) / std::log(args[0].toNum()));
+        return Value::number(std::log(inv.toNum()));
+    }
     if (m == "sin") return Value::number(std::sin(inv.toNum()));
     if (m == "cos") return Value::number(std::cos(inv.toNum()));
     if (m == "numerator") return inv.t == VT::Rat ? Value::bigint(*inv.ratN) : Value::integer(inv.toInt());
@@ -2598,12 +2709,38 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Rat) return Value::array({Value::bigint(*inv.ratN), Value::bigint(*inv.ratD)});
         return Value::array({Value::integer(inv.toInt()), Value::integer(1)});
     }
+    if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
     if (m == "Rat" || m == "FatRat") {
         bool fat = (m == "FatRat");
         Value r;
         if (inv.t == VT::Rat) r = inv;
         else if (inv.t == VT::Int || inv.t == VT::Bool) r = Value::rat(inv.toBig(), BigInt(1));
-        else return inv; // Num->Rat approximation not implemented
+        else {
+            // Num→Rat by continued fractions (Rakudo's default epsilon 1e-6):
+            // pi.Rat == 355/113; dyadic values come out exact (4.5e0 → 9/2).
+            double x = inv.toNum();
+            double eps = args.size() > 0 ? args[0].toNum() : 1e-6;
+            if (std::isnan(x)) r = Value::ratZ(BigInt(0), BigInt(0));
+            else if (std::isinf(x)) r = Value::ratZ(BigInt(x > 0 ? 1 : -1), BigInt(0));
+            else {
+                bool neg = x < 0; double ax = neg ? -x : x, v = ax;
+                long long p0 = 0, q0 = 1, p1 = 1, q1 = 0; // CF convergents h/k
+                for (int it = 0; it < 64; it++) {
+                    double fa = std::floor(v);
+                    if (fa > 9e17) break; // convergent would overflow
+                    long long a = (long long)fa;
+                    if (p1 && a > (LLONG_MAX - p0) / p1) break;
+                    if (q1 && a > (LLONG_MAX - q0) / q1) break;
+                    long long p2 = a * p1 + p0, q2 = a * q1 + q0;
+                    p0 = p1; q0 = q1; p1 = p2; q1 = q2;
+                    if (std::abs((double)p1 / (double)q1 - ax) <= eps) break;
+                    double frac = v - fa;
+                    if (frac <= 1e-18) break;
+                    v = 1.0 / frac;
+                }
+                r = Value::rat(BigInt(neg ? -p1 : p1), BigInt(q1 ? q1 : 1));
+            }
+        }
         r.fatRat = fat; // FatRat is the arbitrary-precision Rat, tagged for type identity
         return r;
     }
@@ -3713,6 +3850,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 
     // an undefined scalar still reports as a 1-item list for .elems (Any.elems == 1)
     if ((inv.t == VT::Any || inv.t == VT::Nil) && m == "elems") return Value::integer(1);
+    // method form of EVAL: '1+2'.EVAL — dispatch to the builtin sub
+    if (m == "EVAL" && inv.t == VT::Str) {
+        auto it = builtins_.find("EVAL");
+        if (it != builtins_.end()) {
+            ValueList a; a.push_back(inv);
+            for (auto& x : args) a.push_back(x);
+            return it->second(*this, a);
+        }
+    }
     // fallthrough: unknown method
     throw RakuError{Value::str("No method '" + m + "'"),
                     "No such method '" + m + "' for type " + inv.typeName()};
@@ -4061,13 +4207,17 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(c);
     };
     B["is-approx"] = [](Interpreter& I, ValueList& a) -> Value {
-        double got = a.size() > 0 ? a[0].toNum() : 0;
-        double exp = a.size() > 1 ? a[1].toNum() : 0;
+        // Complex-aware: compare as points in the plane, |got - exp|
+        auto re = [](const Value& v) { return v.t == VT::Complex ? v.n : v.toNum(); };
+        auto im = [](const Value& v) { return v.t == VT::Complex ? v.im : 0.0; };
+        double gr = a.size() > 0 ? re(a[0]) : 0, gi = a.size() > 0 ? im(a[0]) : 0;
+        double er = a.size() > 1 ? re(a[1]) : 0, ei = a.size() > 1 ? im(a[1]) : 0;
         double tol = 1e-5;
         std::string desc;
         if (a.size() > 2) { if (a[2].isNumeric()) tol = a[2].toNum(); else desc = a[2].toStr(); }
-        double scale = std::max({std::fabs(got), std::fabs(exp), 1.0});
-        bool c = std::fabs(got - exp) <= tol * scale;
+        double gm = std::hypot(gr, gi), em = std::hypot(er, ei);
+        double scale = std::max({gm, em, 1.0});
+        bool c = std::hypot(gr - er, gi - ei) <= tol * scale;
         I.emitTest(c, desc);
         return Value::boolean(c);
     };
@@ -4406,6 +4556,10 @@ void Interpreter::registerBuiltins() {
         srandSeed(seed);
         return Value::integer(seed);
     };
+    B["cis"] = [](Interpreter&, ValueList& a) -> Value {
+        double x = a.empty() ? 0.0 : a[0].toNum();
+        return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
+    };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) { auto r = std::sqrt(std::complex<double>(a[0].n, a[0].im)); return Value::complex(r.real(), r.imag()); }
         double x = numArg(I, a);
@@ -4415,7 +4569,8 @@ void Interpreter::registerBuiltins() {
     B["floor"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::floor(a.empty() ? 0 : a[0].toNum())); };
     B["ceiling"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::ceil(a.empty() ? 0 : a[0].toNum())); };
     B["round"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::llround(a.empty() ? 0 : a[0].toNum())); };
-    B["exp"] = [](Interpreter&, ValueList& a) -> Value {
+    B["exp"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (!a.empty() && a[0].t == VT::Complex) { ValueList none; return I.methodCall(a[0], "exp", none); }
         if (a.size() >= 2) return Value::number(std::pow(a[1].toNum(), a[0].toNum())); // exp($x,$base)
         return Value::number(std::exp(a.empty() ? 0 : a[0].toNum())); };
     // Trigonometry (radians). Also available as methods below.
@@ -4427,7 +4582,16 @@ void Interpreter::registerBuiltins() {
             {"sinh", std::sinh}, {"cosh", std::cosh}, {"tanh", std::tanh},
             {"asinh", std::asinh}, {"acosh", std::acosh}, {"atanh", std::atanh},
         };
-        for (auto& tf : tfs) { auto f = tf.fn; B[tf.name] = [f](Interpreter& I, ValueList& a) -> Value { return Value::number(f(numArg(I, a))); }; }
+        for (auto& tf : tfs) {
+            auto f = tf.fn; std::string name = tf.name;
+            B[tf.name] = [f, name](Interpreter& I, ValueList& a) -> Value {
+                // Complex — or an object whose .Numeric/.Bridge may yield one — via the method path
+                if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) {
+                    ValueList none; return I.methodCall(a[0], name, none);
+                }
+                return Value::number(f(numArg(I, a)));
+            };
+        }
         B["sec"]    = [](Interpreter&, ValueList& a){ return Value::number(1.0 / std::cos(a.empty()?0:a[0].toNum())); };
         B["cosec"]  = [](Interpreter&, ValueList& a){ return Value::number(1.0 / std::sin(a.empty()?0:a[0].toNum())); };
         B["cotan"]  = [](Interpreter&, ValueList& a){ return Value::number(1.0 / std::tan(a.empty()?0:a[0].toNum())); };
@@ -4436,7 +4600,8 @@ void Interpreter::registerBuiltins() {
         B["acotan"] = [](Interpreter&, ValueList& a){ return Value::number(std::atan(1.0 / (a.empty()?1:a[0].toNum()))); };
         B["atan2"]  = [](Interpreter&, ValueList& a){ double y=a.empty()?0:a[0].toNum(), x=a.size()>1?a[1].toNum():1.0; return Value::number(std::atan2(y,x)); };
     }
-    B["log"] = [](Interpreter&, ValueList& a) -> Value {
+    B["log"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (!a.empty() && a[0].t == VT::Complex) { ValueList rest(a.begin() + 1, a.end()); return I.methodCall(a[0], "log", rest); }
         double x = a.empty() ? 0 : a[0].toNum();
         if (a.size() >= 2) return Value::number(std::log(x) / std::log(a[1].toNum())); // log($x, $base)
         return Value::number(std::log(x)); };

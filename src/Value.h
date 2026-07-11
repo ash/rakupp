@@ -100,6 +100,17 @@ struct Value {
         v.ratD = std::make_shared<BigInt>(d);
         return v;
     }
+    // Rat.new semantics: like rat() but a zero denominator is preserved
+    // (normalized to ±1/0; 0/0 stays 0/0). Str/Num of such a Rat throws.
+    static Value ratZ(BigInt n, BigInt d) {
+        if (!d.isZero()) return rat(std::move(n), std::move(d));
+        Value v; v.t = VT::Rat;
+        if (n.sign > 0) n = BigInt(1);
+        else if (n.sign < 0) n = BigInt(-1);
+        v.ratN = std::make_shared<BigInt>(n);
+        v.ratD = std::make_shared<BigInt>(BigInt(0));
+        return v;
+    }
     BigInt toBig() const {
         if (t == VT::Int) return big ? *big : BigInt(i);
         if (t == VT::Bool) return BigInt(b ? 1 : 0);

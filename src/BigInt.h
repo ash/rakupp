@@ -36,6 +36,16 @@ struct BigInt {
     static BigInt gcd(BigInt a, BigInt b);
 
     bool fitsLL() const;
+    // magnitude fits in a uint64 (Raku caps Rat denominators at uint64;
+    // arithmetic producing a larger one spills to Num)
+    bool fitsU64() const {
+        if (mag.size() > 3) return false;
+        if (mag.size() < 3) return true;
+        // limbs are base 1e9: value = m2·1e18 + m1·1e9 + m0 vs 18446744073709551615
+        if (mag[2] != 18u) return mag[2] < 18u;
+        if (mag[1] != 446744073u) return mag[1] < 446744073u;
+        return mag[0] <= 709551615u;
+    }
     long long toLL() const;
     double toDouble() const;
     std::string toString() const;

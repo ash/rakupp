@@ -1,8 +1,10 @@
 #include "Value.h"
+#include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <sstream>
 
 namespace rakupp {
@@ -90,7 +92,12 @@ double Value::toNum() const {
         case VT::Bool: return b ? 1.0 : 0.0;
         case VT::Int:  return big ? big->toDouble() : (double)i;
         case VT::Num:  return n;
-        case VT::Rat:  return (ratN && ratD && !ratD->isZero()) ? ratN->toDouble() / ratD->toDouble() : 0.0;
+        case VT::Rat:
+            if (ratN && ratD && ratD->isZero()) // zero-denominator Rat numifies to ±Inf / NaN
+                return ratN->isZero() ? std::numeric_limits<double>::quiet_NaN()
+                     : ratN->sign > 0 ? std::numeric_limits<double>::infinity()
+                                      : -std::numeric_limits<double>::infinity();
+            return (ratN && ratD) ? ratN->toDouble() / ratD->toDouble() : 0.0;
         case VT::Str:  { try { return std::stod(s); } catch (...) { return 0.0; } }
         case VT::Match: { try { return std::stod(s); } catch (...) { return 0.0; } }
         default: return (double)toInt();
@@ -151,7 +158,11 @@ std::string Value::toStr() const {
             std::string i2 = numToStr(im);
             return r + (im < 0 || i2[0] == '-' ? "" : "+") + i2 + "i";
         }
-        case VT::Rat:  return (ratN && ratD) ? ratToStr(*ratN, *ratD) : "0";
+        case VT::Rat:
+            if (ratN && ratD && ratD->isZero()) // Rakudo dies on Str-coercing a zero-denominator Rat
+                throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                                "Attempt to divide by zero when coercing Rational to Str"};
+            return (ratN && ratD) ? ratToStr(*ratN, *ratD) : "0";
         case VT::Str:  return s;
         case VT::Type: return "(" + s + ")";
         case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");

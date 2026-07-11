@@ -174,7 +174,12 @@ struct Codegen {
             case NK::NumLit: {
                 auto* n = static_cast<NumLit*>(e);
                 if (n->imaginary) unsupported("imaginary literal");
-                if (n->isRat) { std::ostringstream s; s << "Value::rat(BigInt(" << n->ratNum << "LL), BigInt(" << n->ratDen << "LL))"; return s.str(); }
+                if (n->isRat) {
+                    std::ostringstream s;
+                    if (n->bigNum.empty()) s << "Value::rat(BigInt(" << n->ratNum << "LL), BigInt(" << n->ratDen << "LL))";
+                    else s << "Value::rat(BigInt::fromString(\"" << n->bigNum << "\"), BigInt::fromString(\"" << n->bigDen << "\"))";
+                    return s.str();
+                }
                 std::ostringstream s; s.precision(17); s << "Value::number(" << n->v << ")";
                 return s.str();
             }
