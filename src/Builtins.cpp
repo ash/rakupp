@@ -3533,11 +3533,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "hash" && inv.t == VT::Hash) return inv;   // %h.hash is the hash itself
-        if ((m == "hash" || m == "Hash") && inv.t == VT::Array) { // a list of Pairs -> a Hash
+        if ((m == "hash" || m == "Hash") && inv.t == VT::Array) { // list -> Hash
+            // Pairs map directly; non-Pair elements pair up CONSECUTIVELY as
+            // key, value — `(0,"a",1,"b").hash` is {0 => "a", 1 => "b"}, so
+            // `@a.kv.reverse.hash` inverts an index map (value => index).
             Value h = Value::makeHash();
-            for (auto& it : items) {
-                if (it.t == VT::Pair) (*h.hash)[it.s] = it.pairVal ? *it.pairVal : Value::any();
-                else (*h.hash)[it.toStr()] = Value::any();
+            for (size_t k = 0; k < items.size(); k++) {
+                if (items[k].t == VT::Pair)
+                    (*h.hash)[items[k].s] = items[k].pairVal ? *items[k].pairVal : Value::any();
+                else if (k + 1 < items.size()) {
+                    std::string key = items[k].toStr(); // sequenced explicitly: in `m[f(k)] = g(++k)`
+                    (*h.hash)[key] = items[++k];        // the RHS would evaluate before the key!
+                }
+                else // odd trailing key (Rakudo dies; we stay lenient)
+                    (*h.hash)[items[k].toStr()] = Value::any();
             }
             return h;
         }

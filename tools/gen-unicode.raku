@@ -21,8 +21,7 @@ my @gcat;       # category runs: [start, end, cat-index]
 # fixed category order — must match CATNAMES in the C++ lookup code
 my @CATS = <Cn Lu Ll Lt Lm Lo Mn Mc Me Nd Nl No Pc Pd Ps Pe Pi Pf Po
             Sm Sc Sk So Zs Zl Zp Cc Cf Cs Co>;
-my %CATIDX;
-%CATIDX{@CATS[$_]} = $_ for ^@CATS;
+my %CATIDX = @CATS.kv.reverse.hash; # value => index (the idiom that exposed a rakupp .hash bug)
 
 my $run-start = -1;
 my $run-end   = -1;
