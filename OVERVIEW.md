@@ -30,7 +30,7 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler |
 | **Startup** | ~3 ms cold (vs Rakudo's ~100 ms) |
-| **Correctness target** | the Roast suite — ~73% of all individual tests pass; ~20% of files fully pass |
+| **Correctness target** | the Roast suite — ~74% of all individual tests pass; ~25% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
 ## Goals & philosophy
@@ -113,7 +113,7 @@ They make different trade-offs:
 |---|---|---|
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
-| Coverage | a growing subset (~20% of Roast) | complete |
+| Coverage | a growing subset (~25% of Roast) | complete |
 | Startup | ~3 ms cold | ~100 ms |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |
@@ -128,14 +128,14 @@ implementation steadily growing toward the same language.
 
 The same progress measured at three granularities:
 
-- **All declared tests: ~73%** (137,199 / ~187,714) — the headline per-test figure.
+- **All declared tests: ~74%** (139,688 / ~188,835) — the headline per-test figure.
   It counts every test the suite declares, including those in files that abort
   before running (their `plan N` is read from source, all failing), so parse-error
   files can't hide.
-- **Files fully passing: ~22%** (350 / 1,464) — the stricter bar; a file counts
+- **Files fully passing: ~25%** (378 / 1,464) — the stricter bar; a file counts
   only if *every* assertion in it passes.
-- **Tests that ran: ~69%** (137,199 / 146,982) — of just the assertions files
-  actually emitted; useful for tracking regressions, but it ignores the ~31k tests
+- **Tests that ran: ~93%** (139,688 / 149,126) — of just the assertions files
+  actually emitted; useful for tracking regressions, but it ignores the ~28k tests
   in aborting files, so it flatters.
 
 All three are explained in [ROAST.md](ROAST.md), which also has the per-synopsis

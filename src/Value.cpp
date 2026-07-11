@@ -7,6 +7,17 @@
 
 namespace rakupp {
 
+// Recursion depth backstop for gist()/toStr() over nested containers. A
+// self-referential array/hash (`@a[0] = @a`) would otherwise recurse until it
+// exhausts memory; bail with an ellipsis once absurdly deep. (`.raku` has its own
+// pointer-based cycle detection in Builtins.cpp; this is the render-side backstop.)
+static thread_local int g_reprDepth = 0;
+struct ReprDepthGuard {
+    ReprDepthGuard() { ++g_reprDepth; }
+    ~ReprDepthGuard() { --g_reprDepth; }
+    bool tooDeep() const { return g_reprDepth > 512; }
+};
+
 static std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
     char buf[40];
@@ -51,7 +62,14 @@ long long Value::toInt() const {
     switch (t) {
         case VT::Bool: return b ? 1 : 0;
         case VT::Int:  return big ? big->toLL() : i;
-        case VT::Num:  return (long long)n;
+        case VT::Num:
+            // Casting ±Inf/NaN to integer is UB (x86 gives LLONG_MIN for +Inf!) —
+            // saturate instead, so `0..Inf` becomes 0..LLONG_MAX and is recognised
+            // as an infinite range by the lazy-range handling.
+            if (std::isnan(n)) return 0;
+            if (n >= 9223372036854775807.0) return 9223372036854775807LL;
+            if (n <= -9223372036854775808.0) return -9223372036854775807LL - 1;
+            return (long long)n;
         case VT::Rat:  { if (!ratN || !ratD || ratD->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN, *ratD, q, r); return q.toLL(); }
         case VT::Str:  { try { return std::stoll(s); } catch (...) { return 0; } }
         case VT::Match: { try { return std::stoll(s); } catch (...) { return 0; } } // matched text as a number
@@ -143,6 +161,7 @@ std::string Value::toStr() const {
             return os.str();
         }
         case VT::Array: {
+            ReprDepthGuard g; if (g.tooDeep()) return "...";
             std::string out;
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
                 if (k) out += " ";
@@ -153,6 +172,7 @@ std::string Value::toStr() const {
         case VT::Hash: {
             if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
             if ((hashKind == "Date" || hashKind == "DateTime") && hash) return dateGist(*hash, hashKind == "Date");
+            ReprDepthGuard g; if (g.tooDeep()) return "...";
             std::string out;
             if (hash) { bool first = true;
                 for (auto& kv : *hash) {
@@ -180,6 +200,7 @@ std::string Value::gist() const {
         case VT::Any:  return "(Any)";
         case VT::Type: return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
         case VT::Array: {
+            ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
             std::string out = isList ? "(" : "[";
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
                 if (k) out += " ";

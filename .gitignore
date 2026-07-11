@@ -28,6 +28,11 @@
 /parse_and_parsefile_test
 /handle-between-threads-*
 
+# RosettaCode compare harness: fetched programs (rc-cache/, keyed by task name) and
+# per-run scratch (rc-work/). Cached on disk to avoid re-fetching, never tracked.
+/rc-cache/
+/rc-work/
+
 # Homebrew packaging lives in the separate ash/homebrew-rakupp tap; kept here on
 # disk for convenience but not tracked in this repo.
 /packaging/

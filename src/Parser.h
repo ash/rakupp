@@ -32,6 +32,7 @@ private:
     std::map<std::string, int> userInfix_;   // user infix name → left binding power (from is tighter/looser/equiv)
     std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
+    std::set<std::string> sigilless_; // names declared sigilless (my \x, \a params, -> \d) — parse as terms, not listops
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
     std::string pcfxClose_; // active postcircumfix close bracket (don't re-open it inside its own content)
     std::string sigRetType_; // return type from an in-signature `--> T` (read by parseSub)
@@ -78,7 +79,7 @@ private:
     ExprPtr parseDeclarator(const std::string& scope);
     void skipTraits();
     ExprPtr parseColonPair();                     // :name / :!name / :name(x) / :$var
-    std::vector<ExprPtr> parseCallArgs();         // after '('
+    std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
     ExprPtr parseEmbeddedExpr(const std::string& src); // parse a `{…}`/`$()` interpolation, inheriting user operators
     std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)

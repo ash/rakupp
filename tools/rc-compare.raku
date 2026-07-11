@@ -12,6 +12,13 @@ my $RAKUPP = @*ARGS[2] // './build/rakupp';
 my $DIR    = 'rc-work';
 mkdir "$DIR/prog";
 
+# Persisted, git-ignored cache of fetched RosettaCode programs, keyed by task NAME
+# (stable across different N/skip, unlike the old prog/<index>.raku). A task fetched
+# once is reused forever — no re-fetch. See docs/ROSETTACODE.md.
+my $CACHE = 'rc-cache';
+mkdir $CACHE;
+sub cache-file($task) { "$CACHE/" ~ $task.subst(/<-[\w.\-]>+/, '_', :g) ~ '.raku' }
+
 # A tiny timeout wrapper (macOS has no `timeout`): run CMD with stdin closed,
 # stdout/stderr to files, killed after SECS. Exit 137 == killed.
 my $TO = "$DIR/timeout.sh";
@@ -60,7 +67,7 @@ my %tally;
 my $log = "$DIR/results.tsv".IO.open(:w);
 $log.say("task\tcategory\trakudo_exit\trakupp_exit");
 for @tasks.kv -> $i, $task {
-    my $f = "$DIR/prog/{$SKIP + $i}.raku";
+    my $f = cache-file($task);
     my $code = $f.IO.e ?? $f.IO.slurp
              !! extract(try qqx{curl -s -m 25 -G 'https://rosettacode.org/w/index.php' --data-urlencode 'title=$task' --data 'action=raw'} // '');
     unless $code { %tally<no-code>++; $log.say("$task\tno-code\t\t"); $log.flush; next }

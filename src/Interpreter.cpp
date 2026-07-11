@@ -324,7 +324,7 @@ static std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& 
 Value listToArray(const ValueList& items) {
     Value v = Value::array();
     for (auto& it : items) {
-        if (it.t == VT::Range) {
+        if (it.t == VT::Range && it.rTo < 9000000000000000000LL) { // an infinite range stays one lazy item
             ValueList sub = it.flatten();
             v.arr->insert(v.arr->end(), sub.begin(), sub.end());
         } else if (it.t == VT::Array && it.isList && it.arr) { // a List flattens in list context
@@ -742,7 +742,7 @@ int Interpreter::run(Program& prog) {
     // Partition top-level phasers (BEGIN/CHECK/INIT run before mainline; END after).
     // LEAVE/KEEP/UNDO of the compilation unit run when the mainline exits, so they
     // are deferred here too rather than executed at their textual position.
-    std::vector<Block*> beginP, checkP, initP, endP, leaveP;
+    std::vector<Block*> beginP, checkP, initP, endP, leaveP, enterP;
     std::vector<Stmt*> mainline;
     Block* topCatch = nullptr; // a CATCH in the mainline (the UNIT block) guards it
     for (auto& s : prog.stmts) {
@@ -753,6 +753,7 @@ int Interpreter::run(Program& prog) {
             if (b->phaser == "CHECK") { checkP.push_back(b); continue; }
             if (b->phaser == "INIT")  { initP.push_back(b);  continue; }
             if (b->phaser == "END")   { endP.push_back(b);   continue; }
+            if (b->phaser == "ENTER") { enterP.push_back(b); continue; } // file scope: before the mainline body
             if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
                                       { leaveP.push_back(b); continue; }
         }
@@ -791,7 +792,23 @@ int Interpreter::run(Program& prog) {
         hoistSubs(prog.stmts);
         // Pre-declare top-level lexicals so compile-time phasers (BEGIN/CHECK) can see them.
         bool hasInit;
-        for (auto* s : mainline) { std::string nm = topDecl(s, hasInit);
+        auto predeclare = [this](Expr* e) { // a declare-VarExpr, or a list declaration `my ($a, $b)`
+            auto one = [this](Expr* x) {
+                if (x && x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
+                    auto* ve = static_cast<VarExpr*>(x);
+                    if (!ve->name.empty() && !global_->vars.count(ve->name))
+                        global_->define(ve->name, typedDefault(ve->declType, ve->name[0]));
+                }
+            };
+            if (!e) return;
+            if (e->kind == NK::ListExpr) { for (auto& it : static_cast<ListExpr*>(e)->items) one(it.get()); }
+            else one(e);
+        };
+        for (auto* s : mainline) {
+            std::string nm = topDecl(s, hasInit);
+            if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                if (e && e->kind == NK::Assign) predeclare(static_cast<Assign*>(e)->target.get());
+                else predeclare(e); }
             if (nm.empty() || global_->vars.count(nm)) continue;
             std::string dtype; // honor the declared type so `my num $n` pre-declares 0, not Any
             if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
@@ -801,6 +818,7 @@ int Interpreter::run(Program& prog) {
         for (auto* b : beginP) runPhaser(b);                                      // BEGIN: source order
         for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
         for (auto* b : initP) runPhaser(b);                                       // INIT: source order
+        for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
         for (auto* s : mainline) {
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
                 !static_cast<SubDecl*>(s)->isMethod) continue; // hoisted
@@ -2638,14 +2656,17 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
 void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env,
                             const std::vector<ExprPtr>* rwArgs, bool /*methodCtx*/) {
     if (!params || !rwArgs) return;
+    // `is rw` params write back explicitly; a sigilless capture param (`\a`) binds
+    // the caller's container, so an assignment through it must write back too
+    // (copying back an unchanged value is a harmless no-op).
     bool any = false;
-    for (auto& p : *params) if (p.isRw) any = true;
+    for (auto& p : *params) if (p.isRw || p.sigil == '\\') any = true;
     if (!any) return;
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
         if (p.slurpy) break;
-        if (p.isRw && pi < rwArgs->size()) {
+        if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size()) {
             auto it = env->vars.find(p.name);
             if (it != env->vars.end()) {
                 try { if (Value* lv = lvalue((*rwArgs)[pi].get())) *lv = it->second; } catch (...) {}
@@ -3066,7 +3087,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
     // value — but identity/smartmatch/type ops must still see the object itself.
-    if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "=:=" &&
+    if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "!===" && op != "=:=" &&
         ((l.t == VT::Object && l.obj && l.obj->hasBoxed) || (r.t == VT::Object && r.obj && r.obj->hasBoxed))) {
         Value lu = (l.t == VT::Object && l.obj && l.obj->hasBoxed) ? l.obj->boxed : l;
         Value ru = (r.t == VT::Object && r.obj && r.obj->hasBoxed) ? r.obj->boxed : r;
@@ -3391,7 +3412,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
     if (op == "after") return Value::boolean(valueCmp(l, r) > 0);
     if (op == "eqv") return Value::boolean(valueEqv(l, r));
-    if (op == "===" || op == "!==") {
+    if (op == "===" || op == "!==" || op == "!===") {
         bool same;
         if (l.t != r.t) same = false;
         else if (l.t == VT::Object) same = (l.obj == r.obj);
@@ -3401,7 +3422,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         else if (l.t == VT::Hash) same = l.hashKind.empty() ? (l.hash == r.hash) // plain Hash: reference
                                                             : (l.toStr() == r.toStr()); // Set/Bag/Mix: value
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
-        return Value::boolean(op == "===" ? same : !same);
+        return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
     if (op == "%%") { long long b = r.toInt(); return Value::boolean(b != 0 && l.toInt() % b == 0); }
     if (op == "=:=") return Value::boolean(l.t == r.t && valueEq(l, r));
@@ -3419,6 +3440,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         } else if (r.t == VT::Type) {
             res = (l.typeName() == r.s) || r.s == "Any" || r.s == "Mu" ||
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
+                  (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {
@@ -4589,6 +4611,17 @@ Value Interpreter::evalBinary(Binary* b) {
             if (op == "~~") return m.truthy() ? m : Value::nil();
             return Value::boolean(!m.truthy());
         }
+        // Regex ~~ Hash / Regex ~~ Array : does the regex match any KEY / element
+        if (b->lhs->kind == NK::RegexLit && (r.t == VT::Hash || r.t == VT::Array)) {
+            const std::string& pat = static_cast<RegexLit*>(b->lhs.get())->pattern;
+            bool res = false;
+            if (r.t == VT::Hash && r.hash) {
+                for (auto& kv : *r.hash) if (regexMatch(kv.first, pat).truthy()) { res = true; break; }
+            } else if (r.arr) {
+                for (auto& e : *r.arr) if (regexMatch(e.toStr(), pat).truthy()) { res = true; break; }
+            }
+            return Value::boolean(op == "~~" ? res : !res);
+        }
         if (r.t == VT::Code) {
             // `$x ~~ *.method` / `$x ~~ { … }` / `$x ~~ &c` — call it with $x, match on truthiness
             Value m = callCallable(r, ValueList{lTopic});
@@ -4737,10 +4770,20 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "last") throw LastEx{};
     if (u->op == "next") throw NextEx{};
     if (u->op == "redo") throw RedoEx{};
-    // reduction metaoperator [op]
+    // reduction metaoperator [op] — and its triangular/scan form [\op]
     if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') {
         std::string op = u->op.substr(1, u->op.size() - 2);
+        bool scan = !op.empty() && op.front() == '\\'; // [\+] : running partial reductions
+        if (scan) op = op.substr(1);
         ValueList items = eval(u->operand.get()).flatten();
+        if (scan) { // yield (a, a op b, a op b op c, …)
+            Value out = Value::array(); out.isList = true;
+            if (items.empty()) return out;
+            Value acc = items[0];
+            out.arr->push_back(acc);
+            for (size_t k = 1; k < items.size(); k++) { acc = applyBinOp(op, acc, items[k]); out.arr->push_back(acc); }
+            return out;
+        }
         if (items.empty()) {
             if (op == "+" || op == "-") return Value::integer(0);
             if (op == "*" || op == "/") return Value::integer(1);
@@ -5335,7 +5378,16 @@ Value Interpreter::eval(Expr* e) {
                 // `&` sigil so scalar/array/hash `our` vars keep their assignable containers.
                 if (ve->declScope == "our" && sigil == '&' && curPkgEnv_ && curPkgEnv_ != tctx_.cur)
                     if (Value* g = curPkgEnv_->find(ve->name)) { tctx_.cur->define(ve->name, *g); return *g; }
-                tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
+                // A bare untyped `my @a` re-evaluated in the SAME scope keeps its
+                // container — declarations initialize per scope entry, not per
+                // evaluation. So in `until $i.push-exactly(my @a, 3) =:= IterationEnd`,
+                // @a accumulates across condition re-checks (a loop BODY re-entry is a
+                // fresh scope, so body-level `my` still resets each iteration). A TYPED
+                // declaration always redefines: EVALs run in the caller's scope, so
+                // `my Ta $c` in one EVAL must not leave its type constraint on a later
+                // `my Tc $c`.
+                if (!ve->declType.empty() || !tctx_.cur->vars.count(ve->name))
+                    tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
                 return tctx_.cur->vars[ve->name];
             }
             if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {

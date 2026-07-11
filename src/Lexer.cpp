@@ -30,22 +30,113 @@ static std::string renderPod(const std::string& content) {
     return out;
 }
 
-// Roast "fudge" directive: `#?rakudo[.moar] [<N>] todo '<reason>'` marks the next N
-// tests (default 1) as TODO for the Rakudo implementation. rakupp is a moar-like
-// backend, so it honours bare `#?rakudo` and `#?rakudo.moar` (never `.jvm`/`.js…`),
-// rewriting each such directive line into a `todo('<reason>', N);` call — the reason
-// stays a literal, line numbers are preserved (one line in, one line out). `skip`/
-// `emit`/other verbs and backend-specific variants are left as comments (ignored).
+// Roast "fudge" directives — `#?rakudo[.moar] [<N>] <verb> ['reason']` — mark the
+// next N test statements for the Rakudo implementation. rakupp is a moar-like
+// backend, so it honours bare `#?rakudo` and `#?rakudo.moar` (never `.jvm`/`.js…`).
+// This is a faithful subset of roast's own `fudge` preprocessor:
+//   todo  — rewrite the directive line into `todo('<reason>', N);` (marks next N tests)
+//   skip  — comment out the next N test statements / column-0 `{…}` blocks, emitting
+//           `skip('<reason>', numtests);` in front (numtests = test calls inside), so
+//           the plan stays satisfied without running the guarded construct — some of
+//           which even Rakudo can't compile (the fudger comments them out for it too)
+//   emit  — replace the directive line with its argument code, verbatim
+//   eval/try — treated as skip (they guard constructs that need EVAL protection)
+//   #?DOES n — the next statement (or `sub NAME`) counts as n tests
+// Line numbers are preserved throughout: one line in, one line out.
+static const char* kFudgeTestFns[] = { // roast fudge's $IS list: statements starting
+    "cmp_ok", "cmp-ok", "dies_ok", "dies-ok", "does-ok", // with these count as tests
+    "eval_dies_ok", "eval-dies-ok", "eval_lives_ok", "eval-lives-ok", "flunk",
+    "is", "is-approx", "is_deeply", "is-deeply", "isa_ok", "isa-ok", "isnt",
+    "like", "lives_ok", "lives-ok", "nok", "ok", "pass",
+    "throws_like", "throws-like", "unlike", "use_ok", "use-ok",
+    "is_run", "is-run", "doesn't-hang", "doesn't-warn", "warns-like",
+    "fails-like", "is-eqv", "is-path", "is-deeply-junction", "test-iter-opt",
+    "throws-like-any", "run-with-tty", "no-fatal-throws-like", "tap-ok",
+    "loads_ok", "loads-ok", "precomp_loads_ok", "precomp-loads-ok",
+    "loads_is", "loads-is", "precomp_loads_is", "precomp-loads-is",
+    "is-perl-idempotent", "is-primed-sig", "is-primed-call", "priming-fails-bind-ok",
+};
+// The leading identifier of a statement line (test-function names may contain - and ').
+static std::string fudgeLeadingWord(const std::string& line) {
+    size_t p = 0; while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) p++;
+    size_t s = p;
+    while (p < line.size() && (std::isalnum((unsigned char)line[p]) || line[p] == '_' ||
+                               line[p] == '-' || line[p] == '\'')) p++;
+    return line.substr(s, p - s);
+}
 static std::string applyRakudoFudge(const std::string& src) {
-    if (src.find("#?rakudo") == std::string::npos) return src; // fast path: no directives
-    std::string out; out.reserve(src.size());
-    size_t i = 0, n = src.size();
-    while (i <= n) {
-        size_t eol = src.find('\n', i);
-        size_t lineEnd = (eol == std::string::npos) ? n : eol;
-        std::string line = src.substr(i, lineEnd - i);
-        size_t p = 0; while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) p++;
-        bool replaced = false;
+    if (src.find("#?rakudo") == std::string::npos && src.find("#?DOES") == std::string::npos)
+        return src; // fast path: no directives
+    static const std::set<std::string> testFns(std::begin(kFudgeTestFns), std::end(kFudgeTestFns));
+
+    // Split into lines (without terminators) once; reassemble at the end.
+    std::vector<std::string> lines;
+    { size_t i = 0;
+      while (i <= src.size()) {
+          size_t eol = src.find('\n', i);
+          if (eol == std::string::npos) { lines.push_back(src.substr(i)); break; }
+          lines.push_back(src.substr(i, eol - i));
+          i = eol + 1;
+      } }
+
+    auto indentOf = [](const std::string& l) {
+        size_t p = 0; while (p < l.size() && (l[p] == ' ' || l[p] == '\t')) p++; return p;
+    };
+    auto rtrim = [](std::string s) {
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();
+        return s;
+    };
+    // does a (joined) statement line end in `;` (allowing a trailing # comment)?
+    auto endsStatement = [&](const std::string& l) {
+        std::string t = rtrim(l);
+        size_t h = t.rfind('#');
+        if (h != std::string::npos && h > 0 && t.find(';', 0) != std::string::npos) {
+            std::string beforeHash = rtrim(t.substr(0, h));
+            if (!beforeHash.empty() && beforeHash.back() == ';') return true;
+        }
+        return !t.empty() && t.back() == ';';
+    };
+    // count of test calls in a range of lines (fudge: lines starting with a test fn)
+    std::map<std::string, int> doesMap; // sub name -> tests-per-call (from #?DOES)
+    auto countTests = [&](size_t from, size_t to) {
+        int nt = 0;
+        for (size_t k = from; k < to && k < lines.size(); k++) {
+            std::string w = fudgeLeadingWord(lines[k]);
+            if (testFns.count(w)) nt++;
+            else if (doesMap.count(w)) nt += doesMap[w];
+        }
+        return nt;
+    };
+
+    int pending = 0;          // fudged statements still to process
+    std::string verb, reason; // active directive
+    int does = 0;             // pending `#?DOES n` for the next statement / sub
+    bool fudged = false;
+
+    for (size_t li = 0; li < lines.size(); li++) {
+        std::string& line = lines[li];
+        size_t p = indentOf(line);
+
+        // ---- #?DOES n : next statement (or sub definition) counts as n tests
+        if (line.compare(p, 6, "#?DOES") == 0) {
+            size_t q = p + 6; while (q < line.size() && (line[q] == ':' || line[q] == ' ' || line[q] == '\t')) q++;
+            does = std::atoi(line.c_str() + q);
+            continue; // the line stays (it's a comment)
+        }
+        // ---- register `#?DOES n` on a following sub/multi/proto definition
+        if (does > 0 && pending == 0) {
+            std::string w = fudgeLeadingWord(line);
+            if (w == "sub" || w == "multi" || w == "proto") {
+                std::string rest = line.substr(indentOf(line) + w.size());
+                // strip further declarator keywords: `multi sub name`, `proto sub name`
+                std::string w2 = fudgeLeadingWord(rest);
+                if (w2 == "sub" || w2 == "method") { size_t o = rest.find(w2); rest = rest.substr(o + w2.size()); }
+                std::string nm = fudgeLeadingWord(rest);
+                if (!nm.empty()) { doesMap[nm] = does; does = 0; continue; }
+            }
+        }
+
+        // ---- directive lines: #?rakudo[.backend] [N] verb [reason]
         if (line.compare(p, 8, "#?rakudo") == 0) {
             size_t q = p + 8;
             std::string backend;
@@ -54,31 +145,81 @@ static std::string applyRakudoFudge(const std::string& src) {
                 while (q < line.size() && line[q] != ' ' && line[q] != '\t') q++;
                 backend = line.substr(b, q - b);
             }
-            if (backend.empty() || backend == "moar") {
+            if (!backend.empty() && backend != "moar") continue; // other backend: ignore
+            while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
+            std::string count = "1";
+            if (q < line.size() && std::isdigit((unsigned char)line[q])) {
+                size_t c = q; while (q < line.size() && std::isdigit((unsigned char)line[q])) q++;
+                count = line.substr(c, q - c);
                 while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
-                std::string count = "1";
-                if (q < line.size() && std::isdigit((unsigned char)line[q])) {
-                    size_t c = q; while (q < line.size() && std::isdigit((unsigned char)line[q])) q++;
-                    count = line.substr(c, q - c);
-                    while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
-                }
-                if (line.compare(q, 4, "todo") == 0 &&
-                    (q + 4 >= line.size() || line[q + 4] == ' ' || line[q + 4] == '\t')) {
-                    q += 4;
-                    while (q < line.size() && (line[q] == ' ' || line[q] == '\t')) q++;
-                    std::string reason = line.substr(q);
-                    while (!reason.empty() && (reason.back() == ' ' || reason.back() == '\t' || reason.back() == '\r')) reason.pop_back();
-                    if (reason.empty() || (reason[0] != '\'' && reason[0] != '"')) reason = "\"\""; // require a string literal
-                    out += line.substr(0, p) + "todo(" + reason + ", " + count + ");";
-                    replaced = true;
-                }
             }
+            std::string v = fudgeLeadingWord(line.substr(q));
+            size_t vq = q + v.size();
+            while (vq < line.size() && (line[vq] == ' ' || line[vq] == '\t')) vq++;
+            std::string arg = rtrim(line.substr(std::min(vq, line.size())));
+            if (v == "todo") {
+                if (arg.empty() || (arg[0] != '\'' && arg[0] != '"')) arg = "\"\"";
+                line = line.substr(0, p) + "todo(" + arg + ", " + count + ");";
+                fudged = true;
+            }
+            else if (v == "skip" || v == "eval" || v == "try") {
+                pending = std::atoi(count.c_str());
+                verb = "skip";
+                if (arg.empty()) reason = "\"\"";
+                else if (arg[0] == '\'' || arg[0] == '"') reason = arg;
+                else { // unquoted reason: quote it defensively
+                    std::string esc; for (char c : arg) { if (c == '"' || c == '\\') esc += '\\'; esc += c; }
+                    reason = "\"" + esc + "\"";
+                }
+                fudged = true;
+            }
+            else if (v == "emit") {
+                line = line.substr(0, p) + arg; // paste the emitted code, same line
+                fudged = true;
+            }
+            continue;
         }
-        if (!replaced) out += line;
-        if (eol == std::string::npos) break;
-        out += '\n';
-        i = lineEnd + 1;
+
+        if (pending <= 0) { does = 0; continue; }
+
+        // ---- we are looking for the next statement/block to skip
+        std::string t = rtrim(line);
+        if (t.empty()) continue;                       // blank: pass through
+        { size_t q = indentOf(line);
+          if (q < line.size() && line[q] == '#') continue; } // comment: pass through
+
+        if (!line.empty() && line[0] == '{') {
+            // column-0 block: consume through the column-0 closing brace
+            size_t end = li + 1;
+            while (end < lines.size() && !(lines[end].size() && lines[end][0] == '}')) end++;
+            int nt = countTests(li + 1, end);
+            if (does) nt = does;
+            if (nt < 1) nt = 1;
+            for (size_t k = li; k <= end && k < lines.size(); k++) lines[k] = "# " + lines[k];
+            lines[li] = "skip(" + reason + ", " + std::to_string(nt) + "); " + lines[li];
+            li = std::min(end, lines.size() - 1);
+            pending--; does = 0; fudged = true;
+            continue;
+        }
+
+        // plain statement: join lines until one ends with `;` (bounded)
+        size_t end = li;
+        while (end < lines.size() && !endsStatement(lines[end]) && end - li < 49) end++;
+        std::string w = fudgeLeadingWord(line);
+        int nt = doesMap.count(w) ? doesMap[w] : (does ? does : (testFns.count(w) ? 1 : 0));
+        if (nt > 0) {
+            for (size_t k = li; k <= end && k < lines.size(); k++) lines[k] = "# " + lines[k];
+            lines[li] = "skip(" + reason + ", " + std::to_string(nt) + "); " + lines[li];
+            pending--;
+        }
+        // not a test statement: leave it running (matches roast's fudge), keep looking
+        li = std::min(end, lines.size() ? lines.size() - 1 : 0);
+        does = 0;
     }
+
+    if (!fudged) return src;
+    std::string out; out.reserve(src.size() + 256);
+    for (size_t k = 0; k < lines.size(); k++) { if (k) out += '\n'; out += lines[k]; }
     return out;
 }
 
@@ -855,10 +996,13 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
 
 // A quote form (m// s/// q// ...) is NOT a quote when the previous token is a
 // method/sub call dot or a declarator keyword — there the word is a name.
-static bool quoteBlockedHere(const std::vector<Token>& out) {
+static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     if (out.empty()) return false;
     const Token& pv = out.back();
     if (pv.kind == Tok::Op && (pv.text == "." || pv.text == ".&" || pv.text == "->")) return true;
+    // A name TIGHT after ':' is an adverb pair — `:y(2)` is y => 2, never a `y///`
+    // transliteration; `:q<x>` is q => 'x'. (A spaced `$fh.say: q/hi/` stays a quote.)
+    if (pv.kind == Tok::Op && pv.text == ":" && !spaced) return true;
     if (pv.kind == Tok::Ident) {
         static const std::set<std::string> decl = {
             "method", "submethod", "sub", "multi", "proto", "token", "rule",
@@ -971,6 +1115,7 @@ Token Lexer::lexOperator() {
     static const char* ops[] = {
         "==>", "<==", // feed operators (before == / <=)
         "!!!", "???", "...^", "...", "^..^", "..^", "^..",
+        "!===", // negated value identity (before !== / ===)
         "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",
         // bitwise/boolean (numeric +&/+|/+^, string ~&/~|/~^, boolean ?&/?|/?^) before single + ? ~.
         // NB: the shift forms +</+>/~</~> are deliberately omitted — `<`/`>` collide with
@@ -1096,7 +1241,7 @@ std::vector<Token> Lexer::tokenize() {
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
                   ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {
                 t = lexOperator();
-            } else if (isIdentStart(c) && !quoteBlockedHere(out) && tryQuoteForm(t)) {
+            } else if (isIdentStart(c) && !quoteBlockedHere(out, spaced) && tryQuoteForm(t)) {
                 // t set by tryQuoteForm
             } else {
                 t = lexIdentOrVar();

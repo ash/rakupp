@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #if !defined(_WIN32)
 #include <fcntl.h>
+#include <sys/utsname.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -390,7 +391,8 @@ static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any &&
 
 // `.raku` / `.perl` — an EVAL-round-trippable representation of a value (as opposed
 // to `.gist`, which is the human-readable form). Recursive over containers.
-static std::string rakuRepr(const Value& v);
+static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
+static std::string rakuRepr(const Value& v) { std::set<const void*> seen; return rakuRepr(v, 0, seen); }
 static std::string rakuStrLit(const std::string& s) {
     std::string o = "\"";
     for (unsigned char c : s) {
@@ -407,7 +409,11 @@ static bool rakuIdentKey(const std::string& s) {
     for (unsigned char c : s) if (!(std::isalnum(c) || c == '_' || c == '-')) return false;
     return true;
 }
-static std::string rakuRepr(const Value& v) {
+static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
+    // Guard against self-referential / deeply-nested data (`$foo<b> = $foo`): recursing
+    // blindly builds an unbounded string and exhausts memory. Detect a revisited
+    // container (a cycle) and stop; a large depth cap backstops pathological nesting.
+    if (depth > 512) return "...";
     switch (v.t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";
@@ -427,24 +433,27 @@ static std::string rakuRepr(const Value& v) {
         case VT::Pair: {
             Value val = v.pairVal ? *v.pairVal : Value::nil();
             if (v.pairKey) { // non-string key (Int, nested Pair, …)
-                std::string krepr = rakuRepr(*v.pairKey);
+                std::string krepr = rakuRepr(*v.pairKey, depth + 1, seen);
                 if (v.pairKey->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
-                return krepr + " => " + rakuRepr(val);
+                return krepr + " => " + rakuRepr(val, depth + 1, seen);
             }
-            return rakuIdentKey(v.s) ? ":" + v.s + "(" + rakuRepr(val) + ")"
-                                     : rakuStrLit(v.s) + " => " + rakuRepr(val);
+            return rakuIdentKey(v.s) ? ":" + v.s + "(" + rakuRepr(val, depth + 1, seen) + ")"
+                                     : rakuStrLit(v.s) + " => " + rakuRepr(val, depth + 1, seen);
         }
         case VT::Array: {
+            if (v.arr && !seen.insert(v.arr.get()).second) return v.isList ? "(...)" : "[...]"; // cycle
             std::string o(1, v.isList ? '(' : '[');
             if (v.arr) {
                 bool first = true;
-                for (auto& e : *v.arr) { if (!first) o += ", "; first = false; o += rakuRepr(e); }
+                for (auto& e : *v.arr) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
                 if (v.isList && v.arr->size() == 1) o += ",";
+                seen.erase(v.arr.get());
             }
             o += v.isList ? ')' : ']';
             return o;
         }
         case VT::Hash: {
+            if (v.hash && !seen.insert(v.hash.get()).second) return "{...}"; // cycle
             std::vector<std::string> keys;
             if (v.hash) for (auto& kv : *v.hash) keys.push_back(kv.first);
             std::sort(keys.begin(), keys.end());
@@ -452,9 +461,10 @@ static std::string rakuRepr(const Value& v) {
             for (auto& k : keys) {
                 if (!first) o += ", "; first = false;
                 Value val = v.hash->at(k);
-                o += rakuIdentKey(k) ? ":" + k + "(" + rakuRepr(val) + ")"
-                                     : rakuStrLit(k) + " => " + rakuRepr(val);
+                o += rakuIdentKey(k) ? ":" + k + "(" + rakuRepr(val, depth + 1, seen) + ")"
+                                     : rakuStrLit(k) + " => " + rakuRepr(val, depth + 1, seen);
             }
+            if (v.hash) seen.erase(v.hash.get());
             return o + "}";
         }
         default: return v.gist();
@@ -912,6 +922,64 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return methodCall(tobj, mm, args, rwArgs);
     }
 
+    // ---- Iterator protocol (S07). An iterator over a materialized list:
+    // hashKind "Iterator", (*hash)["items"] = the values, (*hash)["pos"] = position.
+    // Every copy of the Value shares the same hash map, so advancing `pos` through
+    // one copy is visible through all of them (iterators are stateful objects).
+    if (inv.t == VT::Hash && inv.hashKind == "Iterator" && inv.hash) {
+        Value& itemsV = (*inv.hash)["items"];
+        Value& posV = (*inv.hash)["pos"];
+        ValueList& items = itemsV.arrRef();
+        long long n = (long long)items.size();
+        auto iterEnd = [] { return Value::typeObj("IterationEnd"); };
+        auto pushInto = [&](const Value& tgt, long long count) -> long long {
+            long long pushed = 0;
+            if (tgt.t == VT::Array && tgt.arr)
+                while (posV.i < n && pushed < count) { tgt.arr->push_back(items[posV.i++]); pushed++; }
+            return pushed;
+        };
+        if (m == "pull-one") return posV.i < n ? items[posV.i++] : iterEnd();
+        if (m == "push-all" || m == "push-until-lazy" || m == "push-exactly" || m == "push-at-least") {
+            if (m == "push-all" || m == "push-until-lazy") {
+                if (!args.empty()) pushInto(args[0], n);
+                return iterEnd();
+            }
+            long long want = args.size() > 1 ? args[1].toInt() : 0;
+            long long pushed = args.empty() ? 0 : pushInto(args[0], want);
+            return pushed < want ? iterEnd() : Value::integer(pushed);
+        }
+        if (m == "sink-all") { posV.i = n; return iterEnd(); }
+        if (m == "skip-one") { bool ok = posV.i < n; if (ok) posV.i++; return Value::boolean(ok); }
+        if (m == "skip-at-least") {
+            long long want = args.empty() ? 0 : args[0].toInt();
+            long long skipped = std::min(want, n - posV.i); if (skipped < 0) skipped = 0;
+            posV.i += skipped;
+            return Value::boolean(skipped >= want);
+        }
+        if (m == "skip-at-least-pull-one") {
+            long long want = args.empty() ? 0 : args[0].toInt();
+            posV.i = std::min(n, posV.i + std::max(0LL, want));
+            return posV.i < n ? items[posV.i++] : iterEnd();
+        }
+        if (m == "count-only") return Value::integer(n - posV.i); // remaining, no advance
+        if (m == "bool-only") return Value::boolean(posV.i < n);
+        if (m == "is-lazy") return Value::boolean(false);
+        if (m == "is-deterministic" || m == "is-monotonically-increasing") return Value::boolean(true);
+        if (m == "can") { // introspection: which protocol methods this iterator supports
+            static const std::set<std::string> ms = {
+                "pull-one", "push-all", "push-until-lazy", "push-exactly", "push-at-least",
+                "sink-all", "skip-one", "skip-at-least", "skip-at-least-pull-one",
+                "count-only", "bool-only", "is-lazy", "iterator",
+            };
+            Value out = Value::array(); out.isList = true;
+            std::string mn = args.empty() ? "" : args[0].toStr();
+            if (ms.count(mn)) out.arr->push_back(Value::str(mn));
+            return out;
+        }
+        if (m == "iterator") return inv; // an Iterator is its own .iterator
+        if (m == "WHAT") return Value::typeObj("Iterator");
+    }
+
     // Signature introspection value (from &routine.signature).
     if (inv.t == VT::Hash && inv.hashKind == "Signature") {
         if (m == "raku" || m == "gist" || m == "Str" || m == "perl")
@@ -1043,6 +1111,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::string langVer = langRev_ == 0 ? "6.c" : (langRev_ == 1 ? "6.d" : "6.e");
         if (m == "compiler") { Value c = Value::makeHash(); c.hashKind = "Compiler"; return c; }
         if (m == "backend") return Value::str("cpp"); // rakupp's engine is a C++ tree-walking interpreter, not MoarVM
+        if (m == "KERNELnames" || m == "DISTROnames" || m == "VMnames") { // known-platform introspection lists
+            Value out = Value::array(); out.isList = true;
+            out.arr->push_back(Value::str(m == "KERNELnames" ? "darwin" : m == "DISTROnames" ? "macos" : "moar"));
+            return out;
+        }
         if (m == "name") return Value::str(nm);
         if (m == "version" || m == "lang-version") { Value v = Value::str(isComp ? "6.d" : langVer); v.hashKind = "Version"; return v; }
         if (m == "auth" || m == "authority") return Value::str("The Raku Community");
@@ -1485,7 +1558,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "is-win") return Value::boolean(false);
         if (m == "version") return Value::str("0");
         if (m == "signature") return Value::str("");
-        if (m == "release" || m == "path-sep") return Value::str(m == "path-sep" ? ":" : "");
+        if (m == "path-sep") return Value::str(":");
+        if (m == "release") { // kernel release string (uname -r)
+#if !defined(_WIN32)
+            struct utsname u;
+            if (uname(&u) == 0) return Value::str(u.release);
+#endif
+            return Value::str("0");
+        }
         if (m == "cpu-cores") return Value::integer(1);
         if (m == "archname" || m == "cpu-arch") return Value::str("x86_64");
         return Value::str(name); // lenient: any other Distro/Kernel/VM accessor
@@ -2240,6 +2320,26 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return Value::typeObj(inv.typeName());
     }
+    if (m == "iterator") { // S07: make an Iterator over this value's elements
+        Value it = Value::makeHash(); it.hashKind = "Iterator";
+        Value items = Value::array();
+        if (inv.t == VT::Array && inv.arr) *items.arr = *inv.arr;
+        else if (inv.t == VT::Range) *items.arr = inv.flatten();
+        else if (inv.t == VT::Hash) { // plain hash and Set/Bag/Mix iterate their pairs
+            ValueList none;
+            Value ps = methodCall(inv, "pairs", none, nullptr);
+            if (ps.t == VT::Array && ps.arr) *items.arr = *ps.arr;
+        }
+        else if (inv.t != VT::Nil && inv.t != VT::Any) items.arr->push_back(inv);
+        (*it.hash)["items"] = items;
+        (*it.hash)["pos"] = Value::integer(0);
+        return it;
+    }
+    if (m == "clone") { // non-object clone: shallow copy of containers, self for immutables
+        if (inv.t == VT::Array) { Value nv = inv; nv.arr = std::make_shared<ValueList>(*inv.arr); return nv; }
+        if (inv.t == VT::Hash)  { Value nv = inv; nv.hash = std::make_shared<std::map<std::string, Value>>(*inv.hash); return nv; }
+        return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
+    }
     if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
     if (m == "WHICH") { // object identity: value-based for immutables, pointer-based for objects
         if (inv.t == VT::Object && inv.obj) { char buf[24]; std::snprintf(buf, sizeof buf, "|%p", (void*)inv.obj.get()); return Value::str(inv.typeName() + buf); }
@@ -2698,7 +2798,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         uint32_t cp; bool have = true;
         if (inv.t == VT::Int || inv.t == VT::Bool) cp = (uint32_t)inv.toInt();
         else { auto cps = utf8cp(inv.toStr()); if (cps.empty()) have = false; else cp = cps[0]; }
-        if (m == "uniname") return Value::str(have ? uniNameOf(cp) : "");
+        if (m == "uniname") { std::string nm = have ? uniNameOf(cp) : ""; return Value::str(nm.empty() ? "<unassigned>" : nm); }
         return have ? univ(cp) : Value::nil();
     }
     if (m == "uniprop") {
@@ -2965,10 +3065,61 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             out.ext = st;
             return out;
         }
+        if (m == "grep" && !args.empty()) {
+            // lazy filter: each appendNext pulls source elements (bounded per call)
+            // until the predicate matches, so `(^Inf).grep(…).head(3)` terminates.
+            Value pred = args[0], src = inv;
+            Value out = Value::array(); out.isList = true;
+            auto st = std::make_shared<LazySeqState>();
+            auto spos = std::make_shared<size_t>(0); // next unexamined source index
+            Interpreter* self = this;
+            st->appendNext = [self, src, pred, spos](ValueList& cache) -> bool {
+                for (long long tries = 0; tries < 1000000; tries++) { // bail on a never-matching predicate
+                    self->materializeLazy(src, *spos + 1);
+                    if (*spos >= src.arr->size()) return false;
+                    Value v = (*src.arr)[(*spos)++];
+                    bool match = pred.t == VT::Code ? self->callCallable(pred, {v}).truthy()
+                                                    : applyArith("~~", v, pred).truthy();
+                    if (match) { cache.push_back(v); return true; }
+                }
+                return false;
+            };
+            out.ext = st;
+            return out;
+        }
+        if (m == "first" && !args.empty()) { // first match, scanning lazily (bounded)
+            Value pred = args[0];
+            for (size_t si = 0; si < 1000000; si++) {
+                materializeLazy(inv, si + 1);
+                if (si >= inv.arr->size()) break;
+                Value v = (*inv.arr)[si];
+                bool match = pred.t == VT::Code ? callCallable(pred, {v}).truthy()
+                                                : applyArith("~~", v, pred).truthy();
+                if (match) return v;
+            }
+            return Value::nil();
+        }
+        if (m == "skip") { // lazy skip: shared view starting n further along the source
+            long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt());
+            Value src = inv;
+            Value out = Value::array(); out.isList = true;
+            auto st = std::make_shared<LazySeqState>();
+            Interpreter* self = this;
+            st->appendNext = [self, src, n](ValueList& cache) -> bool {
+                size_t si = cache.size() + (size_t)n;
+                self->materializeLazy(src, si + 1);
+                if (si >= src.arr->size()) return false;
+                cache.push_back((*src.arr)[si]);
+                return true;
+            };
+            out.ext = st;
+            return out;
+        }
         if (m == "head" && (args.empty() || args[0].t != VT::Whatever)) {
             size_t n = args.empty() ? 1 : (size_t)std::max(0LL, args[0].toInt());
             materializeLazy(inv, n);
             Value out = Value::array(); out.isList = true;
+            if (args.empty()) return inv.arr->empty() ? Value::nil() : (*inv.arr)[0]; // scalar .head
             for (size_t i = 0; i < n && i < inv.arr->size(); i++) out.arr->push_back((*inv.arr)[i]);
             return out;
         }
@@ -2985,8 +3136,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo, false, inv.rExTo); }
         if (m == "elems" || m == "Numeric" || m == "Int") return Value::number(INFINITY);
         if (m == "min") return Value::integer(lo);
-        if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat" || m == "map" || m == "grep")
-            return (m == "map" || m == "grep") ? methodCall(makeInfArray(lo), m, args, rwArgs) : makeInfArray(lo);
+        if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat" ||
+            m == "map" || m == "grep" || m == "first" || m == "iterator" || m == "rotor" || m == "batch")
+            return (m == "map" || m == "grep" || m == "first") ? methodCall(makeInfArray(lo), m, args, rwArgs) : makeInfArray(lo);
         if (m == "AT-POS" && !args.empty()) return Value::integer(lo + args[0].toInt()); // infRange[i]
         if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" || m == "max" || m == "sum" ||
             m == "Array" || m == "eager" || m == "join" || m == "Str" || m == "gist")
@@ -4189,7 +4341,9 @@ void Interpreter::registerBuiltins() {
     };
     B["uniname"] = [cpOfArg](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
-        bool ok; uint32_t cp = cpOfArg(a[0], ok); return Value::str(ok ? uniNameOf(cp) : "");
+        bool ok; uint32_t cp = cpOfArg(a[0], ok);
+        std::string nm = ok ? uniNameOf(cp) : "";
+        return Value::str(nm.empty() ? "<unassigned>" : nm); // out-of-range / unassigned codepoints
     };
     B["uniprop"] = [cpOfArg](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
@@ -4416,6 +4570,12 @@ void Interpreter::registerBuiltins() {
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; // flat is a List (flattens in list context)
         for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
+        return out;
+    };
+    B["cache"] = [](Interpreter&, ValueList& a) -> Value { // cache(list) — like .cache, a no-op for our eager values
+        if (a.size() == 1) { if (a[0].t == VT::Range) return Value::array(a[0].flatten()); return a[0]; }
+        Value out = Value::array(); out.isList = true;
+        for (auto& v : a) out.arr->push_back(v);
         return out;
     };
     B["slip"] = [](Interpreter&, ValueList& a) -> Value { // slip(4,5) spreads into the enclosing list

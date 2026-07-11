@@ -96,7 +96,7 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "==>") { in.valid = true; in.lbp = BP_OR; return in; } // forward feed (left-assoc: data flows L→R)
         if (o == "<==") { in.valid = true; in.lbp = BP_OR; in.rightAssoc = true; return in; } // backward feed (right-assoc: the far-right source flows leftward)
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||
-            o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "===" || o == "!==" ||
+            o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "===" || o == "!==" || o == "!===" ||
             o == "=~=" || o == "≅") { in.valid = true; in.lbp = BP_COMPARE; return in; }
         if (o == "&&") { in.valid = true; in.lbp = BP_ANDAND; return in; }
         if (o == "||" || o == "//" || o == "^^") { in.valid = true; in.lbp = BP_OROR; return in; }
@@ -456,15 +456,43 @@ ExprPtr Parser::parsePrefix(bool tight) {
     return parsePostfix(parsePrimary(), tight);
 }
 
-std::vector<ExprPtr> Parser::parseCallArgs() {
+std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
     std::vector<ExprPtr> args;
     if (isKind(Tok::RParen)) { advance(); return args; }
     ExprPtr e = parseExpression();
-    if (e->kind == NK::ListExpr) {
-        auto* l = static_cast<ListExpr*>(e.get());
-        for (auto& it : l->items) args.push_back(std::move(it));
-    } else {
-        args.push_back(std::move(e));
+    // indirect-invocant colon: `key($pair: args)` == `$pair.key(args)` — a single
+    // first expression followed by a tight `:` (not `::`, not a chained adverb) is
+    // the method invocant, handed back to the caller to build a MethodCall.
+    if (invocant && isOp(":") && !cur().spaceBefore &&
+        e->kind != NK::Pair && e->kind != NK::ListExpr &&
+        peek().text != ":") {
+        advance(); // the invocant-marking ':'
+        *invocant = std::move(e);
+        if (isKind(Tok::RParen)) { advance(); return args; }
+        e = parseExpression();
+    }
+    for (;;) {
+        if (e->kind == NK::ListExpr) {
+            auto* l = static_cast<ListExpr*>(e.get());
+            for (auto& it : l->items) args.push_back(std::move(it));
+        } else {
+            args.push_back(std::move(e));
+        }
+        // chained adverbs without a comma — `f(:x("a"):y("b"))` — parseExpression
+        // stops at the `:` (it isn't an infix), so pick up each following colonpair.
+        if (isOp(":") && (peek().kind == Tok::Ident ||
+                          (peek().kind == Tok::Op && peek().text == "!") ||
+                          peek().kind == Tok::IntLit || peek().kind == Tok::Var)) {
+            e = parseExpr(BP_ASSIGN); // exactly one colonpair
+            continue;
+        }
+        // an adverb may be followed by a comma resuming the ordinary arg list
+        if (matchKind(Tok::Comma)) {
+            if (isKind(Tok::RParen)) break; // trailing comma
+            e = parseExpression();
+            continue;
+        }
+        break;
     }
     expectKind(Tok::RParen, ")");
     return args;
@@ -525,6 +553,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             base = std::move(idx);
         } else if (isKind(Tok::LBrace) && !cur().spaceBefore) {
             advance();
+            if (isKind(Tok::RBrace)) { advance(); continue; } // zen slice %h{} == %h
             auto idx = std::make_unique<Index>();
             idx->base = std::move(base);
             idx->index = parseExpression();
@@ -541,6 +570,10 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             base = std::move(idx);
         } else if (isOp("<") && !cur().spaceBefore) {
             // word-key hash subscript: %h<key>  (and $<name>/@<name>/%<name> capture sugar for $/<name>)
+            // On a numeric literal (`1<2`) this can only be a mistyped comparison —
+            // infix `<` requires whitespace before it (S03), so it's a parse error.
+            if (base->kind == NK::IntLit || base->kind == NK::NumLit)
+                error("Whitespace required before < operator");
             advance();
             std::vector<std::string> words = readAngleWords(">");
             if (words.empty()) continue; // `$x<>` / `@x<>`: zen-slice / decontainerize — the value itself
@@ -699,6 +732,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if (matchOp("\\")) {
         // sigilless: my \x = ...
         std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
+        if (!nm.empty()) sigilless_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
         ve->declare = true; ve->declScope = scope;
         return ve;
@@ -724,6 +758,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     // sigilless after an optional type:  my Mu \x = …   (bare `my \x` handled above)
     if (matchOp("\\")) {
         std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
+        if (!nm.empty()) sigilless_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
         ve->declare = true; ve->declScope = scope; ve->declType = type;
         return ve;
@@ -739,6 +774,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             }
             if (matchOp("\\")) { // sigilless item:  my (\x, $y) = …
                 std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
+                if (!nm.empty()) sigilless_.insert(nm);
                 auto ve = std::make_unique<VarExpr>(nm);
                 ve->declare = true; ve->declScope = scope;
                 list->items.push_back(std::move(ve));
@@ -787,6 +823,45 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         return ve;
     }
     error("expected variable after declarator");
+}
+
+// Pseudo-packages (S02): scope-qualified symbol access. rakupp approximates them
+// with its ordinary scope-chain lookup — `$MY::x`/`MY::<$x>` become plain `$x`,
+// `$PROCESS::IN`/`PROCESS::<$IN>` become the dynamic `$*IN`, `CORE::<&not>` becomes
+// `&not` (builtins resolve through the normal &-lookup). CALLER/OUTER/DYNAMIC are
+// best-effort: dynvars already travel the dynamic chain, lexicals use the current
+// scope (exact caller/outer frame semantics are not modelled).
+static bool isPseudoPkg(const std::string& p) {
+    static const std::set<std::string> ps = {
+        "MY", "OUR", "CORE", "GLOBAL", "PROCESS", "COMPILING", "DYNAMIC",
+        "CALLER", "CALLERS", "OUTER", "OUTERS", "LEXICAL", "UNIT", "SETTING",
+        "PARENT", "CLIENT",
+    };
+    return ps.count(p) > 0;
+}
+// "$MY::x" → "$x"; "$PROCESS::IN" → "$*IN"; unqualified / non-pseudo names unchanged.
+static std::string stripPseudoPkg(const std::string& name) {
+    if (name.size() < 4 || !std::strchr("$@%&", name[0])) return name;
+    size_t twi = 1; // an optional twigil between sigil and the qualifier: `$*DYNAMIC::x`
+    if (twi < name.size() && std::strchr("*!?.^:", name[twi])) twi++;
+    size_t sep = name.find("::", twi);
+    if (sep == std::string::npos) return name;
+    std::string pkg = name.substr(twi, sep - twi);
+    if (!isPseudoPkg(pkg)) return name;
+    std::string rest = name.substr(sep + 2);
+    if (rest.empty()) return name;
+    std::string sig(1, name[0]);
+    // PROCESS/GLOBAL hold the process-wide dynamics: `$PROCESS::IN` is `$*IN`
+    if ((pkg == "PROCESS" || pkg == "GLOBAL") && !std::strchr("*!?.^", rest[0])) sig += "*";
+    return sig + rest;
+}
+// A pseudo-package angle access `MY::<$x>` / `CORE::<&not>` — symbol via scope chain.
+static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& sym) {
+    if (sym.empty()) return "$_";
+    std::string s = sym;
+    if ((pkg == "PROCESS" || pkg == "GLOBAL") && s.size() > 1 &&
+        std::strchr("$@%&", s[0]) && !std::strchr("*!?.^", s[1])) s = s.substr(0, 1) + "*" + s.substr(1);
+    return s;
 }
 
 ExprPtr Parser::parseColonPair() {
@@ -914,6 +989,12 @@ ExprPtr Parser::parsePrimary() {
         std::string nm = typeStack_.empty() ? "" : typeStack_.back();
         return std::make_unique<NameTerm>(nm.empty() ? "Mu" : nm);
     }
+    // root symbol access: `::<$x>` — the symbol looked up through the scope chain
+    if (isOp("::") && peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
+        advance(); advance(); // :: <
+        std::vector<std::string> words = readAngleWords(">");
+        return std::make_unique<VarExpr>(words.empty() ? "$_" : words[0]);
+    }
     // symbolic reference: `::($name)` — look up a symbol at runtime by string name
     if (isOp("::") && peek().kind == Tok::LParen) {
         advance(); advance(); // :: (
@@ -1008,7 +1089,7 @@ ExprPtr Parser::parsePrimary() {
             if (cur().text == "$" && peek().kind == Tok::Op && peek().text == "." && !peek().spaceBefore) {
                 int ln = cur().line; advance(); auto s = std::make_unique<SelfTerm>(); s->line = ln; return s;
             }
-            int ln = cur().line; auto e = std::make_unique<VarExpr>(advance().text); e->line = ln; return e;
+            int ln = cur().line; auto e = std::make_unique<VarExpr>(stripPseudoPkg(advance().text)); e->line = ln; return e;
         }
         case Tok::LParen: {
             advance();
@@ -1062,6 +1143,21 @@ ExprPtr Parser::parsePrimary() {
                 advance(); // ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[" + innerOp + "]";
+                u->operand = parseExpr(BP_COMMA);
+                return u;
+            }
+            // triangular / scan reduce: [\+] [\~] [\*] — yields the list of running
+            // partial reductions (1, 1+2, 1+2+3, …) rather than the final value.
+            if (peek(1).kind == Tok::Op && peek(1).text == "\\" &&
+                (peek(2).kind == Tok::Op || (peek(2).kind == Tok::Ident && !peek(2).text.empty() &&
+                    (peek(2).text == "Z" || peek(2).text == "X" || std::islower((unsigned char)peek(2).text[0])))) &&
+                !peek(2).spaceBefore && peek(3).kind == Tok::RBracket && peek(2).text != "]") {
+                advance(); // [
+                advance(); // '\'
+                std::string innerOp = advance().text; // base op
+                advance(); // ]
+                auto u = std::make_unique<Unary>();
+                u->op = "[\\" + innerOp + "]";
                 u->operand = parseExpr(BP_COMMA);
                 return u;
             }
@@ -1342,6 +1438,18 @@ ExprPtr Parser::parsePrimary() {
                 return parseDeclarator(name);
             }
             advance(); // consume the name
+            // pseudo-package angle access: `MY::<$x>` / `CORE::<&not>` / `PROCESS::<$IN>`
+            // (the lexer folds the trailing `::` into the identifier) — the symbol is
+            // resolved through the ordinary scope chain.
+            if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
+                isPseudoPkg(name.substr(0, name.size() - 2)) &&
+                isOp("<") && !cur().spaceBefore) {
+                advance(); // <
+                std::vector<std::string> words = readAngleWords(">");
+                return std::make_unique<VarExpr>(
+                    pseudoAngleSymbol(name.substr(0, name.size() - 2),
+                                      words.empty() ? "" : words[0]));
+            }
             // parameterized type: `Array[Int]`, `Hash[Int,Str]`, `Foo[Bar]` — a capitalized
             // bareword tight against `[` whose first arg is a (capitalized) type name.
             if (!name.empty() && std::isupper((unsigned char)name[0]) &&
@@ -1368,15 +1476,29 @@ ExprPtr Parser::parsePrimary() {
             }
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 advance();
+                ExprPtr invocant;
+                auto callArgs = parseCallArgs(&invocant);
+                if (invocant) { // indirect invocant: `key($pair: args)` == `$pair.key(args)`
+                    auto mc = std::make_unique<MethodCall>();
+                    mc->inv = std::move(invocant);
+                    mc->method = name;
+                    mc->args = std::move(callArgs);
+                    return mc;
+                }
                 auto c = std::make_unique<Call>();
                 c->name = name;
-                c->args = parseCallArgs();
+                c->args = std::move(callArgs);
                 return c;
             }
             // list-op style call without parens
             // but a capitalized bareword followed by a block is a type + block body, e.g. `if Mu { }`
             if (isKind(Tok::LBrace) && !name.empty() && std::isupper((unsigned char)name[0]))
                 return std::make_unique<NameTerm>(name);
+            // A name declared sigilless (`my \x`, `\a` param, `-> \d`) is a TERM, not a
+            // listop: `x2 < 0 || 1 > 7` is two comparisons, never `x2(< 0 || 1 >) 7`.
+            // (A tight `name(...)` call was already handled above, so invoking a
+            // Callable held in a sigilless var still works.)
+            if (sigilless_.count(name)) return std::make_unique<NameTerm>(name);
             // For +/-/? the prefix reading is only valid when the operand is
             // tight against the operator (`f -5` => f(-5), but `f - 5` => f() - 5).
             bool listopOk = startsListopArg(cur());
@@ -1493,6 +1615,18 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
 std::vector<std::string> Parser::readAngleWords(const std::string& close) {
     std::vector<std::string> words;
     while (!isOp(close) && !isKind(Tok::End)) {
+        // The closing delimiter may be glued to a following operator by the lexer:
+        // `%h<a>=9` lexes `>=` as one token, `%h<a>>` lexes `>>`. Split it: the leading
+        // `>` closes the word list, the remainder stays as the next token. Only when the
+        // token is glued to the preceding word (no space) — a spaced `< a >= b >` word
+        // list legitimately contains `>=` as a word and must not be truncated.
+        if (cur().kind == Tok::Op && !cur().spaceBefore &&
+            cur().text.size() > close.size() &&
+            cur().text.compare(0, close.size(), close) == 0) {
+            toks_[pos_].text = cur().text.substr(close.size());
+            toks_[pos_].spaceBefore = false;
+            return words;
+        }
         const Token& t = cur();
         if (words.empty() || t.spaceBefore) words.push_back(t.text);
         else words.back() += t.text;
@@ -1823,6 +1957,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // sigilless capture parameter: \a  -> bound under bare name
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
             p.sigil = '\\';
+            if (!p.name.empty()) sigilless_.insert(p.name);
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma)) break;
@@ -1890,6 +2025,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (matchOp("\\")) { // typed sigilless capture:  Iterator:D \iter
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
             p.sigil = '\\';
+            if (!p.name.empty()) sigilless_.insert(p.name);
         } else if (isKind(Tok::Var)) {
             p.name = cur().text; p.sigil = cur().text[0]; advance();
             p.named = named;
@@ -1984,6 +2120,7 @@ std::vector<Param> Parser::parsePointyParams() {
         if (matchOp("\\")) {
             if (isKind(Tok::Var) || isKind(Tok::Ident)) p.name = advance().text;
             p.sigil = '\\';
+            if (!p.name.empty()) sigilless_.insert(p.name);
         } else {
             if (isKind(Tok::Ident) && peek().kind == Tok::Var) advance(); // type
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }

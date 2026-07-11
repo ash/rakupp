@@ -70,6 +70,13 @@ committed with **zero Roast regressions**:
 | `srand($seed?)` | seeding the RNG (note: rakupp's PRNG ≠ MoarVM's, so it doesn't reproduce Rakudo's exact *sequence*) |
 | `≤ ≥ ≠ × ÷` | Unicode operator aliases → `<= >= != * /` |
 | `.cache` | list/Seq caching method |
+| sigilless-var disambiguation | a declared `\x` (or `\a` param / `-> \d`) is a term, so `x < 0 \|\| x > 7` is two comparisons, not `x(<0 \|\| x>)` |
+| `%h<key>=val` (no space) | the glued `>=` no longer swallows the rest of the statement — the `>` correctly closes the subscript |
+| `!===` | negated value identity (`3 !=== 4`) |
+| `[\op]` triangular reduce | running partial reductions: `[\+] 1,2,3,4` → `(1 3 6 10)` |
+| `.clone` on immutables/containers | `5.clone`, `@a.clone` (independent copy), `%h.clone` |
+| `cache(…)` sub form | `cache .&f` (the routine, alongside the `.cache` method) |
+| cyclic `.raku`/`.gist` | a self-referential structure (`$foo<b> = $foo`) renders a `{...}` back-reference instead of recursing until it exhausts memory |
 
 ## Real bugs found (noted for follow-up)
 
@@ -89,6 +96,8 @@ and genuine bugs. Confirmed bugs:
 raku tools/rc-compare.raku [N=40] [skip=0] [rakupp=./build/rakupp]
 ```
 
-It writes `rc-work/` (task list, fetched programs, `results.tsv`) and caches each
-fetched program, so re-runs after a rakupp rebuild only pay for the interpreter
-runs, not the network.
+Fetched programs are cached in `rc-cache/`, keyed by task name (e.g.
+`A_search_algorithm.raku`), so a task is fetched **once** and reused forever —
+re-runs after a rakupp rebuild only pay for the interpreter runs, not the network.
+Per-run scratch (task list, `results.tsv`, captured output) goes to `rc-work/`.
+Both directories are git-ignored (kept on disk, never committed).

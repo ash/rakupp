@@ -51,18 +51,18 @@ implementation. Against the full Roast suite of **1,464 `.t` files**:
 | **Fully passing** | **350** | **23%** |
 | Partially passing | 605 | 41% |
 | No TAP output (parse error / unimplemented) | 498 | 34% |
-| Timeouts | 11 | 0.8% |
+| Timeouts | 9 | 0.6% |
 
 Two numbers describe where Raku++ stands, and they measure different things:
 
-- **Per-test — ~73% of all declared tests pass (137,199 / ~187,714).** This is the
+- **Per-test — ~74% of all declared tests pass (139,688 / ~188,835).** This is the
   headline: the honest per-test figure, counting every test the suite declares —
   including those in files that abort before running (their `plan N` is read from
   source, all failing), so parse-error files can't hide. One subsystem (S15,
   Unicode) is ~91k of the total. Of just the tests that *do* run, ~69% pass
-  (137,199 / 146,982) — that variant counts only assertions in files that produce
+  (139,688 / 149,126) — that variant counts only assertions in files that produce
   TAP, so it flatters by ignoring the ~31k tests in aborting files.
-- **Coverage — 350 / 1,464 files fully pass (~22%).** The stricter all-or-nothing
+- **Coverage — 378 / 1,464 files fully pass (~25%).** The stricter all-or-nothing
   bar: a file counts only if every assertion passes. Over a third of the suite
   produces no TAP at all yet (a parse error or unimplemented construct aborts the
   file before any assertion runs).
