@@ -1,10 +1,12 @@
 #pragma once
 #include "Ast.h"
 #include "Value.h"
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <pthread.h>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -148,6 +150,8 @@ public:
     // chain has finished (head/first reached its limit) so `done` should fire.
     ValueList applyTapChain(Value& tap, const Value& in, bool& complete);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
+    Value seqOp(Value l, Value r, bool exclusive); // the `...` sequence operator (also used by codegen)
+    Value rtGather(Value blockClosure); // gather with probe-and-double laziness (native codegen)
     // Emit text for say/print/put/note: route through a user-overridden $*OUT/$*ERR
     // (call its .print), else write to the real stream.
     Value ioEmit(const std::string& s, const char* dynVar, bool toErr);
@@ -226,7 +230,56 @@ public:
     // byte-for-byte unchanged.
     bool parallelMode_ = false;
     std::mutex sharedMut_;
-    std::vector<std::thread> workers_;     // outstanding `start`/async worker threads
+    // Worker threads must carry a big stack: the tree-walker recurses deeply and the
+    // macOS default for non-main pthreads is 512 KB — a recursive Raku sub inside
+    // `start {…}` overflows it within ~100 frames (SIGBUS, then a kill-proof wedge at
+    // exit). Same trick as rakuppRunBigStack, wrapped std::thread-compatibly.
+    class BigStackThread {
+        pthread_t h_{};
+        bool joinable_ = false;
+        struct Fn { std::function<void()> f; };
+    public:
+        BigStackThread() = default;
+        template <typename F> explicit BigStackThread(F f) {
+            auto* fn = new Fn{std::move(f)};
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setstacksize(&attr, (size_t)256 << 20); // 256 MiB (virtual; committed on use)
+            auto entry = [](void* p) -> void* {
+                std::unique_ptr<Fn> g(static_cast<Fn*>(p));
+                g->f();
+                return nullptr;
+            };
+            if (pthread_create(&h_, &attr, entry, fn) == 0) joinable_ = true;
+            else { std::unique_ptr<Fn> g(fn); g->f(); }    // creation failed: run inline
+            pthread_attr_destroy(&attr);
+        }
+        BigStackThread(BigStackThread&& o) noexcept : h_(o.h_), joinable_(o.joinable_) { o.joinable_ = false; }
+        BigStackThread& operator=(BigStackThread&& o) noexcept {
+            if (this != &o) { if (joinable_) pthread_detach(h_); h_ = o.h_; joinable_ = o.joinable_; o.joinable_ = false; }
+            return *this;
+        }
+        BigStackThread(const BigStackThread&) = delete;
+        BigStackThread& operator=(const BigStackThread&) = delete;
+        bool joinable() const { return joinable_; }
+        void join()   { if (joinable_) { pthread_join(h_, nullptr); joinable_ = false; } }
+        void detach() { if (joinable_) { pthread_detach(h_); joinable_ = false; } }
+        ~BigStackThread() { if (joinable_) pthread_detach(h_); } // daemon semantics, like drainWorkers' abandon
+    };
+    // A worker slot pairs the thread with a completion flag so finished workers can
+    // be joined (and their big stacks released) as new ones spawn, instead of
+    // accumulating unjoined until drainWorkers.
+    struct WorkerSlot {
+        BigStackThread th;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<WorkerSlot> workers_;      // outstanding `start`/async worker threads
+    void reapFinishedWorkers() {           // caller must hold the GIL or sharedMut_
+        workers_.erase(std::remove_if(workers_.begin(), workers_.end(), [](WorkerSlot& w) {
+            if (w.done && w.done->load(std::memory_order_acquire)) { w.th.join(); return true; }
+            return false;
+        }), workers_.end());
+    }
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
     bool abandonedWorkers_ = false;        // a fire-and-forget worker outlived the mainline (daemon)
     std::atomic<bool> workerAbort_{false}; // set at teardown: workers unwind at their next safe point
@@ -417,7 +470,13 @@ inline Value rtPow(const Value& l, const Value& r) {
 std::string doSprintf(const std::string& fmt, const ValueList& args); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
+std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // $^a/$^b names, sorted (also used by codegen)
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
+void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
+Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
+Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices)
+Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
+Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
 ValueList rtMainArgs(const std::vector<std::string>& argv); // argv -> MAIN args (--opt named, rest positional)
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
 Value  rtReduce(const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop

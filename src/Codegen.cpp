@@ -11,6 +11,8 @@
 
 namespace rakupp {
 
+std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // Interpreter.cpp
+
 namespace {
 
 [[noreturn]] void unsupported(const std::string& what) { throw CodegenError{what}; }
@@ -73,8 +75,9 @@ struct Codegen {
     std::string gensym(const char* p) { return std::string(p) + std::to_string(tmp++); }
     void line(int ind, const std::string& s) { out << std::string(ind * 4, ' ') << s << "\n"; }
 
-    bool inWC = false; // currently emitting a WhateverCode body
-    int wcArity = 0;   // number of `*` slots consumed
+    std::set<std::string> codeVars; // `my &name = …` seen so far — calls go through the Value
+    int wcDepth = 0;               // nesting level of WhateverCode closures (0 = not in one)
+    std::vector<int> wcArity;      // per-level count of `*` slots consumed
 
     // Emit statements produced by `emit` into a fresh buffer and return them.
     std::string capture(const std::function<void()>& emit) {
@@ -97,6 +100,7 @@ struct Codegen {
             // own closure scopes (e.g. `.grep(* %% 3)`), handled when each arg is emitted.
             case NK::MethodCall: return hasWhatever(static_cast<MethodCall*>(e)->inv.get());
             case NK::Call:       return hasWhatever(static_cast<Call*>(e)->callee.get());
+            case NK::Index:      return hasWhatever(static_cast<Index*>(e)->base.get()); // *<key> / *[0]
             default: return false;
         }
     }
@@ -106,18 +110,52 @@ struct Codegen {
         // A regex literal in argument position is the Regex object (not a $_ match).
         if (e->kind == NK::RegexLit)
             return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
+        // The sequence op consumes `*` itself (seed closures / infinite endpoint) —
+        // it is never a WhateverCode lambda.
+        if (e->kind == NK::Binary) {
+            auto* b = static_cast<Binary*>(e);
+            if (b->op == "..." || b->op == "...^") return ex(e);
+        }
         if (!hasWhatever(e)) return ex(e);
-        if (inWC) unsupported("nested WhateverCode");
-        inWC = true; wcArity = 0;
+        wcDepth++; wcArity.push_back(0);
+        std::string an = "__w" + std::to_string(wcDepth);
         std::string body = ex(e);
-        inWC = false;
-        return "Value::closure([=](ValueList& __w)->Value{ return " + body + "; })";
+        int arity = wcArity.back();
+        wcDepth--; wcArity.pop_back();
+        std::string mk = "Value::closure([=](ValueList& " + an + ")->Value{ return " + body + "; })";
+        if (arity <= 1) return mk;
+        // multi-`*` lambda: the sequence op / sort reads the arity off the Code value
+        return "([&]()->Value{ Value _c = " + mk + "; _c.code->isWhateverCode = true; "
+               "_c.code->whateverArity = " + std::to_string(arity) + "; return _c; }())";
     }
 
+    static bool isSlip(Expr* e) { return e->kind == NK::Unary && static_cast<Unary*>(e)->op == "|" && !static_cast<Unary*>(e)->postfix; }
     std::string argList(const std::vector<ExprPtr>& args) {
         std::string s;
-        for (size_t i = 0; i < args.size(); i++) { if (i) s += ", "; s += exArg(args[i].get()); }
+        for (size_t i = 0; i < args.size(); i++) {
+            if (i) s += ", ";
+            // a |slip in a list literal splices via listToArray (rtSlipVal pre-spreads it)
+            s += isSlip(args[i].get()) ? "rtSlipVal(" + ex(static_cast<Unary*>(args[i].get())->operand.get()) + ")"
+                                       : exArg(args[i].get());
+        }
         return s;
+    }
+    // Full ValueList expression for call arguments; |slips spread positionally
+    // (arrays/ranges) or as named args (hashes), like the interpreter's evalArgs.
+    std::string argsVL(const std::vector<ExprPtr>& args) {
+        bool anySlip = false;
+        for (auto& a : args) if (isSlip(a.get())) anySlip = true;
+        if (!anySlip) {
+            std::string s;
+            for (size_t i = 0; i < args.size(); i++) { if (i) s += ", "; s += exArg(args[i].get()); }
+            return "ValueList{" + s + "}";
+        }
+        std::string o = "([&]()->ValueList{ ValueList __as;";
+        for (auto& a : args) {
+            if (isSlip(a.get())) o += " rtSpreadArg(__as, " + ex(static_cast<Unary*>(a.get())->operand.get()) + ", true);";
+            else o += " __as.push_back(" + exArg(a.get()) + ");";
+        }
+        return o + " return __as; }())";
     }
 
     // Expression in boolean context (if/while/ternary conditions). A plain
@@ -138,18 +176,20 @@ struct Codegen {
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
     std::string emitBlockClosure(BlockExpr* be) {
         bool pushed = false; std::string topic;
+        std::vector<std::string> phs = be->params.empty() ? computePlaceholders(be->body)
+                                                          : std::vector<std::string>{};
         std::string body = capture([&]() {
-            if (be->params.empty()) {
+            if (!phs.empty()) { // $^a/$^b placeholders bind positionally, in sorted order
+                for (size_t k = 0; k < phs.size(); k++)
+                    line(0, "Value " + mangleVar(phs[k]) + " = (__a.size() > " + std::to_string(k) +
+                            " ? __a[" + std::to_string(k) + "] : Value::any());");
+            }
+            else if (be->params.empty()) {
                 topic = gensym("v__t");
                 line(0, "Value " + topic + " = (__a.size() > 0 ? __a[0] : Value::any());");
                 topics.push_back(topic); pushed = true;
             } else {
-                for (size_t k = 0; k < be->params.size(); k++) {
-                    const Param& p = be->params[k];
-                    if (p.sigil != '$' || p.slurpy || p.named) unsupported("block parameter form");
-                    line(0, "Value " + mangleVar(p.name) + " = (__a.size() > " + std::to_string(k) +
-                            " ? __a[" + std::to_string(k) + "] : Value::any());");
-                }
+                bindParams(be->params, 0, false); // full signature forms, same as sub bodies
             }
             for (size_t i = 0; i < be->body.size(); i++) {
                 Stmt* s = be->body[i].get();
@@ -160,7 +200,15 @@ struct Codegen {
             line(0, "return Value::any();");
         });
         if (pushed) topics.pop_back();
-        return "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
+        std::string mk = "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
+        // 2+-ary blocks (pointy params or $^a/$^b) must advertise their arity so
+        // sort/map/for feed them the right number of elements per call.
+        size_t nPos = phs.size();
+        if (nPos <= 1) for (auto& p : be->params) if (!p.named && !p.slurpy) nPos++;
+        if (nPos <= 1) return mk;
+        std::string names;
+        for (size_t k = 0; k < nPos; k++) names += std::string(k ? ", " : "") + "\"$^" + std::string(1, char('a' + k)) + "\"";
+        return "([&]()->Value{ Value _c = " + mk + "; _c.code->placeholders = {" + names + "}; return _c; }())";
     }
 
     // ---- expressions: return a C++ expression string of type Value ----
@@ -219,18 +267,31 @@ struct Codegen {
                 }
                 if (v->name.size() > 1 && (v->name[1] == '*' || v->name[1] == '?' || v->name[1] == '!'))
                     unsupported("special/dynamic variable '" + v->name + "'");
+                if (v->name.size() > 1 && v->name[0] == '$' &&
+                    std::all_of(v->name.begin() + 1, v->name.end(), [](unsigned char c) { return std::isdigit(c); }))
+                    // $0/$1/… are positional captures of the current match ($/)
+                    return "rtIndexGet(" + mangleVar("$/") + ", Value::integer(" + v->name.substr(1) + "LL), false)";
                 return mangleVar(v->name); // scalars, @arrays and %hashes are all C++ Value locals
             }
             case NK::SelfTerm:
                 if (self_.empty()) unsupported("`self` outside a method");
                 return self_;
             case NK::Whatever:
-                if (inWC) { int k = wcArity++; return "(__w.size()>" + std::to_string(k) + "?__w[" + std::to_string(k) + "]:Value::any())"; }
+                if (wcDepth) {
+                    int k = wcArity.back()++;
+                    std::string an = "__w" + std::to_string(wcDepth);
+                    return "(" + an + ".size()>" + std::to_string(k) + "?" + an + "[" + std::to_string(k) + "]:Value::any())";
+                }
                 return "Value::whatever()";
             case NK::BlockExpr: return emitBlockClosure(static_cast<BlockExpr*>(e));
             case NK::Range: {
                 auto* r = static_cast<RangeExpr*>(e);
-                return "Value::range((" + ex(r->from.get()) + ").toInt(), (" + ex(r->to.get()) + ").toInt(), "
+                // integer literal endpoints keep the direct construction; anything else
+                // goes through rtRangeVal so string ranges ('a'..'z') materialise via succ
+                if (r->from->kind == NK::IntLit && r->to->kind == NK::IntLit)
+                    return "Value::range((" + ex(r->from.get()) + ").toInt(), (" + ex(r->to.get()) + ").toInt(), "
+                         + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ")";
+                return "rtRangeVal(" + ex(r->from.get()) + ", " + ex(r->to.get()) + ", "
                      + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ")";
             }
             case NK::RegexLit:
@@ -239,6 +300,12 @@ struct Codegen {
             case NK::Index: {
                 auto* ix = static_cast<Index*>(e);
                 if (!ix->adverb.empty()) unsupported("index adverb (:exists/:delete/…)");
+                if (!ix->isHash && ix->index && ix->index->kind == NK::Range) {
+                    auto* r = static_cast<RangeExpr*>(ix->index.get());
+                    if (r->to && r->to->kind == NK::Whatever && r->from && !hasWhatever(r->from.get()))
+                        return "rtSliceFrom(" + ex(ix->base.get()) + ", (" + ex(r->from.get()) + ").toInt(), "
+                             + (r->exFrom ? "true" : "false") + ")"; // @a[$i .. *]
+                }
                 std::string fn = hasWhatever(ix->index.get()) ? "RT.idxW" : "rtIndexGet"; // @a[*-1] / @a[*]
                 return fn + "(" + ex(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
                      + (ix->isHash ? "true" : "false") + ")";
@@ -283,15 +350,13 @@ struct Codegen {
                     if (u->op == "do") return "([&]()->Value{\n" + body + "}())";
                     return "([&]()->Value{ try {\n" + body + "} catch (const RakuError&) { return Value::nil(); } }())";
                 }
-                if (u->op == "gather") { // gather { … take … } — `take` routes to the runtime collector
+                if (u->op == "gather") { // gather { … take … } — probe-and-double lazy, like the interp
                     std::string body;
                     if (u->operand->kind == NK::BlockExpr) {
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
                         body = capture([&]() { for (auto& s : be->body) stmt(s.get(), 0); });
                     } else body = exArg(u->operand.get()) + ";\n";
-                    return "([&]()->Value{ auto __c = std::make_shared<ValueList>(); RT.tctx_.gatherStack.push_back(__c);\n"
-                           "try {\n" + body + "} catch (...) { RT.tctx_.gatherStack.pop_back(); throw; }\n"
-                           "RT.tctx_.gatherStack.pop_back(); return Value::array(*__c); }())";
+                    return "RT.rtGather(Value::closure([=](ValueList&)->Value{\n" + body + "return Value::any(); }))";
                 }
                 if (u->postfix) { // $x++ / $x-- as an expression: yield the old value
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
@@ -306,6 +371,12 @@ struct Codegen {
                 if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
                 if (u->op == "~")  return "Value::str((" + x + ").toStr())";
                 if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
+                if (u->op == "ctx%") return "rtCoerceHash(" + x + ")"; // %(...) hash composer
+                if (u->op == "ctx$") // $(...) — an array becomes one non-flattening item
+                    return "([&]()->Value{ Value _v = " + x + "; if (_v.t==VT::Array) _v.itemized=true; return _v; }())";
+                if (u->op == "ctx@") // @(...) — one-level list context
+                    return "rtArrayVal(" + x + ")";
+                if (u->op == "|") return "rtSlipVal(" + x + ")"; // |x outside call/list position
                 unsupported("prefix operator '" + u->op + "'");
             }
             case NK::Binary: {
@@ -321,6 +392,23 @@ struct Codegen {
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
                     return "([&]()->Value{ long long _n=(" + R + ").toInt(); Value _o=Value::array(); _o.isList=true; "
                            "for(long long _i=0;_i<_n;_i++) _o.arr->push_back(" + L + "); return _o; }())";
+                }
+                if (b->op == "..." || b->op == "...^") {
+                    // sequence operator: seeds emit per-element (a `* + *` seed becomes a
+                    // generator closure); a bare `*`/Inf endpoint marks the sequence infinite.
+                    std::string L;
+                    if (b->lhs->kind == NK::ListExpr) {
+                        auto* le = static_cast<ListExpr*>(b->lhs.get());
+                        std::string items;
+                        for (size_t i = 0; i < le->items.size(); i++) {
+                            if (i) items += ", ";
+                            items += exArg(le->items[i].get());
+                        }
+                        L = "listToArray({" + items + "})";
+                    }
+                    else L = exArg(b->lhs.get());
+                    std::string R = b->rhs->kind == NK::Whatever ? "Value::whatever()" : exArg(b->rhs.get());
+                    return "RT.seqOp(" + L + ", " + R + ", " + (b->op == "...^" ? "true" : "false") + ")";
                 }
                 if (b->op.size() > 1 && b->op[0] == 'R' && !std::isalnum((unsigned char)b->op[1])) {
                     // reverse metaop `a R/ b` == `b / a`
@@ -349,23 +437,36 @@ struct Codegen {
             }
             case NK::Call: {
                 auto* c = static_cast<Call*>(e);
-                std::string args = argList(c->args);
-                if (c->callee) return "RT.callCallable(" + ex(c->callee.get()) + ", {" + args + "})";
-                if (multiNames.count(c->name)) return mangleSub(c->name) + "(ValueList{" + args + "})"; // multi dispatcher
+                bool slip = false;
+                for (auto& a : c->args) if (isSlip(a.get())) slip = true;
+                std::string vl = argsVL(c->args);
+                if (c->callee) return "RT.callCallable(" + ex(c->callee.get()) + ", " + vl + ")";
+                if (codeVars.count(c->name)) // a `my &name = …` variable called by bare name
+                    return "RT.callCallable(" + mangleVar("&" + c->name) + ", " + vl + ")";
+                if (multiNames.count(c->name)) return mangleSub(c->name) + "(" + vl + ")"; // multi dispatcher
                 if (userSubs.count(c->name)) {
                     // -O: call the direct-Value overload when the arity/args line up
                     auto fit = fastSubs.find(c->name);
-                    if (fit != fastSubs.end() && (int)c->args.size() == fit->second && simpleArgs(c->args))
-                        return mangleSub(c->name) + "(" + args + ")";
-                    return mangleSub(c->name) + "(ValueList{" + args + "})"; // boxed adapter
+                    if (!slip && fit != fastSubs.end() && (int)c->args.size() == fit->second && simpleArgs(c->args))
+                        return mangleSub(c->name) + "(" + argList(c->args) + ")";
+                    return mangleSub(c->name) + "(" + vl + ")"; // boxed adapter
                 }
-                return "RT.callBuiltin(" + cesc(c->name) + ", {" + args + "})";
+                return "RT.callBuiltin(" + cesc(c->name) + ", " + vl + ")";
             }
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
-                if (m->mutate || m->hyper || m->meta || m->maybe)
-                    unsupported("method-call form (.= / >>. / .^ / .?)");
-                return "RT.methodCall(" + ex(m->inv.get()) + ", " + cesc(m->method) + ", {" + argList(m->args) + "})";
+                if (m->maybe) unsupported("method-call form (.?)");
+                if (m->hyper) {
+                    if (m->mutate) unsupported(">>.= hyper-mutate");
+                    return "rtHyperMethod(RT, " + ex(m->inv.get()) + ", " + cesc(m->method) + ", " + argsVL(m->args) + ")";
+                }
+                std::string name = m->meta ? "^" + m->method : m->method;
+                if (m->mutate) { // $x .= meth : rebind the invocant to the result
+                    if (m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index) unsupported(".= on this invocant");
+                    return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; __r = RT.methodCall(__r, "
+                         + cesc(name) + ", " + argsVL(m->args) + "); return __r; }())";
+                }
+                return "RT.methodCall(" + ex(m->inv.get()) + ", " + cesc(name) + ", " + argsVL(m->args) + ")";
             }
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);
@@ -641,9 +742,38 @@ struct Codegen {
         Expr* tgt = a->target.get();
         if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare) { // `my $x = ..`
             const std::string& nm = static_cast<VarExpr*>(tgt)->name;
+            if (nm.size() > 1 && nm[0] == '&') codeVars.insert(nm.substr(1));
             if (atTopLevel_ && topVars_.count(nm)) // hoisted to a global: assign it
                 return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
             return "Value " + mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
+        }
+        // List-assignment target: `($a, $b) = …` / `my ($a, $b) = …` — RHS evaluates
+        // fully into a temp first (so `($a, $b) = $b, $a` swaps), then assigns by position.
+        if (tgt->kind == NK::ListExpr && a->op == "=") {
+            auto* le = static_cast<ListExpr*>(tgt);
+            bool allDecl = !le->items.empty(), anyDecl = false, allScalar = true;
+            for (auto& it : le->items) {
+                if (it->kind != NK::VarExpr) { allScalar = false; break; }
+                auto* v = static_cast<VarExpr*>(it.get());
+                if (v->name.empty() || v->name[0] != '$') allScalar = false;
+                if (v->declare) anyDecl = true;
+                else allDecl = false;
+            }
+            if (allScalar && le->items.size() && (!anyDecl || allDecl)) {
+                std::string t = gensym("__lt");
+                if (allDecl) { // `my ($a, $b) = …` — statement position only
+                    std::string o = "Value " + t + " = rtArrayVal(" + exArg(a->value.get()) + ")";
+                    for (size_t i = 0; i < le->items.size(); i++)
+                        o += "; Value " + mangleVar(static_cast<VarExpr*>(le->items[i].get())->name)
+                           + " = rtIndexGet(" + t + ", Value::integer(" + std::to_string(i) + "LL), false)";
+                    return o;
+                }
+                std::string o = "([&]()->Value{ Value " + t + " = rtArrayVal(" + exArg(a->value.get()) + ");";
+                for (size_t i = 0; i < le->items.size(); i++)
+                    o += " " + lvalueExpr(le->items[i].get()) + " = rtIndexGet(" + t
+                       + ", Value::integer(" + std::to_string(i) + "LL), false);";
+                return o + " return " + t + "; }())";
+            }
         }
         // Scalar `:=` binds ≈ assigns natively; container aliasing isn't modeled, so bundle that.
         if (a->op == ":=") {
@@ -700,7 +830,19 @@ struct Codegen {
     }
 
     void forStmt(ForStmt* f, int ind) {
-        if (f->destructure) unsupported("for with destructuring");
+        if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
+            std::string lst = gensym("__lst"), el = gensym("__e");
+            line(ind, "{");
+            line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
+            line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr) {");
+            for (size_t k = 0; k < f->vars.size(); k++)
+                line(ind + 2, "Value " + mangleVar(f->vars[k]) + " = rtIndexGet(" + el +
+                              ", Value::integer(" + std::to_string(k) + "LL), false);");
+            block(f->body.get(), ind + 2);
+            line(ind + 1, "}");
+            line(ind, "}");
+            return;
+        }
         if (f->vars.size() > 1) { // for @a -> $x, $y { … } : take vars.size() elements per iteration
             size_t n = f->vars.size();
             std::string lst = gensym("__lst"), i = gensym("__fi");
@@ -910,7 +1052,7 @@ struct Codegen {
     }
 
     void classMethodDefs(ClassDecl* cd) {
-        if (cd->isGrammar || cd->isPackage) unsupported("a grammar/package declaration");
+        if (cd->isPackage) unsupported("a package declaration");
         for (auto& mp : cd->methods) {
             SubDecl* md = mp.get();
             if (md->isMulti) unsupported("a multi method");
@@ -950,6 +1092,19 @@ struct Codegen {
         }
         for (auto& mp : cd->methods)
             line(1, "  " + ci + "->methods[" + cesc(mp->name) + "] = Value::closure(" + methodFn(cd->name, mp->name) + ");");
+        if (cd->isGrammar) { // grammar rules are pattern strings — the embedded engine runs them
+            line(1, "  " + ci + "->isGrammar = true;");
+            for (auto& r : cd->rules) {
+                std::string reg = "  " + ci + "->rules[" + cesc(r.name) + "] = " + cesc(r.pattern) + "; "
+                                + ci + "->ruleKind[" + cesc(r.name) + "] = " + cesc(r.kind) + ";";
+                if (!r.params.empty()) {
+                    reg += " " + ci + "->ruleParams[" + cesc(r.name) + "] = {";
+                    for (size_t k = 0; k < r.params.size(); k++) reg += (k ? ", " : "") + cesc(r.params[k]);
+                    reg += "};";
+                }
+                line(1, reg);
+            }
+        }
         line(1, "  RT.classes_[" + cesc(cd->name) + "] = " + ci + "; }");
     }
 
@@ -1008,13 +1163,24 @@ struct Codegen {
         });
         line(0, "static Value " + mangleSub(name) + "(ValueList __a) {");
         for (SubDecl* c : cands) {
-            std::string guard = "__a.size() == " + std::to_string(c->params.size());
+            // arity guard: required positionals set the floor; optional/default params
+            // raise the ceiling; a slurpy removes the ceiling entirely
+            size_t req = 0, opt = 0; bool slurpy = false;
+            for (auto& p : c->params) {
+                if (p.slurpy) { slurpy = true; continue; }
+                if (p.named) continue;
+                if (p.defaultVal || p.optional) opt++;
+                else req++;
+            }
+            std::string guard = "__a.size() >= " + std::to_string(req);
+            if (!slurpy) guard += " && __a.size() <= " + std::to_string(req + opt);
             for (size_t k = 0; k < c->params.size(); k++) {
                 const Param& p = c->params[k];
+                if (p.slurpy || p.named) continue;
                 if (p.litVal)
-                    guard += " && applyArith(\"eqv\", __a[" + std::to_string(k) + "], " + ex(p.litVal.get()) + ").truthy()";
+                    guard += " && __a.size() > " + std::to_string(k) + " && applyArith(\"eqv\", __a[" + std::to_string(k) + "], " + ex(p.litVal.get()) + ").truthy()";
                 else if (!p.type.empty())
-                    guard += " && rtTypeMatch(__a[" + std::to_string(k) + "], " + cesc(p.type) + ")";
+                    guard += " && __a.size() > " + std::to_string(k) + " && rtTypeMatch(__a[" + std::to_string(k) + "], " + cesc(p.type) + ")";
             }
             line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
         }
@@ -1046,7 +1212,7 @@ std::string transpileToCpp(Program& prog, bool optimize) {
             }
         } else if (s->kind == NK::ClassDecl) {
             auto* cd = static_cast<ClassDecl*>(s.get());
-            if (cd->isRole || cd->isGrammar || cd->isPackage) throw CodegenError{"a role/grammar/package"};
+            if (cd->isRole || cd->isPackage) throw CodegenError{"a role/package"};
             g.classNames.insert(cd->name);
             classes.push_back(cd);
         } else if (s->kind == NK::ExprStmt) {

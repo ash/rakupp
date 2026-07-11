@@ -2,10 +2,13 @@
 # Roast test harness, self-hosted in Raku and run by rakupp itself.
 #
 # Usage:
-#   build/rakupp tools/run-roast.raku [PATTERN ...]
+#   build/rakupp tools/run-roast.raku [--workers=N] [PATTERN ...]
 #
 # With no PATTERN, runs every .t file under $ROOT. A PATTERN is matched as a
-# substring against the path.
+# substring against the path. --workers=N runs N test files at a time: each
+# file's subprocess runs from a `start` worker, and the interpreter parks the
+# GIL while a worker waits on its child, so the children genuinely overlap.
+# Results are tallied and printed in file order regardless of N.
 
 my $ROOT    = %*ENV<ROAST> // '/Users/ash/roast';   # set $ROAST to your Roast checkout
 my $BIN     = ~$*EXECUTABLE;   # test whichever compiler is running this harness
@@ -77,7 +80,12 @@ sub static-plan($file) {
     return -1;
 }
 
-my @patterns = @*ARGS;
+my $WORKERS = 1;
+my @patterns;
+for @*ARGS -> $a {
+    if $a ~~ /^ '--workers=' (\d+) $/ { $WORKERS = (+$0) max 1 }
+    else { @patterns.push($a) }
+}
 my @files;
 for find-t($ROOT) -> $f {
     if @patterns.elems == 0 {
@@ -124,17 +132,41 @@ my $notap-unknown  = 0;   # no-TAP files whose plan is dynamic/absent — uncoun
 # Per-section rollups for the by-synopsis table.
 my (%sec-full, %sec-part, %sec-time, %sec-notap, %sec-pass, %sec-tot);
 
-for @files -> $f {
+# Run the files in batches of $WORKERS. Each batch's subprocesses overlap (the
+# GIL is parked while a worker waits on its child); parsing and tallying happen
+# on the main thread afterwards, in file order, so output and totals match a
+# sequential run.
+my $next = 0;
+while $next < @files.elems {
+    my $hi = ($next + $WORKERS) min @files.elems;
+    my @batch = @files[$next ..^ $hi];
+    # Each worker runs its file AND parses the TAP, so parsing overlaps with the
+    # other workers' child processes instead of serialising between batches.
+    my sub run-one($f) {
+        my ($out, $timedout) = run-with-timeout($BIN, $f, $TIMEOUT);
+        my ($planned, $ran, $passed, $failed) = parse-tap($out);
+        [$timedout, $planned, $ran, $passed, $failed, $out.contains('# SKIP')]; # an Array stays one item
+    }
+    my @outs;
+    if $WORKERS > 1 && @batch.elems > 1 {
+        my @promises = @batch.map(-> $f { start run-one($f) });
+        @outs = await @promises;
+    }
+    else {
+        @outs.push(run-one($_)) for @batch; # push keeps each tuple one item
+    }
+    for ^@batch.elems -> $k {
+    my $f = @batch[$k];
     my $rel = $f.substr($ROOT.chars + 1);
     my $sec = seckey($rel);
-    my ($out, $timedout) = run-with-timeout($BIN, $f, $TIMEOUT);
+    my $r = @outs[$k];
+    my ($timedout, $planned, $ran, $passed, $failed, $has-skip) = $r[0], $r[1], $r[2], $r[3], $r[4], $r[5];
     if $timedout {
         $timeout++;
         %sec-time{$sec}++;
         say "  [TIME]          ", $rel;
         next;
     }
-    my ($planned, $ran, $passed, $failed) = parse-tap($out);
     $tot-ran  += $ran;
     $tot-pass += $passed;
     %sec-pass{$sec} += $passed;
@@ -144,7 +176,7 @@ for @files -> $f {
     # where none was emitted we fall back to what ran.
     $tot-plan += ($planned >= 0 ?? $planned !! $ran);
     my $mark;
-    if $planned == 0 && $failed == 0 && $out.contains('# SKIP') {
+    if $planned == 0 && $failed == 0 && $has-skip {
         $pass++;              # genuine `plan skip-all` (emits `1..0 # SKIP …`) is a passing outcome
         %sec-full{$sec}++;
         $mark = 'PASS';
@@ -175,6 +207,8 @@ for @files -> $f {
     if $mark ne '----' {
         say sprintf('  [%s]  %5s  %s', $mark, "$passed/$ran", $rel);
     }
+    }
+    $next = $hi;
 }
 
 my $declared = $tot-plan + $notap-declared;  # every test any file declares it will run

@@ -315,7 +315,7 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
     }
 }
 
-static std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
+std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
     std::set<std::string> ph;
     for (auto& s : body) collectPHStmt(s.get(), ph);
     return std::vector<std::string>(ph.begin(), ph.end()); // std::set is sorted
@@ -362,19 +362,265 @@ ValueList rtMainArgs(const std::vector<std::string>& argv) {
     return margs;
 }
 
+// gather { … } for native codegen: same probe-and-double laziness as the
+// interpreter's gather — run the block collecting takes up to a cap; if the cap
+// is hit the result is lazy and extends by re-running with a doubled cap.
+Value Interpreter::rtGather(Value blockClosure) {
+    auto runGather = [this, blockClosure](size_t limit, ValueList& out) -> bool {
+        auto collector = std::make_shared<ValueList>();
+        tctx_.gatherStack.push_back(collector);
+        tctx_.gatherLimits.push_back(limit);
+        bool hit = false;
+        try { ValueList noargs; callCallable(blockClosure, noargs); }
+        catch (StopGatherEx&) { hit = true; }
+        catch (...) { tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back(); throw; }
+        tctx_.gatherStack.pop_back(); tctx_.gatherLimits.pop_back();
+        out = std::move(*collector);
+        return hit;
+    };
+    const size_t INITIAL = 64;
+    ValueList prefix;
+    if (!runGather(INITIAL, prefix)) return Value::array(std::move(prefix)); // finite: eager
+    Value arr = Value::array(prefix); arr.isList = true;
+    auto st = std::make_shared<LazySeqState>();
+    st->appendNext = [this, runGather](ValueList& out) -> bool {
+        ValueList grown;
+        bool more = runGather(out.size() + std::max<size_t>(64, out.size()), grown);
+        for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
+        return more;
+    };
+    arr.ext = st;
+    return arr;
+}
+
+Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
+    // The sequence operator, callable from both evalBinary and native codegen:
+    // seed list [, generator closure] ... endpoint|*|Code.
+    {
+        // A comma-list `a, b, c` is a list of seeds; take its direct elements only
+        // (a SHALLOW split — a deep flatten would collapse an array-valued seed like
+        // `[1]` to `1` and break an array sequence `[1], -> @b {…} … *`).
+        ValueList seed;
+        if (l.t == VT::Array) seed = *l.arr;
+        else if (l.t == VT::Range) seed = l.flatten();
+        else seed = ValueList{l};
+        Value gen; bool hasGen = false; // a trailing closure is the generator
+        if (!seed.empty() && seed.back().t == VT::Code) { gen = seed.back(); seed.pop_back(); hasGen = true; }
+        // a Code endpoint (`… * > 100`) terminates the sequence at the first
+        // element it accepts (included for `...`, dropped for `...^`)
+        bool endCode = (r.t == VT::Code);
+        bool infinite = (r.t == VT::Whatever) || (r.t == VT::Num && std::isinf(r.n));
+        double endVal = (infinite || endCode) ? 0 : r.toNum();
+        Value out = Value::array(); out.isList = true;
+        for (auto& s : seed) out.arr->push_back(s);
+        if (out.arr->empty()) return out;
+        // String sequence: "a"..."e" climbs via strSucc, "E"..."A" descends via strPred.
+        if (!hasGen && !infinite && r.t == VT::Str && seed.back().t == VT::Str) {
+            std::string end = r.s, cur = seed.back().s;
+            bool desc = cur > end;
+            if (cur == end) { if (exclusive) out.arr->pop_back(); return out; }
+            const size_t SCAP = 1000000;
+            while (out.arr->size() < SCAP) {
+                bool ok = true;
+                std::string nxt = desc ? strPred(cur, ok) : strSucc(cur);
+                if (!ok) break;
+                if (!desc && (nxt.length() > end.length() || (nxt.length() == end.length() && nxt > end))) break;
+                if (desc && (nxt.length() < end.length() || (nxt.length() == end.length() && nxt < end))) break;
+                out.arr->push_back(Value::str(nxt));
+                cur = nxt;
+                if (cur == end) { if (exclusive) out.arr->pop_back(); break; }
+            }
+            return out;
+        }
+        bool allInt = true; for (auto& s : seed) if (s.t != VT::Int && s.t != VT::Bool) allInt = false;
+        double step = 1; bool geometric = false; double ratio = 1;
+        if (!hasGen) {
+            if (seed.size() >= 3) {
+                // constant difference => arithmetic; else constant ratio => geometric (1,2,4,8 → ×2)
+                bool arith = true, geom = true;
+                double d0 = seed[1].toNum() - seed[0].toNum();
+                double r0 = seed[0].toNum() != 0 ? seed[1].toNum() / seed[0].toNum() : 0;
+                for (size_t i = 1; i + 1 < seed.size(); i++) {
+                    if (std::abs((seed[i + 1].toNum() - seed[i].toNum()) - d0) > 1e-9) arith = false;
+                    if (seed[i].toNum() == 0 || std::abs(seed[i + 1].toNum() / seed[i].toNum() - r0) > 1e-9) geom = false;
+                }
+                if (arith) step = d0;
+                else if (geom) { geometric = true; ratio = r0; }
+                else step = seed.back().toNum() - seed[seed.size() - 2].toNum();
+            } else if (seed.size() == 2) step = seed[1].toNum() - seed[0].toNum();
+            else if (!infinite && !endCode && out.arr->back().toNum() > endVal) step = -1;
+        }
+        // Non-numeric seeds (Str / object with .succ) step via succ/pred when the
+        // endpoint is Whatever or Code: 'a' ... * ; H.new ... *.y > 10
+        bool succSeed = !hasGen && !seed.empty() && (infinite || endCode) &&
+                        (seed.back().t == VT::Str || seed.back().t == VT::Object);
+        bool succDesc = succSeed && seed.size() >= 2 &&
+                        seed[seed.size() - 2].toStr() > seed.back().toStr();
+        bool ascending = hasGen ? true : (geometric ? ratio >= 1 : step >= 0);
+        long long arity = 1;
+        if (hasGen && gen.code) arity = gen.code->whateverArity > 0 ? gen.code->whateverArity
+                                       : (gen.code->params ? (long long)gen.code->params->size() : 1);
+        // An infinite sequence (`… … *`) is LAZY: keep only the seed materialised and
+        // attach a generator that computes one more element on demand.
+        if (infinite) {
+            auto st = std::make_shared<LazySeqState>();
+            st->infinite = true; // unbounded: list assignment must keep it lazy, not drain it
+            Interpreter* self = this;
+            st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
+                              succSeed, succDesc](ValueList& cache) -> bool {
+                if (cache.empty()) return false;
+                double lastV = cache.back().toNum();
+                Value next;
+                if (hasGen) {
+                    ValueList args; size_t n = cache.size();
+                    for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? cache[idx] : Value::integer(0)); }
+                    next = self->callCallable(gen, args);
+                } else if (succSeed) { // 'a' ... * : step by succ/pred
+                    const Value& lastE = cache.back();
+                    if (lastE.t == VT::Str) {
+                        bool ok = true;
+                        std::string s = succDesc ? strPred(lastE.s, ok) : strSucc(lastE.s);
+                        if (!ok) return false;
+                        next = Value::str(s);
+                    } else {
+                        ValueList none;
+                        next = self->methodCall(lastE, succDesc ? "pred" : "succ", none);
+                    }
+                } else if (geometric) {
+                    double nv = lastV * ratio;
+                    next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
+                } else {
+                    double nv = lastV + step;
+                    next = allInt ? Value::integer((long long)nv) : Value::number(nv);
+                }
+                cache.push_back(next);
+                return true;
+            };
+            out.ext = st;
+            return out;
+        }
+        // Code endpoint: the first accepted element ends the sequence — check the
+        // seeds themselves first (`1, 2, 4 ... * > 3` is (1 2 4))
+        auto endAccepts = [&](const Value& v) -> bool {
+            ValueList a{v}; return callCallable(r, a).truthy();
+        };
+        if (endCode)
+            for (size_t k = 0; k < out.arr->size(); k++)
+                if (endAccepts((*out.arr)[k])) {
+                    out.arr->resize(exclusive ? k : k + 1);
+                    return out;
+                }
+        const size_t CAP = 1000000;
+        while (out.arr->size() < CAP) {
+            double lastV = out.arr->back().toNum();
+            if (!infinite && !endCode && (ascending ? lastV >= endVal : lastV <= endVal)) break; // reached endpoint
+            Value next;
+            if (hasGen) {
+                ValueList args; size_t n = out.arr->size();
+                for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? (*out.arr)[idx] : Value::integer(0)); }
+                next = callCallable(gen, args);
+            } else if (succSeed) { // H.new ... *.y > 10 : step by succ/pred
+                const Value& lastE = out.arr->back();
+                if (lastE.t == VT::Str) {
+                    bool ok = true;
+                    std::string s = succDesc ? strPred(lastE.s, ok) : strSucc(lastE.s);
+                    if (!ok) break;
+                    next = Value::str(s);
+                } else {
+                    ValueList none;
+                    next = methodCall(lastE, succDesc ? "pred" : "succ", none);
+                }
+            } else if (geometric) {
+                double nv = lastV * ratio;
+                next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
+            } else {
+                double nv = lastV + step;
+                next = allInt ? Value::integer((long long)nv) : Value::number(nv);
+            }
+            if (endCode) {
+                if (endAccepts(next)) { if (!exclusive) out.arr->push_back(next); break; }
+                out.arr->push_back(next);
+                continue;
+            }
+            if (!infinite) { double nv = next.toNum(); if (ascending ? nv > endVal : nv < endVal) break; } // would overshoot
+            out.arr->push_back(next);
+            if (!infinite && next.toNum() == endVal) break; // hit endpoint exactly
+        }
+        if (exclusive && !infinite && !endCode && !out.arr->empty() && out.arr->back().toNum() == endVal) out.arr->pop_back();
+        return out;
+    }
+    return Value::array();
+}
+
+// `from .. to` for native codegen: a string range materialises via succ (like the
+// interpreter's NK::Range eval); anything else is a numeric Range value.
+Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
+    if (from.t == VT::Str && to.t == VT::Str) {
+        Value arr = Value::array(); arr.isList = true; // a string range is list-like (flattens)
+        std::string cur = from.s, end = to.s;
+        for (int g = 0; g < 1000000; g++) {
+            if (cur.length() > end.length()) break;
+            if (cur.length() == end.length() && cur > end) break;
+            if (cur == end) { if (!exTo) arr.arr->push_back(Value::str(cur)); break; }
+            arr.arr->push_back(Value::str(cur));
+            cur = strSucc(cur);
+        }
+        return arr;
+    }
+    return Value::range(from.toInt(), to.toInt(), exFrom, exTo);
+}
+
+// `@a[$i .. *]` for native codegen: the tail slice from index `from` to the end.
+Value rtSliceFrom(const Value& base, long long from, bool exFrom) {
+    Value out = Value::array(); out.isList = true;
+    if (from < 0) return out;
+    if (base.t == VT::Array && base.arr) {
+        long long n = (long long)base.arr->size();
+        for (long long i = from + (exFrom ? 1 : 0); i < n; i++) out.arr->push_back((*base.arr)[i]);
+    }
+    else if (base.t == VT::Str) { // "abc"[1..*] is rare but harmless to support: chars
+        std::string ss = base.s;
+        if (from + (exFrom ? 1 : 0) < (long long)ss.size()) return Value::str(ss.substr(from + (exFrom ? 1 : 0)));
+    }
+    return out;
+}
+
+// >>.method for native codegen: apply to each top-level element (structure-
+// preserving, no deep flatten) — mirrors the interpreter's hyper method call.
+Value rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args) {
+    Value out = Value::array();
+    if (inv.t == VT::Array && inv.arr)
+        for (auto& el : *inv.arr) out.arr->push_back(I.methodCall(el, m, args));
+    else
+        for (auto& el : inv.flatten()) out.arr->push_back(I.methodCall(el, m, args));
+    out.isList = true;
+    return out;
+}
+
+// |x for native codegen. In argument position (argPos): arrays/ranges spread
+// positionally and a hash spreads as named args — mirroring evalArgs. In a list
+// literal a hash stays one item — mirroring the ListExpr eval.
+void rtSpreadArg(ValueList& as, const Value& v, bool argPos) {
+    if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) as.push_back(x); return; }
+    if (argPos && v.t == VT::Hash && v.hash) {
+        for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; as.push_back(std::move(p)); }
+        return;
+    }
+    as.push_back(v);
+}
+// |x as a list-literal element: a pre-spread List that listToArray will splice.
+Value rtSlipVal(const Value& v) {
+    Value out = Value::array(); out.isList = true;
+    rtSpreadArg(*out.arr, v, false);
+    return out;
+}
+
 // `@a = expr` for native codegen: list-assignment semantics. A List splices its
 // elements (one level, via listToArray); an Array (itemized rows included) keeps
 // its elements as they are; a Range expands; a lone scalar becomes a 1-elem array.
 Value rtArrayVal(const Value& v) {
     if (v.t == VT::Array && v.arr) {
-        if (v.ext) { // a lazy seq: keep an infinite one lazy, drain a finite one first
-            auto st = std::static_pointer_cast<LazySeqState>(v.ext);
-            if (st->infinite) return v;
-            if (st->appendNext) {
-                const size_t CAP = 1000000;
-                while (v.arr->size() < CAP && st->appendNext(*v.arr)) {}
-            }
-        }
+        if (v.ext) return v; // a lazy seq stays lazy; indexing/consumers materialise on demand
         if (v.isList) { Value r = listToArray(*v.arr); r.isList = false; return r; }
         Value r = Value::array(*v.arr); // fresh buffer: `@a = @b` must not alias @b
         return r;
@@ -654,7 +900,9 @@ Value Interpreter::spawnPromise(Value code) {
         // (step 2); the promise settle and the workers_ push are mutex-guarded.
         std::lock_guard<std::mutex> wlk(sharedMut_);
         liveWorkers_++;
-        workers_.emplace_back([self, code, ps]() mutable {
+        reapFinishedWorkers();
+        auto fin = std::make_shared<std::atomic<bool>>(false);
+        workers_.push_back({BigStackThread([self, code, ps, fin]() mutable {
             t_isWorker = true;
             Value r; bool broke = false; Value cause;
             try {
@@ -669,11 +917,14 @@ Value Interpreter::spawnPromise(Value code) {
             }
             ps->cv.notify_all();
             self->liveWorkers_--;
-        });
+            fin->store(true, std::memory_order_release);
+        }), fin});
         return p;
     }
     liveWorkers_++;
-    workers_.emplace_back([self, code, ps]() mutable {
+    reapFinishedWorkers();                 // release stacks of already-finished workers
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    workers_.push_back({BigStackThread([self, code, ps, fin]() mutable {
         t_isWorker = true;
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
@@ -693,7 +944,8 @@ Value Interpreter::spawnPromise(Value code) {
         self->liveWorkers_--;
         self->gilYieldNotify();            // release the GIL (waking any cooperative yielder)
         ps->cv.notify_all();
-    });
+        fin->store(true, std::memory_order_release);
+    }), fin});
     return p;
 }
 
@@ -747,10 +999,10 @@ void Interpreter::drainWorkers() {
         // Workers already run freely; just join them. They may spawn more (guarded by
         // sharedMut_), so loop until the queue drains.
         for (;;) {
-            std::vector<std::thread> batch;
+            std::vector<WorkerSlot> batch;
             { std::lock_guard<std::mutex> lk(sharedMut_); batch.swap(workers_); }
             if (batch.empty()) break;
-            for (auto& t : batch) if (t.joinable()) t.join();
+            for (auto& t : batch) if (t.th.joinable()) t.th.join();
         }
         gilHeld_ = false;
         return;
@@ -769,11 +1021,11 @@ void Interpreter::drainWorkers() {
     while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     if (liveWorkers_.load() > 0) {
-        for (auto& t : workers_) t.detach();   // daemon: don't wait on it
+        for (auto& t : workers_) t.th.detach(); // daemon: don't wait on it
         workers_.clear();
         abandonedWorkers_ = true;
     } else {
-        for (auto& t : workers_) if (t.joinable()) t.join(); // reap the finished threads
+        for (auto& t : workers_) if (t.th.joinable()) t.th.join(); // reap the finished threads
         workers_.clear();
     }
     gilHeld_ = false;
@@ -2382,8 +2634,14 @@ static Value typedElemDefault(const Value& base) {
 }
 
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
+    // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
+    if (key.t == VT::Range || (key.t == VT::Array && key.arr)) {
+        Value out = Value::array(); out.isList = true;
+        for (auto& k : key.flatten()) out.arr->push_back(rtIndexGet(base, k, isHash));
+        return out;
+    }
     if (isHash) {
-        if (base.t == VT::Hash && base.hash) {
+        if ((base.t == VT::Hash || base.t == VT::Match) && base.hash) { // Match: named captures
             auto it = base.hash->find(key.toStr());
             if (it != base.hash->end()) return it->second;
         }
@@ -2399,7 +2657,16 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         if (i >= 0 && i < (long long)f.size()) return f[i];
         return Value::nil();
     }
-    if ((base.t == VT::Array) && base.arr) {
+    if (base.t == VT::Array && base.arr && base.ext) { // lazy seq: force elements up to i
+        long long i = key.toInt();
+        if (i >= 0) {
+            auto st = std::static_pointer_cast<LazySeqState>(base.ext);
+            const size_t CAP = 1000000;
+            if (st->appendNext)
+                while ((long long)base.arr->size() <= i && base.arr->size() < CAP && st->appendNext(*base.arr)) {}
+        }
+    }
+    if ((base.t == VT::Array || base.t == VT::Match) && base.arr) { // Match: positional captures
         long long i = key.toInt(), n = (long long)base.arr->size();
         if (i < 0) i += n;
         if (i >= 0 && i < n) return (*base.arr)[i];
@@ -4888,157 +5155,7 @@ Value Interpreter::evalBinary(Binary* b) {
     if (op == "..." || op == "...^") { // sequence operator: seed [, closure] ... endpoint|*
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
-        bool exclusive = (op == "...^");
-        // A comma-list `a, b, c` is a list of seeds; take its direct elements only
-        // (a SHALLOW split — a deep flatten would collapse an array-valued seed like
-        // `[1]` to `1` and break an array sequence `[1], -> @b {…} … *`).
-        ValueList seed;
-        if (l.t == VT::Array) seed = *l.arr;
-        else if (l.t == VT::Range) seed = l.flatten();
-        else seed = ValueList{l};
-        Value gen; bool hasGen = false; // a trailing closure is the generator
-        if (!seed.empty() && seed.back().t == VT::Code) { gen = seed.back(); seed.pop_back(); hasGen = true; }
-        // a Code endpoint (`… * > 100`) terminates the sequence at the first
-        // element it accepts (included for `...`, dropped for `...^`)
-        bool endCode = (r.t == VT::Code);
-        bool infinite = (r.t == VT::Whatever) || (r.t == VT::Num && std::isinf(r.n));
-        double endVal = (infinite || endCode) ? 0 : r.toNum();
-        Value out = Value::array(); out.isList = true;
-        for (auto& s : seed) out.arr->push_back(s);
-        if (out.arr->empty()) return out;
-        // String sequence: "a"..."e" climbs via strSucc, "E"..."A" descends via strPred.
-        if (!hasGen && !infinite && r.t == VT::Str && seed.back().t == VT::Str) {
-            std::string end = r.s, cur = seed.back().s;
-            bool desc = cur > end;
-            if (cur == end) { if (exclusive) out.arr->pop_back(); return out; }
-            const size_t SCAP = 1000000;
-            while (out.arr->size() < SCAP) {
-                bool ok = true;
-                std::string nxt = desc ? strPred(cur, ok) : strSucc(cur);
-                if (!ok) break;
-                if (!desc && (nxt.length() > end.length() || (nxt.length() == end.length() && nxt > end))) break;
-                if (desc && (nxt.length() < end.length() || (nxt.length() == end.length() && nxt < end))) break;
-                out.arr->push_back(Value::str(nxt));
-                cur = nxt;
-                if (cur == end) { if (exclusive) out.arr->pop_back(); break; }
-            }
-            return out;
-        }
-        bool allInt = true; for (auto& s : seed) if (s.t != VT::Int && s.t != VT::Bool) allInt = false;
-        double step = 1; bool geometric = false; double ratio = 1;
-        if (!hasGen) {
-            if (seed.size() >= 3) {
-                // constant difference => arithmetic; else constant ratio => geometric (1,2,4,8 → ×2)
-                bool arith = true, geom = true;
-                double d0 = seed[1].toNum() - seed[0].toNum();
-                double r0 = seed[0].toNum() != 0 ? seed[1].toNum() / seed[0].toNum() : 0;
-                for (size_t i = 1; i + 1 < seed.size(); i++) {
-                    if (std::abs((seed[i + 1].toNum() - seed[i].toNum()) - d0) > 1e-9) arith = false;
-                    if (seed[i].toNum() == 0 || std::abs(seed[i + 1].toNum() / seed[i].toNum() - r0) > 1e-9) geom = false;
-                }
-                if (arith) step = d0;
-                else if (geom) { geometric = true; ratio = r0; }
-                else step = seed.back().toNum() - seed[seed.size() - 2].toNum();
-            } else if (seed.size() == 2) step = seed[1].toNum() - seed[0].toNum();
-            else if (!infinite && !endCode && out.arr->back().toNum() > endVal) step = -1;
-        }
-        // Non-numeric seeds (Str / object with .succ) step via succ/pred when the
-        // endpoint is Whatever or Code: 'a' ... * ; H.new ... *.y > 10
-        bool succSeed = !hasGen && !seed.empty() && (infinite || endCode) &&
-                        (seed.back().t == VT::Str || seed.back().t == VT::Object);
-        bool succDesc = succSeed && seed.size() >= 2 &&
-                        seed[seed.size() - 2].toStr() > seed.back().toStr();
-        bool ascending = hasGen ? true : (geometric ? ratio >= 1 : step >= 0);
-        long long arity = 1;
-        if (hasGen && gen.code) arity = gen.code->whateverArity > 0 ? gen.code->whateverArity
-                                       : (gen.code->params ? (long long)gen.code->params->size() : 1);
-        // An infinite sequence (`… … *`) is LAZY: keep only the seed materialised and
-        // attach a generator that computes one more element on demand.
-        if (infinite) {
-            auto st = std::make_shared<LazySeqState>();
-            Interpreter* self = this;
-            st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
-                              succSeed, succDesc](ValueList& cache) -> bool {
-                if (cache.empty()) return false;
-                double lastV = cache.back().toNum();
-                Value next;
-                if (hasGen) {
-                    ValueList args; size_t n = cache.size();
-                    for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? cache[idx] : Value::integer(0)); }
-                    next = self->callCallable(gen, args);
-                } else if (succSeed) { // 'a' ... * : step by succ/pred
-                    const Value& lastE = cache.back();
-                    if (lastE.t == VT::Str) {
-                        bool ok = true;
-                        std::string s = succDesc ? strPred(lastE.s, ok) : strSucc(lastE.s);
-                        if (!ok) return false;
-                        next = Value::str(s);
-                    } else {
-                        ValueList none;
-                        next = self->methodCall(lastE, succDesc ? "pred" : "succ", none);
-                    }
-                } else if (geometric) {
-                    double nv = lastV * ratio;
-                    next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
-                } else {
-                    double nv = lastV + step;
-                    next = allInt ? Value::integer((long long)nv) : Value::number(nv);
-                }
-                cache.push_back(next);
-                return true;
-            };
-            out.ext = st;
-            return out;
-        }
-        // Code endpoint: the first accepted element ends the sequence — check the
-        // seeds themselves first (`1, 2, 4 ... * > 3` is (1 2 4))
-        auto endAccepts = [&](const Value& v) -> bool {
-            ValueList a{v}; return callCallable(r, a).truthy();
-        };
-        if (endCode)
-            for (size_t k = 0; k < out.arr->size(); k++)
-                if (endAccepts((*out.arr)[k])) {
-                    out.arr->resize(exclusive ? k : k + 1);
-                    return out;
-                }
-        const size_t CAP = 1000000;
-        while (out.arr->size() < CAP) {
-            double lastV = out.arr->back().toNum();
-            if (!infinite && !endCode && (ascending ? lastV >= endVal : lastV <= endVal)) break; // reached endpoint
-            Value next;
-            if (hasGen) {
-                ValueList args; size_t n = out.arr->size();
-                for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? (*out.arr)[idx] : Value::integer(0)); }
-                next = callCallable(gen, args);
-            } else if (succSeed) { // H.new ... *.y > 10 : step by succ/pred
-                const Value& lastE = out.arr->back();
-                if (lastE.t == VT::Str) {
-                    bool ok = true;
-                    std::string s = succDesc ? strPred(lastE.s, ok) : strSucc(lastE.s);
-                    if (!ok) break;
-                    next = Value::str(s);
-                } else {
-                    ValueList none;
-                    next = methodCall(lastE, succDesc ? "pred" : "succ", none);
-                }
-            } else if (geometric) {
-                double nv = lastV * ratio;
-                next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
-            } else {
-                double nv = lastV + step;
-                next = allInt ? Value::integer((long long)nv) : Value::number(nv);
-            }
-            if (endCode) {
-                if (endAccepts(next)) { if (!exclusive) out.arr->push_back(next); break; }
-                out.arr->push_back(next);
-                continue;
-            }
-            if (!infinite) { double nv = next.toNum(); if (ascending ? nv > endVal : nv < endVal) break; } // would overshoot
-            out.arr->push_back(next);
-            if (!infinite && next.toNum() == endVal) break; // hit endpoint exactly
-        }
-        if (exclusive && !infinite && !endCode && !out.arr->empty() && out.arr->back().toNum() == endVal) out.arr->pop_back();
-        return out;
+        return seqOp(std::move(l), std::move(r), op == "...^");
     }
     if (op == "~~" || op == "!~~") {
         // regex match: $str ~~ /pat/   /   $str ~~ s/pat/repl/

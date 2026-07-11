@@ -149,6 +149,12 @@ paste-ready copy of the by-synopsis table above** — so refreshing that table
 is a copy-paste, not a hand computation. Filter by path
 substring: `build/rakupp tools/run-roast.raku S05`.
 
+`--workers=N` runs N test files at a time (`… tools/run-roast.raku
+--workers=8`): each file runs from a `start` worker and the interpreter parks
+the GIL while a worker waits on its child process, so the children genuinely
+overlap. Output and totals are identical to a sequential run — results are
+tallied and printed in file order regardless of N.
+
 _Snapshot: 419 / 1,464 files fully passing (~29% coverage); 646 partial,
 389 no-TAP, 8 timeout. Reached-assertion pass rate 157,293 / 163,209 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
