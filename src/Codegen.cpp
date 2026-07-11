@@ -175,9 +175,13 @@ struct Codegen {
                 auto* n = static_cast<NumLit*>(e);
                 if (n->imaginary) unsupported("imaginary literal");
                 if (n->isRat) {
+                    // function-local static: build the Rat once, share its immutable
+                    // BigInt parts on every evaluation (hot-loop literals!)
                     std::ostringstream s;
+                    s << "([]() -> const Value& { static const Value __r = ";
                     if (n->bigNum.empty()) s << "Value::rat(BigInt(" << n->ratNum << "LL), BigInt(" << n->ratDen << "LL))";
                     else s << "Value::rat(BigInt::fromString(\"" << n->bigNum << "\"), BigInt::fromString(\"" << n->bigDen << "\"))";
+                    s << "; return __r; }())";
                     return s.str();
                 }
                 std::ostringstream s; s.precision(17); s << "Value::number(" << n->v << ")";
@@ -494,6 +498,23 @@ struct Codegen {
                     std::string def = sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
                     line(ind, "Value " + mangleVar(nm) + " = " + def + ";");
                     return;
+                }
+                // bare declaration list `my ($x, $y, $k);` — declare each, no value
+                if (e->kind == NK::ListExpr) {
+                    auto* le = static_cast<ListExpr*>(e);
+                    bool allDecl = !le->items.empty();
+                    for (auto& it : le->items)
+                        if (it->kind != NK::VarExpr || !static_cast<VarExpr*>(it.get())->declare)
+                            { allDecl = false; break; }
+                    if (allDecl) {
+                        for (auto& it : le->items) {
+                            const std::string& nm = static_cast<VarExpr*>(it.get())->name;
+                            char sigil = nm.empty() ? '$' : nm[0];
+                            std::string def = sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
+                            line(ind, "Value " + mangleVar(nm) + " = " + def + ";");
+                        }
+                        return;
+                    }
                 }
                 line(ind, ex(e) + ";");
                 return;
@@ -992,6 +1013,15 @@ std::string transpileToCpp(Program& prog, bool optimize) {
              "    try {\n";
     std::string body = g.capture([&]() {
         g.emitSeq(prog.stmts, 2, /*topLevel=*/true);
+        // auto-invoke MAIN with the CLI args (strings; --opt handling stays interp-only)
+        bool hasMain = false;
+        for (auto& s : prog.stmts)
+            if (s->kind == NK::SubDecl && static_cast<SubDecl*>(s.get())->name == "MAIN")
+                hasMain = true;
+        if (hasMain)
+            g.line(2, "{ ValueList __margs; for (int __i = 1; __i < argc; __i++) "
+                      "__margs.push_back(Value::str(argv[__i])); " +
+                      mangleSub("MAIN") + "(__margs); }");
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });
     g.out << body;

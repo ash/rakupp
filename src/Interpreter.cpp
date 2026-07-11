@@ -3137,6 +3137,39 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '%': if (c1 == '\0' && b != 0) { long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
+    // Mixed float fast path: one side Num, the other any simple numeric — the
+    // result is what the generic double path below computes anyway, dispatched
+    // by first char instead of walking the whole op chain. (Zero-denominator
+    // Rats and bignums fall through so their special semantics stay intact.)
+    if ((l.t == VT::Num || r.t == VT::Num) && !op.empty() && op.size() <= 2) {
+        auto simpleNum = [](const Value& v, double& out) -> bool {
+            switch (v.t) {
+                case VT::Num:  out = v.n; return true;
+                case VT::Int:  if (v.big) return false; out = (double)v.i; return true;
+                case VT::Bool: out = v.b ? 1.0 : 0.0; return true;
+                case VT::Rat:  if (!v.ratN || !v.ratD || v.ratD->isZero()) return false;
+                               out = v.ratN->toDouble() / v.ratD->toDouble(); return true;
+                default: return false;
+            }
+        };
+        double a, b;
+        if (simpleNum(l, a) && simpleNum(r, b)) {
+            char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
+            switch (c0) {
+                case '+': if (c1 == '\0') return Value::number(a + b); break;
+                case '-': if (c1 == '\0') return Value::number(a - b); break;
+                case '*': if (c1 == '\0') return Value::number(a * b);
+                          if (c1 == '*') return Value::number(std::pow(a, b)); break;
+                case '/': if (c1 == '\0') return Value::number(a / b); break;
+                case '<': if (c1 == '\0') return Value::boolean(a < b);
+                          if (c1 == '=') return Value::boolean(a <= b); break;
+                case '>': if (c1 == '\0') return Value::boolean(a > b);
+                          if (c1 == '=') return Value::boolean(a >= b); break;
+                case '=': if (c1 == '=') return Value::boolean(a == b); break;
+                case '!': if (c1 == '=') return Value::boolean(a != b); break;
+            }
+        }
+    }
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
     // value — but identity/smartmatch/type ops must still see the object itself.
     if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "!===" && op != "=:=" &&
@@ -3401,8 +3434,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (a) { n /= a; d /= a; }
                 if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) // uint64 denominator cap
                     return Value::number((double)n / (double)d);
-                if (n >= (__int128)LLONG_MIN && n <= (__int128)LLONG_MAX && d <= (__int128)LLONG_MAX)
-                    return Value::rat(BigInt((long long)n), BigInt((long long)d));
+                if (n >= (__int128)LLONG_MIN && n <= (__int128)LLONG_MAX && d <= (__int128)LLONG_MAX) {
+                    // already reduced with d > 0 — build directly, no second gcd
+                    Value v; v.t = VT::Rat;
+                    v.ratN = std::make_shared<BigInt>((long long)n);
+                    v.ratD = std::make_shared<BigInt>((long long)d);
+                    return v;
+                }
                 // (reduced numerator wider than 64 bits: fall through to BigInt)
             }
         }
