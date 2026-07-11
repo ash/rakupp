@@ -81,6 +81,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 - **[GUIDE.md](GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
 - **[EXAMPLES.md](EXAMPLES.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
+- **[UNICODE.md](UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
 - **[ASYNC.md](ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
