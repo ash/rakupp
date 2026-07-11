@@ -333,6 +333,7 @@ private:
     Value mixinValue(Value base, const Value& rhs, bool copy);
     Value evalUnary(Unary* u);
     Value postfixI(Value v); // postfix:<i> — multiply by the imaginary unit
+    Value applyReduce(std::string op, ValueList& items); // [op] reduce semantics
 public:
     // $*TOLERANCE (dynamic, then lexical), default 1e-15 — Complex→Real coercions
     static double toleranceDyn();

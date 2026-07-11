@@ -175,6 +175,7 @@ bool Parser::startsTermToken(const Token& t) const {
         case Tok::Op:
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
+                   t.text == "++" || t.text == "--" || // prefix incr/decr: `f 0, ++$x`
                    t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
                    t.text == "&" || // operator-as-value `&[+]` (bare `&` in term position is only `&[OP]`)
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
@@ -202,6 +203,7 @@ bool Parser::startsListopArg(const Token& t) const {
         case Tok::Op:
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
+                   t.text == "++" || t.text == "--" || // prefix incr/decr: `say 0, ++$x`
                    t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
@@ -525,14 +527,18 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance(); hyperNext = true; continue;
         }
         // subscript adverb: %h{k}:exists / :delete / :!exists / :kv / :k / :v / :p
+        // and the variable form %h{k}:$delete (applied when the variable is true)
         if (isOp(":") && base->kind == NK::Index &&
-            static_cast<Index*>(base.get())->adverb.empty() &&
-            (peek().kind == Tok::Ident || (peek().kind == Tok::Op && peek().text == "!"))) {
+            (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
+             (peek().kind == Tok::Op && peek().text == "!"))) {
             advance(); // :
             std::string adv;
             if (isOp("!")) { advance(); adv = "!"; }
             if (isKind(Tok::Ident)) adv += advance().text;
-            static_cast<Index*>(base.get())->adverb = adv;
+            else if (isKind(Tok::Var)) adv += advance().text; // "$delete" — conditional
+            auto* ix = static_cast<Index*>(base.get());
+            // stacked adverbs (`:exists:kv:$delete`) accumulate ':'-joined
+            ix->adverb += (ix->adverb.empty() ? "" : ":") + adv;
             continue;
         }
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
@@ -1242,31 +1248,67 @@ ExprPtr Parser::parsePrimary() {
             // (max/min/gcd/…), or the meta bases Z/X. A capitalized type name — `[Any]`,
             // `[Int]`, `[Foo]` — is NOT a reduce; it's a one-element array literal.
             bool identReduce = peek(1).kind == Tok::Ident && !peek(1).text.empty() &&
-                (peek(1).text == "Z" || peek(1).text == "X" || std::islower((unsigned char)peek(1).text[0]));
-            if ((peek(1).kind == Tok::Op || identReduce) &&
-                peek(2).kind == Tok::RBracket && peek(1).text != "]") {
+                (peek(1).text == "Z" || peek(1).text == "X" || std::islower((unsigned char)peek(1).text[0]) ||
+                 // Z/X/R fused with a word op lex as one ident: [Zand] [Xor] [Rmax]
+                 ((peek(1).text[0] == 'Z' || peek(1).text[0] == 'X' || peek(1).text[0] == 'R') &&
+                  peek(1).text.size() > 1 &&
+                  std::all_of(peek(1).text.begin() + 1, peek(1).text.end(),
+                              [](unsigned char c){ return std::islower(c); })));
+            if ((peek(1).kind == Tok::FatArrow || peek(1).kind == Tok::Comma) &&
+                peek(2).kind == Tok::RBracket) {
                 advance(); // [
-                std::string innerOp = advance().text; // operator
-                advance(); // ]
+                std::string innerOp = cur().kind == Tok::FatArrow ? "=>" : ",";
+                advance(); advance(); // op ]
                 auto u = std::make_unique<Unary>();
-                u->op = "[" + innerOp + "]";
+                u->op = "[" + innerOp + "]"; // [=>] pair-consing (right-assoc) / [,] list
                 u->operand = parseExpr(BP_COMMA);
                 return u;
+            }
+            if (((peek(1).kind == Tok::Op && peek(1).text != "\\") || identReduce) &&
+                peek(1).text != "]") {
+                // the op may span several TIGHT tokens ([!=:=] lexes as `!=` + `:=`)
+                int j = 2;
+                while (peek(j).kind == Tok::Op && !peek(j).spaceBefore && peek(j).text != "]") j++;
+                if (peek(j).kind == Tok::RBracket) {
+                    advance(); // [
+                    std::string innerOp;
+                    for (int k = 1; k < j; k++) innerOp += advance().text;
+                    advance(); // ]
+                    auto u = std::make_unique<Unary>();
+                    u->op = "[" + innerOp + "]";
+                    // listop-style forms: `([op], 42)` (comma before the args) and
+                    // the zero-argument `([op])`
+                    if (isKind(Tok::Comma)) advance();
+                    if (isKind(Tok::RParen) || isKind(Tok::Semicolon) || isKind(Tok::End)) {
+                        auto empty = std::make_unique<ListExpr>();
+                        u->operand = std::move(empty);
+                    }
+                    else u->operand = parseExpr(BP_COMMA);
+                    return u;
+                }
             }
             // triangular / scan reduce: [\+] [\~] [\*] — yields the list of running
             // partial reductions (1, 1+2, 1+2+3, …) rather than the final value.
             if (peek(1).kind == Tok::Op && peek(1).text == "\\" &&
                 (peek(2).kind == Tok::Op || (peek(2).kind == Tok::Ident && !peek(2).text.empty() &&
-                    (peek(2).text == "Z" || peek(2).text == "X" || std::islower((unsigned char)peek(2).text[0])))) &&
-                !peek(2).spaceBefore && peek(3).kind == Tok::RBracket && peek(2).text != "]") {
-                advance(); // [
-                advance(); // '\'
-                std::string innerOp = advance().text; // base op
-                advance(); // ]
-                auto u = std::make_unique<Unary>();
-                u->op = "[\\" + innerOp + "]";
-                u->operand = parseExpr(BP_COMMA);
-                return u;
+                    (std::isupper((unsigned char)peek(2).text[0]) ? // Z/X(+word) meta bases
+                         (peek(2).text[0] == 'Z' || peek(2).text[0] == 'X' || peek(2).text[0] == 'R')
+                       : std::islower((unsigned char)peek(2).text[0])))) &&
+                !peek(2).spaceBefore && peek(2).text != "]") {
+                // multi-token base ops too: [\X~] lexes as `\` `X` `~`
+                int j = 3;
+                while (peek(j).kind == Tok::Op && !peek(j).spaceBefore && peek(j).text != "]") j++;
+                if (peek(j).kind == Tok::RBracket) {
+                    advance(); // [
+                    advance(); // '\'
+                    std::string innerOp;
+                    for (int k = 2; k < j; k++) innerOp += advance().text;
+                    advance(); // ]
+                    auto u = std::make_unique<Unary>();
+                    u->op = "[\\" + innerOp + "]";
+                    u->operand = parseExpr(BP_COMMA);
+                    return u;
+                }
             }
             // reverse-metaop reduce: [R-] [R~] [R/] — `R` tight against the base op
             if (peek(1).kind == Tok::Ident && peek(1).text == "R" &&
@@ -1493,7 +1535,9 @@ ExprPtr Parser::parsePrimary() {
                     be->body.push_back(std::move(st));
                     u->operand = std::move(be);
                 } else {
-                    u->operand = parseExpr(BP_PREFIX);
+                    // statement prefixes take a whole expression incl. assignment:
+                    // `try target = values` is try(target = values), not (try target) = values
+                    u->operand = parseExpr(BP_ASSIGN);
                 }
                 return u;
             }

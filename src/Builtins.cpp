@@ -4556,6 +4556,33 @@ void Interpreter::registerBuiltins() {
         srandSeed(seed);
         return Value::integer(seed);
     };
+    B["reduce"] = [](Interpreter& I, ValueList& a) -> Value {
+        // functional form: reduce &infix:<+>, LIST — fold the callable over the list
+        if (a.empty()) return Value::any();
+        Value f = a[0];
+        ValueList items;
+        for (size_t i = 1; i < a.size(); i++)
+            for (auto& x : a[i].flatten()) items.push_back(x);
+        if (items.empty()) return Value::any();
+        if (items.size() == 1) { ValueList one{items[0]}; return I.callCallable(f, one); }
+        Value acc = items[0];
+        for (size_t k = 1; k < items.size(); k++) { ValueList ab{acc, items[k]}; acc = I.callCallable(f, ab); }
+        return acc;
+    };
+    B["produce"] = [](Interpreter& I, ValueList& a) -> Value {
+        // triangular form of reduce: the list of running partial results
+        Value out = Value::array(); out.isList = true;
+        if (a.empty()) return out;
+        Value f = a[0];
+        ValueList items;
+        for (size_t i = 1; i < a.size(); i++)
+            for (auto& x : a[i].flatten()) items.push_back(x);
+        if (items.empty()) return out;
+        Value acc = items[0];
+        out.arr->push_back(acc);
+        for (size_t k = 1; k < items.size(); k++) { ValueList ab{acc, items[k]}; acc = I.callCallable(f, ab); out.arr->push_back(acc); }
+        return out;
+    };
     B["cis"] = [](Interpreter&, ValueList& a) -> Value {
         double x = a.empty() ? 0.0 : a[0].toNum();
         return Value::complex(std::cos(x), std::sin(x)); // e^(ix)

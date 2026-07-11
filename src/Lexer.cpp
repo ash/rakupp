@@ -1278,7 +1278,11 @@ std::vector<Token> Lexer::tokenize() {
         else if (c == ']') { advance(); t = make(Tok::RBracket, "]"); }
         else if (c == ';') { advance(); t = make(Tok::Semicolon, ";"); }
         else if (c == ',') { advance(); t = make(Tok::Comma, ","); }
-        else if (c == '/' && peek(1) != '/' && peek(1) != '=' && regexContext(out)) {
+        else if (c == '/' && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
+                 // `[/]` (and `[\/]`) is the division reduce metaop, not a regex
+                 !(peek(1) == ']' && !out.empty() &&
+                   (out.back().kind == Tok::LBracket ||
+                    (out.back().kind == Tok::Op && out.back().text == "\\")))) {
             advance(); // opening /
             std::string raw;
             char quote = 0;       // '...' / "..." protect an inner /
@@ -1292,6 +1296,9 @@ std::vector<Token> Lexer::tokenize() {
                 // `<(` and `)>` are the match-capture markers, not balanced <…> groups
                 if (ch == '<' && peek(1) == '(') { raw += advance(); raw += advance(); continue; }
                 if (ch == ')' && peek(1) == '>') { raw += advance(); raw += advance(); continue; }
+                // `<<` / `>>` are word-boundary assertions, not angle groups
+                if ((ch == '<' && peek(1) == '<') || (ch == '>' && peek(1) == '>'))
+                    { raw += advance(); raw += advance(); continue; }
                 if (ch == '<') angle++;
                 else if (ch == '>' && angle > 0) angle--;
                 else if (ch == '[') brack++;
@@ -1334,7 +1341,8 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
             if (trimmed == marker) { closeIndent = (a == std::string::npos) ? "" : line.substr(0, a); found = true; break; }
             lines.push_back(line);
         }
-        (void)found;
+        if (!found) // runaway heredoc: the terminator never appears before EOF
+            throw ParseError("Ending delimiter " + marker + " not found for heredoc", line_);
         // dedent by the closing marker's indentation
         std::string body;
         for (size_t i = 0; i < lines.size(); i++) {

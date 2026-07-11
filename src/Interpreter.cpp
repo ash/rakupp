@@ -4439,6 +4439,51 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
     if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]))
         return applyBinOp(op.substr(1), r, l);
+    // short-circuit ops applied to already-evaluated VALUES ([//] reduce, sort &[||]):
+    // no thunking here, just the selection semantics
+    if (op == "//") return isDefined(l) ? l : r;
+    if (op == "||" || op == "or") return l.truthy() ? l : r;
+    if (op == "&&" || op == "and") return l.truthy() ? r : l;
+    if (op == "andthen") return isDefined(l) ? r : l;
+    if (op == "orelse") return isDefined(l) ? l : r;
+    if (op == "xor" || op == "^^")
+        return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
+    // zip/cross with an inner op (Z&& / Zand / X~) — resolve the inner via applyBinOp
+    if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
+        std::string sub = op.substr(1);
+        ValueList a = l.flatten(), bb = r.flatten();
+        Value out = Value::array(); out.isList = true;
+        auto emit = [&](const Value& x, const Value& y) {
+            if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
+            else out.arr->push_back(applyBinOp(sub, x, y));
+        };
+        if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
+        else { for (auto& x : a) for (auto& y : bb) emit(x, y); }
+        return out;
+    }
+    if (op == "minmax") { // Range spanning both operands' extremes
+        ValueList a = l.flatten(), bb = r.flatten();
+        bool first = true; long long mn = 0, mx = 0;
+        auto see = [&](const Value& v) {
+            long long x = v.toInt();
+            if (first) { mn = mx = x; first = false; }
+            else { if (x < mn) mn = x; if (x > mx) mx = x; }
+        };
+        for (auto& v : a) see(v);
+        for (auto& v : bb) see(v);
+        return Value::range(mn, mx, false, false);
+    }
+    // hyper metaop over evaluated lists — also reachable via [>>+<<] reduce
+    if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
+        (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
+        std::string inner = op.substr(2, op.size() - 4);
+        ValueList a = l.flatten(), bb = r.flatten();
+        Value out = Value::array(); out.isList = true;
+        size_t n = a.size() > bb.size() ? a.size() : bb.size();
+        if (!a.empty() && !bb.empty())
+            for (size_t i = 0; i < n; i++) out.arr->push_back(applyBinOp(inner, a[i % a.size()], bb[i % bb.size()]));
+        return out;
+    }
     try { return applyArith(op, l, r); }
     catch (RakuError&) {
         if (Value* f = tctx_.cur->find("&infix:<" + op + ">")) return callCallable(*f, ValueList{l, r});
@@ -4454,7 +4499,8 @@ Value Interpreter::evalBinary(Binary* b) {
     if (b->simpleOp < 0) {
         static const std::set<std::string> special = {
             "~", "does", "but", "xx", "==>", "<==", "...", "...^", "~~", "!~~",
-            "&&", "and", "||", "or", "andthen", "orelse", "//", "^^", "xor", "&", "|", "^"};
+            "&&", "and", "||", "or", "andthen", "orelse", "//", "^^", "xor", "&", "|", "^",
+            "=:=", "!=:="};
         bool rmeta = op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]);
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
     }
@@ -4499,6 +4545,23 @@ Value Interpreter::evalBinary(Binary* b) {
             return out;
         }
         return applyArith(op, l, r);
+    }
+    if (op == "=:=" || op == "!=:=") {
+        // container identity: two variables are =:= only when they are the SAME
+        // slot (`my ($x, $y)` are two containers even while both hold Any).
+        // Non-variable operands fall back to type+value identity (`1 =:= 1`).
+        bool same;
+        if (b->lhs->kind == NK::VarExpr && b->rhs->kind == NK::VarExpr) {
+            Value* lp = nullptr; Value* rp = nullptr;
+            try { lp = lvalue(b->lhs.get()); } catch (RakuError&) {}
+            try { rp = lvalue(b->rhs.get()); } catch (RakuError&) {}
+            same = lp && rp && lp == rp;
+        }
+        else {
+            Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
+            same = (l.t == r.t) && valueEq(l, r);
+        }
+        return Value::boolean(op[0] == '!' ? !same : same);
     }
     if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1])) {
         // reverse metaoperator: `a R/ b` computes `b / a`
@@ -4815,14 +4878,27 @@ Value Interpreter::evalBinary(Binary* b) {
         return eval(b->rhs.get());
     }
     if (op == "^^" || op == "xor") {
-        // `^^` has "find the one true value" semantics: returns the single true
-        // operand, Nil if both are true, and the last operand if neither is.
-        Value l = eval(b->lhs.get());
-        Value r = eval(b->rhs.get());
-        bool lt = boolify(l), rt = boolify(r);
-        if (lt && rt) return Value::nil();
-        if (lt) return l;
-        return r; // only-right → r; neither → r (the last operand)
+        // `^^` has "find the one true value" semantics over the WHOLE chain
+        // (list-associative): the single true operand, Nil if more than one is
+        // true, the last operand if none is. Flatten `a ^^ b ^^ c` first.
+        std::vector<Expr*> chain;
+        Expr* cur = b;
+        while (cur->kind == NK::Binary &&
+               (static_cast<Binary*>(cur)->op == "^^" || static_cast<Binary*>(cur)->op == "xor")) {
+            chain.push_back(static_cast<Binary*>(cur)->rhs.get());
+            cur = static_cast<Binary*>(cur)->lhs.get();
+        }
+        chain.push_back(cur);
+        std::reverse(chain.begin(), chain.end());
+        Value found; bool haveTrue = false, haveAny = false; Value last;
+        for (Expr* e : chain) {
+            last = eval(e); haveAny = true;
+            if (!boolify(last)) continue;
+            if (haveTrue) return Value::nil();
+            found = last; haveTrue = true;
+        }
+        (void)haveAny;
+        return haveTrue ? found : last;
     }
     if (op == "&" || op == "|" || op == "^") {
         // junction constructors: operands are values, so `rx/a/ & rx/b/` builds a
@@ -4932,26 +5008,55 @@ Value Interpreter::evalUnary(Unary* u) {
     // reduction metaoperator [op] — and its triangular/scan form [\op]
     if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') {
         std::string op = u->op.substr(1, u->op.size() - 2);
-        bool scan = !op.empty() && op.front() == '\\'; // [\+] : running partial reductions
-        if (scan) op = op.substr(1);
-        ValueList items = eval(u->operand.get()).flatten();
-        if (scan) { // yield (a, a op b, a op b op c, …)
-            Value out = Value::array(); out.isList = true;
-            if (items.empty()) return out;
-            Value acc = items[0];
-            out.arr->push_back(acc);
-            for (size_t k = 1; k < items.size(); k++) { acc = applyBinOp(op, acc, items[k]); out.arr->push_back(acc); }
-            return out;
+        if (op == "=" && u->operand->kind == NK::ListExpr) {
+            // [=] $a, $b, $c, 42 — right-to-left chain assignment (needs lvalues)
+            auto* le = static_cast<ListExpr*>(u->operand.get());
+            if (le->items.empty()) return Value::any();
+            Value v = eval(le->items.back().get());
+            for (size_t k = le->items.size() - 1; k-- > 0; )
+                if (Value* lvp = lvalue(le->items[k].get())) *lvp = v;
+            return v;
         }
-        if (items.empty()) {
-            if (op == "+" || op == "-") return Value::integer(0);
-            if (op == "*" || op == "/") return Value::integer(1);
-            if (op == "~") return Value::str("");
-            return Value::any();
+        if ((op == "=:=" || op == "!=:=") && u->operand->kind == NK::ListExpr) {
+            // container-identity chain over variables ([=:=] $x, $y, $x)
+            auto* le = static_cast<ListExpr*>(u->operand.get());
+            bool allVars = !le->items.empty();
+            for (auto& it : le->items) if (it->kind != NK::VarExpr) allVars = false;
+            if (allVars) {
+                bool neg = op[0] == '!';
+                Value* prev = nullptr;
+                for (size_t k = 0; k < le->items.size(); k++) {
+                    Value* p = nullptr;
+                    try { p = lvalue(le->items[k].get()); } catch (RakuError&) {}
+                    if (k > 0) {
+                        bool same = prev && p && prev == p;
+                        if (neg ? same : !same) return Value::boolean(false);
+                    }
+                    prev = p;
+                }
+                return Value::boolean(true);
+            }
         }
-        Value acc = items[0];
-        for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
-        return acc;
+        // Flatten like a slurpy arg list: @-vars/ranges/inner lists spread, but a
+        // $-held container or an [..] literal stays ONE item ([===] $a, $a, [1,2]).
+        ValueList items;
+        auto pushFlat = [&](Value v, bool item) {
+            if (!item && (v.t == VT::Array || v.t == VT::Range))
+                for (auto& x : v.flatten()) items.push_back(x);
+            else items.push_back(std::move(v));
+        };
+        if (u->operand->kind == NK::ListExpr) {
+            auto* le = static_cast<ListExpr*>(u->operand.get());
+            for (auto& ie : le->items) {
+                bool item = (ie->kind == NK::VarExpr &&
+                             !static_cast<VarExpr*>(ie.get())->name.empty() &&
+                             static_cast<VarExpr*>(ie.get())->name[0] == '$') ||
+                            ie->kind == NK::ArrayLit;
+                pushFlat(eval(ie.get()), item);
+            }
+        }
+        else pushFlat(eval(u->operand.get()), false);
+        return applyReduce(op, items);
     }
     if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%") {
         Value v = eval(u->operand.get());
@@ -5107,7 +5212,10 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Str) { Value n = numifyStr(v.s); return n.t==VT::Rat ? Value::rat(-(*n.ratN),*n.ratD) : Value::number(-n.toNum()); }
         return Value::number(-v.toNum());
     }
-    if (u->op == "+") return v.isNumeric() ? v : (v.t == VT::Str ? numifyStr(v.s) : Value::number(v.toNum()));
+    if (u->op == "+") {
+        if (v.t == VT::Bool) return Value::integer(v.b ? 1 : 0); // +True == 1
+        return v.isNumeric() ? v : (v.t == VT::Str ? numifyStr(v.s) : Value::number(v.toNum()));
+    }
     if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
@@ -5258,13 +5366,19 @@ Value Interpreter::evalCall(Call* c) {
             return Value::typeObj(v->enumType); // out of range -> the type object
         }
     }
-    // operator-call form: infix:<+>(1,2) / postfix:<i>($x)
+    // operator-call form: infix:<+>(1,2) / postfix:<i>($x) / prefix:<[**]>(2,3,4)
     if (c->name.rfind("infix:<", 0) == 0 && c->name.back() == '>') {
         std::string op = c->name.substr(7, c->name.size() - 8);
         return args.size() >= 2 ? applyBinOp(op, args[0], args[1])
              : args.size() == 1 ? args[0] : Value::any();
     }
     if (c->name == "postfix:<i>" && !args.empty()) return postfixI(args[0]);
+    if (c->name.rfind("prefix:<[", 0) == 0 && c->name.size() > 11 &&
+        c->name.compare(c->name.size() - 2, 2, "]>") == 0) {
+        std::string op = c->name.substr(9, c->name.size() - 11); // the reduce base op
+        ValueList items; for (auto& a : args) for (auto& x : a.flatten()) items.push_back(x);
+        return applyReduce(op, items);
+    }
     // coercion-type functions: Str(x), Int(x), Num(x), Bool(x), … and the no-arg
     // defaults Str()=='' / Int()==0 / Num()==0e0 / Bool()==False.
     {
@@ -5291,6 +5405,106 @@ Value Interpreter::evalCall(Call* c) {
     }
     throw RakuError{Value::str("Undefined routine &" + c->name),
                     "Undefined routine '" + c->name + "'"};
+}
+
+// [op] reduce over an item list — shared by the [op] unary, prefix:<[op]>(…)
+// calls, and &prefix:<[op]> references. `op` may carry a leading '\' (scan form).
+Value Interpreter::applyReduce(std::string op, ValueList& items) {
+    bool scan = !op.empty() && op.front() == '\\'; // [\+] : running partial reductions
+    if (scan) op = op.substr(1);
+    // comparison reduces CHAIN pairwise ([<] 1,2,3 == 1<2 && 2<3); a leading
+    // `!` negates each pairwise test ([!=:=] $x,$y,$x == $x !=:= $y && $y !=:= $x)
+    static const std::set<std::string> chainOps = {
+        "<", "<=", ">", ">=", "==", "!=", "eq", "ne", "lt", "le", "gt", "ge",
+        "=:=", "===", "eqv", "before", "after", "~~"};
+    bool neg = op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==";
+    std::string base = neg ? op.substr(1) : op;
+    if (scan) { // yield (a, a op b, a op b op c, …)
+        Value out = Value::array(); out.isList = true;
+        if (items.empty()) return out;
+        if (op == "**") { // right-assoc scan: suffix reductions — [\**] 1,2,3 → (3 8 1)
+            Value acc = items.back();
+            out.arr->push_back(acc);
+            for (size_t k = items.size() - 1; k-- > 0; ) {
+                acc = applyBinOp(op, items[k], acc);
+                out.arr->push_back(acc);
+            }
+            return out;
+        }
+        if (op == "^^" || op == "xor") { // prefix one-xor: [\^^] 1,1,x → (1 Nil Nil)
+            for (size_t k = 0; k < items.size(); k++) {
+                ValueList pre(items.begin(), items.begin() + k + 1);
+                out.arr->push_back(applyReduce(op, pre));
+            }
+            return out;
+        }
+        if (chainOps.count(base)) { // sticky chain: [\<] 1,3,2,4 → (True True False False)
+            bool ok = true;
+            out.arr->push_back(Value::boolean(true)); // a single element chains truthfully
+            for (size_t k = 1; k < items.size(); k++) {
+                bool c = applyBinOp(base, items[k - 1], items[k]).truthy();
+                if (neg) c = !c;
+                ok = ok && c;
+                out.arr->push_back(Value::boolean(ok));
+            }
+            return out;
+        }
+        Value acc = items[0];
+        out.arr->push_back(acc);
+        for (size_t k = 1; k < items.size(); k++) { acc = applyBinOp(op, acc, items[k]); out.arr->push_back(acc); }
+        return out;
+    }
+    if (op == "min" || op == "max") { // undefined items are skipped; empty → ±Inf
+        ValueList def;
+        for (auto& it : items) if (isDefined(it)) def.push_back(it);
+        if (def.empty()) return Value::number(op == "min" ? INFINITY : -INFINITY);
+        Value acc = def[0];
+        for (size_t k = 1; k < def.size(); k++) acc = applyBinOp(op, acc, def[k]);
+        return acc;
+    }
+    if (items.empty()) {
+        // hyper form empty ([>>+<<]) falls back to the inner op's identity
+        if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
+            (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0))
+            return applyReduce(op.substr(2, op.size() - 4), items);
+        if (op == "+" || op == "-") return Value::integer(0);
+        if (op == "*" || op == "/") return Value::integer(1);
+        if (op == "~") return Value::str("");
+        return Value::any();
+    }
+    if (chainOps.count(base)) {
+        for (size_t k = 1; k < items.size(); k++) {
+            bool ok = applyBinOp(base, items[k - 1], items[k]).truthy();
+            if (neg) ok = !ok;
+            if (!ok) return Value::boolean(false);
+        }
+        return Value::boolean(true);
+    }
+    if (op == ",") { Value out = Value::list(items); return out; } // [,] : the list itself
+    if (op == "^^" || op == "xor") {
+        // one-xor is list-aware: exactly one truthy item → that item;
+        // none truthy → the last item; more than one → Nil
+        const Value* found = nullptr;
+        for (auto& it : items) {
+            if (!it.truthy()) continue;
+            if (found) return Value::nil();
+            found = &it;
+        }
+        return found ? *found : items.back();
+    }
+    // right-associative reduces fold from the right: [**] 2,3,2 == 2**(3**2),
+    // [=>] 1,2,3 == 1 => (2 => 3)
+    if (op == "=>" || op == "**") {
+        Value acc = items.back();
+        for (size_t k = items.size() - 1; k-- > 0; ) {
+            if (op == "=>") { Value p = Value::pair(items[k].toStr(), acc); acc = p; }
+            else acc = applyBinOp(op, items[k], acc);
+        }
+        return acc;
+    }
+    Value acc = items[0];
+    for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
+    return acc;
 }
 
 double Interpreter::toleranceDyn() {
@@ -5411,9 +5625,35 @@ Value Interpreter::evalIndex(Index* idx) {
     }
 
     if (!idx->adverb.empty()) {
-        std::string adv = idx->adverb;
-        bool neg = false;
-        if (!adv.empty() && adv[0] == '!') { neg = true; adv = adv.substr(1); }
+        // Adverbs may be stacked (`:exists:kv:$delete`) and each may be the
+        // variable form ($name: active while the variable is true) or negated.
+        bool wantExists = false, negExists = false, wantDelete = false;
+        bool kvF = false, pF = false, kF = false, vF = false;
+        {
+            std::string rest = idx->adverb;
+            while (!rest.empty()) {
+                size_t c = rest.find(':');
+                std::string part = c == std::string::npos ? rest : rest.substr(0, c);
+                rest = c == std::string::npos ? "" : rest.substr(c + 1);
+                bool neg = !part.empty() && part[0] == '!';
+                if (neg) part = part.substr(1);
+                if (!part.empty() && part[0] == '$') { // conditional: on iff the var is true
+                    Value* vp = tctx_.cur->find(part);
+                    bool on = vp && vp->truthy();
+                    if (neg) on = !on;
+                    if (!on) continue;
+                    part = part.substr(1);
+                    neg = false;
+                }
+                if (part == "exists") { wantExists = true; negExists = neg; }
+                else if (part == "delete") wantDelete = true;
+                else if (part == "kv") kvF = true;
+                else if (part == "p") pF = true;
+                else if (part == "k") kF = true;
+                else if (part == "v") vF = true;
+            }
+        }
+        if (wantExists || wantDelete || kvF || pF || kF || vF) {
         bool exists = false;
         Value val;
         std::string key;
@@ -5432,19 +5672,22 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         Value keyV = idx->isHash ? Value::str(key) : Value::integer(ai);
-        if (adv == "exists") return Value::boolean(neg ? !exists : exists);
-        if (adv == "delete") {
-            if (exists) {
-                if (idx->isHash) base.hash->erase(key);
-                else (*base.arr)[ai] = Value::any();
-            }
-            return exists ? val : Value::any();
+        if (wantDelete && exists) {
+            if (idx->isHash) base.hash->erase(key);
+            else (*base.arr)[ai] = Value::any();
         }
-        if (adv == "k") return exists ? keyV : Value::array();
-        if (adv == "v") return exists ? val : Value::array();
-        if (adv == "kv") { Value o = exists ? Value::array({keyV, val}) : Value::array(); o.isList = true; return o; }
-        if (adv == "p") return exists ? Value::pair(keyV.toStr(), val) : Value::array();
-        // unknown adverb: fall through to plain lookup
+        if (wantExists) {
+            Value ex = Value::boolean(negExists ? !exists : exists);
+            if (kvF) { Value o = Value::array({keyV, ex}); o.isList = true; return o; }
+            if (pF) return Value::pair(keyV.toStr(), ex);
+            return ex;
+        }
+        if (kF) return exists ? keyV : Value::array();
+        if (vF) return exists ? val : Value::array();
+        if (kvF) { Value o = exists ? Value::array({keyV, val}) : Value::array(); o.isList = true; return o; }
+        if (pF) return exists ? Value::pair(keyV.toStr(), val) : Value::array();
+        return exists ? val : Value::any(); // plain :delete (or all conditionals off after delete)
+        }
     }
 
     if (idx->isHash) {
@@ -5681,7 +5924,25 @@ Value Interpreter::eval(Expr* e) {
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
                     code.code->whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
                     code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {
-                        return a.size() >= 2 ? I.applyBinOp(op, a[0], a[1]) : Value::any();
+                        if (a.size() >= 2) return I.applyBinOp(op, a[0], a[1]);
+                        if (a.size() == 1) { // single arg combines with the op's identity
+                            if (op == "+" || op == "-") return I.applyBinOp(op, Value::integer(0), a[0]);
+                            if (op == "*" || op == "/") return I.applyBinOp(op, Value::integer(1), a[0]);
+                            if (op == "~") return I.applyBinOp(op, Value::str(""), a[0]);
+                            return a[0];
+                        }
+                        return Value::any();
+                    };
+                    return code;
+                }
+                if (bare.rfind("prefix:<[", 0) == 0 && bare.size() > 11 &&
+                    bare.compare(bare.size() - 2, 2, "]>") == 0) {
+                    // &prefix:<[+]> — the reduce metaop as a Callable
+                    std::string op = bare.substr(9, bare.size() - 11);
+                    Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
+                    code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {
+                        ValueList items; for (auto& v : a) for (auto& x : v.flatten()) items.push_back(x);
+                        return I.applyReduce(op, items);
                     };
                     return code;
                 }
