@@ -17,9 +17,9 @@ project honest about what the language implementation can actually do.
 
 Beyond the repo, the same principle drives validation against real
 applications: the [covid.observer](https://github.com/ash/covid.observer) site
-builder and the Raku-course static-site generator (with the real zef-installed
-`YAMLish` module) are run unmodified under rakupp — each surfaced gaps that
-Roast never would have.
+builder and the [raku-course](https://github.com/ash/raku-course) static-site
+generator (with the real zef-installed `YAMLish` module) are run unmodified
+under rakupp — each surfaced gaps that Roast never would have.
 
 ## Why bother
 
