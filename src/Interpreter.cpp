@@ -830,14 +830,19 @@ int Interpreter::run(Program& prog) {
         // auto-invoke MAIN with command-line arguments, if defined
         if (Value* mainSub = tctx_.cur->find("&MAIN")) {
             ValueList margs;
+            auto named = [](std::string key, Value v) { // --opt args bind to :$named params
+                Value p = Value::pair(std::move(key), std::move(v));
+                p.namedArg = true;
+                return p;
+            };
             for (auto& a : argv_) {
                 if (a.rfind("--", 0) == 0 && a.size() > 2) {
                     std::string rest = a.substr(2);
-                    if (rest.rfind("/", 0) == 0) margs.push_back(Value::pair(rest.substr(1), Value::boolean(false)));
+                    if (rest.rfind("/", 0) == 0) margs.push_back(named(rest.substr(1), Value::boolean(false)));
                     else {
                         auto eq = rest.find('=');
-                        if (eq != std::string::npos) margs.push_back(Value::pair(rest.substr(0, eq), Value::str(rest.substr(eq + 1))));
-                        else margs.push_back(Value::pair(rest, Value::boolean(true)));
+                        if (eq != std::string::npos) margs.push_back(named(rest.substr(0, eq), Value::str(rest.substr(eq + 1))));
+                        else margs.push_back(named(rest, Value::boolean(true)));
                     }
                 } else {
                     margs.push_back(Value::str(a));
@@ -1674,12 +1679,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto* ws = static_cast<WhileStmt*>(s);
             ValueList collected; ValueList* col = ws->asExpr ? &collected : nullptr;
             bool firstIter = true;
+            std::shared_ptr<Env> scope; // reused across iterations unless captured
             for (;;) {
                 Value cv = eval(ws->cond.get());
                 bool c = boolify(cv);
                 if (ws->isUntil) c = !c;
                 if (!c) break;
-                auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                 if (!ws->var.empty()) scope->define(ws->var, cv); // while EXPR -> $x { }
                 // FIRST runs on the first iteration only; LAST would need lookahead, so it
                 // is approximated as always-last (a single flag can't know the true last).
@@ -1855,9 +1862,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             try {
                 if (ls->init) eval(ls->init.get());
                 bool firstIter = true;
+                std::shared_ptr<Env> scope; // reused across iterations unless captured
                 for (;;) {
                     if (ls->cond && !boolify(eval(ls->cond.get()))) break;
-                    auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                    if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                    else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                     if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, true, col)) break;
                     firstIter = false;
                     if (ls->incr) eval(ls->incr.get());
@@ -1869,8 +1878,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::RepeatStmt: {
             auto* r = static_cast<RepeatStmt*>(s);
             bool firstIter = true;
+            std::shared_ptr<Env> scope; // reused across iterations unless captured
             for (;;) {
-                auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                 if (!runLoopBody(r->body.get(), scope, r->label, firstIter, true)) break;
                 firstIter = false;
                 bool c = r->cond ? boolify(eval(r->cond.get())) : false;
@@ -3429,9 +3440,24 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                        n = op == "+" ? (__int128)n1 * d2 + (__int128)n2 * d1
                                      : (__int128)n1 * d2 - (__int128)n2 * d1; }
                 if (d < 0) { n = -n; d = -d; }
-                __int128 a = n < 0 ? -n : n, b = d;
-                while (b) { __int128 t = a % b; a = b; b = t; } // gcd
-                if (a) { n /= a; d /= a; }
+                // binary gcd — shifts and subtracts instead of ~15 __int128 divisions
+                auto ctz = [](unsigned __int128 x) -> int {
+                    unsigned long long lo = (unsigned long long)x;
+                    return lo ? __builtin_ctzll(lo) : 64 + __builtin_ctzll((unsigned long long)(x >> 64));
+                };
+                unsigned __int128 a = (unsigned __int128)(n < 0 ? -n : n), b = (unsigned __int128)d;
+                unsigned __int128 g;
+                if (a && b) {
+                    int sh = ctz(a | b);
+                    a >>= ctz(a);
+                    while (b) {
+                        b >>= ctz(b);
+                        if (a > b) { unsigned __int128 t = a; a = b; b = t; }
+                        b -= a;
+                    }
+                    g = a << sh;
+                } else g = a | b;
+                if (g > 1) { n /= (__int128)g; d /= (__int128)g; }
                 if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) // uint64 denominator cap
                     return Value::number((double)n / (double)d);
                 if (n >= (__int128)LLONG_MIN && n <= (__int128)LLONG_MAX && d <= (__int128)LLONG_MAX) {
@@ -5283,18 +5309,22 @@ Value Interpreter::evalUnary(Unary* u) {
             out = std::move(*collector);
             return hit;
         };
-        const size_t INITIAL = 10000;
+        // A small first probe: an expensive generator (a prime sieve, say) must not
+        // pay for thousands of takes when the consumer wants @g[^20]. Finite
+        // whole-list consumers force the rest via materializeLazy (Builtins).
+        const size_t INITIAL = 64;
         ValueList prefix;
         // finite gather (terminates within the cap): eager, exactly as before
         if (!runGather(INITIAL, prefix)) return Value::array(std::move(prefix));
         // hit the cap → treat as lazy: keep the prefix and extend on demand by
         // re-running the block with a larger cap (re-run because there are no
         // coroutines; fine for the usual pure generator `gather { loop { take … } }`).
+        // Growth DOUBLES so the O(n²) re-run cost stays amortised-linear in takes.
         Value arr = Value::array(prefix); arr.isList = true;
         auto st = std::make_shared<LazySeqState>();
         st->appendNext = [this, runGather](ValueList& out) -> bool {
             ValueList grown;
-            bool more = runGather(out.size() + 4096, grown);
+            bool more = runGather(out.size() + std::max<size_t>(64, out.size()), grown);
             for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
             return more;
         };
@@ -6011,6 +6041,16 @@ Value Interpreter::eval(Expr* e) {
         case NK::VarExpr: {
             auto* ve = static_cast<VarExpr*>(e);
             char sigil = ve->name.empty() ? '$' : ve->name[0];
+            // Fast path: a plain lexical ($x/@a/%h/&f — second char is a letter
+            // or underscore, so every twigilled/special name is excluded) that is
+            // FOUND in scope returns immediately, skipping the special-name
+            // string compares below. Misses and Proxies take the full path.
+            if (!ve->declare && ve->name.size() > 1 &&
+                (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+                if (Value* p = tctx_.cur->find(ve->name)) {
+                    if (!(p->t == VT::Hash && p->hashKind == "Proxy")) return *p;
+                }
+            }
             if (ve->name == "$=finish") return Value::str(finishData_); // =finish data block
             if (ve->name == "$?LINE") return Value::integer(ve->line);
             if (ve->name == "$?FILE") return Value::str(srcFile_);

@@ -3428,6 +3428,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 m == "min" || m == "max" || m == "join" || m == "Str" || m == "gist")
                 throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list onto an Array"};
             if (m == "shift") { materializeLazy(inv, 1); if (inv.arr->empty()) return Value::nil(); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); return v; }
+        } else {
+            // FINITE lazy (a gather that outgrew its probe, a lazy map over a finite
+            // source, …): whole-list operations force full materialisation first,
+            // so .elems/.sort/.join see every element, not just the cached prefix.
+            static const std::set<std::string> forceAll = {
+                "elems", "end", "pop", "tail", "reverse", "sort", "eager", "List", "Array",
+                "sum", "min", "max", "minmax", "join", "Str", "gist", "raku", "perl",
+                "Numeric", "Int", "all", "any", "one", "none", "unique", "squish",
+                "classify", "categorize", "Set", "Bag", "Mix", "SetHash", "BagHash",
+                "MixHash", "Hash", "hash", "antipairs", "pairs", "kv", "keys", "values",
+                "rotate", "pick", "roll", "combinations", "permutations", "splice"};
+            if (forceAll.count(m)) materializeLazy(inv, 1000000);
         }
         if (m == "map" && !args.empty() && args[0].t == VT::Code && codeArity(args[0]) == 1) {
             Value fn = args[0], src = inv;                 // src shares arr+ext with inv

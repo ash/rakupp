@@ -2905,6 +2905,13 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "use" || kw == "no" || kw == "need") {
             advance();
             auto u = std::make_unique<UseStmt>();
+            if (isKind(Tok::VersionLit)) { // `use v6;` / `use v6.d;` / `use v6.e.PREVIEW;`
+                advance();
+                // swallow any dotted tail the version lexer didn't take (.PREVIEW)
+                while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance();
+                matchKind(Tok::Semicolon);
+                return u; // empty module: nothing to load
+            }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
             if (u->module == "lib" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
                 !isKind(Tok::StrLit) && !isKind(Tok::StrInterp)) {

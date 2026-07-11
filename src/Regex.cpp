@@ -257,7 +257,9 @@ Regex::NodePtr Regex::parseAtom() {
             (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.'))) {
             node->negate = false;
             bool first = true;
-            while (peek() == '[' || peek() == '+' || peek() == '-') {
+            for (;;) {
+                while (peek() == ' ' || peek() == '\t') pos_++; // blanks between members / before '>'
+                if (!(peek() == '[' || peek() == '+' || peek() == '-')) break;
                 char op = '+';
                 if (peek() == '+') { pos_++; op = '+'; }
                 else if (peek() == '-') { pos_++; op = '-'; }
@@ -271,7 +273,7 @@ Regex::NodePtr Regex::parseAtom() {
                     else node->negClassFlags += ruleFlag(nm); // `-rule` difference
                 }
                 first = false;
-                if (peek() == '>' || eof()) break;
+                if (eof()) break;
             }
             if (peek() == '>') pos_++;
             return node;
@@ -684,6 +686,8 @@ bool Regex::classMatch(const Node* n, char ch) const {
         auto test = [&](unsigned char c) -> bool {
             bool pos = false;
             for (auto& r : n->ranges) if (c >= r.first && c <= r.second) { pos = true; break; }
+            // ASCII-range codepoint entries (\c[LF], \x0A, …) participate too
+            if (!pos) for (auto& r : n->cpRanges) if (c >= r.first && c <= r.second) { pos = true; break; }
             if (!pos) for (char f : n->classFlags) if (flagHit(f, c)) { pos = true; break; }
             if (pos) for (char f : n->negClassFlags) if (flagHit(f, c)) return false; // `-rule` difference
             return pos;
@@ -705,7 +709,15 @@ bool Regex::classMatch(const Node* n, char ch) const {
 bool Regex::rootIsSingleChar() const {
     if (!ok_ || !root_) return false;
     const Node* n = root_.get();
-    return n->k == K::Class || n->k == K::Any || (n->k == K::Lit && n->lit.size() == 1);
+    if (n->k == K::Class) {
+        // a codepoint entry past 0xFF can match a MULTI-BYTE char — the one-byte
+        // fast path can't represent that (nor can a negated class, which must
+        // accept arbitrary non-members)
+        for (auto& r : n->cpRanges) if (r.second > 0xFF) return false;
+        if (n->negate && !n->cpRanges.empty()) return false;
+        return n->uprop.empty();
+    }
+    return n->k == K::Any || (n->k == K::Lit && n->lit.size() == 1);
 }
 
 long Regex::trySingleChar(const std::string& s, long pos) const {
