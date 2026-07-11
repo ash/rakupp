@@ -888,9 +888,12 @@ int Interpreter::run(Program& prog) {
             crashed = true;
         }
     } catch (ReturnEx&) {
-    } catch (LastEx&) {
+    } catch (LastEx&) { // `last` outside any loop is a compile/run error, like Rakudo's
+        std::cerr << "last without loop construct\n"; code = 1; crashed = true;
     } catch (NextEx&) {
+        std::cerr << "next without loop construct\n"; code = 1; crashed = true;
     } catch (RedoEx&) {
+        std::cerr << "redo without loop construct\n"; code = 1; crashed = true;
     }
     drainWorkers(); // join any outstanding async workers before we tear down
     // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
@@ -1889,6 +1892,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     code.code->params = &be->params;
     code.code->body = &be->body;
     code.code->closure = tctx_.cur;
+    code.code->isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
     if (be->params.empty()) code.code->placeholders = computePlaceholders(be->body);
     return code;
 }
@@ -3248,8 +3252,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return mkRat(n1 * d2, d1 * n2);
         }
         if (op == "**" && (r.t == VT::Int || r.t == VT::Bool)) {
-            // a huge exponent produces an impractically large number: Rakudo throws
-            // rather than compute it (base 0/±1 are trivial and excepted).
+            // a huge exponent produces an impractically large number: Rakudo
+            // throws rather than compute it (base 0/±1 are trivial and excepted).
+            // (A01-limits/overflow.t test 10 wants a Rat**10**8 to instead grind
+            // exactly until a racing Promise exits the process — an implementation-
+            // speed assertion we deliberately don't chase.)
             bool baseTrivial = l.t == VT::Int && !l.big && (l.toInt() == 0 || l.toInt() == 1 || l.toInt() == -1);
             bool hugeExp = (bool)r.big || std::llabs(r.toInt()) > 900000;
             if (!baseTrivial && hugeExp) {

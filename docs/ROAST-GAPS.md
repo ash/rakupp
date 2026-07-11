@@ -145,6 +145,13 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    `$hashref[0]` returns self; `cmp-ok` handles any infix (`===`, `eqv`, …);
    `$` contextualizer as a listop argument (`ok $%*ENV`). Standing:
    **393 / 1,464, 143,490 assertions.**
+   *Batch 4* (+2 full: `basic-types.t`, `sprintf-d.t` — the latter 4,565 tests):
+   bare/pointy blocks are **Block** (`{ $^a }.WHAT`, `isa-ok -> {}, Code` via a
+   Code-family isa hierarchy; anonymous `sub {}` stays Sub); `sprintf %d`
+   formats big Ints from their exact decimal digits (no more saturation at
+   2⁶³); stray `next`/`last`/`redo` outside any loop is an error and counts as
+   a death for `dies-ok`; `pointy.t`/`control.t` no longer abort mid-file.
+   Standing: **395 / 1,464, 143,537 assertions (76.2%).**
 5. ~~**Emoji/UAX#29 data pass** (D)~~ — **DONE, +4,056 assertions, +12 full
    files (378 → 390)**. Grapheme breaking now uses REAL UCD 17.0 data
    (`tools/gen_unicode_gb.py` → `unicode_gb_gen.cpp`: GraphemeBreakProperty +

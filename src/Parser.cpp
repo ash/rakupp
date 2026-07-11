@@ -1303,6 +1303,7 @@ ExprPtr Parser::parsePrimary() {
             if (name == "sub" || name == "method") {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
+                be->isSub = true; // `sub {…}` as a term is a Sub, not a bare Block
                 if (isKind(Tok::Ident)) advance(); // optional name (anon use)
                 if (isKind(Tok::LParen)) { advance(); be->params = parseSignature(); expectKind(Tok::RParen, ")"); }
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();

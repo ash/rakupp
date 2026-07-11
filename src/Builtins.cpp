@@ -665,6 +665,21 @@ static std::string fmtRadix(long long val, int base, bool upper, const std::stri
     return core;
 }
 
+// Format an exact decimal-digit string (BigInt) for %d: honors width and the
+// '-', '0', '+', ' ' flags (precision on integers is rare; digits stay exact).
+static std::string fmtBigDec(std::string digits, const std::string& flags, long long width) {
+    bool neg = !digits.empty() && digits[0] == '-';
+    std::string sign = neg ? "-" : (flags.find('+') != std::string::npos ? "+" :
+                                    flags.find(' ') != std::string::npos ? " " : "");
+    if (neg) digits = digits.substr(1);
+    std::string body = sign + digits;
+    if ((long long)body.size() >= width) return body;
+    if (flags.find('-') != std::string::npos) return body + std::string(width - body.size(), ' ');
+    if (flags.find('0') != std::string::npos)
+        return sign + std::string(width - body.size(), '0') + digits;
+    return std::string(width - body.size(), ' ') + body;
+}
+
 std::string doSprintf(const std::string& fmt, const ValueList& args) {
     std::string out;
     size_t ai = 0;
@@ -690,7 +705,17 @@ std::string doSprintf(const std::string& fmt, const ValueList& args) {
         char conv = fmt[j];
         switch (conv) {
             case '%': out += '%'; break;
-            case 'd': case 'i': out += fmtRadix(nextArg().toInt(), 10, false, flags, width, prec, true); break;
+            case 'd': case 'i': {
+                // an arbitrary-precision Int (or a Rat/Num too big for long long)
+                // formats from its exact decimal digits, not a saturated toInt()
+                Value av = nextArg();
+                if (av.t == VT::Int && av.big) { out += fmtBigDec(av.big->toString(), flags, width); break; }
+                if (av.t == VT::Rat && av.ratN && av.ratD && !av.ratD->isZero()) {
+                    BigInt q, r; BigInt::divmod(*av.ratN, *av.ratD, q, r);
+                    if (q.toString().size() > 18) { out += fmtBigDec(q.toString(), flags, width); break; }
+                }
+                out += fmtRadix(av.toInt(), 10, false, flags, width, prec, true); break;
+            }
             case 'u':           out += fmtRadix(nextArg().toInt(), 10, false, flags, width, prec, false); break;
             case 'b':           out += fmtRadix(nextArg().toInt(), 2, false, flags, width, prec, true); break;
             case 'B':           out += fmtRadix(nextArg().toInt(), 2, true,  flags, width, prec, true); break;
@@ -3879,7 +3904,14 @@ void Interpreter::registerBuiltins() {
     };
     B["dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool died = false;
-        if (!a.empty() && a[0].t == VT::Code) { try { I.callCallable(a[0], {}); } catch (RakuError&) { died = true; } }
+        if (!a.empty() && a[0].t == VT::Code) {
+            try { I.callCallable(a[0], {}); }
+            catch (RakuError&) { died = true; }
+            // a loop-control exception with no enclosing loop is a death (X::ControlFlow)
+            catch (NextEx&) { died = true; }
+            catch (LastEx&) { died = true; }
+            catch (RedoEx&) { died = true; }
+        }
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(died);
     };
@@ -3904,6 +3936,9 @@ void Interpreter::registerBuiltins() {
             {"Num", {"Num", "Cool", "Numeric", "Real", "Any", "Mu"}},
             {"Str", {"Str", "Cool", "Stringy", "Any", "Mu"}},
             {"Bool", {"Bool", "Any", "Mu"}},
+            {"Sub", {"Sub", "Routine", "Block", "Code", "Callable", "Any", "Mu"}},
+            {"Method", {"Method", "Routine", "Block", "Code", "Callable", "Any", "Mu"}},
+            {"Block", {"Block", "Code", "Callable", "Any", "Mu"}},
             {"Array", {"Array", "List", "Any", "Mu", "Positional"}},
             {"Seq", {"Seq", "List", "Any", "Mu", "Positional", "Iterable"}},
             {"IO::Path", {"IO::Path", "IO", "Cool", "Any", "Mu"}},

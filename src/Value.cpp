@@ -247,7 +247,7 @@ std::string Value::typeName() const {
         case VT::Hash:  if (hashKind == "Pod" && hash && hash->count("podclass")) return hash->at("podclass").s;
                         return (hashKind == "Date" || hashKind == "DateTime") && hash ? dateGist(*hash, hashKind == "Date")
                              : (hashKind.empty() ? "Hash" : hashKind);
-        case VT::Code:  return "Sub";
+        case VT::Code:  return code && code->isMethod ? "Method" : code && code->isBlock ? "Block" : "Sub";
         case VT::Rat:   return fatRat ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";

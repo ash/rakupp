@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 393 / 1,464 (**~27%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 143,490 / 148,775 (~93%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 143,490 / 160,950 (~86%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 143,490 / 188,486 (**~76%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 395 / 1,464 (**~27%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 143,537 / 148,788 (~93%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 143,537 / 160,950 (~86%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 143,537 / 188,486 (**~76%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~27%)** and **measure 4 (all declared tests, ~76%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
