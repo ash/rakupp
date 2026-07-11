@@ -665,6 +665,27 @@ static std::string fmtRadix(long long val, int base, bool upper, const std::stri
     return core;
 }
 
+
+// Digits of a BigInt in the given radix (2/8/16), sign included — for %b/%o/%x
+// on arbitrary-precision Ints (toInt() would truncate at 64 bits).
+static std::string bigRadixDigits(const BigInt& v, int radix, bool upper) {
+    static const char* lo = "0123456789abcdef";
+    static const char* up = "0123456789ABCDEF";
+    const char* digs = upper ? up : lo;
+    BigInt n = v.abs(), r10(radix);
+    if (n.isZero()) return "0";
+    std::string out;
+    while (!n.isZero()) {
+        BigInt q, r;
+        BigInt::divmod(n, r10, q, r);
+        out += digs[(int)r.toLL()];
+        n = q;
+    }
+    if (v.sign < 0) out += '-';
+    std::string rev(out.rbegin(), out.rend());
+    return rev;
+}
+
 // Format an exact decimal-digit string (BigInt) for %d: honors width and the
 // '-', '0', '+', ' ' flags (precision on integers is rare; digits stay exact).
 static std::string fmtBigDec(std::string digits, const std::string& flags, long long width) {
@@ -687,6 +708,15 @@ std::string doSprintf(const std::string& fmt, const ValueList& args) {
     for (size_t i = 0; i < fmt.size(); i++) {
         if (fmt[i] != '%') { out += fmt[i]; continue; }
         size_t j = i + 1;
+        // explicit positional argument: %2$s (1-based index into the args)
+        {
+            size_t d = j;
+            while (d < fmt.size() && std::isdigit((unsigned char)fmt[d])) d++;
+            if (d > j && d < fmt.size() && fmt[d] == '$') {
+                ai = (size_t)std::atoll(fmt.substr(j, d - j).c_str()) - 1;
+                j = d + 1;
+            }
+        }
         std::string flags;
         while (j < fmt.size() && std::strchr("-+ 0#", fmt[j])) flags += fmt[j++];
         // width (digits or `*` = from argument; negative `*` implies left-justify)
@@ -716,12 +746,26 @@ std::string doSprintf(const std::string& fmt, const ValueList& args) {
                 }
                 out += fmtRadix(av.toInt(), 10, false, flags, width, prec, true); break;
             }
-            case 'u':           out += fmtRadix(nextArg().toInt(), 10, false, flags, width, prec, false); break;
-            case 'b':           out += fmtRadix(nextArg().toInt(), 2, false, flags, width, prec, true); break;
-            case 'B':           out += fmtRadix(nextArg().toInt(), 2, true,  flags, width, prec, true); break;
-            case 'o':           out += fmtRadix(nextArg().toInt(), 8, false, flags, width, prec, false); break;
-            case 'x':           out += fmtRadix(nextArg().toInt(), 16, false, flags, width, prec, false); break;
-            case 'X':           out += fmtRadix(nextArg().toInt(), 16, true,  flags, width, prec, false); break;
+            case 'u': case 'b': case 'B': case 'o': case 'x': case 'X': {
+                int radix = (conv == 'u') ? 10 : (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
+                bool upper = (conv == 'B' || conv == 'X');
+                bool prefixable = (conv == 'b' || conv == 'B');
+                Value av = nextArg();
+                if (av.t == VT::Int && av.big) { // arbitrary-precision: exact digits
+                    out += fmtBigDec(bigRadixDigits(*av.big, radix, upper), flags, width);
+                    break;
+                }
+                if (av.t == VT::Rat && av.ratN && av.ratD && !av.ratD->isZero()) {
+                    BigInt q, r;
+                    BigInt::divmod(*av.ratN, *av.ratD, q, r); // truncate toward zero
+                    if (q.toString().size() > 18) {
+                        out += fmtBigDec(bigRadixDigits(q, radix, upper), flags, width);
+                        break;
+                    }
+                }
+                out += fmtRadix(av.toInt(), radix, upper, flags, width, prec, prefixable);
+                break;
+            }
             case 'c': { // codepoint → UTF-8; width counts characters, not bytes
                 uint32_t cp = (uint32_t)nextArg().toInt();
                 std::string s;
@@ -736,13 +780,37 @@ std::string doSprintf(const std::string& fmt, const ValueList& args) {
             case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case 'a': case 'A': {
                 // Raku ignores `#` for floats (no forced trailing dot): sprintf("%#.0f",0) → "0".
                 std::string ff; for (char c : flags) if (c != '#') ff += c;
+                double fv = nextArg().toNum();
+                // Rakudo quirk (encoded in roast sprintf-f.t, marked "bogus, but provided
+                // by the current implementation" there): `-` + `0` with an EXPLICIT
+                // precision and no sign flag formats non-negative values with
+                // precision+1, zero-padded LEFT (the `-` never left-justifies), and
+                // negative values as plain %0W.Pf.
+                if (ff.find('-') != std::string::npos && ff.find('0') != std::string::npos &&
+                    prec >= 0 && hasWidth && (conv == 'f' || conv == 'F')) {
+                    bool signFlag = ff.find('+') != std::string::npos || ff.find(' ') != std::string::npos;
+                    std::string sf = ff.find('+') != std::string::npos ? "+"
+                                   : ff.find(' ') != std::string::npos ? " " : "";
+                    int p = (!signFlag && fv >= 0) ? prec + 1 : prec;
+                    std::string spec = "%" + sf + "0" + std::to_string(width) + "." + std::to_string(p) + "f";
+                    std::vector<char> buf(std::max(64, width + prec + 64));
+                    snprintf(buf.data(), buf.size(), spec.c_str(), fv);
+                    out += buf.data(); break;
+                }
                 std::string spec = "%" + ff;
                 if (hasWidth) spec += std::to_string(width);
                 if (prec >= 0) spec += "." + std::to_string(prec);
                 spec += conv;
                 std::vector<char> buf(std::max(64, width + prec + 64));
-                snprintf(buf.data(), buf.size(), spec.c_str(), nextArg().toNum());
-                out += buf.data(); break;
+                snprintf(buf.data(), buf.size(), spec.c_str(), fv);
+                std::string fs = buf.data();
+                if (std::isnan(fv) || std::isinf(fv)) { // Raku spells them NaN / Inf / -Inf
+                    for (const char* bad : {"nan", "NAN", "inf", "INF"}) {
+                        size_t at = fs.find(bad);
+                        if (at != std::string::npos) fs.replace(at, 3, bad[0]=='n'||bad[0]=='N' ? "NaN" : "Inf");
+                    }
+                }
+                out += fs; break;
             }
             case 's': {
                 Value sa = nextArg();
@@ -762,6 +830,9 @@ std::string doSprintf(const std::string& fmt, const ValueList& args) {
                     sv = (flags.find('-') != std::string::npos) ? sv + std::string(pad,' ') : std::string(pad,fill) + sv; }
                 out += sv; break;
             }
+            case 'n': case 'p': // deliberately unsupported (Perl compat) — hard error
+                throw RakuError{Value::typeObj("X::Str::Sprintf::Directives::Unsupported"),
+                                std::string("Directive %") + conv + " is not valid in sprintf format"};
             default: { out += '%'; out += flags; if (hasWidth) out += std::to_string(width); out += conv; break; }
         }
         i = j;

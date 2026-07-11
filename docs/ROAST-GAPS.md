@@ -1,17 +1,18 @@
 # What still blocks a full Roast pass
 
-*A classification of every currently-failing Roast file, from a systematic scan
-(2026-07-11): each of the 478 no-TAP files was run once and its first error
-bucketed; each of the 622 partial files was re-run and its failing tests
-collected. Raw diagnostics: `rc-work/notap-diag.tsv`, `rc-work/partial-diag.tsv`
-(git-ignored). Baseline for this scan: 350 / 1,462 fully passing, 138,000
-assertions. (Item A1 below has since landed, moving the standing to 369 /
-138,573 — the per-bucket counts predate it.)*
+*A classification of every currently-failing Roast file. Originally scanned at
+the 350-file baseline (2026-07-11); the per-bucket counts in sections B–F are
+from that scan. **Current standing after working the list: 401 / 1,464 fully
+passing, 152,316 / 188,486 declared assertions (80.8%).** A re-scan of the
+no-TAP set at the 400-file mark (`rc-work/notap-now.tsv`, git-ignored) shows
+the remaining 449 no-TAP files bucket as: 104 `expected )`, 91 missing
+method (26 of them `.new` on missing types), 62 term-position operators,
+48 `Confused`, 26 `expected {`, 24 missing routines, 13 borderline-slow,
+12 declarator forms, plus the long tail.*
 
-The suite splits into 350 fully-passing files, **622 partial** (run but lose
-9,697 assertions between them), **478 no-TAP** (abort before any test runs) and
-**12 timeouts**. The blockers fall into six classes, ordered roughly by
-leverage.
+The suite originally split into 350 fully-passing files, 622 partial,
+478 no-TAP and 12 timeouts. The blockers fall into six classes, ordered
+roughly by leverage; struck-through items are done.
 
 ## A. Test-infrastructure gaps (a multiplier, not a language gap)
 
@@ -84,8 +85,12 @@ architecture changes.
 The long tail of the remaining ~5,500 lost partial assertions. Confirmed
 recurring clusters:
 
-- **`sprintf` float flag combos** — `%-08.2f`-style flag interactions (470 lost
-  across `sprintf-f.t` + `sprintf.t`).
+- ~~**`sprintf` float flag combos**~~ **DONE** — the `-`+`0` Rakudo quirk
+  (precision+1, zero-pad-left, `-` never left-justifies) is implemented as
+  roast encodes it; plus big-Int/big-Rat `%b/%o/%x/%u`, positional `%2$s`
+  arguments, `%n`/`%p` dying, and `NaN`/`Inf` casing. `sprintf-f.t`
+  (2,282 tests) fully passes; `sprintf.t` 167/174. **+484 assertions,
+  standing 401 / 152,316 (80.8%).**
 - **NFG-aware string ops** — `index`/`substr` with accented chars & multiple
   needles (`index.t`, 102).
 - **Magic string increment beyond Latin** — `'ΩΩ'++` should be `'ΑΑΑ'`
