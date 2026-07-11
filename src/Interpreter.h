@@ -69,6 +69,21 @@ struct ExecContext {
     std::vector<ValueList*> supplyStack;
     std::vector<Value*> makeTargets;
     std::string pkgPrefix;
+    // Cooperative `return`: when a return executes with NO callable boundary
+    // between it and its enclosing routine (frameTop == curRoutineFrame), it
+    // sets `returning` instead of throwing ReturnEx — native statement/loop
+    // executors break out, and callCallableRaw consumes the flag at the
+    // routine boundary. Anything crossing a closure/builtin callback still
+    // throws (exact old semantics), so intermediate C++ loops stay correct.
+    bool returning = false;
+    Value returnV;
+    uint64_t frameTop = 0;        // incremented per callCallableRaw activation
+    uint64_t curRoutineFrame = 0; // frameTop at the nearest enclosing ROUTINE entry
+    // Cooperative unlabelled next/last/redo: set when the statement executes in
+    // the SAME callable frame as the innermost native loop (no closure between);
+    // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
+    int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
+    uint64_t curLoopFrame = 0;    // frameTop when the innermost native loop body runs
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value

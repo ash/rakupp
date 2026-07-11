@@ -1264,6 +1264,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             } else {
                 last = exec(s.get(), sink || i != lastIdx);
             }
+            if (tctx_.returning || tctx_.loopCtl) break; // cooperative return/next/last unwinds native blocks
         }
     } catch (RakuError& e) {
         runLeavePhasers(b->stmts);
@@ -1292,8 +1293,23 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     }
     bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
     auto runLast = [&]() { if (isLast) inScope(&Interpreter::runLastPhasers); }; // LAST {…}: once, after the last
+    // this loop is now the innermost native loop for cooperative next/last/redo
+    uint64_t savedLoopFrame = tctx_.curLoopFrame;
+    tctx_.curLoopFrame = tctx_.frameTop;
+    struct LoopGuard {
+        ExecContext& t; uint64_t lf;
+        ~LoopGuard() { t.curLoopFrame = lf; }
+    } lguard{tctx_, savedLoopFrame};
     for (;;) {
-        try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr); if (collect) collect->push_back(v); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+        try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
+              if (tctx_.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
+              if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
+                  int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
+                  if (ctl == 3) continue; // redo: rerun the body
+                  if (ctl == 1) { runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+                  runLast(); suppressLoopFirst_ = savedSF; return false; // last
+              }
+              if (collect) collect->push_back(v); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } continue; }
         catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
@@ -1650,11 +1666,35 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
             Value v = r->value ? eval(r->value.get()) : Value::any();
+            // cooperative return when no callable boundary sits between here and
+            // the routine (native loops/blocks only) — else the exception path
+            if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
+                tctx_.returning = true; tctx_.returnV = std::move(v);
+                return Value::any();
+            }
             throw ReturnEx{v};
         }
-        case NK::LastStmt: throw LastEx{static_cast<LastStmt*>(s)->target};
-        case NK::NextStmt: throw NextEx{static_cast<NextStmt*>(s)->target};
-        case NK::RedoStmt: throw RedoEx{static_cast<RedoStmt*>(s)->target};
+        case NK::LastStmt: {
+            const std::string& t = static_cast<LastStmt*>(s)->target;
+            if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+                tctx_.loopCtl = 2; return Value::any(); // cooperative last
+            }
+            throw LastEx{t};
+        }
+        case NK::NextStmt: {
+            const std::string& t = static_cast<NextStmt*>(s)->target;
+            if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+                tctx_.loopCtl = 1; return Value::any(); // cooperative next
+            }
+            throw NextEx{t};
+        }
+        case NK::RedoStmt: {
+            const std::string& t = static_cast<RedoStmt*>(s)->target;
+            if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+                tctx_.loopCtl = 3; return Value::any(); // cooperative redo
+            }
+            throw RedoEx{t};
+        }
         case NK::IfStmt: {
             auto* is = static_cast<IfStmt*>(s);
             for (size_t bi = 0; bi < is->branches.size(); bi++) {
@@ -2630,6 +2670,16 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     tctx_.cur = env;
     tctx_.curStateEnv = c.stateEnv.get();
     tctx_.dynStack.push_back(saved.get()); // caller's scope, for dynamic $*var lookup
+    // cooperative-return frame bookkeeping: every callable bumps frameTop;
+    // a ROUTINE (not a bare block) is a return boundary
+    ++tctx_.frameTop;
+    uint64_t savedFrameTop = tctx_.frameTop, savedRoutineFrame = tctx_.curRoutineFrame;
+    bool isRoutine = !c.isBlock;
+    if (isRoutine) tctx_.curRoutineFrame = tctx_.frameTop;
+    struct FrameGuard {
+        ExecContext& t; uint64_t ft, rf;
+        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
+    } fguard{tctx_, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
     if (c.body) hoistSubs(*c.body); // nested named subs are visible throughout the body
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
@@ -2652,6 +2702,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     last = r->value ? eval(r->value.get()) : Value::any();
                 } else
                     last = exec(s);
+                if (tctx_.returning) { // cooperative return reached this routine
+                    if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
+                    break; // a bare block propagates the flag to its routine
+                }
             }
         }
     } catch (ReturnEx& r) {
@@ -5184,10 +5238,23 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
 
 Value Interpreter::evalUnary(Unary* u) {
     // control-flow in expression position: return/last/next/redo
-    if (u->op == "return" || u->op == "return-rw") throw ReturnEx{u->operand ? eval(u->operand.get()) : Value::any()};
-    if (u->op == "last") throw LastEx{};
-    if (u->op == "next") throw NextEx{};
-    if (u->op == "redo") throw RedoEx{};
+    if (u->op == "return" || u->op == "return-rw") {
+        Value v = u->operand ? eval(u->operand.get()) : Value::any();
+        if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
+            tctx_.returning = true; tctx_.returnV = std::move(v); // cooperative return
+            return Value::any();
+        }
+        throw ReturnEx{v};
+    }
+    if (u->op == "last" || u->op == "next" || u->op == "redo") {
+        if (tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+            tctx_.loopCtl = u->op == "next" ? 1 : u->op == "last" ? 2 : 3; // cooperative
+            return Value::any();
+        }
+        if (u->op == "last") throw LastEx{};
+        if (u->op == "next") throw NextEx{};
+        throw RedoEx{};
+    }
     // reduction metaoperator [op] — and its triangular/scan form [\op]
     if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') {
         std::string op = u->op.substr(1, u->op.size() - 2);
@@ -6219,9 +6286,15 @@ Value Interpreter::eval(Expr* e) {
             if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
                 Value ty = Value::typeObj(n); ty.ofType = nt->ofType; return ty;
             }
-            if (n == "next") throw NextEx{};
-            if (n == "last") throw LastEx{};
-            if (n == "redo") throw RedoEx{};
+            if (n == "next" || n == "last" || n == "redo") {
+                if (tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+                    tctx_.loopCtl = n == "next" ? 1 : n == "last" ? 2 : 3; // cooperative
+                    return Value::any();
+                }
+                if (n == "next") throw NextEx{};
+                if (n == "last") throw LastEx{};
+                throw RedoEx{};
+            }
             if (n == "proceed") throw ProceedEx{};   // leave when, keep matching
             if (n == "succeed") throw BreakGivenEx{}; // exit the enclosing given
             if (n == "Nil") return Value::nil();

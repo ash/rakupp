@@ -139,7 +139,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "// via the linked-in Raku++ runtime.\n"
                 "#include <string>\n#include <vector>\n#include <cstdlib>\n"
                 "namespace rakupp { int rakuppRunBigStack(const std::string&, std::vector<std::string>,"
-                " const std::string&, const std::string&); }\n";
+                " const std::string&, const std::string&, const std::vector<std::string>&); }\n";
         stub << "static const unsigned char SRC[] = {";
         for (size_t i = 0; i < src.size(); i++) { if (i) stub << ","; stub << (int)(unsigned char)src[i]; }
         if (src.empty()) stub << "0"; // avoid zero-size array; length tracked separately
@@ -150,7 +150,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
                 "  char rp[4096]; if (realpath(exe.c_str(), rp)) exe = rp;\n"
-                "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe);\n"
+                "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
                 "}\n";
     }
 
