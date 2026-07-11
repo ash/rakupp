@@ -11,8 +11,9 @@ method (26 of them `.new` on missing types), 62 term-position operators,
 12 declarator forms, plus the long tail.*
 
 The suite originally split into 350 fully-passing files, 622 partial,
-478 no-TAP and 12 timeouts. The blockers fall into six classes, ordered
-roughly by leverage; struck-through items are done.
+478 no-TAP and 12 timeouts; it now stands at **401 / 603 / 449 / 9**. The
+blockers fall into six classes, ordered roughly by leverage; struck-through
+items are done.
 
 ## A. Test-infrastructure gaps (a multiplier, not a language gap)
 
@@ -157,6 +158,18 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    2⁶³); stray `next`/`last`/`redo` outside any loop is an error and counts as
    a death for `dies-ok`; `pointy.t`/`control.t` no longer abort mid-file.
    Standing: **395 / 1,464, 143,537 assertions (76.2%).**
+5. ~~**Emoji/UAX#29 data pass** (D)~~ — **DONE, +4,056 assertions, +12 full
+   files (378 → 390)**. Grapheme breaking now uses REAL UCD 17.0 data
+   (`tools/gen_unicode_gb.py` → `unicode_gb_gen.cpp`: GraphemeBreakProperty +
+   emoji-data ranges) instead of a general-category approximation — that fixes
+   skin-tone modifiers (Sk but Extend), ZWNJ (Cf but Extend), Prepend, and the
+   exact Extended_Pictographic set for GB11 — plus rule **GB9c** (Indic/Myanmar/
+   Khmer/Balinese conjuncts via InCB). `.comb` segments by grapheme (shared
+   `uniGraphemeStarts`). Normalization tables regenerated from UnicodeData.txt
+   17.0 (`tools/gen_unicode_norm.py` → `unicode_norm_gen.cpp`) instead of
+   Python's lagging `unicodedata`; `Uni.Str` NFC-normalizes (NFG semantics).
+   Now fully passing: emoji-test (3825), GraphemeBreakTest-0..3, mass-equality,
+   nf{c,d,kc,kd}-9, nfk{c,d}-1. **S15: 99.9% of assertions, 68/82 files.**
 
 6. **UCA collation (`unicmp`/`coll`)** — a full Unicode Collation Algorithm
    implementation from DUCET 17.0 (`tools/gen_unicode_coll.py` →
@@ -180,15 +193,21 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    consecutive elements (`@a.kv.reverse.hash`). Standing: **400 / 1,464,
    151,832 assertions (80.6%)** — plus two S17 stress files that flip
    400↔402 with suite load.
-5. ~~**Emoji/UAX#29 data pass** (D)~~ — **DONE, +4,056 assertions, +12 full
-   files (378 → 390)**. Grapheme breaking now uses REAL UCD 17.0 data
-   (`tools/gen_unicode_gb.py` → `unicode_gb_gen.cpp`: GraphemeBreakProperty +
-   emoji-data ranges) instead of a general-category approximation — that fixes
-   skin-tone modifiers (Sk but Extend), ZWNJ (Cf but Extend), Prepend, and the
-   exact Extended_Pictographic set for GB11 — plus rule **GB9c** (Indic/Myanmar/
-   Khmer/Balinese conjuncts via InCB). `.comb` segments by grapheme (shared
-   `uniGraphemeStarts`). Normalization tables regenerated from UnicodeData.txt
-   17.0 (`tools/gen_unicode_norm.py` → `unicode_norm_gen.cpp`) instead of
-   Python's lagging `unicodedata`; `Uni.Str` NFC-normalizes (NFG semantics).
-   Now fully passing: emoji-test (3825), GraphemeBreakTest-0..3, mass-equality,
-   nf{c,d,kc,kd}-9, nfk{c,d}-1. **S15: 99.9% of assertions, 68/82 files.**
+
+8. **Where the leverage is now (401 / 152,316 / 80.8%).** The re-scan of the
+   449 remaining no-TAP files (`rc-work/notap-now.tsv`) points at the next
+   round, ordered by unlocked assertions:
+   - **`Rat.new` / `Complex` literals** — a single missing constructor gates
+     `rat.t` (869 declared), and the `i` postfix gates `complex.t` (557). Both
+     are one-feature fixes behind very large files.
+   - **One-line parse blockers on big files** — `reduce.t` (580, `[\(…)]`
+     reduction meta at col 25), `rx.t` (756, parse at 648),
+     `multislice-6e.t` (549, adverb `:` at 286). Each aborts an otherwise-large
+     file at a single construct.
+   - **The `.new` batch** (26 files) — `Version`, `Duration`, `SetHash`/
+     `BagHash`/`MixHash`, `buf8`/`blob8`, native shaped arrays (class C).
+   - **The `expected )` cluster** (104 files) — the single largest first-error
+     bucket; term-position operators (62) and `Confused` (48) follow.
+   The cheapest *file-count* growth stays the 252 partials losing only 1–2
+   tests each (attack-order item 4); the biggest *assertion* wins are the two
+   constructors above.
