@@ -3,8 +3,8 @@
 # 16.0 extracted/DerivedBidiClass.txt.  Re-run: python3 tools/gen_unicode_bidi.py
 import re
 
-SRC = "tools/ucd/DerivedBidiClass-16.0.0.txt"
-VER = "16.0.0"
+SRC = "tools/ucd/DerivedBidiClass-17.0.0.txt"
+VER = "17.0.0"
 
 ranges = []  # (lo, hi, BidiClass) e.g. "L", "EN", "WS"
 for line in open(SRC):

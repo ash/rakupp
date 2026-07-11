@@ -112,6 +112,8 @@ say "🦋".uniname;            # BUTTERFLY
 say "\c[BUTTERFLY]";         # 🦋        (and back, by name)
 say "½".unival;              # 0.5       (an exact Rat, not a Num)
 say "Ⅻ".unival;             # 12        (Roman numeral twelve)
+say "億".unival;             # 100000000 (Unihan numerals too)
+say "가".uniname;            # HANGUL SYLLABLE GA   (algorithmic, both ways)
 say uniprop("ß");            # Ll        (general category)
 say uniprop("敬", "Script"); # Han
 
@@ -141,17 +143,20 @@ live in `tools/ucd/` so regeneration is reproducible and offline:
 
 | Generator | Output | Source data | Version |
 |---|---|---|---|
+| **`tools/gen-unicode.raku`** (Raku, run by rakupp itself) | `src/unicode_gen.cpp`, `src/unicode_names.cpp` | UnicodeData, NameAliases, DerivedNumericValues (names, categories, numeric values incl. Unihan numerals) | **17.0** |
 | `tools/gen_unicode_gb.py` | `src/unicode_gb_gen.cpp` | GraphemeBreakProperty, emoji-data, DerivedCoreProperties (InCB) | **17.0** |
 | `tools/gen_unicode_norm.py` | `src/unicode_norm_gen.cpp` | UnicodeData, DerivedNormalizationProps | **17.0** |
 | `tools/gen_unicode_coll.py` | `src/unicode_coll_gen.cpp` | allkeys.txt (DUCET) | **17.0** |
-| `tools/gen_unicode.py` | `src/unicode_gen.cpp`, `src/unicode_names.cpp` | UnicodeData (names, categories, numeric values) | 16.0 |
-| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties, Scripts, Blocks, DerivedBidiClass | 16.0 |
+| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties, Scripts, Blocks, DerivedBidiClass | **17.0** |
 
-The grapheme, normalization and collation data track **Unicode 17.0** because
-that is what Roast's generated test files (GraphemeBreakTest, emoji-test,
-CollationTest) assert against. The remaining tables are pinned at 16.0; the
-differences are additive (new characters), so mixing versions is safe in
-practice — upgrading the rest to 17.0 is routine work when needed.
+Every table is pinned at **Unicode 17.0** — the version Roast's generated test
+files (GraphemeBreakTest, emoji-test, CollationTest) assert against. The
+names/categories generator is written in Raku and executed by rakupp itself
+(dogfooding): parsing `UnicodeData.txt` directly ended the dependency on the
+host Python's `unicodedata`, whose UCD version lags by years. Ideographic
+names (`CJK UNIFIED IDEOGRAPH-*`, `TANGUT IDEOGRAPH-*`, `NUSHU CHARACTER-*`)
+and Hangul syllable names (`HANGUL SYLLABLE GA` … composed from Jamo short
+names) are algorithmic and synthesized in C++ rather than stored.
 
 ## Known gaps
 

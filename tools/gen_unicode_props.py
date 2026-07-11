@@ -4,8 +4,8 @@
 # Re-run: python3 tools/gen_unicode_props.py
 import re
 
-FILES = ["tools/ucd/DerivedCoreProperties-16.0.0.txt", "tools/ucd/PropList-16.0.0.txt"]
-VER = "16.0.0"
+FILES = ["tools/ucd/DerivedCoreProperties-17.0.0.txt", "tools/ucd/PropList-17.0.0.txt"]
+VER = "17.0.0"
 
 props = {}   # normalized-name -> list of (lo, hi)
 for path in FILES:

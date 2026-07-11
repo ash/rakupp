@@ -19,7 +19,6 @@ extern const uint32_t COMP[];   extern const size_t COMP_N;
 struct NameEnt { const char* name; uint32_t cp; };
 extern const NameEnt NAMES[];   extern const size_t NAMES_N;
 extern const int64_t NUMV[];    extern const size_t NUMV_N;
-extern const uint32_t GBPROP[]; extern const size_t GBPROP_N;
 extern const uint32_t GBRANGE[]; extern const size_t GBRANGE_N; // real UAX#29 classes + ExtPict, as ranges
 extern const uint32_t INCB[]; extern const size_t INCB_N; // Indic_Conjunct_Break (rule GB9c)
 extern const uint16_t COLLCE[]; extern const size_t COLLCE_N;       // DUCET collation elements (L1,L2,L3)
@@ -493,6 +492,17 @@ static uint32_t composePair(uint32_t a, uint32_t b) {
     return it == m.end() ? 0 : it->second;
 }
 
+
+// Hangul syllable names are algorithmic (AC00..D7A3): HANGUL SYLLABLE <L><V><T>
+// composed from the Jamo short names.
+static const char* const HANGUL_L[19] = {"G","GG","N","D","DD","R","M","B","BB","S","SS","","J","JJ","C","K","T","P","H"};
+static const char* const HANGUL_V[21] = {"A","AE","YA","YAE","EO","E","YEO","YE","O","WA","WAE","OE","YO","U","WEO","WE","WI","YU","EU","YI","I"};
+static const char* const HANGUL_T[28] = {"","G","GG","GS","N","NJ","NH","D","L","LG","LM","LB","LS","LT","LP","LH","M","B","BS","S","SS","NG","J","C","K","T","P","H"};
+static std::string hangulSyllableName(uint32_t cp) {
+    uint32_t s = cp - 0xAC00;
+    return std::string("HANGUL SYLLABLE ") + HANGUL_L[s / (21 * 28)] + HANGUL_V[(s / 28) % 21] + HANGUL_T[s % 28];
+}
+
 int32_t uniCharByName(const std::string& name) {
     auto algo = [&](const char* pfx) -> int32_t {
         size_t pl = strlen(pfx);
@@ -503,6 +513,19 @@ int32_t uniCharByName(const std::string& name) {
     int32_t a;
     if ((a = algo("CJK UNIFIED IDEOGRAPH-")) >= 0) return a;
     if ((a = algo("CJK COMPATIBILITY IDEOGRAPH-")) >= 0) return a;
+    if ((a = algo("TANGUT IDEOGRAPH-")) >= 0) return a;
+    if ((a = algo("KHITAN SMALL SCRIPT CHARACTER-")) >= 0) return a;
+    if ((a = algo("NUSHU CHARACTER-")) >= 0) return a;
+    if (name.compare(0, 16, "HANGUL SYLLABLE ") == 0) {
+        static const std::unordered_map<std::string, uint32_t> hangul = [] {
+            std::unordered_map<std::string, uint32_t> m;
+            for (uint32_t cp = 0xAC00; cp <= 0xD7A3; cp++) m[hangulSyllableName(cp)] = cp;
+            return m;
+        }();
+        auto it = hangul.find(name);
+        if (it != hangul.end()) return (int32_t)it->second;
+        return -1;
+    }
     size_t lo = 0, hi = ucd::NAMES_N;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
@@ -522,8 +545,19 @@ std::string uniNameOf(uint32_t cp) {
     auto it = rev.find(cp);
     if (it != rev.end()) return it->second;
     if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) ||
-        (cp >= 0x20000 && cp <= 0x2A6DF) || (cp >= 0x2A700 && cp <= 0x2EBEF)) {
+        (cp >= 0x20000 && cp <= 0x2A6DF) || (cp >= 0x2A700 && cp <= 0x2EE5D) ||
+        (cp >= 0x30000 && cp <= 0x323AF)) {
         char b[40]; std::snprintf(b, sizeof b, "CJK UNIFIED IDEOGRAPH-%04X", cp); return b;
+    }
+    if (cp >= 0xAC00 && cp <= 0xD7A3) return hangulSyllableName(cp);
+    if ((cp >= 0x17000 && cp <= 0x187FF) || (cp >= 0x18D00 && cp <= 0x18D8F)) {
+        char b[32]; std::snprintf(b, sizeof b, "TANGUT IDEOGRAPH-%05X", cp); return b;
+    }
+    if (cp >= 0x18B00 && cp <= 0x18CFF) {
+        char b[40]; std::snprintf(b, sizeof b, "KHITAN SMALL SCRIPT CHARACTER-%05X", cp); return b;
+    }
+    if (cp >= 0x1B170 && cp <= 0x1B2FF) {
+        char b[32]; std::snprintf(b, sizeof b, "NUSHU CHARACTER-%05X", cp); return b;
     }
     return "";
 }

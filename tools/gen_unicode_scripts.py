@@ -3,8 +3,8 @@
 # PINNED 16.0 Scripts.txt.  Re-run: python3 tools/gen_unicode_scripts.py
 import re
 
-SRC = "tools/ucd/Scripts-16.0.0.txt"
-VER = "16.0.0"
+SRC = "tools/ucd/Scripts-17.0.0.txt"
+VER = "17.0.0"
 
 ranges = []  # (lo, hi, ScriptName) — proper case, as in Scripts.txt
 for line in open(SRC):
