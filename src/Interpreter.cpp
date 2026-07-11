@@ -875,8 +875,8 @@ int Interpreter::run(Program& prog) {
         code = e.code;
     } catch (RakuError& e) {
         if (topCatch) { // mainline CATCH: bind $_/$! to the exception and run its when/default
-            tctx_.cur->define("$_", e.payload);
-            tctx_.cur->define("$!", e.payload);
+            tctx_.cur->define("$_", exceptionFor(e));
+            tctx_.cur->define("$!", exceptionFor(e));
             try { for (auto& s : topCatch->stmts) exec(s.get()); }
             catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
         } else {
@@ -1230,8 +1230,8 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     // Run the block's CATCH handler; returns true if `.resume` was called (so the
     // block should carry on after the throwing statement).
     auto runCatch = [&](RakuError& e) -> bool {
-        tctx_.cur->define("$_", e.payload);
-        tctx_.cur->define("$!", e.payload);
+        tctx_.cur->define("$_", exceptionFor(e));
+        tctx_.cur->define("$!", exceptionFor(e));
         try { for (auto& s : catchBlk->stmts) exec(s.get()); }
         catch (BreakGivenEx&) { /* when/default matched */ }
         catch (ResumeEx&) { return true; }
@@ -2629,8 +2629,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return r.v;
     } catch (RakuError& e) {
         if (catchBlk) {
-            tctx_.cur->define("$_", e.payload);
-            tctx_.cur->define("$!", e.payload);
+            tctx_.cur->define("$_", exceptionFor(e));
+            tctx_.cur->define("$!", exceptionFor(e));
             try {
                 for (auto& s : catchBlk->stmts) exec(s.get());
             } catch (BreakGivenEx&) { /* a when/default matched */ }
@@ -4825,7 +4825,7 @@ Value Interpreter::evalUnary(Unary* u) {
             tctx_.cur->define("$!", Value::nil());
             return r;
         } catch (RakuError& e) {
-            tctx_.cur->define("$!", e.payload);
+            tctx_.cur->define("$!", exceptionFor(e));
             return Value::nil();
         }
     }
@@ -4983,9 +4983,38 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
 
 // Stringify honouring user-defined `method gist` / `method Str` (Raku: say/note use
 // .gist; print/put/string interpolation use .Str, which itself falls back to .gist).
+// The value stored into $! / $_ when an error is caught. A bare exception TYPE
+// payload (`throw RakuError{Value::typeObj("X::Foo"), msg}`) would be an
+// UNDEFINED type object — `$!.defined` must be True and `.message` must answer,
+// so wrap it into a defined instance of that class (registered on the fly).
+Value Interpreter::exceptionFor(const RakuError& e) {
+    if (e.payload.t != VT::Type) return e.payload; // already a value/object (die $obj / die "msg")
+    std::string tn = e.payload.s.empty() ? "X::AdHoc" : e.payload.s;
+    std::shared_ptr<ClassInfo> ci;
+    auto it = classes_.find(tn);
+    if (it != classes_.end()) ci = it->second;
+    else {
+        ci = std::make_shared<ClassInfo>();
+        ci->name = tn;
+        ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true;
+        ci->attrs.push_back(a);
+        classes_[tn] = ci;
+    }
+    auto od = std::make_shared<ObjectData>();
+    od->cls = ci;
+    od->attrs["message"] = Value::str(e.message);
+    return Value::object(od);
+}
+
 std::string Interpreter::gistOf(const Value& v) {
-    if (v.t == VT::Object && v.obj && v.obj->cls)
+    if (v.t == VT::Object && v.obj && v.obj->cls) {
         if (Value* m = v.obj->cls->findMethod("gist")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
+        // exceptions gist to their message (`say $!` prints "boom", not X::AdHoc<obj>)
+        if (v.obj->cls->name.rfind("X::", 0) == 0) {
+            auto it = v.obj->attrs.find("message");
+            if (it != v.obj->attrs.end()) return it->second.toStr();
+        }
+    }
     if (v.t == VT::Object && v.obj && v.obj->hasBoxed) return gistOf(v.obj->boxed);
     return v.gist();
 }
@@ -5215,6 +5244,22 @@ Value Interpreter::evalIndex(Index* idx) {
     }
 
     if (idx->isHash) {
+        // Associative indexing on an array-backed value: a Capture (`\(1, :i)`) is
+        // stored as an Array of positionals + Pairs, and `c<i>` finds the named part.
+        // On a plain Array with no such named element it's a type error (`$aref<0>`).
+        if (base.t == VT::Array) {
+            Value iv = eval(idx->index.get());
+            std::string key = iv.toStr();
+            bool capturish = false; // holds named parts (Pairs)? then it's Capture-like
+            if (base.arr)
+                for (auto& el : *base.arr)
+                    if (el.t == VT::Pair) {
+                        capturish = true;
+                        if (el.s == key) return el.pairVal ? *el.pairVal : Value::any();
+                    }
+            if (capturish) return Value::any(); // Capture without that named part
+            throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing"};
+        }
         Value iv = eval(idx->index.get());
         auto lookup1 = [&](const std::string& key) -> Value {
             if (base.t == VT::Hash && base.hash) {
@@ -5233,6 +5278,12 @@ Value Interpreter::evalIndex(Index* idx) {
             return out;
         }
         return lookup1(iv.toStr());
+    }
+    // positional [0] on a non-Positional item returns the item itself: `$hashref[0] === $hashref`
+    if (!idx->isHash && base.t == VT::Hash && base.hashKind.empty()) {
+        Value iv = eval(idx->index.get());
+        if (iv.t != VT::Array && iv.t != VT::Range && iv.toInt() == 0) return base;
+        return Value::any();
     }
     // array/list slice: @a[1..*], @a[0,2,4], @a[@indices]
     if (!idx->isHash && (base.t == VT::Array || base.t == VT::Range || base.t == VT::Str)) {

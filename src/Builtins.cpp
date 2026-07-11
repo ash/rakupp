@@ -3858,6 +3858,7 @@ void Interpreter::registerBuiltins() {
             else if (op == ">=") c = x.toNum() >= y.toNum();
             else if (op == "eq") c = x.toStr() == y.toStr();
             else if (op == "ne") c = x.toStr() != y.toStr();
+            else c = applyArith(op, x, y).truthy(); // ===, eqv, ~~, before/after, user ops…
         }
         I.emitTest(c, a.size() > 3 ? a[3].toStr() : "");
         return Value::boolean(c);

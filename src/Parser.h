@@ -77,7 +77,7 @@ private:
     ExprPtr parsePostfix(ExprPtr base, bool stopAtSpaceDot = false);
     ExprPtr parsePrimary();
     ExprPtr parseDeclarator(const std::string& scope);
-    void skipTraits();
+    void skipTraits(bool onVarDecl = false);
     ExprPtr parseColonPair();                     // :name / :!name / :name(x) / :$var
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);

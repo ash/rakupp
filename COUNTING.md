@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 390 / 1,464 (**~27%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 143,744 / 149,126 (~93%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 143,744 / 161,285 (~86%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 143,744 / 188,835 (**~76%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 393 / 1,464 (**~27%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 143,490 / 148,775 (~93%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 143,490 / 160,950 (~86%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 143,490 / 188,486 (**~76%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~27%)** and **measure 4 (all declared tests, ~76%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -37,8 +37,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (188,835) is
-~28k larger than 3's (161,285) — those ~27,438 tests live in 306 parse-error
+source and counts all N as failing. That is why 4's denominator (188,486) is
+~28k larger than 3's (160,950) — those ~27,438 tests live in 306 parse-error
 files, recovered from source. A parse error can no longer hide its tests.
 
 ## Exactly how the denominators are built

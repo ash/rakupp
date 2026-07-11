@@ -206,6 +206,7 @@ bool Parser::startsListopArg(const Token& t) const {
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
                    t.text == "::" || // symbolic reference `say ::($name)` / `say ::Foo`
+                   t.text == "$" || // item contextualizer `ok $%*ENV` / `say $(1,2)` (bare `$` is never an infix)
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
@@ -719,9 +720,14 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
 }
 
 // skip `is trait` / `does Role` / `where ...` clauses up to '=' , ; or end
-void Parser::skipTraits() {
+void Parser::skipTraits(bool onVarDecl) {
     while (isIdent("is") || isIdent("does") || isIdent("returns") || isIdent("of")) {
+        bool wasIs = isIdent("is");
         advance();
+        // `is readonly` is a PARAMETER trait; on a variable declaration it's a
+        // compile error (X::Comp::Trait::Unknown) — roast S03-binding/ro.t.
+        if (onVarDecl && wasIs && isIdent("readonly"))
+            error("Can't use unknown trait 'is readonly' in a variable declaration");
         if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); // trait name / type
         if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
         if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
@@ -804,7 +810,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
         // Hash[valueType,keyType]
         if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
-        skipTraits();
+        skipTraits(scope != "has");
         return ve;
     }
     if (scope == "constant" && isKind(Tok::Ident)) {
@@ -819,7 +825,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         std::string sig = advance().text;
         auto ve = std::make_unique<VarExpr>(sig + "!anon");
         ve->declare = true; ve->declScope = scope;
-        skipTraits();
+        skipTraits(scope != "has");
         return ve;
     }
     error("expected variable after declarator");
@@ -2159,6 +2165,14 @@ StmtPtr Parser::parseSub(bool isMulti) {
         advance(); // :
         std::vector<std::string> w;
         if (isOp("<")) { advance(); w = readAngleWords(">"); }
+        else if (isOp("<<")) { advance(); w = readAngleWords(">>"); } // sub infix:<<M>>
+        else if (cur().kind == Tok::Op && cur().text.size() > 4 &&
+                 cur().text.compare(0, 2, "<<") == 0 &&
+                 cur().text.compare(cur().text.size() - 2, 2, ">>") == 0) {
+            // the lexer folded `<<M>>` into a single hyper-metaop token — unwrap it
+            std::string tok = advance().text;
+            w.push_back(tok.substr(2, tok.size() - 4));
+        }
         else if (isOp("\xC2\xAB")) { advance(); w = readAngleWords("\xC2\xBB"); }
         std::string opname = w.empty() ? "" : w[0];
         if ((cat == "circumfix" || cat == "postcircumfix") && w.size() >= 2) {

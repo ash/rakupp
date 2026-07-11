@@ -135,8 +135,16 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    BEGIN-visible list declarations `my ($a,$b)`, `1<2` = whitespace parse error,
    `uniname` → `<unassigned>`, `Regex ~~ Hash/Array` (any key/element),
    `X::* ~~ Exception`, `$*KERNEL.release`, `Raku.KERNELnames`, sigilless-param
-   write-through (`sub undefine(\a) { a = Nil }`). Standing: **378 / 1,464,
-   139,688 assertions.**
+   write-through (`sub undefine(\a) { a = Nil }`).
+   *Batch 3* (+4 full: `env.t`, `catch_type_cast_mismatch.t`, `ro.t`,
+   `atanh.t`): caught errors stored in `$!`/`$_` are now always **defined
+   exception instances** (`.defined`/`.message`/`~~ X::Type` all work even for
+   bare-type throws; exceptions gist to their message); `is readonly` on a
+   variable is the spec compile error; `sub infix:<<M>>` op names; Capture
+   associative indexing (`c<named>`) with plain-Array `$aref<k>` a type error;
+   `$hashref[0]` returns self; `cmp-ok` handles any infix (`===`, `eqv`, …);
+   `$` contextualizer as a listop argument (`ok $%*ENV`). Standing:
+   **393 / 1,464, 143,490 assertions.**
 5. ~~**Emoji/UAX#29 data pass** (D)~~ — **DONE, +4,056 assertions, +12 full
    files (378 → 390)**. Grapheme breaking now uses REAL UCD 17.0 data
    (`tools/gen_unicode_gb.py` → `unicode_gb_gen.cpp`: GraphemeBreakProperty +
