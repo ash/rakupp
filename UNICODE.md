@@ -31,6 +31,16 @@ combining acute) is one character, and so is `👨‍👩‍👧` (a ZWJ sequenc
 - Roast: `GraphemeBreakTest-{0..3}.t` (Unicode's own break-test data) and
   `emoji-test.t` (3,825 emoji sequences) fully pass.
 
+```raku
+say "e\x[301]".chars;        # 1        (e + combining acute = one grapheme)
+say "e\x[301]".codes;        # 2        (but two codepoints)
+say "👨‍👩‍👧‍👦".chars;             # 1        (family: 7 codepoints, one ZWJ cluster)
+say "👋🏽".chars;              # 1        (wave + skin-tone modifier)
+say "नमस्ते".chars;            # 3        (Devanagari conjuncts, rule GB9c)
+say "e\x[301]xam".comb.join("|");   # é|x|a|m   (.comb segments by grapheme)
+say "café".flip;             # éfac     (the accent stays on its e)
+```
+
 ### 2. Normalization (NFC / NFD / NFKC / NFKD)
 
 `uniNormalize()` implements the full canonical/compatibility decomposition,
@@ -45,6 +55,17 @@ generated **directly from `UnicodeData.txt` 17.0** by
 whose data typically lags by several versions. Roast: all
 `nf{c,d,kc,kd}-*.t` files and `mass-equality.t` (500 canonical-equivalence
 cases) fully pass.
+
+```raku
+say "é".NFD.list;            # (101 769)  (decomposed: e + combining acute)
+say "é".NFC.list;            # (233)      (composed back to é)
+say "ﬁle".NFKC.Str;          # file       (compatibility: the ﬁ ligature splits)
+
+# canonically equivalent codepoint orders yield the SAME Str (NFG):
+say Uni.new(0x65, 0x301).Str eq "é";                             # True
+say Uni.new(0x44, 0x323, 0x307).Str
+ eq Uni.new(0x44, 0x307, 0x323).Str;                             # True
+```
 
 ### 3. Collation (UCA / DUCET)
 
@@ -68,6 +89,12 @@ failures. This is the *untailored* default table: no locale tailorings (CLDR),
 so `"ö" unicmp "z"` gives the language-neutral answer, not the Swedish one.
 (Rakudo does not do tailorings either.)
 
+```raku
+say "a" cmp    "B";          # More   (codepoint order: 'a' is 97, 'B' is 66)
+say "a" unicmp "B";          # Less   (collation: base letters first, a < b)
+say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
+```
+
 ### 4. Character knowledge
 
 - `uniname`/`.uniname` and `\c[NAME]` — names in both directions, including
@@ -80,12 +107,32 @@ so `"ö" unicmp "z"` gives the language-neutral answer, not the Swedish one.
   properties from `PropList.txt`/`DerivedCoreProperties.txt`
   (`<:Math>`, `<:Soft_Dotted>`, …).
 
+```raku
+say "🦋".uniname;            # BUTTERFLY
+say "\c[BUTTERFLY]";         # 🦋        (and back, by name)
+say "½".unival;              # 0.5       (an exact Rat, not a Num)
+say "Ⅻ".unival;             # 12        (Roman numeral twelve)
+say uniprop("ß");            # Ll        (general category)
+say uniprop("敬", "Script"); # Han
+
+say "Ψφ7".comb.grep(/<:Lu>/);            # (Ψ)     (uppercase letters only)
+say "a+б𝕏".comb.grep(/<:Math>/).join;   # +𝕏      (binary Math property)
+say "abcБВГ".subst(/<:Cyrillic>+/, ""); # abc     (script class in a regex)
+```
+
 ### 5. Case and encodings
 
-- `.uc`/`.lc`/`.tc`/`.fc` with the common special cases (`ß.uc` is `SS`,
-  final sigma) — see gaps below for the folding tail.
+- `.uc`/`.lc`/`.tc`/`.fc` with the common expansions (`ß.uc` is `SS`) —
+  see gaps below for final sigma and the folding tail.
 - `.encode`/`.decode` for utf8 (plus the gb2312/gb18030/shiftjis legacy
   encodings exercised by Roast), `Buf`/`Blob` round-trips.
+
+```raku
+say "Straße".uc;                        # STRASSE   (ß expands to SS)
+say Blob.new(0xC3, 0xA9).decode("utf8"); # é
+my $b = "中文".encode;                  # a Blob of 6 utf8 bytes
+say $b.decode;                           # 中文
+```
 
 ## The data pipeline
 
@@ -111,7 +158,8 @@ practice — upgrading the rest to 17.0 is routine work when needed.
 Stated plainly, per the failing Roast tail (~41 assertions in S15 plus
 scattered S32-str cases):
 
-- **Case folding tail** — `"ß".fc` does not fold to `ss`; `:ignorecase` /
+- **Case folding tail** — `"ß".fc` does not fold to `ss`, and `.lc` does not
+  produce final sigma (`"ΟΔΥΣΣΕΥΣ".lc` should end in `ς`); `:ignorecase` /
   `:ignoremark` on `contains`/`starts-with`/`index` handle ASCII but miss
   some non-ASCII foldings (`"FOÖ"`). `samemark` is not implemented.
 - **`.collate` / `.sort`** do not route through the UCA yet — only the
