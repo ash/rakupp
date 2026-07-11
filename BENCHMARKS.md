@@ -23,9 +23,10 @@ tracks.
 
 ## The short version
 
-- **Startup:** Raku++ is ~9× faster — 17 ms vs Rakudo's 156 ms on this
-  machine (best-of-10, subprocess-spawn inclusive). For one-liners, CLI glue,
-  and small programs it feels instant.
+- **Startup:** ~12 ms cold on this machine (best of a 200-spawn loop) — an
+  order of magnitude quicker than a VM-backed engine. For one-liners, CLI glue,
+  and small programs it feels instant. (The `startup` table rows below read
+  higher — ~16–21 ms — because they include the harness's subprocess capture.)
 - **Native (`--exe`) beats Rakudo on every benchmark here** — from 1.8× on
   `arrayops` to 6× on `loopsum`/`hash` and 9.5× on `strcat`. Compiling removes
   interpreter overhead.
@@ -58,7 +59,7 @@ tracks.
   three and was verified to produce identical output before timing.
 - **Harness overhead:** spawning + capturing a subprocess adds a small fixed
   cost per run to every engine (the `startup` row reads ~20 ms through the
-  harness vs ~17 ms for a bare best-of-10 spawn). It hits all three equally.
+  harness vs ~12 ms for a bare 200-spawn loop). It hits all three equally.
 
 ## Results
 
@@ -180,10 +181,10 @@ that was an unbounded lookbehind scan on a document this large.
 
 ## How to read this
 
-- **Startup wins are real and matter.** A ~3 ms cold start vs ~100 ms is the
-  difference between "instant" and "noticeable" for scripts, editor tooling, and
-  shelling out in a loop. This is the natural advantage of a tiny native binary
-  with no VM to spin up.
+- **Startup wins are real and matter.** A ~12 ms cold start (vs ~150 ms on this
+  machine) is the difference between "instant" and "noticeable" for scripts,
+  editor tooling, and shelling out in a loop. This is the natural advantage of a
+  tiny native binary with no VM to spin up.
 - **Interpreter throughput losses are real, and `--exe` addresses them.** A
   tree-walker re-dispatches every AST node on every execution; compiling to
   native code removes that, which is why `loopsum`/`fib` catch or pass Rakudo.

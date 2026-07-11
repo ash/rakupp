@@ -141,9 +141,12 @@ while many of its files still don't run at all — read it alongside No-TAP.
 build/rakupp tools/run-roast.raku          # self-hosted harness (Raku, run by rakupp)
 ```
 
-It streams a per-file line (`[PASS] n/m path`, `[part]`, `[TIME]`) and ends
-with the summary **plus a paste-ready copy of the by-synopsis table above** —
-so refreshing that table is a copy-paste, not a hand computation. Filter by path
+It runs the full ~1,460-file suite in about **3½ minutes** — the millisecond
+cold-start means spawning a fresh process per file is cheap, so the whole run
+is quick enough to re-do after any change. It streams a per-file line
+(`[PASS] n/m path`, `[part]`, `[TIME]`) and ends with the summary **plus a
+paste-ready copy of the by-synopsis table above** — so refreshing that table
+is a copy-paste, not a hand computation. Filter by path
 substring: `build/rakupp tools/run-roast.raku S05`.
 
 _Snapshot: 401 / 1,464 files fully passing (~27% coverage); 605 partial,

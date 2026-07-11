@@ -29,7 +29,7 @@ official specification test suite. The guiding motto:
 | **Written in** | C++17, zero third-party dependencies |
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler |
-| **Startup** | ~17 ms cold (vs Rakudo's ~156 ms) |
+| **Startup** | ~12 ms cold (vs Rakudo's ~150 ms) |
 | **Correctness target** | the Roast suite — ~81% of all individual tests pass; ~27% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
@@ -116,7 +116,7 @@ They make different trade-offs:
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
 | Coverage | a growing subset (~27% of Roast) | complete |
-| Startup | ~17 ms cold | ~156 ms |
+| Startup | ~12 ms cold | ~150 ms |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |
 
