@@ -37,9 +37,46 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (188,486) is
-~28k larger than 3's (160,950) — those ~27,438 tests live in 306 parse-error
-files, recovered from source. A parse error can no longer hide its tests.
+source and counts all N as failing. That is why 4's denominator (188,486) is ~19k larger
+than 3's (169,221) — those 19,265 tests live in 302 no-TAP files (parse errors
+and runtime aborts), recovered from source. A parse error can no longer hide
+its tests.
+
+## The declared denominator grows with coverage — ~81% here is really ~74% of the whole suite
+
+Measure 4's denominator is **not a fixed property of the suite**; it depends on
+how much of the suite a run can actually execute, and it's worth remembering why
+so this doesn't spawn the same question twice.
+
+For the **1,400 files with a literal `plan 42;`**, the count is recoverable from
+source whether or not the file runs — so those contribute the same to *any* run.
+But **over a hundred files declare their plan dynamically** — `plan +@tests`,
+`plan $n * 6`, or `done-testing` (45 files) with no up-front number. For those,
+the test count is knowable *only by running the file*. When a run aborts such a
+file (no-TAP), there is no static integer to read from source, so the file
+contributes **0** — its tests are genuinely uncountable for that run.
+
+The consequence: **a run that executes more of the suite gets a larger
+denominator.** Our current run recovers **188,486** declared tests. A run that
+executes essentially every file surfaces **~206,000** — the extra ~17,700 live
+in dynamic-plan files we abort on and therefore cannot count.
+
+So our same 152,316 passes read two ways:
+
+- **~81%** against *our* denominator (152,316 / 188,486) — *"of the tests we can
+  account for, how many pass."* This is what a single harness run can measure,
+  and it is the number we quote.
+- **~74%** against the suite's *full* declared total (152,316 / ~206,000) —
+  *"of every test the whole suite could declare, how many pass."*
+
+Both are honest; they answer different questions. Keep the ~74% in mind, because
+it means our headline **~81% is, if anything, slightly flattering** — tests in
+files we can't even run aren't charged against us. It also means **raw per-test
+percentages from two different runs aren't directly comparable** until they're
+put over a common denominator: a run that unlocks more files *raises* its own
+denominator, so a rising numerator can hide behind a rising denominator (or vice
+versa). The zero-regression gate (below) is on the *file list*, precisely to
+sidestep this.
 
 ## Exactly how the denominators are built
 
@@ -58,7 +95,7 @@ The numerator is the **same** in every ratio — only the denominator widens.
 
 - **skip-all / dynamic-plan files** (`plan skip-all`, `plan *`, `done-testing`
   with no count) have no static test count, so they are **excluded** from every
-  denominator (16 such files at present). A file that skips-all at runtime is
+  denominator (15 such files at present). A file that skips-all at runtime is
   scored as a *passing file* contributing 0 tests.
 - **Timeouts** (11 files) are excluded from the assertion denominators.
 - **`# SKIP` / `# TODO`** lines that rakupp itself emits count as **passed** in
@@ -109,10 +146,10 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  350 / 1464   (23.9%)
-Assertions passed:    137199 / 146982  (93.3%)  of tests that ran
-Assertions passed:    137199 / 157967  (86.9%)  of tests planned by files that emitted a plan
-Assertions passed:    137199 / 187714  (73.1%)  of ALL declared tests (+29747 from 350 no-TAP files read from source; 16 more have no static plan)
+Files fully passing:  401 / 1464   (27.4%)
+Assertions passed:    152316 / 157059  (97.0%)  of tests that ran
+Assertions passed:    152316 / 169221  (90.0%)  of tests planned by files that emitted a plan
+Assertions passed:    152316 / 188486  (80.8%)  of ALL declared tests (+19265 from 302 no-TAP files read from source; 15 more have no static plan)
 ```
 
 (No `ROAST` env var is required — the tests' own `use lib` resolves the
