@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [EXAMPLES.md](EXAMPLES.md) for a cookbook of runnable snippets (each verified against `rakupp`).
 
-Roast standing: measured per individual test, **~81% of all declared tests pass** (151,831 / ~188,486, counting tests in files that abort before running); on the stricter file bar, **400 / 1,464 fully pass (~27%)** (605 partial, 449 no-TAP, 10 timeout). See [COUNTING.md](COUNTING.md) for how these are defined.
+Roast standing: measured per individual test, **~81% of all declared tests pass** (151,832 / ~188,486, counting tests in files that abort before running); on the stricter file bar, **400 / 1,464 fully pass (~27%)** (605 partial, 449 no-TAP, 10 timeout). See [COUNTING.md](COUNTING.md) for how these are defined.
 
 ## Language versions (6.c / 6.d / 6.e)
 
@@ -104,17 +104,19 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Substitution adverbs `:g :x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
 - **Gaps:** named-capture storage (`$<name>=(…)`), backtracking control, `:ratchet`
 
-## Unicode (generated from UCD 16.0)
-- Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni` type
-- Grapheme-correct `.chars` (UAX #29: emoji, flags 🇦🇧, ZWJ sequences, Hangul)
-- Character names `\c[NAME]` incl. control aliases (`\c[NULL]`, `\c[LF]`), `uniname`; numeric values `unival`/`univals`
-- Regex properties: general category (short `<:L>`/`<:Nd>` and long `<:UppercaseLetter>`/`<:SpaceSeparator>`), `<:LC>`, and **blocks** `<:InArabic>`/`<:InLatin1Supplement>` (real 16.0 Blocks table); negated/inverted `<:!P>`/`<-:P>`
-- **Gaps:** `uniprop` binary props, exact UCD scripts (still block-approximate — real Scripts.txt table not wired), bidi-class `<:bc<L>>`, derived/contributory props, `unimatch`, full NFG grapheme-break suite
+## Unicode (generated from UCD/UCA 17.0 — see [UNICODE.md](UNICODE.md))
+- Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni`/`NFC`/`NFD` types; `Uni.new(…).Str` is NFC (NFG semantics) — all `nf*-*.t` + `mass-equality.t` pass
+- Grapheme clusters (full UAX #29 incl. **GB9c** Indic conjuncts, emoji ZWJ/skin-tones, flags 🇦🇧): `.chars`/`.comb`/`.flip` — `GraphemeBreakTest-*` and `emoji-test.t` (3,825) fully pass
+- **UCA collation** — `unicmp`/`coll` from DUCET 17.0 (contractions incl. discontiguous matching, implicit weights): all 8,271 conformance tests pass
+- Character names both directions — `\c[NAME]`, `uniname` — incl. control aliases and algorithmic CJK/Tangut/Nushu/**Hangul syllable** names; numeric values `unival`/`univals` as exact Rats, incl. Unihan numerals (`千` = 1000)
+- Regex properties: general category (short `<:L>`/`<:Nd>` and long forms), **scripts** `<:Latin>`/`<:Script<Greek>>` (real Scripts.txt), **blocks** `<:InArabic>`, **bidi** `<:bc<L>>`, binary props (`<:Math>`, `<:Soft_Dotted>`, …); negated/inverted `<:!P>`/`<-:P>`
+- **Gaps:** full case folding (`ß.fc`, final sigma), `:ignorecase`/`:ignoremark` on non-ASCII, `samemark`, `.collate`/`.sort` not yet UCA-routed
 
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise
 - String: `chars codes uc lc tc fc wordcase samecase index rindex substr split comb subst trans words lines flip trim starts-with~ ends-with~ contains sprintf ords chrs ord chr` (`.trans` supports `a..z` ranges); `undefine($x)` resets a container
 - List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift splice keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll`; `slip(…)` spreads into the enclosing list; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; list methods on scalars (`5.map`, `42.grep`); `roundrobin`
+- **Iterator protocol** (S07): `.iterator` on any collection with `pull-one`/`push-all`/`push-exactly`/`skip-at-least`/`count-only`/… and the `IterationEnd` sentinel; **lazy infinite sources** — `^Inf`/`1..Inf` with `.head`/`.skip`/`.grep`/`.first`/`.map` composing lazily (`(^Inf).grep(*.is-prime).head(5)`)
 - Hash: `push`/`append` (accumulate values under a key), `kv keys values pairs invert antipairs`
 - Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, `polymod`, `base`, `rand` / `.rand`, constants `pi tau e`
 

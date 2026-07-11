@@ -29,7 +29,7 @@ official specification test suite. The guiding motto:
 | **Written in** | C++17, zero third-party dependencies |
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler |
-| **Startup** | ~3 ms cold (vs Rakudo's ~100 ms) |
+| **Startup** | ~17 ms cold (vs Rakudo's ~156 ms) |
 | **Correctness target** | the Roast suite — ~81% of all individual tests pass; ~27% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
@@ -116,7 +116,7 @@ They make different trade-offs:
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
 | Coverage | a growing subset (~27% of Roast) | complete |
-| Startup | ~3 ms cold | ~100 ms |
+| Startup | ~17 ms cold | ~156 ms |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |
 
@@ -130,13 +130,13 @@ implementation steadily growing toward the same language.
 
 The same progress measured at three granularities:
 
-- **All declared tests: ~81%** (151,831 / ~188,486) — the headline per-test figure.
+- **All declared tests: ~81%** (151,832 / ~188,486) — the headline per-test figure.
   It counts every test the suite declares, including those in files that abort
   before running (their `plan N` is read from source, all failing), so parse-error
   files can't hide.
 - **Files fully passing: ~27%** (400 / 1,464) — the stricter bar; a file counts
   only if *every* assertion in it passes.
-- **Tests that ran: ~97%** (151,831 / 157,059) — of just the assertions files
+- **Tests that ran: ~97%** (151,832 / 157,059) — of just the assertions files
   actually emitted; useful for tracking regressions, but it ignores the ~28k tests
   in aborting files, so it flatters.
 

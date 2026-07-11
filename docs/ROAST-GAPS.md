@@ -164,6 +164,17 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    parsing and `Uni.new(@list)` flattening. **All 4
    `CollationTest_NON_IGNORABLE` files (8,271 tests) pass with zero real
    failures.** Standing: **400 / 1,464, 151,831 assertions — 80.6%.**
+
+7. **UCD 17.0 everywhere + dogfooded generator** — all remaining tables
+   (names, categories, scripts, blocks, bidi, binary props) moved to 17.0;
+   the names/categories/numerics generator is now
+   [`tools/gen-unicode.raku`](../tools/gen-unicode.raku), written in Raku and
+   run by rakupp itself (see [DOGFOODING.md](../DOGFOODING.md)). Hangul
+   syllable names synthesized both directions, Unihan numerals in `unival`.
+   Dogfooding surfaced and fixed a real bug: `.hash` on a flat list now pairs
+   consecutive elements (`@a.kv.reverse.hash`). Standing: **400 / 1,464,
+   151,832 assertions (80.6%)** — plus two S17 stress files that flip
+   400↔402 with suite load.
 5. ~~**Emoji/UAX#29 data pass** (D)~~ — **DONE, +4,056 assertions, +12 full
    files (378 → 390)**. Grapheme breaking now uses REAL UCD 17.0 data
    (`tools/gen_unicode_gb.py` → `unicode_gb_gen.cpp`: GraphemeBreakProperty +

@@ -55,7 +55,7 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 
 All of the original "next" list has landed; the interpreter now covers whole
 synopses rather than isolated features. Current standing: **400 / 1,464 Roast
-files fully pass**, 151,831 assertions on the files that run (run the harness for
+files fully pass**, 151,832 assertions on the files that run (run the harness for
 live numbers). Major subsystems now in:
 
 - **Regex & grammars** (S05) — a CPS backtracking engine, `token`/`rule`/`regex`,
@@ -84,21 +84,44 @@ live numbers). Major subsystems now in:
 - **Tooling** — a parse-aware syntax highlighter (`--highlight`, HTML + ANSI, a
   `pygmentize` drop-in) and a self-hosted Roast harness written in Raku.
 
+Landed in the 2026-07 Roast push (350 → 400 files, 73% → 81% of declared
+tests; the systematic gap classification lives in
+[docs/ROAST-GAPS.md](docs/ROAST-GAPS.md)):
+
+- **Roast fudge directives** — `#?rakudo skip` (statement/block extents, test
+  counting, `#?DOES`), honoring what roast's own preprocessor does.
+- **Unicode 17.0 across the board** — real UAX #29 data incl. rule GB9c,
+  normalization from `UnicodeData.txt`, **UCA collation** (`unicmp`/`coll`,
+  all 8,271 conformance tests), Hangul/Tangut/Nushu name synthesis, Unihan
+  numerals; the names generator is Raku run by rakupp
+  ([DOGFOODING.md](DOGFOODING.md)).
+- **Iterator protocol** (S07: `.iterator`, `pull-one`, `push-*`, `IterationEnd`)
+  and **lazy `^Inf`** (`.head`/`.skip`/`.grep`/`.first` compose lazily).
+- **Parser clusters** — indirect-invocant colon `key($pair:)`, chained adverbs,
+  zen slice `%h{}`, pseudo-packages (`::<$x>`, `MY::`, `$PROCESS::IN`),
+  `sub infix:<<M>>`, `Q««…»»`.
+- **Semantics** — `$!` always a defined exception, `Block`/`Sub`/`Method` type
+  kinds, Capture `<named>` indexing, exact `sprintf %d` for big Ints,
+  sigilless-param write-through, stray `next`/`last`/`redo` errors.
+
 ## Next
 
 The cheap Roast wins are largely spent; moving the full-pass count now takes
-*whole features* (parse + runtime + dispatch together), as sub-signature
-destructuring showed. Roughly ordered:
+*whole features* (parse + runtime + dispatch together). Roughly ordered:
 
-1. **Redispatch** — `callsame`/`nextsame`/`callwith`/`nextwith` and proto `{*}`
+1. **Big no-TAP files** — `rat.t` (869 declared tests), `rx.t` (756),
+   `reduce.t` (580), `complex.t` (557): each is one file worth hundreds of
+   assertions once its first blocker falls (see
+   [docs/ROAST-GAPS.md](docs/ROAST-GAPS.md)).
+2. **Case-folding tail** — `.fc` full folding (`ß` → `ss`), `:ignorecase` /
+   `:ignoremark` on non-ASCII, `samemark`; and routing `.collate`/`.sort`
+   through the UCA machinery.
+3. **Redispatch** — `callsame`/`nextsame`/`callwith`/`nextwith` and proto `{*}`
    (unblocks a cluster of S06/S12 multi tests).
-2. **More signature binding** — `is rw`/`is copy` inside sub-signatures,
-   `-> [$a,$b]` pointy destructure, `($x,$y)` as a single list argument.
-3. **Symbolic references** — `::('name')`, compile-time `::?CLASS`/`::?ROLE`.
-4. **POD subsystem** (S26) — `=begin/=end`, `$=pod`, `.pod` — a self-contained
-   chunk of no-TAP files.
-5. **Test/subprocess helpers** — `is_run`/`tap-ok` (Test::Util), the last
-   blockers on a set of otherwise-passing files.
+4. **EVAL lexical isolation** — eval-born symbols must not leak to the caller
+   (a recurring S02 tail).
+5. **Test/subprocess helpers** — the `is_run`-based files (Test::Util), shaped
+   -array bounds, `OUR::.<>`-style Stash objects.
 6. **Widen native `--exe` codegen** toward the constructs that still fall back to
    bundling (see below).
 7. **Real-application hardening** — keep driving

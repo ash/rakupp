@@ -23,24 +23,27 @@ tracks.
 
 ## The short version
 
-- **Startup:** Raku++ is dramatically faster either way — ~3 ms cold vs
-  Rakudo's ~100 ms. For one-liners, CLI glue, and small programs it feels instant.
-- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.4× on
-  `fib` to 7.4× on `loopsum` and 17× on `strcat`. Compiling removes interpreter
-  overhead; the collection/hash workloads land 2.4–6.7× ahead.
+- **Startup:** Raku++ is ~9× faster — 17 ms vs Rakudo's 156 ms on this
+  machine (best-of-10, subprocess-spawn inclusive). For one-liners, CLI glue,
+  and small programs it feels instant.
+- **Native (`--exe`) beats Rakudo on every benchmark here** — from 1.8× on
+  `arrayops` to 6× on `loopsum`/`hash` and 9.5× on `strcat`. Compiling removes
+  interpreter overhead.
 - **`fib` used to be Rakudo's one win** — deep recursion of a tiny body is where
   an optimizing JIT is hardest to beat — but hot-pathing integer arithmetic in
-  the runtime pulled native Raku++ to ~2.4× *ahead*.
-- Even the **interpreter** beats Rakudo on most of these — its startup and lean
-  operations outweigh Rakudo's JIT except on the two heaviest loop/recursion
-  kernels (`loopsum`, roughly even; `fib`), where compiling (`--exe`) takes over.
-- **String building (`~=`) appends in place** in every mode (interp and `--exe`),
-  so `strcat` is now O(n) rather than O(n²) — the interpreter went from 82 ms to
-  13 ms, and it's no longer the interpreter's weakest row.
+  the runtime keeps native Raku++ ~2.1× *ahead*.
+- Even the **interpreter** beats Rakudo on 7 of 9 — startup, string, regex, and
+  the collection/hash workloads; Rakudo's JIT leads only on the two heaviest
+  loop/recursion kernels (`loopsum` 1.4×, `fib` 3.5×), where compiling
+  (`--exe`) takes over.
+- **String building (`~=`) appends in place** in every mode, so `strcat` is
+  O(n) rather than O(n²) — 5× ahead of Rakudo even interpreted.
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 25.5).
+- **Machine:** macOS (Darwin 24.6), measured 2026-07-11 under normal desktop
+  ambient load — absolute times on an idle machine run lower for *both*
+  engines; the ratios were stable across two full harness runs.
 - **Raku++:** built `-O3 -DNDEBUG` (CMake Release).
 - **Rakudo:** `raku` v2026.06 (MoarVM backend).
 - **Harness:** [`tools/run-bench.raku`](tools/run-bench.raku) — itself a Raku
@@ -53,9 +56,9 @@ tracks.
   resulting binary is timed — the compile step is not counted.
 - **Fairness:** every benchmark program is byte-for-byte identical across all
   three and was verified to produce identical output before timing.
-- **Harness overhead:** spawning + capturing a subprocess adds a small fixed cost
-  per run to every engine (on this machine the `startup` row reads ~2.5 ms, close
-  to the bare-binary ~3 ms). It hits all three equally.
+- **Harness overhead:** spawning + capturing a subprocess adds a small fixed
+  cost per run to every engine (the `startup` row reads ~20 ms through the
+  harness vs ~17 ms for a bare best-of-10 spawn). It hits all three equally.
 
 ## Results
 
@@ -70,40 +73,40 @@ loop and recursion.
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| startup  | 3.4 ms    | 109.7 ms | **Raku++ 32×**  |
-| strcat   | 13.5 ms   | 128.8 ms | **Raku++ 9.5×** |
-| bigint   | 44.8 ms   | 217.2 ms | **Raku++ 4.8×** |
-| sortnums | 72.0 ms   | 246.0 ms | **Raku++ 3.4×** |
-| hash     | 53.1 ms   | 164.9 ms | **Raku++ 3.1×** |
-| regex    | 98.9 ms   | 227.4 ms | **Raku++ 2.3×** |
-| arrayops | 100.5 ms  | 235.2 ms | **Raku++ 2.3×** |
-| loopsum  | 265.9 ms  | 241.6 ms | Rakudo 1.1× |
-| fib      | 1032.2 ms | 391.0 ms | Rakudo 2.6× |
+| startup  | 20.7 ms   | 167.3 ms | **Raku++ 8.1×** |
+| strcat   | 37.4 ms   | 195.1 ms | **Raku++ 5.2×** |
+| bigint   | 55.2 ms   | 261.4 ms | **Raku++ 4.7×** |
+| hash     | 83.9 ms   | 235.6 ms | **Raku++ 2.8×** |
+| sortnums | 121.5 ms  | 262.3 ms | **Raku++ 2.2×** |
+| regex    | 148.3 ms  | 294.1 ms | **Raku++ 2.0×** |
+| arrayops | 164.5 ms  | 286.3 ms | **Raku++ 1.7×** |
+| loopsum  | 384.1 ms  | 274.6 ms | Rakudo 1.4× |
+| fib      | 1693.5 ms | 480.0 ms | Rakudo 3.5× |
 
 ### Native (`--exe`) vs Rakudo
 
 Compiling removes interpreter overhead on top of that — pushing **every row
-clearly ahead of Rakudo**, `fib` now included. The last column is the speed-up
+clearly ahead of Rakudo**, `fib` included. The last column is the speed-up
 over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| startup  | 2.6 ms    | 109.7 ms | **Raku++ 42×**  | 1.3× |
-| strcat   | 7.4 ms    | 128.8 ms | **Raku++ 17.4×** | 1.8× |
-| loopsum  | 32.7 ms   | 241.6 ms | **Raku++ 7.4×** | 8.1× |
-| hash     | 24.5 ms   | 164.9 ms | **Raku++ 6.7×** | 2.2× |
-| bigint   | 43.0 ms   | 217.2 ms | **Raku++ 5.1×** | 1.0× |
-| sortnums | 53.6 ms   | 246.0 ms | **Raku++ 4.6×** | 1.3× |
-| regex    | 80.3 ms   | 227.4 ms | **Raku++ 2.8×** | 1.2× |
-| arrayops | 97.6 ms   | 235.2 ms | **Raku++ 2.4×** | 1.0× |
-| fib      | 165.0 ms  | 391.0 ms | **Raku++ 2.4×** | 6.2× |
+| startup  | 16.1 ms  | 167.3 ms | **Raku++ 10.4×** | 1.3× |
+| strcat   | 20.6 ms  | 195.1 ms | **Raku++ 9.5×**  | 1.8× |
+| loopsum  | 45.0 ms  | 274.6 ms | **Raku++ 6.1×**  | 8.5× |
+| hash     | 38.7 ms  | 235.6 ms | **Raku++ 6.1×**  | 2.2× |
+| bigint   | 49.4 ms  | 261.4 ms | **Raku++ 5.3×**  | 1.1× |
+| sortnums | 79.9 ms  | 262.3 ms | **Raku++ 3.3×**  | 1.5× |
+| regex    | 108.4 ms | 294.1 ms | **Raku++ 2.7×**  | 1.4× |
+| fib      | 228.8 ms | 480.0 ms | **Raku++ 2.1×**  | 7.4× |
+| arrayops | 158.7 ms | 286.3 ms | **Raku++ 1.8×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
-hurts — `loopsum` 8.1×, `fib` 6.2× (both re-dispatch a tiny body a huge number of
-times). It's a near no-op (1.0–1.3×) for the workloads whose time is spent
+hurts — `loopsum` 8.5×, `fib` 7.4× (both re-dispatch a tiny body a huge number
+of times). It's a near no-op (1.0–1.5×) for the workloads whose time is spent
 *inside* runtime methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and
-especially `bigint`, which lives almost entirely in `BigInt` multiply. There the
-driving loop is trivial, so removing interpreter overhead changes little.
+especially `bigint`, which lives almost entirely in `BigInt` multiply. There
+the driving loop is trivial, so removing interpreter overhead changes little.
 
 `fib` — a tiny function called 1.6M times, the case a JIT specializes best — used
 to be the one place Rakudo led even the default `--exe`; hot-pathing integer

@@ -74,7 +74,7 @@ This is the heart. Key pieces:
 | `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus the concurrency runtime (a CPython-style GIL, thread-local execution registers, and opt-in true parallelism via `RAKUPP_PARALLEL`; see [ASYNC.md](ASYNC.md)). |
 | `Builtins.cpp` | Named built-ins, the `Test` module (TAP), and the ~big method dispatcher `methodCall`. |
 | `Regex.{h,cpp}` | Recursive-descent regex/grammar engine with a backtracking matcher. |
-| `Unicode.*`, `unicode_gen.cpp`, `unicode_names.cpp` | Normalization, grapheme segmentation, properties, names — tables generated from UCD 16.0. |
+| `Unicode.*`, `unicode_*_gen.cpp`, `unicode_names.cpp` | The Unicode subsystems: UAX #29 grapheme segmentation, NFC/NFD/NFKC/NFKD normalization, UCA collation (DUCET), names, categories, scripts, properties. All tables generated from pinned UCD/UCA **17.0** data in `tools/ucd/` — the names/categories generator is written in Raku and run by rakupp itself (see [UNICODE.md](UNICODE.md) and [DOGFOODING.md](DOGFOODING.md)). |
 | `IOSpec.cpp` | `IO::Spec::*` path semantics (Unix/Win32). |
 | `Highlight.{h,cpp}` | The parse-aware syntax highlighter behind `--highlight` (HTML + ANSI). |
 | `Runtime.{h,cpp}` | Shared entry points: `rakuppRun` (lex+parse+interpret) and `rakuppRunProgram` (interpret a prebuilt AST, for `--aot`). |

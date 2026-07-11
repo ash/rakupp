@@ -9,7 +9,7 @@ standalone native binary. It is not a fork of Rakudo and shares no code with it;
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** measured per individual test, **~81% of Roast passes** — 151,831 of
+**Status:** measured per individual test, **~81% of Roast passes** — 151,832 of
 ~188,486 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
 **400 / 1,464 files fully pass (~27%)** — a file counts only if *every* assertion
@@ -84,6 +84,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 - **[UNICODE.md](UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
 - **[ASYNC.md](ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
+- **[DOGFOODING.md](DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
 - **[ROAST.md](ROAST.md)** — Roast suite overview and per-section statistics.
 - **[COUNTING.md](COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
