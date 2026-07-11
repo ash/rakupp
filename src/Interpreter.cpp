@@ -5786,6 +5786,31 @@ Value Interpreter::postfixI(Value v) {
 }
 
 Value Interpreter::evalIndex(Index* idx) {
+    // Fast path: `@plainvar[intexpr]` — the overwhelmingly common array read.
+    // Grab the array's shared_ptr (one refcount, safe across the index eval)
+    // instead of copying the whole ~300-byte Value three times through eval().
+    if (!idx->isHash && idx->adverb.empty() && idx->index &&
+        idx->base->kind == NK::VarExpr) {
+        auto* ve = static_cast<VarExpr*>(idx->base.get());
+        if (!ve->declare && ve->name.size() > 1 && ve->name[0] == '@' &&
+            (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+            if (Value* bp = tctx_.cur->find(ve->name)) {
+                if (bp->t == VT::Array && bp->arr && !bp->ext && bp->ofType.empty() &&
+                    bp->hashKind.empty()) {
+                    auto arr = bp->arr; // keeps elements alive if the index expr mutates the var
+                    Value iv = eval(idx->index.get());
+                    if (iv.t == VT::Int && !iv.big) {
+                        long long ix = iv.i;
+                        if (ix < 0) ix += (long long)arr->size();
+                        if (ix >= 0 && ix < (long long)arr->size()) return (*arr)[ix];
+                        return Value::any();
+                    }
+                    // non-Int subscript (range/whatever/list): fall through with the
+                    // base already at hand — re-enter the general machinery below
+                }
+            }
+        }
+    }
     Value base = eval(idx->base.get());
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
     if (base.t == VT::Type && !idx->isHash && idx->index) {
