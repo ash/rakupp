@@ -1,6 +1,6 @@
 # Raku++ — Concurrency & Async
 
-A focused companion to [EXAMPLES.md](EXAMPLES.md) for the concurrency features.
+A focused companion to [COOKBOOK.md](COOKBOOK.md) for the concurrency features.
 **Every snippet below has been run on `rakupp` and produces the output shown**
 (`# → …`). Run any of them with:
 

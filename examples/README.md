@@ -439,8 +439,9 @@ shows no differences.
 
 ---
 
-These run under the interpreter. `rakupp` can also compile a program to a
-standalone binary (`--bundle`, `--aot`, or native `--exe`); see the top-level
+These are complete programs. `rakupp` can also compile one to a standalone
+binary (`--bundle`, `--aot`, or native `--exe`); see the top-level
 [README](../README.md) and [GUIDE.md](../GUIDE.md) for how that works and which
 constructs the native path supports today. For a broader, snippet-sized tour of
-the language, see [EXAMPLES.md](../EXAMPLES.md).
+the language — short `-e` one-liners rather than whole programs — see
+[COOKBOOK.md](../COOKBOOK.md).

@@ -80,7 +80,8 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 - **[OVERVIEW.md](OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[GUIDE.md](GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
-- **[EXAMPLES.md](EXAMPLES.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
+- **[COOKBOOK.md](COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
+- **[examples/](examples/)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md).
 - **[UNICODE.md](UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
 - **[ASYNC.md](ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.

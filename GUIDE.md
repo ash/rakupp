@@ -122,7 +122,8 @@ battery.
 
 - **[OVERVIEW.md](OVERVIEW.md)** — a one-page tour: what Raku++ is, goals, capabilities, comparison to Rakudo.
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
-- **[EXAMPLES.md](EXAMPLES.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
+- **[COOKBOOK.md](COOKBOOK.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
+- **[examples/](examples/)** — complete example programs (see [examples/README.md](examples/README.md)).
 - **[ASYNC.md](ASYNC.md)** — concurrency & async cookbook: promises, supplies, channels, threads, and the two execution modes (GIL by default, opt-in true CPU parallelism via `RAKUPP_PARALLEL`).
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
