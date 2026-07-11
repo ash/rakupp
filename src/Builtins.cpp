@@ -2067,9 +2067,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "new") {
         Value v = Value::makeHash(); v.ofType = inv.ofType;
-        for (size_t k = 0; k < args.size(); k++) {
-            if (args[k].t == VT::Pair) (*v.hash)[args[k].s] = args[k].pairVal ? *args[k].pairVal : Value::any();
-            else if (k + 1 < args.size()) { (*v.hash)[args[k].toStr()] = args[k + 1]; k++; }
+        ValueList items; // a parenned list arg — Hash.new((a => 1, b => 2)) — spreads
+        for (auto& a : args)
+            if (a.t == VT::Array) { for (auto& x : *a.arr) items.push_back(x); }
+            else items.push_back(a);
+        for (size_t k = 0; k < items.size(); k++) {
+            if (items[k].t == VT::Pair) (*v.hash)[items[k].s] = items[k].pairVal ? *items[k].pairVal : Value::any();
+            else if (k + 1 < items.size()) { std::string key = items[k].toStr(); (*v.hash)[key] = items[k + 1]; k++; }
         }
         return v;
     }

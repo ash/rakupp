@@ -1259,6 +1259,11 @@ std::vector<Token> Lexer::tokenize() {
         } else if ((unsigned char)c == 0xC3 && ((unsigned char)peek(1) == 0x97 || (unsigned char)peek(1) == 0xB7)) {
             bool mul = (unsigned char)peek(1) == 0x97; advance(); advance();
             t = make(Tok::Op, mul ? "*" : "/");
+        } else if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x88 &&
+                   (unsigned char)peek(2) == 0x92) {
+            // − (U+2212 minus sign) → -
+            advance(); advance(); advance();
+            t = make(Tok::Op, "-");
         } else if (std::isdigit((unsigned char)c) ||
             (!afterBareSigil && (unsigned char)c >= 0x80 &&
              (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {

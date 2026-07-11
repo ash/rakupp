@@ -359,6 +359,30 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // -c : syntax check only (like Rakudo's -c) — parse, report, never execute
+    if (argc >= 2 && std::string(argv[1]) == "-c") {
+        std::string src, fname = "-e"; bool haveSrc = false;
+        for (int i = 2; i < argc; i++) {
+            std::string a = argv[i];
+            if (a == "-e" && i + 1 < argc) { src = argv[++i]; haveSrc = true; }
+            else if (!haveSrc) {
+                std::ifstream in(a);
+                if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
+                std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = a; haveSrc = true;
+            }
+        }
+        if (!haveSrc) { std::cerr << "Usage: rakupp -c (FILE | -e CODE)\n"; return 4; }
+        try {
+            Lexer lexer(src);
+            Parser parser(lexer.tokenize());
+            (void)parser.parseProgram();
+        } catch (const ParseError& e) {
+            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            return 2;
+        }
+        std::cout << "Syntax OK\n";
+        return 0;
+    }
     // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)
     if (argc >= 2 && (std::string(argv[1]) == "--cpp" || std::string(argv[1]) == "--emit-cpp")) {
         std::string src, fname = "-e"; bool haveSrc = false, optimize = false;

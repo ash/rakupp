@@ -481,7 +481,9 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
         e = parseExpression();
     }
     for (;;) {
-        if (e->kind == NK::ListExpr) {
+        // a comma list spreads into arguments — but a PARENNED list `g((3,4))`
+        // is one List argument (it destructures as a unit)
+        if (e->kind == NK::ListExpr && !static_cast<ListExpr*>(e.get())->parenned) {
             auto* l = static_cast<ListExpr*>(e.get());
             for (auto& it : l->items) args.push_back(std::move(it));
         } else {
@@ -2226,8 +2228,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // Coercion is the tight single-ident form; anything else is a sub-signature.
             if (isKind(Tok::LParen)) {
                 bool coercion = !cur().spaceBefore &&
-                                peek().kind == Tok::Ident && peek(2).kind == Tok::RParen;
-                if (coercion) { advance(); advance(); advance(); } // skip (Type) — dispatch only
+                                ((peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) ||
+                                 peek().kind == Tok::RParen); // `Foo()` — coerce from Any
+                if (coercion) { advance(); if (isKind(Tok::Ident)) advance(); advance(); } // skip (Type)/() — dispatch only
                 else {
                     advance(); // (
                     p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
@@ -2262,6 +2265,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.sigil = '\\';
             if (!p.name.empty()) sigilless_.insert(p.name);
         } else if (isKind(Tok::Var)) {
+            // compile-time twigil vars ($?VERSION) can't be parameters —
+            // dynamic ($*SCHEDULER) and accessor ($.x) parameters are legal
+            if (cur().text.size() > 1 && cur().text[1] == '?')
+                error("Cannot use a variable with twigil '?' as a parameter");
             p.name = cur().text; p.sigil = cur().text[0]; advance();
             p.named = named;
         } else if (isKind(Tok::Op) && cur().text.size() == 1 &&
@@ -2335,58 +2342,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
 }
 
 std::vector<Param> Parser::parsePointyParams() {
-    std::vector<Param> ps;
-    while (!isKind(Tok::LBrace) && !isKind(Tok::End)) {
-        if (matchOp("-->")) { if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); break; } // return type
-        Param p;
-        if (isKind(Tok::LParen)) { // destructuring: -> ($a, $b) {} / -> (:key($k), :value($v)) {}
-            advance();
-            while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
-                if (isOp(":")) { // :name($var) — bind $var
-                    advance();
-                    if (isKind(Tok::Ident)) advance(); // name
-                    if (isKind(Tok::LParen)) {
-                        advance();
-                        if (isKind(Tok::Var)) { Param q; q.name = cur().text; q.sigil = cur().text[0]; advance(); ps.push_back(std::move(q)); }
-                        while (!isKind(Tok::RParen) && !isKind(Tok::End)) advance();
-                        matchKind(Tok::RParen);
-                    }
-                } else {
-                    if (isKind(Tok::Ident) && peek().kind == Tok::Var) advance(); // type
-                    if (isKind(Tok::Var)) { Param q; q.name = cur().text; q.sigil = cur().text[0]; advance(); ps.push_back(std::move(q)); }
-                    else advance();
-                }
-                if (!matchKind(Tok::Comma)) break;
-            }
-            expectKind(Tok::RParen, ")");
-            if (!matchKind(Tok::Comma)) break;
-            continue;
-        }
-        if (matchOp("\\")) {
-            if (isKind(Tok::Var) || isKind(Tok::Ident)) p.name = advance().text;
-            p.sigil = '\\';
-            if (!p.name.empty()) sigilless_.insert(p.name);
-        } else {
-            if (isKind(Tok::Ident) && peek().kind == Tok::Var) advance(); // type
-            if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
-            else break;
-        }
-        if (matchOp("?")) p.optional = true;
-        else if (matchOp("!")) {}
-        while (isIdent("is") || isIdent("where") || isIdent("returns") || isIdent("of")) {
-            std::string trait = advance().text;
-            if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
-            else if (!isKind(Tok::LBrace) && !isKind(Tok::Comma) && !isKind(Tok::End) && !isOp("=")) {
-                if (trait == "is" && (isIdent("rw") || isIdent("copy"))) p.isRw = (cur().text == "rw");
-                advance();
-            }
-        }
-        if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
-        ps.push_back(std::move(p));
-        if (matchOp("-->")) { if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); break; } // return type
-        if (!matchKind(Tok::Comma)) break;
-    }
-    return ps;
+    // pointy blocks share the full signature grammar (types, coercions, slurpies,
+    // named params, destructuring, traits) — the body brace ends the signature
+    return parseSignature(Tok::LBrace);
 }
 
 StmtPtr Parser::parseSub(bool isMulti) {
@@ -2750,7 +2708,11 @@ StmtPtr Parser::parseFor() {
     s->list = parseExpression();
     if (matchOp("->") || matchOp("<->")) {
         if (isKind(Tok::LParen)) s->destructure = true; // `-> ($a,$b)`: unpack each element
-        for (auto& p : parsePointyParams()) s->vars.push_back(p.name);
+        for (auto& p : parsePointyParams()) {
+            if (p.subSig && p.name.empty()) // signature-style destructure: inner names
+                for (auto& q : *p.subSig) s->vars.push_back(q.name);
+            else s->vars.push_back(p.name);
+        }
     }
     s->body = parseBlock();
     return s;
@@ -2792,7 +2754,11 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
                     auto* be = static_cast<BlockExpr*>(es->e.get());
                     if (!be->params.empty()) {
                         if (be->params.size() == 1 && be->params[0].subSig) fs->destructure = true;
-                        for (auto& p : be->params) fs->vars.push_back(p.name);
+                        for (auto& p : be->params) {
+                            if (p.subSig && p.name.empty()) // signature-style destructure
+                                for (auto& q : *p.subSig) fs->vars.push_back(q.name);
+                            else fs->vars.push_back(p.name);
+                        }
                         auto blk = std::make_unique<Block>();
                         blk->stmts = std::move(be->body);
                         fs->body = std::move(blk);
