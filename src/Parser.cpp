@@ -168,7 +168,7 @@ static void markLoopAsExpr(Stmt* s) {
 
 bool Parser::startsTermToken(const Token& t) const {
     switch (t.kind) {
-        case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
+        case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
         case Tok::QwList:
         case Tok::Var: case Tok::LParen: case Tok::LBracket: case Tok::LBrace:
             return true;
@@ -186,6 +186,11 @@ bool Parser::startsTermToken(const Token& t) const {
         case Tok::Ident:
             // sub/method/do/start begin an expression (anonymous routine / do-block) even though block keywords;
             // my/our/state/has/constant begin a declaration expression (`ok my $x = 5, "d"`)
+            // an inline type expression (`…, class Foo {}.new` / `role {…}`) also starts a term
+            if ((t.text == "class" || t.text == "role" || t.text == "grammar") && &t == &cur() &&
+                (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::") ||
+                 (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace)))
+                return true;
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
                    t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant";
@@ -196,7 +201,7 @@ bool Parser::startsTermToken(const Token& t) const {
 // what may begin a list-op argument (no parens; conservative on leading symbols)
 bool Parser::startsListopArg(const Token& t) const {
     switch (t.kind) {
-        case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
+        case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
         case Tok::QwList:
         case Tok::Var: case Tok::LBracket: case Tok::LParen: case Tok::LBrace:
             return true;
@@ -1172,6 +1177,13 @@ ExprPtr Parser::parsePrimary() {
             if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
             return e;
         }
+        case Tok::VersionLit: { // v1.2.3 — sugar for Version.new("1.2.3")
+            auto mc = std::make_unique<MethodCall>();
+            mc->inv = std::make_unique<NameTerm>("Version");
+            mc->method = "new";
+            mc->args.push_back(std::make_unique<StrLit>(advance().text));
+            return mc;
+        }
         case Tok::StrInterp: {
             bool fmt = cur().flag; std::string raw = advance().text; auto e = parseInterpString(raw);
             if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
@@ -1458,10 +1470,12 @@ ExprPtr Parser::parsePrimary() {
                 return be;
             }
             // anonymous type as an expression term: `$x does role {…}`, `my $r = role {…}`,
-            // and the explicit form `class :: does R {…}`
+            // the explicit form `class :: does R {…}`, and a NAMED inline class
+            // in value position (`class Foo {}.new` as a list element)
             if ((name == "role" || name == "class" || name == "grammar") &&
                 (peek().kind == Tok::LBrace ||
-                 (peek().kind == Tok::Op && peek().text == "::"))) {
+                 (peek().kind == Tok::Op && peek().text == "::") ||
+                 (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace))) {
                 advance(); // consume the keyword (parseClass expects it already consumed)
                 auto decl = parseClass(name == "role", name == "grammar");
                 auto be = std::make_unique<BlockExpr>();
@@ -1617,11 +1631,27 @@ ExprPtr Parser::parsePrimary() {
                                       words.empty() ? "" : words[0]));
             }
             // parameterized type: `Array[Int]`, `Hash[Int,Str]`, `Foo[Bar]` — a capitalized
+            // runtime type parameterization with a variable: array[$T].new / Blob[$T]
+            if (!name.empty() && (std::isupper((unsigned char)name[0]) || name == "array") &&
+                isKind(Tok::LBracket) && !cur().spaceBefore &&
+                peek().kind == Tok::Var && peek(2).kind == Tok::RBracket) {
+                advance(); // [
+                auto ix = std::make_unique<Index>();
+                ix->base = std::make_unique<NameTerm>(name);
+                ix->index = std::make_unique<VarExpr>(advance().text);
+                ix->isHash = false;
+                advance(); // ]
+                return ix;
+            }
             // bareword tight against `[` whose first arg is a (capitalized) type name.
-            if (!name.empty() && std::isupper((unsigned char)name[0]) &&
+            if (!name.empty() && (std::isupper((unsigned char)name[0]) || name == "array") &&
                 isKind(Tok::LBracket) && !cur().spaceBefore &&
                 peek().kind == Tok::Ident && !peek().text.empty() &&
-                std::isupper((unsigned char)peek().text[0])) {
+                (std::isupper((unsigned char)peek().text[0]) ||
+                 [&]{ static const std::set<std::string> nat = {
+                          "int","int8","int16","int32","int64","uint","uint8","uint16",
+                          "uint32","uint64","byte","num","num32","num64","str"};
+                      return nat.count(peek().text) > 0; }())) {
                 advance(); // [
                 std::string params;
                 while (!isKind(Tok::RBracket) && !isKind(Tok::End)) {

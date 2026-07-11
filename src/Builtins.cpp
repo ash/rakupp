@@ -1177,6 +1177,55 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return o;
     }
     // Buf/Blob.new(byte, byte, …) — a byte buffer, stored as a Str of those bytes.
+    if (inv.t == VT::Type && (inv.s == "buf8" || inv.s == "blob8" || inv.s == "utf8" ||
+                              inv.s == "buf16" || inv.s == "blob16" || inv.s == "utf16" ||
+                              inv.s == "buf32" || inv.s == "blob32" || inv.s == "utf32") &&
+        (m == "new" || m == "allocate")) {
+        // byte-buffer views share the Blob representation (8-bit semantics)
+        std::string bytes;
+        std::function<void(const Value&)> add = [&](const Value& v) {
+            if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) add(e); }
+            else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
+        };
+        for (auto& a : args) add(a);
+        Value b = Value::str(bytes); b.hashKind = "Blob"; return b;
+    }
+    if (inv.t == VT::Type &&
+        (inv.s == "Set" || inv.s == "SetHash" || inv.s == "Bag" || inv.s == "BagHash" ||
+         inv.s == "Mix" || inv.s == "MixHash") && m == "new") {
+        ValueList items; for (auto& a : args) for (auto& x : toList(a)) items.push_back(x);
+        return makeBaggy(items, inv.s);
+    }
+    if (inv.t == VT::Str && inv.hashKind == "Version") {
+        if (m == "parts") { // numeric parts as Ints, alpha parts as Strs, '*' as Whatever
+            Value out = Value::array(); out.isList = true;
+            const std::string& s = inv.s;
+            size_t i = 0;
+            while (i < s.size()) {
+                unsigned char c = s[i];
+                if (std::isdigit(c)) { size_t j = i; while (j < s.size() && std::isdigit((unsigned char)s[j])) j++;
+                    out.arr->push_back(Value::integer(std::atoll(s.substr(i, j - i).c_str()))); i = j; }
+                else if (std::isalpha(c)) { size_t j = i; while (j < s.size() && std::isalpha((unsigned char)s[j])) j++;
+                    out.arr->push_back(Value::str(s.substr(i, j - i))); i = j; }
+                else if (c == '*') { Value w; w.t = VT::Whatever; out.arr->push_back(w); i++; }
+                else i++;
+            }
+            return out;
+        }
+        if (m == "Str") return Value::str(inv.s);
+        if (m == "gist" || m == "raku" || m == "perl") return Value::str("v" + inv.s);
+        if (m == "plus") return Value::boolean(!inv.s.empty() && inv.s.back() == '+');
+        if (m == "whatever") return Value::boolean(inv.s.find('*') != std::string::npos);
+    }
+    if (inv.t == VT::Type && inv.s == "Version" && m == "new") {
+        std::string s = args.empty() ? "" : args[0].toStr();
+        if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) s = s.substr(1);
+        Value v = Value::str(s); v.hashKind = "Version"; return v;
+    }
+    if (inv.t == VT::Type && inv.s == "Duration" && m == "new") {
+        // Duration is a number of seconds (a tagged Num, like `now - now`)
+        return Value::number(args.empty() ? 0.0 : args[0].toNum());
+    }
     if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
@@ -1670,6 +1719,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::str(flat(inv));
         }
     }
+    if ((inv.t == VT::Type && inv.s == "Kernel") ||
+        (inv.t == VT::Hash && inv.hashKind == "Kernel")) {
+        if (m == "endian") { // all supported targets are little-endian
+            Value e = Value::enumVal("LittleEndian", 1); e.enumType = "Endian"; return e;
+        }
+    }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {
         std::string name = inv.hash->count("name") ? (*inv.hash)["name"].toStr() : "";
         if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
@@ -1990,9 +2045,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (t == "Num" || t == "Real" || t == "Numeric") return Value::number(0.0);
         if (t == "Bool") return Value::boolean(false);
     }
-    if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq") && m == "new") {
-        Value v = Value::array(); v.isList = (inv.s != "Array"); v.ofType = inv.ofType;
-        for (auto& a : args) for (auto& x : toList(a)) v.arr->push_back(x); return v;
+    if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" || inv.s == "array") && m == "new") {
+        if (inv.s == "array" && inv.ofType.empty()) // native arrays need a type parameter
+            throw RakuError{Value::typeObj("X::MustBeParametric"),
+                            "Must first parameterize the vector type, e.g.: array[int32]"};
+        Value v = Value::array(); v.isList = (inv.s == "List" || inv.s == "Seq"); v.ofType = inv.ofType;
+        long long shape = -1;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.s == "shape") { shape = a.pairVal ? a.pairVal->toInt() : 0; continue; }
+            for (auto& x : toList(a)) v.arr->push_back(x);
+        }
+        if (shape >= 0) { // 1-dim shaped array: pre-sized with the element default
+            bool natNum = v.ofType == "num" || v.ofType == "num32" || v.ofType == "num64";
+            bool natStr = v.ofType == "str" || v.ofType == "Str";
+            bool natInt = !v.ofType.empty() && !natNum && !natStr && v.ofType != "Any" && v.ofType != "Mu";
+            while ((long long)v.arr->size() < shape)
+                v.arr->push_back(natNum ? Value::number(0) : natStr ? Value::str("")
+                               : natInt ? Value::integer(0) : Value::any());
+        }
+        return v;
     }
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "new") {
         Value v = Value::makeHash(); v.ofType = inv.ofType;
@@ -2710,6 +2781,54 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::array({Value::integer(inv.toInt()), Value::integer(1)});
     }
     if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
+    if (inv.t == VT::Array && inv.arr &&
+        (m == "AT-POS" || m == "EXISTS-POS" || m == "ASSIGN-POS" || m == "DELETE-POS")) {
+        long long i = args.empty() ? 0 : args[0].toInt();
+        if (i < 0) i += (long long)inv.arr->size();
+        bool in = i >= 0 && i < (long long)inv.arr->size();
+        if (m == "EXISTS-POS") return Value::boolean(in && defined((*inv.arr)[i]));
+        if (m == "AT-POS") return in ? (*inv.arr)[i] : Value::any();
+        if (m == "ASSIGN-POS") {
+            Value v = args.size() > 1 ? args[1] : Value::any();
+            if (i >= 0) { while ((long long)inv.arr->size() <= i) inv.arr->push_back(Value::any());
+                          (*inv.arr)[i] = v; }
+            return v;
+        }
+        // DELETE-POS
+        Value old = in ? (*inv.arr)[i] : Value::any();
+        if (in) (*inv.arr)[i] = Value::any();
+        return old;
+    }
+    if (m == "minpairs" || m == "maxpairs") {
+        // pairs whose value is the min/max (per cmp); a scalar is its 0 => self pair
+        Value out = Value::array(); out.isList = true;
+        std::vector<std::pair<Value, Value>> kvs; // key, value
+        if (inv.t == VT::Array && inv.arr) {
+            for (size_t k = 0; k < inv.arr->size(); k++) kvs.push_back({Value::integer((long long)k), (*inv.arr)[k]});
+        } else if (inv.t == VT::Hash && inv.hash && inv.hashKind.empty()) {
+            for (auto& kv : *inv.hash) kvs.push_back({Value::str(kv.first), kv.second});
+        } else {
+            out.arr->push_back(Value::pair("0", inv));
+            return out;
+        }
+        if (kvs.empty()) return out;
+        Value best = kvs[0].second;
+        bool wantMax = (m == "maxpairs");
+        for (auto& kv : kvs) {
+            Value c = applyArith("cmp", kv.second, best);
+            if (wantMax ? c.toInt() > 0 : c.toInt() < 0) best = kv.second;
+        }
+        for (auto& kv : kvs)
+            if (applyArith("cmp", kv.second, best).toInt() == 0) {
+                Value p = Value::pair(kv.first.toStr(), kv.second);
+                out.arr->push_back(p);
+            }
+        return out;
+    }
+    if (m == "keyof") { // key type of an Associative (unparameterized: Mu / Str(Any))
+        if (inv.t == VT::Hash && !inv.hashKind.empty()) return Value::typeObj("Mu"); // quanthashes key on Mu
+        return Value::typeObj("Str");
+    }
     if (m == "Rat" || m == "FatRat") {
         bool fat = (m == "FatRat");
         Value r;
@@ -3741,7 +3860,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "hash" && inv.t == VT::Hash) return inv;   // %h.hash is the hash itself
-        if ((m == "hash" || m == "Hash") && inv.t == VT::Array) { // list -> Hash
+        if ((m == "hash" || m == "Hash" || m == "Map") && inv.t == VT::Array) { // list -> Hash/Map
             // Pairs map directly; non-Pair elements pair up CONSECUTIVELY as
             // key, value — `(0,"a",1,"b").hash` is {0 => "a", 1 => "b"}, so
             // `@a.kv.reverse.hash` inverts an index map (value => index).

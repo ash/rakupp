@@ -9,6 +9,7 @@ enum class Tok {
     IntLit,
     NumLit,
     StrLit,        // single-quoted, no interpolation
+    VersionLit,    // v1.2.3 / v6.* / v1.2+ — text holds the version WITHOUT the 'v'
     StrInterp,     // double-quoted, interpolation
     RegexLit,      // / / , m// , rx//  -> text = pattern (adverbs prepended)
     SubstLit,      // s///  -> text = pattern, text2 = replacement

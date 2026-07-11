@@ -2861,6 +2861,12 @@ Value* Interpreter::lvalue(Expr* e) {
         VarExpr tmp(nm); tmp.line = e->line;
         return lvalue(&tmp);
     }
+    if (e->kind == NK::Assign) {
+        // `(my $a = …)<key> = v` — a parenthesized assignment is an lvalue via its target
+        auto* a = static_cast<Assign*>(e);
+        evalAssign(a);
+        return lvalue(a->target.get());
+    }
     if (e->kind == NK::Index) {
         auto* idx = static_cast<Index*>(e);
         Value* base = lvalue(idx->base.get());
@@ -2956,6 +2962,24 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     }
 
     if (a->op == "=" || a->op == ":=") {
+        // quanthash element assignment: $sh<k> = False deletes from a SetHash,
+        // $bh<k> = 0 deletes from a BagHash/MixHash; true/nonzero (re)sets
+        if (a->op == "=" && a->target->kind == NK::Index &&
+            static_cast<Index*>(a->target.get())->isHash) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            Value* bp = nullptr;
+            try { bp = lvalue(ix->base.get()); } catch (RakuError&) {}
+            if (bp && bp->t == VT::Hash && bp->hash &&
+                (bp->hashKind == "SetHash" || bp->hashKind == "BagHash" || bp->hashKind == "MixHash")) {
+                std::string key = eval(ix->index.get()).toStr();
+                Value rhs = evalValueOf(a->value.get());
+                bool del = bp->hashKind == "SetHash" ? !rhs.truthy() : rhs.toNum() == 0.0;
+                if (del) bp->hash->erase(key);
+                else (*bp->hash)[key] = bp->hashKind == "SetHash" ? Value::boolean(true)
+                                      : bp->hashKind == "BagHash" ? Value::integer(rhs.toInt()) : rhs;
+                return sink ? Value::any() : rhs;
+            }
+        }
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -3270,6 +3294,58 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
     }
 
+    // ---- Version comparison (S03): parts split on separators and digit/alpha
+    // boundaries; numeric parts compare numerically (leading zeros dropped),
+    // missing/trailing parts count as 0, '*' (Whatever) matches anything,
+    // alpha parts sort before numeric (pre-release convention). ----
+    if ((l.hashKind == "Version" || r.hashKind == "Version") &&
+        l.t == VT::Str && r.t == VT::Str &&
+        (op == "cmp" || op == "==" || op == "!=" || op == "<" || op == "<=" ||
+         op == ">" || op == ">=" || op == "eqv" || op == "before" || op == "after" ||
+         op == "~~" || op == "eq" || op == "ne")) {
+        auto parts = [](const std::string& s) {
+            std::vector<std::pair<bool, std::string>> out; // {isNumeric, text}
+            size_t i = 0;
+            while (i < s.size()) {
+                unsigned char c = s[i];
+                if (std::isdigit(c)) {
+                    size_t j = i; while (j < s.size() && std::isdigit((unsigned char)s[j])) j++;
+                    std::string d = s.substr(i, j - i);
+                    size_t nz = d.find_first_not_of('0');
+                    out.push_back({true, nz == std::string::npos ? "0" : d.substr(nz)});
+                    i = j;
+                } else if (std::isalpha(c)) {
+                    size_t j = i; while (j < s.size() && std::isalpha((unsigned char)s[j])) j++;
+                    out.push_back({false, s.substr(i, j - i)});
+                    i = j;
+                } else if (c == '*') { out.push_back({false, "*"}); i++; }
+                else i++; // separator: . - + / _
+            }
+            return out;
+        };
+        auto pa = parts(l.s), pb = parts(r.s);
+        int c = 0;
+        size_t n = pa.size() > pb.size() ? pa.size() : pb.size();
+        for (size_t k = 0; k < n && !c; k++) {
+            std::pair<bool, std::string> a = k < pa.size() ? pa[k] : std::make_pair(true, std::string("0"));
+            std::pair<bool, std::string> b = k < pb.size() ? pb[k] : std::make_pair(true, std::string("0"));
+            if (a.second == "*" || b.second == "*") continue;
+            if (a.first && b.first)
+                c = a.second.size() != b.second.size()
+                      ? (a.second.size() < b.second.size() ? -1 : 1)
+                      : (a.second < b.second ? -1 : a.second > b.second ? 1 : 0);
+            else if (!a.first && !b.first)
+                c = a.second < b.second ? -1 : a.second > b.second ? 1 : 0;
+            else c = a.first ? 1 : -1; // alpha before numeric
+        }
+        if (op == "cmp") return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c);
+        if (op == "==" || op == "eqv" || op == "eq" || op == "~~") return Value::boolean(c == 0);
+        if (op == "!=" || op == "ne") return Value::boolean(c != 0);
+        if (op == "<"  || op == "before") return Value::boolean(c < 0);
+        if (op == ">"  || op == "after")  return Value::boolean(c > 0);
+        if (op == "<=") return Value::boolean(c <= 0);
+        return Value::boolean(c >= 0); // >=
+    }
     // ---- exact numeric tower: Int (bignum) and Rat ----
     auto isExact = [](const Value& v) { return v.t == VT::Int || v.t == VT::Bool || v.t == VT::Rat; };
     // an undefined operand (Any/Nil/bare type object) numifies to 0 in arithmetic,
@@ -5533,6 +5609,15 @@ Value Interpreter::postfixI(Value v) {
 
 Value Interpreter::evalIndex(Index* idx) {
     Value base = eval(idx->base.get());
+    // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
+    if (base.t == VT::Type && !idx->isHash && idx->index) {
+        Value p = eval(idx->index.get());
+        if (p.t == VT::Type) {
+            Value ty = Value::typeObj(base.s);
+            ty.ofType = base.ofType.empty() ? p.s : base.ofType + "," + p.s;
+            return ty;
+        }
+    }
     // a native-container subclass / `but`/`does` mixin instance indexes through its box
     if (base.t == VT::Object && base.obj && base.obj->hasBoxed) base = base.obj->boxed;
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
@@ -6048,7 +6133,15 @@ Value Interpreter::eval(Expr* e) {
         case NK::ListExpr: {
             auto* l = static_cast<ListExpr*>(e);
             ValueList items;
-            for (auto& it : l->items) items.push_back(eval(it.get()));
+            for (auto& it : l->items) {
+                // a |slip in a list literal splices its elements: Set, |@more, Bag
+                if (it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "|") {
+                    Value v = eval(static_cast<Unary*>(it.get())->operand.get());
+                    if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
+                    items.push_back(v); continue;
+                }
+                items.push_back(eval(it.get()));
+            }
             return listToArray(items);
         }
         case NK::ArrayLit: {

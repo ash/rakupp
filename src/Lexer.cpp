@@ -930,12 +930,23 @@ Token Lexer::lexIdentOrVar() {
         }
         return make(Tok::Var, name);
     }
-    // version literal: v0.48  v6  v1.2.3+
+    // version literal: v0.48  v6  v1.2.3+  v6.*  — parts are digits or '*'
+    // separated by '.', optional trailing '+'; `.WHAT` etc. stays a method call
     if (peek() == 'v' && std::isdigit((unsigned char)peek(1))) {
         std::string ver;
-        ver += advance(); // v
-        while (std::isalnum((unsigned char)peek()) || peek() == '.' || peek() == '+') ver += advance();
-        return make(Tok::StrLit, ver);
+        advance(); // v (not stored)
+        for (;;) {
+            while (std::isdigit((unsigned char)peek()) || peek() == '*' ||
+                   std::islower((unsigned char)peek())) ver += advance();
+            // a dotted part continues the version if it's digits/'*' or a LOWERCASE
+            // alpha run (v6.c); `.WHAT` and friends stay method calls
+            if (peek() == '.' && (std::isdigit((unsigned char)peek(1)) || peek(1) == '*' ||
+                                  std::islower((unsigned char)peek(1))))
+                ver += advance();
+            else break;
+        }
+        if (peek() == '+') ver += advance();
+        return make(Tok::VersionLit, ver);
     }
     // bareword identifier (may start with a Unicode letter, e.g. π, αβγ)
     std::string name;
