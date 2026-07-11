@@ -1720,7 +1720,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Type && (inv.s == "Uni" || inv.s == "NFC" || inv.s == "NFD" || inv.s == "NFKC" || inv.s == "NFKD")) {
         if (m == "new") {
-            std::vector<uint32_t> in; for (auto& a : args) if (a.t != VT::Pair) in.push_back((uint32_t)a.toInt());
+            std::vector<uint32_t> in;
+            for (auto& a : args) {
+                if (a.t == VT::Pair) continue;
+                if (a.t == VT::Array || a.t == VT::Range) { // a codepoint LIST flattens: Uni.new(@cps)
+                    for (auto& x : a.flatten()) in.push_back((uint32_t)x.toInt());
+                } else in.push_back((uint32_t)a.toInt());
+            }
             if (inv.s != "Uni") in = uniNormalize(in, inv.s == "NFD" ? 0 : inv.s == "NFC" ? 1 : inv.s == "NFKD" ? 2 : 3);
             Value out = Value::array(); out.s = inv.s == "Uni" ? "Uni" : inv.s; for (uint32_t c : in) out.arr->push_back(Value::integer((long long)c));
             return out;

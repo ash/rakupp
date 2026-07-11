@@ -3416,6 +3416,21 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     };
     if (op == "<=>") { double a = l.toNum(), b = r.toNum(); return orderVal(a < b ? -1 : a > b ? 1 : 0); }
     if (op == "cmp" || op == "leg") { return orderVal(valueCmp(l, r)); }
+    if (op == "unicmp" || op == "coll") { // UCA collation (DUCET) over the two strings
+        auto decode = [](const std::string& str) {
+            std::vector<uint32_t> cps;
+            for (size_t i = 0; i < str.size(); ) {
+                unsigned char b = str[i];
+                int len = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
+                uint32_t cp = len == 1 ? b : (uint32_t)(b & (0xFF >> (len + 1)));
+                for (int k = 1; k < len && i + k < str.size(); k++) cp = (cp << 6) | ((unsigned char)str[i + k] & 0x3F);
+                cps.push_back(cp); i += len;
+            }
+            return cps;
+        };
+        int c = uniCollate(decode(l.toStr()), decode(r.toStr()));
+        return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c);
+    }
     if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
     if (op == "after") return Value::boolean(valueCmp(l, r) > 0);
     if (op == "eqv") return Value::boolean(valueEqv(l, r));

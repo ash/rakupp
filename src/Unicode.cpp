@@ -22,6 +22,9 @@ extern const int64_t NUMV[];    extern const size_t NUMV_N;
 extern const uint32_t GBPROP[]; extern const size_t GBPROP_N;
 extern const uint32_t GBRANGE[]; extern const size_t GBRANGE_N; // real UAX#29 classes + ExtPict, as ranges
 extern const uint32_t INCB[]; extern const size_t INCB_N; // Indic_Conjunct_Break (rule GB9c)
+extern const uint16_t COLLCE[]; extern const size_t COLLCE_N;       // DUCET collation elements (L1,L2,L3)
+extern const uint32_t COLLSING[]; extern const size_t COLLSING_N;   // single-cp entries (cp, off, cnt)
+extern const uint32_t COLLCONTR[]; extern const size_t COLLCONTR_N; // contractions (cp0,cp1,cp2,off,cnt)
 extern const char* const CATNAMES[]; extern const uint32_t GCAT[]; extern const size_t GCAT_N;
 struct BlockEnt { uint32_t lo, hi; const char* name; };
 extern const BlockEnt BLOCKS[]; extern const size_t BLOCKS_N; // Unicode Blocks.txt
@@ -290,6 +293,135 @@ std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
 
 size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
     return uniGraphemeStarts(cps).size();
+}
+
+
+// ---- UCA collation (DUCET, allkeys 17.0) — powers `unicmp` / `coll` ----
+namespace {
+struct CE { uint16_t l1, l2, l3; };
+// Implicit-weight primaries (UTS #10 §10.1.3): siniform scripts get fixed bases;
+// Han uses the real Unified_Ideograph property (block-split core vs extensions);
+// everything else (unassigned/reserved) gets the FBC0 series.
+void ucaImplicit(uint32_t cp, uint16_t& aaaa, uint16_t& bbbb) {
+    if (cp >= 0x17000 && cp <= 0x18AFF) { aaaa = 0xFB00; bbbb = (uint16_t)((cp - 0x17000) | 0x8000); return; } // Tangut (+components)
+    if (cp >= 0x18D00 && cp <= 0x18D8F) { aaaa = 0xFB00; bbbb = (uint16_t)((cp - 0x17000) | 0x8000); return; } // Tangut Supplement
+    if (cp >= 0x1B170 && cp <= 0x1B2FF) { aaaa = 0xFB01; bbbb = (uint16_t)((cp - 0x1B170) | 0x8000); return; } // Nushu
+    if (cp >= 0x18B00 && cp <= 0x18CFF) { aaaa = 0xFB02; bbbb = (uint16_t)((cp - 0x18B00) | 0x8000); return; } // Khitan Small Script
+    bool han = uniBinProp(cp, "unifiedideograph") == 1;
+    uint16_t base = !han ? 0xFBC0
+                  : ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF)) ? 0xFB40 : 0xFB80;
+    aaaa = (uint16_t)(base + (cp >> 15));
+    bbbb = (uint16_t)((cp & 0x7FFF) | 0x8000);
+}
+// DUCET lookup for a 1-3 codepoint sequence -> (offset, count) into COLLCE
+bool ducetLookup(const uint32_t* seq, size_t len, uint32_t& off, uint32_t& cnt) {
+    if (len == 1) {
+        size_t lo = 0, hi = ucd::COLLSING_N;
+        while (lo < hi) { size_t mid = (lo + hi) / 2;
+            if (ucd::COLLSING[mid * 3] < seq[0]) lo = mid + 1; else hi = mid; }
+        if (lo < ucd::COLLSING_N && ucd::COLLSING[lo * 3] == seq[0]) {
+            off = ucd::COLLSING[lo * 3 + 1]; cnt = ucd::COLLSING[lo * 3 + 2]; return true;
+        }
+        return false;
+    }
+    size_t lo = 0, hi = ucd::COLLCONTR_N;
+    while (lo < hi) { size_t mid = (lo + hi) / 2;
+        if (ucd::COLLCONTR[mid * 5] < seq[0]) lo = mid + 1; else hi = mid; }
+    for (size_t k = lo; k < ucd::COLLCONTR_N && ucd::COLLCONTR[k * 5] == seq[0]; k++) {
+        uint32_t c1 = ucd::COLLCONTR[k * 5 + 1], c2 = ucd::COLLCONTR[k * 5 + 2];
+        size_t elen = c2 ? 3 : 2;
+        if (elen != len) continue;
+        if (c1 != seq[1]) continue;
+        if (len == 3 && c2 != seq[2]) continue;
+        off = ucd::COLLCONTR[k * 5 + 3]; cnt = ucd::COLLCONTR[k * 5 + 4];
+        return true;
+    }
+    return false;
+}
+
+// Append the collation elements for cps starting at i; returns #cps consumed
+// contiguously. May ERASE later non-starters from cps when a discontiguous
+// contraction (UCA S2.1.2/S2.1.3) consumes them out of the stream.
+size_t ucaElements(std::vector<uint32_t>& cps, size_t i, std::vector<CE>& out) {
+    uint32_t seq[3] = {cps[i], 0, 0};
+    size_t slen = 1;
+    uint32_t off = 0, cnt = 0;
+    bool have = ducetLookup(seq, 1, off, cnt);
+    size_t consumed = 1;
+    if (have) {
+        // longest CONTIGUOUS match, longest-first: a 3-cp contraction's 2-cp
+        // prefix need not itself be an entry (e.g. 0FB2 0F71 0F80 exists but
+        // 0FB2 0F71 doesn't), so probe length 3 before length 2.
+        if (i + 2 < cps.size()) {
+            seq[1] = cps[i + 1]; seq[2] = cps[i + 2];
+            uint32_t o2, c2;
+            if (ducetLookup(seq, 3, o2, c2)) { off = o2; cnt = c2; slen = 3; consumed = 3; }
+        }
+        if (slen == 1 && i + 1 < cps.size()) {
+            seq[1] = cps[i + 1]; seq[2] = 0;
+            uint32_t o2, c2;
+            if (ducetLookup(seq, 2, o2, c2)) { off = o2; cnt = c2; slen = 2; consumed = 2; }
+        }
+        if (slen == 1) { seq[1] = 0; seq[2] = 0; }
+        // DISCONTIGUOUS extension: an unblocked non-starter C (no B in between with
+        // ccc(B)==0 or ccc(B)>=ccc(C)) that extends the match is consumed out of
+        // the stream (NFD reordering can split contractions like 0DD9+0DCA).
+        if (slen < 3) {
+            size_t j = i + consumed;
+            std::vector<int> betweenCcc;
+            while (j < cps.size() && slen < 3) {
+                int cc = uniCombiningClass(cps[j]);
+                if (cc == 0) break;
+                bool blocked = false;
+                for (int b : betweenCcc) if (b >= cc) { blocked = true; break; }
+                if (!blocked) {
+                    seq[slen] = cps[j];
+                    uint32_t o2, c2;
+                    if (ducetLookup(seq, slen + 1, o2, c2)) {
+                        off = o2; cnt = c2; slen++;
+                        cps.erase(cps.begin() + j); // consumed discontiguously
+                        continue;
+                    }
+                    seq[slen] = 0;
+                }
+                betweenCcc.push_back(cc);
+                j++;
+            }
+        }
+        for (uint32_t j = 0; j < cnt; j++)
+            out.push_back({ucd::COLLCE[(off + j) * 3], ucd::COLLCE[(off + j) * 3 + 1], ucd::COLLCE[(off + j) * 3 + 2]});
+        return consumed;
+    }
+    // implicit weights (unassigned / siniform / Han not in the table)
+    uint16_t aaaa, bbbb;
+    ucaImplicit(cps[i], aaaa, bbbb);
+    out.push_back({aaaa, 0x20, 0x2});
+    out.push_back({bbbb, 0, 0});
+    return 1;
+}
+} // namespace
+
+// three-way UCA comparison of two codepoint sequences: -1 / 0 / 1
+int uniCollate(const std::vector<uint32_t>& acps, const std::vector<uint32_t>& bcps) {
+    std::vector<uint32_t> a = uniNormalize(acps, 0), b = uniNormalize(bcps, 0); // NFD (UCA S1.1)
+    std::vector<CE> ea, eb;
+    for (size_t i = 0; i < a.size(); ) i += ucaElements(a, i, ea); // (may erase consumed non-starters)
+    for (size_t i = 0; i < b.size(); ) i += ucaElements(b, i, eb);
+    for (int level = 0; level < 3; level++) {
+        size_t i = 0, j = 0;
+        for (;;) {
+            uint16_t wa = 0, wb = 0;
+            while (i < ea.size()) { uint16_t w = level == 0 ? ea[i].l1 : level == 1 ? ea[i].l2 : ea[i].l3; i++; if (w) { wa = w; break; } }
+            while (j < eb.size()) { uint16_t w = level == 0 ? eb[j].l1 : level == 1 ? eb[j].l2 : eb[j].l3; j++; if (w) { wb = w; break; } }
+            if (wa != wb) return wa < wb ? -1 : 1;
+            if (!wa) break; // both exhausted at this level
+        }
+    }
+    // identical sort keys: the UCA conformance rule breaks ties by codepoint order
+    for (size_t i = 0; i < acps.size() && i < bcps.size(); i++)
+        if (acps[i] != bcps[i]) return acps[i] < bcps[i] ? -1 : 1;
+    if (acps.size() != bcps.size()) return acps.size() < bcps.size() ? -1 : 1;
+    return 0;
 }
 
 // Hangul syllable constants (UAX #15) — composed/decomposed by arithmetic.

@@ -126,7 +126,8 @@ static InfixInfo classifyInfix(const Token& t) {
         const std::string& o = t.text;
         in.op = o;
         if (o == "eq" || o == "ne" || o == "lt" || o == "gt" || o == "le" || o == "ge" ||
-            o == "cmp" || o == "leg" || o == "eqv" || o == "before" || o == "after") { in.valid = true; in.lbp = BP_COMPARE; return in; }
+            o == "cmp" || o == "leg" || o == "eqv" || o == "before" || o == "after" ||
+            o == "unicmp" || o == "coll") { in.valid = true; in.lbp = BP_COMPARE; return in; }
         if (o == "x" || o == "xx") { in.valid = true; in.lbp = BP_REPLICATE; return in; }
         if (o == "div" || o == "mod" || o == "gcd" || o == "lcm") {
             in.valid = true; in.lbp = BP_MUL; return in;
@@ -213,7 +214,7 @@ bool Parser::startsListopArg(const Token& t) const {
             // A word-infix operator right after a bareword term is an INFIX, not the
             // start of a listop argument: `Seq eqv Seq`, `Int eq Int`, `$x div $y`.
             static const std::set<std::string> wordInfix = {
-                "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after",
+                "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after", "unicmp", "coll",
                 "x", "xx", "and", "or", "andthen", "orelse", "div", "mod", "gcd", "lcm",
             };
             if (wordInfix.count(t.text)) return false;

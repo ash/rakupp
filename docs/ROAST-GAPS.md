@@ -152,6 +152,18 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    2⁶³); stray `next`/`last`/`redo` outside any loop is an error and counts as
    a death for `dies-ok`; `pointy.t`/`control.t` no longer abort mid-file.
    Standing: **395 / 1,464, 143,537 assertions (76.2%).**
+
+6. **UCA collation (`unicmp`/`coll`)** — a full Unicode Collation Algorithm
+   implementation from DUCET 17.0 (`tools/gen_unicode_coll.py` →
+   `unicode_coll_gen.cpp`): 38,785 single-codepoint entries + 964 contractions,
+   longest-first contiguous matching (a 3-cp contraction's 2-cp prefix need not
+   be an entry), **discontiguous matching** per S2.1 (NFD reordering splits
+   contractions like `0DD9+0DCA`), implicit weights with the real
+   `Unified_Ideograph` property and the Tangut/Nushu/Khitan fixed bases, and
+   the conformance-test codepoint tie-break. Plus `Q««…»»` guillemet quote
+   parsing and `Uni.new(@list)` flattening. **All 4
+   `CollationTest_NON_IGNORABLE` files (8,271 tests) pass with zero real
+   failures.** Standing: **400 / 1,464, 151,831 assertions — 80.6%.**
 5. ~~**Emoji/UAX#29 data pass** (D)~~ — **DONE, +4,056 assertions, +12 full
    files (378 → 390)**. Grapheme breaking now uses REAL UCD 17.0 data
    (`tools/gen_unicode_gb.py` → `unicode_gb_gen.cpp`: GraphemeBreakProperty +

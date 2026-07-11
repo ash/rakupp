@@ -710,6 +710,29 @@ bool Lexer::tryQuoteForm(Token& out) {
     { size_t ws = p; while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t')) ws++;
       if (ws < src_.size() && (src_[ws] == '(' || src_[ws] == '[' || src_[ws] == '{' || src_[ws] == '<')) p = ws; }
     if (p >= src_.size()) return false;
+    // guillemet-delimited quote: Q«…» / Q««…»» (double «« matches »», so a single
+    // » may appear inside). q interpolates nothing extra; qq interpolates.
+    if (!isRegex && !isSubst && !isTrans && !isWords &&
+        p + 1 < src_.size() && (unsigned char)src_[p] == 0xC2 && (unsigned char)src_[p + 1] == 0xAB) {
+        while (pos_ < p) advance(); // consume the keyword (+ adverbs/whitespace)
+        int opens = 0;
+        while ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xAB) { advance(); advance(); opens++; }
+        std::string raw;
+        while (!eof()) {
+            if ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
+                int closes = 0;
+                while (closes < opens && (unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
+                    advance(); advance(); closes++;
+                }
+                if (closes == opens) break;                          // matched full run: done
+                for (int k = 0; k < closes; k++) raw += "\xC2\xBB"; // shorter run is content
+                continue;
+            }
+            raw += advance();
+        }
+        out = make(w == "qq" ? Tok::StrInterp : Tok::StrLit, raw);
+        return true;
+    }
     char d = src_[p];
     char close;
     bool bracket = true;
