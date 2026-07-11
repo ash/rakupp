@@ -15,7 +15,8 @@ method (26 of them `.new` on missing types), 62 term-position operators,
 The suite originally split into 350 fully-passing files, 622 partial,
 478 no-TAP and 12 timeouts; it now stands at **419 / 646 / 389 / 8**. The
 blockers fall into six classes, ordered roughly by leverage; struck-through
-items are done.
+items are done. Behavioural quirks found *outside* the harness (e.g. while
+writing the `examples/` programs) live in [TRIAGE.md](TRIAGE.md).
 
 ## A. Test-infrastructure gaps (a multiplier, not a language gap)
 
