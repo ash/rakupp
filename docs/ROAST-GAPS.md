@@ -2,8 +2,10 @@
 
 *A classification of every currently-failing Roast file. Originally scanned at
 the 350-file baseline (2026-07-11); the per-bucket counts in sections B–F are
-from that scan. **Current standing after working the list: 401 / 1,464 fully
-passing, 152,316 / 188,486 declared assertions (80.8%).** A re-scan of the
+from that scan. **Current standing after working the list: 419 / 1,464 fully
+passing, 157,293 / 191,537 declared assertions (82.1%) — the 1.0-campaign
+batches A–D (Rat/Complex, reduce/rx/multislice, the .new batch, pointy
+signatures) are logged in the git history from 3a61fdb on.** A re-scan of the
 no-TAP set at the 400-file mark (`rc-work/notap-now.tsv`, git-ignored) shows
 the remaining 449 no-TAP files bucket as: 104 `expected )`, 91 missing
 method (26 of them `.new` on missing types), 62 term-position operators,
@@ -11,7 +13,7 @@ method (26 of them `.new` on missing types), 62 term-position operators,
 12 declarator forms, plus the long tail.*
 
 The suite originally split into 350 fully-passing files, 622 partial,
-478 no-TAP and 12 timeouts; it now stands at **401 / 603 / 449 / 9**. The
+478 no-TAP and 12 timeouts; it now stands at **419 / 646 / 389 / 8**. The
 blockers fall into six classes, ordered roughly by leverage; struck-through
 items are done.
 
@@ -194,7 +196,7 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    151,832 assertions (80.6%)** — plus two S17 stress files that flip
    400↔402 with suite load.
 
-8. **Where the leverage is now (401 / 152,316 / 80.8%).** The re-scan of the
+8. **Where the leverage is now (419 / 157,293 / 82.1%; items below partly done).** The re-scan of the
    449 remaining no-TAP files (`rc-work/notap-now.tsv`) points at the next
    round, ordered by unlocked assertions:
    - **`Rat.new` / `Complex` literals** — a single missing constructor gates
