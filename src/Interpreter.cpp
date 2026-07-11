@@ -3369,6 +3369,43 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         };
         auto getN = [](const Value& v) { return v.t == VT::Rat ? *v.ratN : v.toBig(); };
         auto getD = [](const Value& v) { return v.t == VT::Rat ? *v.ratD : BigInt(1); };
+        // Small-Rat fast path: when every component fits well under 2^62, do the
+        // exact arithmetic in native __int128 (products stay in range) and reduce
+        // with a native gcd — orders of magnitude cheaper than the BigInt path.
+        // Rakudo-spec spill applies here too: denominator past uint64 → Num.
+        auto smallParts = [](const Value& v, long long& n, long long& d) -> bool {
+            const long long LIM = 1LL << 62;
+            if (v.t == VT::Rat) {
+                if (!v.ratN->fitsLL() || !v.ratD->fitsLL()) return false;
+                n = v.ratN->toLL(); d = v.ratD->toLL();
+            } else if (v.t == VT::Int) {
+                if (v.big) { if (!v.big->fitsLL()) return false; n = v.big->toLL(); }
+                else n = v.i;
+                d = 1;
+            } else { n = v.b ? 1 : 0; d = 1; } // Bool
+            return n > -LIM && n < LIM && d < LIM;
+        };
+        if (anyRat && !fat && (op == "+" || op == "-" || op == "*" || op == "/")) {
+            long long n1, d1, n2, d2;
+            if (smallParts(l, n1, d1) && smallParts(r, n2, d2) &&
+                d1 != 0 && d2 != 0 && !(op == "/" && n2 == 0)) { // zero-den Rats take the slow path
+                __int128 n, d;
+                if (op == "*") { n = (__int128)n1 * n2; d = (__int128)d1 * d2; }
+                else if (op == "/") { n = (__int128)n1 * d2; d = (__int128)d1 * n2; }
+                else { d = (__int128)d1 * d2;
+                       n = op == "+" ? (__int128)n1 * d2 + (__int128)n2 * d1
+                                     : (__int128)n1 * d2 - (__int128)n2 * d1; }
+                if (d < 0) { n = -n; d = -d; }
+                __int128 a = n < 0 ? -n : n, b = d;
+                while (b) { __int128 t = a % b; a = b; b = t; } // gcd
+                if (a) { n /= a; d /= a; }
+                if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) // uint64 denominator cap
+                    return Value::number((double)n / (double)d);
+                if (n >= (__int128)LLONG_MIN && n <= (__int128)LLONG_MAX && d <= (__int128)LLONG_MAX)
+                    return Value::rat(BigInt((long long)n), BigInt((long long)d));
+                // (reduced numerator wider than 64 bits: fall through to BigInt)
+            }
+        }
         if (op == "+" || op == "-" || op == "*") {
             if (smallInt) {
                 long long a = l.toInt(), b = r.toInt(), res;
@@ -3443,7 +3480,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (zeroDen(l) || zeroDen(r))
                 return applyArith(op, Value::number(l.toNum()), Value::number(r.toNum()));
             int c;
+            long long cn1, cd1, cn2, cd2;
             if (smallInt) { long long a = l.toInt(), b = r.toInt(); c = a < b ? -1 : a > b ? 1 : 0; }
+            else if (anyRat && smallParts(l, cn1, cd1) && smallParts(r, cn2, cd2)) {
+                // native cross-multiply — no BigInt temporaries for small Rats
+                __int128 a = (__int128)cn1 * cd2, b = (__int128)cn2 * cd1;
+                c = a < b ? -1 : a > b ? 1 : 0;
+            }
             else c = BigInt::cmp(getN(l) * getD(r), getN(r) * getD(l));
             if (op == "==") return Value::boolean(c == 0);
             if (op == "!=") return Value::boolean(c != 0);
@@ -5883,10 +5926,22 @@ Value Interpreter::eval(Expr* e) {
         }
         case NK::NumLit: { auto* nl = static_cast<NumLit*>(e);
             if (nl->imaginary) return Value::complex(0, nl->v);
-            if (nl->isRat) return nl->bigNum.empty()
-                ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))                 // 3.14 is a Rat
-                : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
+            if (nl->isRat) {
+                // build once, then share the immutable BigInt parts on every eval
                 // (ratZ: an explicit zero denominator — `<42/0>` — is preserved)
+                if (!nl->cacheN) {
+                    Value first = nl->bigNum.empty()
+                        ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))         // 3.14 is a Rat
+                        : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
+                    nl->cacheD = first.ratD; // set D first: cacheN is the "ready" flag
+                    nl->cacheN = first.ratN;
+                    return first;
+                }
+                Value v; v.t = VT::Rat;
+                v.ratN = std::static_pointer_cast<BigInt>(nl->cacheN);
+                v.ratD = std::static_pointer_cast<BigInt>(nl->cacheD);
+                return v;
+            }
             return Value::number(nl->v); }
         case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
         case NK::RegexLit: {

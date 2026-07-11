@@ -37,6 +37,10 @@ struct NumLit : Expr {
     double v; bool imaginary = false;
     bool isRat = false; long long ratNum = 0, ratDen = 1; // decimal literal `3.14` is a Rat (num/den)
     std::string bigNum, bigDen; // decimal strings when the exact Rat overflows long long
+    // interpreter cache of the built Rat's (immutable) BigInt parts — literals in
+    // hot loops would otherwise re-allocate + re-reduce on every evaluation.
+    // (Benign same-value race under RAKUPP_PARALLEL, like Binary::simpleOp.)
+    mutable std::shared_ptr<void> cacheN, cacheD;
     explicit NumLit(double x): Expr(NK::NumLit), v(x){}
 };
 struct StrLit : Expr { std::string v; explicit StrLit(std::string s): Expr(NK::StrLit), v(std::move(s)){} };
