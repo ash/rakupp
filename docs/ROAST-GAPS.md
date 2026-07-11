@@ -137,5 +137,15 @@ runtime rather than logic regressions; the `Proc::Async` stress files
    `X::* ~~ Exception`, `$*KERNEL.release`, `Raku.KERNELnames`, sigilless-param
    write-through (`sub undefine(\a) { a = Nil }`). Standing: **378 / 1,464,
    139,688 assertions.**
-5. **Emoji/UAX#29 data pass** (D) — one data-table project worth ~3.5k
-   assertions.
+5. ~~**Emoji/UAX#29 data pass** (D)~~ — **DONE, +4,056 assertions, +12 full
+   files (378 → 390)**. Grapheme breaking now uses REAL UCD 17.0 data
+   (`tools/gen_unicode_gb.py` → `unicode_gb_gen.cpp`: GraphemeBreakProperty +
+   emoji-data ranges) instead of a general-category approximation — that fixes
+   skin-tone modifiers (Sk but Extend), ZWNJ (Cf but Extend), Prepend, and the
+   exact Extended_Pictographic set for GB11 — plus rule **GB9c** (Indic/Myanmar/
+   Khmer/Balinese conjuncts via InCB). `.comb` segments by grapheme (shared
+   `uniGraphemeStarts`). Normalization tables regenerated from UnicodeData.txt
+   17.0 (`tools/gen_unicode_norm.py` → `unicode_norm_gen.cpp`) instead of
+   Python's lagging `unicodedata`; `Uni.Str` NFC-normalizes (NFG semantics).
+   Now fully passing: emoji-test (3825), GraphemeBreakTest-0..3, mass-equality,
+   nf{c,d,kc,kd}-9, nfk{c,d}-1. **S15: 99.9% of assertions, 68/82 files.**

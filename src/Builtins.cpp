@@ -1711,7 +1711,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "list" || m == "List" || m == "values" || m == "Seq" || m == "cache") { Value out = Value::array(); out.isList = true; if (inv.arr) out.arr = inv.arr; return out; }
         if (m == "codes" || m == "elems") return Value::integer(inv.arr ? (long long)inv.arr->size() : 0);
-        if (m == "Str" || m == "gist" || m == "Stringy") { std::string s; if (inv.arr) for (auto& x : *inv.arr) s += cpToUtf8((uint32_t)x.toInt()); return Value::str(s); }
+        if (m == "Str" || m == "gist" || m == "Stringy") {
+            // Raku Strs are NFG (NFC-normalized under the hood): canonically
+            // equivalent codepoint orders must yield the SAME Str, so normalize
+            // on the way from Uni to Str (mass-equality.t).
+            std::vector<uint32_t> in; if (inv.arr) for (auto& x : *inv.arr) in.push_back((uint32_t)x.toInt());
+            auto norm = uniNormalize(in, 1 /*NFC*/);
+            std::string s; for (uint32_t c : norm) s += cpToUtf8(c);
+            return Value::str(s);
+        }
     }
     if (inv.t == VT::Type && inv.s == "Complex") {
         if (m == "new") return Value::complex(args.size() > 0 ? args[0].toNum() : 0.0,
@@ -3011,7 +3019,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     out.arr->push_back(Value::str(needle));
             return out;
         }
-        for (auto cp : utf8cp(inv.toStr())) out.arr->push_back(Value::str(cpToUtf8(cp)));
+        { // one entry per GRAPHEME (UAX #29 cluster), not per codepoint —
+          // "e\x[301]" combs to one "é", emoji ZWJ sequences stay whole.
+            auto cps = utf8cp(inv.toStr());
+            auto starts = uniGraphemeStarts(cps);
+            for (size_t gi = 0; gi < starts.size(); gi++) {
+                size_t from = starts[gi], to = gi + 1 < starts.size() ? starts[gi + 1] : cps.size();
+                std::string g;
+                for (size_t k = from; k < to; k++) g += cpToUtf8(cps[k]);
+                out.arr->push_back(Value::str(g));
+            }
+        }
         return out;
     }
     if (m == "fmt" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)

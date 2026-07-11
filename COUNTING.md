@@ -8,10 +8,10 @@ on every run.
 
 ## The one-line summary
 
-> **Per-test: ~74% of all declared tests pass. Coverage: ~25% of files fully pass.**
+> **Per-test: ~76% of all declared tests pass. Coverage: ~27% of files fully pass.**
 
-Quote both, per-test first. The ~74% is the primary correctness number (the fair
-per-test bar); the ~25% is the stricter all-or-nothing file bar.
+Quote both, per-test first. The ~76% is the primary correctness number (the fair
+per-test bar); the ~27% is the stricter all-or-nothing file bar.
 
 ## The measures
 
@@ -22,12 +22,12 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 378 / 1,464 (**~25%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 139,688 / 149,126 (~93%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 139,688 / 161,285 (~86%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 139,688 / 188,835 (**~74%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 390 / 1,464 (**~27%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 143,744 / 149,126 (~93%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 143,744 / 161,285 (~86%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 143,744 / 188,835 (**~76%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
-**Measure 1 (files, ~25%)** and **measure 4 (all declared tests, ~74%)** are the
+**Measure 1 (files, ~27%)** and **measure 4 (all declared tests, ~76%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
 
 ## Why measure 4 is the honest per-test number

@@ -20,6 +20,8 @@ struct NameEnt { const char* name; uint32_t cp; };
 extern const NameEnt NAMES[];   extern const size_t NAMES_N;
 extern const int64_t NUMV[];    extern const size_t NUMV_N;
 extern const uint32_t GBPROP[]; extern const size_t GBPROP_N;
+extern const uint32_t GBRANGE[]; extern const size_t GBRANGE_N; // real UAX#29 classes + ExtPict, as ranges
+extern const uint32_t INCB[]; extern const size_t INCB_N; // Indic_Conjunct_Break (rule GB9c)
 extern const char* const CATNAMES[]; extern const uint32_t GCAT[]; extern const size_t GCAT_N;
 struct BlockEnt { uint32_t lo, hi; const char* name; };
 extern const BlockEnt BLOCKS[]; extern const size_t BLOCKS_N; // Unicode Blocks.txt
@@ -199,13 +201,6 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
 enum GB { GB_Other, GB_CR, GB_LF, GB_Control, GB_Extend, GB_ZWJ, GB_RI, GB_Prepend,
           GB_SpacingMark, GB_L, GB_V, GB_T, GB_LV, GB_LVT, GB_ExtPict };
 
-static bool isExtPict(uint32_t c) { // approximate Extended_Pictographic (emoji)
-    return (c >= 0x1F000 && c <= 0x1FAFF) || (c >= 0x2600 && c <= 0x27BF) ||
-           (c >= 0x2B00 && c <= 0x2BFF) || (c >= 0x1FA70 && c <= 0x1FAFF) ||
-           c == 0x00A9 || c == 0x00AE || c == 0x203C || c == 0x2049 ||
-           c == 0x2122 || c == 0x2139 || (c >= 0x2194 && c <= 0x2199) ||
-           (c >= 0x231A && c <= 0x231B) || (c >= 0x23E9 && c <= 0x23FA);
-}
 static int gbProp(uint32_t cp) {
     if (cp == 0x0D) return GB_CR;
     if (cp == 0x0A) return GB_LF;
@@ -215,23 +210,55 @@ static int gbProp(uint32_t cp) {
     if ((cp >= 0x1160 && cp <= 0x11A7) || (cp >= 0xD7B0 && cp <= 0xD7C6)) return GB_V;
     if ((cp >= 0x11A8 && cp <= 0x11FF) || (cp >= 0xD7CB && cp <= 0xD7FB)) return GB_T;
     if (cp >= 0xAC00 && cp <= 0xD7A3) return ((cp - 0xAC00) % 28 == 0) ? GB_LV : GB_LVT;
-    if (isExtPict(cp)) return GB_ExtPict;
-    // table: 1=Extend, 2=SpacingMark, 3=Control
-    size_t lo = 0, hi = ucd::GBPROP_N / 2;
-    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t c = ucd::GBPROP[mid * 2];
-        if (c == cp) { int t = (int)ucd::GBPROP[mid * 2 + 1]; return t == 1 ? GB_Extend : t == 2 ? GB_SpacingMark : GB_Control; }
-        if (cp < c) hi = mid; else lo = mid + 1; }
+    // Real UCD 16.0 data (unicode_gb_gen.cpp, from GraphemeBreakProperty.txt +
+    // emoji-data.txt): (start, end, class) ranges — 1=Extend 2=SpacingMark
+    // 3=Control 4=Prepend 5=Extended_Pictographic. This gets the cases a
+    // general-category approximation misses: skin-tone modifiers (Sk but Extend),
+    // ZWNJ (Cf but Extend), Prepend marks, and the exact ExtPict set for GB11.
+    size_t lo = 0, hi = ucd::GBRANGE_N;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        uint32_t s = ucd::GBRANGE[mid * 3], e = ucd::GBRANGE[mid * 3 + 1];
+        if (cp < s) hi = mid;
+        else if (cp > e) lo = mid + 1;
+        else switch (ucd::GBRANGE[mid * 3 + 2]) {
+            case 1: return GB_Extend;
+            case 2: return GB_SpacingMark;
+            case 3: return GB_Control;
+            case 4: return GB_Prepend;
+            case 5: return GB_ExtPict;
+            default: return GB_Other;
+        }
+    }
     return GB_Other;
 }
 
-size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
-    if (cps.empty()) return 0;
-    size_t g = 1;
+// Indic_Conjunct_Break class: 0=None 1=Linker 2=Consonant 3=Extend (for GB9c)
+static int incbProp(uint32_t cp) {
+    size_t lo = 0, hi = ucd::INCB_N;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        uint32_t s = ucd::INCB[mid * 3], e = ucd::INCB[mid * 3 + 1];
+        if (cp < s) hi = mid;
+        else if (cp > e) lo = mid + 1;
+        else return (int)ucd::INCB[mid * 3 + 2];
+    }
+    return 0;
+}
+
+// Indices (into cps) where a new grapheme cluster starts; front() is always 0.
+std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
+    std::vector<size_t> starts;
+    if (cps.empty()) return starts;
+    starts.push_back(0);
     int prev = gbProp(cps[0]);
     bool pictSeq = (prev == GB_ExtPict);
     int riRun = (prev == GB_RI) ? 1 : 0;
+    // GB9c conjunct state: 0=none, 1=InCB Consonant seen, 2=Consonant + Linker seen
+    int incbState = (incbProp(cps[0]) == 2) ? 1 : 0;
     for (size_t i = 1; i < cps.size(); i++) {
         int cur = gbProp(cps[i]);
+        int ip = incbProp(cps[i]);
         bool brk;
         if (prev == GB_CR && cur == GB_LF) brk = false;                                  // GB3
         else if (prev == GB_Control || prev == GB_CR || prev == GB_LF) brk = true;        // GB4
@@ -242,17 +269,27 @@ size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
         else if (cur == GB_Extend || cur == GB_ZWJ) brk = false;                          // GB9
         else if (cur == GB_SpacingMark) brk = false;                                      // GB9a
         else if (prev == GB_Prepend) brk = false;                                         // GB9b
+        else if (incbState == 2 && ip == 2) brk = false;                                  // GB9c (Indic conjuncts)
         else if (pictSeq && prev == GB_ZWJ && cur == GB_ExtPict) brk = false;             // GB11
         else if (prev == GB_RI && cur == GB_RI && (riRun % 2 == 1)) brk = false;          // GB12/13
         else brk = true;                                                                  // GB999
-        if (brk) g++;
+        if (brk) starts.push_back(i);
         riRun = (cur == GB_RI) ? (brk ? 1 : riRun + 1) : 0;
         if (cur == GB_ExtPict) pictSeq = true;
         else if (!brk && pictSeq && (cur == GB_Extend || cur == GB_ZWJ)) pictSeq = true;
         else pictSeq = false;
+        // conjunct chain: a Consonant anchors, Linker upgrades, InCB-Extend carries
+        if (brk) incbState = (ip == 2) ? 1 : 0;
+        else if (ip == 2) incbState = 1;
+        else if (incbState >= 1 && ip == 1) incbState = 2;
+        else if (!(incbState >= 1 && ip == 3)) incbState = 0;
         prev = cur;
     }
-    return g;
+    return starts;
+}
+
+size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
+    return uniGraphemeStarts(cps).size();
 }
 
 // Hangul syllable constants (UAX #15) — composed/decomposed by arithmetic.

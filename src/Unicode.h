@@ -9,6 +9,7 @@ namespace rakupp {
 std::vector<uint32_t> uniNormalize(const std::vector<uint32_t>& cps, int mode);
 int uniCombiningClass(uint32_t cp);
 size_t uniGraphemeCount(const std::vector<uint32_t>& cps); // UAX #29 grapheme cluster count
+std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps); // cluster start indices (front()==0)
 int32_t uniCharByName(const std::string& name);            // name -> codepoint, or -1
 std::string uniNameOf(uint32_t cp);                        // codepoint -> name, or ""
 bool uniNumValue(uint32_t cp, long long& num, long long& den); // numeric value as num/den
