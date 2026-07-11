@@ -253,6 +253,7 @@ struct Codegen {
                 if (n == "tau")   return "Value::number(6.28318530717958647692)";
                 if (n == "rand")  return "Value::number(randDouble())";
                 if (enumKeys.count(n)) return mangleVar(n); // enum value (bound as a global)
+                if (topVars_.count(n))  return mangleVar(n); // sigilless top-level var/constant (a global)
                 // Any other bareword is a type object (Int, Str, Supply, a user class, …) —
                 // matching the interpreter, which resolves an unknown bareword to typeObj(n).
                 return "Value::typeObj(" + cesc(n) + ")";
@@ -397,6 +398,9 @@ struct Codegen {
 
     // ---- statements ----
     std::vector<Block*> topLevelEnds; // top-level END phasers, run at program end
+    int leaveCtr_ = 0;                // unique names for LEAVE scope guards
+    std::set<std::string> topVars_;   // top-level `my` vars hoisted to C++ globals
+    bool atTopLevel_ = false;         // emitting the mainline (not a sub body)
 
     void emitPhaserBody(Block* b, int ind) {
         line(ind, "{");
@@ -482,7 +486,7 @@ struct Codegen {
                     }
                     if (allDecl) {
                         std::string tmp = gensym("__la");
-                        line(ind, "Value " + tmp + " = Value::array((" + exArg(a->value.get()) + ").flatten());");
+                        line(ind, "Value " + tmp + " = rtArrayVal(" + exArg(a->value.get()) + ");");
                         for (size_t k = 0; k < lst->items.size(); k++) {
                             auto* v = static_cast<VarExpr*>(lst->items[k].get());
                             line(ind, "Value " + mangleVar(v->name) + " = rtIndexGet(" + tmp +
@@ -494,6 +498,7 @@ struct Codegen {
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
                     const std::string& nm = static_cast<VarExpr*>(e)->name;
+                    if (atTopLevel_ && topVars_.count(nm)) { line(ind, "; // " + nm + " is a global"); return; }
                     char sigil = nm.empty() ? '$' : nm[0];
                     std::string def = sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
                     line(ind, "Value " + mangleVar(nm) + " = " + def + ";");
@@ -509,6 +514,7 @@ struct Codegen {
                     if (allDecl) {
                         for (auto& it : le->items) {
                             const std::string& nm = static_cast<VarExpr*>(it.get())->name;
+                            if (atTopLevel_ && topVars_.count(nm)) continue; // global
                             char sigil = nm.empty() ? '$' : nm[0];
                             std::string def = sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
                             line(ind, "Value " + mangleVar(nm) + " = " + def + ";");
@@ -524,7 +530,7 @@ struct Codegen {
                 if (d->names.size() != 1) { // my ($a, $b) = LIST
                     if (!d->init) unsupported("multi-variable declaration without initializer");
                     std::string tmp = gensym("__d");
-                    line(ind, "Value " + tmp + " = Value::array((" + exArg(d->init.get()) + ").flatten());");
+                    line(ind, "Value " + tmp + " = rtArrayVal(" + exArg(d->init.get()) + ");");
                     for (size_t k = 0; k < d->names.size(); k++)
                         line(ind, "Value " + mangleVar(d->names[k]) + " = rtIndexGet(" + tmp +
                                   ", Value::integer(" + std::to_string(k) + "), false);");
@@ -532,7 +538,7 @@ struct Codegen {
                 }
                 char sigil = d->names[0].empty() ? '$' : d->names[0][0];
                 std::string init;
-                if (d->init) init = sigil == '@' ? "Value::array((" + exArg(d->init.get()) + ").flatten())" : exArg(d->init.get());
+                if (d->init) init = sigil == '@' ? "rtArrayVal(" + exArg(d->init.get()) + ")" : exArg(d->init.get());
                 else if (sigil == '@') init = "Value::array()";
                 else if (sigil == '%') init = "Value::makeHash()";
                 else init = "Value::any()";
@@ -548,6 +554,15 @@ struct Codegen {
             case NK::NextStmt: line(ind, "continue;"); return;
             case NK::Block: {
                 auto* b = static_cast<Block*>(s);
+                // LEAVE {…} maps exactly to a C++ scope guard (runs on any exit,
+                // exceptions included)
+                if (b->phaser == "LEAVE") {
+                    std::string g = "__leave" + std::to_string(leaveCtr_++);
+                    line(ind, "struct " + g + "_t { std::function<void()> f; ~" + g + "_t(){ try { f(); } catch (...) {} } } " + g + "{[&]{");
+                    block(b, ind + 1);
+                    line(ind, "}};");
+                    return;
+                }
                 if (b->isCatch || !b->phaser.empty()) unsupported("phaser / CATCH block");
                 line(ind, "{"); block(b, ind + 1); line(ind, "}");
                 return;
@@ -602,7 +617,10 @@ struct Codegen {
         if (e->kind == NK::Index) {
             auto* ix = static_cast<Index*>(e);
             if (!ix->adverb.empty()) unsupported("index adverb on assignment");
-            if (ix->base->kind != NK::VarExpr) unsupported("assignment to nested index");
+            // nested indices chain: @g[$r][$c] = v → rtIndexRef(rtIndexRef(v_g, r), c)
+            // (rtIndexRef returns an autovivifying Value&, so the chain is natural)
+            if (ix->base->kind != NK::VarExpr && ix->base->kind != NK::Index)
+                unsupported("assignment to nested index");
             return "rtIndexRef(" + lvalueExpr(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
                  + (ix->isHash ? "true" : "false") + ")";
         }
@@ -613,7 +631,7 @@ struct Codegen {
     std::string coerceFor(Expr* tgt, const std::string& rhs) {
         if (tgt->kind == NK::VarExpr) {
             const std::string& n = static_cast<VarExpr*>(tgt)->name;
-            if (!n.empty() && n[0] == '@') return "Value::array((" + rhs + ").flatten())";
+            if (!n.empty() && n[0] == '@') return "rtArrayVal(" + rhs + ")";
             if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…
         }
         return rhs;
@@ -621,8 +639,12 @@ struct Codegen {
 
     std::string assign(Assign* a) {
         Expr* tgt = a->target.get();
-        if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare)   // `my $x = ..`
-            return "Value " + mangleVar(static_cast<VarExpr*>(tgt)->name) + " = " + coerceFor(tgt, exArg(a->value.get()));
+        if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare) { // `my $x = ..`
+            const std::string& nm = static_cast<VarExpr*>(tgt)->name;
+            if (atTopLevel_ && topVars_.count(nm)) // hoisted to a global: assign it
+                return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
+            return "Value " + mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()));
+        }
         // Scalar `:=` binds ≈ assigns natively; container aliasing isn't modeled, so bundle that.
         if (a->op == ":=") {
             if (tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->name.empty() && static_cast<VarExpr*>(tgt)->name[0] == '$')
@@ -683,7 +705,7 @@ struct Codegen {
             size_t n = f->vars.size();
             std::string lst = gensym("__lst"), i = gensym("__fi");
             line(ind, "{");
-            line(ind + 1, "Value " + lst + " = Value::array((" + ex(f->list.get()) + ").flatten());");
+            line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + i + " = 0; " + i + " < " + lst + ".arr->size(); " + i + " += " + std::to_string(n) + ") {");
             for (size_t k = 0; k < n; k++)
                 line(ind + 2, "Value " + mangleVar(f->vars[k]) + " = (" + i + "+" + std::to_string(k) + " < " + lst +
@@ -708,14 +730,77 @@ struct Codegen {
             line(ind + 1, "}");
         } else {
             std::string lst = gensym("__lst"), el = gensym("__e");
-            line(ind + 1, "Value " + lst + " = " + ex(f->list.get()) + ";");
-            line(ind + 1, "for (auto& " + el + " : " + lst + ".flatten()) {");
+            line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
+            line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr) {");
             line(ind + 2, "Value " + topic + " = " + el + ";");
             topics.push_back(topic);
             block(f->body.get(), ind + 2);
             topics.pop_back();
             line(ind + 1, "}");
         }
+        line(ind, "}");
+    }
+
+    // ---- value-position statements: a sub body ending in if/given returns the branch value ----
+    void stmtValue(Stmt* s, int ind, const std::string& dst) {
+        if (s->kind == NK::ExprStmt)  { line(ind, dst + " = " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";"); return; }
+        if (s->kind == NK::IfStmt)    { ifValue(static_cast<IfStmt*>(s), ind, dst); return; }
+        if (s->kind == NK::GivenStmt) { givenValue(static_cast<GivenStmt*>(s), ind, dst); return; }
+        stmt(s, ind); // no value to capture; dst keeps its prior content
+    }
+    void blockValue(Block* b, int ind, const std::string& dst) {
+        if (b->stmts.empty()) return;
+        for (size_t i = 0; i + 1 < b->stmts.size(); i++) stmt(b->stmts[i].get(), ind);
+        stmtValue(b->stmts.back().get(), ind, dst);
+    }
+    void ifValue(IfStmt* f, int ind, const std::string& dst) {
+        if (!f->thenVar.empty()) { ifStmt(f, ind); return; } // `if EXPR -> $x` in value position: not captured
+        for (size_t i = 0; i < f->branches.size(); i++) {
+            std::string c = exBool(f->branches[i].first.get());
+            if (f->isUnless) c = "!" + c;
+            line(ind, (i == 0 ? "if (" : "else if (") + c + ") {");
+            blockValue(f->branches[i].second.get(), ind + 1, dst);
+            line(ind, "}");
+        }
+        if (f->elseBlock) { line(ind, "else {"); blockValue(f->elseBlock.get(), ind + 1, dst); line(ind, "}"); }
+    }
+    void givenValue(GivenStmt* g, int ind, const std::string& dst) {
+        if (g->defGuard != 0) { // with / without in value position
+            std::string topic = gensym("v__w");
+            line(ind, "{");
+            line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
+            std::string def = "(" + topic + ".t != VT::Nil && " + topic + ".t != VT::Any && " + topic + ".t != VT::Type)";
+            line(ind + 1, "if (" + (g->defGuard == 1 ? def : "!" + def) + ") {");
+            topics.push_back(topic);
+            blockValue(g->body.get(), ind + 2, dst);
+            topics.pop_back();
+            line(ind + 1, "}");
+            if (g->hasElse && g->elseBody) {
+                line(ind + 1, "else {");
+                blockValue(g->elseBody.get(), ind + 2, dst);
+                line(ind + 1, "}");
+            }
+            line(ind, "}");
+            return;
+        }
+        std::string topic = gensym("v__g"), done = gensym("__gdone");
+        line(ind, "{");
+        line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
+        topics.push_back(topic);
+        for (auto& st : g->body->stmts) {
+            if (st->kind == NK::WhenStmt) {
+                auto* w = static_cast<WhenStmt*>(st.get());
+                if (w->isDefault) line(ind + 1, "{");
+                else line(ind + 1, "if (applyArith(\"~~\", " + topic + ", " + ex(w->cond.get()) + ").truthy()) {");
+                blockValue(w->body.get(), ind + 2, dst);
+                line(ind + 2, "goto " + done + ";");
+                line(ind + 1, "}");
+            } else {
+                stmt(st.get(), ind + 1);
+            }
+        }
+        topics.pop_back();
+        line(ind + 1, done + ": ;");
         line(ind, "}");
     }
 
@@ -837,6 +922,12 @@ struct Codegen {
                 Stmt* s = md->body[i].get();
                 if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
                     line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                else if (i + 1 == md->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
+                    std::string rv = gensym("__rv");
+                    line(1, "Value " + rv + " = Value::any();");
+                    stmtValue(s, 1, rv);
+                    line(1, "return " + rv + ";");
+                }
                 else stmt(s, 1);
             }
             line(1, "return Value::any();");
@@ -868,6 +959,12 @@ struct Codegen {
             Stmt* s = body[i].get();
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
                 line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+            else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
+                std::string rv = gensym("__rv"); // trailing if/given: the matched branch's value
+                line(1, "Value " + rv + " = Value::any();");
+                stmtValue(s, 1, rv);
+                line(1, "return " + rv + ";");
+            }
             else stmt(s, 1);
         }
         line(1, "return Value::any();");
@@ -952,6 +1049,23 @@ std::string transpileToCpp(Program& prog, bool optimize) {
             if (cd->isRole || cd->isGrammar || cd->isPackage) throw CodegenError{"a role/grammar/package"};
             g.classNames.insert(cd->name);
             classes.push_back(cd);
+        } else if (s->kind == NK::ExprStmt) {
+            // top-level `my` declarations become C++ globals so subs can see them
+            Expr* e = static_cast<ExprStmt*>(s.get())->e.get();
+            auto collectDecl = [&](Expr* x) {
+                if (x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
+                    const std::string& nm = static_cast<VarExpr*>(x)->name;
+                    // sigilled vars need a name beyond the sigil; sigilless (constant \W) are fine at 1 char
+                    bool sigilled = !nm.empty() && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%' || nm[0] == '&');
+                    if (sigilled ? nm.size() > 1 : !nm.empty()) g.topVars_.insert(nm);
+                }
+            };
+            if (e) {
+                if (e->kind == NK::Assign) collectDecl(static_cast<Assign*>(e)->target.get());
+                else if (e->kind == NK::ListExpr)
+                    for (auto& it : static_cast<ListExpr*>(e)->items) collectDecl(it.get());
+                else collectDecl(e);
+            }
         } else if (s->kind == NK::EnumDecl) {
             auto* ed = static_cast<EnumDecl*>(s.get());
             Expr* v = ed->values.get();
@@ -973,6 +1087,14 @@ std::string transpileToCpp(Program& prog, bool optimize) {
              "using namespace rakupp;\n"
              "static Interpreter RT;   // provides builtins, method dispatch, coercions\n\n";
 
+    // top-level `my` vars as globals (initialised in program order inside main)
+    for (auto& nm : g.topVars_) {
+        char sg = nm[0];
+        g.out << "static Value " << mangleVar(nm) << " = "
+              << (sg == '@' ? "Value::array()" : sg == '%' ? "Value::makeHash()" : "Value::any()")
+              << ";\n";
+    }
+    if (!g.topVars_.empty()) g.out << "\n";
     // enum values as globals
     for (auto& e : enumConsts)
         g.out << "static Value " << mangleVar(e.first) << " = Value::enumVal(" << cesc(e.first)
@@ -1012,15 +1134,17 @@ std::string transpileToCpp(Program& prog, bool optimize) {
              "    __rakupp_register();\n"
              "    try {\n";
     std::string body = g.capture([&]() {
+        g.atTopLevel_ = true;
         g.emitSeq(prog.stmts, 2, /*topLevel=*/true);
-        // auto-invoke MAIN with the CLI args (strings; --opt handling stays interp-only)
+        g.atTopLevel_ = false;
+        // auto-invoke MAIN with the CLI args (--opt args become named, like the interpreter)
         bool hasMain = false;
         for (auto& s : prog.stmts)
             if (s->kind == NK::SubDecl && static_cast<SubDecl*>(s.get())->name == "MAIN")
                 hasMain = true;
         if (hasMain)
-            g.line(2, "{ ValueList __margs; for (int __i = 1; __i < argc; __i++) "
-                      "__margs.push_back(Value::str(argv[__i])); " +
+            g.line(2, "{ std::vector<std::string> __argv(argv + 1, argv + argc); "
+                      "ValueList __margs = rtMainArgs(__argv); " +
                       mangleSub("MAIN") + "(__margs); }");
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });

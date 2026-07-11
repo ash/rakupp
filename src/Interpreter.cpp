@@ -336,6 +336,55 @@ Value listToArray(const ValueList& items) {
     return v;
 }
 
+// Turn a raw argv into MAIN's argument list: --opt / --opt=val / --/opt become
+// named args, everything else stays a positional string. Shared by the
+// interpreter's auto-invoke and the native-codegen main().
+ValueList rtMainArgs(const std::vector<std::string>& argv) {
+    ValueList margs;
+    auto named = [](std::string key, Value v) { // --opt args bind to :$named params
+        Value p = Value::pair(std::move(key), std::move(v));
+        p.namedArg = true;
+        return p;
+    };
+    for (auto& a : argv) {
+        if (a.rfind("--", 0) == 0 && a.size() > 2) {
+            std::string rest = a.substr(2);
+            if (rest.rfind("/", 0) == 0) margs.push_back(named(rest.substr(1), Value::boolean(false)));
+            else {
+                auto eq = rest.find('=');
+                if (eq != std::string::npos) margs.push_back(named(rest.substr(0, eq), Value::str(rest.substr(eq + 1))));
+                else margs.push_back(named(rest, Value::boolean(true)));
+            }
+        } else {
+            margs.push_back(Value::str(a));
+        }
+    }
+    return margs;
+}
+
+// `@a = expr` for native codegen: list-assignment semantics. A List splices its
+// elements (one level, via listToArray); an Array (itemized rows included) keeps
+// its elements as they are; a Range expands; a lone scalar becomes a 1-elem array.
+Value rtArrayVal(const Value& v) {
+    if (v.t == VT::Array && v.arr) {
+        if (v.ext) { // a lazy seq: keep an infinite one lazy, drain a finite one first
+            auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+            if (st->infinite) return v;
+            if (st->appendNext) {
+                const size_t CAP = 1000000;
+                while (v.arr->size() < CAP && st->appendNext(*v.arr)) {}
+            }
+        }
+        if (v.isList) { Value r = listToArray(*v.arr); r.isList = false; return r; }
+        Value r = Value::array(*v.arr); // fresh buffer: `@a = @b` must not alias @b
+        return r;
+    }
+    if (v.t == VT::Range) return Value::array(v.flatten());
+    Value a = Value::array();
+    if (v.t != VT::Nil) a.arr->push_back(v);
+    return a;
+}
+
 static Value coerceArray(const Value& v) {
     if (v.t == VT::Array) { if (!v.isList) return v; Value r = v; r.isList = false; return r; } // @-container is an Array
     if (v.t == VT::Range) {
@@ -829,25 +878,7 @@ int Interpreter::run(Program& prog) {
         }
         // auto-invoke MAIN with command-line arguments, if defined
         if (Value* mainSub = tctx_.cur->find("&MAIN")) {
-            ValueList margs;
-            auto named = [](std::string key, Value v) { // --opt args bind to :$named params
-                Value p = Value::pair(std::move(key), std::move(v));
-                p.namedArg = true;
-                return p;
-            };
-            for (auto& a : argv_) {
-                if (a.rfind("--", 0) == 0 && a.size() > 2) {
-                    std::string rest = a.substr(2);
-                    if (rest.rfind("/", 0) == 0) margs.push_back(named(rest.substr(1), Value::boolean(false)));
-                    else {
-                        auto eq = rest.find('=');
-                        if (eq != std::string::npos) margs.push_back(named(rest.substr(0, eq), Value::str(rest.substr(eq + 1))));
-                        else margs.push_back(named(rest, Value::boolean(true)));
-                    }
-                } else {
-                    margs.push_back(Value::str(a));
-                }
-            }
+            ValueList margs = rtMainArgs(argv_);
             // Decide up front whether any MAIN candidate matches the argv. Checking
             // BEFORE the call means a nested X::Multi::NoMatch thrown from inside a
             // matched MAIN body propagates as a real error instead of being mistaken

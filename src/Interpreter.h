@@ -417,6 +417,8 @@ inline Value rtPow(const Value& l, const Value& r) {
 std::string doSprintf(const std::string& fmt, const ValueList& args); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
+Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
+ValueList rtMainArgs(const std::vector<std::string>& argv); // argv -> MAIN args (--opt named, rest positional)
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
 Value  rtReduce(const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop
 Value  rtAttrGet(const Value& self, const std::string& name);   // $!attr / $.attr read (codegen)
