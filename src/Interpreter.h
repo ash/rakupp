@@ -18,6 +18,7 @@
 namespace rakupp {
 
 double randDouble(); // uniform random in [0,1)
+bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
 void srandSeed(long long s); // reseed the RNG (srand)
 
 struct Env {
@@ -161,6 +162,8 @@ public:
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
+    void rtUse(const std::string& module, const std::string& arg = ""); // `use MODULE` (used by codegen)
+    Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {
         namedRegex_[name] = pattern; namedRegexKind_[name] = kind; // (used by codegen)
     }
@@ -480,8 +483,13 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); 
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
-Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices)
+Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)
+Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
 Value  rtHashLit(const ValueList& items); // { k => v, … } hash constructor
+Value  rtNamedPair(const std::string& k, Value v); // k => v as a NAMED call argument
+size_t rtPosCount(const ValueList& a, size_t from = 0); // positional-arg count (named pairs excluded)
+Value  rtThrowNext(const std::string& label = ""); Value rtThrowLast(const std::string& label = "");
+Value  rtThrowRedo(const std::string& label = ""); // expression-position / labelled loop control
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)

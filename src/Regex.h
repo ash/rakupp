@@ -112,6 +112,7 @@ private:
         std::string negClassFlags;       // `-rule` difference members: char must NOT match these
         std::string uprop;               // Unicode property for <:Nd>/<:L>/… (Class node, codepoint-aware)
         bool negate = false;
+        bool icase = false;              // case-insensitive at THIS node (scoped inline :i)
         bool multiline = false;          // AnchorStart/AnchorEnd: `^^`/`$$` (line) vs `^`/`$` (string)
         mutable uint32_t byteset[8];     // per-byte match result (incl. icase+negate), built on first use
         mutable bool bytesetReady = false;
@@ -149,6 +150,7 @@ private:
     int ncaps_ = 0;
     bool ok_ = true;
     bool icase_ = false;
+    bool curIcase_ = false; // parse-time adverb state: :i/:!i scoped to the enclosing group
     bool sigspace_ = false;
     bool ratchet_ = false; // `token`/`rule`: quantifiers are possessive, matches commit (no backtracking)
     int assertDepth_ = 0; // >0 while parsing an assertion inner (so parseSeq stops at `>`)

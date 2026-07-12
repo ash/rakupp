@@ -14,6 +14,6 @@ struct CodegenError { std::string msg; };
 // Throws CodegenError on any unsupported construct.
 // With optimize=true, fixed-arity positional subs get direct `Value` parameters
 // (skipping the per-call ValueList heap allocation) — the `-O` codegen pass.
-std::string transpileToCpp(Program& prog, bool optimize = false);
+std::string transpileToCpp(Program& prog, bool optimize = false, const std::string& srcPath = "");
 
 }

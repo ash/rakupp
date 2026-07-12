@@ -167,6 +167,12 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
 
 // Fully compile a Raku program to a native executable by transpiling its AST to
 // C++ (no interpreter embedded) and linking against the runtime library. Falls
+static std::string absPath(const std::string& p) {
+    char rp[4096];
+    if (!p.empty() && realpath(p.c_str(), rp)) return rp;
+    return p;
+}
+
 // back with a clear message if the program uses an unsupported construct.
 static int compileNative(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe, bool optimize = false, const std::string& ccOpt = "-O2") {
     if (outPath.empty()) outPath = defaultOut(srcName);
@@ -176,7 +182,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
         Program prog = parser.parseProgram();
-        cpp = transpileToCpp(prog, optimize);
+        cpp = transpileToCpp(prog, optimize, absPath(srcName));
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
@@ -401,7 +407,7 @@ int main(int argc, char** argv) {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
             Program prog = parser.parseProgram();
-            std::cout << transpileToCpp(prog, optimize);
+            std::cout << transpileToCpp(prog, optimize, absPath(fname));
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;

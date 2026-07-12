@@ -615,6 +615,67 @@ Value rtSlipVal(const Value& v) {
     return out;
 }
 
+// A bareword term for native codegen — the interpreter's NameTerm tail: an
+// env-bound value, a zero-arg &routine call, a zero-arg builtin, else a type object.
+Value Interpreter::rtNameTerm(const std::string& n) {
+    if (tctx_.cur) {
+        if (Value* p = tctx_.cur->find(n)) return *p;
+        if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
+    }
+    auto it = builtins_.find(n);
+    if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
+    return Value::typeObj(n);
+}
+
+// k => v at a call site (native codegen): a syntactic identifier-keyed pair is
+// a NAMED argument — mirrors evalArgs.
+Value rtNamedPair(const std::string& k, Value v) {
+    Value p = Value::pair(k, std::move(v));
+    p.namedArg = true;
+    return p;
+}
+// The count of POSITIONAL args (named pairs excluded) — for multi-dispatch arity.
+size_t rtPosCount(const ValueList& a, size_t from) {
+    size_t n = 0;
+    for (size_t i = from; i < a.size(); i++) if (!(a[i].t == VT::Pair && a[i].namedArg)) n++;
+    return n;
+}
+
+// `use MODULE` for native codegen: mirror exec(UseStmt) — Test flag, language
+// pragma, lib paths, real module loading into the runtime env.
+void Interpreter::rtUse(const std::string& module, const std::string& arg) {
+    if (module == "Test") { usedTest_ = true; return; }
+    if (module.size() >= 2 && module[0] == 'v' && std::isdigit((unsigned char)module[1])) {
+        if (module.find("6.c") != std::string::npos) langRev_ = 0;
+        else if (module.find("6.d") != std::string::npos) langRev_ = 1;
+        else langRev_ = 2;
+        return;
+    }
+    if (module == "lib") {
+        if (!arg.empty()) libPaths_.insert(libPaths_.begin(), arg);
+        return;
+    }
+    if (!module.empty()) loadModule(module);
+}
+
+// |@a in VALUE position (a return value, an assignment RHS) for native codegen:
+// a one-level splice marker — the consumer (map, list assignment) splices the
+// top-level elements; itemized inner arrays stay whole. Mirrors the interp,
+// where the value-position slip returns the array and the consumer flattens.
+Value rtSlipShallow(const Value& v) {
+    if (v.t == VT::Array && v.arr) { Value r = v; r.isList = true; return r; }
+    if (v.t == VT::Range) { Value r = Value::array(v.flatten()); r.isList = true; return r; }
+    Value out = Value::array(); out.isList = true;
+    if (v.t != VT::Nil) out.arr->push_back(v);
+    return out;
+}
+
+// next/last/redo in EXPRESSION position for native codegen (`$x > 3 && last`):
+// throw the interpreter's control-flow signals; native loop bodies catch them.
+Value rtThrowNext(const std::string& label) { throw NextEx{label}; }
+Value rtThrowLast(const std::string& label) { throw LastEx{label}; }
+Value rtThrowRedo(const std::string& label) { throw RedoEx{label}; }
+
 // { k => v, … } for native codegen — mirrors the interpreter's HashLit eval
 // (arrays splice one level, then hash coercion).
 Value rtHashLit(const ValueList& items) {
@@ -1614,7 +1675,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
 
 // Is `n` a built-in type name that a class may legitimately derive from?
 // (Used to decide whether `class X is Y` with an unregistered Y is an error.)
-static bool isKnownTypeName(const std::string& n) {
+bool isKnownTypeName(const std::string& n) {
     if (n.empty()) return false;
     if (n.rfind("X::", 0) == 0) return true;         // exception types
     if (n.rfind("Metamodel::", 0) == 0) return true; // HOWs
@@ -2513,8 +2574,13 @@ bool Interpreter::boolify(const Value& v) {
 
 Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
     auto it = builtins_.find(name);
-    if (it == builtins_.end())
+    if (it == builtins_.end()) {
+        // not a builtin: a module-loaded (or otherwise env-bound) routine?
+        Value* p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
+        if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
+        if (p && p->t == VT::Code) return callCallable(*p, std::move(args));
         throw RakuError{Value::nil(), "Undefined routine '" + name + "'"};
+    }
     return it->second(*this, args);
 }
 

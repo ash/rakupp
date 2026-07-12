@@ -12,6 +12,7 @@
 namespace rakupp {
 
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // Interpreter.cpp
+bool isKnownTypeName(const std::string& n); // Interpreter.cpp
 
 namespace {
 
@@ -35,16 +36,23 @@ std::string nkName(NK k) {
 
 // C++ string-literal escape.
 std::string cesc(const std::string& s) {
+    bool hasNul = s.find('\0') != std::string::npos;
     std::string o = "\"";
+    bool afterHex = false; // a hex escape must not swallow a following hex-digit char
     for (unsigned char c : s) {
+        bool hex = false;
+        if (afterHex && std::isxdigit(c)) o += "\" \""; // break the literal: "\x0d" "e"
         if (c == '\\' || c == '"') { o += '\\'; o += (char)c; }
         else if (c == '\n') o += "\\n";
         else if (c == '\t') o += "\\t";
         else if (c == '\r') o += "\\r";
-        else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\x%02x", c); o += b; }
+        else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\x%02x", c); o += b; hex = true; }
         else o += (char)c;
+        afterHex = hex;
     }
     o += "\"";
+    // an embedded NUL truncates char*-based construction — use the length-aware form
+    if (hasNul) return "std::string(" + o + ", " + std::to_string(s.size()) + ")";
     return o;
 }
 
@@ -141,6 +149,23 @@ struct Codegen {
         }
         return s;
     }
+    static bool identKey(const std::string& k) {
+        if (k.empty() || !(std::isalpha((unsigned char)k[0]) || k[0] == '_')) return false;
+        for (unsigned char c : k) if (!(std::isalnum(c) || c == '-' || c == '_' || c == '\'')) return false;
+        return true;
+    }
+    // An argument expression: a syntactic `k => v` / `:k(v)` with an identifier key
+    // is a NAMED argument (mirrors evalArgs); everything else is exArg.
+    std::string emitArg(Expr* a) {
+        if (a->kind == NK::Pair) {
+            auto* pr = static_cast<PairExpr*>(a);
+            if (!pr->keyExpr && identKey(pr->key)) {
+                std::string val = pr->value ? exArg(pr->value.get()) : "Value::boolean(true)";
+                return "rtNamedPair(" + cesc(pr->key) + ", " + val + ")";
+            }
+        }
+        return exArg(a);
+    }
     // Full ValueList expression for call arguments; |slips spread positionally
     // (arrays/ranges) or as named args (hashes), like the interpreter's evalArgs.
     std::string argsVL(const std::vector<ExprPtr>& args) {
@@ -148,13 +173,13 @@ struct Codegen {
         for (auto& a : args) if (isSlip(a.get())) anySlip = true;
         if (!anySlip) {
             std::string s;
-            for (size_t i = 0; i < args.size(); i++) { if (i) s += ", "; s += exArg(args[i].get()); }
+            for (size_t i = 0; i < args.size(); i++) { if (i) s += ", "; s += emitArg(args[i].get()); }
             return "ValueList{" + s + "}";
         }
         std::string o = "([&]()->ValueList{ ValueList __as;";
         for (auto& a : args) {
             if (isSlip(a.get())) o += " rtSpreadArg(__as, " + ex(static_cast<Unary*>(a.get())->operand.get()) + ", true);";
-            else o += " __as.push_back(" + exArg(a.get()) + ");";
+            else o += " __as.push_back(" + emitArg(a.get()) + ");";
         }
         return o + " return __as; }())";
     }
@@ -174,8 +199,74 @@ struct Codegen {
         return "RT.boolify(" + ex(e) + ")";
     }
 
+    // A lexical `sub f (…) { … }` inside a block becomes a native closure stored
+    // in the runtime env, so calls (including self-recursive ones) resolve by name.
+    struct BodyScope {
+        Codegen* g;
+        std::set<std::string> savedHoisted, savedSpecials, savedEnvSubs;
+        int savedDepth;
+        BodyScope(Codegen* g_, bool closure) : g(g_),
+            savedHoisted(g_->hoisted), savedSpecials(g_->boundSpecials),
+            savedEnvSubs(g_->envSubs), savedDepth(g_->loopDepth_) {
+            g->loopDepth_ = 0;               // break/continue never cross a C++ function boundary
+            if (!closure) { g->hoisted.clear(); g->boundSpecials.clear(); }
+            // a closure inherits the lexical sets (copy-in); additions are discarded on exit
+        }
+        ~BodyScope() {
+            g->hoisted = std::move(savedHoisted);
+            g->boundSpecials = std::move(savedSpecials);
+            g->envSubs = std::move(savedEnvSubs);
+            g->loopDepth_ = savedDepth;
+        }
+    };
+
+    // Register a statement list's lexical subs at block entry, before any other
+    // statement runs — mirroring the interpreter's hoistSubs (forward calls and
+    // recursion resolve through the runtime env). Names enter envSubs before any
+    // body is emitted so mutually-recursive subs call each other via the env.
+    void hoistLexicalSubs(const std::vector<StmtPtr>& stmts, int ind, bool programTop = false) {
+        auto lexical = [&](Stmt* st) -> SubDecl* {
+            if (st->kind != NK::SubDecl) return nullptr;
+            auto* d = static_cast<SubDecl*>(st);
+            if (d->name.empty() || d->isMethod) return nullptr;
+            if (programTop && (userSubs.count(d->name) || multiNames.count(d->name))) return nullptr; // pre-pass hoisted
+            return d;
+        };
+        for (auto& st : stmts)
+            if (SubDecl* d = lexical(st.get())) {
+                if (d->isMulti) unsupported("a nested multi sub");
+                envSubs.insert(d->name);
+            }
+        for (auto& st : stmts)
+            if (SubDecl* d = lexical(st.get()))
+                line(ind, "RT.dynVarRef(" + cesc("&" + d->name) + ") = " + subClosure(d) + ";");
+    }
+
+    std::string subClosure(SubDecl* d) {
+        BodyScope __bs{this, /*closure=*/false};
+        std::string body = capture([&]() {
+            bindParams(d->params, 0, false);
+            hoistLexicalSubs(d->body, 0);
+            for (size_t i = 0; i < d->body.size(); i++) {
+                Stmt* st = d->body[i].get();
+                if (i + 1 == d->body.size() && st->kind == NK::ExprStmt)
+                    line(0, "return " + exArg(static_cast<ExprStmt*>(st)->e.get()) + ";");
+                else if (i + 1 == d->body.size() && (st->kind == NK::IfStmt || st->kind == NK::GivenStmt)) {
+                    std::string rv = gensym("__rv");
+                    line(0, "Value " + rv + " = Value::any();");
+                    stmtValue(st, 0, rv);
+                    line(0, "return " + rv + ";");
+                }
+                else stmt(st, 0);
+            }
+            line(0, "return Value::any();");
+        });
+        return "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
+    }
+
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
     std::string emitBlockClosure(BlockExpr* be) {
+        BodyScope __bs{this, /*closure=*/true};
         bool pushed = false; std::string topic;
         std::vector<std::string> phs = be->params.empty() ? computePlaceholders(be->body)
                                                           : std::vector<std::string>{};
@@ -192,6 +283,7 @@ struct Codegen {
             } else {
                 bindParams(be->params, 0, false); // full signature forms, same as sub bodies
             }
+            hoistLexicalSubs(be->body, 0);
             for (size_t i = 0; i < be->body.size(); i++) {
                 Stmt* s = be->body[i].get();
                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
@@ -210,6 +302,39 @@ struct Codegen {
         std::string names;
         for (size_t k = 0; k < nPos; k++) names += std::string(k ? ", " : "") + "\"$^" + std::string(1, char('a' + k)) + "\"";
         return "([&]()->Value{ Value _c = " + mk + "; _c.code->placeholders = {" + names + "}; return _c; }())";
+    }
+
+    bool stmtHasRedo(Stmt* s) {
+        if (!s) return false;
+        switch (s->kind) {
+            case NK::WhileStmt: case NK::ForStmt: case NK::LoopStmt: case NK::RepeatStmt:
+                return false; // a nested loop owns its own redo
+            case NK::ExprStmt: return exprHasRedo(static_cast<ExprStmt*>(s)->e.get());
+            case NK::IfStmt: {
+                auto* f = static_cast<IfStmt*>(s);
+                for (auto& br : f->branches)
+                    if (exprHasRedo(br.first.get()) || stmtsHaveRedo(br.second->stmts)) return true;
+                return f->elseBlock && stmtsHaveRedo(f->elseBlock->stmts);
+            }
+            case NK::Block: return stmtsHaveRedo(static_cast<Block*>(s)->stmts);
+            case NK::GivenStmt: {
+                auto* g = static_cast<GivenStmt*>(s);
+                if (exprHasRedo(g->topic.get())) return true;
+                if (g->body && stmtsHaveRedo(g->body->stmts)) return true;
+                return g->elseBody && stmtsHaveRedo(g->elseBody->stmts);
+            }
+            case NK::WhenStmt: {
+                auto* w = static_cast<WhenStmt*>(s);
+                if (w->cond && exprHasRedo(w->cond.get())) return true;
+                return w->body && stmtsHaveRedo(w->body->stmts);
+            }
+            case NK::ReturnStmt: { auto* r = static_cast<ReturnStmt*>(s); return r->value && exprHasRedo(r->value.get()); }
+            default: return false;
+        }
+    }
+    bool stmtsHaveRedo(const std::vector<StmtPtr>& v) {
+        for (auto& st : v) if (stmtHasRedo(st.get())) return true;
+        return false;
     }
 
     // ---- expressions: return a C++ expression string of type Value ----
@@ -260,6 +385,7 @@ struct Codegen {
                     if (multiNames.count(nm))
                         return "Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(ValueList(__a)); })";
                     if (codeVars.count(nm)) return mangleVar(v->name); // `my &f = …`
+                    if (envSubs.count(nm)) return "RT.dynVar(" + cesc(v->name) + ")"; // lexical sub
                     if (nm.rfind("infix:", 0) == 0 || nm.rfind("prefix:", 0) == 0 || nm.rfind("postfix:", 0) == 0) {
                         // &infix:<op> — an operator as a callable
                         std::string op = nm.substr(nm.find('<') + 1);
@@ -343,15 +469,23 @@ struct Codegen {
                 if (n == "True")  return "Value::boolean(true)";
                 if (n == "False") return "Value::boolean(false)";
                 if (n == "Nil")   return "Value::nil()";
+                if (n == "Inf" || n == "\xe2\x88\x9e") return "Value::number(INFINITY)"; // Inf / ∞
+                if (n == "NaN") return "Value::number(NAN)";
                 if (n == "pi" || n == "\xcf\x80")  return "Value::number(3.14159265358979323846)";
                 if (n == "e")     return "Value::number(2.71828182845904523536)";
                 if (n == "tau")   return "Value::number(6.28318530717958647692)";
                 if (n == "rand")  return "Value::number(randDouble())";
                 if (enumKeys.count(n)) return mangleVar(n); // enum value (bound as a global)
                 if (topVars_.count(n))  return mangleVar(n); // sigilless top-level var/constant (a global)
-                // Any other bareword is a type object (Int, Str, Supply, a user class, …) —
-                // matching the interpreter, which resolves an unknown bareword to typeObj(n).
-                return "Value::typeObj(" + cesc(n) + ")";
+                // user-declared code wins over type names, matching the interpreter's
+                // env-first NameTerm resolution (a `sub Date {…}` calls the sub).
+                if (userSubs.count(n))   return mangleSub(n) + "(ValueList{})";     // zero-arg sub call
+                if (multiNames.count(n)) return mangleSub(n) + "(ValueList{})";     // zero-arg multi dispatch
+                if (envSubs.count(n))    return "RT.callCallable(RT.dynVar(" + cesc("&" + n) + "), ValueList{})"; // lexical sub
+                if (classNames.count(n)) return "Value::typeObj(" + cesc(n) + ")";  // a user class: a type object
+                // anything else resolves at runtime like the interpreter's NameTerm:
+                // env value, zero-arg &routine/builtin call, else a type object
+                return "RT.rtNameTerm(" + cesc(n) + ")";
             }
             case NK::Ternary: {
                 auto* t = static_cast<Ternary*>(e);
@@ -388,6 +522,13 @@ struct Codegen {
                     } else body = exArg(u->operand.get()) + ";\n";
                     return "RT.rtGather(Value::closure([=](ValueList&)->Value{\n" + body + "return Value::any(); }))";
                 }
+                if (u->op == "next" || u->op == "last" || u->op == "redo") {
+                    if (u->operand) unsupported("labelled/valued loop control in expression position");
+                    // `$x > 3 and last` — throw the interpreter's control signal; the
+                    // enclosing native loop body catches it (loopBody)
+                    return u->op == "next" ? "rtThrowNext()"
+                         : u->op == "last" ? "rtThrowLast()" : "rtThrowRedo()";
+                }
                 if (u->postfix) { // $x++ / $x-- as an expression: yield the old value
                     if (u->op == "i") return "RT.postfixIPub(" + ex(u->operand.get()) + ")"; // (2+3)i
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
@@ -419,7 +560,7 @@ struct Codegen {
                     return "([&]()->Value{ Value _v = " + x + "; if (_v.t==VT::Array) _v.itemized=true; return _v; }())";
                 if (u->op == "ctx@") // @(...) — one-level list context
                     return "rtArrayVal(" + x + ")";
-                if (u->op == "|") return "rtSlipVal(" + x + ")"; // |x outside call/list position
+                if (u->op == "|") return "rtSlipShallow(" + x + ")"; // |x in value position: one-level marker
                 unsupported("prefix operator '" + u->op + "'");
             }
             case NK::Binary: {
@@ -486,6 +627,8 @@ struct Codegen {
                 if (c->callee) return "RT.callCallable(" + ex(c->callee.get()) + ", " + vl + ")";
                 if (codeVars.count(c->name)) // a `my &name = …` variable called by bare name
                     return "RT.callCallable(" + mangleVar("&" + c->name) + ", " + vl + ")";
+                if (envSubs.count(c->name))  // a lexical sub registered in the runtime env
+                    return "RT.callCallable(RT.dynVar(" + cesc("&" + c->name) + "), " + vl + ")";
                 if (multiNames.count(c->name)) return mangleSub(c->name) + "(" + vl + ")"; // multi dispatcher
                 if (userSubs.count(c->name)) {
                     // -O: call the direct-Value overload when the arity/args line up
@@ -600,6 +743,7 @@ struct Codegen {
             regular.push_back(s.get());
         }
         for (Block* b : pre) emitPhaserBody(b, ind);
+        hoistLexicalSubs(stmts, ind, topLevel);
         // A CATCH guards its enclosing block (the mainline is the UNIT block).
         if (catchBlk) {
             line(ind, "try {");
@@ -618,6 +762,8 @@ struct Codegen {
 
     std::set<std::string> hoisted; // expression-position `my` names pre-declared in this body
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
+    std::set<std::string> envSubs;  // lexical subs registered in the runtime env (`sub f {…}` inside a block)
+    int loopDepth_ = 0;             // native loops enclosing the emission point IN THIS function body
     void collectExprDecls(Expr* e, std::vector<std::string>& out, bool root = true) {
         if (!e) return;
         if (e->kind == NK::Assign) {
@@ -653,7 +799,14 @@ struct Codegen {
     void stmt(Stmt* s, int ind) {
         if (s->kind == NK::ExprStmt) hoistExprDecls(static_cast<ExprStmt*>(s)->e.get(), ind);
         switch (s->kind) {
-            case NK::EmptyStmt: case NK::UseStmt: case NK::SubDecl: case NK::EnumDecl:
+            case NK::UseStmt: { // `use Test` / `use lib '…'` / `use Module` — runtime effects
+                auto* u = static_cast<UseStmt*>(s);
+                std::string arg = u->argExpr ? "(" + ex(u->argExpr.get()) + ").toStr()" : cesc(u->arg);
+                line(ind, "RT.rtUse(" + cesc(u->module) + ", " + arg + ");");
+                return;
+            }
+            case NK::SubDecl: return; // registered by hoistLexicalSubs at block entry
+            case NK::EmptyStmt: case NK::EnumDecl:
             case NK::ClassDecl: return; // subs/enums/classes emitted separately
             case NK::ExprStmt: {
                 Expr* e = static_cast<ExprStmt*>(s)->e.get();
@@ -750,8 +903,18 @@ struct Codegen {
                 line(ind, "return " + (r->value ? exArg(r->value.get()) : std::string("Value::any()")) + ";");
                 return;
             }
-            case NK::LastStmt: line(ind, "break;"); return;
-            case NK::NextStmt: line(ind, "continue;"); return;
+            case NK::LastStmt: {
+                const std::string& lb = static_cast<LastStmt*>(s)->target;
+                if (!lb.empty()) line(ind, "rtThrowLast(" + cesc(lb) + ");");
+                else line(ind, loopDepth_ ? "break;" : "rtThrowLast();");
+                return;
+            }
+            case NK::NextStmt: {
+                const std::string& lb = static_cast<NextStmt*>(s)->target;
+                if (!lb.empty()) line(ind, "rtThrowNext(" + cesc(lb) + ");");
+                else line(ind, loopDepth_ ? "continue;" : "rtThrowNext();");
+                return;
+            }
             case NK::Block: {
                 auto* b = static_cast<Block*>(s);
                 // LEAVE {…} maps exactly to a C++ scope guard (runs on any exit,
@@ -773,13 +936,13 @@ struct Codegen {
                 if (!w->var.empty()) unsupported("while EXPR -> $x");
                 std::string c = exBool(w->cond.get());
                 line(ind, "while (" + (w->isUntil ? "!" + c : c) + ") {");
-                block(w->body.get(), ind + 1); line(ind, "}");
+                loopBody(w->body.get(), ind + 1, w->label); line(ind, "}");
                 return;
             }
             case NK::RepeatStmt: {
                 auto* r = static_cast<RepeatStmt*>(s);
                 std::string c = exBool(r->cond.get());
-                line(ind, "do {"); block(r->body.get(), ind + 1);
+                line(ind, "do {"); loopBody(r->body.get(), ind + 1, r->label);
                 line(ind, "} while (" + (r->isUntil ? "!" + c : c) + ");");
                 return;
             }
@@ -789,7 +952,7 @@ struct Codegen {
                 if (l->init) line(ind + 1, ex(l->init.get()) + ";");
                 std::string c = l->cond ? exBool(l->cond.get()) : "true";
                 line(ind + 1, "for (; " + c + "; " + (l->incr ? ex(l->incr.get()) : std::string()) + ") {");
-                block(l->body.get(), ind + 2);
+                loopBody(l->body.get(), ind + 2, l->label);
                 line(ind + 1, "}");
                 line(ind, "}");
                 return;
@@ -946,6 +1109,75 @@ struct Codegen {
         if (f->elseBlock) { line(ind, "else {"); block(f->elseBlock.get(), ind + 1); line(ind, "}"); }
     }
 
+    // A native loop body: catches the thrown forms of next/last (expression
+    // position, or propagated out of a closure) and maps them to continue/break.
+    // Does this loop body contain an expression-position `redo` (its own, not a
+    // nested loop's)? Descends into everything except nested loop statements.
+
+    bool exprHasRedo(Expr* e) {
+        if (!e) return false;
+        switch (e->kind) {
+            case NK::Unary: {
+                auto* u = static_cast<Unary*>(e);
+                if (u->op == "redo" && !u->postfix) return true;
+                return exprHasRedo(u->operand.get());
+            }
+            case NK::Binary: { auto* b = static_cast<Binary*>(e); return exprHasRedo(b->lhs.get()) || exprHasRedo(b->rhs.get()); }
+            case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return exprHasRedo(t->cond.get()) || exprHasRedo(t->then.get()) || exprHasRedo(t->els.get()); }
+            case NK::Assign: { auto* a = static_cast<Assign*>(e); return exprHasRedo(a->target.get()) || exprHasRedo(a->value.get()); }
+            case NK::Call: { auto* c = static_cast<Call*>(e); for (auto& x : c->args) if (exprHasRedo(x.get())) return true; return c->callee && exprHasRedo(c->callee.get()); }
+            case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e); if (exprHasRedo(m->inv.get())) return true; for (auto& x : m->args) if (exprHasRedo(x.get())) return true; return false; }
+            case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) if (exprHasRedo(x.get())) return true; return false;
+            case NK::Index: { auto* ix = static_cast<Index*>(e); return exprHasRedo(ix->base.get()) || (ix->index && exprHasRedo(ix->index.get())); }
+            default: return false;
+        }
+    }
+
+    void loopBody(Block* b, int ind, const std::string& label = "") {
+        bool hasRedo = false;
+        for (auto& st : b->stmts) if (stmtHasRedo(st.get())) { hasRedo = true; break; }
+        std::string pass = label.empty() ? "!__e.label.empty()"
+                                         : "!__e.label.empty() && __e.label != " + cesc(label);
+        if (hasRedo) {
+            // retry shape: `redo` re-runs the body with the same topic. Statement
+            // next/last inside must THROW (loopDepth_ 0) so the retry catches see
+            // them and translate to outer-loop continue/break via __lc.
+            std::string lc = gensym("__lc"), ag = gensym("__ag");
+            line(ind, "{ int " + lc + " = 0;");
+            line(ind, "for (bool " + ag + " = true; " + ag + "; ) { " + ag + " = false;");
+            line(ind + 1, "try {");
+            int savedDepth = loopDepth_; loopDepth_ = 0;
+            block(b, ind + 2);
+            loopDepth_ = savedDepth;
+            line(ind + 1, "} catch (const RedoEx& __e) { if (" + pass + ") throw; " + ag + " = true; }");
+            line(ind + 1, "catch (const NextEx& __e) { if (" + pass + ") throw; " + lc + " = 1; }");
+            line(ind + 1, "catch (const LastEx& __e) { if (" + pass + ") throw; " + lc + " = 2; }");
+            line(ind, "}");
+            line(ind, "if (" + lc + " == 1) continue;");
+            line(ind, "if (" + lc + " == 2) break;");
+            line(ind, "}");
+            return;
+        }
+        loopDepth_++;
+        std::string body = capture([&]() { block(b, ind + 1); });
+        loopDepth_--;
+        // a body that provably cannot raise a control signal (no user-code calls,
+        // no closures, no throw helpers) runs bare — the hot benchmark kernels
+        // (loopsum) stay wrapper-free for the optimizer
+        bool canSignal = body.find("RT.") != std::string::npos ||
+                         body.find("rtThrow") != std::string::npos ||
+                         body.find("u_") != std::string::npos ||
+                         body.find("m_") != std::string::npos ||
+                         body.find("Value::closure") != std::string::npos;
+        if (!canSignal) { out << body; return; }
+        line(ind, "try {");
+        out << body;
+        // an unlabelled signal stops here; a labelled one only if this loop wears it
+        line(ind, "} catch (const NextEx& __e) { if (" + pass + ") throw; continue; }"
+                  " catch (const LastEx& __e) { if (" + pass + ") throw; break; }"
+                  " catch (const RedoEx& __e) { throw; }");
+    }
+
     void forStmt(ForStmt* f, int ind) {
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
             std::string lst = gensym("__lst"), el = gensym("__e");
@@ -955,7 +1187,7 @@ struct Codegen {
             for (size_t k = 0; k < f->vars.size(); k++)
                 line(ind + 2, "Value " + mangleVar(f->vars[k]) + " = rtIndexGet(" + el +
                               ", Value::integer(" + std::to_string(k) + "LL), false);");
-            block(f->body.get(), ind + 2);
+            loopBody(f->body.get(), ind + 2, f->label);
             line(ind + 1, "}");
             line(ind, "}");
             return;
@@ -969,7 +1201,7 @@ struct Codegen {
             for (size_t k = 0; k < n; k++)
                 line(ind + 2, "Value " + mangleVar(f->vars[k]) + " = (" + i + "+" + std::to_string(k) + " < " + lst +
                               ".arr->size() ? (*" + lst + ".arr)[" + i + "+" + std::to_string(k) + "] : Value::any());");
-            block(f->body.get(), ind + 2);
+            loopBody(f->body.get(), ind + 2, f->label);
             line(ind + 1, "}");
             line(ind, "}");
             return;
@@ -984,7 +1216,7 @@ struct Codegen {
             line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");
             line(ind + 2, "Value " + topic + " = Value::integer(" + i + ");");
             topics.push_back(topic);
-            block(f->body.get(), ind + 2);
+            loopBody(f->body.get(), ind + 2, f->label);
             topics.pop_back();
             line(ind + 1, "}");
         } else {
@@ -993,7 +1225,7 @@ struct Codegen {
             line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr) {");
             line(ind + 2, "Value " + topic + " = " + el + ";");
             topics.push_back(topic);
-            block(f->body.get(), ind + 2);
+            loopBody(f->body.get(), ind + 2, f->label);
             topics.pop_back();
             line(ind + 1, "}");
         }
@@ -1009,6 +1241,7 @@ struct Codegen {
     }
     void blockValue(Block* b, int ind, const std::string& dst) {
         if (b->stmts.empty()) return;
+        hoistLexicalSubs(b->stmts, ind);
         for (size_t i = 0; i + 1 < b->stmts.size(); i++) stmt(b->stmts[i].get(), ind);
         stmtValue(b->stmts.back().get(), ind, dst);
     }
@@ -1180,11 +1413,12 @@ struct Codegen {
             SubDecl* md = mp.get();
             std::string fname = md->isMulti ? methodCandFn(cd->name, md->name, multiSeq[md->name]++)
                                             : methodFn(cd->name, md->name);
-            std::set<std::string> savedSpecials; savedSpecials.swap(boundSpecials);
+            BodyScope __bs{this, /*closure=*/false};
             line(0, "static Value " + fname + "(ValueList& __a) {");
             line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
             bindParams(md->params, 1, true);
             std::string saved = self_; self_ = "__self";
+            hoistLexicalSubs(md->body, 1);
             for (size_t i = 0; i < md->body.size(); i++) {
                 Stmt* s = md->body[i].get();
                 if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
@@ -1200,7 +1434,6 @@ struct Codegen {
             line(1, "return Value::any();");
             self_ = saved;
             line(0, "}");
-            boundSpecials = std::move(savedSpecials);
         }
     }
 
@@ -1229,7 +1462,7 @@ struct Codegen {
                 // dispatcher: try candidates in declaration order; arity floor from
                 // required params (excluding self), ceiling unless slurpy; typed/literal
                 // params guard with rtTypeMatch/eqv
-                std::string d = "  " + ci + "->methods[" + cesc(kv.first) + "] = Value::closure([](ValueList& __a)->Value{ size_t __n = __a.size() > 0 ? __a.size() - 1 : 0;";
+                std::string d = "  " + ci + "->methods[" + cesc(kv.first) + "] = Value::closure([](ValueList& __a)->Value{ size_t __n = __a.size() > 0 ? rtPosCount(__a, 1) : 0;";
                 for (size_t k = 0; k < kv.second.size(); k++) {
                     SubDecl* c = kv.second[k];
                     size_t req = 0, opt = 0; bool slurpy = false;
@@ -1242,11 +1475,11 @@ struct Codegen {
                     }
                     std::string guard = "__n >= " + std::to_string(req);
                     if (!slurpy) guard += " && __n <= " + std::to_string(req + opt);
-                    size_t pi = 1;
+                    size_t pi = 1; // positional index; __a[0] is self, so start at 1 (matches bindParams)
                     for (auto& pp : c->params) {
                         if (pp.invocant || pp.slurpy || pp.named) continue;
                         if (!pp.type.empty())
-                            guard += " && __a.size() > " + std::to_string(pi) + " && rtTypeMatch(__a[" + std::to_string(pi) + "], " + cesc(pp.type) + ")";
+                            guard += " && rtTypeMatch(rtPos(__a, " + std::to_string(pi) + "), " + cesc(pp.type) + ")";
                         pi++;
                     }
                     d += " if (" + guard + ") return " + methodCandFn(cd->name, kv.first, (int)k) + "(__a);";
@@ -1273,6 +1506,7 @@ struct Codegen {
 
     // Emit the statements of a sub body (last ExprStmt becomes the return value).
     void emitBody(const std::vector<StmtPtr>& body) {
+        hoistLexicalSubs(body, 1);
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
@@ -1289,11 +1523,7 @@ struct Codegen {
     }
     // Emit a sub/candidate body given its C++ function name.
     void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false) {
-        struct SpecialsGuard {
-            Codegen* g; std::set<std::string> saved;
-            SpecialsGuard(Codegen* g_) : g(g_), saved(g_->boundSpecials) { g->boundSpecials.clear(); }
-            ~SpecialsGuard() { g->boundSpecials = std::move(saved); }
-        } __sg{this};
+        BodyScope __bs{this, /*closure=*/false};
         if (fast) {
             // -O: direct-Value signature (params are the C++ args themselves — no ValueList)
             std::string sig, fwd;
@@ -1330,6 +1560,7 @@ struct Codegen {
             return spec(a) > spec(b);
         });
         line(0, "static Value " + mangleSub(name) + "(ValueList __a) {");
+        line(1, "size_t __n = rtPosCount(__a);");
         for (SubDecl* c : cands) {
             // arity guard: required positionals set the floor; optional/default params
             // raise the ceiling; a slurpy removes the ceiling entirely
@@ -1340,15 +1571,16 @@ struct Codegen {
                 if (p.defaultVal || p.optional) opt++;
                 else req++;
             }
-            std::string guard = "__a.size() >= " + std::to_string(req);
-            if (!slurpy) guard += " && __a.size() <= " + std::to_string(req + opt);
-            for (size_t k = 0; k < c->params.size(); k++) {
-                const Param& p = c->params[k];
+            std::string guard = "__n >= " + std::to_string(req);
+            if (!slurpy) guard += " && __n <= " + std::to_string(req + opt);
+            size_t pi = 0; // positional index (named params don't consume a slot)
+            for (auto& p : c->params) {
                 if (p.slurpy || p.named) continue;
                 if (p.litVal)
-                    guard += " && __a.size() > " + std::to_string(k) + " && applyArith(\"eqv\", __a[" + std::to_string(k) + "], " + ex(p.litVal.get()) + ").truthy()";
+                    guard += " && applyArith(\"eqv\", rtPos(__a, " + std::to_string(pi) + "), " + ex(p.litVal.get()) + ").truthy()";
                 else if (!p.type.empty())
-                    guard += " && __a.size() > " + std::to_string(k) + " && rtTypeMatch(__a[" + std::to_string(k) + "], " + cesc(p.type) + ")";
+                    guard += " && rtTypeMatch(rtPos(__a, " + std::to_string(pi) + "), " + cesc(p.type) + ")";
+                pi++;
             }
             line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
         }
@@ -1359,7 +1591,7 @@ struct Codegen {
 
 } // namespace
 
-std::string transpileToCpp(Program& prog, bool optimize) {
+std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcPath) {
     Codegen g;
     g.optimize_ = optimize;
     // pre-pass: collect top-level sub declarations (for forward refs) and enum
@@ -1418,7 +1650,7 @@ std::string transpileToCpp(Program& prog, bool optimize) {
     }
 
     g.out << "// Generated by `rakupp --exe` — native transpilation of a Raku program.\n"
-             "#include \"Interpreter.h\"\n#include \"Value.h\"\n#include <vector>\n#include <string>\n#include <iostream>\n"
+             "#include \"Interpreter.h\"\n#include \"Value.h\"\n#include <cmath>\n#include <vector>\n#include <string>\n#include <iostream>\n"
              "using namespace rakupp;\n"
              "static Interpreter RT;   // provides builtins, method dispatch, coercions\n\n";
 
@@ -1466,7 +1698,7 @@ std::string transpileToCpp(Program& prog, bool optimize) {
     // main()
     g.out << "int main(int argc, char** argv) {\n"
              "    { std::vector<std::string> a; for (int i = 1; i < argc; i++) a.push_back(argv[i]); RT.setArgs(a); }\n"
-             "    __rakupp_register();\n"
+             "    RT.srcFile_ = " + cesc(srcPath) + ";\n    __rakupp_register();\n"
              "    try {\n";
     std::string body = g.capture([&]() {
         g.atTopLevel_ = true;
@@ -1484,7 +1716,11 @@ std::string transpileToCpp(Program& prog, bool optimize) {
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });
     g.out << body;
-    g.out << "    } catch (const RakuError& e) { std::cerr << e.message << \"\\n\"; return 1; }\n"
+    g.out << "    } catch (const ExitEx& e) { std::cout.flush(); return e.code; }\n"
+             "    catch (const LastEx&) { std::cerr << \"last without loop construct\\n\"; return 1; }\n"
+             "    catch (const NextEx&) { std::cerr << \"next without loop construct\\n\"; return 1; }\n"
+             "    catch (const RedoEx&) { std::cerr << \"redo without loop construct\\n\"; return 1; }\n"
+             "    catch (const RakuError& e) { std::cerr << e.message << \"\\n\"; return 1; }\n"
              "    catch (const std::exception& e) { std::cerr << \"Internal error: \" << e.what() << \"\\n\"; return 3; }\n"
              "    return 0;\n}\n";
     return g.out.str();

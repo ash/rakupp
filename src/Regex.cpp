@@ -18,6 +18,7 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
         if (f == 's') sigspace_ = true;
         if (f == 'r') ratchet_ = true;
     }
+    curIcase_ = icase_;
     try {
         root_ = parseAlt();
         if (!eof()) ok_ = false; // trailing garbage (e.g. unbalanced)
@@ -31,14 +32,17 @@ void Regex::skipWs() {
         while (!eof() && std::isspace((unsigned char)peek())) pos_++;
         if (peek() == '#') { while (!eof() && peek() != '\n') pos_++; continue; }
         // inline adverb :i :s :ignorecase ...
-        if (peek() == ':' && (std::isalpha((unsigned char)peek(1)))) {
+        if (peek() == ':' && (std::isalpha((unsigned char)peek(1)) || (peek(1) == '!' && std::isalpha((unsigned char)peek(2))))) {
             size_t save = pos_;
             pos_++;
+            bool neg = peek() == '!';
+            if (neg) pos_++;
             std::string adv;
             while (std::isalnum((unsigned char)peek())) adv += pat_[pos_++];
-            if (adv == "i" || adv == "ignorecase") icase_ = true;
-            else if (adv == "s" || adv == "sigspace") sigspace_ = true;
-            else if (adv == "g" || adv == "ratchet" || adv == "m" || adv == "ratchet") {}
+            // scoped: applies from here to the end of the enclosing group
+            if (adv == "i" || adv == "ignorecase") curIcase_ = !neg;
+            else if (adv == "s" || adv == "sigspace") sigspace_ = !neg;
+            else if (adv == "g" || adv == "ratchet" || adv == "m") {}
             else { pos_ = save; break; } // not an adverb we consume; leave it
             continue;
         }
@@ -83,7 +87,7 @@ Regex::NodePtr Regex::parseSeq() {
         if (c == '~' && !seq->kids.empty()) { pos_++; skipWs(); goalClose = parseQuant(); continue; }
         // sigspace (a `rule`): whitespace between atoms matches optional whitespace `\s*`
         if (sigspace_ && !seq->kids.empty() && hadSpace) {
-            auto cls = std::make_unique<Node>(); cls->k = K::Class; cls->classFlags = "s";
+            auto cls = std::make_unique<Node>(); cls->k = K::Class; cls->icase = curIcase_; cls->classFlags = "s";
             auto rep = std::make_unique<Node>(); rep->k = K::Rep; rep->min = 0; rep->max = -1; rep->greedy = true;
             rep->kids.push_back(std::move(cls));
             seq->kids.push_back(std::move(rep));
@@ -209,7 +213,9 @@ Regex::NodePtr Regex::parseAtom() {
     if (c == '(') {
         pos_++;
         int idx = ncaps_++;
+        bool savedI = curIcase_, savedS = sigspace_;
         auto child = parseAlt();
+        curIcase_ = savedI; sigspace_ = savedS;
         if (peek() == ')') pos_++;
         auto g = std::make_unique<Node>();
         g->k = K::Group; g->capIndex = idx;
@@ -218,7 +224,9 @@ Regex::NodePtr Regex::parseAtom() {
     }
     if (c == '[') {
         pos_++;
+        bool savedI = curIcase_, savedS = sigspace_;
         auto child = parseAlt();
+        curIcase_ = savedI; sigspace_ = savedS;
         if (peek() == ']') pos_++;
         auto g = std::make_unique<Node>();
         g->k = K::Group; g->capIndex = -1;
@@ -242,15 +250,15 @@ Regex::NodePtr Regex::parseAtom() {
             std::stable_sort(words.begin(), words.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
             auto alt = std::make_unique<Node>(); alt->k = K::Alt;
             for (auto& w : words) {
-                if (w.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->lit = w; alt->kids.push_back(std::move(n)); }
+                if (w.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = w; alt->kids.push_back(std::move(n)); }
                 else { auto seq = std::make_unique<Node>(); seq->k = K::Seq;
-                    for (char ch : w) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
+                    for (char ch : w) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
                     alt->kids.push_back(std::move(seq)); }
             }
             return alt;
         }
         auto node = std::make_unique<Node>();
-        node->k = K::Class;
+        node->k = K::Class; node->icase = curIcase_;
         // char class, possibly composed: `[..]`, `-[..]`, `+[..]`, `<+alpha>`, `<+[A]+alpha>`.
         // (A bare `<-name>` is the negated-subrule branch further down, not this.)
         if (peek() == '[' || ((peek() == '+' || peek() == '-') && peek(1) == '[') ||
@@ -317,6 +325,7 @@ Regex::NodePtr Regex::parseAtom() {
                 return cn;
             }
             bool behind = false;
+            bool savedAdvI = curIcase_, savedAdvS = sigspace_; // adverbs inside an assertion are scoped to it
             // `before`/`after` may be followed by any whitespace (space, newline, tab),
             // not just a literal space — the inner pattern can start on the next line.
             auto kw = [&](const char* w, size_t n) {
@@ -350,7 +359,7 @@ Regex::NodePtr Regex::parseAtom() {
                     nm += pat_[pos_++];
                 }
                 if (peek() == '>') pos_++;
-                auto cls = std::make_unique<Node>(); cls->k = K::Class; cls->uprop = nm;
+                auto cls = std::make_unique<Node>(); cls->k = K::Class; cls->icase = curIcase_; cls->uprop = nm;
                 auto look = std::make_unique<Node>();
                 look->k = K::Look; look->negate = neg; look->behind = false;
                 look->kids.push_back(std::move(cls));
@@ -358,6 +367,7 @@ Regex::NodePtr Regex::parseAtom() {
             }
             assertDepth_++;
             auto child = parseAlt();
+            curIcase_ = savedAdvI; sigspace_ = savedAdvS;
             assertDepth_--;
             skipWs();
             if (peek() == '>') pos_++;
@@ -448,9 +458,9 @@ Regex::NodePtr Regex::parseAtom() {
         }
         if (peek() == q) pos_++;
         // a quoted multi-char literal: build a Seq of single-char Lits so quantifiers stay sane
-        if (lit.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->lit = lit; return n; }
+        if (lit.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = lit; return n; }
         auto seq = std::make_unique<Node>(); seq->k = K::Seq;
-        for (char ch : lit) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
+        for (char ch : lit) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
         return seq;
     }
     if (c == '.') { pos_++; auto n = std::make_unique<Node>(); n->k = K::Any; return n; }
@@ -480,13 +490,13 @@ Regex::NodePtr Regex::parseAtom() {
         pos_++;
         char e = peek(); pos_++;
         auto n = std::make_unique<Node>();
-        if (e == 'd' || e == 'w' || e == 's') { n->k = K::Class; n->classFlags = std::string(1, e); return n; }
-        if (e == 'D' || e == 'W' || e == 'S') { n->k = K::Class; n->classFlags = std::string(1, (char)std::tolower(e)); n->negate = true; return n; }
+        if (e == 'd' || e == 'w' || e == 's') { n->k = K::Class; n->icase = curIcase_; n->classFlags = std::string(1, e); return n; }
+        if (e == 'D' || e == 'W' || e == 'S') { n->k = K::Class; n->icase = curIcase_; n->classFlags = std::string(1, (char)std::tolower(e)); n->negate = true; return n; }
         // \N — any char except a logical newline (\n, \r). \h/\v — horizontal/vertical
         // whitespace (and \H/\V their negations).
-        if (e == 'N') { n->k = K::Class; n->negate = true; n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); return n; }
-        if (e == 'h' || e == 'H') { n->k = K::Class; n->negate = (e=='H'); n->ranges.push_back({' ',' '}); n->ranges.push_back({'\t','\t'}); return n; }
-        if (e == 'v' || e == 'V') { n->k = K::Class; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'}); return n; }
+        if (e == 'N') { n->k = K::Class; n->icase = curIcase_; n->negate = true; n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); return n; }
+        if (e == 'h' || e == 'H') { n->k = K::Class; n->icase = curIcase_; n->negate = (e=='H'); n->ranges.push_back({' ',' '}); n->ranges.push_back({'\t','\t'}); return n; }
+        if (e == 'v' || e == 'V') { n->k = K::Class; n->icase = curIcase_; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'}); return n; }
         // \X[HH] / \O[OO] / \C[NAME] — match ONE codepoint that is NOT the given one(s).
         if ((e == 'X' || e == 'O' || e == 'C') && (peek() == '[' || (e != 'C' && std::isalnum((unsigned char)peek())))) {
             char le = (char)std::tolower((unsigned char)e);
@@ -497,7 +507,7 @@ Regex::NodePtr Regex::parseAtom() {
                 if (le == 'o') return (int32_t)std::strtol(t.c_str(), nullptr, 8);
                 return namedCp(t);
             };
-            n->k = K::Class; n->negate = true;
+            n->k = K::Class; n->icase = curIcase_; n->negate = true;
             auto addCp = [&](const std::string& t) { int32_t cp = cpOf(t); if (cp >= 0) n->cpRanges.push_back({(uint32_t)cp, (uint32_t)cp}); };
             if (peek() == '[') {
                 pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
@@ -523,7 +533,7 @@ Regex::NodePtr Regex::parseAtom() {
                 return namedCp(t);
             };
             auto seq = std::make_unique<Node>(); seq->k = K::Seq;
-            auto addCp = [&](const std::string& t) { int32_t cp = cpOf(t); if (cp >= 0) { auto lit = std::make_unique<Node>(); lit->k = K::Lit; lit->lit = encode((uint32_t)cp); seq->kids.push_back(std::move(lit)); } };
+            auto addCp = [&](const std::string& t) { int32_t cp = cpOf(t); if (cp >= 0) { auto lit = std::make_unique<Node>(); lit->k = K::Lit; lit->icase = curIcase_; lit->lit = encode((uint32_t)cp); seq->kids.push_back(std::move(lit)); } };
             if (peek() == '[') {
                 pos_++; std::string body; while (!eof() && peek() != ']') body += pat_[pos_++]; if (peek() == ']') pos_++;
                 for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); addCp(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
@@ -532,7 +542,7 @@ Regex::NodePtr Regex::parseAtom() {
             if (seq->kids.size() == 1) return std::move(seq->kids[0]);
             return seq;
         }
-        n->k = K::Lit;
+        n->k = K::Lit; n->icase = curIcase_;
         switch (e) {
             case 'n': n->lit = "\n"; break;
             case 't': n->lit = "\t"; break;
@@ -546,7 +556,7 @@ Regex::NodePtr Regex::parseAtom() {
     }
     // plain literal char
     auto n = std::make_unique<Node>();
-    n->k = K::Lit;
+    n->k = K::Lit; n->icase = curIcase_;
     n->lit = std::string(1, c);
     pos_++;
     return n;
@@ -696,7 +706,7 @@ bool Regex::classMatch(const Node* n, char ch) const {
         for (int v = 0; v < 256; v++) {
             unsigned char c = (unsigned char)v;
             bool in = test(c);
-            if (!in && icase_) in = test((unsigned char)std::tolower(c)) || test((unsigned char)std::toupper(c));
+            if (!in && n->icase) in = test((unsigned char)std::tolower(c)) || test((unsigned char)std::toupper(c));
             if (n->negate ? !in : in) n->byteset[v >> 5] |= (1u << (v & 31));
         }
         n->bytesetReady = true;
@@ -717,7 +727,8 @@ bool Regex::rootIsSingleChar() const {
         if (n->negate && !n->cpRanges.empty()) return false;
         return n->uprop.empty();
     }
-    return n->k == K::Any || (n->k == K::Lit && n->lit.size() == 1);
+    if (n->k == K::Lit) return !n->icase && n->lit.size() == 1;
+    return n->k == K::Any;
 }
 
 long Regex::trySingleChar(const std::string& s, long pos) const {
@@ -871,7 +882,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (pos + m > len) return false;
             for (long j = 0; j < m; j++) {
                 char a = st.s[pos + j], b = n->lit[j];
-                if (a != b && !(icase_ && std::tolower((unsigned char)a) == std::tolower((unsigned char)b))) return false;
+                if (a != b && !(n->icase && std::tolower((unsigned char)a) == std::tolower((unsigned char)b))) return false;
             }
             return k(pos + m);
         }
