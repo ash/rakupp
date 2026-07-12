@@ -13,11 +13,36 @@ crash once their subtests actually executed, and (b) exposes a large surface
 of pre-existing engine bugs living inside those subtests (`.isNaN` not
 implemented on Rat, sprintf 6.e space-flag `% b`→`0`, etc.).
 
-DECISION: split the batch. Land everything EXCEPT the Pair-form fix now
-(zero-regression vs the 418 baseline). The Pair-form fix is CORRECT and
-important but must land WITH the exposed pre-existing bugs fixed (or with an
-explicit, documented acceptance of the lower honest count) — tracked as its
-own effort. The worker-scope-anchor deadlock fix and the when-in-map crash
+### Pair-form campaign (DEFERRED, tracked — 2026-07-13)
+
+Status: the Pair-form fix is **held out** by user decision. Landing it (with
+the standalone fixes already committed) measures **383** full-pass; **~36
+files** still carry pre-existing bugs inside subtests that only run once the
+Pair form works. This is a multi-session grind, revisited as its own push.
+
+To resume: re-apply the one-line Pair-form change in `subtest` (extract the
+Code from a `desc => {…}` Pair) and work the still-down list. Landed so far
+from this surface: **6.e pragma activation** (`use v6.e.PREVIEW` was a total
+no-op — parser dropped the version, so langRev_ never moved; committed
+`9dd79fd`), **Rat `.isNaN`**, **sprintf 6.e binary flags** (fixes sprintf-b/d).
+
+The ~36 still-down files, by rough category:
+- sprintf `#`/precision edges (6.e): sprintf-e/f/o/s/x — `%#.0f`→`0.`,
+  `%#.0e`→`0.e+00`, `%#x` of a negative → `-0x100`, `%08.2s` of empty → pad.
+- Rat NaN/Inf semantics: rat.t (.raku/EVAL round-trip of NaN.Rat, Rational
+  math on 0-denominator Rats not throwing, `===` on 0-den Rats), num/complex/
+  stress.
+- The rest span smartmatch (any-callable/num/type), roles (rw, submethods-6e,
+  mro-6e, roles-6e), IO (chdir, seek, io-spec-unix, print, prompt), Test
+  helpers (is-approx, is_deeply, fails-like), and a long tail — each a distinct
+  bug in a now-running subtest. Full list: `comm -23` the 419 pass-list against
+  a Pair-form gate.
+
+DECISION (superseded above): split the batch. Land everything EXCEPT the
+Pair-form fix now (zero-regression vs the 418 baseline). The Pair-form fix is
+CORRECT and important but must land WITH the exposed pre-existing bugs fixed
+(or with an explicit, documented acceptance of the lower honest count) —
+tracked as its own effort. The worker-scope-anchor deadlock fix and the when-in-map crash
 fix stay in the landed batch (they're real fixes; without the Pair form
 nothing in the suite triggers them yet, but they're correct).
 
