@@ -597,14 +597,27 @@ void Regex::parseClassBodyMember(Node* node) {
             else node->ranges.push_back({(unsigned char)e, (unsigned char)e}); // \: \# \- etc → literal
             continue;
         }
-        unsigned char lo = (unsigned char)pat_[pos_++];
+        // A literal member may be a multibyte UTF-8 codepoint (e.g. <[é]>);
+        // read the whole codepoint so it isn't stored as two stray lead/cont bytes.
+        auto readCp = [&]() -> uint32_t {
+            unsigned char c0 = (unsigned char)pat_[pos_++];
+            if (c0 < 0x80) return c0;
+            int clen = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+            uint32_t cp = (uint32_t)(c0 & (0xFF >> (clen + 1)));
+            for (int i = 1; i < clen && !eof(); i++) cp = (cp << 6) | ((unsigned char)pat_[pos_++] & 0x3F);
+            return cp;
+        };
+        uint32_t lo = readCp();
         if (peek() == '.' && peek(1) == '.') {
             pos_ += 2;
             while (std::isspace((unsigned char)peek())) pos_++;
-            unsigned char hi = (unsigned char)pat_[pos_++];
-            node->ranges.push_back({lo, hi});
+            uint32_t hi = readCp();
+            if (lo < 0x80 && hi < 0x80) node->ranges.push_back({(unsigned char)lo, (unsigned char)hi});
+            else node->cpRanges.push_back({lo, hi}); // any endpoint ≥ 0x80 → codepoint range
+        } else if (lo < 0x80) {
+            node->ranges.push_back({(unsigned char)lo, (unsigned char)lo});
         } else {
-            node->ranges.push_back({lo, lo});
+            node->cpRanges.push_back({lo, lo}); // non-ASCII literal → codepoint, not raw bytes
         }
     }
     if (peek() == ']') pos_++;
@@ -932,17 +945,36 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (!m) return false;
                 return k(pos + clen);
             }
-            // \s / \S against a multibyte codepoint (e.g. NBSP U+00A0): decode and
-            // test Unicode whitespace, consuming the whole codepoint.
+            // The byteset table covers bytes 0x00–0xFF only; a multibyte codepoint
+            // must be tested and consumed whole, or a negated class like <-[x]>
+            // matches a lone UTF-8 lead byte and splits the codepoint. Decode the
+            // full codepoint and test class membership at codepoint granularity.
             {
                 unsigned char c0 = (unsigned char)st.s[pos];
-                if (c0 >= 0xC0 && n->ranges.empty() && n->classFlags == "s") {
+                if (c0 >= 0x80) {
+                    if (c0 < 0xC0) return false; // bare continuation byte: not a codepoint start
                     int clen = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
                     uint32_t cp = (uint32_t)(c0 & (0xFF >> (clen + 1)));
                     for (int i = 1; i < clen && pos + i < (long)len; i++) cp = (cp << 6) | ((unsigned char)st.s[pos + i] & 0x3F);
-                    bool m = isUnicodeSpace(cp);
-                    if (n->negate) m = !m;
-                    if (!m) return false;
+                    auto flagHitCp = [](char f, uint32_t c) -> bool {
+                        switch (f) {
+                            case 'd': return uniMatchesProp(c, "Nd");
+                            case 'w': return c == '_' || uniMatchesProp(c, "alnum");
+                            case 's': return isUnicodeSpace(c);
+                            case 'a': return uniMatchesProp(c, "alpha");
+                            case 'u': return uniMatchesProp(c, "Lu");
+                            case 'l': return uniMatchesProp(c, "Ll");
+                            case 'p': return uniMatchesProp(c, "P");
+                        }
+                        return false; // x/k/g/r/b: ASCII-only classes never match >0x7F
+                    };
+                    bool in = false;
+                    for (auto& r : n->ranges)   if (cp >= r.first && cp <= r.second) { in = true; break; }
+                    if (!in) for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
+                    if (!in) for (char f : n->classFlags)    if (flagHitCp(f, cp)) { in = true; break; }
+                    if (in)  for (char f : n->negClassFlags) if (flagHitCp(f, cp)) { in = false; break; }
+                    if (n->negate) in = !in;
+                    if (!in) return false;
                     return k(pos + clen);
                 }
             }
