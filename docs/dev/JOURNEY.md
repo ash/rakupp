@@ -16,10 +16,9 @@ Everything below is the story of finding out.
 
 ## A principle we grew into: Rakudo is the reference, never the source
 
-To be honest, this was not a rule laid down on day one — the need for it
-became clear a little way into the project. But once understood, it held:
-**Rakudo is our reference implementation, but we do not read its source, and
-we are not rebuilding it.**
+The need for this became clear a little way into the project. But once
+understood, it held: **Rakudo is our reference implementation, but we do not
+read its source, and we are not rebuilding it.**
 
 This matters, and it is worth being explicit about. Rakudo is a real Raku
 compiler — the standard against which "does this behave like Raku?" is answered.
