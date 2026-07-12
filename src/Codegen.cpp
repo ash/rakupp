@@ -57,17 +57,27 @@ std::string cesc(const std::string& s) {
 }
 
 // $foo / @foo -> v_foo (sigil dropped); non-identifier chars -> '_'.
-std::string mangleVar(const std::string& name) {
-    std::string s = name;
-    if (!s.empty() && (s[0] == '$' || s[0] == '@' || s[0] == '%' || s[0] == '&')) s = s.substr(1);
-    std::string o = "v_";
-    for (char c : s) o += (std::isalnum((unsigned char)c) || c == '_') ? c : '_';
+// Injective byte encoding: alnum passes through, every other byte (incl. '_')
+// becomes "_HH" (2 hex). So distinct Raku names never collide onto one C++
+// identifier — `$a-b` (a_2db) and `$a_b` (a_5fb) stay separate, and `_` can't
+// masquerade as an escaped byte.
+static std::string mangleBody(const std::string& s) {
+    std::string o;
+    for (unsigned char c : s) {
+        if (std::isalnum(c)) o += (char)c;
+        else { char b[4]; std::snprintf(b, sizeof b, "_%02x", c); o += b; }
+    }
     return o;
 }
+std::string mangleVar(const std::string& name) {
+    // keep the sigil (tagged) so `$x` / `@x` / `%x` / `&x` are distinct C++ names
+    char sigil = (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) ? name[0] : 0;
+    std::string body = sigil ? name.substr(1) : name;
+    char tag = sigil == '@' ? 'a' : sigil == '%' ? 'h' : sigil == '&' ? 'c' : 's'; // sigilless → 's'
+    return std::string("v_") + tag + mangleBody(body);
+}
 std::string mangleSub(const std::string& name) {
-    std::string o = "u_";
-    for (char c : name) o += (std::isalnum((unsigned char)c) || c == '_') ? c : '_';
-    return o;
+    return "u_" + mangleBody(name);
 }
 
 struct Codegen {
@@ -1395,11 +1405,9 @@ struct Codegen {
 
     // ---- classes ----
     std::string methodFn(const std::string& cls, const std::string& meth) {
-        std::string o = "m_";
-        for (char c : cls)  o += (std::isalnum((unsigned char)c) || c == '_') ? c : '_';
-        o += "_";
-        for (char c : meth) o += (std::isalnum((unsigned char)c) || c == '_') ? c : '_';
-        return o;
+        // "__" separates: mangleBody never emits two consecutive underscores
+        // (each '_' is followed by 2 hex digits), so the boundary is unambiguous.
+        return "m_" + mangleBody(cls) + "__" + mangleBody(meth);
     }
 
     // one body per multi-method candidate: m_Cls_name__K
