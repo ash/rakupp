@@ -158,6 +158,12 @@ public:
     Value getArgs(); // @*ARGS as a List value (used by codegen)
     void syncEnvToProcess(); // push %*ENV into the real process environment, so children inherit it
     Value dynVar(const std::string& name); // $* / $? magical variables (used by codegen)
+    Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
+    Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
+    Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
+    void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {
+        namedRegex_[name] = pattern; namedRegexKind_[name] = kind; // (used by codegen)
+    }
     Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
     void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
     Value methodCall(Value inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
@@ -358,6 +364,7 @@ public:
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     std::string srcFile_;             // source file path (for $?FILE)
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
+    int quietDepth_ = 0;              // inside a `quietly {…}`, warn() is suppressed (codegen bumps it too)
 private:
 
     // test harness state
@@ -367,7 +374,6 @@ private:
     bool usedTest_ = false;
     int subtestDepth_ = 0;
     bool subtestFailed_ = false;
-    int quietDepth_ = 0; // inside a `quietly {…}`, warn() output is suppressed
     bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan
     int curLine_ = 0;        // source line of the statement currently executing (for test diagnostics)
     int todoRemaining_ = 0;  // number of upcoming tests marked TODO by a bare `todo` statement
@@ -475,6 +481,8 @@ Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr`
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices)
+Value  rtHashLit(const ValueList& items); // { k => v, … } hash constructor
+Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
 ValueList rtMainArgs(const std::vector<std::string>& argv); // argv -> MAIN args (--opt named, rest positional)

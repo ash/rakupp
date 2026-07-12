@@ -615,6 +615,17 @@ Value rtSlipVal(const Value& v) {
     return out;
 }
 
+// { k => v, … } for native codegen — mirrors the interpreter's HashLit eval
+// (arrays splice one level, then hash coercion).
+Value rtHashLit(const ValueList& items) {
+    Value arr = Value::array();
+    for (auto& v : items) {
+        if (v.t == VT::Array && v.arr) { for (auto& x : *v.arr) arr.arr->push_back(x); }
+        else arr.arr->push_back(v);
+    }
+    return rtCoerceHash(arr);
+}
+
 // `@a = expr` for native codegen: list-assignment semantics. A List splices its
 // elements (one level, via listToArray); an Array (itemized rows included) keeps
 // its elements as they are; a Range expands; a lone scalar becomes a 1-elem array.
@@ -2620,7 +2631,98 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*THREAD") { Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); return h; }
     if (name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
     if (name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
+    // anything else: resolve from the live env chain (covers %*ENV, $*REPO,
+    // program-declared dynamics, $!, $/ — used by native codegen)
+    if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
+    if (global_) { auto it = global_->vars.find(name); if (it != global_->vars.end()) return it->second; }
     return Value::any();
+}
+
+// @a[i]:exists / %h<k>:delete / :k / :v / :kv / :p for native codegen — the
+// static subset of the interpreter's adverbed indexing (no $var conditionals).
+Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb) {
+    bool wantExists = false, negExists = false, wantDelete = false;
+    bool kvF = false, pF = false, kF = false, vF = false;
+    {
+        std::string rest = adverb;
+        while (!rest.empty()) {
+            size_t c = rest.find(':');
+            std::string part = c == std::string::npos ? rest : rest.substr(0, c);
+            rest = c == std::string::npos ? "" : rest.substr(c + 1);
+            bool neg = !part.empty() && part[0] == '!';
+            if (neg) part = part.substr(1);
+            if (part == "exists") { wantExists = true; negExists = neg; }
+            else if (part == "delete") wantDelete = true;
+            else if (part == "kv") kvF = true;
+            else if (part == "p") pF = true;
+            else if (part == "k") kF = true;
+            else if (part == "v") vF = true;
+        }
+    }
+    bool exists = false;
+    Value val;
+    std::string key;
+    long long ai = 0;
+    if (isHash) {
+        key = keyIn.toStr();
+        if (base.t == VT::Hash && base.hash) {
+            auto it = base.hash->find(key);
+            if (it != base.hash->end()) { exists = true; val = it->second; }
+        }
+    } else {
+        ai = keyIn.toInt();
+        if (base.t == VT::Array && base.arr) {
+            if (ai < 0) ai += (long long)base.arr->size();
+            if (ai >= 0 && ai < (long long)base.arr->size()) {
+                const Value& v = (*base.arr)[ai];
+                exists = !(v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type);
+                val = v;
+            }
+        }
+    }
+    Value keyV = isHash ? Value::str(key) : Value::integer(ai);
+    if (wantDelete && exists) {
+        if (isHash) base.hash->erase(key);
+        else (*base.arr)[ai] = Value::any();
+    }
+    if (wantExists) {
+        Value ex = Value::boolean(negExists ? !exists : exists);
+        if (kvF) { Value o = Value::array({keyV, ex}); o.isList = true; return o; }
+        if (pF) return Value::pair(keyV.toStr(), ex);
+        return ex;
+    }
+    if (kF) return exists ? keyV : Value::array();
+    if (vF) return exists ? val : Value::array();
+    if (kvF) { Value o = exists ? Value::array({keyV, val}) : Value::array(); o.isList = true; return o; }
+    if (pF) return exists ? Value::pair(keyV.toStr(), val) : Value::array();
+    return exists ? val : Value::any();
+}
+
+// $obj.accessor as an assignable slot (native codegen) — same semantics as the
+// interpreter's MethodCall lvalue: FileHandle slots are free-form; a public
+// attribute must be `is rw`; anything else is not assignable.
+Value& Interpreter::accessorRef(Value& base, const std::string& name) {
+    if (base.t == VT::Hash && base.hashKind == "FileHandle") {
+        if (!base.hash) base.hash = std::make_shared<std::map<std::string, Value>>();
+        return (*base.hash)[name];
+    }
+    if (base.t == VT::Object && base.obj) {
+        for (ClassInfo* ci = base.obj->cls.get(); ci; ci = ci->parent.get())
+            for (auto& at : ci->attrs)
+                if (at.name == name && at.pub && !at.rw)
+                    throw RakuError{Value::typeObj("X::Assignment::RO"),
+                        "Cannot modify an immutable '" + name + "'"};
+        return base.obj->attrs[name];
+    }
+    throw RakuError{Value::str("Cannot assign"), "Target is not assignable"};
+}
+
+// Assignable slot for a dynamic/special variable (native codegen): the existing
+// binding if one is visible, else a fresh one in the global env.
+Value& Interpreter::dynVarRef(const std::string& name) {
+    if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
+    global_->define(name, Value::any());
+    return global_->vars[name];
 }
 
 // Value-level indexing for native codegen (no AST). Read returns Nil when absent.
