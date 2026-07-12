@@ -2548,10 +2548,41 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     return score;
 }
 
+// Per-thread stack accounting for the recursion guard. `t_stackTop` is a byte
+// address near the top of this thread's stack (set once, lazily, from the first
+// guarded frame); `t_stackLimit` is that thread's usable stack size. The main
+// interpreter runs on a 1 GiB stack (Runtime.cpp) and workers on 256 MiB
+// (BigStackThread) — a headroom check fits both, where a fixed frame count
+// cannot. We stop with X::Recursion while ~2 MiB of stack remains, so the throw
+// unwinds cleanly instead of the process taking SIGSEGV/SIGBUS (the latter
+// wedging kill-proof under Rosetta).
+thread_local char* t_stackTop = nullptr;
+thread_local size_t t_stackLimit = 0;
+static size_t currentThreadStackSize() {
+#if defined(__APPLE__)
+    size_t sz = pthread_get_stacksize_np(pthread_self());
+    return sz ? sz : (size_t(8) << 20);
+#else
+    pthread_attr_t attr; void* base = nullptr; size_t sz = 0;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        pthread_attr_getstack(&attr, &base, &sz);
+        pthread_attr_destroy(&attr);
+    }
+    return sz ? sz : (size_t(8) << 20);
+#endif
+}
 struct DepthGuard {
     int& d;
     explicit DepthGuard(int& dd) : d(dd) {
-        if (++d > 60000) { --d; throw RakuError{Value::str("X::Recursion"), "Too many levels of recursion"}; }
+        ++d;
+        char probe;
+        if (!t_stackTop) { t_stackTop = &probe; t_stackLimit = currentThreadStackSize(); }
+        // used stack grows downward from the recorded top
+        size_t used = (size_t)(t_stackTop - &probe);
+        const size_t RESERVE = size_t(2) << 20; // stop with ~2 MiB to spare
+        if (used + RESERVE >= t_stackLimit || d > 100000) { // hard frame backstop too
+            --d; throw RakuError{Value::str("X::Recursion"), "Too many levels of recursion"};
+        }
     }
     ~DepthGuard() { --d; }
 };
