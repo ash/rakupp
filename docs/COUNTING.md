@@ -23,9 +23,9 @@ narrowest:
 | # | Measure | Current | Definition |
 |---|---|---|---|
 | 1 | **Files fully passing** | 419 / 1,464 (**~29%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 157,293 / 163,209 (~96%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 157,293 / 176,967 (~89%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 157,293 / 191,537 (**~82%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 2 | Assertions of **tests that ran** | 157,293 / 163,185 (~96%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 157,293 / 176,976 (~89%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 157,293 / 191,546 (**~82%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~29%)** and **measure 4 (all declared tests, ~82%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -37,7 +37,7 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (191,537) is ~15k larger
+source and counts all N as failing. That is why 4's denominator (191,546) is ~15k larger
 than 3's (176,967) — those 14,570 tests live in 261 no-TAP files (parse errors
 and runtime aborts), recovered from source. A parse error can no longer hide
 its tests.
@@ -63,7 +63,7 @@ in dynamic-plan files we abort on and therefore cannot count.
 
 So our same 157,293 passes read two ways:
 
-- **~82%** against *our* denominator (157,293 / 191,537) — *"of the tests we can
+- **~82%** against *our* denominator (157,293 / 191,546) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
 - **~76%** against the suite's *full* declared total (157,293 / ~206,000) —
