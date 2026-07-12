@@ -2906,11 +2906,12 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto u = std::make_unique<UseStmt>();
             if (isKind(Tok::VersionLit)) { // `use v6;` / `use v6.d;` / `use v6.e.PREVIEW;`
-                advance();
-                // swallow any dotted tail the version lexer didn't take (.PREVIEW)
-                while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance();
+                { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
+                  // swallow any dotted tail the version lexer didn't take (.PREVIEW)
+                  while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) ver += advance().text;
+                  u->module = (ver.empty() || ver[0] != 'v') ? "v" + ver : ver; } // exec() reads langRev from this
                 matchKind(Tok::Semicolon);
-                return u; // empty module: nothing to load
+                return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
             if (u->module == "lib" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&

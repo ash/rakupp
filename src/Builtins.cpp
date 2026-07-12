@@ -734,7 +734,7 @@ static std::string fmtBigDec(std::string digits, const std::string& flags, long 
     return std::string(width - body.size(), ' ') + body;
 }
 
-std::string doSprintf(const std::string& fmt, const ValueList& args) {
+std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev) {
     std::string out;
     size_t ai = 0;
     auto nextArg = [&]() -> Value { return ai < args.size() ? args[ai++] : Value::any(); };
@@ -786,20 +786,27 @@ std::string doSprintf(const std::string& fmt, const ValueList& args) {
                 int radix = (conv == 'u') ? 10 : (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
                 bool upper = (conv == 'B' || conv == 'X');
                 bool prefixable = (conv == 'b' || conv == 'B');
+                // 6.e: the space and + flags no longer apply to binary (`% b`, `%+b`) —
+                // o/x already ignore them; the # prefix flag is kept.
+                std::string flags2 = flags;
+                if (langRev >= 2 && (conv == 'b' || conv == 'B')) {
+                    size_t p2; while ((p2 = flags2.find(' ')) != std::string::npos) flags2.erase(p2, 1);
+                    while ((p2 = flags2.find('+')) != std::string::npos) flags2.erase(p2, 1);
+                }
                 Value av = nextArg();
                 if (av.t == VT::Int && av.big) { // arbitrary-precision: exact digits
-                    out += fmtBigDec(bigRadixDigits(*av.big, radix, upper), flags, width);
+                    out += fmtBigDec(bigRadixDigits(*av.big, radix, upper), flags2, width);
                     break;
                 }
                 if (av.t == VT::Rat && av.ratN && av.ratD && !av.ratD->isZero()) {
                     BigInt q, r;
                     BigInt::divmod(*av.ratN, *av.ratD, q, r); // truncate toward zero
                     if (q.toString().size() > 18) {
-                        out += fmtBigDec(bigRadixDigits(q, radix, upper), flags, width);
+                        out += fmtBigDec(bigRadixDigits(q, radix, upper), flags2, width);
                         break;
                     }
                 }
-                out += fmtRadix(av.toInt(), radix, upper, flags, width, prec, prefixable);
+                out += fmtRadix(av.toInt(), radix, upper, flags2, width, prec, prefixable);
                 break;
             }
             case 'c': { // codepoint → UTF-8; width counts characters, not bytes
@@ -2483,6 +2490,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                         throw RakuError{Value::typeObj("X::Str::Numeric"), "Cannot convert string to number: a numeral in category '" + gc + "' is not a digit"}; }
             }
         return Value::integer(inv.toInt());
+    }
+    if (m == "isNaN") {
+        if (inv.t == VT::Num) return Value::boolean(std::isnan(inv.n));
+        if (inv.t == VT::Rat) return Value::boolean(inv.ratD && inv.ratD->isZero() && inv.ratN && inv.ratN->isZero()); // 0/0
+        if (inv.t == VT::Int || inv.t == VT::Bool) return Value::boolean(false);
     }
     if (m == "Num" || m == "Numeric" || m == "Real") return Value::number(inv.toNum());
     if (m == "Bool" || m == "so") return Value::boolean(inv.truthy());
@@ -5000,10 +5012,10 @@ void Interpreter::registerBuiltins() {
         }
         return rest;
     };
-    B["sprintf"] = [sprintfArgs](Interpreter&, ValueList& a) -> Value {
+    B["sprintf"] = [sprintfArgs](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
         ValueList rest = sprintfArgs(a);
-        return Value::str(doSprintf(a[0].toStr(), rest));
+        return Value::str(doSprintf(a[0].toStr(), rest, I.langRev_));
     };
     // Format object (6.e `q:o/…/` / `q:format/…/`): a callable sprintf template that
     // stringifies to its format string. Built by the parser from a flagged literal.
@@ -5012,10 +5024,10 @@ void Interpreter::registerBuiltins() {
         (*f.hash)["fmt"] = Value::str(a.empty() ? "" : a[0].toStr());
         return f;
     };
-    B["printf"] = [sprintfArgs](Interpreter&, ValueList& a) -> Value {
+    B["printf"] = [sprintfArgs](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(true);
         ValueList rest = sprintfArgs(a);
-        std::cout << doSprintf(a[0].toStr(), rest); return Value::boolean(true);
+        std::cout << doSprintf(a[0].toStr(), rest, I.langRev_); return Value::boolean(true);
     };
     // 6.e sub form: snip(PRED(s), *@list) — first arg is the predicate or a (p1,p2)
     // list of predicates; the rest is the list. Delegates to the .snip method.

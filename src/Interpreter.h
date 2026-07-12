@@ -479,7 +479,7 @@ inline Value rtPow(const Value& l, const Value& r) {
     }
     return applyArith("**", l, r);
 }
-std::string doSprintf(const std::string& fmt, const ValueList& args); // sprintf engine (also used by the Format type)
+std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev = 1); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // $^a/$^b names, sorted (also used by codegen)
