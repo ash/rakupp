@@ -980,8 +980,11 @@ Value Interpreter::spawnPromise(Value code) {
         liveWorkers_++;
         reapFinishedWorkers();
         auto fin = std::make_shared<std::atomic<bool>>(false);
-        workers_.push_back({BigStackThread([self, code, ps, fin]() mutable {
+        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope]() mutable {
             t_isWorker = true;
+            tctx_.cur = spawnScope;        // anchor: dynamics visible at the spawn point
+            tctx_.dynStack.push_back(spawnScope.get());
             Value r; bool broke = false; Value cause;
             try {
                 ValueList noargs;
@@ -1002,11 +1005,14 @@ Value Interpreter::spawnPromise(Value code) {
     liveWorkers_++;
     reapFinishedWorkers();                 // release stacks of already-finished workers
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    workers_.push_back({BigStackThread([self, code, ps, fin]() mutable {
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_; // dynamics visible at the spawn point
+    workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope]() mutable {
         t_isWorker = true;
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
         self->loadCtx(wctx);
+        tctx_.cur = spawnScope;            // anchor: `start {…}` sees the spawner's dynamics
+        tctx_.dynStack.push_back(spawnScope.get());
         Value r; bool broke = false; Value cause;
         try {
             ValueList noargs;
@@ -1110,6 +1116,18 @@ void Interpreter::drainWorkers() {
         for (auto& t : batch) if (t.th.joinable()) t.th.join(); // reap the finished threads
     }
     gilHeld_ = false;
+}
+
+void Interpreter::flushOpenWriteHandles() {
+    for (auto& h : openWriteHandles_) {
+        if (!h) continue;
+        auto cl = h->find("closed"); if (cl != h->end() && cl->second.truthy()) continue;
+        auto fl = h->find("flushed"); if (fl != h->end() && fl->second.truthy()) continue;
+        std::string mode = (*h)["mode"].toStr();
+        std::ofstream out((*h)["path"].toStr(), mode == "a" ? std::ios::app : std::ios::trunc);
+        if (out) out << (*h)["buffer"].toStr();
+    }
+    openWriteHandles_.clear();
 }
 
 int Interpreter::run(Program& prog) {
@@ -1264,6 +1282,7 @@ int Interpreter::run(Program& prog) {
     } catch (RedoEx&) {
         std::cerr << "redo without loop construct\n"; code = 1; crashed = true;
     }
+    flushOpenWriteHandles(); // write out any file handle the program forgot to .close
     drainWorkers(); // join any outstanding async workers before we tear down
     // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
     // way out — after the mainline, before END.
@@ -1511,7 +1530,9 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
     bool realFail = !ok && directive.empty(); // a genuine failure (not TODO/SKIP)
     if (subtestDepth_ > 0) {
         if (realFail) subtestFailed_ = true;
-        std::cout << "    " << (ok ? "ok" : "not ok");
+        testNum_++; // advance the subtest-local counter (plan checks + skip-rest depend on it)
+        std::string ind(4 * subtestDepth_, ' '); // one indent level per nesting depth
+        std::cout << ind << (ok ? "ok " : "not ok ") << testNum_;
         if (!isSkip) std::cout << " - " << desc;
         if (!directive.empty()) std::cout << " # " << directive;
         std::cout << "\n";
@@ -3187,7 +3208,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     Env* savedState = tctx_.curStateEnv;
     tctx_.cur = env;
     tctx_.curStateEnv = c.stateEnv.get();
-    tctx_.dynStack.push_back(saved.get()); // caller's scope, for dynamic $*var lookup
+    tctx_.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
     // restore() puts the caller's scope back; called on every exit path. (ENTER
     // phasers now run inside the try, and the CATCH body is wrapped, so a throw
     // from either restores instead of leaking dynStack / bleeding scope.)
@@ -3235,6 +3256,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         restore();
         copyOutRw(c.params, env, rwArgs, false);
         return r.v;
+    } catch (BreakGivenEx& b) { // `when` matched in this block: its value is the block's result
+        if (c.body) runLeavePhasers(*c.body);
+        restore();
+        copyOutRw(c.params, env, rwArgs, false);
+        return b.hasVal ? b.v : last;
     } catch (RakuError& e) {
         if (catchBlk) {
             tctx_.cur->define("$_", exceptionFor(e));
@@ -4397,7 +4423,11 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         if (name == "ws") { long p = pos; while (p < (long)subj.size() && std::isspace((unsigned char)subj[p])) p++; out.from = pos; out.to = p; out.matched = true; return true; }
         auto it = namedRegex_.find(name);
         if (it == namedRegex_.end()) { out.from = pos; out.to = pos; out.matched = true; return true; }
-        Regex sub(it->second, namedRegexKind_[name] == "rule" ? "s" : "");
+        const std::string& kind = namedRegexKind_[name];
+        std::string flags = kind == "rule" ? "sr"       // rule:  sigspace + ratchet
+                          : kind == "token" ? "r"        // token: ratchet (no backtracking)
+                          : "";                          // regex: backtracking, no sigspace
+        Regex sub(it->second, flags);
         return sub.matchAt(subj, pos, out, resolver);
     };
     auto build = [&](const RxMatch& m) {
@@ -6170,7 +6200,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
 double Interpreter::toleranceDyn() {
     Value* tp = nullptr;
     for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend() && !tp; ++it)
-        tp = (*it)->find("$*TOLERANCE");
+        if (*it) tp = (*it)->find("$*TOLERANCE");
     if (!tp && tctx_.cur) tp = tctx_.cur->find("$*TOLERANCE"); // `my $*TOLERANCE` is lexical
     return tp ? tp->toNum() : 1e-15;
 }
@@ -6560,7 +6590,7 @@ Value Interpreter::eval(Expr* e) {
             if (builtinDefault && ve->name.size() > 1 && ve->name[1] == '*') {
                 if (tctx_.cur->find(ve->name)) builtinDefault = false;
                 else for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
-                    if ((*it)->find(ve->name)) { builtinDefault = false; break; }
+                    if (*it && (*it)->find(ve->name)) { builtinDefault = false; break; }
             }
             if (builtinDefault) {
             if (ve->name == "$=pod" || ve->name == "@=pod") { Value a = Value::array(); *a.arr = podDom_; return a; }
@@ -6621,7 +6651,7 @@ Value Interpreter::eval(Expr* e) {
             // dynamic variable ($*foo/@*foo/%*foo): search the caller chain, not the lexical closure
             if (ve->name.size() > 1 && ve->name[1] == '*') {
                 for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
-                    if (Value* dp = (*it)->find(ve->name)) return *dp;
+                    if (*it) if (Value* dp = (*it)->find(ve->name)) return *dp;
             }
             Value* p = tctx_.cur->find(ve->name);
             if (p) {

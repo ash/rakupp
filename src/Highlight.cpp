@@ -136,6 +136,7 @@ struct Scanner {
             if (c == '=' && atLineStart() && identStart(at(i + 1))) { scanPod(); continue; }
             if (c == '\'' || c == '"') { scanQuote(c); continue; }
             if (c == '<' && !lastWasValue && looksLikeQw()) { scanAngleQw(); continue; }
+            if (c == '<' && lastWasValue && looksLikeAngleKey()) { scanAngleQw(); continue; } // sym<int> / %h<key> / (…)<last>
             if (c == '/' && !lastWasValue) { scanRegex(); continue; }
             if (c == '/' && lastWasValue) {
                 // operator context after a term: division `/`, defined-or `//`, or
@@ -205,6 +206,17 @@ struct Scanner {
         }
         emit(s.substr(i, j - i), "s", true);
         i = j;
+    }
+
+    // `<word>` immediately after a value: an angle subscript / sym<…> / regex
+    // subrule — word-only content (no spaces/operators), closing `>` required.
+    // Comparisons never look like this (`$a < $b`, `2 <3 && 4>5` have non-word
+    // content or spaces), so `<` stays an operator there.
+    bool looksLikeAngleKey() const {
+        size_t j = i + 1;
+        if (j >= s.size() || !(std::isalnum((unsigned char)s[j]) || s[j] == '_')) return false;
+        while (j < s.size() && (std::isalnum((unsigned char)s[j]) || s[j] == '_' || s[j] == '-' || s[j] == '\'')) j++;
+        return j < s.size() && s[j] == '>';
     }
 
     bool looksLikeQw() const {

@@ -1,5 +1,27 @@
 # Pre-1.0 independent review — 2026-07-12
 
+## MAJOR finding (2026-07-13): subtest Pair-form was a silent no-op
+
+`subtest 'desc' => { … }` (the standard idiom) passed the block as a Pair
+*value* that the `subtest` builtin never extracted — so the block **never
+ran**, the subtest emitted nothing, and it auto-passed as an empty subtest.
+Effect: every roast file using `subtest '…' => {…}` had those subtests as
+no-ops that auto-passed. The 418-file baseline was **inflated** — ~36 files
+were "passing" only because entire subtest bodies were dead. Fixing the Pair
+form makes them run, which (a) fixed the then.t deadlock and io-cathandle
+crash once their subtests actually executed, and (b) exposes a large surface
+of pre-existing engine bugs living inside those subtests (`.isNaN` not
+implemented on Rat, sprintf 6.e space-flag `% b`→`0`, etc.).
+
+DECISION: split the batch. Land everything EXCEPT the Pair-form fix now
+(zero-regression vs the 418 baseline). The Pair-form fix is CORRECT and
+important but must land WITH the exposed pre-existing bugs fixed (or with an
+explicit, documented acceptance of the lower honest count) — tracked as its
+own effort. The worker-scope-anchor deadlock fix and the when-in-map crash
+fix stay in the landed batch (they're real fixes; without the Pair form
+nothing in the suite triggers them yet, but they're correct).
+
+
 ## Fix progress
 
 - **Wave 1 (batch B1–B11): DONE** — committed `1c317ab`. One BodyScope RAII +
@@ -7,7 +29,39 @@
   assertion adverb scoping. Gate clean, 23 examples byte-identical, S05 up.
 - **Wave 2a (recursion zombie): DONE** — committed `ebe460b`. Stack-headroom
   guard replaces the fixed 60k cap. The kill-proof SIGBUS mechanism is closed.
+- **Wave 3 (silent wrong answers): DONE** — committed `fd630a3`. coerceArray
+  clone (interp/native array-assignment now agree with Rakudo), toLL
+  saturation, LLONG_MIN%-1 guard, Value::rat zero-denominator via ratZ, fatRat
+  preservation, valueCmp exact (int64 fast path + BigInt cross-multiply).
+  Gate clean, benches at baseline (a first cut regressed sortnums via
+  applyArith-per-compare; the int64 fast path fixed it).
+  Still open from wave 3's review section: codegen mangling injectivity and
+  `[=]` closure capture (both silent-wrong in the NATIVE backend) — these are
+  codegen, grouped with the wave-5 codegen items below.
+- **Wave 4 (exception safety): DONE** — committed `11cb561` (with F1–F4).
+  callCallableRaw ScopeGuard (ENTER inside try + CATCH body wrapped), supply
+  try/catch pop, path-based temp restore, LEAVE-vs-cooperative-flags.
+- **Wave 5 concurrency F1–F4: DONE** — committed `11cb561`. awaitPromise/
+  runReactLoop unlock-before-relock (ABBA), drainWorkers lock, fork hygiene
+  (argv-before-fork, FD_CLOEXEC, process-group kill, EINTR waitpid).
+- **Wave 5 regex/TAP/sprintf/IO: gating** (uncommitted). Regex step-cap
+  (8M budget, shared across start positions — the /[a*]* b/ hang is gone) +
+  capFrom/firstCode rollback across `|`/`||` (fixed `<(` .from) + StepLimit
+  caught at entry. TAP: subtest counter advances (skip-rest correct), depth
+  indent, inner-plan indent, `subtest "d" => {…}` Pair form. `is()` compares
+  stringified (Rakudo), not numeric. sprintf width/precision capped at 10M
+  (no int-overflow UB / GB pads). FileHandle write handles flush at program
+  exit if `.close` is forgotten; :w creates the file at open.
+  REMAINING wave-5 (more invasive, documented): UTF-8 byteset classes split
+  codepoints on negated/`\N` classes; codegen mangling injectivity ($a-b/$a_b
+  collide) and `[=]` closure capture cells (native silent-wrongs); Env cycle
+  collector (needs design). Regex `$`-before-newline and lookbehind O(n²)
+  logged as known limitations.
 - **Wave 2b (`%*ENV`-in-`start` deadlock): DEFERRED to a native debug session.**
+  UPDATE: root cause FOUND via sample — worker holds the GIL, then a safe
+  point or the dynamic-var path re-acquires a mutex it already holds
+  (`__ulock_wait` under evalIndex). Still needs the exact lock pinned on
+  native arm64 (Rosetta blocks lldb pause).
   Reframed: it is a *killable* deadlock (kill -9 works), NOT a kill-proof
   zombie — that property belonged only to the recursion SIGBUS. `sample`
   confirms the worker holds the GIL and self-blocks in `__ulock_wait` inside

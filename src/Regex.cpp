@@ -624,7 +624,7 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
     }
     if (pos >= len) {
         static const std::set<std::string> known = {"alpha","digit","space","blank","alnum","upper","lower",
-            "xdigit","word","punct","cntrl","graph","print"};
+            "xdigit","punct","cntrl","graph","print"};
         return known.count(nm) ? -1 : -2;
     }
     unsigned char c = (unsigned char)s[pos];
@@ -637,7 +637,6 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
     else if (nm == "upper") ok = std::isupper(c);
     else if (nm == "lower") ok = std::islower(c);
     else if (nm == "xdigit") ok = std::isxdigit(c);
-    else if (nm == "word") ok = std::isalnum(c) || c == '_';
     else if (nm == "punct") ok = std::ispunct(c);
     else if (nm == "cntrl") ok = std::iscntrl(c);
     else if (nm == "graph") ok = std::isgraph(c);
@@ -797,6 +796,10 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
 }
 
 bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const {
+    // Step budget: bounds catastrophic backtracking and unbounded CPS recursion.
+    // ~8M steps is far beyond any real match yet trips in well under a second on
+    // patterns like /[a*]* b/ against a long non-matching string.
+    if (++st.steps > 8000000) throw StepLimitExceeded{};
     long len = (long)st.s.size();
     switch (n->k) {
         case K::Nop: return k(pos);
@@ -849,11 +852,15 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 long e = builtinRuleMatch(n->ruleName, st.s, pos, len);
                 if (e >= 0) {
                     if (n->ruleCapture && !n->ruleName.empty()) { // record $<name> for a capturing built-in
-                        auto saved = st.named.count(n->ruleName) ? st.named[n->ruleName] : std::pair<long, long>{-1, -1};
-                        bool had = st.named.count(n->ruleName);
-                        st.named[n->ruleName] = {pos, e};
+                        const std::string& cn = n->ruleName;
+                        auto saved = st.named.count(cn) ? st.named[cn] : std::pair<long, long>{-1, -1};
+                        bool had = st.named.count(cn);
+                        st.named[cn] = {pos, e};
+                        ParseNode leaf; leaf.name = cn; leaf.from = pos; leaf.to = e;
+                        st.children[cn].push_back(std::move(leaf)); // <alpha>+ collates into a list
                         if (k(e)) return true;
-                        if (had) st.named[n->ruleName] = saved; else st.named.erase(n->ruleName);
+                        st.children[cn].pop_back(); if (st.children[cn].empty()) st.children.erase(cn);
+                        if (had) st.named[cn] = saved; else st.named.erase(cn);
                         return false;
                     }
                     return k(e);
@@ -866,13 +873,19 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             std::string call = n->ruleArgs.empty() ? n->ruleName : (n->ruleName + "\x1f" + n->ruleArgs);
             if (!(*st.resolver)(call, st.s, pos, sub)) return false;
             if (n->ruleCapture && !n->ruleName.empty()) {
-                auto savedN = st.named.count(n->ruleName) ? st.named[n->ruleName] : std::pair<long,long>{-1,-1};
-                bool had = st.named.count(n->ruleName);
-                st.named[n->ruleName] = {sub.from, sub.to};
-                st.subs[n->ruleName] = {sub.from, sub.to};
+                const std::string& cn = n->ruleName;
+                auto savedN = st.named.count(cn) ? st.named[cn] : std::pair<long,long>{-1,-1};
+                bool had = st.named.count(cn);
+                st.named[cn] = {sub.from, sub.to};
+                st.subs[cn] = {sub.from, sub.to};
+                ParseNode leaf; leaf.name = cn; leaf.from = sub.from; leaf.to = sub.to;
+                for (auto& kv : sub.named) leaf.named[kv.first] = kv.second;
+                leaf.caps = sub.caps;
+                st.children[cn].push_back(std::move(leaf)); // collates repeated <cn> into a list
                 if (k(sub.to)) return true;
-                if (had) st.named[n->ruleName] = savedN; else st.named.erase(n->ruleName);
-                st.subs.erase(n->ruleName);
+                st.children[cn].pop_back(); if (st.children[cn].empty()) st.children.erase(cn);
+                if (had) st.named[cn] = savedN; else st.named.erase(cn);
+                st.subs.erase(cn);
                 return false;
             }
             return k(sub.to);
@@ -989,8 +1002,11 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         }
         case K::Alt: {
             if (n->firstMatch) { // `||` — try branches in order, first that satisfies k wins
-                for (auto& kid : n->kids)
+                long cf0 = st.capFrom, fc0 = st.firstCode;
+                for (auto& kid : n->kids) {
                     if (matchNode(kid.get(), st, pos, k)) return true;
+                    st.capFrom = cf0; st.firstCode = fc0; // roll back a failed branch's <( / firstCode
+                }
                 return false;
             }
             // `|` — longest-token match. True LTM needs each branch's set of reachable
@@ -1005,6 +1021,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // into the commit (which would duplicate them into Arrays).
             auto savedCaps = st.caps; auto savedNamed = st.named;
             auto savedSubs = st.subs; auto savedChildren = st.children;
+            long savedCapFrom = st.capFrom, savedFirstCode = st.firstCode;
             std::vector<std::pair<long, size_t>> order; // (greedy end, branch index)
             for (size_t i = 0; i < n->kids.size(); i++) {
                 long e0 = -1;
@@ -1013,6 +1030,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             }
             st.caps = std::move(savedCaps); st.named = std::move(savedNamed);
             st.subs = std::move(savedSubs); st.children = std::move(savedChildren);
+            st.capFrom = savedCapFrom; st.firstCode = savedFirstCode;
             if (snap && st.hooks->restoreState) st.hooks->restoreState(snap);
             std::stable_sort(order.begin(), order.end(),
                              [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -1114,15 +1132,20 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out) cons
 
 bool Regex::search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r) const {
     if (!ok_ || !root_) return false;
+    long budget = 0; // shared across start positions: a whole search is bounded, not each attempt
     for (long start = startPos; start <= (long)subject.size(); start++) {
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+        st.steps = budget;
         long endPos = -1;
-        if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
-            out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = endPos;
-            out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-            out.children = st.children;
-            return true;
-        }
+        try {
+            if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
+                out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = endPos;
+                out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+                out.children = st.children;
+                return true;
+            }
+        } catch (const StepLimitExceeded&) { return false; } // pathological pattern: give up (no match)
+        budget = st.steps;
     }
     return false;
 }
@@ -1131,12 +1154,14 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
     if (!ok_ || !root_) return false;
     MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
     long endPos = -1;
-    if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
-        out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = endPos;
-        out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-        out.children = st.children;
-        return true;
-    }
+    try {
+        if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
+            out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = endPos;
+            out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+            out.children = st.children;
+            return true;
+        }
+    } catch (const StepLimitExceeded&) { return false; }
     return false;
 }
 

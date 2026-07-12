@@ -753,15 +753,18 @@ std::string doSprintf(const std::string& fmt, const ValueList& args) {
         std::string flags;
         while (j < fmt.size() && std::strchr("-+ 0#", fmt[j])) flags += fmt[j++];
         // width (digits or `*` = from argument; negative `*` implies left-justify)
+        const long long SPRINTF_MAX = 10'000'000; // guard against int overflow (UB) and multi-GB pads
         int width = 0; bool hasWidth = false;
         if (j < fmt.size() && fmt[j] == '*') { j++; long long w = nextArg().toInt();
-            if (w < 0) { flags += '-'; w = -w; } width = (int)w; hasWidth = true; }
-        else while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { width = width*10 + (fmt[j]-'0'); hasWidth = true; j++; }
+            if (w < 0) { flags += '-'; w = -w; } if (w > SPRINTF_MAX) w = SPRINTF_MAX; width = (int)w; hasWidth = true; }
+        else { long long w = 0;
+            while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { w = w * 10 + (fmt[j]-'0'); if (w > SPRINTF_MAX) w = SPRINTF_MAX; hasWidth = true; j++; }
+            width = (int)w; }
         // precision (.digits or .* ; a negative `.*` means "no precision")
         int prec = -1;
         if (j < fmt.size() && fmt[j] == '.') { j++; prec = 0;
-            if (j < fmt.size() && fmt[j] == '*') { j++; long long p = nextArg().toInt(); prec = p < 0 ? -1 : (int)p; }
-            else { prec = 0; while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { prec = prec*10 + (fmt[j]-'0'); j++; } }
+            if (j < fmt.size() && fmt[j] == '*') { j++; long long p = nextArg().toInt(); prec = p < 0 ? -1 : (int)std::min(p, SPRINTF_MAX); }
+            else { long long p = 0; while (j < fmt.size() && std::isdigit((unsigned char)fmt[j])) { p = p * 10 + (fmt[j]-'0'); if (p > SPRINTF_MAX) p = SPRINTF_MAX; j++; } prec = (int)p; }
         }
         while (j < fmt.size() && std::strchr("lhqLVjzt", fmt[j])) j++; // length modifiers, ignored
         if (j >= fmt.size()) break;
@@ -3034,6 +3037,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         for (auto& a : args) if (a.t == VT::Pair) { if (a.s == "w") mode = "w"; else if (a.s == "a") mode = "a"; else if (a.s == "r") mode = "r"; }
         (*h.hash)["mode"] = Value::str(mode);
         (*h.hash)["buffer"] = Value::str("");
+        if (mode == "w") { std::ofstream create(inv.toStr(), std::ios::trunc); } // the file exists immediately
+        if (mode == "w" || mode == "a") registerWriteHandle(h.hash); // flush at exit if not closed
         return h;
     }
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
@@ -3058,9 +3063,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "close") {
             std::string mode = (*inv.hash)["mode"].toStr();
-            if (mode == "w" || mode == "a") { // only flush write/append handles
+            if (mode == "w" || mode == "a") { // flush write/append handles
                 std::ofstream out((*inv.hash)["path"].toStr(), mode == "a" ? std::ios::app : std::ios::trunc);
                 if (out) out << (*inv.hash)["buffer"].toStr();
+                (*inv.hash)["flushed"] = Value::boolean(true); // exit-flush skips it now
             }
             return Value::boolean(true);
         }
@@ -4177,7 +4183,7 @@ void Interpreter::registerBuiltins() {
             else if (x.t == VT::Str && x.s == "skip-all") skipAll = true;
         }
         if (skipAll) { I.planned_ = 0; std::cout << "1..0 # SKIP " << reason << "\n" << std::flush; throw ExitEx{0}; }
-        if (!a.empty()) { I.planned_ = a[0].toInt(); std::cout << "1.." << I.planned_ << "\n"; }
+        if (!a.empty()) { I.planned_ = a[0].toInt(); std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.planned_ << "\n"; }
         return Value::boolean(true);
     };
     B["ok"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -4194,7 +4200,9 @@ void Interpreter::registerBuiltins() {
     // comparison and collapses per the junction's kind (any/all/one/none).
     auto isEq = [](const Value& got, const Value& exp) -> bool {
         auto scalarEq = [](const Value& g, const Value& e) {
-            if (g.isNumeric() && e.isNumeric()) { double a = g.toNum(), b = e.toNum(); return (std::isnan(a) && std::isnan(b)) || a == b; }
+            // Rakudo's `is` compares stringified values with `eq` (Test::is), so
+            // `is 1/3, 0.333333` passes on matching decimal forms. (Exact-numeric
+            // comparison lives in is-approx / cmp-ok, not plain `is`.)
             return g.toStr() == e.toStr();
         };
         if (exp.t == VT::Array && exp.arr &&
@@ -4588,7 +4596,7 @@ void Interpreter::registerBuiltins() {
         while (ws >> w) out.arr->push_back(Value::str(w));
         return out;
     };
-    B["open"] = [](Interpreter&, ValueList& a) -> Value { // sub form: open($path, :r/:w/:a)
+    B["open"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: open($path, :r/:w/:a)
         std::string path = a.empty() ? "" : a[0].toStr();
         std::string mode = "r";
         for (auto& x : a) if (x.t == VT::Pair) { if (x.s == "w") mode = "w"; else if (x.s == "a") mode = "a"; else if (x.s == "r") mode = "r"; }
@@ -4601,6 +4609,8 @@ void Interpreter::registerBuiltins() {
         (*h.hash)["path"] = Value::str(path);
         (*h.hash)["mode"] = Value::str(mode);
         (*h.hash)["buffer"] = Value::str("");
+        if (mode == "w") { std::ofstream create(path, std::ios::trunc); } // the file exists immediately
+        if (mode == "w" || mode == "a") I.registerWriteHandle(h.hash); // flush at exit if not closed
         return h;
     };
     B["unlink"] = [](Interpreter&, ValueList& a) -> Value {
@@ -4656,7 +4666,7 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(ok);
     };
     B["done-testing"] = [](Interpreter& I, ValueList&) -> Value {
-        if (I.planned_ < 0) { std::cout << "1.." << I.testNum_ << "\n"; I.planned_ = I.testNum_; }
+        if (I.planned_ < 0) { std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n"; I.planned_ = I.testNum_; }
         // True only if every test passed and the ran count matched the plan.
         return Value::boolean(I.failCount_ == 0 && I.planned_ == I.testNum_);
     };

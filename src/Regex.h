@@ -181,7 +181,12 @@ public:
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
         const std::string* curSym = nullptr;               // proto candidate's sym value, so `<sym>` matches it
         long firstCode = -1;                               // string pos at the first bare `{…}` block (ends the LTM declarative prefix)
+        long steps = 0;                                    // backtracking step budget (guards catastrophic patterns)
     };
+    // Thrown when a match exceeds the step budget — a pathological pattern
+    // (nested-quantifier backtracking) would otherwise hang or overflow the C++
+    // stack. Caught at the match entry points and reported as a no-match/error.
+    struct StepLimitExceeded {};
     bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;
     // {min,max} byte width the pattern can match; max = -1 means unbounded/unknown.
     std::pair<long, long> nodeWidth(const Node* n, MState& st) const;

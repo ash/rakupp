@@ -330,6 +330,9 @@ public:
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
     void drainWorkers();
+    void registerWriteHandle(const std::shared_ptr<std::map<std::string, Value>>& h) { openWriteHandles_.push_back(h); }
+    void flushOpenWriteHandles();  // flush any unclosed write handle at program exit
+    std::vector<std::shared_ptr<std::map<std::string, Value>>> openWriteHandles_;
 
     // Per-thread execution registers — current scope, dyn-var chain, gather/supply/
     // make collectors, call depth, package prefix. Held in a `static thread_local`
