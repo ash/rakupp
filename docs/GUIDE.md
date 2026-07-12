@@ -1,6 +1,6 @@
 # Raku++ — Guide
 
-*The full guide. For a 30-second overview and quick start, see [README.md](README.md).*
+*The full guide. For a 30-second overview and quick start, see [README.md](../README.md).*
 
 A from-scratch implementation of the [Raku](https://raku.org) programming
 language in **C++17, with no third-party dependencies**. Raku++ is a
@@ -123,7 +123,7 @@ battery.
 - **[OVERVIEW.md](OVERVIEW.md)** — a one-page tour: what Raku++ is, goals, capabilities, comparison to Rakudo.
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
 - **[COOKBOOK.md](COOKBOOK.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
-- **[examples/](examples/)** — complete example programs (see [examples/README.md](examples/README.md)).
+- **[examples/](../examples/)** — complete example programs (see [examples/README.md](../examples/README.md)).
 - **[ASYNC.md](ASYNC.md)** — concurrency & async cookbook: promises, supplies, channels, threads, and the two execution modes (GIL by default, opt-in true CPU parallelism via `RAKUPP_PARALLEL`).
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
@@ -131,7 +131,7 @@ battery.
 - **[COUNTING.md](COUNTING.md)** — authoritative definition of the pass-rate figures.
 - **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
 - **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: passes, C++ level forwarding, numbers.
-- **[docs/JOURNEY.md](docs/JOURNEY.md)** — a memoir of how this was built: the Roast / real-project / docs loops, the clean-room stance on Rakudo, and reaching `--exe`.
+- **[docs/JOURNEY.md](dev/JOURNEY.md)** — a memoir of how this was built: the Roast / real-project / docs loops, the clean-room stance on Rakudo, and reaching `--exe`.
 
 ## Building
 
@@ -336,4 +336,4 @@ next direction.
 
 ## License
 
-[Artistic License 2.0](LICENSE) — the same license Raku itself uses.
+[Artistic License 2.0](../LICENSE) — the same license Raku itself uses.

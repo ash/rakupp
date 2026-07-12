@@ -1,6 +1,6 @@
 # Interpreter vs compiled (`--exe`) — the examples
 
-Every program in [examples/](examples/) compiles to a standalone native binary
+Every program in [examples/](../examples/) compiles to a standalone native binary
 with `rakupp --exe`, and every binary produces byte-identical output to the
 interpreter run (`life.raku` is seeded random, so its check uses an
 `srand`-pinned copy). This page compares the two modes of Raku++ itself —

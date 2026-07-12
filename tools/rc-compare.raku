@@ -4,7 +4,7 @@
 # Fetches Category:Raku tasks, extracts each first Raku solution, runs it under
 # both `raku` and rakupp (10s timeout, closed stdin), and tallies MATCH / DIFFER
 # / rakupp-error / rakudo-error / …  Results stream to rc-work/results.tsv.
-# See docs/ROSETTACODE.md for a written-up run.
+# See docs/dev/ROSETTACODE.md for a written-up run.
 
 my $N      = (@*ARGS[0] // 40).Int;
 my $SKIP   = (@*ARGS[1] // 0).Int;
@@ -14,7 +14,7 @@ mkdir "$DIR/prog";
 
 # Persisted, git-ignored cache of fetched RosettaCode programs, keyed by task NAME
 # (stable across different N/skip, unlike the old prog/<index>.raku). A task fetched
-# once is reused forever — no re-fetch. See docs/ROSETTACODE.md.
+# once is reused forever — no re-fetch. See docs/dev/ROSETTACODE.md.
 my $CACHE = 'rc-cache';
 mkdir $CACHE;
 sub cache-file($task) { "$CACHE/" ~ $task.subst(/<-[\w.\-]>+/, '_', :g) ~ '.raku' }

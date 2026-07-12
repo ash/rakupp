@@ -46,7 +46,7 @@ Full suite — **1,464 files**:
 
 (Two files — `S04-statements/try.t`, `S12-construction/destruction.t` — hang the
 harness with unkillable children and are measured separately; they count above as
-one partial and one timeout. See [docs/ROAST-GAPS.md](docs/ROAST-GAPS.md).)
+one partial and one timeout. See [docs/ROAST-GAPS.md](dev/ROAST-GAPS.md).)
 
 **Coverage ≈ 29% of files.** That is the number to quote. Just under a third of the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
@@ -159,4 +159,4 @@ _Snapshot: 419 / 1,464 files fully passing (~29% coverage); 646 partial,
 389 no-TAP, 8 timeout. Reached-assertion pass rate 157,293 / 163,209 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t). The +19-file jump came from honoring
-roast's `#?rakudo skip` fudge directives (see [docs/ROAST-GAPS.md](docs/ROAST-GAPS.md))._
+roast's `#?rakudo skip` fudge directives (see [docs/ROAST-GAPS.md](dev/ROAST-GAPS.md))._

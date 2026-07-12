@@ -47,7 +47,7 @@ tracks.
   engines; the ratios were stable across two full harness runs.
 - **Raku++:** built `-O3 -DNDEBUG` (CMake Release).
 - **Rakudo:** `raku` v2026.06 (MoarVM backend).
-- **Harness:** [`tools/run-bench.raku`](tools/run-bench.raku) — itself a Raku
+- **Harness:** [`tools/run-bench.raku`](../tools/run-bench.raku) — itself a Raku
   program, run *by Raku++* (it also runs under Rakudo). It only spawns each
   engine as a fresh subprocess and times it with `now`, so the language the
   harness is written in does not bias either contestant.

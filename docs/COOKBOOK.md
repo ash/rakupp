@@ -1,7 +1,7 @@
 # Raku++ — Cookbook
 
 A cookbook companion to [FEATURES.md](FEATURES.md): short, runnable one-liner
-snippets. For complete example programs, see [examples/](examples/). **Every
+snippets. For complete example programs, see [examples/](../examples/). **Every
 snippet below has been run on `rakupp` and produces the output shown** (`# → …`).
 Run any of them with:
 

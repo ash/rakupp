@@ -211,8 +211,8 @@ None of that is here yet; `-O` today is the two passes above.
 
 ## Showcase suite
 
-[`tools/optbench/`](tools/optbench) holds programs each written to lean on one
-pass, and [`tools/run-optbench.raku`](tools/run-optbench.raku) compiles every one
+[`tools/optbench/`](../tools/optbench) holds programs each written to lean on one
+pass, and [`tools/run-optbench.raku`](../tools/run-optbench.raku) compiles every one
 twice — `--exe` and `--exe -O` — checks the two builds agree with the interpreter
 byte-for-byte, then times both and reports the `-O` speed-up (Rakudo shown for
 reference):
@@ -245,5 +245,5 @@ claim (see [BENCHMARKS.md](BENCHMARKS.md)).
 ## See also
 
 - [BENCHMARKS.md](BENCHMARKS.md) — the full speed comparison across all modes.
-- [`tools/optbench/`](tools/optbench) + `tools/run-optbench.raku` — the showcase above.
+- [`tools/optbench/`](../tools/optbench) + `tools/run-optbench.raku` — the showcase above.
 - `rakupp --cpp [-O] SRC` — inspect exactly what the transpiler emits.

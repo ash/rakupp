@@ -189,7 +189,7 @@ runtime rather than logic regressions; the `Proc::Async` stress files
 7. **UCD 17.0 everywhere + dogfooded generator** — all remaining tables
    (names, categories, scripts, blocks, bidi, binary props) moved to 17.0;
    the names/categories/numerics generator is now
-   [`tools/gen-unicode.raku`](../tools/gen-unicode.raku), written in Raku and
+   [`tools/gen-unicode.raku`](../../tools/gen-unicode.raku), written in Raku and
    run by rakupp itself (see [DOGFOODING.md](../DOGFOODING.md)). Hangul
    syllable names synthesized both directions, Unihan numerals in `unival`.
    Dogfooding surfaced and fixed a real bug: `.hash` on a flat list now pairs

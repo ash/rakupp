@@ -1,7 +1,7 @@
 # Raku++ — Overview
 
 *A tour of what Raku++ is, what it can do, and how it compares — one level up
-from the [README](README.md), one level down from the [full guide](GUIDE.md).*
+from the [README](../README.md), one level down from the [full guide](GUIDE.md).*
 
 ---
 
@@ -49,7 +49,7 @@ official specification test suite. The guiding motto:
 
 A high-level inventory — the full list is in [FEATURES.md](FEATURES.md), with
 runnable snippets in [COOKBOOK.md](COOKBOOK.md) and complete programs in
-[examples/](examples/).
+[examples/](../examples/).
 
 - **Core language** — scalars/arrays/hashes, control flow, `given`/`when`,
   statement modifiers, closures, phasers (`BEGIN`/`END`/`ENTER`/`LEAVE`/`CATCH`).
@@ -151,14 +151,14 @@ build/rakupp tools/run-roast.raku S05      # filter by path
 
 ## Where to go next
 
-- **[README.md](README.md)** — install and first run.
+- **[README.md](../README.md)** — install and first run.
 - **[GUIDE.md](GUIDE.md)** — the full guide: goals, status, run modes, real-app hardening.
 - **[FEATURES.md](FEATURES.md)** / **[COOKBOOK.md](COOKBOOK.md)** — what works, with runnable snippets.
-- **[examples/](examples/)** — complete example programs.
+- **[examples/](../examples/)** — complete example programs.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built and what each run mode does.
 - **[ROAST.md](ROAST.md)** — coverage, per-synopsis stats, and how the numbers are defined.
 - **[COUNTING.md](COUNTING.md)** — the authoritative definition of every pass-rate figure and how it's computed.
 - **[BENCHMARKS.md](BENCHMARKS.md)** / **[OPTIMIZATION.md](OPTIMIZATION.md)** — speed vs Rakudo; the `-O` optimizer.
 - **[ASYNC.md](ASYNC.md)** / **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — concurrency; language-mutation coverage.
 - **[ROADMAP.md](ROADMAP.md)** — done / next.
-- **[docs/JOURNEY.md](docs/JOURNEY.md)** — a memoir of how this was built.
+- **[docs/JOURNEY.md](dev/JOURNEY.md)** — a memoir of how this was built.

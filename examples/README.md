@@ -54,7 +54,7 @@ Every output shown below is what the program actually prints.
 
 The classic ASCII Mandelbrot set, a faithful modernisation of the ~2004 Parrot
 `examples/mandel.p6`. The header explains the two language changes since then
-that the original tripped over; [docs/MANDEL.md](../docs/MANDEL.md) has the full
+that the original tripped over; [docs/MANDEL.md](../docs/dev/MANDEL.md) has the full
 story. It is the smallest program here that exercises tight numeric loops.
 
 ### `sierpinski.raku`
@@ -441,7 +441,7 @@ shows no differences.
 
 These are complete programs. `rakupp` can also compile one to a standalone
 binary (`--bundle`, `--aot`, or native `--exe`); see the top-level
-[README](../README.md) and [GUIDE.md](../GUIDE.md) for how that works and which
+[README](../README.md) and [GUIDE.md](../docs/GUIDE.md) for how that works and which
 constructs the native path supports today. For a broader, snippet-sized tour of
 the language — short `-e` one-liners rather than whole programs — see
-[COOKBOOK.md](../COOKBOOK.md).
+[COOKBOOK.md](../docs/COOKBOOK.md).

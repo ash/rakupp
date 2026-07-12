@@ -120,7 +120,7 @@ for 1..5 { $total += square($_) }
 say $total;
 ```
 
-The CLI ([`src/main.cpp`](src/main.cpp)) picks a mode from the flags, then:
+The CLI ([`src/main.cpp`](../src/main.cpp)) picks a mode from the flags, then:
 
 ### Mode 1 — interpret (default): `rakupp demo.raku`
 
@@ -173,7 +173,7 @@ demo.raku ─► Lexer ─► Parser ─► Program (AST)   ← parsed at BUILD 
 
 This is genuine ahead-of-time work: `compileAotAst` **parses the program at build
 time** (so parse errors are reported *then*, not at run time), and
-[`AstEmit`](src/AstEmit.cpp) emits one small builder function per AST node. The
+[`AstEmit`](../src/AstEmit.cpp) emits one small builder function per AST node. The
 generated `main` reconstructs the identical `Program` and hands it to
 `rakuppRunProgram` — which interprets it with **no lexing or parsing at run time**:
 
@@ -208,7 +208,7 @@ demo.raku ─► Lexer ─► Parser ─► Program (AST)
 ```
 
 `compileNative` parses the program to an AST and then
-[`Codegen`](src/Codegen.cpp) walks it, emitting **C++ that implements the program
+[`Codegen`](../src/Codegen.cpp) walks it, emitting **C++ that implements the program
 directly** — native control flow, native calls — calling the runtime only for
 `Value` operations. For `demo.raku` it produces (verbatim):
 

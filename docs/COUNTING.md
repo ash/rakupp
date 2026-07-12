@@ -3,7 +3,7 @@
 This is the authoritative definition of the numbers quoted everywhere else
 (README, OVERVIEW, GUIDE, FEATURES, ROADMAP, ROAST). If a figure disagrees with
 this file, this file wins. The self-hosted harness
-([`tools/run-roast.raku`](tools/run-roast.raku)) computes all of it and prints it
+([`tools/run-roast.raku`](../tools/run-roast.raku)) computes all of it and prints it
 on every run.
 
 ## The one-line summary

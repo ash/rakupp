@@ -86,7 +86,7 @@ live numbers). Major subsystems now in:
 
 Landed in the 2026-07 Roast push (350 → 400 files, 73% → 81% of declared
 tests; the systematic gap classification lives in
-[docs/ROAST-GAPS.md](docs/ROAST-GAPS.md)):
+[docs/ROAST-GAPS.md](dev/ROAST-GAPS.md)):
 
 - **Roast fudge directives** — `#?rakudo skip` (statement/block extents, test
   counting, `#?DOES`), honoring what roast's own preprocessor does.
@@ -112,7 +112,7 @@ The cheap Roast wins are largely spent; moving the full-pass count now takes
 1. **Big no-TAP files** — `rat.t` (869 declared tests), `rx.t` (756),
    `reduce.t` (580), `complex.t` (557): each is one file worth hundreds of
    assertions once its first blocker falls (see
-   [docs/ROAST-GAPS.md](docs/ROAST-GAPS.md)).
+   [docs/ROAST-GAPS.md](dev/ROAST-GAPS.md)).
 2. **Case-folding tail** — `.fc` full folding (`ß` → `ss`), `:ignorecase` /
    `:ignoremark` on non-ASCII, `samemark`; and routing `.collate`/`.sort`
    through the UCA machinery.

@@ -13,9 +13,9 @@ the official Raku test suite.
 ~191,537 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
 **419 / 1,464 files fully pass (~29%)** — a file counts only if *every* assertion
-in it passes. Early-stage, growing test-first. See [the overview](OVERVIEW.md) for
-a one-page tour, [the full guide](GUIDE.md) for the complete picture, or
-[COUNTING.md](COUNTING.md) for exactly how these are defined.
+in it passes. Early-stage, growing test-first. See [the overview](docs/OVERVIEW.md) for
+a one-page tour, [the full guide](docs/GUIDE.md) for the complete picture, or
+[COUNTING.md](docs/COUNTING.md) for exactly how these are defined.
 
 ## Install
 
@@ -73,27 +73,27 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 
 `RAKUPP_PARALLEL=1` opts into true CPU parallelism for `start`/worker threads
 (default coordinates under a GIL). Full option and environment-variable reference:
-[the guide](GUIDE.md#command-line-options).
+[the guide](docs/GUIDE.md#command-line-options).
 
 ## Documentation
 
-- **[OVERVIEW.md](OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
-- **[GUIDE.md](GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
-- **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
-- **[COOKBOOK.md](COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
+- **[OVERVIEW.md](docs/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
+- **[GUIDE.md](docs/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
+- **[FEATURES.md](docs/FEATURES.md)** — inventory of supported language features, by theme.
+- **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
 - **[examples/](examples/)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md).
-- **[UNICODE.md](UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
-- **[ASYNC.md](ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
-- **[DOGFOODING.md](DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
-- **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
-- **[ROAST.md](ROAST.md)** — Roast suite overview and per-section statistics.
-- **[COUNTING.md](COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
-- **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
-- **[NATIVE.md](NATIVE.md)** — interpreter vs compiled (`--exe`) on the example programs; every example compiles natively with identical output.
-- **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
-- **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
-- **[docs/JOURNEY.md](docs/JOURNEY.md)** — a memoir of how this was built.
+- **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
+- **[ASYNC.md](docs/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
+- **[DOGFOODING.md](docs/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
+- **[ROADMAP.md](docs/ROADMAP.md)** — done / in-progress / next.
+- **[ROAST.md](docs/ROAST.md)** — Roast suite overview and per-section statistics.
+- **[COUNTING.md](docs/COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
+- **[BENCHMARKS.md](docs/BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
+- **[NATIVE.md](docs/NATIVE.md)** — interpreter vs compiled (`--exe`) on the example programs; every example compiles natively with identical output.
+- **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
+- **[METAPROGRAMMING.md](docs/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
+- **[docs/dev/JOURNEY.md](docs/dev/JOURNEY.md)** — a memoir of how this was built.
 
 ## License
 
