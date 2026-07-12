@@ -224,6 +224,52 @@ dependency — which is a different and useful shape for a Raku program to take.
 
 ---
 
+## The examples/ directory: a test suite that doesn't know it's one
+
+Somewhere along the way the repository grew an [examples/](../../examples/)
+directory — two dozen small, self-contained programs: the Mandelbrot set in
+ASCII, Conway's Life on a torus, a JSON parser as a grammar, quicksort three
+ways, a quine, a Brainfuck interpreter. The original motive was the obvious
+one: show the language running. Each file is a single program with no
+arguments, no network, no setup, and a header comment saying what it leans on.
+
+What they actually became is a fourth feedback loop, small enough to run in
+seconds and sharper than expected in three distinct ways.
+
+First, **writing them found bugs that Roast and the big projects both missed**.
+A showcase program is written the way a person naturally writes Raku, not the
+way a spec test isolates a feature — and the natural phrasing kept stepping on
+quirks: a slip that wouldn't flatten inside an array literal, `"$x-1"`
+interpolating as subtraction, `Rat.Str` quietly truncating, a `rule TOP` that
+refused trailing whitespace. Those went into [TRIAGE.md](TRIAGE.md) with a
+minimal repro, the correct behaviour, and the workaround used — a page that
+exists because of these programs.
+
+Second, **they became the performance conscience**. "It works" hides "it takes
+seven seconds where Rakudo takes half of one." Mandelbrot, the prime sieve,
+N-Queens, Life, Brainfuck — each one, timed against Rakudo, pointed at a real
+engine problem: a `Rat` re-reduced on every operation, control flow unwinding
+C++ exceptions for every `next`, an interpreter copying a 330-byte value per
+array index. Fixing what the examples exposed sped up everything else too;
+several of the interpreter's best optimizations trace back to one of these
+files feeling slow.
+
+Third, **they are the compiler's parity corpus**. Every example compiles with
+`--exe`, and every native binary must produce byte-identical output to the
+interpreter run (Life is seeded for the comparison). Closing that gap — from
+roughly half the directory falling back to interpreter bundling, to all of it
+compiling natively — drove a long tail of codegen work: placeholder
+parameters, slips, lazy `gather`, the sequence operator, grammar registration,
+destructuring loops. The sweep now runs as a routine check, and
+[NATIVE.md](../NATIVE.md) records interpreter-vs-native timings on exactly
+these programs.
+
+A directory meant as a brochure turned out to be a test suite that doesn't
+know it's one — and because its programs are *idiomatic* rather than
+minimal, it keeps finding the failures the other loops are blind to.
+
+---
+
 ## Where the frontier is now
 
 At the time of writing, Raku++ fully passes **252 of 1,464** Roast files (~17%),
