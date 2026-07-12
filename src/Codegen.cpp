@@ -252,8 +252,89 @@ struct Codegen {
                 line(ind, "RT.dynVarRef(" + cesc("&" + d->name) + ") = " + subClosure(d) + ";");
     }
 
+    void collectClosureLocals(const std::vector<StmtPtr>& body, std::set<std::string>& out) {
+        std::function<void(Expr*)> ex = [&](Expr* e) {
+            if (!e) return;
+            if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); if (v->declare && v->name.size() > 1) out.insert(v->name); return; }
+            if (e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e); ex(a->target.get()); ex(a->value.get()); return; }
+            if (e->kind == NK::ListExpr) { for (auto& it : static_cast<ListExpr*>(e)->items) ex(it.get()); return; }
+            if (e->kind == NK::Binary) { auto* b = static_cast<Binary*>(e); ex(b->lhs.get()); ex(b->rhs.get()); return; }
+            if (e->kind == NK::Unary) { ex(static_cast<Unary*>(e)->operand.get()); return; }
+            // do NOT descend into a nested BlockExpr — it has its own scope
+        };
+        std::function<void(Stmt*)> st = [&](Stmt* s) {
+            if (!s) return;
+            switch (s->kind) {
+                case NK::ExprStmt: ex(static_cast<ExprStmt*>(s)->e.get()); break;
+                case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s); for (auto& br : f->branches) { ex(br.first.get()); collectClosureLocals(br.second->stmts, out); } if (f->elseBlock) collectClosureLocals(f->elseBlock->stmts, out); break; }
+                case NK::WhileStmt: case NK::LoopStmt: case NK::RepeatStmt: case NK::ForStmt: case NK::Block: case NK::GivenStmt: case NK::WhenStmt: {
+                    // loop/block scopes: their inner `my` doesn't leak, but a `my` here
+                    // is still local to the closure body — collect conservatively.
+                    if (s->kind == NK::Block) collectClosureLocals(static_cast<Block*>(s)->stmts, out);
+                    break;
+                }
+                default: break;
+            }
+        };
+        for (auto& s : body) st(s.get());
+    }
+    bool exprAssignsCaptured(Expr* e, const std::set<std::string>& local) {
+        if (!e) return false;
+        auto isCapturedTarget = [&](Expr* t) -> bool {
+            if (t->kind != NK::VarExpr) return false;
+            auto* v = static_cast<VarExpr*>(t);
+            if (v->declare) return false;
+            const std::string& n = v->name;
+            if (n.size() < 2 || !(n[0] == '$' || n[0] == '@' || n[0] == '%')) return false;
+            if (!(std::isalpha((unsigned char)n[1]) || n[1] == '_')) return false; // skip $*/$!//etc.
+            return !local.count(n) && !topVars_.count(n); // captured enclosing local
+        };
+        switch (e->kind) {
+            case NK::Assign: { auto* a = static_cast<Assign*>(e); if (a->op.size() && a->op.back() == '=' && a->op != "==" && a->op != "!=" && a->op != ">=" && a->op != "<=" && isCapturedTarget(a->target.get())) return true; return exprAssignsCaptured(a->value.get(), local); }
+            case NK::Unary: { auto* u = static_cast<Unary*>(e); if ((u->op == "++" || u->op == "--") && isCapturedTarget(u->operand.get())) return true; return exprAssignsCaptured(u->operand.get(), local); }
+            case NK::Binary: { auto* b = static_cast<Binary*>(e); return exprAssignsCaptured(b->lhs.get(), local) || exprAssignsCaptured(b->rhs.get(), local); }
+            case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return exprAssignsCaptured(t->cond.get(), local) || exprAssignsCaptured(t->then.get(), local) || exprAssignsCaptured(t->els.get(), local); }
+            case NK::Call: { auto* c = static_cast<Call*>(e); for (auto& x : c->args) if (exprAssignsCaptured(x.get(), local)) return true; return false; }
+            case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e); if (m->mutate && isCapturedTarget(m->inv.get())) return true; if (exprAssignsCaptured(m->inv.get(), local)) return true; for (auto& x : m->args) if (exprAssignsCaptured(x.get(), local)) return true; return false; }
+            case NK::ListExpr: { for (auto& x : static_cast<ListExpr*>(e)->items) if (exprAssignsCaptured(x.get(), local)) return true; return false; }
+            case NK::Index: { auto* ix = static_cast<Index*>(e); return exprAssignsCaptured(ix->base.get(), local) || (ix->index && exprAssignsCaptured(ix->index.get(), local)); }
+            default: return false;
+        }
+    }
+    bool stmtAssignsCaptured(Stmt* s, const std::set<std::string>& local) {
+        if (!s) return false;
+        switch (s->kind) {
+            case NK::ExprStmt: return exprAssignsCaptured(static_cast<ExprStmt*>(s)->e.get(), local);
+            case NK::ReturnStmt: { auto* r = static_cast<ReturnStmt*>(s); return r->value && exprAssignsCaptured(r->value.get(), local); }
+            case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s); for (auto& br : f->branches) { if (exprAssignsCaptured(br.first.get(), local)) return true; for (auto& x : br.second->stmts) if (stmtAssignsCaptured(x.get(), local)) return true; } if (f->elseBlock) for (auto& x : f->elseBlock->stmts) if (stmtAssignsCaptured(x.get(), local)) return true; return false; }
+            case NK::WhileStmt: case NK::LoopStmt: case NK::RepeatStmt: case NK::ForStmt: { auto* b = loopBodyOf(s); if (b) for (auto& x : b->stmts) if (stmtAssignsCaptured(x.get(), local)) return true; return false; }
+            case NK::Block: { for (auto& x : static_cast<Block*>(s)->stmts) if (stmtAssignsCaptured(x.get(), local)) return true; return false; }
+            case NK::GivenStmt: { auto* g = static_cast<GivenStmt*>(s); if (g->body) for (auto& x : g->body->stmts) if (stmtAssignsCaptured(x.get(), local)) return true; return false; }
+            default: return false;
+        }
+    }
+    Block* loopBodyOf(Stmt* s) {
+        switch (s->kind) {
+            case NK::WhileStmt: return static_cast<WhileStmt*>(s)->body.get();
+            case NK::LoopStmt: return static_cast<LoopStmt*>(s)->body.get();
+            case NK::RepeatStmt: return static_cast<RepeatStmt*>(s)->body.get();
+            case NK::ForStmt: return static_cast<ForStmt*>(s)->body.get();
+            default: return nullptr;
+        }
+    }
+    // bail if this closure body assigns to a captured (enclosing-local) variable —
+    // [=] const-captures it, so the emitted C++ would not compile / would be wrong.
+    void checkClosureCapture(const std::vector<StmtPtr>& body, const std::set<std::string>& seedLocal) {
+        std::set<std::string> local = seedLocal;
+        collectClosureLocals(body, local);
+        for (auto& s : body)
+            if (stmtAssignsCaptured(s.get(), local))
+                unsupported("a closure that mutates a captured local variable");
+    }
+
     std::string subClosure(SubDecl* d) {
         BodyScope __bs{this, /*closure=*/false};
+        { std::set<std::string> loc; for (auto& p : d->params) if (!p.name.empty()) loc.insert(p.name); checkClosureCapture(d->body, loc); }
         std::string body = capture([&]() {
             bindParams(d->params, 0, false);
             hoistLexicalSubs(d->body, 0);
@@ -280,6 +361,7 @@ struct Codegen {
         bool pushed = false; std::string topic;
         std::vector<std::string> phs = be->params.empty() ? computePlaceholders(be->body)
                                                           : std::vector<std::string>{};
+        { std::set<std::string> loc(phs.begin(), phs.end()); for (auto& p : be->params) if (!p.name.empty()) loc.insert(p.name); checkClosureCapture(be->body, loc); }
         std::string body = capture([&]() {
             if (!phs.empty()) { // $^a/$^b placeholders bind positionally, in sorted order
                 for (size_t k = 0; k < phs.size(); k++)
