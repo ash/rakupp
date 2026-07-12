@@ -13,6 +13,18 @@ crash once their subtests actually executed, and (b) exposes a large surface
 of pre-existing engine bugs living inside those subtests (`.isNaN` not
 implemented on Rat, sprintf 6.e space-flag `% b`→`0`, etc.).
 
+### Codegen silent-wrongs (DONE — 2026-07-13)
+
+- **Mangling injectivity** (`38fb8a1`): mangleVar/mangleSub/methodFn are now
+  injective (sigil-tagged prefix + `_HH` hex escaping). `$a-b`/`$a_b` no longer
+  collide; `$x`/`@x`/`%x` coexist; operator-named subs compile.
+- **`[=]` closure capture** (`7df69b1`): a closure that assigns to a captured
+  local now bails to the interpreter bundle (correct output) instead of a
+  miscompile/silent-snapshot. Only true assignment to a captured scalar local
+  was broken; top-level globals and `.push` on captured arrays already worked.
+  Remaining known limitation: a closure that READS a captured local which is
+  mutated later in the enclosing scope still snapshots (narrow; not detected).
+
 ### Pair-form campaign (DEFERRED, tracked — 2026-07-13)
 
 Status: the Pair-form fix is **held out** by user decision. Landing it (with
