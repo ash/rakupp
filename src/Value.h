@@ -91,9 +91,9 @@ struct Value {
         return v;
     }
     static Value rat(BigInt n, BigInt d) {
+        if (d.sign == 0) return ratZ(std::move(n), std::move(d)); // zero denominator: ±1/0 or 0/0, not 1/1
         Value v; v.t = VT::Rat;
         if (d.sign < 0) { n = -n; d = -d; }
-        if (d.sign == 0) d = BigInt(1);
         BigInt g = BigInt::gcd(n, d);
         if (!g.isZero()) { BigInt q, r; BigInt::divmod(n, g, q, r); n = q; BigInt::divmod(d, g, q, r); d = q; }
         v.ratN = std::make_shared<BigInt>(n);

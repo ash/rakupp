@@ -332,7 +332,21 @@ bool valueEq(const Value& a, const Value& b) {
 
 int valueCmp(const Value& a, const Value& b) {
     if (a.isNumeric() && b.isNumeric()) {
-        double x = a.toNum(), y = b.toNum();
+        // Fast, exact path for native ints (the common case — e.g. sorting 50k
+        // integers): compare the int64 fields directly, no double, no allocation.
+        bool aInt = (a.t == VT::Int && !a.big) || a.t == VT::Bool;
+        bool bInt = (b.t == VT::Int && !b.big) || b.t == VT::Bool;
+        if (aInt && bInt) {
+            long long x = a.t == VT::Bool ? (a.b ? 1 : 0) : a.i;
+            long long y = b.t == VT::Bool ? (b.b ? 1 : 0) : b.i;
+            return x < y ? -1 : x > y ? 1 : 0;
+        }
+        // Exact types where a value can exceed 2^53 (big Int / Rat) compare via
+        // the <=> operator's BigInt cross-multiply — the double path would lose
+        // precision (e.g. (2**53, 2**53+1).max picked the wrong element).
+        auto exact = [](const Value& v) { return v.t == VT::Int || v.t == VT::Rat || v.t == VT::Bool; };
+        if (exact(a) && exact(b)) return applyArith("<=>", a, b).toInt();
+        double x = a.toNum(), y = b.toNum(); // Num/Complex: inherently binary float
         return x < y ? -1 : x > y ? 1 : 0;
     }
     // Pairs compare by key first, then value (Rakudo's Pair cmp semantics).

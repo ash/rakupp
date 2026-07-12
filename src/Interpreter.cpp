@@ -704,7 +704,13 @@ Value rtArrayVal(const Value& v) {
 }
 
 static Value coerceArray(const Value& v) {
-    if (v.t == VT::Array) { if (!v.isList) return v; Value r = v; r.isList = false; return r; } // @-container is an Array
+    if (v.t == VT::Array) {
+        if (v.ext) return v; // a lazy seq stays lazy (shared machinery; consumers materialise)
+        // `@b = @a` / `@x is copy` copy the top-level buffer — a fresh Array that does
+        // NOT alias the source (nested itemized arrays are containers, shared by value,
+        // matching Rakudo). Mirrors rtArrayVal so the interpreter and native backends agree.
+        Value r = Value::array(*v.arr); r.isList = false; return r;
+    }
     if (v.t == VT::Range) {
         if (v.rTo >= 9000000000000000000LL) { // …..Inf : a lazy @-array, materialised on demand
             long long start = v.rFrom + (v.rExFrom ? 1 : 0);
@@ -3696,7 +3702,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                       if (c1 == '=') return Value::boolean(a >= b); break;
             case '=': if (c1 == '=') return Value::boolean(a == b); break;
             case '!': if (c1 == '=') return Value::boolean(a != b); break;
-            case '%': if (c1 == '\0' && b != 0) { long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
+            case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
     // Mixed float fast path: one side Num, the other any simple numeric — the
@@ -4070,6 +4076,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (smallInt && op != "div") { // native fast path for small ints (div stays on BigInt for identical rounding)
                 long long a = l.toInt(), b = r.toInt();
                 if (b == 0) return Value::typeObj("Failure");
+                if (b == -1) return op == "%%" ? Value::boolean(true) : Value::integer(0); // a % -1 == 0 (avoids LLONG_MIN%-1 UB)
                 long long rem = a % b;
                 if (op == "%%") return Value::boolean(rem == 0); // divisibility is sign-independent
                 if (rem != 0 && ((rem < 0) != (b < 0))) rem += b; // sign follows divisor (matches BigInt path)
@@ -5809,7 +5816,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Complex) return Value::complex(-v.n, -v.im);
         if (v.t == VT::Int && v.big) return Value::bigint(-(*v.big));
         if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
-        if (v.t == VT::Rat) return Value::rat(-(*v.ratN), *v.ratD);
+        if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN), *v.ratD); r.fatRat = v.fatRat; return r; }
         if (v.t == VT::Str) { Value n = numifyStr(v.s); return n.t==VT::Rat ? Value::rat(-(*n.ratN),*n.ratD) : Value::number(-n.toNum()); }
         return Value::number(-v.toNum());
     }

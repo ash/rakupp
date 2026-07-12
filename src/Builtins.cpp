@@ -2682,7 +2682,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "abs") {
         if (inv.t == VT::Int && inv.big) return Value::bigint(inv.big->abs());
         if (inv.t == VT::Int) return Value::integer(std::llabs(inv.toInt()));
-        if (inv.t == VT::Rat) return Value::rat(inv.ratN->abs(), *inv.ratD);
+        if (inv.t == VT::Rat) { Value r = Value::rat(inv.ratN->abs(), *inv.ratD); r.fatRat = inv.fatRat; return r; }
         return Value::number(std::fabs(inv.toNum()));
     }
     if (m == "sqrt") { double x = inv.toNum(); return (x < 0 && langRev_ >= 2) ? Value::complex(0, std::sqrt(-x)) : Value::number(std::sqrt(x)); }

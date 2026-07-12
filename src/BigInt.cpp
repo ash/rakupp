@@ -159,17 +159,20 @@ BigInt BigInt::gcd(BigInt a, BigInt b) {
 
 bool BigInt::fitsLL() const {
     if (mag.size() > 3) return false;
-    // compare against 9.2e18; cheap: rebuild as long double-ish
-    static const BigInt maxLL(9223372036854775807ll);
+    static const BigInt maxLL(9223372036854775807ll); // 2^63 - 1
     if (sign >= 0) return cmpMag(*this, maxLL) <= 0;
-    BigInt minAbs(0); minAbs = maxLL; // |min| = max+1, but max is safe enough
-    return cmpMag(*this, maxLL) <= 0;
+    // negatives fit down to LLONG_MIN, whose magnitude is 2^63 = maxLL + 1
+    static const BigInt minAbs = maxLL + BigInt(1);
+    return cmpMag(*this, minAbs) <= 0;
 }
 
 long long BigInt::toLL() const {
-    long long r = 0;
-    for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (long long)BASE + mag[i];
-    return sign < 0 ? -r : r;
+    // saturate on overflow instead of wrapping (UB) — callers use this for native-int
+    // coercion (indexing, chr, ranges); a silent wrap produced garbage indices.
+    if (!fitsLL()) return sign < 0 ? INT64_MIN : INT64_MAX;
+    unsigned long long r = 0;
+    for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (unsigned long long)BASE + mag[i];
+    return sign < 0 ? -(long long)r : (long long)r; // r <= 2^63 here, so -(ll)r is well-defined at LLONG_MIN
 }
 
 double BigInt::toDouble() const {
