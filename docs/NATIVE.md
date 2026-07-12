@@ -23,6 +23,14 @@ User CPU time, best of 3, arm64 build on an M3 (macOS). Measured 2026-07-12.
 `echo-server`, `sleep-sort`, and `parallel` are excluded — their runtime is
 network/timer wall-clock, not compute.
 
+**User CPU is not wall clock** — don't compare these numbers with the
+`startup` row in [BENCHMARKS.md](BENCHMARKS.md). That row is wall time
+through the bench harness (spawn + output capture, 16–21 ms there, ~12 ms
+for a bare cold start). User CPU counts only the cycles the program itself
+burns — process creation, the dynamic linker, and kernel time are excluded —
+which is how a do-almost-nothing program reads ~1 ms here (measured on this
+machine: `say 1` is ~3–11 ms wall but ~1.1 ms user CPU).
+
 | Example | interp | native (`--exe`) | native is |
 |---|---:|---:|---:|
 | life (`--delay=0`) | 746.2 ms | 171.6 ms | 4.3× |
