@@ -4416,6 +4416,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         } else if ((r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.t == VT::Str || l.t == VT::Bool)) {
             res = applyArith("==", l, r).truthy(); // `$x ~~ 5` : numeric coercion ('05' ~~ 5 is True)
+            // NaN ~~ NaN is True even though NaN == NaN is False ('NaN' ~~ NaN coerces
+            // the string to NaN); ACCEPTS special-cases NaN.
+            if (!res && r.t == VT::Num && std::isnan(r.n) && std::isnan(l.toNum())) res = true;
         } else {
             res = valueEq(l, r);
         }

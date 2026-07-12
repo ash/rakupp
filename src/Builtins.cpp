@@ -649,7 +649,7 @@ static ValueList flattenArgs(ValueList& args) {
 // precision = minimum digits (precision 0 of value 0 → empty), `0` flag ignored with a
 // precision or with left-justify.
 static std::string fmtRadix(long long val, int base, bool upper, const std::string& flags,
-                            int width, int prec, bool signFlags) {
+                            int width, int prec, bool signFlags, int langRev = 1) {
     bool neg = val < 0;
     unsigned long long u = neg ? (unsigned long long)(0 - (unsigned long long)val)
                                : (unsigned long long)val;
@@ -681,16 +681,18 @@ static std::string fmtRadix(long long val, int base, bool upper, const std::stri
     if (neg) sign = "-";
     else if (signFlags && flags.find('+') != std::string::npos) sign = "+";
     else if (signFlags && flags.find(' ') != std::string::npos) sign = " ";
-    // Octal/hex `#` prefixes sit ahead of the sign (Raku quirk: sprintf("%#o",-4) → "0-100",
-    // sprintf("%#x",-256) → "0x-100"); binary keeps the sign first ("-0b100").
-    bool prefixFirst = (base == 8 || base == 16);
+    // 6.e (langRev>=2) puts the sign first for every base: sprintf("%#x",-256) →
+    // "-0x100". 6.c/6.d keep the historical "bogus" prefix-before-sign for octal/hex
+    // ("0x-100", "0-100" — roast's 6.d sprintf files assert exactly this); binary
+    // always keeps the sign first.
+    bool prefixFirst = (langRev < 2) && (base == 8 || base == 16);
     std::string core = prefixFirst ? prefix + sign + digits : sign + prefix + digits;
     if ((int)core.size() < width) {
         int pad = width - (int)core.size();
         if (flags.find('-') != std::string::npos) core += std::string(pad, ' ');
         else if (flags.find('0') != std::string::npos && prec < 0)
-            // zero-pad: for o/x the fill sits after the prefix but BEFORE the sign
-            // (sprintf("%08o",-64) → "0000-100"); for d/b it sits after sign+prefix.
+            // zero-pad fills after the prefix; for 6.c/6.d octal/hex it sits before
+            // the sign, for 6.e (and binary) after sign+prefix.
             core = prefixFirst ? prefix + std::string(pad, '0') + sign + digits
                                : sign + prefix + std::string(pad, '0') + digits;
         else core = std::string(pad, ' ') + core;
@@ -806,7 +808,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                         break;
                     }
                 }
-                out += fmtRadix(av.toInt(), radix, upper, flags2, width, prec, prefixable);
+                out += fmtRadix(av.toInt(), radix, upper, flags2, width, prec, prefixable, langRev);
                 break;
             }
             case 'c': { // codepoint → UTF-8; width counts characters, not bytes
@@ -821,24 +823,30 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     s = (flags.find('-') != std::string::npos) ? s + std::string(pad,' ') : std::string(pad,fill) + s; }
                 out += s; break; }
             case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case 'a': case 'A': {
-                // Raku ignores `#` for floats (no forced trailing dot): sprintf("%#.0f",0) → "0".
-                std::string ff; for (char c : flags) if (c != '#') ff += c;
+                // `#` on a float is version-split: 6.e honors it (forces the decimal
+                // point — sprintf("%#.0f",0) → "0."), 6.c/6.d ignore it (→ "0").
+                std::string ff;
+                for (char c : flags) if (c != '#' || langRev >= 2) ff += c;
                 double fv = nextArg().toNum();
-                // Rakudo quirk (encoded in roast sprintf-f.t, marked "bogus, but provided
-                // by the current implementation" there): `-` + `0` with an EXPLICIT
-                // precision and no sign flag formats non-negative values with
-                // precision+1, zero-padded LEFT (the `-` never left-justifies), and
-                // negative values as plain %0W.Pf.
-                if (ff.find('-') != std::string::npos && ff.find('0') != std::string::npos &&
-                    prec >= 0 && hasWidth && (conv == 'f' || conv == 'F')) {
-                    bool signFlag = ff.find('+') != std::string::npos || ff.find(' ') != std::string::npos;
-                    std::string sf = ff.find('+') != std::string::npos ? "+"
-                                   : ff.find(' ') != std::string::npos ? " " : "";
-                    int p = (!signFlag && fv >= 0) ? prec + 1 : prec;
-                    std::string spec = "%" + sf + "0" + std::to_string(width) + "." + std::to_string(p) + "f";
-                    std::vector<char> buf(std::max(64, width + prec + 64));
-                    snprintf(buf.data(), buf.size(), spec.c_str(), fv);
-                    out += buf.data(); break;
+                // `%f` with both `-` and `0` is version-split. 6.e: `0` wins — the
+                // value is zero-padded, not left-justified (opposite of C), precision
+                // unchanged (sprintf("%-08.2f",0) → "00000.00"). 6.c/6.d: the historical
+                // "bogus but provided" form — a non-negative value with no sign flag is
+                // formatted with precision+1, zero-padded ("%-08.2f",0 → "0000.000").
+                if ((conv == 'f' || conv == 'F') &&
+                    ff.find('-') != std::string::npos && ff.find('0') != std::string::npos) {
+                    if (langRev >= 2) {
+                        std::string t; for (char c : ff) if (c != '-') t += c; ff = t;
+                    } else if (prec >= 0 && hasWidth) {
+                        bool signFlag = ff.find('+') != std::string::npos || ff.find(' ') != std::string::npos;
+                        std::string sf = ff.find('+') != std::string::npos ? "+"
+                                       : ff.find(' ') != std::string::npos ? " " : "";
+                        int p = (!signFlag && fv >= 0) ? prec + 1 : prec;
+                        std::string spec = "%" + sf + "0" + std::to_string(width) + "." + std::to_string(p) + "f";
+                        std::vector<char> buf(std::max(64, width + prec + 64));
+                        snprintf(buf.data(), buf.size(), spec.c_str(), fv);
+                        out += buf.data(); break;
+                    }
                 }
                 std::string spec = "%" + ff;
                 if (hasWidth) spec += std::to_string(width);
@@ -868,8 +876,13 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 }
                 int chars = cpCount(sv);
                 if (chars < width) { int pad = width - chars;
-                    // `0` fill only applies without a precision (else spaces): %08.2s → "      Fo".
-                    char fill = (flags.find('0') != std::string::npos && flags.find('-') == std::string::npos && prec < 0) ? '0' : ' ';
+                    // `-` always wins over `0` for %s (left-justify with spaces). The
+                    // `0` fill itself is version-split: 6.e zero-fills even with a
+                    // precision (%08.2s of "Foo" → "000000Fo"); 6.c/6.d only zero-fill
+                    // without a precision (with one it pads with spaces → "      Fo").
+                    bool zeroFill = flags.find('0') != std::string::npos && flags.find('-') == std::string::npos
+                                    && (langRev >= 2 || prec < 0);
+                    char fill = zeroFill ? '0' : ' ';
                     sv = (flags.find('-') != std::string::npos) ? sv + std::string(pad,' ') : std::string(pad,fill) + sv; }
                 out += sv; break;
             }
@@ -2633,6 +2646,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (ClassInfo* c = ci; c; c = c->parent.get()) if (c->name == rn) { res = true; break; }
             if (!res) res = ci->doesRole(rn);
         }
+        // a Code value does the Callable/Code/Routine/Block roles
+        if (!res && inv.t == VT::Code &&
+            (rn == "Callable" || rn == "Code" || rn == "Routine" || rn == "Block" || rn == "Sub"))
+            res = true;
         return Value::boolean(res);
     }
     if (m == "name" || m == "^name") return Value::str(inv.typeName());
@@ -3228,7 +3245,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::str(r);
     }
     if (m == "flip") { auto cps = utf8cp(inv.toStr()); std::string r; for (auto it = cps.rbegin(); it != cps.rend(); ++it) r += cpToUtf8(*it); return Value::str(r); }
-    if (m == "ords") { Value out = Value::array(); for (auto cp : utf8cp(inv.toStr())) out.arr->push_back(Value::integer(cp)); return out; }
+    if (m == "ords") { Value out = Value::array(); for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
     if (m == "chomp") { std::string s = inv.toStr(); if (!s.empty() && s.back() == '\n') s.pop_back(); return Value::str(s); }
     if (m == "trim") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a, b - a + 1)); }
     if (m == "trim-leading") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a)); }
@@ -4380,10 +4397,29 @@ void Interpreter::registerBuiltins() {
         double er = a.size() > 1 ? re(a[1]) : 0, ei = a.size() > 1 ? im(a[1]) : 0;
         double tol = 1e-5;
         std::string desc;
-        if (a.size() > 2) { if (a[2].isNumeric()) tol = a[2].toNum(); else desc = a[2].toStr(); }
+        bool haveRel = false, haveAbs = false, havePosTol = false;
+        double relTol = 0, absTol = 0;
+        // named :rel-tol / :abs-tol arrive as positional Pairs; a bare numeric 3rd
+        // arg is the (relative) tolerance, a Str is the description.
+        for (size_t i = 2; i < a.size(); i++) {
+            if (a[i].t == VT::Pair) {
+                std::string k = a[i].s; double val = a[i].pairVal ? a[i].pairVal->toNum() : 0;
+                if (k == "rel-tol") { haveRel = true; relTol = val; }
+                else if (k == "abs-tol") { haveAbs = true; absTol = val; }
+            } else if (a[i].isNumeric() && !havePosTol) { tol = a[i].toNum(); havePosTol = true; }
+            else if (a[i].t == VT::Str && desc.empty()) desc = a[i].toStr();
+        }
+        double diff = std::hypot(gr - er, gi - ei);
         double gm = std::hypot(gr, gi), em = std::hypot(er, ei);
-        double scale = std::max({gm, em, 1.0});
-        bool c = std::hypot(gr - er, gi - ei) <= tol * scale;
+        bool c;
+        if (haveRel || haveAbs) {
+            c = true;
+            if (haveAbs) c = c && (diff <= absTol);
+            if (haveRel) { double mx = std::max(gm, em); c = c && (mx == 0 ? true : diff / mx <= relTol); }
+        } else {
+            double scale = std::max({gm, em, 1.0});
+            c = diff <= tol * scale;
+        }
         I.emitTest(c, desc);
         return Value::boolean(c);
     };
@@ -4410,7 +4446,8 @@ void Interpreter::registerBuiltins() {
                 Value r;
                 if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
                 else if (a[0].t == VT::Str) r = I.evalString(a[0].s);
-                if (r.t == VT::Type && r.s == "Failure") failed = true;
+                // `fail` returns a live Failure (a hashKind-tagged Hash), not the type object
+                if ((r.t == VT::Hash && r.hashKind == "Failure") || (r.t == VT::Type && r.s == "Failure")) failed = true;
             } catch (RakuError&) { failed = true; }
         }
         // description = the first Str positional after the exception type (index >= 2)
@@ -4815,6 +4852,12 @@ void Interpreter::registerBuiltins() {
         return p == std::string::npos ? Value::nil() : Value::integer((long long)p); };
     B["min"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = a; Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) < 0) { best = v; s = true; } } return s ? best : Value::any(); };
     B["max"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = a; Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) > 0) { best = v; s = true; } } return s ? best : Value::any(); };
+    B["minmax"] = [](Interpreter&, ValueList& a) -> Value {
+        Value lo, hi; bool s = false;
+        for (auto& v : a) { if (!s) { lo = hi = v; s = true; } else { if (valueCmp(v, lo) < 0) lo = v; if (valueCmp(v, hi) > 0) hi = v; } }
+        if (!s) return Value::any();
+        return Value::range(lo.toInt(), hi.toInt(), false, false);
+    };
     B["elems"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer(a.empty() ? 0 : (long long)toList(a[0]).size()); };
     B["defined"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(!a.empty() && defined(a[0])); };
     // Prefix forms of the metamethods: WHAT($x) === $x.WHAT, etc.
