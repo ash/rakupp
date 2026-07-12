@@ -25,38 +25,45 @@ implemented on Rat, sprintf 6.e space-flag `% b`→`0`, etc.).
   Remaining known limitation: a closure that READS a captured local which is
   mutated later in the enclosing scope still snapshots (narrow; not detected).
 
-### Pair-form campaign (DEFERRED, tracked — 2026-07-13)
+### Pair-form campaign (DEFERRED, tracked — updated 2026-07-13)
 
-Status: the Pair-form fix is **held out** by user decision. Landing it (with
-the standalone fixes already committed) measures **383** full-pass; **~36
-files** still carry pre-existing bugs inside subtests that only run once the
-Pair form works. This is a multi-session grind, revisited as its own push.
+Status: the Pair-form fix stays **held out of the tree** so the gate does not
+regress. Applying it alone measures **381** full-pass (down from 419) — **38
+files** carry pre-existing bugs inside subtests that only run once the Pair
+form works. The plan is to fix those bugs *first*, banked as gate-safe commits
+(dormant until the Pair form lands), then land the Pair form + honest doc
+update in one batch once the drop is small.
 
-To resume: re-apply the one-line Pair-form change in `subtest` (extract the
-Code from a `desc => {…}` Pair) and work the still-down list. Landed so far
-from this surface: **6.e pragma activation** (`use v6.e.PREVIEW` was a total
-no-op — parser dropped the version, so langRev_ never moved; committed
-`9dd79fd`), **Rat `.isNaN`**, **sprintf 6.e binary flags** (fixes sprintf-b/d).
+The one-line change (in `subtest`, extract the Code from a `desc => {…}` Pair):
+```cpp
+else if (v.t == VT::Pair) { desc = v.s; if (v.pairVal && v.pairVal->t == VT::Code) code = *v.pairVal; }
+```
 
-The ~36 still-down files, by rough category:
-- sprintf `#`/precision edges (6.e): sprintf-e/f/o/s/x — `%#.0f`→`0.`,
-  `%#.0e`→`0.e+00`, `%#x` of a negative → `-0x100`, `%08.2s` of empty → pad.
-- Rat NaN/Inf semantics: rat.t (.raku/EVAL round-trip of NaN.Rat, Rational
-  math on 0-denominator Rats not throwing, `===` on 0-den Rats), num/complex/
-  stress.
-- The rest span smartmatch (any-callable/num/type), roles (rw, submethods-6e,
-  mro-6e, roles-6e), IO (chdir, seek, io-spec-unix, print, prompt), Test
-  helpers (is-approx, is_deeply, fails-like), and a long tail — each a distinct
-  bug in a now-running subtest. Full list: `comm -23` the 419 pass-list against
-  a Pair-form gate.
+**Recovered so far (7 files, fixes committed dormant):**
+- `sprintf-{e,f,o,s,x}` — version-aware `#`/`-0`/`0`-fill (6.c/6.d keep the
+  historical "bogus" forms, 6.e the modern ones; both asserted by roast).
+  Commit `c5fc267`.
+- `S03-smartmatch/any-num` — `'NaN' ~~ NaN` is True; `&minmax` registered.
+- `S24-testing/10-is-approx` — named `:rel-tol`/`:abs-tol`.
+Also partially fixed (not yet fully green): `fails-like` (live Failure now
+recognized; exception-type/message matching still incomplete), `ords` (values
+now NFC-composed; `.ords.iterator` protocol still failing), `.does(Callable)`
+on Code, smartmatch on type objects (blocked — `applyArith` is a free function
+with no class registry).
 
-DECISION (superseded above): split the batch. Land everything EXCEPT the
-Pair-form fix now (zero-regression vs the 418 baseline). The Pair-form fix is
-CORRECT and important but must land WITH the exposed pre-existing bugs fixed
-(or with an explicit, documented acceptance of the lower honest count) —
-tracked as its own effort. The worker-scope-anchor deadlock fix and the when-in-map crash
-fix stay in the landed batch (they're real fixes; without the Pair form
-nothing in the suite triggers them yet, but they're correct).
+**31 files still down**, by category:
+- Rat/Num 0-denominator (Inf/NaN) semantics: `rat`, `stress`, `complex` —
+  arithmetic on `<1/0>`/`<0/0>`, `Int()` coercion must throw
+  X::Numeric::DivideByZero, `===`/`==` on 0-den Rats, `.raku.EVAL` round-trip.
+- roles/class 6e: `mro-6e`, `roles-6e` (BUILD order), `submethods-6e`,
+  `rw`(S12/S14), `walk` (`.^walk`), `attributes`, `unpackability`.
+- IO: `chdir`, `seek`, `io-spec-unix` (IO::Spec path split), `print`, `prompt`.
+- Test/misc: `is_deeply` (needs a real Junction type — architectural),
+  `fails-like`, `any-callable`, `any-type`, `hyperwhatever`, `constant-6.d`,
+  `categorize-list`, `toggle`, `subst` (S///, :Nth:g, list-$/),
+  `cur-current-distribution`, `numbered-alias`, `lock`, `supplier-preserving`,
+  `misc-6.c`.
+Full current list: `comm -23` the 419 pass-list against a Pair-form gate.
 
 
 ## Fix progress
