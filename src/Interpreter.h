@@ -181,7 +181,8 @@ public:
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs, bool methodCtx);
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
-    void hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility)
+    bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
+    void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
     void runFirstPhasers(const std::vector<StmtPtr>& stmts); // FIRST once before a loop's first iteration

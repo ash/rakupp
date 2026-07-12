@@ -823,13 +823,32 @@ Interpreter::Interpreter() {
     registerBuiltins();
 }
 
-void Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
+bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
+    bool any = false;
     for (auto& s : stmts) {
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<SubDecl*>(s.get());
-            if (!sd->isMethod && !sd->name.empty()) exec(s.get());
+            if (!sd->isMethod && !sd->name.empty()) { exec(s.get()); any = true; }
+        }
+    }
+    return any;
+}
+
+// A named sub hoisted into a scope closes over that scope's Env and is stored back
+// into it, forming a shared_ptr cycle (Env→Value→Callable→closure→Env, plus a
+// second edge via stateEnv->parent) that neither side can free — the frame leaks.
+// When the frame exits, break the back-edges of any Code that closes over THIS env
+// and is referenced nowhere else (use_count 1 ⇒ it did not escape via return or
+// assignment). A torn-down non-escaped frame has no surviving `state` to preserve.
+void Interpreter::breakSelfClosures(Env* env) {
+    for (auto& kv : env->vars) {
+        Value& v = kv.second;
+        if (v.t == VT::Code && v.code && v.code.use_count() == 1 &&
+            v.code->closure.get() == env) {
+            v.code->closure.reset();
+            v.code->stateEnv.reset();
         }
     }
 }
@@ -1614,6 +1633,12 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts) {
 Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     auto saved = tctx_.cur;
     tctx_.cur = std::move(scope);
+    // A named sub hoisted into this block leaks the block env via a closure cycle
+    // (see breakSelfClosures). Break it just before restoring tctx_.cur, while the
+    // block env is still held by tctx_.cur (so the raw pointer is valid). Gated on
+    // hasNestedSub → zero cost for the overwhelmingly common sub-free block.
+    Env* blockEnv = tctx_.cur.get();
+    bool hasNestedSub = false;
     Value last = Value::any();
     // index of the last statement whose value becomes the block's value; earlier
     // statements are always sink (their value is discarded either way).
@@ -1630,7 +1655,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     Block* catchBlk = nullptr;
     for (auto& s : b->stmts)
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
-    hoistSubs(b->stmts);
+    hasNestedSub = hoistSubs(b->stmts);
     runEnterPhasers(b->stmts);
     // Run the block's CATCH handler; returns true if `.resume` was called (so the
     // block should carry on after the throwing statement).
@@ -1656,7 +1681,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                 try { last = exec(s.get(), sink || i != lastIdx); }
                 catch (RakuError& e) {
                     if (runCatch(e)) continue;           // .resume → next statement
-                    runLeavePhasers(b->stmts); tctx_.cur = saved; return Value::nil(); // handled
+                    runLeavePhasers(b->stmts); if (hasNestedSub) breakSelfClosures(blockEnv); tctx_.cur = saved; return Value::nil(); // handled
                 }
             } else {
                 last = exec(s.get(), sink || i != lastIdx);
@@ -1665,14 +1690,17 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         }
     } catch (RakuError& e) {
         runLeavePhasers(b->stmts);
+        if (hasNestedSub) breakSelfClosures(blockEnv);
         tctx_.cur = saved;
         throw;
     } catch (...) {
         runLeavePhasers(b->stmts);
+        if (hasNestedSub) breakSelfClosures(blockEnv);
         tctx_.cur = saved;
         throw;
     }
     runLeavePhasers(b->stmts);
+    if (hasNestedSub) breakSelfClosures(blockEnv);
     tctx_.cur = saved;
     return last;
 }
@@ -3170,6 +3198,15 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.builtin) return c.builtin(*this, args);
 
     auto env = std::make_shared<Env>();
+    // Break the leak cycle a nested named sub would form (see breakSelfClosures).
+    // The guard fires only when hoistSubs (below) reported a nested sub, and
+    // destructs before `env` does, on every exit path. `env` is a live local, so
+    // the reference stays valid — no extra shared_ptr copy on the hot path.
+    bool hasNestedSub = false;
+    struct CycleBreaker {
+        Interpreter* self; std::shared_ptr<Env>& env; bool& active;
+        ~CycleBreaker() { if (active && env) self->breakSelfClosures(env.get()); }
+    } cycleBreaker{this, env, hasNestedSub};
     // `state` vars live in a per-callable persistent env spliced into the lookup chain.
     // Its parent is constant (the closure scope, or global), so create it exactly once
     // — never rewrite it per call. That keeps concurrent invocations of the SAME closure
@@ -3224,7 +3261,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
     } fguard{tctx_, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
-    if (c.body) hoistSubs(*c.body); // nested named subs are visible throughout the body
+    if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
     Block* catchBlk = nullptr;
     if (c.body) for (auto& s : *c.body)
