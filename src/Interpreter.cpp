@@ -1043,6 +1043,7 @@ void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
     saveCtx(parked);
     gilYieldNotify();
     ps->cv.wait(plk, [&] { return ps->done; });
+    plk.unlock();          // drop ps->m BEFORE reacquiring the GIL (avoids ABBA with keep/break/second-awaiter)
     gil_.lock();
     loadCtx(parked);
 }
@@ -1064,8 +1065,10 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         saveCtx(parked);
         gilYieldNotify();
         ctx->cv.wait(lk, [&] { return ctx->liveSources <= 0 || ctx->closed; });
+        lk.unlock();       // drop ctx->m before reacquiring the GIL (avoids ABBA with emitters)
         gil_.lock();
         loadCtx(parked);
+        lk.lock();         // re-check the loop condition under ctx->m
     }
 }
 
@@ -1098,13 +1101,13 @@ void Interpreter::drainWorkers() {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::vector<WorkerSlot> batch;
+    { std::lock_guard<std::mutex> lk(sharedMut_); batch.swap(workers_); } // take ownership under the lock
     if (liveWorkers_.load() > 0) {
-        for (auto& t : workers_) t.th.detach(); // daemon: don't wait on it
-        workers_.clear();
+        for (auto& t : batch) t.th.detach(); // daemon: don't wait on it
         abandonedWorkers_ = true;
     } else {
-        for (auto& t : workers_) if (t.th.joinable()) t.th.join(); // reap the finished threads
-        workers_.clear();
+        for (auto& t : batch) if (t.th.joinable()) t.th.join(); // reap the finished threads
     }
     gilHeld_ = false;
 }
@@ -1567,7 +1570,19 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts) {
     std::vector<Block*> leaves;
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO") leaves.push_back(b); }
-    for (auto it = leaves.rbegin(); it != leaves.rend(); ++it) { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; try { execBlock(*it, sc); } catch (...) {} }
+    // A LEAVE/KEEP/UNDO phaser body runs to completion even though the block is
+    // leaving via a cooperative return/next/last — those flags belong to the
+    // OUTER control flow. Save and clear them around each phaser so execBlock's
+    // "break on returning/loopCtl" doesn't truncate the phaser to one statement,
+    // then restore so the outer transfer still happens.
+    for (auto it = leaves.rbegin(); it != leaves.rend(); ++it) {
+        bool savedRet = tctx_.returning; Value savedRV = tctx_.returnV;
+        int savedLC = tctx_.loopCtl;
+        tctx_.returning = false; tctx_.loopCtl = 0;
+        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+        try { execBlock(*it, sc); } catch (...) {}
+        tctx_.returning = savedRet; tctx_.returnV = std::move(savedRV); tctx_.loopCtl = savedLC;
+    }
     // `temp`-saved containers are restored on scope exit (reverse order), after LEAVE blocks.
     if (tctx_.cur && !tctx_.cur->tempRestores.empty()) {
         for (auto it = tctx_.cur->tempRestores.rbegin(); it != tctx_.cur->tempRestores.rend(); ++it) (*it)();
@@ -3173,6 +3188,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     tctx_.cur = env;
     tctx_.curStateEnv = c.stateEnv.get();
     tctx_.dynStack.push_back(saved.get()); // caller's scope, for dynamic $*var lookup
+    // restore() puts the caller's scope back; called on every exit path. (ENTER
+    // phasers now run inside the try, and the CATCH body is wrapped, so a throw
+    // from either restores instead of leaking dynStack / bleeding scope.)
+    auto restore = [&] { tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back(); };
     // cooperative-return frame bookkeeping: every callable bumps frameTop;
     // a ROUTINE (not a bare block) is a return boundary
     ++tctx_.frameTop;
@@ -3189,8 +3208,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     Block* catchBlk = nullptr;
     if (c.body) for (auto& s : *c.body)
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
-    if (c.body) runEnterPhasers(*c.body);
     try {
+        if (c.body) runEnterPhasers(*c.body);
         if (c.body) {
             size_t nst = c.body->size();
             for (size_t i = 0; i < nst; i++) {
@@ -3213,7 +3232,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     } catch (ReturnEx& r) {
         if (c.body) runLeavePhasers(*c.body);
-        tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+        restore();
         copyOutRw(c.params, env, rwArgs, false);
         return r.v;
     } catch (RakuError& e) {
@@ -3223,8 +3242,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             try {
                 for (auto& s : catchBlk->stmts) exec(s.get());
             } catch (BreakGivenEx&) { /* a when/default matched */ }
+            catch (...) { if (c.body) runLeavePhasers(*c.body); restore(); throw; } // die/rethrow from CATCH
             if (c.body) runLeavePhasers(*c.body);
-            tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+            restore();
             return Value::nil();
         }
         if (c.body) runLeavePhasers(*c.body);
@@ -5927,10 +5947,42 @@ Value Interpreter::evalCall(Call* c) {
         // `temp $x` / `temp @a` — snapshot the container now, restore it when the current
         // scope leaves (dynamic-scope save, like Perl's local). Modifications persist until then.
         if (c->name == "temp" && c->args.size() == 1 && !tctx_.cur->find("&temp")) {
-            if (Value* lv = lvalue(c->args[0].get())) {
-                Value snapshot = *lv; // deep-copy containers so later mutation doesn't touch the snapshot
-                if (snapshot.t == VT::Array && snapshot.arr) snapshot.arr = std::make_shared<ValueList>(*snapshot.arr);
-                else if (snapshot.t == VT::Hash && snapshot.hash) snapshot.hash = std::make_shared<std::map<std::string, Value>>(*snapshot.hash);
+            auto snap = [](Value v) { // detach container storage so later mutation misses the snapshot
+                if (v.t == VT::Array && v.arr) v.arr = std::make_shared<ValueList>(*v.arr);
+                else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<std::map<std::string, Value>>(*v.hash);
+                return v;
+            };
+            // `temp @a[$i]` / `temp %h<k>`: restore THROUGH the container by key, not
+            // through a raw element pointer — the element storage can reallocate (a
+            // later push) before the scope leaves, dangling a captured Value*.
+            Expr* tgt = c->args[0].get();
+            if (tgt->kind == NK::Index) {
+                auto* ix = static_cast<Index*>(tgt);
+                Value base = eval(ix->base.get());
+                Value key = eval(ix->index.get());
+                if (base.t == VT::Array && base.arr && !ix->isHash) {
+                    auto arr = base.arr; long long i = key.toInt();
+                    if (i < 0) i += (long long)arr->size();
+                    if (i >= 0 && i < (long long)arr->size()) {
+                        Value snapshot = snap((*arr)[i]);
+                        tctx_.cur->tempRestores.push_back([arr, i, snapshot]() {
+                            if (i < (long long)arr->size()) (*arr)[i] = snapshot;
+                        });
+                        return (*arr)[i];
+                    }
+                }
+                else if (base.t == VT::Hash && base.hash) {
+                    auto h = base.hash; std::string k = key.toStr();
+                    Value snapshot = h->count(k) ? snap((*h)[k]) : Value::any();
+                    bool existed = h->count(k) > 0;
+                    tctx_.cur->tempRestores.push_back([h, k, snapshot, existed]() {
+                        if (existed) (*h)[k] = snapshot; else h->erase(k);
+                    });
+                    return h->count(k) ? (*h)[k] : Value::any();
+                }
+            }
+            if (Value* lv = lvalue(tgt)) { // plain `temp $x` / `temp @a`: the Env slot is stable
+                Value snapshot = snap(*lv);
                 tctx_.cur->tempRestores.push_back([lv, snapshot]() { *lv = snapshot; });
                 return *lv;
             }

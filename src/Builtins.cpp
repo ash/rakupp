@@ -139,23 +139,32 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     if (parked) gil->gilUnpark(true);
     return;
 #else
+    // Build the argv vector BEFORE fork — malloc between fork and execvp is unsafe
+    // in a multithreaded process (another thread can hold the allocator lock at
+    // fork, deadlocking the child pre-exec).
+    std::vector<char*> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
+    cargv.push_back(nullptr);
     int pipefd[2], errfd[2];
     if (pipe(pipefd) != 0) return;
     if (errOut && pipe(errfd) != 0) { close(pipefd[0]); close(pipefd[1]); return; }
     pid_t pid = fork();
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); if (errOut) { close(errfd[0]); close(errfd[1]); } return; }
-    if (pid == 0) { // child
+    if (pid == 0) { // child — async-signal-safe only from here
+        setpgid(0, 0); // own process group, so a timeout can kill grandchildren too
         dup2(pipefd[1], STDOUT_FILENO);
         if (errOut) dup2(errfd[1], STDERR_FILENO);
         else { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
         close(pipefd[0]); close(pipefd[1]);
         if (errOut) { close(errfd[0]); close(errfd[1]); }
-        std::vector<char*> cargv;
-        for (auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
-        cargv.push_back(nullptr);
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
+    // parent: don't let a concurrent spawn (another worker) inherit our read ends
+    // across its execvp — that would keep the write end open and defer our EOF.
+    fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+    if (errOut) fcntl(errfd[0], F_SETFD, FD_CLOEXEC);
     close(pipefd[1]);
     int fd = pipefd[0];
     fcntl(fd, F_SETFL, O_NONBLOCK);
@@ -190,11 +199,11 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         if (oEof && eEof) break;
         if (timeoutSec > 0) {
             double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            if (elapsed > timeoutSec) { kill(pid, SIGKILL); timedout = true; break; }
+            if (elapsed > timeoutSec) { kill(-pid, SIGKILL); kill(pid, SIGKILL); timedout = true; break; }
         }
     }
-    int status;
-    waitpid(pid, &status, 0);            // reap; safe now that the pipe is drained (or we killed it)
+    int status = 0;
+    while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {} // reap; retry on EINTR
     if (!timedout) exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     close(fd);
     if (efd >= 0) close(efd);
@@ -255,24 +264,26 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
     if (parked) gil->gilUnpark(true);
     return;
 #else
+    std::vector<char*> cargv; // build argv before fork (no malloc between fork & exec)
+    cargv.reserve(argv.size() + 1);
+    for (auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
+    cargv.push_back(nullptr);
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) != 0) return;
     if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return; }
     pid_t pid = fork();
     if (pid < 0) { close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]); return; }
-    if (pid == 0) { // child
+    if (pid == 0) { // child — async-signal-safe from here
         dup2(inPipe[0], STDIN_FILENO);
         dup2(outPipe[1], STDOUT_FILENO);
         int devnull = open("/dev/null", O_WRONLY);
         if (devnull >= 0) dup2(devnull, STDERR_FILENO);
         close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
-        std::vector<char*> cargv;
-        for (auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
-        cargv.push_back(nullptr);
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
     close(inPipe[0]); close(outPipe[1]);
+    fcntl(inPipe[1], F_SETFD, FD_CLOEXEC); fcntl(outPipe[0], F_SETFD, FD_CLOEXEC);
     int wfd = inPipe[1], rfd = outPipe[0];
     fcntl(wfd, F_SETFL, O_NONBLOCK);
     fcntl(rfd, F_SETFL, O_NONBLOCK);
@@ -301,8 +312,8 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
             if (written >= input.size()) { wOpen = false; close(wfd); } // done: signal EOF to child
         }
     }
-    int status;
-    waitpid(pid, &status, 0);
+    int status = 0;
+    while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
     exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (parked) gil->gilUnpark(true); // reacquire the GIL before touching interpreter state
 #endif
@@ -4958,7 +4969,9 @@ void Interpreter::registerBuiltins() {
     B["supply"] = [](Interpreter& I, ValueList& a) -> Value {
         // supply { emit ...; done } : run the block now, collecting emitted values
         ValueList vals; I.tctx_.supplyStack.push_back(&vals);
-        if (!a.empty() && a.back().t == VT::Code) I.callCallable(a.back(), {});
+        try {
+            if (!a.empty() && a.back().t == VT::Code) I.callCallable(a.back(), {});
+        } catch (...) { I.tctx_.supplyStack.pop_back(); throw; } // a throw (die/last/…) must still pop our &vals
         I.tctx_.supplyStack.pop_back();
         Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v;
         return s;
