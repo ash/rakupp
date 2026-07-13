@@ -89,7 +89,16 @@ $/ scopes to the ROUTINE (Env.routineFrame; setMatchVar walks to it), single
 ordinal :2nd:g yields a Match not a List. subst.t recovered (191/191);
 S05-match/blocks.t newly green on the committed gate (424 / 157,590).
 
-**~21 files still down**, by category:
+Batch 7 (`e426a35`) — strict Rakudo fails-like (unhandled-Failure-only, typed
++ named matchers, X::Match::Bool), Failure handled-marking, zero-den
+.Int/.floor/.ceiling/.round FAIL instead of throwing, real \(…) Captures
+(assoc-indexable bare), statement-level anonymous sub-call, junction .raku
+form, is-deeply expected/got diagnostics, only ~~ exempt from currying,
+substr-eq implemented in full. 9-is_deeply.t + fails-like.t recovered;
+substr-eq.t 87/87 (its matrix was dying — plan now fully counted:
+denominator +~90). Gate 423 / **157,665**.
+
+**~19 files still down**, by category:
 - Rat/Num 0-denominator (Inf/NaN) semantics: `rat`, `stress`, `complex` —
   arithmetic on `<1/0>`/`<0/0>`, `Int()` coercion must throw
   X::Numeric::DivideByZero, `===`/`==` on 0-den Rats, `.raku.EVAL` round-trip.
