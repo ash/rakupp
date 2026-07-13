@@ -4004,6 +4004,83 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return out;
         }
+        if ((m == "categorize-list" || m == "classify-list") && inv.t == VT::Hash) {
+            // %h.categorize-list(mapper, values, :&as) — mutate %h in place (shared
+            // container) and return it. mapper: Callable → mapper(v); Hash → lookup;
+            // Array → index. categorize: the result is a LIST of categories (each a
+            // key, or a key-PATH array for nested classification); classify: one.
+            if (inv.hashKind == "Bag" || inv.hashKind == "Mix" || inv.hashKind == "Set")
+                throw RakuError{Value::typeObj("X::Immutable"),
+                                "Cannot call " + m + " on an immutable " + inv.hashKind};
+            bool baggy = inv.hashKind == "BagHash" || inv.hashKind == "MixHash";
+            Value asF, mapper; bool haveMapper = false; ValueList vals;
+            for (auto& a2 : args) {
+                if (a2.t == VT::Pair && a2.s == "as" && a2.pairVal) { asF = *a2.pairVal; continue; }
+                if (!haveMapper) { mapper = a2; haveMapper = true; continue; }
+                if (a2.t == VT::Array && a2.ext)
+                    throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list"};
+                if (a2.t == VT::Range || a2.t == VT::Array) { for (auto& x : a2.flatten()) vals.push_back(x); }
+                else vals.push_back(a2);
+            }
+            int runMode = 0; // 0 unset, 1 flat keys, 2 nested key-paths (mixing throws)
+            for (auto& v : vals) {
+                Value cat;
+                if (mapper.t == VT::Code) cat = callCallable(mapper, ValueList{v});
+                else if (mapper.t == VT::Hash) {
+                    if (!mapper.hash) continue;
+                    auto f = mapper.hash->find(v.toStr());
+                    if (f == mapper.hash->end()) continue;
+                    cat = f->second;
+                }
+                else if (mapper.t == VT::Array) {
+                    long long i = v.toInt();
+                    if (!mapper.arr || i < 0 || (size_t)i >= mapper.arr->size()) continue;
+                    cat = (*mapper.arr)[i];
+                }
+                else continue;
+                if (cat.t == VT::Nil || cat.t == VT::Any) continue; // Nil category: skip the value
+                ValueList cats;
+                if (m == "categorize-list" && cat.t == VT::Array) {
+                    if (!cat.arr || cat.arr->empty()) continue;
+                    cats = *cat.arr;
+                } else cats.push_back(cat);
+                Value sv = asF.t == VT::Code ? callCallable(asF, ValueList{v}) : v;
+                for (auto& c : cats) {
+                    int mode = c.t == VT::Array ? 2 : 1;
+                    if (runMode == 0) runMode = mode;
+                    else if (runMode != mode)
+                        throw RakuError{Value::typeObj("X::Invalid::ComputedValue"),
+                            m + " mapper on " + inv.typeName() + " cannot produce mixed-level keys"};
+                    if (mode == 2 && baggy)
+                        throw RakuError{Value::typeObj("X::Invalid::ComputedValue"),
+                            m + " mapper on " + inv.typeName() + " cannot produce multi-level keys"};
+                    if (mode == 1) {
+                        Value& slot = (*inv.hash)[c.toStr()];
+                        if (baggy) {
+                            if (inv.hashKind == "BagHash")
+                                slot = Value::integer((slot.t == VT::Int ? slot.i : 0) + 1);
+                            else
+                                slot = Value::number((slot.isNumeric() ? slot.toNum() : 0.0) + 1.0);
+                        } else {
+                            if (slot.t != VT::Array || !slot.arr) { slot = Value::array(); slot.itemized = true; }
+                            slot.arr->push_back(sv);
+                        }
+                    } else { // key path: descend/autovivify nested hashes, push at the leaf
+                        if (!c.arr || c.arr->empty()) continue;
+                        Value* curH = &inv;
+                        for (size_t k = 0; k + 1 < c.arr->size(); k++) {
+                            Value& slot = (*curH->hash)[(*c.arr)[k].toStr()];
+                            if (slot.t != VT::Hash || !slot.hash) { slot = Value::makeHash(); slot.itemized = true; }
+                            curH = &slot;
+                        }
+                        Value& slot = (*curH->hash)[c.arr->back().toStr()];
+                        if (slot.t != VT::Array || !slot.arr) { slot = Value::array(); slot.itemized = true; }
+                        slot.arr->push_back(sv);
+                    }
+                }
+            }
+            return inv;
+        }
         if (m == "toggle" && inv.t == VT::Hash) { // Any.toggle works over .list
             Value lst = methodCall(inv, "list", ValueList{});
             return methodCall(lst, "toggle", args, rwArgs);

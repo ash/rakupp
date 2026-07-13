@@ -89,6 +89,7 @@ struct SymbolicRef : Expr {
 struct ArrayLit : Expr { // [ ... ]  or a word-list < ... > / qw
     std::vector<ExprPtr> items;
     bool isList = false; // word-lists are flattening Lists; bracket [..] literals are not
+    bool fromCommaList = false; // [a, b] / [x,]: members are ITEMS — a List member stays one element
     ArrayLit(): Expr(NK::ArrayLit) {}
 };
 

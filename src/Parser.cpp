@@ -218,6 +218,8 @@ bool Parser::startsListopArg(const Token& t) const {
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)
                    t.text == "::" || // symbolic reference `say ::($name)` / `say ::Foo`
                    t.text == "$" || // item contextualizer `ok $%*ENV` / `say $(1,2)` (bare `$` is never an infix)
+                   ((t.text == "%" || t.text == "@") && &t == &cur() &&
+                    peek().kind == Tok::LParen && !peek().spaceBefore) || // hash/list contextualizer `is-deeply %(...)…` / `push @(...)…`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
@@ -450,13 +452,31 @@ ExprPtr Parser::parsePrefix(bool tight) {
             u->op = "?"; u->operand = parseExpr(BP_PREFIX);
             return u;
         }
-        // contextualizer: $(...) @(...) %(...) $@foo etc.
+        // contextualizer: $(...) @(...) %(...) $[...] ${...} $@foo etc.
         if (o == "$" || o == "@" || o == "%") {
             advance();
             auto u = std::make_unique<Unary>();
-            // parsePrefix (not just primary) so nested contextualizers like $%( ... ) work
-            u->op = "ctx" + o; u->operand = parsePrefix();
-            return u;
+            u->op = "ctx" + o;
+            // circumfix forms complete the term at the closing bracket — postfixes
+            // bind to the CONTEXTUALIZED value: %(:a(1)).raku is (%(:a(1))).raku,
+            // ${:k(1)} is an itemized hash, $[1,2].elems counts the itemized array.
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                advance();
+                u->operand = isKind(Tok::RParen) ? ExprPtr(std::make_unique<ListExpr>())
+                                                 : parseExpression();
+                if (u->operand->kind == NK::ListExpr) static_cast<ListExpr*>(u->operand.get())->parenned = true;
+                expectKind(Tok::RParen, ")");
+                return parsePostfix(std::move(u), tight);
+            }
+            if ((isKind(Tok::LBrace) || isKind(Tok::LBracket)) && !cur().spaceBefore) {
+                u->operand = parsePrimary();
+                return parsePostfix(std::move(u), tight);
+            }
+            // sigil-on-variable form ($@foo, $%h): parsePrefix (not just primary) so
+            // nested contextualizers work; tight, so a space-preceded `.method`
+            // binds to the contextualized value.
+            u->operand = parsePrefix(true);
+            return parsePostfix(std::move(u), tight);
         }
     }
     // user-defined prefix operator: `sub prefix:<§>` — symbolic (Op) or word (Ident)
@@ -1220,11 +1240,24 @@ ExprPtr Parser::parsePrimary() {
             if (cur().text == "$" && peek().kind == Tok::Op && peek().text == "." && !peek().spaceBefore) {
                 int ln = cur().line; advance(); auto s = std::make_unique<SelfTerm>(); s->line = ln; return s;
             }
+            // `${ ... }` — itemized hash literal (the lexer split off a lone `$`;
+            // without this, the braces would parse as a hash-index on `$`).
+            if (cur().text == "$" && peek().kind == Tok::LBrace && !peek().spaceBefore) {
+                advance();
+                auto u = std::make_unique<Unary>();
+                u->op = "ctx$"; u->operand = parsePrimary();
+                return u;
+            }
             int ln = cur().line; auto e = std::make_unique<VarExpr>(stripPseudoPkg(advance().text)); e->line = ln; return e;
         }
         case Tok::LParen: {
             advance();
-            if (isKind(Tok::RParen)) { advance(); return std::make_unique<ListExpr>(); }
+            if (isKind(Tok::RParen)) {
+                advance();
+                auto empty = std::make_unique<ListExpr>();
+                empty->parenned = true; // `(), a, b` is a 3-element list — the comma chain must not extend ()
+                return empty;
+            }
             ExprPtr e = parseExpression();
             // statement modifier inside parens:  (42 if $x)  (42 unless $x)  (42 with $y)
             if (isIdent("if") || isIdent("unless") || isIdent("with") || isIdent("without")) {
@@ -1347,6 +1380,9 @@ ExprPtr Parser::parsePrimary() {
                 if (e->kind == NK::ListExpr) {
                     auto* l = static_cast<ListExpr*>(e.get());
                     for (auto& it : l->items) arr->items.push_back(std::move(it));
+                    // `[<a b>,]` / `[x, y]`: comma members are items — a List member
+                    // stays one element ([<a b>] without the comma still flattens).
+                    arr->fromCommaList = true;
                 } else arr->items.push_back(std::move(e));
             }
             expectKind(Tok::RBracket, "]");
@@ -2002,7 +2038,8 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
         if ((c == '$' || c == '@' || c == '%') &&
             (i + 1 < n) && (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
                             raw[i + 1] == '{' || raw[i + 1] == '*' || raw[i + 1] == '!' ||
-                            raw[i + 1] == '.' || (unsigned char)raw[i + 1] >= 0x80)) {
+                            raw[i + 1] == '.' || raw[i + 1] == '^' ||
+                            (unsigned char)raw[i + 1] >= 0x80)) {
             char sig = c;
             size_t j = i + 1;
             std::string var(1, sig);
@@ -2019,8 +2056,8 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
                 i = j + 1;
                 continue;
             }
-            // twigil
-            if (raw[j] == '*' || raw[j] == '!' || raw[j] == '.') var += raw[j++];
+            // twigil ($*dyn, $!attr, $.attr, $^placeholder)
+            if (raw[j] == '*' || raw[j] == '!' || raw[j] == '.' || raw[j] == '^') var += raw[j++];
             while (j < n && (isIdentCont(raw[j]) || (unsigned char)raw[j] >= 0x80)) var += raw[j++];
             // hyphen/apostrophe continue the name when followed by an alphanumeric ($foo-bar)
             while (j + 1 < n && (raw[j] == '-' || raw[j] == '\'') && std::isalnum((unsigned char)raw[j + 1])) {

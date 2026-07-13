@@ -3641,7 +3641,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         }
         // `@a := item, item, …` binds the list AS-IS — a Range/List element stays
         // one element (ListExpr eval would flatten it, which is `=` semantics).
-        if (a->op == ":=" && a->target->kind == NK::VarExpr &&
+        // `my constant @m = Nil, <a b>, …` binds too: constants are := in disguise.
+        if ((a->op == ":=" ||
+             (a->op == "=" && a->target->kind == NK::VarExpr &&
+              static_cast<VarExpr*>(a->target.get())->declare &&
+              static_cast<VarExpr*>(a->target.get())->declScope == "constant")) &&
+            a->target->kind == NK::VarExpr &&
             !static_cast<VarExpr*>(a->target.get())->name.empty() &&
             static_cast<VarExpr*>(a->target.get())->name[0] == '@' &&
             a->value->kind == NK::ListExpr) {
@@ -6925,7 +6930,7 @@ Value Interpreter::eval(Expr* e) {
                 bool flatten = !isHyper &&
                                ((it->kind == NK::VarExpr && !static_cast<VarExpr*>(it.get())->name.empty() &&
                                  static_cast<VarExpr*>(it.get())->name[0] == '@') ||
-                                (v.t == VT::Array && v.isList));
+                                (v.t == VT::Array && v.isList && !l->fromCommaList));
                 if (flatten && v.t == VT::Array) { for (auto& x : *v.arr) a.arr->push_back(x); }
                 else if (v.t == VT::Range && !v.rExFrom && v.rTo - v.rFrom < 1000000) { // finite Range flattens: [1..10]
                     for (auto& x : v.flatten()) a.arr->push_back(x);
