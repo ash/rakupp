@@ -5739,7 +5739,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     // a list of them, or a `:name(value)` Pair mixing one attribute).
     std::vector<ClassInfo*> roleInfos;
     std::vector<std::string> roleNames;
-    std::vector<Value> pairs;
+    std::vector<Value> pairs, valueMixins;
     std::function<void(const Value&)> collect = [&](const Value& v) {
         if (v.t == VT::Type) {
             roleNames.push_back(v.s);
@@ -5749,6 +5749,10 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
             pairs.push_back(v);
         } else if (v.t == VT::Array && v.arr) {
             for (auto& e : *v.arr) collect(e);
+        } else {
+            // `X but VALUE` mixes in a method named after VALUE's type that
+            // returns it: 5 but "t" stringifies as "t"; 0 but True is true.
+            valueMixins.push_back(v);
         }
     };
     collect(rhs);
@@ -5801,6 +5805,12 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         }
     }
     for (auto& rn : roleNames) nc->doneRoles.insert(rn);
+    // `but VALUE` — a constant method named after the value's type (Str/Bool/Int/…).
+    for (auto& vm : valueMixins) {
+        Value method = Value::closure([vm](ValueList&) { return vm; });
+        method.code->isMethod = true;
+        nc->methods[vm.typeName()] = method;
+    }
     // `but :name(value)` — mix one attribute with a public read accessor.
     for (auto& p : pairs) {
         ClassAttr ca; ca.name = p.s; ca.sigil = '$'; ca.pub = true;
