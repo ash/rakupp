@@ -1,12 +1,15 @@
 #pragma once
 #include "Ast.h"
 #include "Value.h"
+#include "IntOps.h"
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#if !defined(_WIN32)
 #include <pthread.h>
+#endif
 #include <memory>
 #include <mutex>
 #include <set>
@@ -20,6 +23,14 @@ namespace rakupp {
 double randDouble(); // uniform random in [0,1)
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
 void srandSeed(long long s); // reseed the RNG (srand)
+
+#if defined(_WIN32)
+// Big-stack worker threads on Windows (_beginthreadex with a reserved stack).
+// Defined in Runtime.cpp so <windows.h> stays out of this widely-included header.
+std::uintptr_t bigStackCreate(void (*entry)(void*), void* arg, std::size_t stackBytes); // 0 on failure
+void           bigStackJoin(std::uintptr_t h);
+void           bigStackClose(std::uintptr_t h);
+#endif
 
 struct Env {
     std::unordered_map<std::string, Value> vars;
@@ -245,36 +256,60 @@ public:
     // `start {…}` overflows it within ~100 frames (SIGBUS, then a kill-proof wedge at
     // exit). Same trick as rakuppRunBigStack, wrapped std::thread-compatibly.
     class BigStackThread {
+#if defined(_WIN32)
+        std::uintptr_t h_ = 0; // HANDLE from _beginthreadex (impl in Runtime.cpp; keeps <windows.h> out of this header)
+#else
         pthread_t h_{};
+#endif
         bool joinable_ = false;
         struct Fn { std::function<void()> f; };
+        static void run_(void* p) { std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
     public:
         BigStackThread() = default;
         template <typename F> explicit BigStackThread(F f) {
             auto* fn = new Fn{std::move(f)};
+            const size_t kStack = (size_t)256 << 20; // 256 MiB (virtual; committed on use)
+#if defined(_WIN32)
+            h_ = bigStackCreate(&BigStackThread::run_, fn, kStack);
+            if (h_) joinable_ = true;
+            else { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
+#else
             pthread_attr_t attr;
             pthread_attr_init(&attr);
-            pthread_attr_setstacksize(&attr, (size_t)256 << 20); // 256 MiB (virtual; committed on use)
-            auto entry = [](void* p) -> void* {
-                std::unique_ptr<Fn> g(static_cast<Fn*>(p));
-                g->f();
-                return nullptr;
-            };
+            pthread_attr_setstacksize(&attr, kStack);
+            auto entry = [](void* p) -> void* { BigStackThread::run_(p); return nullptr; };
             if (pthread_create(&h_, &attr, entry, fn) == 0) joinable_ = true;
-            else { std::unique_ptr<Fn> g(fn); g->f(); }    // creation failed: run inline
+            else { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
             pthread_attr_destroy(&attr);
+#endif
         }
         BigStackThread(BigStackThread&& o) noexcept : h_(o.h_), joinable_(o.joinable_) { o.joinable_ = false; }
         BigStackThread& operator=(BigStackThread&& o) noexcept {
-            if (this != &o) { if (joinable_) pthread_detach(h_); h_ = o.h_; joinable_ = o.joinable_; o.joinable_ = false; }
+            if (this != &o) { if (joinable_) detach(); h_ = o.h_; joinable_ = o.joinable_; o.joinable_ = false; }
             return *this;
         }
         BigStackThread(const BigStackThread&) = delete;
         BigStackThread& operator=(const BigStackThread&) = delete;
         bool joinable() const { return joinable_; }
-        void join()   { if (joinable_) { pthread_join(h_, nullptr); joinable_ = false; } }
-        void detach() { if (joinable_) { pthread_detach(h_); joinable_ = false; } }
-        ~BigStackThread() { if (joinable_) pthread_detach(h_); } // daemon semantics, like drainWorkers' abandon
+        void join() {
+            if (!joinable_) return;
+#if defined(_WIN32)
+            bigStackJoin(h_); bigStackClose(h_);
+#else
+            pthread_join(h_, nullptr);
+#endif
+            joinable_ = false;
+        }
+        void detach() {
+            if (!joinable_) return;
+#if defined(_WIN32)
+            bigStackClose(h_);
+#else
+            pthread_detach(h_);
+#endif
+            joinable_ = false;
+        }
+        ~BigStackThread() { if (joinable_) detach(); } // daemon semantics, like drainWorkers' abandon
     };
     // A worker slot pairs the thread with a completion flag so finished workers can
     // be joined (and their big stacks released) as new ones spawn, instead of
@@ -436,9 +471,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r); // bina
 // case as native int64, else fall back to the general applyArith. Semantics are
 // identical — this only skips the string dispatch + boxing on the hot Int path.
 inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int && r.t == VT::Int && !l.big && !r.big; }
-inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !__builtin_add_overflow(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
-inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !__builtin_sub_overflow(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
-inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !__builtin_mul_overflow(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }
+inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
+inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
+inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }
 inline Value rtLt(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i <  r.i); return applyArith("<",  l, r); }
 inline Value rtLe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i <= r.i); return applyArith("<=", l, r); }
 inline Value rtGt(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i >  r.i); return applyArith(">",  l, r); }
@@ -472,9 +507,9 @@ inline Value rtPow(const Value& l, const Value& r) {
     if (rtBothInt(l, r) && r.i >= 0) {
         long long base = l.i, e = r.i, res = 1; bool ovf = false;
         while (e > 0) {
-            if ((e & 1) && __builtin_mul_overflow(res, base, &res)) { ovf = true; break; }
+            if ((e & 1) && rakupp::mul_ovf(res, base, &res)) { ovf = true; break; }
             e >>= 1;
-            if (e && __builtin_mul_overflow(base, base, &base)) { ovf = true; break; }
+            if (e && rakupp::mul_ovf(base, base, &base)) { ovf = true; break; }
         }
         if (!ovf) return Value::integer(res);
     }

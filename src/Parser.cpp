@@ -6,6 +6,8 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <climits>
+#include <algorithm>
 #include <limits>
 #include <set>
 #include <unordered_set>

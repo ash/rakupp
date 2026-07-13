@@ -9,7 +9,19 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+if(MSVC)
+  # /utf-8 is essential — the sources contain UTF-8 string literals (Raku's ｢｣
+  # match quotes, Unicode tables); without it MSVC decodes them as the system
+  # codepage and corrupts them. /EHsc = standard C++ exceptions; /Zc:__cplusplus
+  # reports the real value; /permissive- for conformance. The /wd disables silence
+  # the pervasive intentional 64<->32 narrowing in the numeric tower.
+  add_compile_options(/W3 /EHsc /permissive- /Zc:__cplusplus /utf-8
+                      /wd4244 /wd4267 /wd4146 /wd4018 /wd4996)
+  add_compile_definitions(_USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS
+                          NOMINMAX WIN32_LEAN_AND_MEAN)
+else()
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+endif()
 
 # Single source of truth for the version — bump `project(... VERSION ...)` above.
 add_compile_definitions(RAKUPP_VERSION="${PROJECT_VERSION}")

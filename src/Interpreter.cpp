@@ -17,6 +17,7 @@ static char** rakupp_environ() { return environ; }
 #include "Parser.h"
 #include "Unicode.h"
 #include <algorithm>
+#include <climits>
 #include <cctype>
 #include <cmath>
 #include <complex>
@@ -2629,7 +2630,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
 thread_local char* t_stackTop = nullptr;
 thread_local size_t t_stackLimit = 0;
 static size_t currentThreadStackSize() {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+    ULONG_PTR low = 0, high = 0;
+    ::GetCurrentThreadStackLimits(&low, &high); // Win8+: [low, high) is the committed+reserved stack
+    size_t sz = (size_t)(high - low);
+    return sz ? sz : (size_t(8) << 20);
+#elif defined(__APPLE__)
     size_t sz = pthread_get_stacksize_np(pthread_self());
     return sz ? sz : (size_t(8) << 20);
 #else
@@ -3776,9 +3782,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         long long a = l.i, b = r.i, z;
         char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
         switch (c0) {
-            case '+': if (c1 == '\0' && !__builtin_add_overflow(a, b, &z)) return Value::integer(z); break;
-            case '-': if (c1 == '\0' && !__builtin_sub_overflow(a, b, &z)) return Value::integer(z); break;
-            case '*': if (c1 == '\0' && !__builtin_mul_overflow(a, b, &z)) return Value::integer(z); break;
+            case '+': if (c1 == '\0' && !rakupp::add_ovf(a, b, &z)) return Value::integer(z); break;
+            case '-': if (c1 == '\0' && !rakupp::sub_ovf(a, b, &z)) return Value::integer(z); break;
+            case '*': if (c1 == '\0' && !rakupp::mul_ovf(a, b, &z)) return Value::integer(z); break;
             case '<': if (c1 == '\0') return Value::boolean(a < b);
                       if (c1 == '=') return Value::boolean(a <= b); break;
             case '>': if (c1 == '\0') return Value::boolean(a > b);
@@ -4069,6 +4075,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             } else { n = v.b ? 1 : 0; d = 1; } // Bool
             return n > -LIM && n < LIM && d < LIM;
         };
+#if RAKUPP_HAS_INT128
         if (anyRat && !fat && (op == "+" || op == "-" || op == "*" || op == "/")) {
             long long n1, d1, n2, d2;
             if (smallParts(l, n1, d1) && smallParts(r, n2, d2) &&
@@ -4110,12 +4117,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 // (reduced numerator wider than 64 bits: fall through to BigInt)
             }
         }
+#endif // RAKUPP_HAS_INT128 (small-Rat fast path; MSVC falls through to BigInt)
         if (op == "+" || op == "-" || op == "*") {
             if (smallInt) {
                 long long a = l.toInt(), b = r.toInt(), res;
-                if (op == "+" && !__builtin_add_overflow(a, b, &res)) return Value::integer(res);
-                if (op == "-" && !__builtin_sub_overflow(a, b, &res)) return Value::integer(res);
-                if (op == "*" && !__builtin_mul_overflow(a, b, &res)) return Value::integer(res);
+                if (op == "+" && !rakupp::add_ovf(a, b, &res)) return Value::integer(res);
+                if (op == "-" && !rakupp::sub_ovf(a, b, &res)) return Value::integer(res);
+                if (op == "*" && !rakupp::mul_ovf(a, b, &res)) return Value::integer(res);
             }
             if (!anyRat) {
                 BigInt a = l.toBig(), b = r.toBig();
@@ -4185,13 +4193,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (zeroDen(l) || zeroDen(r))
                 return applyArith(op, Value::number(l.toNum()), Value::number(r.toNum()));
             int c;
-            long long cn1, cd1, cn2, cd2;
             if (smallInt) { long long a = l.toInt(), b = r.toInt(); c = a < b ? -1 : a > b ? 1 : 0; }
-            else if (anyRat && smallParts(l, cn1, cd1) && smallParts(r, cn2, cd2)) {
+#if RAKUPP_HAS_INT128
+            else if (long long cn1, cd1, cn2, cd2;
+                     anyRat && smallParts(l, cn1, cd1) && smallParts(r, cn2, cd2)) {
                 // native cross-multiply — no BigInt temporaries for small Rats
                 __int128 a = (__int128)cn1 * cd2, b = (__int128)cn2 * cd1;
                 c = a < b ? -1 : a > b ? 1 : 0;
             }
+#endif
             else c = BigInt::cmp(getN(l) * getD(r), getN(r) * getD(l));
             if (op == "==") return Value::boolean(c == 0);
             if (op == "!=") return Value::boolean(c != 0);
