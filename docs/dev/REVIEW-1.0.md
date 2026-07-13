@@ -84,7 +84,12 @@ FileHandle.printf, junction Str-routines, native-typed attr defaults, ⚛ not
 whitespace. io-spec-unix.t recovered (133/133); print.t down to its sprintf
 tail. Committed gate rose to **424 / 157,587**.
 
-**~23 files still down**, by category:
+Batch 6 (`c322945`) — `(EXPR with X)` topicalizes (do{with X{…}} desugar),
+$/ scopes to the ROUTINE (Env.routineFrame; setMatchVar walks to it), single
+ordinal :2nd:g yields a Match not a List. subst.t recovered (191/191);
+S05-match/blocks.t newly green on the committed gate (424 / 157,590).
+
+**~21 files still down**, by category:
 - Rat/Num 0-denominator (Inf/NaN) semantics: `rat`, `stress`, `complex` —
   arithmetic on `<1/0>`/`<0/0>`, `Int()` coercion must throw
   X::Numeric::DivideByZero, `===`/`==` on 0-den Rats, `.raku.EVAL` round-trip.
