@@ -77,7 +77,14 @@ Ranges/Lists engine-wide (pre-GLR). Big blast radius (for-loops DO flatten
 one level; args don't) — needs its own dedicated batch with a full gate.
 9-is_deeply.t is down to junction GISTS in failure diagnostics (small).
 
-**24 files still down**, by category:
+Batch 5 (`3a8a047`) — return-is-Routine-only (X::ControlFlow::Return; blocks
+propagate through HOFs — matches Rakudo, zero roast fallout), quoted-key pairs
+positional, real named/nested pointy destructuring (ForStmt.params),
+FileHandle.printf, junction Str-routines, native-typed attr defaults, ⚛ not
+whitespace. io-spec-unix.t recovered (133/133); print.t down to its sprintf
+tail. Committed gate rose to **424 / 157,587**.
+
+**~23 files still down**, by category:
 - Rat/Num 0-denominator (Inf/NaN) semantics: `rat`, `stress`, `complex` —
   arithmetic on `<1/0>`/`<0/0>`, `Int()` coercion must throw
   X::Numeric::DivideByZero, `===`/`==` on 0-den Rats, `.raku.EVAL` round-trip.
