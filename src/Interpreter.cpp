@@ -31,7 +31,9 @@ static char** rakupp_environ() { return environ; }
 #include <regex>
 #include <set>
 #include <sstream>
-#include <dirent.h>
+#if !defined(_WIN32)
+#include <dirent.h>   // Windows gets the FindFirstFile-based shim from Platform.h
+#endif
 
 namespace rakupp {
 

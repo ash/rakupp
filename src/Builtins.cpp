@@ -20,8 +20,10 @@
 #include <set>
 #include <sstream>
 #include <vector>
+#include "Platform.h"   // POSIX headers on Unix; Winsock + shims (incl. dirent) on Windows
+#if !defined(_WIN32)
 #include <dirent.h>
-#include "Platform.h"   // POSIX headers on Unix; Winsock + shims on Windows
+#endif
 #include <csignal>
 #include <sys/stat.h>
 #if !defined(_WIN32)

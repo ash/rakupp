@@ -57,6 +57,46 @@ inline int poll(struct pollfd* fds, unsigned long n, int timeout) { return ::WSA
 // --- mkdir: POSIX 2-arg -> Windows 1-arg ---
 inline int mkdir(const char* path, int) { return ::_mkdir(path); }
 
+// --- <dirent.h>: opendir/readdir/closedir over FindFirstFile ---
+struct dirent { char d_name[260]; };
+struct DIR {
+    HANDLE h = INVALID_HANDLE_VALUE;
+    WIN32_FIND_DATAA fd{};
+    dirent de{};
+    bool first = true;
+};
+inline DIR* opendir(const char* path) {
+    std::string pat = std::string(path) + "\\*";
+    DIR* d = new DIR;
+    d->h = ::FindFirstFileA(pat.c_str(), &d->fd);
+    if (d->h == INVALID_HANDLE_VALUE) { delete d; return nullptr; }
+    return d;
+}
+inline dirent* readdir(DIR* d) {
+    if (!d) return nullptr;
+    if (d->first) d->first = false;
+    else if (!::FindNextFileA(d->h, &d->fd)) return nullptr;
+    ::strncpy(d->de.d_name, d->fd.cFileName, sizeof(d->de.d_name) - 1);
+    d->de.d_name[sizeof(d->de.d_name) - 1] = '\0';
+    return &d->de;
+}
+inline int closedir(DIR* d) {
+    if (!d) return -1;
+    ::FindClose(d->h);
+    delete d;
+    return 0;
+}
+
+// --- <sys/stat.h> gaps: MSVC has struct stat but not the S_IS* macros / mode_t ---
+#include <sys/stat.h>
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+using mode_t = int;
+
 // --- erand48: POSIX 48-bit LCG (drand48 family), reimplemented for parity ---
 inline double erand48(unsigned short xsubi[3]) {
     unsigned long long x = ((unsigned long long)xsubi[2] << 32) |
