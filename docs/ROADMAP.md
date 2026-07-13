@@ -54,9 +54,10 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing: **401 / 1,464 Roast
-files fully pass**, 152,316 assertions on the files that run (run the harness for
-live numbers). Major subsystems now in:
+synopses rather than isolated features. Current standing: **419 / 1,464 Roast
+files fully pass (~29%)**, **157,293 / 191,546 declared assertions (~82%)** —
+run the harness for live numbers; definitions in [COUNTING.md](COUNTING.md).
+Major subsystems now in:
 
 - **Regex & grammars** (S05) — a CPS backtracking engine, `token`/`rule`/`regex`,
   `.parse`/`.subparse`/actions, `Match`/`$/`/`$0…`, substitution, and Unicode
@@ -70,9 +71,9 @@ live numbers). Major subsystems now in:
   on the destructured arity.
 - **Exceptions** (S04) — `die`/`try`/`CATCH`, `X::*`, `throws-like`/`fails-like`.
 - **Junctions, lazy lists, hyperops, feeds** (S03/S07/S09).
-- **Unicode** (S15, ~95% of assertions) — NFC/NFD/NFKC/NFKD, grapheme-correct
-  `.chars` (UAX #29), names + numeric values, and category/script property
-  classes, all from UCD 16.0 tables.
+- **Unicode** (S15, ~100% of assertions) — NFC/NFD/NFKC/NFKD, grapheme-correct
+  `.chars` (UAX #29), UCA collation, names + numeric values, and
+  category/script property classes, all from UCD/UCA 17.0 tables.
 - **Modules** (S11) — `use`/`need`/`EXPORT`, `use lib`, resolving real
   zef-installed modules via the Rakudo CURI `short/` index.
 - **Concurrency** (S17) — real `std::thread`s under a CPython-style GIL: promises
@@ -104,29 +105,56 @@ tests; the systematic gap classification lives in
   kinds, Capture `<named>` indexing, exact `sprintf %d` for big Ints,
   sigilless-param write-through, stray `next`/`last`/`redo` errors.
 
+Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 419 files):
+
+- **The big no-TAP files** — `rat.t` (869), `complex.t` (557), `reduce.t`,
+  `rx.t` and the `.new` batch (Version, Duration, SetHash/BagHash/MixHash,
+  buf8/blob8, shaped arrays) all fully pass; the `expected )` /
+  term-position-op / Confused parser clusters (200+ files) unblocked.
+- **Redispatch** — `callsame`/`nextsame`/`callwith`/`nextwith`, proto `{*}`.
+- **An independent pre-1.0 review, then five fix waves**
+  ([dev/REVIEW-1.0.md](dev/REVIEW-1.0.md)): exception safety (scope guards,
+  LEAVE under cooperative control flow), concurrency lock-order fixes, a
+  stack-headroom recursion guard (no more SIGBUS), silent-wrong-answer fixes
+  in the numeric tower, a regex step budget, and the nested-sub closure-cycle
+  leak (~425 MB → ~3 MB on a 300k-call driver).
+- **UTF-8-correct regex char classes** — `<-[x]>` / `<[é]>` / `<[a..ÿ]>` match
+  whole codepoints, not bytes.
+- **Native codegen hardening** — 389 of 416 fully-passing roast files
+  transpile with `--exe`; injective name mangling; closure-capture
+  correctness (bail to bundle instead of miscompiling).
+- **Cross-platform delivery** — CI builds and smoke-tests macOS (universal
+  binary, deployment target 11.0), Linux x86_64 (Clang, static libstdc++;
+  a separate GCC gate job), and Windows x64 (native MSVC, static CRT);
+  tagged releases attach all three archives. Release binaries build with
+  Clang everywhere it applies (measured 1.2–2.0× faster than GCC on the
+  bench suite).
+
 ## Next
 
 The cheap Roast wins are largely spent; moving the full-pass count now takes
 *whole features* (parse + runtime + dispatch together). Roughly ordered:
 
-1. **Big no-TAP files** — `rat.t` (869 declared tests), `rx.t` (756),
-   `reduce.t` (580), `complex.t` (557): each is one file worth hundreds of
-   assertions once its first blocker falls (see
-   [docs/ROAST-GAPS.md](dev/ROAST-GAPS.md)).
+1. **The subtest Pair-form campaign** — `subtest 'desc' => {…}` bodies
+   currently never run (auto-pass); the fix is implemented but held out until
+   the ~31 pre-existing bugs it exposes are fixed (sprintf recovered already;
+   remaining: Rat 0-denominator semantics, 6.e roles/MRO/submethods, IO
+   seek/chdir/print/prompt, `is_deeply` needs a real Junction type — the full
+   list is in [dev/REVIEW-1.0.md](dev/REVIEW-1.0.md)). Landing it re-measures
+   the suite honestly.
 2. **Case-folding tail** — `.fc` full folding (`ß` → `ss`), `:ignorecase` /
-   `:ignoremark` on non-ASCII, `samemark`; and routing `.collate`/`.sort`
-   through the UCA machinery.
-3. **Redispatch** — `callsame`/`nextsame`/`callwith`/`nextwith` and proto `{*}`
-   (unblocks a cluster of S06/S12 multi tests).
-4. **EVAL lexical isolation** — eval-born symbols must not leak to the caller
+   `:ignoremark` on non-ASCII (incl. codepoint classes), `samemark`; and
+   routing `.collate`/`.sort` through the UCA machinery.
+3. **EVAL lexical isolation** — eval-born symbols must not leak to the caller
    (a recurring S02 tail).
-5. **Test/subprocess helpers** — the `is_run`-based files (Test::Util), shaped
+4. **Test/subprocess helpers** — the `is_run`-based files (Test::Util), shaped
    -array bounds, `OUR::.<>`-style Stash objects.
-6. **Widen native `--exe` codegen** toward the constructs that still fall back to
-   bundling (see below).
-7. **Real-application hardening** — keep driving
-   [covid.observer](https://github.com/ash/covid.observer) and the Raku-course
-   generator toward running unmodified; each surfaces gaps Roast doesn't.
+5. **Widen native `--exe` codegen** toward the constructs that still fall back
+   to bundling (roles/packages, symbolic refs, `s///` — see below).
+6. **The v1.0 gate** — reach 90–92% of declared assertions with no
+   architecture changes and no performance regressions, then tag v1.0.
+   Architecture work (grammar-engine LTM/packrat, GIL removal follow-through,
+   `.resume`) comes after.
 
 ## Compiler backend
 
