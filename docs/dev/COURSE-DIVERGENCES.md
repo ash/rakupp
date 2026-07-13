@@ -1,7 +1,8 @@
 # Raku-course examples: rakupp vs Rakudo divergences
 
 Source: [The Complete Course of the Raku Programming
-Language](https://github.com/ash/raku-course).
+Language](https://course.raku.org/) —
+[source on GitHub](https://github.com/ash/raku-course).
 
 Method: every fenced code block (```raku and untagged) from the English course
 pages (`essentials advanced oop paradigms regexes addendum about-this-course
