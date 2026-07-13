@@ -479,6 +479,14 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                                      : rakuStrLit(v.s) + " => " + rakuRepr(val, depth + 1, seen);
         }
         case VT::Array: {
+            // Junctions render as their constructor form: none(1, 2, 3)
+            if (!v.enumName.empty() && v.arr &&
+                (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none")) {
+                std::string o = v.enumName + "(";
+                bool first = true;
+                for (auto& e : *v.arr) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
+                return o + ")";
+            }
             if (v.arr && !seen.insert(v.arr.get()).second) return v.isList ? "(...)" : "[...]"; // cycle
             std::string o(1, v.isList ? '(' : '[');
             if (v.arr) {
@@ -1793,9 +1801,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Failure") {
         Value ex = inv.hash->count("exception") ? (*inv.hash)["exception"] : Value::typeObj("Exception");
         if (m == "exception") return ex;
-        if (m == "defined" || m == "Bool" || m == "so") return Value::boolean(false);
-        if (m == "not") return Value::boolean(true);
-        if (m == "handled") return Value::boolean(false);
+        if (m == "defined" || m == "Bool" || m == "so") {
+            (*inv.hash)["handled"] = Value::boolean(true); // testing a Failure marks it handled
+            return Value::boolean(false);
+        }
+        if (m == "not") { (*inv.hash)["handled"] = Value::boolean(true); return Value::boolean(true); }
+        if (m == "handled") return inv.hash->count("handled") ? (*inv.hash)["handled"] : Value::boolean(false);
         if (m == "self" || m == "Failure") return inv;
         if (m == "throw" || m == "sink") { if (ex.t == VT::Object) throw RakuError{ex, ex.toStr()}; throw RakuError{Value::typeObj("X::AdHoc"), ex.toStr()}; }
         // delegate message/Str/gist and other queries to the carried exception
@@ -2567,10 +2578,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Num && !std::isfinite(inv.n))
             throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                             "Cannot convert " + inv.toStr() + " to Int"};
-        // a zero-denominator Rat likewise dies on Int coercion
-        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero())
-            throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                            "Attempt to divide by zero when coercing Rational to Int"};
+        // a zero-denominator Rat FAILS on Int coercion (a Failure, not a throw —
+        // fails-like requires the returned unhandled Failure)
+        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero()) {
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash)["exception"] = Value::typeObj("X::Numeric::DivideByZero");
+            return f;
+        }
         // Converting a string that carries an Nl/No numeral (Roman, circled,
         // Tamil ௰, …) is not supported — only Nd digits are numeric. (X::Str::Numeric)
         if (inv.t == VT::Str)
@@ -2870,10 +2884,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "acotan" || m == "acot") return Value::number(std::atan(1.0 / x));
     }
     if (m == "floor" || m == "ceiling" || m == "round" || m == "truncate") {
-        // zero-denominator Rats cannot round (X::Numeric::DivideByZero)
-        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero())
-            throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                            "Attempt to divide by zero when coercing Rational to Int"};
+        // zero-denominator Rats cannot round — they FAIL (X::Numeric::DivideByZero)
+        if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero()) {
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash)["exception"] = Value::typeObj("X::Numeric::DivideByZero");
+            return f;
+        }
         // exact rounding for Rats/Ints (big-safe): floor = div, others derive from it
         if (m != "round" && (inv.t == VT::Rat || inv.t == VT::Int || inv.t == VT::Bool)) {
             BigInt n = inv.t == VT::Rat ? *inv.ratN : inv.toBig();
@@ -3455,6 +3471,33 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "contains") return Value::boolean(inv.toStr().find(a0().toStr()) != std::string::npos);
     if (m == "starts-with") { std::string s = inv.toStr(), n = a0().toStr(); return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0); }
+    if (m == "substr-eq") { // does the substring starting at pos equal the needle?
+        if (args.empty() || (args[0].t == VT::Type && args.size() < 2))
+            throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
+        bool icase = false;
+        ValueList pargs;
+        for (auto& a2 : args) {
+            if (a2.t == VT::Pair && (a2.s == "i" || a2.s == "ignorecase"))
+                icase = a2.pairVal && a2.pairVal->truthy();
+            else if (a2.t != VT::Pair) pargs.push_back(a2);
+        }
+        std::string s = inv.toStr(), n = pargs[0].toStr();
+        long long len = (long long)methodCall(inv, "chars", ValueList{}).toInt();
+        long long pos = 0;
+        if (pargs.size() > 1) // a Code position (*-4) resolves against .chars
+            pos = pargs[1].t == VT::Code ? callCallable(pargs[1], ValueList{Value::integer(len)}).toInt()
+                                         : pargs[1].toInt();
+        if (pos < 0 || pos > len) { // out of range FAILS (fails-like X::OutOfRange)
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash)["exception"] = Value::typeObj("X::OutOfRange");
+            return f;
+        }
+        Value sub = methodCall(inv, "substr", ValueList{Value::integer(pos),
+                                                        methodCall(Value::str(n), "chars", ValueList{})});
+        if (!icase) return Value::boolean(sub.toStr() == n);
+        Value a1 = methodCall(sub, "lc", ValueList{}), b1 = methodCall(Value::str(n), "lc", ValueList{});
+        return Value::boolean(a1.toStr() == b1.toStr());
+    }
     if (m == "ends-with") { std::string s = inv.toStr(), n = a0().toStr(); return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0); }
     if (m == "ord") { auto c = utf8cp(inv.toStr()); return c.empty() ? Value::nil() : Value::integer(c[0]); }
     if (m == "chr") return Value::str(cpToUtf8((uint32_t)inv.toInt()));
@@ -4478,6 +4521,10 @@ void Interpreter::registerBuiltins() {
     B["is-deeply"] = [](Interpreter& I, ValueList& a) -> Value {
         bool c = a.size() >= 2 && deepEq(a[0], a[1]);
         I.emitTest(c, a.size() > 2 ? a[2].toStr() : "");
+        if (!c && a.size() >= 2) { // failure diagnostics (stderr), Rakudo-style
+            std::cerr << "# expected: " << rakuRepr(a[1]) << "\n"
+                      << "#      got: " << rakuRepr(a[0]) << "\n";
+        }
         return Value::boolean(c);
     };
     B["cmp-ok"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -4650,18 +4697,43 @@ void Interpreter::registerBuiltins() {
         // error counts as failing. (The exception-type / matcher args are accepted
         // but, as with throws-like, not deeply checked.)
         bool failed = false;
+        // fails-like BLOCK, TYPE, matchers…, desc? — passes only when the block
+        // RETURNS an UNHANDLED Failure whose exception matches TYPE and every
+        // named matcher. A thrown exception is NOT a pass (that's throws-like);
+        // neither is a Failure the block already handled (.so / .Bool).
+        std::string desc;
+        std::vector<Value> matchers;
+        for (size_t i = 2; i < a.size(); i++) {
+            if (a[i].t == VT::Pair && a[i].namedArg) matchers.push_back(a[i]);
+            else if (a[i].t == VT::Str && desc.empty()) desc = a[i].s;
+        }
         if (!a.empty()) {
             try {
                 Value r;
                 if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
                 else if (a[0].t == VT::Str) r = I.evalString(a[0].s);
-                // `fail` returns a live Failure (a hashKind-tagged Hash), not the type object
-                if ((r.t == VT::Hash && r.hashKind == "Failure") || (r.t == VT::Type && r.s == "Failure")) failed = true;
-            } catch (RakuError&) { failed = true; }
+                if (r.t == VT::Hash && r.hashKind == "Failure" &&
+                    !(r.hash->count("handled") && (*r.hash)["handled"].truthy())) {
+                    Value ex = r.hash->count("exception") ? (*r.hash)["exception"] : Value::any();
+                    failed = true;
+                    if (a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
+                        failed = applyArith("~~", ex, a[1]).truthy();
+                    for (auto& mp : matchers) {
+                        if (!failed) break;
+                        Value want = mp.pairVal ? *mp.pairVal : Value::boolean(true);
+                        if (want.t == VT::Bool)
+                            throw RakuError{Value::typeObj("X::Match::Bool"),
+                                "Cannot use Bool as matcher for '" + mp.s + "'; did you mean to smartmatch the attribute?"};
+                        Value got = I.methodCall(ex, mp.s, ValueList{});
+                        failed = want.t == VT::Code ? I.callCallable(want, ValueList{got}).truthy()
+                                                    : applyArith("~~", got, want).truthy();
+                    }
+                }
+            } catch (RakuError& e) {
+                if (e.payload.t == VT::Type && e.payload.s == "X::Match::Bool") throw; // matcher misuse propagates
+                failed = false; // thrown exception: fails-like does not pass
+            }
         }
-        // description = the first Str positional after the exception type (index >= 2)
-        std::string desc;
-        for (size_t i = 2; i < a.size(); i++) if (a[i].t == VT::Str) { desc = a[i].s; break; }
         I.emitTest(failed, desc);
         return Value::boolean(failed);
     };

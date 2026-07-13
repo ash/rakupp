@@ -1448,7 +1448,15 @@ ExprPtr Parser::parsePrimary() {
             }
             if (t.text == "\xE2\x88\x9E") { advance(); return std::make_unique<NumLit>(std::numeric_limits<double>::infinity()); } // ∞
             if (t.text == ".") return std::make_unique<VarExpr>("$_"); // .method => $_.method
-            if (t.text == "\\") { advance(); return parsePrefix(); } // capture/itemize: pass through
+            if (t.text == "\\") { // capture: \(…) builds a Capture (assoc-indexable); bare \x itemizes
+                advance();
+                if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                    auto u = std::make_unique<Unary>();
+                    u->op = "capture"; u->operand = parsePrefix(true);
+                    return u; // caller's parsePostfix attaches any postfixes
+                }
+                return parsePrefix();
+            }
             if (t.text == "<") {
                 // qw word list  < a b c >
                 advance();
@@ -2996,6 +3004,13 @@ StmtPtr Parser::parseStatementImpl() {
             }
             matchKind(Tok::Semicolon);
             return u;
+        }
+        // ANONYMOUS sub at statement level (`sub { … }(args)` / `sub (…) {…}(…)`)
+        // is an expression term (often immediately called), not a declaration.
+        if (kw == "sub" && (peek().kind == Tok::LBrace || peek().kind == Tok::LParen)) {
+            auto es = std::make_unique<ExprStmt>();
+            es->e = parseExpression();
+            return applyModifiers(std::move(es));
         }
         if (kw == "sub") { advance(); return parseSub(false); }
         if (kw == "multi" || kw == "proto") {

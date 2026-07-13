@@ -796,12 +796,16 @@ Interpreter::Interpreter() {
         global_->define("%*ENV", envh);
     }
     // X::AdHoc — the exception `die "message"` produces (so $_/$! in CATCH answer .message/.^name)
+    // — plus the handful of typed exceptions roast constructs with .new.
     {
-        auto adhoc = std::make_shared<ClassInfo>();
-        adhoc->name = "X::AdHoc";
-        ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true;
-        adhoc->attrs.push_back(a);
-        classes_["X::AdHoc"] = adhoc;
+        auto reg = [&](const char* name, std::initializer_list<const char*> attrs) {
+            auto ci = std::make_shared<ClassInfo>();
+            ci->name = name;
+            for (const char* an : attrs) { ClassAttr a; a.name = an; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+            classes_[name] = ci;
+        };
+        reg("X::AdHoc", {"message"});
+        reg("X::Syntax::Reserved", {"reserved", "instead", "pos", "message"});
     }
     // CompUnit::Repository — a role a repository class must fully implement, and the
     // $*REPO instance that does it.
@@ -3991,9 +3995,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return out;
     }
     // Whatever-currying: `* + 1`, `*.elems == 2`, `2 * *`, etc. yield a WhateverCode.
-    // Excluded by spec (S02): ~~, ===, eqv, =:= treat a Whatever as a plain value
-    // (`(**) ~~ HyperWhatever:D` is a type test, not a curry).
-    static const std::set<std::string> kNoCurry = {"~~", "!~~", "===", "!===", "eqv", "=:="};
+    // Excluded by spec: smartmatch treats a Whatever as a plain value
+    // (`(**) ~~ HyperWhatever:D` is a type test, not a curry) — but `* === True`
+    // and `* eqv X` DO curry in Rakudo (matcher idioms rely on it).
+    static const std::set<std::string> kNoCurry = {"~~", "!~~"};
     auto isWhateverish = [](const Value& v) {
         return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
     };
@@ -5881,6 +5886,11 @@ Value Interpreter::evalUnary(Unary* u) {
         else pushFlat(eval(u->operand.get()), false);
         return applyReduce(op, items);
     }
+    if (u->op == "capture") { // \(…): a Capture — one item, assoc-indexable on its named parts
+        Value v = eval(u->operand.get());
+        if (v.t == VT::Array) { v.hashKind = "Capture"; v.itemized = true; v.isList = false; }
+        return v;
+    }
     if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%") {
         Value v = eval(u->operand.get());
         if (u->op == "ctx@") {
@@ -6591,7 +6601,7 @@ Value Interpreter::evalIndex(Index* idx) {
         if (base.t == VT::Array) {
             Value iv = eval(idx->index.get());
             std::string key = iv.toStr();
-            bool capturish = false; // holds named parts (Pairs)? then it's Capture-like
+            bool capturish = base.hashKind == "Capture"; // \(…) — even with no named parts
             if (base.arr)
                 for (auto& el : *base.arr)
                     if (el.t == VT::Pair) {
