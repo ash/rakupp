@@ -92,6 +92,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 - **[OVERVIEW.md](docs/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[GUIDE.md](docs/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 - **[FEATURES.md](docs/FEATURES.md)** — inventory of supported language features, by theme.
+- **[REFERENCE.md](docs/REFERENCE.md)** — exhaustive lookup sheet: every operator, built-in subroutine, and method, each with a verified example.
 - **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
 - **[examples/](examples/)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md).
 - **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
@@ -106,6 +107,12 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 - **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[METAPROGRAMMING.md](docs/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
 - **[docs/dev/JOURNEY.md](docs/dev/JOURNEY.md)** — a memoir of how this was built.
+
+## Author
+
+Raku++ is created by [Andrew Shitov](https://andrewshitov.com). Read the
+announcement:
+[Raku++ — the fastest Raku compiler](https://andrewshitov.com/2026/07/13/raku-the-fastest-raku-compiler/).
 
 ## License
 
