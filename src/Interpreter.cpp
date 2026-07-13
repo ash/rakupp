@@ -206,10 +206,24 @@ static Value numifyStr(const std::string& in) {
         }
         if (std::regex_match(s, reRat)) {
             size_t sl = s.find('/');
-            double num = std::stod(s.substr(0, sl)), den = std::stod(s.substr(sl + 1));
-            return Value::number(den == 0 ? 0 : num / den);
+            return Value::rat(BigInt::fromString(s.substr(0, sl)), BigInt::fromString(s.substr(sl + 1)));
         }
-        if (std::regex_match(s, reFloat)) return Value::number(std::stod(s));
+        if (std::regex_match(s, reFloat)) {
+            // a plain decimal ("3.14") numifies to a Rat, like the literal would;
+            // an exponent ("1.23E4") makes it a Num
+            if (s.find('e') == std::string::npos && s.find('E') == std::string::npos) {
+                size_t dot = s.find('.');
+                std::string frac = dot == std::string::npos ? "" : s.substr(dot + 1);
+                if (!frac.empty()) {
+                    std::string digits = (dot == std::string::npos ? s : s.substr(0, dot) + frac);
+                    if (!digits.empty() && digits[0] == '+') digits.erase(0, 1);
+                    BigInt den(1);
+                    for (size_t k = 0; k < frac.size(); k++) den = den * BigInt(10);
+                    return Value::rat(BigInt::fromString(digits), std::move(den));
+                }
+            }
+            return Value::number(std::stod(s));
+        }
     } catch (...) {}
     return Value::any(); // not numeric -> undefined (so .defined is False)
 }
@@ -850,13 +864,32 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
     bool any = false;
+    bool saved = hoistingSubs_; hoistingSubs_ = true;
     for (auto& s : stmts) {
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<SubDecl*>(s.get());
             if (!sd->isMethod && !sd->name.empty()) { exec(s.get()); any = true; }
         }
     }
+    hoistingSubs_ = saved;
     return any;
+}
+
+// Run a hoisted sub's user `is` traits at its textual position (the sub itself
+// was registered at scope entry; the trait handler may use `my`s declared above).
+void Interpreter::applySubTraits(SubDecl* sd) {
+    if (sd->traits.empty()) return;
+    Value* tm = tctx_.cur->find("&trait_mod:<is>");
+    if (!tm || tm->t != VT::Code) return;
+    Value* fn = tctx_.cur->find("&" + sd->name);
+    if (!fn) return;
+    for (auto& st : sd->traits) {
+        Value arg = st.arg ? eval(st.arg.get()) : Value::boolean(true);
+        Value p = Value::pair(st.name, arg); p.namedArg = true;
+        ValueList ta; ta.push_back(*fn); ta.push_back(p);
+        try { callCallable(*tm, ta); }
+        catch (RakuError&) {} // no matching candidate: not this handler's trait
+    }
 }
 
 // A named sub hoisted into a scope closes over that scope's Env and is stored back
@@ -1263,10 +1296,28 @@ int Interpreter::run(Program& prog) {
         for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
         for (auto* s : mainline) {
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
-                !static_cast<SubDecl*>(s)->isMethod) continue; // hoisted
+                !static_cast<SubDecl*>(s)->isMethod) { applySubTraits(static_cast<SubDecl*>(s)); continue; } // hoisted
             // a bare `my $x;` (no init) must not clobber a value a phaser already set
             std::string nm = topDecl(s, hasInit);
-            if (!nm.empty() && !hasInit && global_->vars.count(nm)) continue;
+            if (!nm.empty() && !hasInit && global_->vars.count(nm)) {
+                // the skipped declaration still owns its container metadata:
+                // `my $port is default(8080);` initializes AND registers the default
+                if (s->kind == NK::ExprStmt) {
+                    Expr* e0 = static_cast<ExprStmt*>(s)->e.get();
+                    if (e0 && e0->kind == NK::VarExpr) {
+                        auto* ve0 = static_cast<VarExpr*>(e0);
+                        if (ve0->declDefault) {
+                            Value dv = eval(ve0->declDefault.get());
+                            global_->varDefault[ve0->name] = dv;
+                            global_->vars[ve0->name] = dv;
+                        }
+                        else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
+                                 std::isupper((unsigned char)ve0->declType[0]))
+                            global_->varDefault[ve0->name] = Value::typeObj(ve0->declType);
+                    }
+                }
+                continue;
+            }
             exec(s);
         }
         // auto-invoke MAIN with command-line arguments, if defined
@@ -1439,7 +1490,7 @@ void Interpreter::loadModule(const std::string& name) {
             hoistSubs(prog->stmts);
             for (auto& st : prog->stmts) {
                 if (st->kind == NK::SubDecl && !static_cast<SubDecl*>(st.get())->name.empty() &&
-                    !static_cast<SubDecl*>(st.get())->isMethod) continue; // hoisted
+                    !static_cast<SubDecl*>(st.get())->isMethod) { applySubTraits(static_cast<SubDecl*>(st.get())); continue; } // hoisted
                 exec(st.get());
             }
         }
@@ -1696,7 +1747,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) continue;
             if (isBlockPhaser(s.get())) continue; // ENTER/LEAVE handled at entry/exit
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s.get())->name.empty() &&
-                !static_cast<SubDecl*>(s.get())->isMethod) continue; // hoisted
+                !static_cast<SubDecl*>(s.get())->isMethod) { applySubTraits(static_cast<SubDecl*>(s.get())); continue; } // hoisted
             // sink every statement whose value is discarded: all but the block's
             // final statement, and even that one when the whole block is sink.
             if (catchBlk) {
@@ -1828,6 +1879,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::UseStmt: {
             auto* u = static_cast<UseStmt*>(s);
+            if (u->isNo && u->module == "strict") { noStrict_ = true; return Value::any(); }
             if (u->module == "Test") usedTest_ = true;
             else if (u->module.size() >= 2 && u->module[0] == 'v' && std::isdigit((unsigned char)u->module[1])) {
                 // language version pragma: use v6.c / v6.d / v6.e[.PREVIEW]
@@ -1866,6 +1918,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             Value code = makeCand(&sd->params);
             std::vector<Value> altCands;
             for (auto& ap : sd->altParams) altCands.push_back(makeCand(&ap));
+            // dispatch non-built-in `is` traits to a user trait_mod:<is> multi:
+            // `sub foo() is traced {…}` calls trait_mod:<is>($foo, :traced).
+            // Skipped while hoisting — traits run at the declaration's textual
+            // position (see the hoist-skip sites), after earlier `my`s initialized.
+            if (!sd->traits.empty() && !hoistingSubs_) {
+                if (Value* tm = tctx_.cur->find("&trait_mod:<is>")) {
+                    if (tm->t == VT::Code) for (auto& st : sd->traits) {
+                        Value arg = st.arg ? eval(st.arg.get()) : Value::boolean(true);
+                        Value p = Value::pair(st.name, arg); p.namedArg = true;
+                        ValueList ta; ta.push_back(code); ta.push_back(p);
+                        try { callCallable(*tm, ta); }
+                        catch (RakuError&) {} // no matching candidate: not this handler's trait
+                    }
+                }
+            }
             // `(sig1) | (sig2)` is ONE routine with alternative signatures — its
             // candidates share a single `state`-variable store.
             if (!sd->altParams.empty()) {
@@ -2701,6 +2768,35 @@ struct DepthGuard {
 };
 
 static bool isJunction(const Value& v); // defined below
+
+// Does this expression contain a literal `*` (Whatever) term — walking only
+// through composable expression forms, never into variables or calls? This is
+// the syntactic test Whatever-currying keys on: `(* * 2).floor` composes,
+// `my $d = * * 2; $d.floor` does not.
+bool Interpreter::exprHasWhateverLit(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::Whatever: return true;
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            return exprHasWhateverLit(b->lhs.get()) || exprHasWhateverLit(b->rhs.get());
+        }
+        case NK::Unary: return exprHasWhateverLit(static_cast<const Unary*>(e)->operand.get());
+        case NK::MethodCall: return exprHasWhateverLit(static_cast<const MethodCall*>(e)->inv.get());
+        case NK::Index: return exprHasWhateverLit(static_cast<const Index*>(e)->base.get());
+        case NK::ChainExpr: {
+            auto* c = static_cast<const ChainExpr*>(e);
+            for (auto& o : c->operands) if (exprHasWhateverLit(o.get())) return true;
+            return false;
+        }
+        case NK::ListExpr: {
+            auto* l = static_cast<const ListExpr*>(e);
+            if (l->items.size() != 1) return false; // only parenthesized grouping composes
+            return exprHasWhateverLit(l->items[0].get());
+        }
+        default: return false;
+    }
+}
 
 bool Interpreter::boolify(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->cls) {
@@ -3554,7 +3650,14 @@ Value* Interpreter::lvalue(Expr* e) {
                 if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
                 return &tctx_.curStateEnv->vars[ve->name];
             }
-            tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
+            Value init = typedDefault(ve->declType, sigil);
+            if (ve->declDefault) { // `is default(v)`: initial AND reset value
+                init = eval(ve->declDefault.get());
+                tctx_.cur->varDefault[ve->name] = init;
+            }
+            else if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
+                tctx_.cur->varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+            tctx_.cur->define(ve->name, std::move(init));
             return &tctx_.cur->vars[ve->name];
         }
         // attribute lvalue: $.x / $!x
@@ -3565,7 +3668,7 @@ Value* Interpreter::lvalue(Expr* e) {
         }
         Value* p = tctx_.cur->find(ve->name);
         if (p) return p;
-        if (!isSpecialVar(ve->name))
+        if (!isSpecialVar(ve->name) && !noStrict_)
             throw RakuError{Value::typeObj("X::Undeclared"),
                             "Variable '" + ve->name + "' is not declared"};
         tctx_.cur->define(ve->name, defaultFor(sigil));
@@ -3724,6 +3827,52 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             *lv = b;
             return sink ? Value::any() : *lv;
         }
+        // `$y := $x` ALIASES the container: reads and writes on $y reach $x's slot.
+        // Implemented as a Proxy over the source's owning Env (Env value slots are
+        // node-stable; the shared_ptr keeps the Env alive for escaped closures).
+        if (a->op == ":=" && a->target->kind == NK::VarExpr && a->value->kind == NK::VarExpr) {
+            auto* tv = static_cast<VarExpr*>(a->target.get());
+            auto* sv = static_cast<VarExpr*>(a->value.get());
+            if (tv->name.size() > 1 && tv->name[0] == '$' && sv->name.size() > 1 && sv->name[0] == '$' &&
+                (std::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_') &&
+                (std::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_')) {
+                std::shared_ptr<Env> owner;
+                for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                    if (en->vars.count(sv->name)) { owner = en; break; }
+                if (owner) {
+                    std::string src = sv->name;
+                    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                    Value fetch; fetch.t = VT::Code; fetch.code = std::make_shared<Callable>();
+                    fetch.code->builtin = [owner, src](Interpreter& I, ValueList&) -> Value {
+                        auto it = owner->vars.find(src);
+                        if (it == owner->vars.end()) return Value::any();
+                        // a bound-to-bound chain: deref one more Proxy level
+                        if (it->second.t == VT::Hash && it->second.hashKind == "Proxy" && it->second.hash) {
+                            auto f2 = it->second.hash->find("FETCH");
+                            if (f2 != it->second.hash->end()) { ValueList none; return I.callCallable(f2->second, none); }
+                        }
+                        return it->second;
+                    };
+                    Value store; store.t = VT::Code; store.code = std::make_shared<Callable>();
+                    store.code->builtin = [owner, src](Interpreter& I, ValueList& sa) -> Value {
+                        Value nv = sa.empty() ? Value::any() : sa[0];
+                        auto it = owner->vars.find(src);
+                        if (it != owner->vars.end() && it->second.t == VT::Hash &&
+                            it->second.hashKind == "Proxy" && it->second.hash) {
+                            auto s2 = it->second.hash->find("STORE");
+                            if (s2 != it->second.hash->end()) { ValueList one{nv}; return I.callCallable(s2->second, one); }
+                        }
+                        owner->vars[src] = nv;
+                        return nv;
+                    };
+                    (*proxy.hash)["FETCH"] = fetch;
+                    (*proxy.hash)["STORE"] = store;
+                    Value* blv = lvalue(a->target.get());
+                    *blv = proxy;
+                    return sink ? Value::any() : eval(a->value.get());
+                }
+            }
+        }
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -3745,6 +3894,17 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             else *lv = coerceArray(rhs);
         }
         else if (sigil == '%') *lv = coerceHash(rhs);
+        else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
+            // assigning Nil restores the container's default (is default / (Type) / Any)
+            const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
+            Value dv = Value::any();
+            for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                auto di = en->varDefault.find(nm);
+                if (di != en->varDefault.end()) { dv = di->second; break; }
+                if (en->vars.count(nm)) break; // owner scope reached, no declared default
+            }
+            *lv = dv;
+        }
         else *lv = rhs;
         if (nb) wrapNative(*lv, nb, ns);
         return sink ? Value::any() : *lv;
@@ -3929,6 +4089,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return applyArith(op, lu, ru);
     }
     if (op == "!%%") return Value::boolean(!applyArith("%%", l, r).truthy()); // negated divisibility
+    // generic op negation (`!eq`, `!before`, …): apply the base op, negate the Bool
+    if (op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==" && op != "!===" && op != "!~~")
+        return Value::boolean(!applyArith(op.substr(1), l, r).truthy());
     if (isSetOpStr(op)) return setOp(op, l, r);
     // hyper binary metaop  >>OP>>  : element-wise apply OP over the two lists
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
@@ -3977,7 +4140,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         ValueList a = l.flatten(), b = r.flatten();
         Value out = Value::array(); out.isList = true;
         for (size_t i = 0; i < a.size() && i < b.size(); i++) {
-            if (sub.empty()) out.arr->push_back(Value::array({a[i], b[i]}));
+            if (sub.empty()) { Value t = Value::array({a[i], b[i]}); t.isList = true; out.arr->push_back(t); }
             else if (sub == "=>") out.arr->push_back(Value::pair(a[i].toStr(), b[i]));
             else out.arr->push_back(applyArith(sub, a[i], b[i]));
         }
@@ -3988,7 +4151,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         ValueList a = l.flatten(), b = r.flatten();
         Value out = Value::array(); out.isList = true;
         for (auto& x : a) for (auto& y : b) {
-            if (sub.empty()) out.arr->push_back(Value::array({x, y}));
+            if (sub.empty()) { Value t = Value::array({x, y}); t.isList = true; out.arr->push_back(t); }
             else if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
             else out.arr->push_back(applyArith(sub, x, y));
         }
@@ -4278,6 +4441,18 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return mkRat(rn, rd);
         }
         if (op == "%" || op == "div" || op == "mod" || op == "%%") {
+            if (anyRat && (op == "%" || op == "%%")) {
+                // Rat modulo stays exact: a % b = a - b * floor(a/b)  (10.3 % 3 == 1.3)
+                BigInt an = getN(l), ad = getD(l), bn = getN(r), bd = getD(r);
+                if (bn.isZero()) return Value::typeObj("Failure");
+                BigInt N = an * bd, D = ad * bn;
+                if (D.sign < 0) { N = -N; D = -D; }
+                BigInt q, rm; BigInt::divmod(N, D, q, rm);
+                if (!rm.isZero() && N.sign < 0) q = q - BigInt(1); // floor, not truncate
+                BigInt rn = an * bd - bn * ad * q;
+                if (op == "%%") return Value::boolean(rn.isZero());
+                return mkRat(std::move(rn), ad * bd);
+            }
             if (smallInt && op != "div") { // native fast path for small ints (div stays on BigInt for identical rounding)
                 long long a = l.toInt(), b = r.toInt();
                 if (b == 0) return Value::typeObj("Failure");
@@ -4348,6 +4523,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return Value::number(res);
     }
     if (op == "%") {
+        if (l.t == VT::Num || r.t == VT::Num) { // floating modulo: a - b * floor(a/b)
+            double a = l.toNum(), b = r.toNum();
+            if (b == 0.0) return Value::number(std::numeric_limits<double>::quiet_NaN());
+            return Value::number(a - b * std::floor(a / b));
+        }
         long long b = r.toInt();
         if (b == 0) return Value::integer(0);
         long long m = l.toInt() % b;
@@ -5878,20 +6058,39 @@ Value Interpreter::evalUnary(Unary* u) {
         // Flatten like a slurpy arg list: @-vars/ranges/inner lists spread, but a
         // $-held container or an [..] literal stays ONE item ([===] $a, $a, [1,2]).
         ValueList items;
+        std::function<void(const Value&)> spread = [&](const Value& v) {
+            // deep-spread plain lists, but an itemized element ([1,2,3] row of a
+            // matrix) stays ONE item — so [Z] @matrix zips the rows
+            if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); return; }
+            if (v.t == VT::Array && v.arr && !v.itemized) { for (auto& x : *v.arr) spread(x); return; }
+            items.push_back(v);
+        };
         auto pushFlat = [&](Value v, bool item) {
             if (!item && (v.t == VT::Array || v.t == VT::Range))
-                for (auto& x : v.flatten()) items.push_back(x);
+                spread(v);
             else items.push_back(std::move(v));
         };
+        // list-infix reduces ([Z]/[X] and their metaop forms) keep each operand
+        // list whole: [Z] @a, @b zips the two arrays, [Z] @matrix zips the rows
+        bool listInfix = !op.empty() && (op[0] == 'Z' || op[0] == 'X') &&
+                         !isSetOpStr(op) && op != "X"; // "X" alone is still the cross op
+        if (op == "Z" || op == "X") listInfix = true;
         if (u->operand->kind == NK::ListExpr) {
             auto* le = static_cast<ListExpr*>(u->operand.get());
             for (auto& ie : le->items) {
-                bool item = (ie->kind == NK::VarExpr &&
+                bool item = listInfix ||
+                            (ie->kind == NK::VarExpr &&
                              !static_cast<VarExpr*>(ie.get())->name.empty() &&
                              static_cast<VarExpr*>(ie.get())->name[0] == '$') ||
                             ie->kind == NK::ArrayLit;
                 pushFlat(eval(ie.get()), item);
             }
+        }
+        else if (listInfix) { // a single @rows operand spreads ONE level
+            Value v = eval(u->operand.get());
+            if (v.t == VT::Array && v.arr) for (auto& x : *v.arr) items.push_back(x);
+            else if (v.t == VT::Range) for (auto& x : v.flatten()) items.push_back(x);
+            else items.push_back(std::move(v));
         }
         else pushFlat(eval(u->operand.get()), false);
         return applyReduce(op, items);
@@ -6140,6 +6339,44 @@ std::string Interpreter::gistOf(const Value& v) {
         }
     }
     if (v.t == VT::Object && v.obj && v.obj->hasBoxed) return gistOf(v.obj->boxed);
+    if (v.t == VT::Object && v.obj && v.obj->cls) {
+        // Rakudo's default gist: Class.new(pubattr => repr, ...) — public attrs
+        // in declaration order, base-class attrs first.
+        std::vector<const ClassAttr*> pub;
+        std::function<void(ClassInfo*)> collect = [&](ClassInfo* c) {
+            if (!c) return;
+            collect(c->parent.get());
+            for (auto& p : c->extraParents) collect(p.get());
+            for (auto& a : c->attrs) if (a.pub) pub.push_back(&a);
+        };
+        collect(v.obj->cls.get());
+        std::function<std::string(const Value&)> repr = [&](const Value& av) -> std::string {
+            if (av.t == VT::Str && av.hashKind.empty()) {
+                std::string o = "\"";
+                for (char ch : av.s) { if (ch == '"' || ch == '\\' || ch == '$' || ch == '@' || ch == '{') o += '\\'; o += ch; }
+                return o + "\"";
+            }
+            if (av.t == VT::Type) return av.ofType.empty() ? av.s : av.s + "[" + av.ofType + "]";
+            if (av.t == VT::Any) return "Any";
+            if (av.t == VT::Nil) return "Nil";
+            if (av.t == VT::Object) return gistOf(av);
+            return av.gist();
+        };
+        std::string o = v.obj->cls->name + ".new";
+        if (!pub.empty()) {
+            o += "(";
+            bool first = true;
+            for (auto* a : pub) {
+                if (!first) o += ", "; first = false;
+                auto it = v.obj->attrs.find(a->name);
+                Value av = it != v.obj->attrs.end() ? it->second : Value::any();
+                if (av.t == VT::Any && !a->type.empty()) av = Value::typeObj(a->type); // unset typed attr shows its type
+                o += a->name + " => " + repr(av);
+            }
+            o += ")";
+        }
+        return o;
+    }
     return v.gist();
 }
 std::string Interpreter::strOf(const Value& v) {
@@ -6382,6 +6619,25 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         }
         return acc;
     }
+    if (op == "Z") { // n-ary zip: [Z] rows == transpose (a fold would nest tuples)
+        std::vector<ValueList> rows;
+        for (auto& it : items) {
+            if (it.t == VT::Array && it.arr) rows.push_back(*it.arr);
+            else if (it.t == VT::Range) rows.push_back(it.flatten());
+            else rows.push_back(ValueList{it});
+        }
+        Value out = Value::array(); out.isList = true;
+        if (!rows.empty()) {
+            size_t n = rows[0].size();
+            for (auto& r : rows) n = std::min(n, r.size());
+            for (size_t i = 0; i < n; i++) {
+                Value t = Value::array(); t.isList = true;
+                for (auto& r : rows) t.arr->push_back(r[i]);
+                out.arr->push_back(t);
+            }
+        }
+        return out;
+    }
     Value acc = items[0];
     for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
     return acc;
@@ -6568,39 +6824,61 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         if (wantExists || wantDelete || kvF || pF || kF || vF) {
-        bool exists = false;
-        Value val;
-        std::string key;
-        long long ai = 0;
-        if (idx->isHash) {
-            key = eval(idx->index.get()).toStr();
-            if (base.t == VT::Hash && base.hash) {
-                auto it = base.hash->find(key);
-                if (it != base.hash->end()) { exists = true; val = it->second; }
+        Value iv = eval(idx->index.get());
+        bool slice = iv.t == VT::Array || iv.t == VT::Range;
+        ValueList sliceKeys;
+        if (slice) for (auto& k : iv.flatten()) sliceKeys.push_back(k);
+        else sliceKeys.push_back(iv);
+        struct Hit { Value keyV; Value val; bool exists; };
+        std::vector<Hit> hits;
+        for (auto& kv : sliceKeys) {
+            bool exists = false; Value val; Value keyV;
+            if (idx->isHash) {
+                std::string key = kv.toStr(); keyV = Value::str(key);
+                if (base.t == VT::Hash && base.hash) {
+                    auto it = base.hash->find(key);
+                    if (it != base.hash->end()) { exists = true; val = it->second; }
+                }
+            } else {
+                long long ai = kv.toInt();
+                if (base.t == VT::Array && base.arr) {
+                    if (ai < 0) ai += (long long)base.arr->size();
+                    if (ai >= 0 && ai < (long long)base.arr->size()) { exists = isDefined((*base.arr)[ai]); val = (*base.arr)[ai]; }
+                }
+                keyV = Value::integer(ai);
             }
-        } else {
-            ai = eval(idx->index.get()).toInt();
-            if (base.t == VT::Array && base.arr) {
-                if (ai < 0) ai += (long long)base.arr->size();
-                if (ai >= 0 && ai < (long long)base.arr->size()) { exists = isDefined((*base.arr)[ai]); val = (*base.arr)[ai]; }
+            hits.push_back({keyV, val, exists});
+        }
+        if (wantDelete) for (auto& h : hits) if (h.exists) {
+            if (idx->isHash) base.hash->erase(h.keyV.toStr());
+            else { long long ai = h.keyV.toInt();
+                   if (base.arr && ai >= 0 && ai < (long long)base.arr->size()) (*base.arr)[ai] = Value::any(); }
+        }
+        if (!slice) {
+            auto& h = hits[0];
+            if (wantExists) {
+                Value ex = Value::boolean(negExists ? !h.exists : h.exists);
+                if (kvF) { Value o = Value::array({h.keyV, ex}); o.isList = true; return o; }
+                if (pF) return Value::pair(h.keyV.toStr(), ex);
+                return ex;
             }
+            if (kF) return h.exists ? h.keyV : Value::array();
+            if (vF) return h.exists ? h.val : Value::array();
+            if (kvF) { Value o = h.exists ? Value::array({h.keyV, h.val}) : Value::array(); o.isList = true; return o; }
+            if (pF) return h.exists ? Value::pair(h.keyV.toStr(), h.val) : Value::array();
+            return h.exists ? h.val : Value::any(); // plain :delete (or all conditionals off after delete)
         }
-        Value keyV = idx->isHash ? Value::str(key) : Value::integer(ai);
-        if (wantDelete && exists) {
-            if (idx->isHash) base.hash->erase(key);
-            else (*base.arr)[ai] = Value::any();
+        // slice + adverb: :exists is per-key; the others filter to existing keys
+        Value out = Value::array(); out.isList = true;
+        for (auto& h : hits) {
+            if (wantExists) { out.arr->push_back(Value::boolean(negExists ? !h.exists : h.exists)); continue; }
+            if (!h.exists) continue;
+            if (kvF) { out.arr->push_back(h.keyV); out.arr->push_back(h.val); }
+            else if (pF) out.arr->push_back(Value::pair(h.keyV.toStr(), h.val));
+            else if (kF) out.arr->push_back(h.keyV);
+            else out.arr->push_back(h.val); // :v or plain :delete slice
         }
-        if (wantExists) {
-            Value ex = Value::boolean(negExists ? !exists : exists);
-            if (kvF) { Value o = Value::array({keyV, ex}); o.isList = true; return o; }
-            if (pF) return Value::pair(keyV.toStr(), ex);
-            return ex;
-        }
-        if (kF) return exists ? keyV : Value::array();
-        if (vF) return exists ? val : Value::array();
-        if (kvF) { Value o = exists ? Value::array({keyV, val}) : Value::array(); o.isList = true; return o; }
-        if (pF) return exists ? Value::pair(keyV.toStr(), val) : Value::array();
-        return exists ? val : Value::any(); // plain :delete (or all conditionals off after delete)
+        return out;
         }
     }
 
@@ -6623,6 +6901,8 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         Value iv = eval(idx->index.get());
         auto lookup1 = [&](const std::string& key) -> Value {
+            if (base.t == VT::Pair) // a Pair is associative on its own key
+                return key == base.s && base.pairVal ? *base.pairVal : Value::any();
             if (base.t == VT::Hash && base.hash) {
                 auto it = base.hash->find(key);
                 if (it != base.hash->end()) return it->second;
@@ -6823,8 +7103,17 @@ Value Interpreter::eval(Expr* e) {
                 // declaration always redefines: EVALs run in the caller's scope, so
                 // `my Ta $c` in one EVAL must not leave its type constraint on a later
                 // `my Tc $c`.
-                if (!ve->declType.empty() || !tctx_.cur->vars.count(ve->name))
+                if (ve->declDefault) { // `is default(v)`: initial AND reset value
+                    Value dv = eval(ve->declDefault.get());
+                    tctx_.cur->varDefault[ve->name] = dv;
+                    tctx_.cur->define(ve->name, dv);
+                    return tctx_.cur->vars[ve->name];
+                }
+                if (!ve->declType.empty() || !tctx_.cur->vars.count(ve->name)) {
+                    if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
+                        tctx_.cur->varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
                     tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
+                }
                 return tctx_.cur->vars[ve->name];
             }
             if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
@@ -6851,6 +7140,7 @@ Value Interpreter::eval(Expr* e) {
                 }
                 return *p;
             }
+            if (ve->name == "$!") return Value::nil(); // no error yet: $! is Nil
             // `&`-references that aren't user subs: built-in operators (&infix:<+>,
             // &prefix:<->) and named builtins (&say) → a Callable that applies them.
             if (ve->name.size() > 1 && ve->name[0] == '&') {
@@ -6896,7 +7186,7 @@ Value Interpreter::eval(Expr* e) {
                 if (alldig) if (Value* sl = tctx_.cur->find("$/"))
                     if (sl->arr) { long idx = std::stol(ve->name.substr(1)); if (idx < (long)sl->arr->size()) return (*sl->arr)[idx]; }
             }
-            if (!isSpecialVar(ve->name))
+            if (!isSpecialVar(ve->name) && !noStrict_)
                 throw RakuError{Value::typeObj("X::Undeclared"),
                                 "Variable '" + ve->name + "' is not declared"};
             return defaultFor(sigil);
@@ -7043,6 +7333,30 @@ Value Interpreter::eval(Expr* e) {
         case NK::Binary: return evalBinary(static_cast<Binary*>(e));
         case NK::ChainExpr: {
             auto* ch = static_cast<ChainExpr*>(e);
+            // a literal `*` operand curries the whole chain (60 < * < 70) — check
+            // the AST up front so short-circuiting still guards the normal path
+            bool anyWhatever = false;
+            for (auto& o : ch->operands) if (o->kind == NK::Whatever) anyWhatever = true;
+            if (anyWhatever) {
+                ValueList ops;
+                for (auto& o : ch->operands) ops.push_back(eval(o.get()));
+                // Whatever in a chain curries the whole chain: 60 < * < 70 is a
+                // one-arg WhateverCode testing both comparisons
+                Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+                code.code->isWhateverCode = true;
+                long long stars = 0; for (auto& v : ops) if (v.t == VT::Whatever) stars++;
+                code.code->whateverArity = stars;
+                std::vector<std::string> cops = ch->ops;
+                code.code->builtin = [cops, ops](Interpreter& I, ValueList& a) -> Value {
+                    size_t ai = 0;
+                    ValueList filled;
+                    for (auto& v : ops) filled.push_back(v.t == VT::Whatever && ai < a.size() ? a[ai++] : v);
+                    for (size_t k = 0; k < cops.size(); k++)
+                        if (!I.applyBinOp(cops[k], filled[k], filled[k + 1]).truthy()) return Value::boolean(false);
+                    return Value::boolean(true);
+                };
+                return code;
+            }
             Value prev = eval(ch->operands[0].get());
             for (size_t k = 0; k < ch->ops.size(); k++) {
                 Value next = eval(ch->operands[k + 1].get());
@@ -7062,6 +7376,26 @@ Value Interpreter::eval(Expr* e) {
             // quoted `."DEFINITE"()` form (methodExpr set) still dispatches normally.
             if (mc->method == "DEFINITE" && !mc->methodExpr && !mc->meta)
                 return Value::boolean(isDefined(inv));
+            // `.VAR` on a $-variable: a Scalar container record answering
+            // .^name (Scalar), .name ($x), .default; other methods hit the value.
+            if (mc->method == "VAR" && !mc->methodExpr && !mc->meta &&
+                mc->inv->kind == NK::VarExpr) {
+                auto* ivar = static_cast<VarExpr*>(mc->inv.get());
+                if (ivar->name.size() > 1 && ivar->name[0] == '$' &&
+                    (std::isalpha((unsigned char)ivar->name[1]) || ivar->name[1] == '_')) {
+                    Value sc = Value::makeHash(); sc.hashKind = "Scalar";
+                    (*sc.hash)["name"] = Value::str(ivar->name);
+                    Value dv = Value::any();
+                    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                        auto di = en->varDefault.find(ivar->name);
+                        if (di != en->varDefault.end()) { dv = di->second; break; }
+                        if (en->vars.count(ivar->name)) break;
+                    }
+                    (*sc.hash)["default"] = dv;
+                    (*sc.hash)["value"] = inv;
+                    return sc;
+                }
+            }
             if (mc->methodExpr) mc->method = eval(mc->methodExpr.get()).toStr(); // indirect ."$name"()
             ValueList args = evalArgs(mc->args);
             // `$x.&foo(...)` — call the sub `foo` (not a method) with the invocant prepended:
@@ -7088,8 +7422,13 @@ Value Interpreter::eval(Expr* e) {
                     }
                 } catch (...) {}
             }
-            // Whatever-currying: `*.method(...)` yields a WhateverCode
-            if (inv.t == VT::Whatever || (inv.t == VT::Code && inv.code && inv.code->isWhateverCode)) {
+            // Whatever-currying: `*.method(...)` yields a WhateverCode. The decision
+            // is SYNTACTIC, like Rakudo's: only an invocant expression containing a
+            // literal `*` composes — `my $d = * * 2; $d.^name` calls the method on
+            // the stored WhateverCode instead. Metamodel macros never compose.
+            static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "WHICH", "VAR", "WHY"};
+            if ((inv.t == VT::Whatever || (inv.t == VT::Code && inv.code && inv.code->isWhateverCode)) &&
+                !mc->meta && !kMetaMacros.count(mc->method) && exprHasWhateverLit(mc->inv.get())) {
                 Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
                 code.code->isWhateverCode = true;
                 Value self = inv; std::string method = mc->method; ValueList margs = args;
@@ -7153,6 +7492,12 @@ Value Interpreter::eval(Expr* e) {
                 }
                 return arr;
             }
+            // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
+            // marks an infinite range, same as 1..Inf)
+            if (to.t == VT::Whatever)
+                return Value::range(from.toInt(), 9223372036854775807LL, r->exFrom, false);
+            if (from.t == VT::Whatever)
+                return Value::range(-9223372036854775807LL - 1, to.toInt(), false, r->exTo);
             return Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
         }
         case NK::Pair: {

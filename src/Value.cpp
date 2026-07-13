@@ -73,7 +73,24 @@ long long Value::toInt() const {
             if (n <= -9223372036854775808.0) return -9223372036854775807LL - 1;
             return (long long)n;
         case VT::Rat:  { if (!ratN || !ratD || ratD->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN, *ratD, q, r); return q.toLL(); }
-        case VT::Str:  { try { return std::stoll(s); } catch (...) { return 0; } }
+        case VT::Str:  { try {
+            size_t pos = 0;
+            long long v = std::stoll(s, &pos);
+            // the string is a wider numeric literal ("3.14", "1.23E4", "1/3"):
+            // numify the whole thing, then truncate — like .Int on the numeric
+            if (pos < s.size() && (s[pos] == '.' || s[pos] == 'e' || s[pos] == 'E' || s[pos] == '/')) {
+                try {
+                    double d = s[pos] == '/' ? (std::stod(s.substr(pos + 1)) == 0.0 ? 0.0
+                                                : (double)v / std::stod(s.substr(pos + 1)))
+                                             : std::stod(s);
+                    if (std::isnan(d)) return 0;
+                    if (d >= 9223372036854775807.0) return 9223372036854775807LL;
+                    if (d <= -9223372036854775808.0) return -9223372036854775807LL - 1;
+                    return (long long)d;
+                } catch (...) {}
+            }
+            return v;
+        } catch (...) { return 0; } }
         case VT::Match: { try { return std::stoll(s); } catch (...) { return 0; } } // matched text as a number
         case VT::Array: return arr ? (long long)arr->size() : 0;
         case VT::Hash:
@@ -220,7 +237,20 @@ std::string Value::toStr() const {
 }
 
 std::string Value::gist() const {
-    if (!enumName.empty()) return enumName;
+    if (!enumName.empty()) {
+        // a Junction gists with its eigenstates: any(1, 2, 3)
+        if (t == VT::Array && arr &&
+            (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none")) {
+            ReprDepthGuard g; if (g.tooDeep()) return enumName + "(...)";
+            std::string out = enumName + "(";
+            for (size_t k = 0; k < arr->size(); k++) {
+                if (k) out += ", ";
+                out += (*arr)[k].gist();
+            }
+            return out + ")";
+        }
+        return enumName;
+    }
     switch (t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "(Any)";
@@ -236,6 +266,45 @@ std::string Value::gist() const {
         }
         case VT::Pair: return s + " => " + (pairVal ? pairVal->gist() : "");
         case VT::Str:  return s;
+        case VT::Hash: {
+            // plain Hash: {a => 1, b => 2}; Map: Map.new((a => 1)); Set/Bag/Mix
+            // families: Kind(elems). Everything else (Date, Failure, …) keeps
+            // its toStr form via the default below.
+            if (hashKind == "Attribute" && hash) { // Str $!name
+                std::string tn = hash->count("type") ? hash->at("type").s : "Mu";
+                std::string nm = hash->count("name") ? hash->at("name").s : "";
+                return (tn.empty() ? "Mu" : tn) + " " + nm;
+            }
+            if (hashKind.empty() || hashKind == "Map" || hashKind == "Stash") {
+                ReprDepthGuard g; if (g.tooDeep()) return "{...}";
+                std::string body; bool first = true;
+                if (hash) for (auto& kv : *hash) {
+                    if (!first) body += ", "; first = false;
+                    body += kv.first + " => " + kv.second.gist();
+                }
+                if (hashKind == "Map") return "Map.new((" + body + "))";
+                return "{" + body + "}";
+            }
+            if (hashKind == "Set" || hashKind == "SetHash" ||
+                hashKind == "Bag" || hashKind == "BagHash" ||
+                hashKind == "Mix" || hashKind == "MixHash") {
+                ReprDepthGuard g; if (g.tooDeep()) return hashKind + "(...)";
+                bool isSet = hashKind[0] == 'S', isMix = hashKind[0] == 'M';
+                std::string body; bool first = true;
+                if (hash) for (auto& kv : *hash) {
+                    if (!first) body += " "; first = false;
+                    if (isSet) body += kv.first;
+                    else if (isMix) body += kv.first + " => " + kv.second.gist();
+                    else { // Bag: elem(count), (1) omitted
+                        body += kv.first;
+                        if (!(kv.second.t == VT::Int && kv.second.toInt() == 1))
+                            body += "(" + kv.second.gist() + ")";
+                    }
+                }
+                return hashKind + "(" + body + ")";
+            }
+            return toStr();
+        }
         case VT::Match: {
             // ｢matched｣ followed by one indented line per capture (positional then named)
             std::string r = "\xEF\xBD\xA2" + s + "\xEF\xBD\xA3";
@@ -273,7 +342,8 @@ std::string Value::typeName() const {
         case VT::Hash:  if (hashKind == "Pod" && hash && hash->count("podclass")) return hash->at("podclass").s;
                         return (hashKind == "Date" || hashKind == "DateTime") && hash ? dateGist(*hash, hashKind == "Date")
                              : (hashKind.empty() ? "Hash" : hashKind);
-        case VT::Code:  return code && code->isMethod ? "Method" : code && code->isBlock ? "Block" : "Sub";
+        case VT::Code:  return code && code->isWhateverCode ? "WhateverCode"
+                             : code && code->isMethod ? "Method" : code && code->isBlock ? "Block" : "Sub";
         case VT::Rat:   return fatRat ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
@@ -371,6 +441,16 @@ int valueCmp(const Value& a, const Value& b) {
         Value av = a.pairVal ? *a.pairVal : Value::any();
         Value bv = b.pairVal ? *b.pairVal : Value::any();
         return valueCmp(av, bv);
+    }
+    // Lists compare elementwise, shorter-is-less on a tie — so a sort key of
+    // `{ -.value, .key }` orders by the first element, then the second.
+    if (a.t == VT::Array && b.t == VT::Array && a.arr && b.arr && a.enumName.empty() && b.enumName.empty()) {
+        size_t n = std::min(a.arr->size(), b.arr->size());
+        for (size_t k = 0; k < n; k++) {
+            int c = valueCmp((*a.arr)[k], (*b.arr)[k]);
+            if (c != 0) return c;
+        }
+        return a.arr->size() < b.arr->size() ? -1 : a.arr->size() > b.arr->size() ? 1 : 0;
     }
     std::string x = a.toStr(), y = b.toStr();
     return x < y ? -1 : x > y ? 1 : 0;

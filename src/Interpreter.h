@@ -37,6 +37,9 @@ struct Env {
     std::shared_ptr<Env> parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
+    // container reset values: `is default(v)` stores v; a typed `my Int $x`
+    // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
+    std::map<std::string, Value> varDefault;
 
     Value* find(const std::string& name) {
         auto it = vars.find(name);
@@ -195,6 +198,9 @@ public:
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
+    void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
+    static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
+    bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
@@ -416,6 +422,7 @@ private:
     long testNum_ = 0;
     long failCount_ = 0;
     bool usedTest_ = false;
+    bool noStrict_ = false;  // `no strict` — undeclared variables auto-vivify
     int subtestDepth_ = 0;
     bool subtestFailed_ = false;
     bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan

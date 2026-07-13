@@ -627,7 +627,13 @@ void Regex::parseClassBodyMember(Node* node) {
 // matchers. Returns the new position after matching, -1 if it IS a built-in but
 // doesn't match here, or -2 if `nm` is not a built-in rule at all.
 static long builtinRuleMatch(const std::string& nm, const std::string& s, long pos, long len) {
-    if (nm == "ws") { long p = pos; while (p < len && std::isspace((unsigned char)s[p])) p++; return p; } // \s* (may be zero-width)
+    if (nm == "ws") { // <!ww> \s* — zero-width only OFF a word-word boundary
+        long p = pos;
+        while (p < len && std::isspace((unsigned char)s[p])) p++;
+        auto wordAt = [&](long i) { return i >= 0 && i < len && (std::isalnum((unsigned char)s[i]) || s[i] == '_'); };
+        if (p == pos && wordAt(pos - 1) && wordAt(pos)) return -1; // between two word chars: needs real space
+        return p;
+    }
     if (nm == "ident") {
         if (pos >= len) return -1;
         unsigned char c0 = (unsigned char)s[pos];

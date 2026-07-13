@@ -61,6 +61,7 @@ struct VarExpr : Expr {
     std::string declScope;       // my / our / state / constant
     std::string declType;        // optional type constraint (ignored at runtime for now)
     std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
+    ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
 };
 
@@ -217,11 +218,14 @@ struct VarDecl : Stmt {
     VarDecl(): Stmt(NK::VarDecl) {}
 };
 
+struct SubTraitSpec { std::string name; ExprPtr arg; }; // `is traced` / `is role('admin')`
+
 struct SubDecl : Stmt {
     std::string name; // empty for anon
     std::vector<Param> params;
     std::vector<std::vector<Param>> altParams; // extra `(sig1) | (sig2)` signatures, share the body
     std::vector<StmtPtr> body;
+    std::vector<SubTraitSpec> traits; // non-built-in `is` traits, dispatched to user trait_mod:<is> multis
     bool isMulti = false;
     bool isMethod = false;
     bool isSubmethod = false;
@@ -319,6 +323,7 @@ struct UseStmt : Stmt {
     std::string module;
     std::string arg; // first string argument, e.g. `use lib 'lib'`
     ExprPtr argExpr; // computed argument, e.g. `use lib $?FILE.IO.parent`
+    bool isNo = false; // `no strict` / `no worries` — the negated pragma form
     UseStmt(): Stmt(NK::UseStmt) {}
 };
 

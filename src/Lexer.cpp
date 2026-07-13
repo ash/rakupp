@@ -471,25 +471,12 @@ static int ndDigitValue(uint32_t cp) {
 // digits these do not combine positionally; each is a complete literal. Returns
 // true and sets num/den (den>0) when `cp` is such a numeral.
 static bool unicodeNumeralValue(uint32_t cp, long long& num, long long& den) {
-    struct NV { uint32_t cp; long long n, d; };
-    static const NV tab[] = {
-        {0x2188, 100000, 1},  // ↈ ROMAN NUMERAL ONE HUNDRED THOUSAND (Nl)
-        {0x2187, 50000, 1},   // ↇ
-        {0x2186, 10000, 1},   // ↆ  (also 6, but modern = 10000)
-        {0x12400, 2, 1},      // 𒐀 CUNEIFORM NUMERIC SIGN TWO ASH (Nl)
-        {0x137C, 10000, 1},   // ፼ ETHIOPIC NUMBER TEN THOUSAND (No)
-        {0x24FF, 0, 1},       // ⓿ NEGATIVE CIRCLED DIGIT ZERO (No)
-        {0x2150, 1, 7},       // ⅐ VULGAR FRACTION ONE SEVENTH (No)
-        {0x2151, 1, 9},       // ⅑
-        {0x2152, 1, 10},      // ⅒
-        {0x00BD, 1, 2},       // ½
-        {0x00BC, 1, 4},       // ¼
-        {0x00BE, 3, 4},       // ¾
-        {0x2173, 4, 1},       // ⅳ SMALL ROMAN NUMERAL FOUR (Nl)
-        {0x0F33, -1, 2},      // ༳ TIBETAN DIGIT HALF ZERO = -1/2 (No)
-    };
-    for (auto& e : tab) if (e.cp == cp) { num = e.n; den = e.d; return true; }
-    return false;
+    // Any Nl/No numeral with a UCD numeric value (⓷ ❷ ⒌ ㊄ Ⅳ ½ …) is a
+    // standalone literal. Decimal (Nd) digits combine positionally instead,
+    // so they are excluded here and handled by the digit path.
+    if (cp < 0x80) return false;
+    if (ndDigitValue(cp) >= 0) return false;
+    return uniNumValue(cp, num, den);
 }
 
 // Fullwidth ASCII letter (Ａ-Ｚ / ａ-ｚ, U+FF21.., U+FF41..) folded to ASCII, or 0.
@@ -507,7 +494,9 @@ Token Lexer::lexNumber() {
     if ((unsigned char)peek() >= 0x80) {
         long long nn, dd;
         if (unicodeNumeralValue(codepointHere(), nn, dd)) {
-            for (int k = utf8Len((unsigned char)peek()); k > 0; k--) advance();
+            std::string orig; // keep the numeral's own spelling as the token text, so
+                              // re-joined source (`:36<utfⅧ>`) still shows the Nl/No char
+            for (int k = utf8Len((unsigned char)peek()); k > 0; k--) orig += advance();
             // Nl/No numerals do not combine as digits: another numeral/digit
             // immediately after is malformed (e.g. `𒐀𒐀`, `⓿⓿`).
             if ((unsigned char)peek() >= 0x80) {
@@ -515,9 +504,9 @@ Token Lexer::lexNumber() {
                 if (ndDigitValue(nx) >= 0 || unicodeNumeralValue(nx, a, b))
                     throw ParseError("Malformed numeric literal", line_);
             }
-            if (dd == 1) { Token t = make(Tok::IntLit, std::to_string(nn)); t.ival = nn; return t; }
-            Token t = make(Tok::NumLit, std::to_string(nn) + "/" + std::to_string(dd)); // Rat num/den
-            t.nval = (double)nn / (double)dd; t.flag = true; // flag => Rat
+            if (dd == 1) { Token t = make(Tok::IntLit, orig); t.ival = nn; return t; }
+            Token t = make(Tok::NumLit, orig); // fractional numeral (½): a Rat
+            t.nval = (double)nn / (double)dd; t.flag = true; t.ival = nn; t.text2 = std::to_string(dd);
             return t;
         }
     }
@@ -698,8 +687,9 @@ bool Lexer::tryQuoteForm(Token& out) {
     while (p < src_.size() && src_[p] == ':') {
         size_t q = p + 1;
         std::string a;
+        if (q < src_.size() && src_[q] == '!') a += src_[q++]; // negated adverb (:!s)
         while (q < src_.size() && std::isalnum((unsigned char)src_[q])) a += src_[q++];
-        if (a.empty()) break;
+        if (a.empty() || a == "!") break;
         std::string arg; // parenthesized adverb argument: :x(2), :nth(3), :nth(1,3,5)
         if (q < src_.size() && src_[q] == '(') {
             int d = 0;
@@ -872,6 +862,36 @@ bool Lexer::tryQuoteForm(Token& out) {
         return true;
     }
     bool interp = (w == "qq");
+    // interpolation-feature adverbs (q:c / Q:s / qq:!s / q:s …) pick which
+    // features interpolate: s=scalars a=arrays h=hashes f=&calls c={blocks}
+    // b=backslashes. Encoded as a "\x02feats\x02" prefix for parseInterpString.
+    {
+        std::string feats = interp ? "sahfcb" : "";
+        bool anyFeat = false;
+        auto toggle = [&](const char* name, char f) {
+            if (adverbs.find(":" + std::string(name) + " ") != std::string::npos) {
+                anyFeat = true;
+                if (feats.find(f) == std::string::npos) feats += f;
+            }
+            if (adverbs.find(":!" + std::string(name) + " ") != std::string::npos) {
+                anyFeat = true;
+                size_t at = feats.find(f);
+                if (at != std::string::npos) feats.erase(at, 1);
+            }
+        };
+        toggle("s", 's'); toggle("scalar", 's');
+        toggle("a", 'a'); toggle("array", 'a');
+        toggle("h", 'h'); toggle("hash", 'h');
+        toggle("f", 'f'); toggle("function", 'f');
+        toggle("c", 'c'); toggle("closure", 'c');
+        toggle("b", 'b'); toggle("backslash", 'b');
+        if (adverbs.find(":qq ") != std::string::npos) { anyFeat = true; feats = "sahfcb"; }
+        if (anyFeat) {
+            if (feats.empty()) { out = make(Tok::StrLit, raw); return true; }
+            out = make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
+            return true;
+        }
+    }
     // `q…` has single-quote semantics: collapse \\ → \ and \<delimiter> → <delimiter>
     // (qq handles escapes at interpolation time; Q leaves everything literal).
     if (w == "q") {

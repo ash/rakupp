@@ -194,6 +194,9 @@ bool Parser::startsTermToken(const Token& t) const {
                 (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::") ||
                  (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace)))
                 return true;
+            // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
+            // keyword: `register('Anna', role => 'admin')`
+            if (&t == &cur() && peek().kind == Tok::FatArrow) return true;
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
                    t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant";
@@ -230,6 +233,9 @@ bool Parser::startsListopArg(const Token& t) const {
                 "x", "xx", "and", "or", "andthen", "orelse", "div", "mod", "gcd", "lcm",
             };
             if (wordInfix.count(t.text)) return false;
+            // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
+            // keyword: `register('Anna', role => 'admin')`
+            if (&t == &cur() && peek().kind == Tok::FatArrow) return true;
             // sub/method/do/start begin an expression (anonymous routine / do-block); my/our/state/has/
             // constant begin a declaration expression that is a valid list-op argument (`ok my $x = 5, "d"`)
             return !kBlockKeywords.count(t.text) ||
@@ -301,6 +307,24 @@ ExprPtr Parser::parseExpr(int minbp) {
             list->items.push_back(parseColonPair());
             lhs = std::move(list);
             continue;
+        }
+        // negated infix (`!eq`, `!%%` when lexed apart): `!` glued to a negatable
+        // comparison op applies the op and negates its Bool
+        if (cur().kind == Tok::Op && cur().text == "!" && !peek().spaceBefore) {
+            static const std::set<std::string> negatable = {
+                "eq", "ne", "lt", "gt", "le", "ge", "before", "after", "eqv",
+                "%%", "==", "<", ">", "<=", ">=",
+            };
+            InfixInfo negIn = classifyInfix(peek());
+            if (negIn.valid && negatable.count(negIn.op) && negIn.lbp >= minbp) {
+                advance(); advance(); // ! and the op
+                auto bin = std::make_unique<Binary>();
+                bin->op = "!" + negIn.op;
+                bin->lhs = std::move(lhs);
+                bin->rhs = parseExpr(negIn.lbp + 1);
+                lhs = std::move(bin);
+                continue;
+            }
         }
         InfixInfo in = classifyInfix(cur());
         if (!in.valid || in.lbp < minbp) break;
@@ -768,7 +792,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
 }
 
 // skip `is trait` / `does Role` / `where ...` clauses up to '=' , ; or end
-void Parser::skipTraits(bool onVarDecl) {
+void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
     while (isIdent("is") || isIdent("does") || isIdent("returns") || isIdent("of")) {
         bool wasIs = isIdent("is");
         advance();
@@ -776,6 +800,13 @@ void Parser::skipTraits(bool onVarDecl) {
         // compile error (X::Comp::Trait::Unknown) — roast S03-binding/ro.t.
         if (onVarDecl && wasIs && isIdent("readonly"))
             error("Can't use unknown trait 'is readonly' in a variable declaration");
+        // `is default(EXPR)` — capture the container default for the declaration
+        if (wasIs && isIdent("default") && peek().kind == Tok::LParen && defaultOut) {
+            advance(); advance(); // default (
+            *defaultOut = parseExpression();
+            expectKind(Tok::RParen, ")");
+            continue;
+        }
         if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); // trait name / type
         if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
         if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
@@ -858,7 +889,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
         // Hash[valueType,keyType]
         if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
-        skipTraits(scope != "has");
+        skipTraits(scope != "has", &ve->declDefault);
         return ve;
     }
     if (scope == "constant" && isKind(Tok::Ident)) {
@@ -1173,10 +1204,16 @@ ExprPtr Parser::parsePrimary() {
             bool imag = !t.text.empty() && t.text.back() == 'i';
             bool isRat = t.flag && !imag; // decimal literal with no exponent -> Rat
             std::string txt = t.text;
+            std::string den2 = t.text2; long long numeralNum = t.ival;
             auto e = std::make_unique<NumLit>(advance().nval);
             e->imaginary = imag;
-            if (isRat && txt.find('/') != std::string::npos) {
-                // explicit numerator/denominator (a Unicode vulgar-fraction numeral)
+            if (isRat && !den2.empty()) {
+                // a Unicode vulgar-fraction numeral (½): num in ival, den in text2
+                e->isRat = true;
+                e->ratNum = numeralNum;
+                e->ratDen = std::strtoll(den2.c_str(), nullptr, 10);
+            } else if (isRat && txt.find('/') != std::string::npos) {
+                // explicit numerator/denominator
                 size_t sl = txt.find('/');
                 e->isRat = true;
                 e->ratNum = std::strtoll(txt.substr(0, sl).c_str(), nullptr, 10);
@@ -1902,6 +1939,14 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
             cur().text.compare(0, close.size(), close) == 0) {
             toks_[pos_].text = cur().text.substr(close.size());
             toks_[pos_].spaceBefore = false;
+            // re-glue a hyper split by the close: `<a b>>>.uc` lexes `>>`+`>` —
+            // the leftover `>` joins a following glued `>` back into hyper `>>`
+            if (toks_[pos_].text == ">" && pos_ + 1 < toks_.size() &&
+                toks_[pos_ + 1].kind == Tok::Op && !toks_[pos_ + 1].spaceBefore &&
+                toks_[pos_ + 1].text == ">") {
+                toks_[pos_].text = ">>";
+                toks_.erase(toks_.begin() + pos_ + 1);
+            }
             return words;
         }
         const Token& t = cur();
@@ -1913,7 +1958,23 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
     return words;
 }
 
-ExprPtr Parser::parseInterpString(const std::string& raw) {
+ExprPtr Parser::parseInterpString(const std::string& rawIn) {
+    // interpolation-feature prefix from quoting adverbs (q:c / Q:s / qq:!s):
+    // "\x02feats\x02" — s=scalars a=arrays h=hashes f=&calls c={blocks} b=backslashes
+    std::string raw = rawIn;
+    bool fS = true, fA = true, fH = true, fC = true, fB = true;
+    if (!raw.empty() && raw[0] == '\x02') {
+        size_t fend = raw.find('\x02', 1);
+        if (fend != std::string::npos) {
+            std::string feats = raw.substr(1, fend - 1);
+            raw = raw.substr(fend + 1);
+            fS = feats.find('s') != std::string::npos;
+            fA = feats.find('a') != std::string::npos;
+            fH = feats.find('h') != std::string::npos;
+            fC = feats.find('c') != std::string::npos;
+            fB = feats.find('b') != std::string::npos;
+        }
+    }
     auto result = std::make_unique<InterpStr>();
     std::string lit;
     auto flush = [&]() {
@@ -1924,7 +1985,7 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
     size_t i = 0, n = raw.size();
     while (i < n) {
         char c = raw[i];
-        if (c == '\\' && i + 1 < n) {
+        if (fB && c == '\\' && i + 1 < n) {
             char e = raw[i + 1];
             // \x41 \x[263a] hex, \o77 \o[..] octal
             if (e == 'x' || e == 'o') {
@@ -2007,7 +2068,7 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
             i += 2;
             continue;
         }
-        if (c == '{') {
+        if (fC && c == '{') {
             // balanced code block
             int depth = 1; size_t j = i + 1; std::string inner;
             while (j < n && depth > 0) {
@@ -2021,7 +2082,7 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
             continue;
         }
         // `$/` (match) and `$!` (error) as standalone interpolated vars
-        if (c == '$' && (i + 1 < n) && (raw[i + 1] == '/' || raw[i + 1] == '!') &&
+        if (fS && c == '$' && (i + 1 < n) && (raw[i + 1] == '/' || raw[i + 1] == '!') &&
             !(i + 2 < n && (std::isalnum((unsigned char)raw[i + 2]) || raw[i + 2] == '_'))) {
             flush();
             result->parts.push_back(std::make_unique<VarExpr>(std::string("$") + raw[i + 1]));
@@ -2029,7 +2090,7 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
             continue;
         }
         // numbered regex captures `$0` `$1` … and named captures `$<name>`
-        if (c == '$' && (i + 1 < n) && (std::isdigit((unsigned char)raw[i + 1]) || raw[i + 1] == '<')) {
+        if (fS && c == '$' && (i + 1 < n) && (std::isdigit((unsigned char)raw[i + 1]) || raw[i + 1] == '<')) {
             size_t j = i + 1;
             std::string var("$");
             if (raw[j] == '<') {
@@ -2054,7 +2115,7 @@ ExprPtr Parser::parseInterpString(const std::string& raw) {
             i = j;
             continue;
         }
-        if ((c == '$' || c == '@' || c == '%') &&
+        if (((c == '$' && fS) || (c == '@' && fA) || (c == '%' && fH)) &&
             (i + 1 < n) && (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
                             raw[i + 1] == '{' || raw[i + 1] == '*' || raw[i + 1] == '!' ||
                             raw[i + 1] == '.' || raw[i + 1] == '^' ||
@@ -2435,6 +2496,13 @@ StmtPtr Parser::parseSub(bool isMulti) {
     if (isOp("!")) advance(); // private method `method !name` — stored under its bare name
     if (isKind(Tok::Ident)) s->name = advance().text;
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
+    // trait handler declaration: sub trait_mod:<is>(…) — name keeps the angle form
+    if (s->name == "trait_mod" && isOp(":")) {
+        advance(); // :
+        std::vector<std::string> w;
+        if (isOp("<")) { advance(); w = readAngleWords(">"); }
+        s->name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
+    }
     // operator declaration: sub infix:<avg> / prefix:<§> / postfix:<²>
     if ((s->name == "infix" || s->name == "prefix" || s->name == "postfix" ||
          s->name == "circumfix" || s->name == "postcircumfix") && isOp(":")) {
@@ -2536,6 +2604,26 @@ StmtPtr Parser::parseSub(bool isMulti) {
                 if (isOp("<")) { advance(); auto w = readAngleWords(">"); if (!w.empty()) kind = w[0]; }
                 if (kind == "right") userInfixRight_.insert(declInfix);
                 else userInfixRight_.erase(declInfix);
+                continue;
+            }
+        }
+        // a non-built-in `is NAME` / `is NAME(expr)` trait: captured for dispatch
+        // to a user `multi sub trait_mod:<is>` at declaration time
+        if (isIdent("is") && peek().kind == Tok::Ident) {
+            static const std::set<std::string> builtinTraits = {
+                "export", "native", "symbol", "tighter", "looser", "equiv", "assoc",
+                "rw", "raw", "copy", "readonly", "pure", "default", "DEPRECATED",
+                "test-assertion", "hidden-from-backtrace", "nodal", "implementation-detail",
+            };
+            if (!builtinTraits.count(peek().text)) {
+                advance(); // is
+                SubTraitSpec st; st.name = advance().text;
+                if (isKind(Tok::LParen)) {
+                    advance();
+                    st.arg = parseExpression();
+                    expectKind(Tok::RParen, ")");
+                }
+                s->traits.push_back(std::move(st));
                 continue;
             }
         }
@@ -2983,6 +3071,7 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "use" || kw == "no" || kw == "need") {
             advance();
             auto u = std::make_unique<UseStmt>();
+            u->isNo = (kw == "no");
             if (isKind(Tok::VersionLit)) { // `use v6;` / `use v6.d;` / `use v6.e.PREVIEW;`
                 { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
                   // swallow any dotted tail the version lexer didn't take (.PREVIEW)

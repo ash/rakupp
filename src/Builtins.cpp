@@ -1118,9 +1118,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if ((inv.t == VT::Any || inv.t == VT::Nil) && (m == "ast" || m == "made")) return Value::nil();
 
     // metamodel call .^method — .^name/.^WHAT answer the type; others dispatch by bare name
+    // a Scalar container record (from `.VAR` on a $-variable): its own name/default,
+    // .^name = Scalar via typeName; anything else answers from the held value.
+    if (inv.t == VT::Hash && inv.hashKind == "Scalar" && inv.hash &&
+        m != "^name" && m != "WHAT" && m != "WHICH" && m != "raku" && m != "perl" && m != "gist" && m != "Str") {
+        if (m == "name")    { auto it = inv.hash->find("name");    return it != inv.hash->end() ? it->second : Value::any(); }
+        if (m == "default") { auto it = inv.hash->find("default"); return it != inv.hash->end() ? it->second : Value::any(); }
+        if (m == "of")      { auto it = inv.hash->find("default"); return (it != inv.hash->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu"); }
+        auto vi = inv.hash->find("value");
+        if (vi != inv.hash->end()) return methodCall(vi->second, m, std::move(args), rwArgs);
+    }
     if (!m.empty() && m[0] == '^') {
         std::string mm = m.substr(1);
-        if (mm == "name") return Value::str(inv.typeName());
+        if (mm == "name") {
+            if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW")
+                return Value::str("Perl6::Metamodel::ClassHOW"); // Rakudo's full metaclass name
+            return Value::str(inv.typeName());
+        }
         if (mm == "WHAT") return Value::typeObj(inv.typeName());
         // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
         // type (HOW), even when called on an instance.
@@ -1675,7 +1689,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             // eager: push every value to the emit callback, then run the done phaser.
             if (listy) {
-                if (emit.t == VT::Code) for (auto& v : vals()) { ValueList one{v}; callCallable(emit, one); }
+                if (emit.t == VT::Code) for (auto& v : vals()) {
+                    ValueList one{v}; callCallable(emit, one);
+                    // `done` inside the block closes the enclosing react: stop emitting
+                    if (!reactStack_.empty() && reactStack_.back()->closed) break;
+                }
                 if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
             } else if (!args.empty() && args[0].t == VT::Code && (*inv.hash)["stream"].toStr() == "stdout") {
                 Value proc = (*inv.hash)["proc"]; (*proc.hash)["taps"].arr->push_back(args[0]);
@@ -2730,6 +2748,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
     if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
+    if (m == "WHO") { Value st = Value::makeHash(); st.hashKind = "Stash"; return st; } // package stash
     if (m == "WHICH") { // object identity: value-based for immutables, pointer-based for objects
         if (inv.t == VT::Object && inv.obj) { char buf[24]; std::snprintf(buf, sizeof buf, "|%p", (void*)inv.obj.get()); return Value::str(inv.typeName() + buf); }
         return Value::str(inv.typeName() + "|" + inv.toStr());
@@ -2755,7 +2774,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             res = true;
         return Value::boolean(res);
     }
-    if (m == "name" || m == "^name") return Value::str(inv.typeName());
+    if (m == "name" || m == "^name") {
+        // the metaclass reports Rakudo's full name; HOW.name($obj) names the OBJECT's type
+        if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW") {
+            if (m == "name" && !args.empty()) return Value::str(args[0].typeName());
+            return Value::str("Perl6::Metamodel::ClassHOW");
+        }
+        return Value::str(inv.typeName());
+    }
 
     // Set/Bag/Mix coercions and queries
     if (m == "Set" || m == "SetHash" || m == "Bag" || m == "BagHash" || m == "Mix" || m == "MixHash")
@@ -3035,9 +3061,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return v;
     }
     if (m == "spurt") {
-        std::ofstream out(inv.toStr());
+        bool append = false;
+        std::string content;
+        bool haveContent = false;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.namedArg) {
+                if (a.s == "append") append = a.pairVal && a.pairVal->truthy();
+            }
+            else if (!haveContent) { content = a.toStr(); haveContent = true; }
+        }
+        std::ofstream out(inv.toStr(), append ? (std::ios::out | std::ios::app) : std::ios::out);
         if (!out) return Value::boolean(false);
-        out << (args.empty() ? "" : a0().toStr());
+        out << content;
         return Value::boolean(true);
     }
     if ((m == "e" || m == "f" || m == "d" || m == "r" || m == "w" || m == "x") && inv.hashKind == "IO") {
@@ -3700,6 +3735,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // list / array / range
+    if (inv.t == VT::Range && m == "is-lazy")
+        return Value::boolean(inv.b || inv.rTo >= 9000000000000000000LL); // `lazy 1..3` marks .b
     // an infinite range (…..Inf) must not materialise: only lazy views are defined
     if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL) {
         long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0);
@@ -3799,11 +3836,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "sum") { double s = 0; bool allInt = true; for (auto& v : items) { s += v.toNum(); if (v.t != VT::Int) allInt = false; } return allInt ? Value::integer((long long)s) : Value::number(s); }
         if (m == "enums") { // enum type (a pair-list) -> Map of name => value
             Value h = Value::makeHash();
+            h.hashKind = "Map";
             for (auto& v : items) if (v.t == VT::Pair) (*h.hash)[v.s] = v.pairVal ? *v.pairVal : Value::any();
             return h;
         }
         if (m == "hyper" || m == "race") { Value o = Value::array(items); o.isList = true; return o; } // parallel -> sequential
-        if (m == "is-lazy") return Value::boolean(false); // materialised list is not lazy
+        if (m == "is-lazy") return Value::boolean(inv.t == VT::Array && inv.b); // materialised list is not lazy (unless `lazy`-marked)
         if (m == "reduce" && !args.empty() && args[0].t == VT::Code) { // fold with a 2-arg op: (1,2,3).reduce(* + *)
             if (items.empty()) return Value::any();
             Value acc = items[0];
@@ -4279,7 +4317,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return it->second(*this, a);
         }
     }
-    // fallthrough: unknown method
+    // fallthrough: unknown method — but any method call on Nil returns Nil
+    if (inv.t == VT::Nil) return Value::nil();
     throw RakuError{Value::str("No method '" + m + "'"),
                     "No such method '" + m + "' for type " + inv.typeName()};
 }
@@ -4419,7 +4458,7 @@ void Interpreter::registerBuiltins() {
     B["prompt"] = [](Interpreter&, ValueList& a) -> Value {
         if (!a.empty()) { std::cout << a[0].toStr(); std::cout.flush(); }
         std::string line;
-        if (!std::getline(std::cin, line)) return Value::any();
+        if (!std::getline(std::cin, line)) return Value::nil(); // EOF -> Nil
         if (!line.empty() && line.back() == '\r') line.pop_back();
         Value s = Value::str(line); return s; // Raku returns a Str that numifies on demand
     };
@@ -4879,9 +4918,21 @@ void Interpreter::registerBuiltins() {
     };
     B["spurt"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
-        std::ofstream out(a[0].toStr());
+        bool append = false, createonly = false;
+        std::string content;
+        bool haveContent = false;
+        for (size_t i = 1; i < a.size(); i++) {
+            if (a[i].t == VT::Pair && a[i].namedArg) {
+                if (a[i].s == "append") append = a[i].pairVal && a[i].pairVal->truthy();
+                else if (a[i].s == "createonly" || a[i].s == "x") createonly = a[i].pairVal && a[i].pairVal->truthy();
+            }
+            else if (!haveContent) { content = a[i].toStr(); haveContent = true; }
+        }
+        std::string path = a[0].toStr();
+        if (createonly) { std::ifstream probe(path); if (probe) return Value::boolean(false); }
+        std::ofstream out(path, append ? (std::ios::out | std::ios::app) : std::ios::out);
         if (!out) return Value::boolean(false);
-        out << (a.size() > 1 ? a[1].toStr() : "");
+        out << content;
         return Value::boolean(true);
     };
     B["slurp"] = [](Interpreter&, ValueList& a) -> Value {
@@ -5188,7 +5239,13 @@ void Interpreter::registerBuiltins() {
             for (auto& v : flattenArgs(a)) j.arr->push_back(v);
             return j;
         };
-    B["ord"] = [](Interpreter&, ValueList& a) -> Value { auto c = a.empty() ? std::vector<uint32_t>{} : utf8cp(a[0].toStr()); return c.empty() ? Value::nil() : Value::integer(c[0]); };
+    B["ord"] = [](Interpreter&, ValueList& a) -> Value {
+        // bare `ord` (no argument) is the Perl-5-ism Rakudo rejects with X::Obsolete
+        if (a.empty()) throw RakuError{Value::typeObj("X::Obsolete"),
+            "Unsupported use of bare \"ord\". In Raku please use: .ord if you meant to call it as a method on $_, or use an explicit invocant or argument"};
+        auto c = utf8cp(a[0].toStr());
+        return c.empty() ? Value::nil() : Value::integer(c[0]);
+    };
     B["chr"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(cpToUtf8((uint32_t)(a.empty() ? 0 : a[0].toInt()))); };
     B["ords"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "ords", none); };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
@@ -5425,8 +5482,13 @@ void Interpreter::registerBuiltins() {
     // `lazy LIST` / `eager LIST` — rakupp lists are already index-materialised, so
     // both are identity passthroughs (single arg, or a List of the args).
     B["lazy"] = [](Interpreter&, ValueList& a) -> Value {
-        if (a.size() == 1) return a[0];
-        Value out = Value::array(); out.isList = true; for (auto& v : a) out.arr->push_back(v); return out;
+        if (a.size() == 1) {
+            Value v = a[0];
+            if (v.t == VT::Range || v.t == VT::Array) v.b = true; // b marks laziness for .is-lazy
+            return v;
+        }
+        Value out = Value::array(); out.isList = true; out.b = true;
+        for (auto& v : a) out.arr->push_back(v); return out;
     };
     B["eager"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() == 1) return a[0];
@@ -5442,6 +5504,11 @@ void Interpreter::registerBuiltins() {
     };
     B["item"] = [](Interpreter&, ValueList& a) -> Value { return a.empty() ? Value::any() : a[0]; };
     B["VAR"] = [](Interpreter&, ValueList& a) -> Value { return a.empty() ? Value::any() : a[0]; }; // container introspection: value is its own container
+    B["sink"] = [](Interpreter& I, ValueList& a) -> Value {
+        // sink EXPR / sink { … }: evaluate for side effects, discard the value
+        if (!a.empty() && a[0].t == VT::Code) { ValueList none; I.callCallable(a[0], none); }
+        return Value::nil();
+    };
     B["quietly"] = [](Interpreter& I, ValueList& a) -> Value { // suppress warn() output; run block/return arg
         if (!a.empty() && a[0].t == VT::Code) {
             I.quietDepth_++;
