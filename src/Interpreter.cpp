@@ -3458,6 +3458,16 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     } else env->define("@_", Value::array(args));
     auto saved = tctx_.cur;
     tctx_.cur = env;
+    // A method is a routine boundary for cooperative return, exactly like a sub:
+    // establish a frame so a `return` inside a loop/native block in the body unwinds
+    // to here instead of leaking the `returning` flag past the loop (mirrors callCallable).
+    ++tctx_.frameTop;
+    uint64_t savedFrameTop = tctx_.frameTop, savedRoutineFrame = tctx_.curRoutineFrame;
+    tctx_.curRoutineFrame = tctx_.frameTop;
+    struct FrameGuard {
+        ExecContext& t; uint64_t ft, rf;
+        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
+    } fguard{tctx_, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
     try {
         if (c.body) {
@@ -3469,6 +3479,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     last = r->value ? eval(r->value.get()) : Value::any();
                 } else
                     last = exec(s);
+                if (tctx_.returning) { // cooperative return reached this method boundary
+                    tctx_.returning = false; last = std::move(tctx_.returnV);
+                    break;
+                }
             }
         }
     } catch (ReturnEx& r) { tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true); return r.v; }
