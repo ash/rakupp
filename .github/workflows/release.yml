@@ -54,9 +54,12 @@ jobs:
 
       # No pinned -G: windows-latest rotates its Visual Studio version (2022 is
       # already gone); CMake's default generator picks whatever VS is installed.
+      # MultiThreaded = static CRT (/MT): the exe carries its own C++ runtime,
+      # so users don't need the VC++ Redistributable (msvcp140.dll) installed —
+      # same self-contained philosophy as the static libstdc++ on Linux.
       - name: Configure (Windows, MSVC x64)
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -A x64
+        run: cmake -S . -B build -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
       - name: Build
         run: cmake --build build --config Release -j 4
