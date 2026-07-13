@@ -49,8 +49,9 @@ official specification test suite. The guiding motto:
 ## What it can do
 
 A high-level inventory — the full list is in [FEATURES.md](FEATURES.md), with
-runnable snippets in [COOKBOOK.md](COOKBOOK.md) and complete programs in
-[examples/](../examples/).
+runnable snippets in [COOKBOOK.md](COOKBOOK.md), complete programs in
+[examples/](../examples/), and mid-size showcase programs in
+[showcase/](../showcase/).
 
 - **Core language** — scalars/arrays/hashes, control flow, `given`/`when`,
   statement modifiers, closures, phasers (`BEGIN`/`END`/`ENTER`/`LEAVE`/`CATCH`).
@@ -157,6 +158,7 @@ build/rakupp tools/run-roast.raku S05      # filter by path
 - **[GUIDE.md](GUIDE.md)** — the full guide: goals, status, run modes, real-app hardening.
 - **[FEATURES.md](FEATURES.md)** / **[COOKBOOK.md](COOKBOOK.md)** — what works, with runnable snippets.
 - **[examples/](../examples/)** — complete example programs.
+- **[showcase/](../showcase/)** — mid-size showcase programs (a Scheme interpreter, a pastebin HTTP server).
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built and what each run mode does.
 - **[ROAST.md](ROAST.md)** — coverage, per-synopsis stats, and how the numbers are defined.
 - **[COUNTING.md](COUNTING.md)** — the authoritative definition of every pass-rate figure and how it's computed.

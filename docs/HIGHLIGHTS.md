@@ -86,6 +86,9 @@
   Life, a JSON grammar, a calculator, an echo server, a quine, …); every one
   also compiles natively with `--exe`, with byte-identical output
   ([NATIVE.md](NATIVE.md)).
+- **[showcase/](../showcase/)** — mid-size showcase programs: a Scheme
+  interpreter built on a Raku grammar, and a pastebin HTTP server written
+  directly on sockets.
 - Real applications run **unmodified**: the
   [raku-course](https://github.com/ash/raku-course) static-site generator
   regenerates the entire ~1500-page Raku course byte-for-byte identically to
