@@ -2538,11 +2538,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
     // yields a one-element list. Restricted to scalar types so list/array/range/seq values —
     // which carry their own list semantics upstream — are never re-wrapped.
-    if ((m == "list" || m == "List" || m == "flat" || m == "eager" || m == "cache") &&
+    if ((m == "list" || m == "List" || m == "Seq" || m == "flat" || m == "eager" || m == "cache") &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
          inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair || inv.t == VT::Type ||
          inv.t == VT::Any || inv.t == VT::Nil)) {
         Value o = Value::array(); o.isList = true; o.arr->push_back(inv); return o;
+    }
+    if (m == "toggle" &&
+        (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
+         inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair)) {
+        // Any.toggle: a non-iterable is a one-element list
+        Value o = Value::array(); o.isList = true; o.arr->push_back(inv);
+        return methodCall(o, "toggle", args, rwArgs);
     }
     if (m == "sink") return Value::nil(); // Mu.sink: evaluate for side effects, yield Nil (user `sink` dispatched earlier)
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
@@ -3859,6 +3866,28 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             out.isList = true;
             return out;
         }
+        if (m == "toggle") { // gate values on/off, flipping at each condition boundary
+            // ON: emit while cond(v) is true; the first false value flips OFF (not
+            // emitted) and consumes the condition. OFF: skip while false; the first
+            // true value flips ON (emitted) and consumes the condition. Out of
+            // conditions → the state freezes. :off starts in the OFF state.
+            bool on = true;
+            std::vector<Value> conds;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.s == "off") on = !(a.pairVal && a.pairVal->truthy());
+                else if (a.t == VT::Code) conds.push_back(a);
+            }
+            Value out = Value::array(); out.isList = true;
+            size_t ci = 0;
+            for (auto& v : items) {
+                if (ci < conds.size()) {
+                    bool c = callCallable(conds[ci], ValueList{v}).truthy();
+                    if (on) { if (c) out.arr->push_back(v); else { on = false; ci++; } }
+                    else if (c) { on = true; ci++; out.arr->push_back(v); }
+                } else if (on) out.arr->push_back(v);
+            }
+            return out;
+        }
         if (m == "squish") { // collapse adjacent duplicates (:as maps keys, :with compares them)
             Value asF, withF;
             for (auto& a : args) if (a.t == VT::Pair && a.pairVal && a.pairVal->t == VT::Code) { if (a.s == "as") asF = *a.pairVal; else if (a.s == "with") withF = *a.pairVal; }
@@ -3974,6 +4003,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 else out.arr->push_back(Value::pair(kv.second.toStr(), Value::str(kv.first)));
             }
             return out;
+        }
+        if (m == "toggle" && inv.t == VT::Hash) { // Any.toggle works over .list
+            Value lst = methodCall(inv, "list", ValueList{});
+            return methodCall(lst, "toggle", args, rwArgs);
         }
         if (m == "antipairs" && inv.t == VT::Hash) { // (value => key) pairs, like invert
             Value out = Value::array(); out.isList = true; out.s = "Seq";

@@ -3639,6 +3639,25 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 return sink ? Value::any() : rhs;
             }
         }
+        // `@a := item, item, …` binds the list AS-IS — a Range/List element stays
+        // one element (ListExpr eval would flatten it, which is `=` semantics).
+        if (a->op == ":=" && a->target->kind == NK::VarExpr &&
+            !static_cast<VarExpr*>(a->target.get())->name.empty() &&
+            static_cast<VarExpr*>(a->target.get())->name[0] == '@' &&
+            a->value->kind == NK::ListExpr) {
+            auto* le = static_cast<ListExpr*>(a->value.get());
+            Value b = Value::array();
+            for (auto& it : le->items) {
+                if (it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "|") {
+                    Value v = eval(static_cast<Unary*>(it.get())->operand.get());
+                    if ((v.t == VT::Array || v.t == VT::Range)) { for (auto& x : v.flatten()) b.arr->push_back(x); continue; }
+                }
+                b.arr->push_back(eval(it.get()));
+            }
+            Value* lv = lvalue(a->target.get());
+            *lv = b;
+            return sink ? Value::any() : *lv;
+        }
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -3652,7 +3671,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             if (it != lv->hash->end()) { Value r = callCallable(it->second, { rhs }); return sink ? Value::any() : r; }
         }
         int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
-        if (sigil == '@') *lv = coerceArray(rhs);
+        if (sigil == '@') {
+            // `=` assignment flattens iterables into the array; `:=` BINDS — the
+            // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
+            // elements: a Range, a List, an Array — not their union).
+            if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
+            else *lv = coerceArray(rhs);
+        }
         else if (sigil == '%') *lv = coerceHash(rhs);
         else *lv = rhs;
         if (nb) wrapNative(*lv, nb, ns);
@@ -3945,6 +3970,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (isDateVal(l) && (r.t == VT::Int || r.t == VT::Bool) && (op == "+" || op == "-"))
         return makeDate(dateDays(l) + (op == "+" ? r.toInt() : -r.toInt()));
     if (isDateVal(r) && l.t == VT::Int && op == "+") return makeDate(dateDays(r) + l.toInt());
+
+    // Range ± n shifts both endpoints, preserving exclusivity: ^9+1 is 1..9,
+    // (1..5)+1 is 2..6. n + Range commutes.
+    if (l.t == VT::Range && (r.t == VT::Int || r.t == VT::Bool) && (op == "+" || op == "-")) {
+        long long d = op == "+" ? r.toInt() : -r.toInt();
+        Value out = Value::range(l.rFrom + d, l.rTo + d, l.rExFrom, l.rExTo);
+        return out;
+    }
+    if (r.t == VT::Range && (l.t == VT::Int || l.t == VT::Bool) && op == "+") {
+        long long d = l.toInt();
+        Value out = Value::range(r.rFrom + d, r.rTo + d, r.rExFrom, r.rExTo);
+        return out;
+    }
 
     // ---- Complex arithmetic ----
     if (l.t == VT::Complex || r.t == VT::Complex) {

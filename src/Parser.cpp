@@ -179,6 +179,7 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `f 0, ++$x`
                    t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
+                   t.text == "^" || // prefix `^N` (upto) after a comma: `1, ^10 .Seq` (infix ^ is impossible there)
                    t.text == "&" || // operator-as-value `&[+]` (bare `&` in term position is only `&[OP]`)
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
                    t.text == "::" || // symbolic reference `::($name)` / `::Foo`
