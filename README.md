@@ -31,6 +31,16 @@ Apple Silicon installs a **prebuilt binary** (no compile); Intel builds from
 source. Homebrew itself requires the Xcode Command Line Tools — if `brew install`
 says to install them, run `xcode-select --install` first.
 
+### Prebuilt binaries (macOS, Linux, Windows)
+
+Every release ships self-contained archives on the
+[Releases page](https://github.com/ash/rakupp/releases/latest):
+`rakupp-macos-universal.tar.gz` (Apple Silicon + Intel, macOS 11+),
+`rakupp-linux-x86_64.tar.gz` (static libstdc++ — no dependencies), and
+`rakupp-windows-x64.zip` (static CRT — no redistributable needed). Unpack
+keeping the `bin/ lib/ include/` layout together (that's what `--exe` uses)
+and put `bin/` on your `PATH`.
+
 ### Build from source
 
 ```sh
