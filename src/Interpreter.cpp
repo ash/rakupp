@@ -830,6 +830,18 @@ Interpreter::Interpreter() {
     registerBuiltins();
 }
 
+// Set `$/` after a match/substitution. If an enclosing scope already has a $/,
+// UPDATE that one — a match inside a desugared block (`(S/// with X)` becomes
+// `do { with X { … } }`) must be visible to the caller, like Rakudo's
+// per-routine $/ declaration.
+void Interpreter::setMatchVar(Value v) {
+    for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
+        auto it = e->vars.find("$/");
+        if (it != e->vars.end()) { it->second = std::move(v); return; } // update the visible $/
+        if (e->routineFrame || !e->parent) { e->vars["$/"] = std::move(v); return; } // scope to the routine (or program top)
+    }
+}
+
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
@@ -3282,7 +3294,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     ++tctx_.frameTop;
     uint64_t savedFrameTop = tctx_.frameTop, savedRoutineFrame = tctx_.curRoutineFrame;
     bool isRoutine = !c.isBlock;
-    if (isRoutine) tctx_.curRoutineFrame = tctx_.frameTop;
+    if (isRoutine) { tctx_.curRoutineFrame = tctx_.frameTop; env->routineFrame = true; } // $/ scopes here
     struct FrameGuard {
         ExecContext& t; uint64_t ft, rf;
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
@@ -4616,14 +4628,14 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             list.arr->push_back(build(m));
             pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
         }
-        tctx_.cur->define("$/", list);
+        setMatchVar(list);
         return list;
     }
     RxMatch m;
     Value mv;
     if (re.ok() && re.search(subject, 0, m, resolver)) mv = build(m);
     else mv = Value::nil();
-    tctx_.cur->define("$/", mv);
+    setMatchVar(mv);
     if (mv.t == VT::Match) {
         if (mv.arr) for (size_t k = 0; k < mv.arr->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*mv.arr)[k]);
         if (mv.hash) for (auto& kv : *mv.hash) tctx_.cur->define("$<" + kv.first + ">", kv.second);
@@ -4732,7 +4744,7 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     while (re.ok() && pos <= (long)subject.size() && re.search(subject, pos, m)) {
         out += subject.substr(pos, m.from - pos);
         Value mv = build(m);
-        tctx_.cur->define("$/", mv);
+        setMatchVar(mv);
         for (size_t k = 0; k < mv.arr->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*mv.arr)[k]);
         for (auto& kv : *mv.hash) tctx_.cur->define("$<" + kv.first + ">", kv.second);
         if (codeRepl) out += evalString(codeInner).toStr();
@@ -4752,7 +4764,7 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
         if (!global) break;
     }
     if (pos < (long)subject.size()) out += subject.substr(pos);
-    tctx_.cur->define("$/", last);
+    setMatchVar(last);
     return last;
 }
 
@@ -5088,7 +5100,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         std::string r;
         Value matchV = build(mm);
         auto bindCaps = [&]() {
-            tctx_.cur->define("$/", matchV);
+            setMatchVar(matchV);
             if (matchV.arr) for (size_t k = 0; k < matchV.arr->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*matchV.arr)[k]);
             for (auto& kv : *matchV.hash) tctx_.cur->define("$<" + kv.first + ">", kv.second);
         };
@@ -5141,13 +5153,16 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         last = mm.to;
     }
     out += subj.substr(last);
-    // $/ / the s/// return value: no match → falsey Nil; :g/:nth → a List of Matches;
-    // otherwise the single Match. (`.Str` = matched text, `+` of the :g List = count.)
+    // $/ / the s/// return value: no match → falsey Nil; :g/:nth-list → a List of
+    // Matches; a SINGLE ordinal (:2nd, :nth(2)) yields the one Match even with :g.
+    // (`.Str` = matched text, `+` of the :g List = count.)
+    bool nthScalar = haveNth && !(nthVal.t == VT::Array || nthVal.t == VT::Range);
     Value result;
     if (selMatches.empty()) result = Value::nil();
+    else if (nthScalar && selMatches.size() == 1) result = selMatches.back();
     else if (global || haveNth || haveX) { result = Value::list(selMatches); } // multi-match adverbs → List
     else result = selMatches.back();
-    if (!literal) tctx_.cur->define("$/", result); // a literal (string) .subst leaves $/ untouched
+    if (!literal) setMatchVar(result); // a literal (string) .subst leaves $/ untouched
     if (matchResult) *matchResult = result;
     return out;
 }
@@ -5245,7 +5260,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             tctx_.cur->define(name, v);
         };
         bool hadSlash = tctx_.cur->find("$/") != nullptr; Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
-        tctx_.cur->define("$/", m);
+        setMatchVar(m);
         for (auto& p : params) overlay(p.first, Value::str(p.second));
         Value makeTarget; tctx_.makeTargets.push_back(&makeTarget); // capture an inline `make`
         Value last = Value::any();
@@ -5345,7 +5360,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             mc->second.erase(mc->second.begin());
             if (auto prog = parseCode(code)) {
                 Value* slot = tctx_.cur->find("$/"); Value saved = slot ? *slot : Value::nil();
-                tctx_.cur->define("$/", mv);
+                setMatchVar(mv);
                 tctx_.makeTargets.push_back(&mv);
                 try { for (auto& s : prog->stmts) exec(s.get()); } catch (...) {}
                 tctx_.makeTargets.pop_back();
@@ -5372,10 +5387,10 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         tctx_.cur = savedScope;
     }
     if (!matched) {
-        tctx_.cur->define("$/", Value::nil()); return Value::nil();
+        setMatchVar(Value::nil()); return Value::nil();
     }
     Value mv = build(tree);
-    tctx_.cur->define("$/", mv);
+    setMatchVar(mv);
     return mv;
 }
 

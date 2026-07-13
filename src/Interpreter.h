@@ -35,6 +35,7 @@ void           bigStackClose(std::uintptr_t h);
 struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
+    bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
 
     Value* find(const std::string& name) {
@@ -192,6 +193,7 @@ public:
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs, bool methodCtx);
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
+    void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)

@@ -1263,18 +1263,29 @@ ExprPtr Parser::parsePrimary() {
             if (isIdent("if") || isIdent("unless") || isIdent("with") || isIdent("without")) {
                 std::string mod = advance().text;
                 ExprPtr cond = parseExpression();
-                ExprPtr test = std::move(cond);
                 if (mod == "with" || mod == "without") {
-                    auto c = std::make_unique<Call>(); c->name = "defined";
-                    c->args.push_back(std::move(test)); test = std::move(c);
+                    // `(EXPR with X)` also BINDS $_ to X inside EXPR (it's a topicalizer,
+                    // not just a definedness test): (S:th(1,3)/./Z/ with 'abcd') works
+                    // on 'abcd'. Desugar to  do { with X { EXPR } }.
+                    auto gs = std::make_unique<GivenStmt>();
+                    gs->topic = std::move(cond);
+                    gs->defGuard = (mod == "with") ? 1 : 2;
+                    auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+                    gs->body = std::make_unique<Block>();
+                    gs->body->stmts.push_back(std::move(es));
+                    auto be = std::make_unique<BlockExpr>();
+                    be->body.push_back(std::move(gs));
+                    auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                    e = std::move(u);
+                } else {
+                    bool neg = (mod == "unless");
+                    auto tern = std::make_unique<Ternary>();
+                    tern->cond = std::move(cond);
+                    auto empty = std::make_unique<ArrayLit>();
+                    if (neg) { tern->then = std::move(empty); tern->els = std::move(e); }
+                    else { tern->then = std::move(e); tern->els = std::move(empty); }
+                    e = std::move(tern);
                 }
-                bool neg = (mod == "unless" || mod == "without");
-                auto tern = std::make_unique<Ternary>();
-                tern->cond = std::move(test);
-                auto empty = std::make_unique<ArrayLit>();
-                if (neg) { tern->then = std::move(empty); tern->els = std::move(e); }
-                else { tern->then = std::move(e); tern->els = std::move(empty); }
-                e = std::move(tern);
             }
             else if (isIdent("for")) {
                 // (EXPR for LIST) — a for statement-modifier inside parens; run EXPR
