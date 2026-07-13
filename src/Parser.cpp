@@ -2291,7 +2291,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 bool coercion = !cur().spaceBefore &&
                                 ((peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) ||
                                  peek().kind == Tok::RParen); // `Foo()` — coerce from Any
-                if (coercion) { advance(); if (isKind(Tok::Ident)) advance(); advance(); } // skip (Type)/() — dispatch only
+                if (coercion) { p.coerce = true; advance(); if (isKind(Tok::Ident)) advance(); advance(); } // skip (Type)/(); bind coerces to p.type
                 else {
                     advance(); // (
                     p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));

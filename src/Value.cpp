@@ -97,7 +97,22 @@ double Value::toNum() const {
                 return ratN->isZero() ? std::numeric_limits<double>::quiet_NaN()
                      : ratN->sign > 0 ? std::numeric_limits<double>::infinity()
                                       : -std::numeric_limits<double>::infinity();
-            return (ratN && ratD) ? ratN->toDouble() / ratD->toDouble() : 0.0;
+            if (ratN && ratD) {
+                double dn = ratN->toDouble(), dd = ratD->toDouble();
+                if (std::isinf(dn) || std::isinf(dd)) {
+                    // both sides overflow a double (FatRat with huge parts): divide
+                    // the leading digits and scale by the ten-power difference —
+                    // inf/inf would be NaN, and n/inf would wrongly give 0.
+                    std::string sn = ratN->abs().toString(), sd = ratD->abs().toString();
+                    double mn = std::stod(sn.substr(0, 17)), md = std::stod(sd.substr(0, 17));
+                    double mag = ((double)sn.size() - (double)std::min<size_t>(sn.size(), 17)) -
+                                 ((double)sd.size() - (double)std::min<size_t>(sd.size(), 17));
+                    double r = (mn / md) * std::pow(10.0, mag);
+                    return ratN->sign < 0 ? -r : r;
+                }
+                return dn / dd;
+            }
+            return 0.0;
         case VT::Str:  { try { return std::stod(s); } catch (...) { return 0.0; } }
         case VT::Match: { try { return std::stod(s); } catch (...) { return 0.0; } }
         default: return (double)toInt();

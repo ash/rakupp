@@ -161,6 +161,10 @@ static bool valueEqv(const Value& a, const Value& b) {
         case VT::Pair:
             return a.s == b.s && valueEqv(a.pairVal ? *a.pairVal : Value::any(), b.pairVal ? *b.pairVal : Value::any());
         case VT::Object: return a.obj == b.obj;
+        case VT::Rat: // structural nude compare — .Str on a 0-denominator Rat throws
+            return a.fatRat == b.fatRat &&
+                   a.ratN && b.ratN && a.ratD && b.ratD &&
+                   BigInt::cmp(*a.ratN, *b.ratN) == 0 && BigInt::cmp(*a.ratD, *b.ratD) == 0;
         default: return a.toStr() == b.toStr();
     }
 }
@@ -2506,6 +2510,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             if (p.sigil == '@') v = coerceArray(v);
             else if (p.sigil == '%') v = coerceHash(v);
+            // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
+            // its .Type method — which FAILS where the method does (Int on <1/0>)
+            if (p.coerce && !p.type.empty() && v.typeName() != p.type)
+                v = methodCall(v, p.type, ValueList{});
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
             if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;
             env->define(p.name, v);
@@ -4412,6 +4420,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         else if (l.t == VT::Array) same = (l.arr == r.arr); // Lists/Arrays: reference identity
         else if (l.t == VT::Hash) same = l.hashKind.empty() ? (l.hash == r.hash) // plain Hash: reference
                                                             : (l.toStr() == r.toStr()); // Set/Bag/Mix: value
+        else if (l.t == VT::Rat) // structural nude compare — .Str on a 0-denominator Rat throws
+            same = l.fatRat == r.fatRat &&
+                   l.ratN && r.ratN && l.ratD && r.ratD &&
+                   BigInt::cmp(*l.ratN, *r.ratN) == 0 && BigInt::cmp(*l.ratD, *r.ratD) == 0;
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
         return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
@@ -6206,6 +6218,7 @@ Value Interpreter::evalCall(Call* c) {
             if (a0.t == VT::Complex && (c->name == "Int" || c->name == "Num" ||
                                         c->name == "Real" || c->name == "Rat"))
                 return methodCall(a0, c->name, {}); // $*TOLERANCE-aware imaginary-part check
+            if (c->name == "Int" && a0.t == VT::Rat) return methodCall(a0, "Int", {}); // 0-denominator fails X::Numeric::DivideByZero
             if (c->name == "Int") return Value::integer(a0.toInt());
             if (c->name == "Num" || c->name == "Real") return Value::number(a0.toNum());
             if (c->name == "Rat") return methodCall(a0, "Rat", {}); // CF approximation for Num

@@ -442,8 +442,9 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             if (v.fatRat) return "FatRat.new(" + n + ", " + d + ")"; // FatRat.raku is explicit
             // Terminating decimal (denominator 2^a·5^b) prints as a decimal literal
             // with a fraction part kept, so EVAL round-trips to Rat: 0.25, -7.0, 0.1.
-            // Anything else (incl. zero-denominator) is the <n/d> form.
-            if (v.ratD && !v.ratD->isZero()) {
+            // Anything else (incl. zero-denominator, or a denominator wider than
+            // uint64 — 0.9999999999999999999999.raku) is the <n/d> form.
+            if (v.ratD && !v.ratD->isZero() && v.ratD->fitsU64()) {
                 BigInt den = *v.ratD; int p2 = 0, p5 = 0; BigInt q, r;
                 while (true) { BigInt::divmod(den, BigInt(2), q, r); if (!r.isZero()) break; den = q; p2++; }
                 while (true) { BigInt::divmod(den, BigInt(5), q, r); if (!r.isZero()) break; den = q; p5++; }
@@ -901,6 +902,24 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 }
 
 static bool deepEq(const Value& a, const Value& b) {
+    // a Junction on either side autothreads (is-deeply $x, 'a'|'b';
+    // is-deeply any(1,2,3), none(4,5,6) collapses to True)
+    auto junct = [](const Value& v) {
+        return v.t == VT::Array && v.arr &&
+               (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
+    };
+    if (junct(b)) {
+        int t = 0;
+        for (auto& e : *b.arr) if (deepEq(a, e)) t++;
+        return b.enumName == "any" ? t > 0 : b.enumName == "all" ? t == (int)b.arr->size()
+             : b.enumName == "one" ? t == 1 : t == 0;
+    }
+    if (junct(a)) {
+        int t = 0;
+        for (auto& e : *a.arr) if (deepEq(e, b)) t++;
+        return a.enumName == "any" ? t > 0 : a.enumName == "all" ? t == (int)a.arr->size()
+             : a.enumName == "one" ? t == 1 : t == 0;
+    }
     if (a.t == VT::Array && b.t == VT::Array) {
         if (a.arr->size() != b.arr->size()) return false;
         for (size_t i = 0; i < a.arr->size(); i++)
@@ -918,6 +937,10 @@ static bool deepEq(const Value& a, const Value& b) {
     if (a.t == VT::Pair && b.t == VT::Pair)
         return a.s == b.s && deepEq(a.pairVal ? *a.pairVal : Value::any(),
                                    b.pairVal ? *b.pairVal : Value::any());
+    if (a.t == VT::Rat && b.t == VT::Rat) // structural (eqv): <0/0> eqv <0/0> is True; toNum would NaN-compare
+        return a.fatRat == b.fatRat &&
+               a.ratN && b.ratN && a.ratD && b.ratD &&
+               BigInt::cmp(*a.ratN, *b.ratN) == 0 && BigInt::cmp(*a.ratD, *b.ratD) == 0;
     return valueEq(a, b);
 }
 
@@ -1234,6 +1257,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         ValueList items; for (auto& a : args) for (auto& x : toList(a)) items.push_back(x);
         return makeBaggy(items, inv.s);
     }
+    if (inv.t == VT::Hash && inv.hashKind == "StrDistance") {
+        auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second : Value::str(""); };
+        if (m == "before" || m == "after") return fld(m.c_str());
+        if (m == "Bool") return Value::boolean(fld("before").toStr() != fld("after").toStr());
+        if (m == "Rat" || m == "FatRat" || m == "Numeric" || m == "Int" || m == "Num" || m == "chars") {
+            long long c = methodCall(fld("after"), "chars", ValueList{}).toInt(); // numifies to .after.chars
+            if (m == "Num") return Value::number((double)c);
+            if (m == "Int" || m == "Numeric" || m == "chars") return Value::integer(c);
+            Value v = Value::rat(BigInt(c), BigInt(1));
+            if (m == "FatRat") v.fatRat = true;
+            return v;
+        }
+    }
     if (inv.t == VT::Str && inv.hashKind == "Version") {
         if (m == "parts") { // numeric parts as Ints, alpha parts as Strs, '*' as Whatever
             Value out = Value::array(); out.isList = true;
@@ -1263,6 +1299,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Type && inv.s == "Duration" && m == "new") {
         // Duration is a number of seconds (a tagged Num, like `now - now`)
         return Value::number(args.empty() ? 0.0 : args[0].toNum());
+    }
+    if (inv.t == VT::Type && inv.s == "Instant" && m == "from-posix") {
+        // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
+        return Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
+    }
+    if (inv.t == VT::Type && inv.s == "StrDistance" && m == "new") {
+        // StrDistance (the tr/// result value): numifies to .after.chars
+        Value h = Value::makeHash(); h.hashKind = "StrDistance";
+        for (auto& a2 : args) if (a2.t == VT::Pair && a2.pairVal) (*h.hash)[a2.s] = *a2.pairVal;
+        return h;
     }
     if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
         std::string bytes;
@@ -1952,6 +1998,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         BigInt d = args.size() > 1 ? args[1].toBig() : BigInt(1);
         Value v = Value::ratZ(std::move(n), std::move(d));
         if (inv.s == "FatRat") v.fatRat = true;
+        // Rat denominators are capped at uint64 (FatRat is arbitrary): a wider one
+        // degrades to Num at construction too — Rat.new(10**400, 9**999).Str is "0"
+        // (the value underflows a double), matching the arithmetic spill rule.
+        else if (v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());
         return v;
     }
     if (inv.t == VT::Type && (inv.s == "IO::String" || inv.s == "Text::IO::String")) {

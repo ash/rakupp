@@ -182,6 +182,7 @@ struct Param {
     bool required = false; // explicit `!` on a named param
     bool invocant = false; // declared before ':' in signature
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
+    bool coerce = false;   // coercion type `Int(Str)` / `Int()`: the bound value is coerced to `type`
     bool isRw = false;     // `is rw` — writes copy back to the caller's lvalue
     bool isCopy = false;   // `is copy` — a fresh mutable copy (vs a readonly plain param)
     // destructuring sub-signature: `[$a,$b]` / `($a,$b)` / `|c($x)` — the inner
