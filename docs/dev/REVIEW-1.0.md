@@ -39,7 +39,12 @@ The one-line change (in `subtest`, extract the Code from a `desc => {…}` Pair)
 else if (v.t == VT::Pair) { desc = v.s; if (v.pairVal && v.pairVal->t == VT::Code) code = *v.pairVal; }
 ```
 
-**Recovered so far (7 files, fixes committed dormant):**
+**Recovered so far (11 files, fixes committed dormant):**
+- `complex.t` 557/557, `any-callable`, `hyperwhatever`, `10-is-approx` —
+  batch 1 (`a1deb77`): Complex 0**0 → 1+0i, cmp-ok with a Code comparator,
+  `:=` comma-list bind, expression-position declarator initializer, does-ok,
+  HyperWhatever typeName, no-curry ops (~~ === eqv =:=) + Whatever-RHS
+  matches-all. Also lifted the committed gate itself to 422 (+ defaults.t).
 - `sprintf-{e,f,o,s,x}` — version-aware `#`/`-0`/`0`-fill (6.c/6.d keep the
   historical "bogus" forms, 6.e the modern ones; both asserted by roast).
   Commit `c5fc267`.
@@ -51,7 +56,7 @@ now NFC-composed; `.ords.iterator` protocol still failing), `.does(Callable)`
 on Code, smartmatch on type objects (blocked — `applyArith` is a free function
 with no class registry).
 
-**31 files still down**, by category:
+**27 files still down**, by category:
 - Rat/Num 0-denominator (Inf/NaN) semantics: `rat`, `stress`, `complex` —
   arithmetic on `<1/0>`/`<0/0>`, `Int()` coercion must throw
   X::Numeric::DivideByZero, `===`/`==` on 0-den Rats, `.raku.EVAL` round-trip.
