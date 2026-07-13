@@ -39,7 +39,12 @@ The one-line change (in `subtest`, extract the Code from a `desc => {…}` Pair)
 else if (v.t == VT::Pair) { desc = v.s; if (v.pairVal && v.pairVal->t == VT::Code) code = *v.pairVal; }
 ```
 
-**Recovered so far (13 files, fixes committed dormant):**
+**Recovered so far (14 files, fixes committed dormant):**
+- `categorize-list.t` 28/28 — batch 3 (`33ef0cb`): categorize-list/
+  classify-list implemented (multi-category, nested multi-level, :&as,
+  Baggy, typed exceptions) + a parser correctness cluster: contextualizer
+  $()/@()/%()/${}/$[] circumfix, `(), a, b` keeps the empty element,
+  [a, b] comma members are items, constants bind, $^a interpolates.
 - `toggle.t`, `ords.t` — batch 2 (`6a9317a`): .toggle implemented,
   non-flattening `:=` list bind, `^` starts a term after comma, Range±Int
   shift, scalar .Seq.
@@ -59,7 +64,7 @@ now NFC-composed; `.ords.iterator` protocol still failing), `.does(Callable)`
 on Code, smartmatch on type objects (blocked — `applyArith` is a free function
 with no class registry).
 
-**25 files still down**, by category:
+**24 files still down**, by category:
 - Rat/Num 0-denominator (Inf/NaN) semantics: `rat`, `stress`, `complex` —
   arithmetic on `<1/0>`/`<0/0>`, `Int()` coercion must throw
   X::Numeric::DivideByZero, `===`/`==` on 0-den Rats, `.raku.EVAL` round-trip.
