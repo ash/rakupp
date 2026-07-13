@@ -54,8 +54,8 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing: **419 / 1,464 Roast
-files fully pass (~29%)**, **157,293 / 191,546 declared assertions (~82%)** —
+synopses rather than isolated features. Current standing: **433 / 1,462 Roast
+files fully pass (~30%)**, **157,898 / 193,638 declared assertions (~82%)** —
 run the harness for live numbers; definitions in [COUNTING.md](COUNTING.md).
 Major subsystems now in:
 
@@ -105,7 +105,7 @@ tests; the systematic gap classification lives in
   kinds, Capture `<named>` indexing, exact `sprintf %d` for big Ints,
   sigilless-param write-through, stray `next`/`last`/`redo` errors.
 
-Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 419 files):
+Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 433 files):
 
 - **The big no-TAP files** — `rat.t` (869), `complex.t` (557), `reduce.t`,
   `rx.t` and the `.new` batch (Version, Duration, SetHash/BagHash/MixHash,
