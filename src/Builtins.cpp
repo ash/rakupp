@@ -1080,7 +1080,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (i >= 0) items[i] = val;
             return val;
         }
-        if (m == "List" || m == "Seq" || m == "Slip" || m == "list") return asList();
+        if (m == "List" || m == "Seq" || m == "Slip" || m == "list") {
+            Value r = asList();
+            if (m == "Slip") r.s = "Slip"; // Slips splice into list-building contexts
+            return r;
+        }
         if (m == "append" || m == "prepend") {
             ValueList add;
             for (auto& a : args) {
@@ -2678,8 +2682,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "gist") return Value::str(inv.gist());
     if (m == "raku" || m == "perl") return Value::str(rakuRepr(inv));
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
-        if (inv.t == VT::Array) { Value r = inv; r.isList = true; return r; }
-        if (inv.t == VT::Range) { Value r = Value::array(); *r.arr = inv.flatten(); r.isList = true; return r; }
+        if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
+        if (inv.t == VT::Range) { Value r = Value::array(); *r.arr = inv.flatten(); r.isList = true; r.s = "Slip"; return r; }
         return inv;
     }
     // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
@@ -5573,7 +5577,7 @@ void Interpreter::registerBuiltins() {
         return out;
     };
     B["slip"] = [](Interpreter&, ValueList& a) -> Value { // slip(4,5) spreads into the enclosing list
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Slip";
         for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
         return out;
     };

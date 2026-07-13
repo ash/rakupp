@@ -344,10 +344,14 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
 
 Value listToArray(const ValueList& items) {
     // Post-GLR: a comma list keeps every member as-is — nested Lists, Ranges,
-    // and word lists stay single elements. Only |slips spread (handled by the
-    // ListExpr/args evaluators before the items reach here).
+    // and word lists stay single elements. Only Slips splice (`|x`, slip(),
+    // .Slip — all tagged s=="Slip" by their producers).
     Value v = Value::array();
-    for (auto& it : items) v.arr->push_back(it);
+    for (auto& it : items) {
+        if (it.t == VT::Array && it.arr && it.s == "Slip")
+            v.arr->insert(v.arr->end(), it.arr->begin(), it.arr->end());
+        else v.arr->push_back(it);
+    }
     return v;
 }
 
@@ -625,7 +629,7 @@ void rtSpreadArg(ValueList& as, const Value& v, bool argPos) {
 }
 // |x as a list-literal element: a pre-spread List that listToArray will splice.
 Value rtSlipVal(const Value& v) {
-    Value out = Value::array(); out.isList = true;
+    Value out = Value::array(); out.isList = true; out.s = "Slip"; // splices via listToArray
     rtSpreadArg(*out.arr, v, false);
     return out;
 }
@@ -678,9 +682,9 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg) {
 // top-level elements; itemized inner arrays stay whole. Mirrors the interp,
 // where the value-position slip returns the array and the consumer flattens.
 Value rtSlipShallow(const Value& v) {
-    if (v.t == VT::Array && v.arr) { Value r = v; r.isList = true; return r; }
-    if (v.t == VT::Range) { Value r = Value::array(v.flatten()); r.isList = true; return r; }
-    Value out = Value::array(); out.isList = true;
+    if (v.t == VT::Array && v.arr) { Value r = v; r.isList = true; r.s = "Slip"; return r; }
+    if (v.t == VT::Range) { Value r = Value::array(v.flatten()); r.isList = true; r.s = "Slip"; return r; }
+    Value out = Value::array(); out.isList = true; out.s = "Slip";
     if (v.t != VT::Nil) out.arr->push_back(v);
     return out;
 }
@@ -5069,6 +5073,22 @@ static std::string applySamecase(const std::string& orig, const std::string& rep
             r[i] = lastUpper ? std::toupper((unsigned char)r[i]) : std::tolower((unsigned char)r[i]);
     }
     return r;
+}
+
+// `target ~~ s/pat/repl/` as one runtime call — mirrors the evalBinary SubstLit
+// branch so native codegen can compile substitutions instead of bailing to bundle.
+Value Interpreter::substApply(Value* target, const std::string& pattern, const std::string& repl, bool nonMut) {
+    Value subj = target ? *target : Value::str("");
+    if (isTrSubst(pattern)) { // tr/from/to/ — transliteration, returns the count changed
+        long long n; std::string out = translit(subj.toStr(), pattern.substr(1), repl, n);
+        if (target && !nonMut) *target = Value::str(out);
+        return Value::integer(n);
+    }
+    long nsub = 0; ValueList noArgs; Value mres;
+    std::string out = substSelect(subj.toStr(), pattern, nullptr, noArgs, nsub, false, &repl, &mres);
+    if (nonMut) return Value::str(out); // S/// : return the new string, leave the target intact
+    if (target) *target = Value::str(out);
+    return mres;                        // s/// returns the Match / List of matches
 }
 
 std::string Interpreter::substSelect(const std::string& subj, const std::string& pat,

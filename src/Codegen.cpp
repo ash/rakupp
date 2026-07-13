@@ -505,9 +505,14 @@ struct Codegen {
                 if (v->name.size() > 1 && (v->name[1] == '?' || v->name[1] == '!'))
                     unsupported("special/dynamic variable '" + v->name + "'");
                 if (v->name.size() > 1 && v->name[0] == '$' &&
-                    std::all_of(v->name.begin() + 1, v->name.end(), [](unsigned char c) { return std::isdigit(c); }))
-                    // $0/$1/… are positional captures of the current match ($/)
-                    return "rtIndexGet(" + mangleVar("$/") + ", Value::integer(" + v->name.substr(1) + "LL), false)";
+                    std::all_of(v->name.begin() + 1, v->name.end(), [](unsigned char c) { return std::isdigit(c); })) {
+                    // $0/$1/… are positional captures of the current match ($/) —
+                    // read through the live env (RT.regexMatch stores it there),
+                    // except when $/ is a bound parameter (action methods)
+                    std::string slash = boundSpecials.count("$/") ? mangleVar("$/")
+                                      : "RT.dynVar(" + cesc("$/") + ")";
+                    return "rtIndexGet(" + slash + ", Value::integer(" + v->name.substr(1) + "LL), false)";
+                }
                 return mangleVar(v->name); // scalars, @arrays and %hashes are all C++ Value locals
             }
             case NK::SelfTerm:
@@ -663,6 +668,14 @@ struct Codegen {
                                   + cesc(static_cast<RegexLit*>(b->rhs.get())->pattern) + ")";
                     return b->op == "~~" ? m : "Value::boolean(!(" + m + ").truthy())";
                 }
+                // substitution: `$x ~~ s/pat/repl/` (and tr///, S///) — one runtime call
+                // that mutates the target through its lvalue like the interpreter does
+                if (b->op == "~~" && b->rhs->kind == NK::SubstLit) {
+                    auto* sub = static_cast<SubstLit*>(b->rhs.get());
+                    return "RT.substApply(&(" + lvalueExpr(b->lhs.get()) + "), "
+                         + cesc(sub->pattern) + ", " + cesc(sub->repl) + ", "
+                         + (sub->nonMut ? "true" : "false") + ")";
+                }
                 if (b->op == "xx") {
                     // list repetition thunks its left side (re-evaluate per copy)
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
@@ -775,7 +788,13 @@ struct Codegen {
                 std::string val = p->value ? exArg(p->value.get()) : "Value::boolean(true)"; // :g  ==  g => True
                 return "Value::pair(" + key + ", " + val + ")";
             }
-            case NK::ListExpr: return "listToArray({" + argList(static_cast<ListExpr*>(e)->items) + "})";
+            case NK::ListExpr: {
+                auto* le = static_cast<ListExpr*>(e);
+                std::string built = "listToArray({" + argList(le->items) + "})";
+                if (le->parenned) // (1, 2, 3) is a List — mirrors the interpreter's eval
+                    return "([&]()->Value{ Value _l = " + built + "; _l.isList = true; return _l; }())";
+                return built;
+            }
             case NK::HashLit:  return "rtHashLit({" + argList(static_cast<HashLit*>(e)->items) + "})";
             case NK::ArrayLit: return "listToArray({" + argList(static_cast<ArrayLit*>(e)->items) + "})";
             default: unsupported(nkName(e->kind));
@@ -1272,12 +1291,18 @@ struct Codegen {
 
     void forStmt(ForStmt* f, int ind) {
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
+            // names live in f->vars, or — when the parser produced a real signature
+            // (ForStmt.params, one param with a sub-signature) — in that sub-signature
+            std::vector<std::string> names = f->vars;
+            if (names.empty() && !f->params.empty() && f->params[0].subSig)
+                for (auto& sp : *f->params[0].subSig)
+                    if (!sp.name.empty()) names.push_back(sp.name);
             std::string lst = gensym("__lst"), el = gensym("__e");
             line(ind, "{");
             line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr) {");
-            for (size_t k = 0; k < f->vars.size(); k++)
-                line(ind + 2, "Value " + mangleVar(f->vars[k]) + " = rtIndexGet(" + el +
+            for (size_t k = 0; k < names.size(); k++)
+                line(ind + 2, "Value " + mangleVar(names[k]) + " = rtIndexGet(" + el +
                               ", Value::integer(" + std::to_string(k) + "LL), false);");
             loopBody(f->body.get(), ind + 2, f->label);
             line(ind + 1, "}");

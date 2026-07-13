@@ -356,7 +356,7 @@ std::string Value::typeName() const {
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
-            return !isList ? "Array" : s == "Seq" ? "Seq" : "List";
+            return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : "List";
         case VT::Hash:  if (hashKind == "Pod" && hash && hash->count("podclass")) return hash->at("podclass").s;
                         return (hashKind == "Date" || hashKind == "DateTime") && hash ? dateGist(*hash, hashKind == "Date")
                              : (hashKind.empty() ? "Hash" : hashKind);

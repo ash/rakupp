@@ -221,6 +221,10 @@ public:
     std::string substSelect(const std::string& subj, const std::string& pat,
                             Value* replArg, ValueList& args, long& nsub, bool literal = false,
                             const std::string* tmplRepl = nullptr, Value* matchResult = nullptr);
+    // `target ~~ s/pat/repl/` (or tr///, or non-mutating S///) as one call — the
+    // native-codegen entry point. Mutates *target unless nonMut; returns what the
+    // interpreted form returns (Match/List for s///, count for tr///, Str for S///).
+    Value substApply(Value* target, const std::string& pattern, const std::string& repl, bool nonMut);
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions);
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
