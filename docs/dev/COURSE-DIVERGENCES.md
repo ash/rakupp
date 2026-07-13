@@ -12,7 +12,9 @@ Blocks that do not run under Rakudo (theory fragments, output samples,
 incomplete code) were ignored, as were snippets whose Rakudo output is not
 reproducible across two runs (nondeterminism).
 
-**STATUS after the fix round (2026-07-13): 116 → ~9 deduped mismatches.**
+**STATUS after the fix round (2026-07-13): 116 → 12 deduped mismatches**
+(148 → 14 raw), of which 5 are harness artifacts and 6 are prompt-EOF
+nuances — one real feature gap remains (the Iterator role).
 Fixed across two commits (round 1 `3324752`, round 2 follows this file).
 Every batch passed the zero-regression gate: full Roast run with no
 pass-list drops, benchmarks equal-or-faster.
@@ -63,7 +65,7 @@ keys, `:s` sigspace requires `<!ww>`, `$0` in-flight backreferences
 Date.is-leap-year, DateTime.new positional time args,
 `.later/.earlier(:months)` with month-end clamping, `:!exists:delete` dies.
 
-## Remaining (~9 snippets, mostly artifacts)
+## Remaining (12 snippets, 5 root causes)
 
 1. `prompt`-family EOF nuances: interpolating a Nil `$name` diverges in
    warnings/rc; `.say for $begin .. $end` over Nil endpoints (Rakudo: cannot
@@ -81,6 +83,9 @@ Date.is-leap-year, DateTime.new positional time args,
    too (timeout); excluded.
 7. `say 'a\b\c\\'` — verified identical by hand; the harness's Rakudo run
    was the artifact. Excluded.
+8. `.VAR.default` on a cumulative page that REDECLARES `my $language`
+   several times in one scope — redeclaration semantics differ (Rakudo
+   warns and keeps one container; we re-declare). Standalone blocks pass.
 
 ## Known Roast residue from the post-GLR change
 
