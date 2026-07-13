@@ -1,6 +1,7 @@
 #include "Interpreter.h"
 #include <cstdint>
 #include <climits>
+#include <limits>
 #include <memory>
 #include <cstdlib>
 #include "Unicode.h"
@@ -346,7 +347,7 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
             }
             else if (op == "skip") { long long n = arg.toInt(); long long c = sInt("c"); if (c < n) (*state.hash)["c"] = Value::integer(c + 1); else next.push_back(v); }
             else if (op == "head") {
-                double lim = arg.t == VT::Nil ? 1 : (arg.t == VT::Whatever ? 1.0/0.0 : arg.toNum());
+                double lim = arg.t == VT::Nil ? 1 : (arg.t == VT::Whatever ? std::numeric_limits<double>::infinity() : arg.toNum());
                 long long c = sInt("c");
                 if (c < lim) { next.push_back(v); (*state.hash)["c"] = Value::integer(c + 1); if (c + 1 >= lim) complete = true; }
                 else complete = true;
@@ -956,7 +957,7 @@ static Value makeSignature(const Callable* c) {
     Value s = Value::makeHash(); s.hashKind = "Signature";
     (*s.hash)["str"] = Value::str(sig);
     (*s.hash)["arity"] = Value::integer(arity);
-    (*s.hash)["count"] = slurpy ? Value::number(1.0/0.0) : Value::integer(count);
+    (*s.hash)["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
     return s;
 }
 
@@ -2382,7 +2383,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (p.named) continue;
                 if (p.slurpy) slurpy = true; else n++;
             } else n = (long long)inv.code->placeholders.size();
-            return slurpy ? Value::number(1.0/0.0) : Value::integer(n);
+            return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n);
         }
         if (m == "name") return Value::str(inv.code->name);
         if (m == "returns" || m == "of")
