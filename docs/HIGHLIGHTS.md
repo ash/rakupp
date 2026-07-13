@@ -80,6 +80,20 @@
 - A parse-aware **syntax highlighter** (`--highlight`, HTML + ANSI).
 - `--doc` (POD rendering), `-c` (parse-only check), `--cpp` (show generated C++).
 
+## Examples & real programs
+
+- **[examples/](../examples/)** — 24 complete programs (Mandelbrot, Game of
+  Life, a JSON grammar, a calculator, an echo server, a quine, …); every one
+  also compiles natively with `--exe`, with byte-identical output
+  ([NATIVE.md](NATIVE.md)).
+- Real applications run **unmodified**: the
+  [raku-course](https://github.com/ash/raku-course) static-site generator
+  regenerates the entire 1,483-page Raku course byte-for-byte identically to
+  Rakudo (including the real zef-installed `YAMLish` module), and the
+  [covid.observer](https://github.com/ash/covid.observer) site builder runs
+  end-to-end — dogfooding beyond what Roast exercises
+  ([DOGFOODING.md](DOGFOODING.md)).
+
 ## Not there yet
 
 - Macros / `RakuAST` / slangs; `libffi`-grade NativeCall (structs, callbacks);
