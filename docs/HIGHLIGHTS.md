@@ -88,7 +88,7 @@
   ([NATIVE.md](NATIVE.md)).
 - Real applications run **unmodified**: the
   [raku-course](https://github.com/ash/raku-course) static-site generator
-  regenerates the entire 1,483-page Raku course byte-for-byte identically to
+  regenerates the entire ~1500-page Raku course byte-for-byte identically to
   Rakudo (including the real zef-installed `YAMLish` module), and the
   [covid.observer](https://github.com/ash/covid.observer) site builder runs
   end-to-end — dogfooding beyond what Roast exercises
