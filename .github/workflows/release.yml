@@ -33,9 +33,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Deployment target 11.0 = Big Sur, the first Apple Silicon macOS: the
+      # artifact runs on any Mac from 2020 on, regardless of which macOS the
+      # runner image happens to be (macos-latest rotates, e.g. to macOS 26 —
+      # without this pin the binary's minimum OS would silently drift up).
       - name: Configure (macOS universal)
         if: runner.os == 'macOS'
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 
       # Clang, not GCC: on rakupp's tree-walker Clang -O3 measures 1.2-2.0x
       # faster than GCC across the whole bench suite (fib +28%, loopsum +46%;
