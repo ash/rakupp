@@ -13,7 +13,8 @@ the official Raku test suite.
 ~191,546 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
 **419 / 1,464 files fully pass (~29%)** — a file counts only if *every* assertion
-in it passes. Early-stage, growing test-first. See [the overview](docs/OVERVIEW.md) for
+in it passes. Early-stage, growing test-first. See [the highlights](docs/HIGHLIGHTS.md)
+for the key features in bullets, [the overview](docs/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/GUIDE.md) for the complete picture, or
 [COUNTING.md](docs/COUNTING.md) for exactly how these are defined.
 
@@ -77,6 +78,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 
 ## Documentation
 
+- **[HIGHLIGHTS.md](docs/HIGHLIGHTS.md)** — the key features, in bullets, on one page.
 - **[OVERVIEW.md](docs/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[GUIDE.md](docs/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 - **[FEATURES.md](docs/FEATURES.md)** — inventory of supported language features, by theme.

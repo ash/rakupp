@@ -1,7 +1,8 @@
 # Raku++ — Overview
 
 *A tour of what Raku++ is, what it can do, and how it compares — one level up
-from the [README](../README.md), one level down from the [full guide](GUIDE.md).*
+from the [README](../README.md) and the bullet-point [highlights](HIGHLIGHTS.md),
+one level down from the [full guide](GUIDE.md).*
 
 ---
 
@@ -152,6 +153,7 @@ build/rakupp tools/run-roast.raku S05      # filter by path
 ## Where to go next
 
 - **[README.md](../README.md)** — install and first run.
+- **[HIGHLIGHTS.md](HIGHLIGHTS.md)** — the key features, in bullets, on one page.
 - **[GUIDE.md](GUIDE.md)** — the full guide: goals, status, run modes, real-app hardening.
 - **[FEATURES.md](FEATURES.md)** / **[COOKBOOK.md](COOKBOOK.md)** — what works, with runnable snippets.
 - **[examples/](../examples/)** — complete example programs.

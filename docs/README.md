@@ -5,6 +5,7 @@ point; everything else lives here.
 
 ## Reference
 
+- **[HIGHLIGHTS.md](HIGHLIGHTS.md)** — the key features, in bullets, on one page.
 - **[OVERVIEW.md](OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[GUIDE.md](GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
