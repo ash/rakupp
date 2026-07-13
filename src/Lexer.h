@@ -19,6 +19,7 @@ private:
     std::string finishData_; // captured =finish data block
     std::string podData_;    // rendered content of =begin pod blocks
     size_t pos_ = 0;
+    size_t atomDropEnd_ = (size_t)-1; // pos right after a dropped ⚛ marker (not whitespace)
     int line_ = 1;
     int col_ = 1;
 

@@ -162,6 +162,7 @@ struct RangeExpr : Expr {
 
 struct PairExpr : Expr {
     std::string key;     // used when keyExpr is null (bareword / literal key)
+    bool quotedKey = false; // 'a' => 1 — quoted-key pairs are POSITIONAL args, never named
     ExprPtr keyExpr;     // dynamic key, e.g. $var => ... or (expr) => ...
     ExprPtr value;
     PairExpr(): Expr(NK::Pair) {}
@@ -296,6 +297,8 @@ struct ForStmt : Stmt {
     ExprPtr list;
     std::vector<std::string> vars; // loop variables ($_ if empty)
     bool destructure = false;      // `-> ($a,$b,$c)`: unpack each element into vars
+    std::vector<Param> params;     // full pointy signature when it has sub-signatures
+                                   // (named/nested destructure) — bound via bindParams
     std::unique_ptr<Block> body;
     bool asExpr = false; // used in value context: collect each iteration's value into a List
     bool modifier = false; // `EXPR for LIST` — no implicit block (a `my` in EXPR leaks out)

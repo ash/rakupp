@@ -1008,6 +1008,25 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // Junction invocant: the Str-using routines operate on the WHOLE junction
+    // (no autothreading — `$j.print` prints the junction's string form, calling
+    // each eigenstate's .Str; `$j.printf` treats that form as the format).
+    // enumName.empty() first: it rejects everything but junctions/enums in one load.
+    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr &&
+        (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none") &&
+        (m == "print" || m == "printf" || m == "sprintf" || m == "say" || m == "put" || m == "note" || m == "Str")) {
+        std::string s;
+        for (size_t i = 0; i < inv.arr->size(); i++) {
+            if (i) s += " ";
+            s += methodCall((*inv.arr)[i], "Str", ValueList{}).toStr();
+        }
+        if (m == "Str") return Value::str(s);
+        if (m == "sprintf") return Value::str(doSprintf(s, args, langRev_));
+        if (m == "printf") { std::cout << doSprintf(s, args, langRev_); return Value::boolean(true); }
+        if (m == "note") { std::cerr << s << "\n"; return Value::boolean(true); }
+        std::cout << s << (m == "print" ? "" : "\n");
+        return Value::boolean(true);
+    }
     // `augment class Int {…}`: methods added to a built-in type are parked in
     // builtinExt_ (keyed by type name). Consult it — walking the native ancestry,
     // so augmenting Cool/Any reaches Int/Str too — for native values and type
@@ -2357,6 +2376,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                                  : at.def ? eval(const_cast<Expr*>(at.def))
                                           : (at.sigil == '@' ? Value::array()
                                              : at.sigil == '%' ? Value::makeHash() : Value::any());
+                        // native-typed scalars default to their zero, not Any:
+                        // `has atomicint $.n` starts at 0 so `$!n⚛++` yields 0, 1, …
+                        if (!at.hasDefVal && !at.def && at.sigil == '$' && !at.type.empty()) {
+                            if (at.type == "atomicint" || at.type == "byte" ||
+                                at.type.rfind("int", 0) == 0 || at.type.rfind("uint", 0) == 0)
+                                dv = Value::integer(0);
+                            else if (at.type.rfind("num", 0) == 0) dv = Value::number(0);
+                            else if (at.type == "str") dv = Value::str("");
+                        }
                         od->attrs[at.name] = dv;
                     }
                 for (auto& arg : args)
@@ -3137,18 +3165,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "nl-in")  { auto it = inv.hash->find("nl-in");  return it != inv.hash->end() ? it->second : Value::str("\n"); }
         if (m == "nl-out") { auto it = inv.hash->find("nl-out"); return it != inv.hash->end() ? it->second : Value::str("\n"); }
         if (m == "path" || m == "IO") return (*inv.hash)["path"];
-        if (m == "say" || m == "print" || m == "put") {
+        if (m == "say" || m == "print" || m == "put" || m == "printf") {
+            std::string s;
+            if (m == "printf") { // $fh.printf(FMT, args…) — FMT stringifies via .Str (junctions too)
+                std::string fmt = args.empty() ? "" : methodCall(args[0], "Str", ValueList{}).toStr();
+                ValueList rest(args.begin() + (args.empty() ? 0 : 1), args.end());
+                s = doSprintf(fmt, rest, langRev_);
+            } else {
+                for (auto& a : args) s += (m == "say" ? a.gist() : a.toStr());
+                if (m != "print") s += "\n";
+            }
             auto stdit = inv.hash->find("std");
             if (stdit != inv.hash->end()) { // $*OUT / $*ERR — write straight to the stream
-                std::string s; for (auto& a : args) s += (m == "say" ? a.gist() : a.toStr());
-                if (m != "print") s += "\n";
                 (stdit->second.toStr() == "err" ? std::cerr : std::cout) << s;
                 return Value::boolean(true);
             }
-            std::string s = (*inv.hash)["buffer"].toStr();
-            for (auto& a : args) s += a.toStr();
-            if (m != "print") s += "\n";
-            (*inv.hash)["buffer"] = Value::str(s);
+            (*inv.hash)["buffer"] = Value::str((*inv.hash)["buffer"].toStr() + s);
             return Value::boolean(true);
         }
         if (m == "close") {

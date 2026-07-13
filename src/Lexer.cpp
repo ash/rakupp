@@ -361,8 +361,11 @@ void Lexer::skipWhitespaceAndComments() {
         }
         // atomic-operator marker ⚛ (U+269B): under the GIL, atomic ops are plain ops,
         // so `$x⚛++`/`⚛$x`/`$x ⚛= v` reduce to `$x++`/`$x`/`$x = v` — just drop the ⚛.
+        // Remember where it ended: dropping it must NOT count as whitespace, or the
+        // following `++` loses its tight postfix position ($x⚛++ became $x ++).
         if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x9A && (unsigned char)peek(2) == 0x9B) {
             advance(); advance(); advance();
+            atomDropEnd_ = pos_;
             continue;
         }
         // unspace: backslash followed by whitespace is ignored (token-joining)
@@ -1184,7 +1187,8 @@ std::vector<Token> Lexer::tokenize() {
         if (!pendingHeredocs_.empty() && peek() == '\n') processHeredocs(out);
         size_t before = pos_;
         skipWhitespaceAndComments();
-        bool spaced = (pos_ > before) || before == 0;
+        // a dropped ⚛ marker isn't whitespace: `$x⚛++` keeps `++` tight-postfix
+        bool spaced = (pos_ > before && pos_ != atomDropEnd_) || before == 0;
         if (eof()) break;
         char c = peek();
         Token t;

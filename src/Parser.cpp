@@ -362,7 +362,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             advance();
             auto p = std::make_unique<PairExpr>();
             if (lhs->kind == NK::NameTerm) p->key = static_cast<NameTerm*>(lhs.get())->name;
-            else if (lhs->kind == NK::StrLit) p->key = static_cast<StrLit*>(lhs.get())->v;
+            else if (lhs->kind == NK::StrLit) { p->key = static_cast<StrLit*>(lhs.get())->v; p->quotedKey = true; } // 'a' => 1 stays a POSITIONAL arg
             else p->keyExpr = std::move(lhs); // $var / "interp" / (expr) keys evaluated at runtime
             p->value = parseExpr(BP_ASSIGN);
             lhs = std::move(p);
@@ -2769,11 +2769,11 @@ StmtPtr Parser::parseFor() {
     s->list = parseExpression();
     if (matchOp("->") || matchOp("<->")) {
         if (isKind(Tok::LParen)) s->destructure = true; // `-> ($a,$b)`: unpack each element
-        for (auto& p : parsePointyParams()) {
-            if (p.subSig && p.name.empty()) // signature-style destructure: inner names
-                for (auto& q : *p.subSig) s->vars.push_back(q.name);
-            else s->vars.push_back(p.name);
-        }
+        std::vector<Param> ps = parsePointyParams();
+        bool anySub = false;
+        for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+        if (anySub) s->params = std::move(ps); // real signature binding (named/nested destructure)
+        else for (auto& p : ps) s->vars.push_back(p.name);
     }
     s->body = parseBlock();
     return s;
@@ -2814,12 +2814,10 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
                 if (es->e && es->e->kind == NK::BlockExpr) {
                     auto* be = static_cast<BlockExpr*>(es->e.get());
                     if (!be->params.empty()) {
-                        if (be->params.size() == 1 && be->params[0].subSig) fs->destructure = true;
-                        for (auto& p : be->params) {
-                            if (p.subSig && p.name.empty()) // signature-style destructure
-                                for (auto& q : *p.subSig) fs->vars.push_back(q.name);
-                            else fs->vars.push_back(p.name);
-                        }
+                        bool anySub = false;
+                        for (auto& p : be->params) anySub = anySub || (bool)p.subSig;
+                        if (anySub) { fs->destructure = true; fs->params = std::move(be->params); }
+                        else for (auto& p : be->params) fs->vars.push_back(p.name);
                         auto blk = std::make_unique<Block>();
                         blk->stmts = std::move(be->body);
                         fs->body = std::move(blk);

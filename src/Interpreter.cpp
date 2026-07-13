@@ -2260,6 +2260,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             else if (listv.t == VT::Array && listv.arr) items = *listv.arr; // one-level
             else if (listv.t == VT::Range) items = listv.flatten();
             else items.push_back(listv);
+            // `-> (:key($k), :value($v))` / nested sub-signatures: real signature
+            // binding — each element is the single argument of the pointy signature.
+            if (!fs->params.empty()) {
+                for (size_t i = 0; i < items.size(); i++) {
+                    auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                    ValueList one{items[i]};
+                    bindParams(fs->params, one, scope);
+                    if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == items.size(), col)) break;
+                }
+                return forResult();
+            }
             // `-> ($a,$b,$c)`: each element is unpacked into the vars (one item/iteration).
             if (fs->destructure && !fs->vars.empty()) {
                 for (size_t i = 0; i < items.size(); i++) {
@@ -3293,7 +3304,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // Tail-position `return X` yields exactly X as the call result — evaluate
                 // it directly instead of throwing+unwinding a ReturnEx (the hot path for
                 // the many one-line accessor/action methods a grammar parse calls).
-                if (i + 1 == nst && s->kind == NK::ReturnStmt) {
+                // ROUTINES only: in a bare Block, `return` belongs to the enclosing
+                // routine (or is an error without one) — it must take the throw path.
+                if (i + 1 == nst && s->kind == NK::ReturnStmt && isRoutine) {
                     auto* r = static_cast<ReturnStmt*>(s);
                     last = r->value ? eval(r->value.get()) : Value::any();
                 } else
@@ -3307,6 +3320,16 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     } catch (ReturnEx& r) {
         if (c.body) runLeavePhasers(*c.body);
         restore();
+        // `return` returns from the innermost enclosing ROUTINE, not from a bare
+        // Block: a block (e.g. `-> $x, $y {…}` passed to reduce/map) lets it fly
+        // through — aborting the C++ HOF loop — to the caller's routine frame.
+        // With no enclosing routine at all it is the spec'd control-flow error.
+        if (!isRoutine) {
+            if (savedRoutineFrame == 0)
+                throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+                                "Attempt to return outside of any Routine"};
+            throw;
+        }
         copyOutRw(c.params, env, rwArgs, false);
         return r.v;
     } catch (BreakGivenEx& b) { // `when` matched in this block: its value is the block's result
@@ -6033,7 +6056,7 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) whose key
             // is a bare identifier is a NAMED argument; a Pair value from a variable/
             // call/list — or with a non-identifier key (`3 => 4`) — is positional.
-            if (v.t == VT::Pair && a->kind == NK::Pair) {
+            if (v.t == VT::Pair && a->kind == NK::Pair && !static_cast<PairExpr*>(a.get())->quotedKey) {
                 const std::string& k = static_cast<PairExpr*>(a.get())->key;
                 bool ident = !k.empty() && (std::isalpha((unsigned char)k[0]) || k[0] == '_');
                 for (size_t ci = 1; ident && ci < k.size(); ci++)
