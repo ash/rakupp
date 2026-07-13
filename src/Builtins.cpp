@@ -4289,9 +4289,13 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(c);
     };
     B["cmp-ok"] = [](Interpreter& I, ValueList& a) -> Value {
-        // cmp-ok($a, $op, $b, $desc)
+        // cmp-ok($a, $op, $b, $desc) — $op may be an operator NAME or a Code
+        // (the roast idiom `cmp-ok $x, &[!==], $y`).
         bool c = false;
-        if (a.size() >= 3) {
+        if (a.size() >= 3 && a[1].t == VT::Code) {
+            c = I.callCallable(a[1], ValueList{a[0], a[2]}).truthy();
+        }
+        else if (a.size() >= 3) {
             std::string op = a[1].toStr();
             const Value& x = a[0]; const Value& y = a[2];
             if (op == "==") c = x.toNum() == y.toNum();
@@ -4346,6 +4350,15 @@ void Interpreter::registerBuiltins() {
         try { I.loadModule(mod); } catch (...) { ok = false; }
         I.emitTest(ok, a.size() > 1 ? a[1].toStr() : ("The module can be use-d ok: " + mod));
         return Value::boolean(ok);
+    };
+    B["does-ok"] = [](Interpreter& I, ValueList& a) -> Value {
+        // does-ok($obj, Role, $desc?) — role/type membership via .does
+        bool c = false;
+        if (a.size() >= 2) c = I.methodCall(a[0], "does", ValueList{a[1]}).truthy();
+        std::string desc;
+        for (size_t i = 2; i < a.size(); i++) if (a[i].t == VT::Str) { desc = a[i].s; break; }
+        I.emitTest(c, desc);
+        return Value::boolean(c);
     };
     B["isa-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string want = a.size() > 1 ? (a[1].t == VT::Type ? a[1].s : a[1].toStr()) : "";

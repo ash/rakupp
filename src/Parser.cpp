@@ -398,9 +398,10 @@ ExprPtr Parser::parseExpr(int minbp) {
 
         advance(); // consume infix op
 
-        // list assignment: `@a = 1,2,3` / `my ($a,$b) = ...` grabs the whole comma list
+        // list assignment: `@a = 1,2,3` / `my ($a,$b) = ...` grabs the whole comma
+        // list; binding does too (`my @r := &min, &max, &minmax` is a 3-element bind)
         bool listAssign = false;
-        if (in.isAssign && in.op == "=") {
+        if (in.isAssign && (in.op == "=" || in.op == ":=")) {
             if (lhs->kind == NK::ListExpr) listAssign = true;
             else if (lhs->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(lhs.get())->name;
@@ -1611,7 +1612,27 @@ ExprPtr Parser::parsePrimary() {
                     u->operand = std::move(be);
                     return u;
                 }
-                return parseDeclarator(name);
+                {
+                    // Expression-position declaration: the initializer binds to the
+                    // DECLARATOR, tighter than any pending prefix op — Rakudo parses
+                    // `plan +my @r := a, b, c` as `plan +(my @r := (a, b, c))`.
+                    // Consume `= / :=` here so a caller's prefix can't capture the
+                    // bare declarator as its operand first.
+                    ExprPtr decl = parseDeclarator(name);
+                    if (isKind(Tok::Op) && (cur().text == "=" || cur().text == ":=")) {
+                        bool listTarget = decl->kind == NK::ListExpr;
+                        if (decl->kind == NK::VarExpr) {
+                            const std::string& nm = static_cast<VarExpr*>(decl.get())->name;
+                            listTarget = !nm.empty() && (nm[0] == '@' || nm[0] == '%');
+                        }
+                        auto as = std::make_unique<Assign>();
+                        as->op = advance().text;
+                        as->target = std::move(decl);
+                        as->value = parseExpr(listTarget ? BP_COMMA : BP_ASSIGN);
+                        return as;
+                    }
+                    return decl;
+                }
             }
             advance(); // consume the name
             // operator-name call: infix:<+>(1,2) / postfix:<i>($x) — canonical op name

@@ -3903,11 +3903,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         return out;
     }
-    // Whatever-currying: `* + 1`, `*.elems == 2`, `2 * *`, etc. yield a WhateverCode
+    // Whatever-currying: `* + 1`, `*.elems == 2`, `2 * *`, etc. yield a WhateverCode.
+    // Excluded by spec (S02): ~~, ===, eqv, =:= treat a Whatever as a plain value
+    // (`(**) ~~ HyperWhatever:D` is a type test, not a curry).
+    static const std::set<std::string> kNoCurry = {"~~", "!~~", "===", "!===", "eqv", "=:="};
     auto isWhateverish = [](const Value& v) {
         return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
     };
-    if (isWhateverish(l) || isWhateverish(r)) {
+    if ((isWhateverish(l) || isWhateverish(r)) && !kNoCurry.count(op)) {
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
         code.code->isWhateverCode = true;
         // each `*` consumes one argument left-to-right, so `* + *` has arity 2
@@ -3955,7 +3958,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (op == "-") return mk(a - b);
         if (op == "*") return mk(a * b);
         if (op == "/") return mk(a / b);
-        if (op == "**") return mk(std::pow(a, b));
+        if (op == "**") {
+            // 0 ** 0 == 1+0i by spec (RT #128785; std::pow gives NaN+NaNi via polar log)
+            if (b == std::complex<double>(0.0, 0.0)) return mk({1.0, 0.0});
+            return mk(std::pow(a, b));
+        }
         if (op == "==" || op == "===" || op == "eqv") return Value::boolean(a == b);
         if (op == "!=") return Value::boolean(a != b);
         if (op == "=~=" || op == "≅") { // approx-equal in the complex plane
@@ -4355,6 +4362,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "=:=") return Value::boolean(l.t == r.t && valueEq(l, r));
     if (op == "~~" || op == "!~~") {
         bool res;
+        // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
+        // `when *`, `$x ~~ *`. (~~ never curries — see kNoCurry above.)
+        if (r.t == VT::Whatever) return Value::boolean(op == "~~");
         if (!r.enumType.empty() && r.t == VT::Array) {
             // $val ~~ EnumType : the enum type object is a tagged pair-list
             res = (!l.enumType.empty() && l.enumType == r.enumType) || l.typeName() == r.enumType;

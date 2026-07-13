@@ -263,7 +263,7 @@ std::string Value::typeName() const {
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
         case VT::Type:  return ofType.empty() ? s : s + "[" + ofType + "]";
-        case VT::Whatever: return "Whatever";
+        case VT::Whatever: return b ? "HyperWhatever" : "Whatever"; // `**` marks hyper via .b
         case VT::Object: return obj && obj->cls ? obj->cls->name : "Object";
         case VT::Regex: return "Regex";
         case VT::Match: return "Match";
