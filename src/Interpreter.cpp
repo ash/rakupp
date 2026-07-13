@@ -343,17 +343,11 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
 }
 
 Value listToArray(const ValueList& items) {
+    // Post-GLR: a comma list keeps every member as-is — nested Lists, Ranges,
+    // and word lists stay single elements. Only |slips spread (handled by the
+    // ListExpr/args evaluators before the items reach here).
     Value v = Value::array();
-    for (auto& it : items) {
-        if (it.t == VT::Range && it.rTo < 9000000000000000000LL) { // an infinite range stays one lazy item
-            ValueList sub = it.flatten();
-            v.arr->insert(v.arr->end(), sub.begin(), sub.end());
-        } else if (it.t == VT::Array && it.isList && it.arr) { // a List flattens in list context
-            v.arr->insert(v.arr->end(), it.arr->begin(), it.arr->end());
-        } else {
-            v.arr->push_back(it);
-        }
-    }
+    for (auto& it : items) v.arr->push_back(it);
     return v;
 }
 
@@ -432,7 +426,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         bool endCode = (r.t == VT::Code);
         bool infinite = (r.t == VT::Whatever) || (r.t == VT::Num && std::isinf(r.n));
         double endVal = (infinite || endCode) ? 0 : r.toNum();
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq"; // (1...5).WHAT is (Seq)
         for (auto& s : seed) out.arr->push_back(s);
         if (out.arr->empty()) return out;
         // String sequence: "a"..."e" climbs via strSucc, "E"..."A" descends via strPred.
@@ -2276,7 +2270,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                 } else {
                     ValueList items;
-                    if (lv.t == VT::Array && lv.arr) items = *lv.arr;
+                    // an itemized value ($(@a)) or a $-scalar source is ONE topic
+                    bool oneItem = lv.itemized ||
+                        (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
+                         static_cast<VarExpr*>(fs->list.get())->name[0] == '$');
+                    if (oneItem) items.push_back(lv);
+                    else if (lv.t == VT::Array && lv.arr) items = *lv.arr;
                     else if (lv.t == VT::Range) items = lv.flatten();
                     else items.push_back(lv);
                     for (size_t i = 0; i < items.size(); i++) {
@@ -3698,6 +3697,10 @@ Value* Interpreter::lvalue(Expr* e) {
             std::string key = eval(idx->index.get()).toStr();
             return &(*base->hash)[key];
         } else {
+            // a List ((1,3,5) held in a scalar) is immutable — element assignment dies
+            if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty())
+                throw RakuError{Value::typeObj("X::Assignment::RO"),
+                    "Cannot modify an immutable List (" + base->gist() + ")"};
             if (base->t != VT::Array) *base = Value::array();
             long long i = eval(idx->index.get()).toInt();
             if (i < 0) i += (long long)base->arr->size();
@@ -3905,7 +3908,31 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             }
             *lv = dv;
         }
-        else *lv = rhs;
+        else {
+            // typed container: enforce the constraint on assignment for the core
+            // nominal types (`my Int $i = $str` throws X::TypeCheck::Assignment)
+            if (a->op == "=" && a->target->kind == NK::VarExpr && isDefined(rhs)) {
+                static const std::set<std::string> kChecked = {
+                    "Int", "Num", "Rat", "Complex", "Str", "Bool",
+                };
+                const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
+                for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                    auto di = en->varDefault.find(nm);
+                    if (di != en->varDefault.end()) {
+                        if (di->second.t == VT::Type && kChecked.count(di->second.s) &&
+                            !rtTypeMatch(rhs, di->second.s) &&
+                            !(di->second.s == "Int" && rhs.t == VT::Bool)) // Bool is an Int subtype
+                            throw RakuError{Value::typeObj("X::TypeCheck::Assignment"),
+                                "Type check failed in assignment to " + nm +
+                                "; expected " + di->second.s + " but got " + rhs.typeName() +
+                                " (" + rhs.gist() + ")"};
+                        break;
+                    }
+                    if (en->vars.count(nm)) break;
+                }
+            }
+            *lv = rhs;
+        }
         if (nb) wrapNative(*lv, nb, ns);
         return sink ? Value::any() : *lv;
     }
@@ -5538,8 +5565,15 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         }
         // a deferred inline `{ make … }` runs now, with $/ = this fully-built match
         // (so it can read `$/.values[0].ast` etc.) and this node as the make target.
-        // Pop the innermost queued make for this span (parent/child may share it).
+        // Pop the innermost queued make for this span — but only when THIS rule's
+        // body actually contains the block: a parent and its only child share the
+        // span (`token TOP { <number> {make …} }`), and the make is the parent's.
         auto mc = pendingMakeCode->find({pn.from, pn.to});
+        if (mc != pendingMakeCode->end() && !mc->second.empty()) {
+            const std::string* rulePat = g ? g->findRule(pn.name) : nullptr;
+            if (rulePat && rulePat->find(mc->second.front()) == std::string::npos)
+                mc = pendingMakeCode->end();
+        }
         if (mc != pendingMakeCode->end() && !mc->second.empty()) {
             std::string code = mc->second.front();
             mc->second.erase(mc->second.begin());
@@ -6824,6 +6858,10 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         if (wantExists || wantDelete || kvF || pF || kF || vF) {
+        // `:!exists:delete` is a contradictory adverb combination — Rakudo dies
+        if (wantExists && negExists && wantDelete)
+            throw RakuError{Value::typeObj("X::Adverb"),
+                "Unexpected adverbs passed to subscript: combination of :!exists and :delete"};
         Value iv = eval(idx->index.get());
         bool slice = iv.t == VT::Array || iv.t == VT::Range;
         ValueList sliceKeys;
@@ -7289,7 +7327,9 @@ Value Interpreter::eval(Expr* e) {
                 }
                 items.push_back(eval(it.get()));
             }
-            return listToArray(items);
+            Value lout = listToArray(items);
+            if (l->parenned) lout.isList = true; // (1, 2, 3) is a List — immutable, .WHAT (List)
+            return lout;
         }
         case NK::ArrayLit: {
             auto* l = static_cast<ArrayLit*>(e);
@@ -7302,10 +7342,14 @@ Value Interpreter::eval(Expr* e) {
                 // (`@x».meth`) is itemized — it stays one element (so
                 // `[Foo, @x».ast]` is a 2-element [class, list] tuple).
                 bool isHyper = it->kind == NK::MethodCall && static_cast<MethodCall*>(it.get())->hyper;
-                bool flatten = !isHyper &&
+                // one-arg rule: `[<a b>».Str]` (a SINGLE list-valued item) spreads —
+                // even a hyper result; with several members the comma rules apply.
+                bool oneArgSpread = l->items.size() == 1 && v.t == VT::Array && v.isList && !v.itemized;
+                bool flatten = oneArgSpread ||
+                               (!isHyper &&
                                ((it->kind == NK::VarExpr && !static_cast<VarExpr*>(it.get())->name.empty() &&
                                  static_cast<VarExpr*>(it.get())->name[0] == '@') ||
-                                (v.t == VT::Array && v.isList && !l->fromCommaList));
+                                (v.t == VT::Array && v.isList && !l->fromCommaList)));
                 if (flatten && v.t == VT::Array) { for (auto& x : *v.arr) a.arr->push_back(x); }
                 else if (v.t == VT::Range && !v.rExFrom && v.rTo - v.rFrom < 1000000) { // finite Range flattens: [1..10]
                     for (auto& x : v.flatten()) a.arr->push_back(x);
@@ -7425,13 +7469,17 @@ Value Interpreter::eval(Expr* e) {
             // Whatever-currying: `*.method(...)` yields a WhateverCode. The decision
             // is SYNTACTIC, like Rakudo's: only an invocant expression containing a
             // literal `*` composes — `my $d = * * 2; $d.^name` calls the method on
-            // the stored WhateverCode instead. Metamodel macros never compose.
+            // the stored WhateverCode instead. On a BARE `*` even metamethods curry
+            // (`.map(*.^name)`); on a composed WhateverCode the macros answer directly.
             static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "WHICH", "VAR", "WHY"};
-            if ((inv.t == VT::Whatever || (inv.t == VT::Code && inv.code && inv.code->isWhateverCode)) &&
-                !mc->meta && !kMetaMacros.count(mc->method) && exprHasWhateverLit(mc->inv.get())) {
+            if ((inv.t == VT::Whatever ||
+                 (inv.t == VT::Code && inv.code && inv.code->isWhateverCode &&
+                  !mc->meta && !kMetaMacros.count(mc->method))) &&
+                exprHasWhateverLit(mc->inv.get())) {
                 Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
                 code.code->isWhateverCode = true;
-                Value self = inv; std::string method = mc->method; ValueList margs = args;
+                Value self = inv; ValueList margs = args;
+                std::string method = mc->meta ? "^" + mc->method : mc->method; // *.^name keeps its meta form
                 code.code->builtin = [self, method, margs](Interpreter& I, ValueList& a) -> Value {
                     Value arg = a.empty() ? Value::any() : a[0];
                     Value base = arg;

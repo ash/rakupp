@@ -85,12 +85,12 @@ Regex::NodePtr Regex::parseSeq() {
         if (assertDepth_ > 0 && c == '>') break; // end of an assertion inner
         // goal operator: `A ~ B  C D` matches `A C D B` (nice bracket-matching sugar)
         if (c == '~' && !seq->kids.empty()) { pos_++; skipWs(); goalClose = parseQuant(); continue; }
-        // sigspace (a `rule`): whitespace between atoms matches optional whitespace `\s*`
+        // sigspace (a `rule`): whitespace between atoms matches <.ws> — \s* that
+        // may be zero-width only OFF a word-word boundary ('foobar' !~~ /:s foo bar/)
         if (sigspace_ && !seq->kids.empty() && hadSpace) {
-            auto cls = std::make_unique<Node>(); cls->k = K::Class; cls->icase = curIcase_; cls->classFlags = "s";
-            auto rep = std::make_unique<Node>(); rep->k = K::Rep; rep->min = 0; rep->max = -1; rep->greedy = true;
-            rep->kids.push_back(std::move(cls));
-            seq->kids.push_back(std::move(rep));
+            auto ws = std::make_unique<Node>();
+            ws->k = K::Subrule; ws->ruleName = "ws"; ws->ruleCapture = false;
+            seq->kids.push_back(std::move(ws));
         }
         seq->kids.push_back(parseQuant());
     }
@@ -1030,6 +1030,20 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             return ok ? k(pos) : false;
         }
         case K::VarMatch: { // `$var` in a pattern — match the variable's current Str value literally
+            // `$0`/`$1` backreference: the IN-FLIGHT capture of this same match
+            // (`(.) $0*` matches a run of the captured character)
+            if (n->lit.size() > 1 && std::isdigit((unsigned char)n->lit[1])) {
+                long ci = std::stol(n->lit.substr(1));
+                if (ci >= 0 && ci < (long)st.caps.size() && st.caps[ci].first >= 0) {
+                    long cb = st.caps[ci].first, ce = st.caps[ci].second;
+                    long clen = ce - cb;
+                    if (clen < 0) return false;
+                    if (pos + clen > (long)st.s.size()) return false;
+                    if (st.s.compare(pos, clen, st.s, cb, clen) != 0) return false;
+                    return k(pos + clen);
+                }
+                return false; // that group hasn't captured yet
+            }
             if (!st.hooks || !st.hooks->str) return false;
             static const GrammarHooks::ParamMap noParams;
             const auto& params = st.grammar ? st.grammar->currentParams() : noParams;

@@ -24,7 +24,7 @@ static std::string dateGist(const std::map<std::string, Value>& h, bool isDate) 
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
     char buf[40];
     if (isDate) std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", f("year"), f("month"), f("day"));
-    else std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld",
+    else std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lldZ",
                        f("year"), f("month"), f("day"), f("hour"), f("minute"), f("second"));
     return buf;
 }
@@ -199,6 +199,14 @@ std::string Value::toStr() const {
         case VT::Type: return "(" + s + ")";
         case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");
         case VT::Range: {
+            // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
+            // an infinite one keeps the endpoint form
+            if (rTo < 9000000000000000000LL && rFrom > -9000000000000000000LL) {
+                long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
+                std::string out2;
+                for (long long k2 = lo; k2 <= hi; k2++) { if (k2 != lo) out2 += " "; out2 += std::to_string(k2); }
+                return out2;
+            }
             std::ostringstream os;
             os << rFrom << ".." << (rExTo ? "^" : "") << rTo;
             return os.str();
@@ -266,6 +274,11 @@ std::string Value::gist() const {
         }
         case VT::Pair: return s + " => " + (pairVal ? pairVal->gist() : "");
         case VT::Str:  return s;
+        case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
+            std::ostringstream os;
+            os << rFrom << ".." << (rExTo ? "^" : "") << rTo;
+            return os.str();
+        }
         case VT::Hash: {
             // plain Hash: {a => 1, b => 2}; Map: Map.new((a => 1)); Set/Bag/Mix
             // families: Kind(elems). Everything else (Date, Failure, …) keeps
@@ -274,6 +287,10 @@ std::string Value::gist() const {
                 std::string tn = hash->count("type") ? hash->at("type").s : "Mu";
                 std::string nm = hash->count("name") ? hash->at("name").s : "";
                 return (tn.empty() ? "Mu" : tn) + " " + nm;
+            }
+            if (hashKind == "Scalar" && hash) { // a .VAR container gists as its value
+                auto it = hash->find("value");
+                return it != hash->end() ? it->second.gist() : "(Any)";
             }
             if (hashKind.empty() || hashKind == "Map" || hashKind == "Stash") {
                 ReprDepthGuard g; if (g.tooDeep()) return "{...}";
@@ -338,7 +355,8 @@ std::string Value::typeName() const {
         case VT::Str:  return hashKind == "IO" ? "IO::Path" : hashKind == "Version" ? "Version" : hashKind == "Blob" ? "Blob" : "Str";
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
-            return (isList && s == "Seq") ? "Seq" : "Array";
+            if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
+            return !isList ? "Array" : s == "Seq" ? "Seq" : "List";
         case VT::Hash:  if (hashKind == "Pod" && hash && hash->count("podclass")) return hash->at("podclass").s;
                         return (hashKind == "Date" || hashKind == "DateTime") && hash ? dateGist(*hash, hashKind == "Date")
                              : (hashKind.empty() ? "Hash" : hashKind);
@@ -370,6 +388,11 @@ ValueList Value::flatten() const {
     } else if (t == VT::Range) {
         long long lo = rFrom + (rExFrom ? 1 : 0);
         long long hi = rTo - (rExTo ? 1 : 0);
+        // an infinite range (1..* / 1..Inf) yields a bounded prefix instead of
+        // hanging — eager consumers that reach it index/scan a finite prefix
+        if (rTo >= 9000000000000000000LL || rFrom <= -9000000000000000000LL) {
+            if (hi > lo + 9999 || hi < lo) hi = lo + 9999;
+        }
         for (long long k = lo; k <= hi; k++) out.push_back(Value::integer(k));
     } else {
         out.push_back(*this);

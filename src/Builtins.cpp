@@ -957,13 +957,25 @@ static Value makeBaggy(const ValueList& items, const std::string& kind) {
     Value h = Value::makeHash();
     h.hashKind = kind;
     bool isSet = kind.find("Set") == 0;
+    bool isMix = kind.find("Mix") == 0; // Mix weights keep their full numeric value (2.5 stays a Rat)
     auto add = [&](const std::string& k, long long cnt) {
         if (isSet) { if (cnt > 0) (*h.hash)[k] = Value::boolean(true); else h.hash->erase(k); return; }
         long long c = 0; auto it = h.hash->find(k); if (it != h.hash->end()) c = it->second.toInt();
         c += cnt; if (c != 0) (*h.hash)[k] = Value::integer(c); else h.hash->erase(k);
     };
     for (auto& v : items) {
-        if (v.t == VT::Pair) add(v.s, v.pairVal ? v.pairVal->toInt() : 0);
+        if (v.t == VT::Pair) {
+            Value w = v.pairVal ? *v.pairVal : Value::integer(0);
+            if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
+                auto it = h.hash->find(v.s);
+                if (it != h.hash->end()) {
+                    double sum = it->second.toNum() + w.toNum();
+                    if (sum == 0.0) h.hash->erase(v.s); else (*h.hash)[v.s] = Value::number(sum);
+                } else if (w.toNum() != 0.0) (*h.hash)[v.s] = w;
+                continue;
+            }
+            add(v.s, w.toInt());
+        }
         else add(v.toStr(), 1);
     }
     return h;
@@ -1121,7 +1133,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // a Scalar container record (from `.VAR` on a $-variable): its own name/default,
     // .^name = Scalar via typeName; anything else answers from the held value.
     if (inv.t == VT::Hash && inv.hashKind == "Scalar" && inv.hash &&
-        m != "^name" && m != "WHAT" && m != "WHICH" && m != "raku" && m != "perl" && m != "gist" && m != "Str") {
+        m != "^name" && m != "WHAT" && m != "WHICH" && m != "raku" && m != "perl") {
         if (m == "name")    { auto it = inv.hash->find("name");    return it != inv.hash->end() ? it->second : Value::any(); }
         if (m == "default") { auto it = inv.hash->find("default"); return it != inv.hash->end() ? it->second : Value::any(); }
         if (m == "of")      { auto it = inv.hash->find("default"); return (it != inv.hash->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu"); }
@@ -2126,6 +2138,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (pos.size() >= 1) y = pos[0];
             if (pos.size() >= 2) mo = pos[1];
             if (pos.size() >= 3) d = pos[2];
+            if (pos.size() >= 4) h = pos[3];   // DateTime.new(y, m, d, H, M, S)
+            if (pos.size() >= 5) mi = pos[4];
+            if (pos.size() >= 6) s = pos[5];
             return mk(y, mo, d, h, mi, s, 0);
         }
     }
@@ -2136,7 +2151,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "Str" || m == "gist" || m == "yyyy-mm-dd" || m == "Date") {
             char buf[32];
             if (inv.hashKind == "Date") snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", fld("year"), fld("month"), fld("day"));
-            else snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld", fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"));
+            else snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lldZ", fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"));
             return Value::str(buf);
         }
         if (m == "day-of-week" || m == "dow") { // 1=Monday .. 7=Sunday (Sakamoto's algorithm)
@@ -2147,11 +2162,33 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::integer((sak + 6) % 7 + 1);
         }
         if ((m == "later" || m == "earlier") && inv.hashKind == "Date") {
-            long long days = 0;
-            for (auto& a : args) if (a.t == VT::Pair && a.s == "days" && a.pairVal) days = a.pairVal->toInt();
-            return makeDate(civilToDays(fld("year"), fld("month"), fld("day")) + (m == "later" ? days : -days));
+            long long sign = (m == "later") ? 1 : -1;
+            long long days = 0, months = 0, years = 0;
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+                long long v = a.pairVal->toInt();
+                if (a.s == "day" || a.s == "days") days += v;
+                else if (a.s == "week" || a.s == "weeks") days += 7 * v;
+                else if (a.s == "month" || a.s == "months") months += v;
+                else if (a.s == "year" || a.s == "years") years += v;
+            }
+            long long y = fld("year"), mo = fld("month"), d = fld("day");
+            if (months || years) {
+                long long total = (y * 12 + (mo - 1)) + sign * (years * 12 + months);
+                y = total >= 0 ? total / 12 : -((-total + 11) / 12);
+                mo = total - y * 12 + 1;
+                // clamp to the target month's length (2026-01-31 +1 month -> 2026-02-28)
+                static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                long long lim = mlen[mo - 1];
+                if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) lim = 29;
+                if (d > lim) d = lim;
+            }
+            return makeDate(civilToDays(y, mo, d) + sign * days);
         }
-        if (m == "truncated-to" || m == "earlier" || m == "later") return inv; // best-effort (weeks/months etc.)
+        if (m == "is-leap-year" && (inv.hashKind == "Date" || inv.hashKind == "DateTime")) {
+            long long y = fld("year");
+            return Value::boolean((y % 4 == 0 && y % 100 != 0) || y % 400 == 0);
+        }
+        if (m == "truncated-to" || m == "earlier" || m == "later") return inv; // best-effort (weeks etc.)
     }
 
     // `.new` on a scalar built-in type object → that type's default value. This is
@@ -2789,7 +2826,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && !inv.hashKind.empty()) {
         bool isSet = inv.hashKind.find("Set") == 0;
         if (m == "default") return isSet ? Value::boolean(false) : Value::integer(0);
-        if (m == "total") { long long t = 0; for (auto& kv : *inv.hash) t += isSet ? 1 : kv.second.toInt(); return Value::integer(t); }
+        if (m == "total") { // Mix weights may be fractional — keep the numeric type
+            bool allInt = true; double t = 0;
+            for (auto& kv : *inv.hash) {
+                if (isSet) { t += 1; continue; }
+                t += kv.second.toNum();
+                if (kv.second.t != VT::Int && kv.second.t != VT::Bool) allInt = false;
+            }
+            return allInt ? Value::integer((long long)t) : Value::number(t);
+        }
         if (m == "elems") return Value::integer((long long)inv.hash->size());
     }
 
@@ -3437,7 +3482,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::str(out);
         }
         if (m == "comb") {
-            Regex re(pat); Value out = Value::array(); long pos = 0; RxMatch mm;
+            Regex re(pat); Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
                 out.arr->push_back(Value::str(subj.substr(mm.from, mm.to - mm.from)));
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
@@ -3445,8 +3490,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "split") {
-            Regex re(pat); Value out = Value::array(); long pos = 0; RxMatch mm;
+            Regex re(pat); Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
+            // optional limit (second positional): <=0 → empty, 1 → the whole string,
+            // n → at most n pieces
+            long long limit = -12345;
+            for (auto& la : args) if (la.t != VT::Pair && la.t != VT::Regex) {
+                if (la.t != VT::Whatever) limit = la.toInt(); // a `*` limit means unlimited
+                break;
+            }
+            bool haveLimit = limit != -12345;
+            if (haveLimit && limit <= 0) return out;
+            if (haveLimit && limit == 1) { out.arr->push_back(Value::str(subj)); return out; }
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
+                if (haveLimit && (long long)out.arr->size() >= limit - 1) break;
                 if (mm.to == mm.from && mm.from == pos) { if (pos >= (long)subj.size()) break; }
                 out.arr->push_back(Value::str(subj.substr(pos, mm.from - pos)));
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
@@ -3544,19 +3600,49 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         auto add = [&](const Value& d) { if (d.t == VT::Regex) delims.push_back({true, d.s}); else delims.push_back({false, d.toStr()}); };
         if (d0.t == VT::Array) { for (auto& e : *d0.arr) add(e); } else add(d0);
         bool keepSep = false, skipEmpty = false;
-        for (auto& a : args) if (a.t == VT::Pair && a.pairVal && a.pairVal->truthy()) {
-            if (a.s == "v" || a.s == "kv") keepSep = true;
-            else if (a.s == "skip-empty") skipEmpty = true;
+        long long limit = -1; bool haveLimit = false; // second positional (a `*` means unlimited)
+        { bool first = true;
+          for (auto& a : args) {
+              if (a.t == VT::Pair) {
+                  if (a.pairVal && a.pairVal->truthy()) {
+                      if (a.s == "v" || a.s == "kv") keepSep = true;
+                      else if (a.s == "skip-empty") skipEmpty = true;
+                  }
+                  continue;
+              }
+              if (first) { first = false; continue; } // the delimiter itself
+              if (a.t != VT::Whatever) { limit = a.toInt(); haveLimit = true; }
+              break;
+          }
         }
         Value out = Value::array();
+        out.isList = true; out.s = "Seq";
+        if (haveLimit && limit <= 0) return out;
         auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr->push_back(Value::str(piece)); };
-        // empty single delimiter => split into characters
+        // empty single delimiter => split into characters, with the empty-string
+        // edges Rakudo yields ('abc'.split('') is ("", "a", "b", "c", ""));
+        // a limit keeps the first limit-1 pieces and the rest as the final piece
         if (delims.size() == 1 && !delims[0].isRx && delims[0].str.empty()) {
-            for (auto cp : utf8cp(s)) out.arr->push_back(Value::str(cpToUtf8(cp)));
+            if (s.empty()) return out; // ''.split('') is ()
+            auto cps = utf8cp(s);
+            if (haveLimit && limit == 1) { emit(s); return out; }
+            emit("");
+            size_t taken = 0;
+            for (size_t ci = 0; ci < cps.size(); ci++) {
+                if (haveLimit && (long long)out.arr->size() == limit - 1) {
+                    std::string rest; for (size_t cj = ci; cj < cps.size(); cj++) rest += cpToUtf8(cps[cj]);
+                    emit(rest); return out;
+                }
+                out.arr->push_back(Value::str(cpToUtf8(cps[ci])));
+                taken = ci;
+            }
+            (void)taken;
+            if (!haveLimit || (long long)out.arr->size() < limit) emit("");
             return out;
         }
         size_t pos = 0;
         while (pos <= s.size()) {
+            if (haveLimit && (long long)out.arr->size() >= limit - 1) { emit(s.substr(pos)); break; }
             size_t bestStart = std::string::npos, bestLen = 0; // earliest, then longest match
             for (auto& d : delims) {
                 if (d.isRx) {
@@ -3579,16 +3665,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "words") {
         std::istringstream is(inv.toStr()); std::string w; Value out = Value::array();
+        out.isList = true; out.s = "Seq";
         while (is >> w) out.arr->push_back(Value::str(w));
         return out;
     }
     if (m == "lines") {
         std::istringstream is(inv.toStr()); std::string w; Value out = Value::array();
+        out.isList = true; out.s = "Seq";
         while (std::getline(is, w)) out.arr->push_back(Value::str(w));
         return out;
     }
     if (m == "comb") {
         Value out = Value::array();
+        out.isList = true; out.s = "Seq";
         // .comb($needle): every non-overlapping occurrence of the literal substring
         // (a regex needle is handled earlier); .comb() with no arg: one entry per codepoint.
         if (!args.empty() && args[0].t != VT::Int) {
@@ -4263,7 +4352,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             } else {
                 for (size_t i = 0; i < items.size(); i++) {
                     if (m == "kv") { out.arr->push_back(Value::integer((long long)i)); out.arr->push_back(items[i]); }
-                    else out.arr->push_back(Value::pair(std::to_string(i), items[i]));
+                    else if (m == "antipairs") { // value => index
+                        Value p = Value::pair(items[i].toStr(), Value::integer((long long)i));
+                        p.pairKey = std::make_shared<Value>(items[i]);
+                        out.arr->push_back(p);
+                    }
+                    else {
+                        Value p = Value::pair(std::to_string(i), items[i]);
+                        p.pairKey = std::make_shared<Value>(Value::integer((long long)i)); // Int keys
+                        out.arr->push_back(p);
+                    }
                 }
             }
             return out;
@@ -5080,6 +5178,16 @@ void Interpreter::registerBuiltins() {
             Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
             return I.methodCall(inv, nm, rest);
         };
+    // head/tail sub forms take the count FIRST: head(5, @list) → @list.head(5);
+    // the one-arg form is the method with no count (first/last element).
+    for (auto nm : {"head", "tail"})
+        B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return Value::nil();
+            if (a.size() == 1) { ValueList none; return I.methodCall(a[0], nm, none); }
+            Value n = a[0];
+            Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
+            ValueList ma{n}; return I.methodCall(list, nm, ma);
+        };
     // pick/roll sub forms take the count FIRST: pick(3, @list) → @list.pick(3).
     for (auto nm : {"pick", "roll"})
         B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
@@ -5452,7 +5560,10 @@ void Interpreter::registerBuiltins() {
     };
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; // flat is a List (flattens in list context)
-        for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
+        for (auto& v : a) {
+            if (v.itemized) { out.arr->push_back(v); continue; } // $(@a) stays ONE item
+            ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x);
+        }
         return out;
     };
     B["cache"] = [](Interpreter&, ValueList& a) -> Value { // cache(list) — like .cache, a no-op for our eager values

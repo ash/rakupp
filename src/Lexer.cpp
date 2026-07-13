@@ -374,7 +374,19 @@ void Lexer::skipWhitespaceAndComments() {
             continue;
         }
         if (c == '#') {
-            // embedded comment #`( ... ) or #`[ ... ] -- skip for MVP as line comment
+            // embedded comment #`( ... ) / #`[ ... ] / #`{ ... }: skip the balanced
+            // bracket group only — the rest of the line still parses
+            if (peek(1) == '`' && (peek(2) == '(' || peek(2) == '[' || peek(2) == '{' || peek(2) == '<')) {
+                char open = peek(2), close = open == '(' ? ')' : open == '[' ? ']' : open == '{' ? '}' : '>';
+                advance(); advance(); advance(); // # ` open
+                int d = 1;
+                while (!eof() && d > 0) {
+                    char ch = advance();
+                    if (ch == open) d++;
+                    else if (ch == close) d--;
+                }
+                continue;
+            }
             while (!eof() && peek() != '\n') advance();
             continue;
         }

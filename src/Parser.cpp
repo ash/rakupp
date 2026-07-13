@@ -1884,13 +1884,12 @@ ExprPtr Parser::parsePrimary() {
                     c->args.push_back(std::move(seq));
                     return c;
                 }
-                // `f (a, b)` (space then a parenthesised comma-list) == `f(a, b)`:
-                // flatten the single list argument into the call's args.
-                if (c->args.size() == 1 && c->args[0]->kind == NK::ListExpr) {
-                    auto* l = static_cast<ListExpr*>(c->args[0].get());
-                    std::vector<ExprPtr> items = std::move(l->items);
-                    c->args = std::move(items);
-                }
+                // `f (a, b)` (space then a parenthesised comma-list) passes ONE List
+                // argument — unlike the tight call form `f(a, b)` (Rakudo semantics).
+                // An empty `f ()` still means no arguments.
+                if (c->args.size() == 1 && c->args[0]->kind == NK::ListExpr &&
+                    static_cast<ListExpr*>(c->args[0].get())->items.empty())
+                    c->args.clear();
                 return c;
             }
             return std::make_unique<NameTerm>(name);
