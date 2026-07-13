@@ -64,6 +64,19 @@ now NFC-composed; `.ords.iterator` protocol still failing), `.does(Callable)`
 on Code, smartmatch on type objects (blocked — `applyArith` is a free function
 with no class registry).
 
+Batch 4 (`4c272e3`) — the Rat 0-denominator cluster: rat.t 11 fails → 5.
+Structural ===/eqv/is-deeply for Rats (no stringify), junction-autothreading
+is-deeply, Int() coercer + coercion-type params fail X::Numeric::DivideByZero,
+Rat.new uint64 spill, big-ratio toNum, .raku nude form for wide denominators,
+Instant.from-posix, StrDistance. rat.t's 5 survivors = the parametric
+Rational[...] role group (roles-6e) + one needing post-GLR list assignment.
+NEW CAMPAIGN ITEM discovered: **post-GLR no-flatten list assignment** —
+Rakudo does NOT flatten comma-list members (`my @a = 1, ^3, [^3]` is 4
+elements, Range kept; verified against Rakudo directly). Our `=` flattens
+Ranges/Lists engine-wide (pre-GLR). Big blast radius (for-loops DO flatten
+one level; args don't) — needs its own dedicated batch with a full gate.
+9-is_deeply.t is down to junction GISTS in failure diagnostics (small).
+
 **24 files still down**, by category:
 - Rat/Num 0-denominator (Inf/NaN) semantics: `rat`, `stress`, `complex` —
   arithmetic on `<1/0>`/`<0/0>`, `Int()` coercion must throw
