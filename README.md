@@ -10,9 +10,9 @@ it targets the *language*, measured against [**Roast**](https://github.com/Raku/
 the official Raku test suite.
 
 **Status:** measured per individual test, **~82% of Roast passes** — 157,898 of
-~193,637 tests the suite declares, counting the tests in files that abort before
+~193,638 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
-**432 / 1,462 files fully pass (~30%)** — a file counts only if *every* assertion
+**433 / 1,462 files fully pass (~30%)** — a file counts only if *every* assertion
 in it passes. Early-stage, growing test-first. See [the highlights](docs/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/GUIDE.md) for the complete picture, or
