@@ -247,8 +247,11 @@ static Value typedDefault(const std::string& type, char sigil) {
         if (type == "str") return Value::str("");
         if (std::isupper((unsigned char)type[0])) return Value::typeObj(type); // my Int $x -> (Int)
     }
-    // typed containers: `my Int @a` -> Array[Int], `my Int %h` -> Hash[Int]
-    if ((sigil == '@' || sigil == '%') && !type.empty() && std::isupper((unsigned char)type[0])) {
+    // typed containers: `my Int @a` -> Array[Int], `my int @a` (native) too
+    if ((sigil == '@' || sigil == '%') && !type.empty() &&
+        (std::isupper((unsigned char)type[0]) ||
+         type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
+         type.rfind("num", 0) == 0 || type == "str" || type == "byte")) {
         Value v = defaultFor(sigil);
         v.ofType = type;
         return v;
@@ -724,6 +727,9 @@ Value rtArrayVal(const Value& v) {
 
 static Value coerceArray(const Value& v) {
     if (v.t == VT::Array) {
+        if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
+            Value r = Value::array(); r.arr->push_back(v); return r;
+        }
         if (v.ext) return v; // a lazy seq stays lazy (shared machinery; consumers materialise)
         // `@b = @a` / `@x is copy` copy the top-level buffer — a fresh Array that does
         // NOT alias the source (nested itemized arrays are containers, shared by value,
@@ -4044,11 +4050,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         }
         int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
         if (sigil == '@') {
+            std::string keepType = lv->ofType; // the container keeps its element type
             // `=` assignment flattens iterables into the array; `:=` BINDS — the
             // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
             // elements: a Range, a List, an Array — not their union).
             if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
             else *lv = coerceArray(rhs);
+            if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
         }
         else if (sigil == '%') *lv = coerceHash(rhs);
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -5814,6 +5822,11 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         Value out = Value::array(); out.isList = true;
         auto emit = [&](const Value& x, const Value& y) {
             if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
+            else if (sub == ",") { // Z, / X, — tuples
+                Value t = Value::array(); t.isList = true;
+                t.arr->push_back(x); t.arr->push_back(y);
+                out.arr->push_back(t);
+            }
             else out.arr->push_back(applyBinOp(sub, x, y));
         };
         if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
@@ -5892,10 +5905,18 @@ Value Interpreter::evalBinary(Binary* b) {
         // zip/cross metaop `Zop`/`Xop` — resolve a user inner operator via applyBinOp
         if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
             std::string sub = op.substr(1);
-            ValueList a = l.flatten(), bb = r.flatten();
+            auto oneLevel = [](const Value& v) -> ValueList {
+                if (v.t == VT::Array && v.arr) return *v.arr;
+                if (v.t == VT::Range) return v.flatten();
+                return ValueList{v};
+            };
+            ValueList a = oneLevel(l), bb = oneLevel(r);
             Value out = Value::array(); out.isList = true;
             auto emit = [&](const Value& x, const Value& y) {
-                if (sub.empty()) out.arr->push_back(Value::array({x, y}));
+                if (sub.empty() || sub == ",") { // Z / Z, — tuples
+                    Value t = Value::array({x, y}); t.isList = true;
+                    out.arr->push_back(t);
+                }
                 else if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
                 else out.arr->push_back(applyBinOp(sub, x, y));
             };
@@ -7007,7 +7028,13 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (iv.t == VT::Int && !iv.big) {
                         long long ix = iv.i;
                         if (ix < 0) ix += (long long)arr->size();
-                        if (ix >= 0 && ix < (long long)arr->size()) return (*arr)[ix];
+                        if (ix >= 0 && ix < (long long)arr->size()) {
+                            Value el = (*arr)[ix];
+                            // an element is a scalar container: a nested Array stays
+                            // ONE item downstream (`my @row = @m[0]` is [[...],])
+                            if (el.t == VT::Array) el.itemized = true;
+                            return el;
+                        }
                         return Value::any();
                     }
                     // non-Int subscript (range/whatever/list): fall through with the

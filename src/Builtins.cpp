@@ -4634,8 +4634,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (m == "append") { for (auto& a : appendValues(args)) inv.arr->push_back(a); return Value::integer((long long)inv.arr->size()); }
             if (m == "unshift") { inv.arr->insert(inv.arr->begin(), args.begin(), args.end()); return Value::integer((long long)inv.arr->size()); }
             if (m == "prepend") { auto f = appendValues(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return Value::integer((long long)inv.arr->size()); }
-            if (m == "pop") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->back(); inv.arr->pop_back(); return v; }
-            if (m == "shift") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); return v; }
+            if (m == "pop") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->back(); inv.arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
+            if (m == "shift") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
                 long n = (long)inv.arr->size();
                 long start = args.size() > 0 ? args[0].toInt() : 0;
@@ -5860,12 +5860,12 @@ void Interpreter::registerBuiltins() {
     B["pop"] = [](Interpreter&, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite)
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
-        if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->back(); a[0].arr->pop_back(); return v; }
+        if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->back(); a[0].arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
         return Value::any();
     };
     B["shift"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite) I.materializeLazy(a[0], 1);
-        if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->front(); a[0].arr->erase(a[0].arr->begin()); return v; }
+        if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->front(); a[0].arr->erase(a[0].arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
         return Value::any();
     };
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {

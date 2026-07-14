@@ -22,7 +22,7 @@ namespace rakupp {
 // trait can slot a fresh precedence *between* two built-in levels (e.g. tighter
 // than `+` but looser than `*`).
 enum {
-    BP_OR = 10, BP_AND = 20, BP_COMMA = 30, BP_ASSIGN = 40, BP_TERNARY = 50,
+    BP_OR = 10, BP_AND = 20, BP_ZIP = 25, BP_COMMA = 30, BP_ASSIGN = 40, BP_TERNARY = 50,
     BP_OROR = 60, BP_ANDAND = 70, BP_COMPARE = 80, BP_RANGE = 90,
     BP_CONCAT = 100, BP_REPLICATE = 110, BP_ADD = 120, BP_MUL = 130, BP_POW = 140, BP_PREFIX = 150
 };
@@ -146,11 +146,11 @@ static InfixInfo classifyInfix(const Token& t) {
         }
         if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
         if (o == "o") { in.valid = true; in.lbp = BP_MUL; return in; } // ASCII alias for ∘ (function composition)
-        if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ADD; return in; } // zip / cross
+        if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ZIP; return in; } // zip / cross: list infix, looser than comma
         {   // stacked zip/cross metaops: XZ / ZZ / XX (optionally with a tight op after)
             bool allZX = o.size() > 1;
             for (char c : o) if (c != 'Z' && c != 'X') { allZX = false; break; }
-            if (allZX) { in.valid = true; in.lbp = BP_ADD; return in; }
+            if (allZX) { in.valid = true; in.lbp = BP_ZIP; return in; }
         }
         if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
         if (o == "and" || o == "andthen") { in.valid = true; in.lbp = BP_AND; return in; }
@@ -432,6 +432,7 @@ ExprPtr Parser::parseExpr(int minbp) {
         if (zxStack) {
             std::string meta;
             if (peek().kind == Tok::FatArrow) meta = "=>";
+            else if (peek().kind == Tok::Comma) meta = ","; // Z, / X, — zip/cross into tuples
             else if (peek().kind == Tok::Op) meta = peek().text;
             if (!meta.empty() && !peek().spaceBefore) {
                 advance(); advance(); // consume Z/X and the trailing op
@@ -471,7 +472,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
         }
 
-        int nextMin = listAssign ? BP_COMMA : (in.rightAssoc ? in.lbp : in.lbp + 1);
+        int nextMin = listAssign ? BP_ZIP : (in.rightAssoc ? in.lbp : in.lbp + 1); // list assign includes Z/X (looser than comma)
         ExprPtr rhs = parseExpr(nextMin);
 
         if (in.isAssign) {
@@ -1850,7 +1851,7 @@ ExprPtr Parser::parsePrimary() {
                         auto as = std::make_unique<Assign>();
                         as->op = advance().text;
                         as->target = std::move(decl);
-                        as->value = parseExpr(listTarget ? BP_COMMA : BP_ASSIGN);
+                        as->value = parseExpr(listTarget ? BP_ZIP : BP_ASSIGN); // list decls include Z/X
                         return as;
                     }
                     return decl;
@@ -1997,7 +1998,10 @@ ExprPtr Parser::parsePrimary() {
             if (listopOk) {
                 auto c = std::make_unique<Call>();
                 c->name = name;
-                ExprPtr firstArg = parseExpr(BP_ASSIGN);
+                // parse the WHOLE argument expression including the list-infix tier,
+                // so `flat @a Z @b` is flat((@a Z @b)); a bare top-level comma list
+                // spreads back into individual arguments below.
+                ExprPtr firstArg = parseExpr(BP_ZIP);
                 // Indirect-object (dative): `print $*OUT: 'ok'` == `$*OUT.print('ok')`.
                 // The colon must be TIGHT against the invocant (no space before) — a
                 // space before ':' is an adverb (`slurp $p :bin`), not an invocant.
@@ -2014,7 +2018,11 @@ ExprPtr Parser::parsePrimary() {
                         do { mc->args.push_back(parseExpr(BP_ASSIGN)); } while (matchKind(Tok::Comma) && startsTermToken(cur()));
                     return mc;
                 }
-                c->args.push_back(std::move(firstArg));
+                if (firstArg->kind == NK::ListExpr && !static_cast<ListExpr*>(firstArg.get())->parenned) {
+                    auto* le = static_cast<ListExpr*>(firstArg.get());
+                    for (auto& it : le->items) c->args.push_back(std::move(it));
+                }
+                else c->args.push_back(std::move(firstArg));
                 while (matchKind(Tok::Comma) && startsTermToken(cur())) {
                     c->args.push_back(parseExpr(BP_ASSIGN));
                 }

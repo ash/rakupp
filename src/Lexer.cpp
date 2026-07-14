@@ -716,9 +716,12 @@ bool Lexer::tryQuoteForm(Token& out) {
         p = q;
     }
     if (w == "ss" || w == "SS") adverbs = ":samespace " + adverbs; // ss/// == s:samespace///
-    // whitespace is allowed before a bracketing delimiter: `s:g [ pat ] = repl`
+    // whitespace is allowed before a bracketing delimiter: `s:g [ pat ] = repl`,
+    // and before `/` too (`s :g /pat//`, `qw /a b/` — Rakudo accepts both)
     { size_t ws = p; while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t')) ws++;
-      if (ws < src_.size() && (src_[ws] == '(' || src_[ws] == '[' || src_[ws] == '{' || src_[ws] == '<')) p = ws; }
+      if (ws > p && ws < src_.size() &&
+          (src_[ws] == '(' || src_[ws] == '[' || src_[ws] == '{' || src_[ws] == '<' ||
+           src_[ws] == '/')) p = ws; }
     if (p >= src_.size()) return false;
     // guillemet-delimited quote: Q«…» / Q««…»» (double «« matches »», so a single
     // » may appear inside). q interpolates nothing extra; qq interpolates.
@@ -1293,7 +1296,9 @@ std::vector<Token> Lexer::tokenize() {
         if (!out.empty() && (unsigned char)c >= 0x80) {
             Tok lk = out.back().kind;
             bool afterTerm = lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var ||
-                             lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident;
+                             lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident ||
+                             (lk == Tok::Op && (out.back().text == "*" || // Whatever-curry `*²`
+                                                out.back().text == ">>" || out.back().text == "Â»")); // hyper `»²`
             std::string digits;
             if (afterTerm && tryReadSuperscript(digits)) {
                 Token op = make(Tok::Op, "**"); op.spaceBefore = false; out.push_back(op);
