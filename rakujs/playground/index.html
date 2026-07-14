@@ -290,6 +290,41 @@ document.addEventListener('keydown', e => {
 // Safety net: editing the source frees the Run button if it ever got stuck
 // disabled while idle. Never touches the mid-run state.
 codeEl.addEventListener('input', () => { if (!running && ready) runBtn.disabled = false; });
+
+// Tab indents instead of moving focus out of the editor; Shift-Tab outdents.
+// A selection spanning lines indents/outdents every line it touches.
+const INDENT = '  ';
+codeEl.addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  e.preventDefault();
+  const el = codeEl, v = el.value, s = el.selectionStart, en = el.selectionEnd;
+  const hasSel = s !== en;
+
+  // Plain Tab with no selection: just insert an indent at the caret (keeps undo).
+  if (!e.shiftKey && !hasSel) { document.execCommand('insertText', false, INDENT); return; }
+
+  // Otherwise operate on the whole lines the selection touches.
+  const from = v.lastIndexOf('\n', s - 1) + 1;
+  let end = en;
+  if (hasSel && end > from && v[end - 1] === '\n') end--;   // selection ending at a line start doesn't grab that line
+  let to = v.indexOf('\n', end); if (to === -1) to = v.length;
+  const lines = v.slice(from, to).split('\n');
+
+  let firstCut = 0, region;
+  if (e.shiftKey) {
+    region = lines.map((l, i) => {
+      const cut = (l.match(/^( {1,2}|\t)/) || [''])[0].length;
+      if (i === 0) firstCut = cut;
+      return l.slice(cut);
+    }).join('\n');
+  } else {
+    region = lines.map(l => INDENT + l).join('\n');
+  }
+
+  el.value = v.slice(0, from) + region + v.slice(to);
+  if (hasSel) { el.selectionStart = from; el.selectionEnd = from + region.length; }
+  else { el.selectionStart = el.selectionEnd = Math.max(from, s - firstCut); }
+});
 </script>
 </body>
 </html>
