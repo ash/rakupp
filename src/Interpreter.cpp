@@ -6836,6 +6836,8 @@ Value Interpreter::evalCall(Call* c) {
     // operator-call form: infix:<+>(1,2) / postfix:<i>($x) / prefix:<[**]>(2,3,4)
     if (c->name.rfind("infix:<", 0) == 0 && c->name.back() == '>') {
         std::string op = c->name.substr(7, c->name.size() - 8);
+        if (op.size() > 2 && op.front() == '<' && op.back() == '>')
+            op = op.substr(1, op.size() - 2); // infix:<<∈>> — double-angle form
         if (op == "=" && c->args.size() >= 2) { // infix:<=>($x, v) assigns through
             if (Value* lv = lvalue(c->args[0].get())) { *lv = args[1]; return *lv; }
         }
@@ -7583,6 +7585,8 @@ Value Interpreter::eval(Expr* e) {
                 std::string bare = ve->name.substr(1);
                 if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
                     std::string op = bare.substr(7, bare.size() - 8);
+                    if (op.size() > 2 && op.front() == '<' && op.back() == '>')
+                        op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
                     code.code->whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
                     code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {

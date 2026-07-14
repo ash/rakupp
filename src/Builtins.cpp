@@ -2233,6 +2233,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             return Value::integer(civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1);
         }
+        if (m == "daycount") { // days since the MJD epoch (1858-11-17)
+            long long y = fld("year"), mo = fld("month"), d = fld("day");
+            return Value::integer(civilToDays(y, mo, d) + 40587);
+        }
+        if (m == "day-fraction") {
+            double frac = (fld("hour") * 3600.0 + fld("minute") * 60.0 +
+                           (inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0)) / 86400.0;
+            return Value::number(frac);
+        }
+        if (m == "julian-date" || m == "modified-julian-date") {
+            long long y = fld("year"), mo = fld("month"), d = fld("day");
+            double frac = (fld("hour") * 3600.0 + fld("minute") * 60.0 +
+                           (inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0)) / 86400.0;
+            double jd = civilToDays(y, mo, d) + 2440587.5 + frac; // civil epoch 1970-01-01
+            return Value::number(m == "julian-date" ? jd : jd - 2400000.5);
+        }
         if (m == "truncated-to" || m == "earlier" || m == "later") return inv; // best-effort (weeks etc.)
     }
 
@@ -3443,6 +3459,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         auto norm = uniNormalize(utf8cp(inv.toStr()), mode);
         Value out = Value::array(); out.s = "Uni"; for (auto c : norm) out.arr->push_back(Value::integer((long long)c)); return out;
     }
+    if (m == "unimatch") { // method form delegates to the sub
+        ValueList a2; a2.push_back(inv);
+        for (auto& a : args) a2.push_back(a);
+        auto it = builtins_.find("unimatch");
+        if (it != builtins_.end()) return it->second(*this, a2);
+    }
     if (m == "unival" || m == "univals" || m == "uniname") {
         auto univ = [](uint32_t cp) -> Value { long long num, den; if (!uniNumValue(cp, num, den)) return Value::nil(); return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den)); };
         if (m == "univals") { Value out = Value::array(); out.isList = true; for (uint32_t cp : utf8cp(inv.toStr())) out.arr->push_back(univ(cp)); return out; }
@@ -3893,6 +3915,43 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // Pair
+    // low-level access protocol as ordinary methods (xxKEY.t etc.)
+    if (inv.t == VT::Hash && inv.hash) {
+        if (m == "AT-KEY" && !args.empty()) {
+            auto it = inv.hash->find(args[0].toStr());
+            return it != inv.hash->end() ? it->second : Value::any();
+        }
+        if (m == "EXISTS-KEY" && !args.empty())
+            return Value::boolean(inv.hash->count(args[0].toStr()) > 0);
+        if (m == "DELETE-KEY" && !args.empty()) {
+            auto it = inv.hash->find(args[0].toStr());
+            if (it == inv.hash->end()) return Value::any();
+            Value v = it->second; inv.hash->erase(it); return v;
+        }
+        if (m == "ASSIGN-KEY" && args.size() >= 2) {
+            (*inv.hash)[args[0].toStr()] = args[1]; return args[1];
+        }
+    }
+    if (inv.t == VT::Array && inv.arr) {
+        if (m == "AT-POS" && !args.empty()) {
+            long long i = args[0].toInt(), n = (long long)inv.arr->size();
+            if (i < 0) i += n;
+            return (i >= 0 && i < n) ? (*inv.arr)[i] : Value::any();
+        }
+        if (m == "EXISTS-POS" && !args.empty()) {
+            long long i = args[0].toInt(), n = (long long)inv.arr->size();
+            if (i < 0) i += n;
+            return Value::boolean(i >= 0 && i < n);
+        }
+        if (m == "ASSIGN-POS" && args.size() >= 2) {
+            long long i = args[0].toInt();
+            if (i >= 0) {
+                while ((long long)inv.arr->size() <= i) inv.arr->push_back(Value::any());
+                (*inv.arr)[i] = args[1];
+            }
+            return args[1];
+        }
+    }
     if (inv.t == VT::Pair) {
         if (m == "key") return inv.pairKey ? *inv.pairKey : Value::str(inv.s); // object/array keys preserved
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
@@ -4678,6 +4737,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "minmax") {
             long long v = inv.toInt();
             return Value::range(v, v, false, false);
+        }
+        if (m == "expmod" && args.size() >= 2) { // modular exponentiation (bigint-safe)
+            BigInt base = inv.big ? *inv.big : BigInt(inv.toInt());
+            BigInt e = args[0].big ? *args[0].big : BigInt(args[0].toInt());
+            BigInt mod = args[1].big ? *args[1].big : BigInt(args[1].toInt());
+            if (mod.isZero()) return Value::integer(0);
+            auto modOf = [&](const BigInt& x) { BigInt q, r; BigInt::divmod(x, mod, q, r); if (r.sign < 0) r = r + mod; return r; };
+            BigInt result(1), b = modOf(base);
+            // square-and-multiply over e's bits (via halving)
+            BigInt two(2), cur = e;
+            while (!cur.isZero()) {
+                BigInt q, r; BigInt::divmod(cur, two, q, r);
+                if (!r.isZero()) result = modOf(result * b);
+                b = modOf(b * b);
+                cur = q;
+            }
+            return result.fitsLL() ? Value::integer(result.toLL()) : Value::bigint(result);
         }
     }
     // $x.take — the method form of take
@@ -5593,6 +5669,11 @@ void Interpreter::registerBuiltins() {
         if (v.t == VT::Int || v.t == VT::Bool) return (uint32_t)v.toInt();
         auto cps = utf8cp(v.toStr()); if (cps.empty()) { ok = false; return 0; } return cps[0];
     };
+    B["expmod"] = [](Interpreter& I, ValueList& a) -> Value { // expmod($b, $e, $m)
+        if (a.size() < 3) return Value::integer(0);
+        ValueList rest{a[1], a[2]};
+        return I.methodCall(a[0], "expmod", rest);
+    };
     B["unival"] = [univalOf, cpOfArg](Interpreter&, ValueList& a) -> Value {
         if (a.empty() || a[0].t == VT::Type) throw RakuError{Value::typeObj("X::Numeric"), "Cannot get unival"};
         bool ok; uint32_t cp = cpOfArg(a[0], ok); return ok ? univalOf(cp) : Value::nil();
@@ -5614,6 +5695,21 @@ void Interpreter::registerBuiltins() {
         std::string prop = a.size() > 1 ? a[1].toStr() : "General_Category";
         if (prop == "Script" || prop == "sc") return Value::str(uniScript(cp));
         return Value::str(uniGeneralCategory(cp));
+    };
+    // (the Str/Int method form delegates here through the sub-as-method fallback)
+    // unimatch($char, $propval [, $propname]) — property match; a bare value
+    // tests the general category (major class prefix allowed: L matches Lu)
+    B["unimatch"] = [cpOfArg](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::boolean(false);
+        bool ok; uint32_t cp = cpOfArg(a[0], ok); if (!ok) return Value::nil(); // "" → Nil
+        std::string want = a[1].toStr();
+        std::string prop = a.size() > 2 ? a[2].toStr() : "General_Category";
+        std::string got = (prop == "Script" || prop == "sc") ? uniScript(cp)
+                                                             : uniGeneralCategory(cp);
+        if (got == want) return Value::boolean(true);
+        // major-class prefix: unimatch("A", "L") is true for Lu
+        if (want.size() == 1 && !got.empty() && got[0] == want[0]) return Value::boolean(true);
+        return Value::boolean(false);
     };
     B["uc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), true, 0)); };
     B["lc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 0)); };

@@ -360,6 +360,21 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
         }
         InfixInfo in = classifyInfix(cur());
+        // reduce-metaop assign `$x [+]= 6, 7` — just like `+=` (item assignment);
+        // `[` is not an infix, so this must be recognized before the validity break
+        if (!in.valid && cur().kind == Tok::LBracket && cur().spaceBefore &&
+            peek().kind == Tok::Op && peek(2).kind == Tok::RBracket &&
+            peek(3).kind == Tok::Op && peek(3).text == "=" && BP_ASSIGN >= minbp) {
+            advance(); // [
+            std::string op = advance().text;
+            advance(); advance(); // ] =
+            auto as = std::make_unique<Assign>();
+            as->op = op + "=";
+            as->target = std::move(lhs);
+            as->value = parseExpr(BP_ASSIGN);
+            lhs = std::move(as);
+            continue;
+        }
         if (!in.valid || in.lbp < minbp) break;
 
         if (in.isTernary) {
@@ -882,7 +897,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             auto u = std::make_unique<Unary>();
             u->op = "i"; u->postfix = true; u->operand = std::move(base);
             base = std::move(u);
-        } else if (cur().kind == Tok::Op && userPostfix_.count(cur().text)) {
+        } else if ((cur().kind == Tok::Op ||
+                    (cur().kind == Tok::Ident && !cur().spaceBefore)) &&
+                   userPostfix_.count(cur().text)) {
             // user-defined postfix operator:  5!  ==  postfix:<!>(5)
             // (a preceding private-method branch already claimed `!ident`, so we
             //  only reach here when the operator is a genuine postfix)

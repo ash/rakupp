@@ -974,8 +974,13 @@ Token Lexer::lexIdentOrVar() {
         } else if (peek() == '/' || peek() == '!' || peek() == '~') {
             name += advance(); // special vars $/ $! $~
         }
-        // operator-name suffix: &infix:<cmp>  &prefix:<->  &infix:«+»
-        if (peek() == ':' && peek(1) == '<') {
+        // operator-name suffix: &infix:<cmp>  &prefix:<->  &infix:«+»  &infix:<<∈>>
+        if (peek() == ':' && peek(1) == '<' && peek(2) == '<') {
+            name += advance(); name += advance(); name += advance(); // :<<
+            while (!eof() && !(peek() == '>' && peek(1) == '>')) name += advance();
+            if (peek() == '>') { name += advance(); name += advance(); }
+        }
+        else if (peek() == ':' && peek(1) == '<') {
             name += advance(); name += advance(); // :<
             while (!eof() && peek() != '>') name += advance();
             if (peek() == '>') name += advance();
@@ -1138,6 +1143,13 @@ bool Lexer::trySetOp(Token& out) {
     while (p < src_.size() && src_[p] != ')' && (p - pos_) < 8) { inner += src_[p]; p++; }
     if (p < src_.size() && src_[p] == ')' && inners.count(inner)) {
         for (size_t k = pos_; k <= p; k++) advance();
+        // compound set-op assign: `(|)=` `(&)=` … (like ∪=)
+        static const std::set<std::string> combiners = {"|", "&", "-", "^", ".", "+"};
+        if (combiners.count(inner) && peek() == '=' && peek(1) != '=') {
+            advance();
+            out = make(Tok::Op, "(" + inner + ")=");
+            return true;
+        }
         out = make(Tok::Op, "(" + inner + ")");
         return true;
     }
