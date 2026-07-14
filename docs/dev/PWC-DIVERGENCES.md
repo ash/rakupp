@@ -37,6 +37,7 @@ kept as written for that baseline.
 | after batch 10 (`e53f4a9`) | 4,044 | 2,725 | 439 / 159,105 |
 | after batch 11 (`4580aff`) | 4,045 | 2,724 | 439 / 159,119 |
 | after batch 12 (`1827ddd`) | 4,087 | 2,682 | 440 / 159,205 |
+| batch 12, full re-verification | 4,037 | 2,726 | (same binary) |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -86,6 +87,12 @@ Batch 12: element-read itemization (`my @row = @m[0]` keeps the row
 whole — the is-deeply nested-structure class), Z/X at list-infix
 precedence with `Z,` tuples, native-container element types
 (`state int @a` zeros), `*²` superscripts, spaced `/` quote delimiters.
+The re-verification row re-ran the full pass set from scratch (the
+incremental sweeps only re-test mismatches, so a transiently-flapping
+file could stick as "pass"). Result: ~50 of the ledger passes were
+such flaps; exactly one file regressed vs the round start and it
+proved to be hash-order nondeterminism. The verified figures are the
+honest baseline going forward.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
