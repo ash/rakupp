@@ -5804,7 +5804,13 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // zip/cross with an inner op (Z&& / Zand / X~) — resolve the inner via applyBinOp
     if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
         std::string sub = op.substr(1);
-        ValueList a = l.flatten(), bb = r.flatten();
+        // one-level elements: sublists stay whole ((1,0) X (a,b),(c,d) is 2x2, not 2x4)
+        auto oneLevel = [](const Value& v) -> ValueList {
+            if (v.t == VT::Array && v.arr) return *v.arr;
+            if (v.t == VT::Range) return v.flatten();
+            return ValueList{v};
+        };
+        ValueList a = oneLevel(l), bb = oneLevel(r);
         Value out = Value::array(); out.isList = true;
         auto emit = [&](const Value& x, const Value& y) {
             if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));

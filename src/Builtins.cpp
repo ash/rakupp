@@ -5887,6 +5887,7 @@ void Interpreter::registerBuiltins() {
         for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
         return out;
     };
+    B["Slip"] = B["slip"]; // Slip(...) coercer-as-routine
     B["roundrobin"] = [](Interpreter&, ValueList& a) -> Value {
         // interleave the input lists: round 0 = one from each, round 1 = next, … skipping exhausted lists
         std::vector<ValueList> lists;

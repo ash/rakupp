@@ -147,6 +147,11 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
         if (o == "o") { in.valid = true; in.lbp = BP_MUL; return in; } // ASCII alias for ∘ (function composition)
         if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ADD; return in; } // zip / cross
+        {   // stacked zip/cross metaops: XZ / ZZ / XX (optionally with a tight op after)
+            bool allZX = o.size() > 1;
+            for (char c : o) if (c != 'Z' && c != 'X') { allZX = false; break; }
+            if (allZX) { in.valid = true; in.lbp = BP_ADD; return in; }
+        }
         if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
         if (o == "and" || o == "andthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
@@ -421,8 +426,10 @@ ExprPtr Parser::parseExpr(int minbp) {
             continue;
         }
 
-        // zip/cross metaoperator with a trailing tight op: Z=> Z+ X* Zeq ...
-        if (in.op == "Z" || in.op == "X") {
+        // zip/cross metaoperator with a trailing tight op: Z=> Z+ X* Zeq XZ+ ...
+        bool zxStack = !in.op.empty();
+        for (char c : in.op) if (c != 'Z' && c != 'X') { zxStack = false; break; }
+        if (zxStack) {
             std::string meta;
             if (peek().kind == Tok::FatArrow) meta = "=>";
             else if (peek().kind == Tok::Op) meta = peek().text;
