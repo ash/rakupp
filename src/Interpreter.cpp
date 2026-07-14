@@ -3504,13 +3504,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
         env->define("@_", Value::array(args));
     } else {
-        // implicit $_ / @_
+        // implicit $_ / @_ — NB: no implicit $a/$b (Perl-5 style sort vars are
+        // invalid Raku; defining them here shadowed legitimate outer $a/$b in
+        // every paramless block: `map {$_+$a}, @k` doubled elements)
         env->define("$_", args.empty() ? Value::any() : args[0]);
         env->define("@_", Value::array(args));
-        if (!args.empty()) {
-            env->define("$a", args[0]);
-            if (args.size() > 1) env->define("$b", args[1]);
-        }
     }
     auto saved = tctx_.cur;
     Env* savedState = tctx_.curStateEnv;
