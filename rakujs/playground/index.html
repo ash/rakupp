@@ -115,13 +115,20 @@
   textarea#code { resize: none; outline: 0; background: transparent;
                   color: transparent; caret-color: var(--ink); }
   textarea#code::selection { background: rgba(120,140,170,.35); }
-  /* Raku token colours (Solarized accents — legible on both themes) */
-  .t-k  { color: #859900; }                            /* keyword */
-  .t-nb { color: #b58900; }                            /* builtin / type */
-  .t-v  { color: #268bd2; }                            /* variable */
-  .t-s  { color: #2aa198; }                            /* string */
-  .t-m  { color: #d33682; }                            /* number */
-  .t-c  { color: var(--muted); font-style: italic; }   /* comment */
+  /* Token colours — the Visual Studio scheme (VS Code Light+ by default,
+     Dark+ under the dark theme). */
+  .t-k  { color: #0000ff; }   /* keyword */
+  .t-nb { color: #267f99; }   /* builtin / type */
+  .t-v  { color: #001080; }   /* variable */
+  .t-s  { color: #a31515; }   /* string */
+  .t-m  { color: #098658; }   /* number */
+  .t-c  { color: #008000; }   /* comment */
+  html[data-theme-active="dark"] .t-k  { color: #569cd6; }
+  html[data-theme-active="dark"] .t-nb { color: #4ec9b0; }
+  html[data-theme-active="dark"] .t-v  { color: #9cdcfe; }
+  html[data-theme-active="dark"] .t-s  { color: #ce9178; }
+  html[data-theme-active="dark"] .t-m  { color: #b5cea8; }
+  html[data-theme-active="dark"] .t-c  { color: #6a9955; }
   #out { flex: 1; margin: 0; padding: 14px; overflow: auto; white-space: pre-wrap;
          font-family: var(--font-mono); font-size: 13px; }
   #out .err { color: var(--accent); }
@@ -166,8 +173,8 @@
   </section>
 </main>
 <footer>
-  <a href="https://raku.org" target="_blank" rel="noopener">raku.org</a>
-  <a href="https://course.raku.org" target="_blank" rel="noopener">course.raku.org</a>
+  <a href="https://raku.org" target="_blank" rel="noopener">Raku</a>
+  <a href="https://course.raku.org" target="_blank" rel="noopener">Raku Course</a>
   <a href="https://github.com/ash/rakupp/blob/main/rakujs/README.md" target="_blank" rel="noopener">About the playground</a>
 </footer>
 
