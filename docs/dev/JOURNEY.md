@@ -3,6 +3,8 @@
 This is a memoir of how Raku++ (`rakupp`) came to be: not a changelog, but an
 account of the *method* — the loops we ran, the sources we leaned on, and the
 principles we held to while growing a from-scratch Raku implementation in C++.
+For the long-form narrative — the chronological story, round by round, with the
+numbers — see [LONGREAD.md](../../LONGREAD.md).
 
 Raku is a large, expressive language, and for most of its life it has had exactly
 one mature implementation: Rakudo, on the MoarVM/JVM backends. The question that
