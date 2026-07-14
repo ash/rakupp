@@ -7312,7 +7312,17 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (auto& e : iv.flatten()) indices.push_back(e.toInt());
             } else {
                 long long i = iv.toInt();
-                if (base.t == VT::Str) { if (i < 0) i += (long long)base.s.size(); return (i >= 0 && i < (long long)base.s.size()) ? Value::str(std::string(1, base.s[i])) : Value::any(); }
+                if (base.t == VT::Str) {
+                    if (base.hashKind == "Blob" || base.hashKind == "Buf") { // byte view
+                        if (i < 0) i += (long long)base.s.size();
+                        return (i >= 0 && i < (long long)base.s.size())
+                             ? Value::integer((unsigned char)base.s[i]) : Value::any();
+                    }
+                    // a Str is a one-item list: "ab"[0] is "ab"
+                    if (i == 0) return base;
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0"};
+                }
                 if (i < 0) i += n;
                 return (i >= 0 && i < n) ? src[i] : (base.ofType.empty() ? Value::any() : typedElemDefault(base));
             }

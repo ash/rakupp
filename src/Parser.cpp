@@ -620,6 +620,45 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         if ((isOp(">>") || isOp("<<") || isOp("»") || isOp("«")) && peek().kind == Tok::Op && peek().text == ".") {
             advance(); hyperNext = true; continue;
         }
+        // hyper postfix index / power / increment: @w»[0], @n»**2 (from »²), %h{…}»++
+        if ((isOp(">>") || isOp("»")) &&
+            (peek().kind == Tok::LBracket ||
+             (peek().kind == Tok::Op && (peek().text == "**" || peek().text == "++" || peek().text == "--")))) {
+            advance(); // the hyper marker
+            auto mc = std::make_unique<MethodCall>();
+            mc->inv = std::move(base);
+            mc->method = "map";
+            auto blk = std::make_unique<BlockExpr>();
+            auto es = std::make_unique<ExprStmt>();
+            if (isKind(Tok::LBracket)) { // »[i] — index each element
+                advance();
+                auto ix = std::make_unique<Index>();
+                ix->base = std::make_unique<VarExpr>("$_");
+                ix->index = parseExpression();
+                ix->isHash = false;
+                expectKind(Tok::RBracket, "]");
+                es->e = std::move(ix);
+            }
+            else if (cur().text == "**") { // »**N (also »² via the superscript lexer)
+                advance();
+                auto bin = std::make_unique<Binary>();
+                bin->op = "**";
+                bin->lhs = std::make_unique<VarExpr>("$_");
+                bin->rhs = parsePrefix(true);
+                es->e = std::move(bin);
+            }
+            else { // »++ / »-- — mutate each element in place
+                std::string op = advance().text;
+                auto u = std::make_unique<Unary>();
+                u->op = op; u->postfix = true;
+                u->operand = std::make_unique<VarExpr>("$_");
+                es->e = std::move(u);
+            }
+            blk->body.push_back(std::move(es));
+            mc->args.push_back(std::move(blk));
+            base = std::move(mc);
+            continue;
+        }
         // dot-hyper spelling: @a.».method / @a.>>.method — same hyper call
         if (isOp(".") && peek().kind == Tok::Op && (peek().text == "»" || peek().text == ">>") &&
             peek(2).kind == Tok::Op && peek(2).text == ".") {
@@ -955,9 +994,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             std::string t2;
             if (isKind(Tok::Ident) &&
                 (peek().kind == Tok::Var ||
+                 peek().kind == Tok::LBracket || // parameterized: Array[UInt] $x
                  (peek().kind == Tok::Op && peek().text == ":" && peek(2).kind == Tok::Ident &&
                   peek(3).kind == Tok::Var))) {
                 t2 = advance().text;
+                if (isKind(Tok::LBracket)) { // skip the [T] parameter group
+                    int d = 0;
+                    do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); }
+                    while (d > 0 && !isKind(Tok::End));
+                }
                 if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
             }
             if (!isKind(Tok::Var)) error("expected variable in declaration");
