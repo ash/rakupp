@@ -16,7 +16,8 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
-         font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+         font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         height: 100vh; display: flex; flex-direction: column; }
   header { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
            padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
   header h1 { font-size: 16px; margin: 0; font-weight: 650; }
@@ -38,8 +39,8 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   [hidden] { display: none !important; }
   main { display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
-         background: var(--border); height: calc(100vh - 54px); }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; height: auto; } }
+         background: var(--border); flex: 1; min-height: 0; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; } }
   .pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
   .pane > .label { padding: 6px 14px; font-size: 11px; letter-spacing: .08em;
                    text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); }
@@ -52,6 +53,10 @@
   #out .meta { color: var(--muted); }
   .status { padding: 4px 14px; font-size: 12px; color: var(--muted);
             border-top: 1px solid var(--border); }
+  footer { display: flex; flex-wrap: wrap; gap: 18px; padding: 9px 18px;
+           border-top: 1px solid var(--border); background: var(--panel); font-size: 12px; }
+  footer a { color: var(--accent2); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -74,6 +79,11 @@
     <div class="status" id="status"></div>
   </section>
 </main>
+<footer>
+  <a href="https://raku.org" target="_blank" rel="noopener">raku.org</a>
+  <a href="https://course.raku.org" target="_blank" rel="noopener">course.raku.org</a>
+  <a href="https://github.com/ash/rakupp/blob/main/rakujs/README.md" target="_blank" rel="noopener">About the playground</a>
+</footer>
 
 <script src="examples.js"></script>
 <script>
