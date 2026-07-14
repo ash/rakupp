@@ -28,8 +28,8 @@ enum {
 };
 
 static const std::unordered_set<std::string> kAssignOps = {
-    "=", "+=", "-=", "*=", "/=", "~=", "%=", "**=", "//=", "||=", "&&=", "x=", ":=",
-    "div=", "mod=", "gcd=", "lcm=",
+    "=", "+=", "-=", "*=", "/=", "~=", "%=", "**=", "//=", "||=", "&&=", "^^=", "x=", ":=",
+    "div=", "mod=", "gcd=", "lcm=", "xx=", "min=", "max=",
 };
 static const std::unordered_set<std::string> kBlockKeywords = {
     "if", "unless", "while", "until", "for", "else", "elsif", "given", "when",
@@ -929,6 +929,16 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
                 if (!nm.empty()) sigilless_.insert(nm);
                 auto ve = std::make_unique<VarExpr>(nm);
+                ve->declare = true; ve->declScope = scope;
+                list->items.push_back(std::move(ve));
+                if (!matchKind(Tok::Comma)) break;
+                continue;
+            }
+            if (isOp("*") && peek().kind == Tok::Var &&
+                (peek().text == "@" || peek().text == "%")) {
+                // anonymous slurpy `my ($one, *@) = 1..4` — swallow the rest
+                advance(); advance();
+                auto ve = std::make_unique<VarExpr>("");
                 ve->declare = true; ve->declScope = scope;
                 list->items.push_back(std::move(ve));
                 if (!matchKind(Tok::Comma)) break;
@@ -1848,6 +1858,18 @@ ExprPtr Parser::parsePrimary() {
                 auto w = readAngleWords(">");
                 name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
             }
+            else if ((name == "infix" || name == "prefix" || name == "postfix") &&
+                     isOp(":") && !cur().spaceBefore &&
+                     peek().kind == Tok::Op && peek().text.size() > 1 &&
+                     peek().text[0] == '<' && peek().text.compare(0, 2, "<<") != 0 &&
+                     !peek().spaceBefore) {
+                // fused op token: `infix:<=>` lexes `<=>` whole, `infix:<==>` lexes
+                // `<==`+`>` — strip the leading '<' and let readAngleWords close it
+                advance(); // :
+                toks_[pos_].text = cur().text.substr(1);
+                auto w = readAngleWords(">");
+                name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
+            }
             // pseudo-package angle access: `MY::<$x>` / `CORE::<&not>` / `PROCESS::<$IN>`
             // (the lexer folds the trailing `::` into the identifier) — the symbol is
             // resolved through the ordinary scope chain.
@@ -2649,6 +2671,13 @@ StmtPtr Parser::parseSub(bool isMulti) {
         advance(); // :
         std::vector<std::string> w;
         if (isOp("<")) { advance(); w = readAngleWords(">"); }
+        else if (cur().kind == Tok::Op && cur().text.size() > 1 && cur().text[0] == '<' &&
+                 cur().text.compare(0, 2, "<<") != 0) {
+            // fused op token: `sub infix:<=>` lexes `<=>` whole — strip the
+            // leading '<' and let readAngleWords find the close
+            toks_[pos_].text = cur().text.substr(1);
+            w = readAngleWords(">");
+        }
         else if (isOp("<<")) { advance(); w = readAngleWords(">>"); } // sub infix:<<M>>
         else if (cur().kind == Tok::Op && cur().text.size() > 4 &&
                  cur().text.compare(0, 2, "<<") == 0 &&
@@ -3105,6 +3134,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
         if (kw == "given") {
             advance();
             auto g = std::make_unique<GivenStmt>();
+            g->modifier = true; // no implicit block: a `my` in STMT leaks out
             g->topic = parseExpression();
             g->body = wrapStmt(std::move(s));
             return g;
@@ -3121,6 +3151,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             // STMT with X : bind $_ = X, run only if X is defined (without: if undefined)
             advance();
             auto g = std::make_unique<GivenStmt>();
+            g->modifier = true; // no implicit block: a `my` in STMT leaks out
             g->defGuard = (kw == "with") ? 1 : 2;
             g->topic = parseExpression();
             g->body = wrapStmt(std::move(s));
@@ -3143,7 +3174,11 @@ StmtPtr Parser::parseStatementImpl() {
     // statement label:  LABEL: for ...   (ident + a colon with no space before it,
     // so `say :adverb` — space before the ':' — is a listop call, not a label)
     if (cur().kind == Tok::Ident && peek().kind == Tok::Op && peek().text == ":" &&
-        !peek().spaceBefore && !kBlockKeywords.count(cur().text)) {
+        !peek().spaceBefore && !kBlockKeywords.count(cur().text) &&
+        // `infix:<=>(…)` is an operator-name call, not a label —
+        // a tight `<`-starting op token after the colon disqualifies a label
+        !(peek(2).kind == Tok::Op && !peek(2).spaceBefore && !peek(2).text.empty() &&
+          peek(2).text[0] == '<')) {
         std::string lbl = cur().text;
         advance(); advance(); // consume LABEL and ':'
         auto st = parseStatement();

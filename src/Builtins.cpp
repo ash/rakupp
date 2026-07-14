@@ -4098,7 +4098,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 std::vector<long long> c(k);
                 for (long long i = 0; i < k; i++) c[i] = i;
                 while (k == 0 ? (sel.empty()) : true) {
-                    Value combo = Value::array();
+                    Value combo = Value::array(); combo.isList = true; // each combo is a List
                     for (long long i = 0; i < k; i++) combo.arr->push_back(items[c[i]]);
                     out.arr->push_back(combo);
                     if (k == 0) break;
@@ -5830,7 +5830,7 @@ void Interpreter::registerBuiltins() {
         return out;
     };
     B["grep"] = [](Interpreter& I, ValueList& a) -> Value {
-        Value out = Value::array();
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (a.size() >= 2 && a[0].t == VT::Code)
             for (auto& v : toList(a[1])) if (I.callCallable(a[0], {v}).truthy()) out.arr->push_back(v);
         return out;

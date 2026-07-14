@@ -2404,6 +2404,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             Value topic = eval(g->topic.get());
             // with/without definedness guard
             bool skip = (g->defGuard == 1 && !isDefined(topic)) || (g->defGuard == 2 && isDefined(topic));
+            if (g->modifier) { // `EXPR with X`: no implicit block — a `my` in EXPR leaks out
+                auto env = tctx_.cur;
+                bool hadTopic = env->vars.count("$_");
+                Value savedTopic = hadTopic ? env->vars["$_"] : Value::any();
+                env->vars["$_"] = topic;
+                Value r = Value::any();
+                try {
+                    if (skip) { if (g->hasElse) r = execBlock(g->elseBody.get(), env); }
+                    else r = execBlock(g->body.get(), env);
+                } catch (BreakGivenEx& e) { r = e.hasVal ? e.v : Value::any(); }
+                catch (...) { if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_"); throw; }
+                if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
+                return r;
+            }
             auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
             scope->define("$_", topic);
             if (!g->var.empty()) scope->define(g->var, topic);
@@ -4072,6 +4086,10 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     if (binop == "||") { if (!lv->truthy()) *lv = rhs; return sink ? Value::any() : *lv; }
     if (binop == "&&") { if (lv->truthy()) *lv = rhs; return sink ? Value::any() : *lv; }
     if (binop == "//") { if (!isDefined(*lv)) *lv = rhs; return sink ? Value::any() : *lv; }
+    if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
+        *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
+        return sink ? Value::any() : *lv;
+    }
     // `$obj OP= x` reuses a user `sub infix:<OP>` overload (Raku's `is deep` also
     // auto-generates OP= from OP), falling back to the built-in operator.
     bool overloaded = false;
@@ -6707,6 +6725,9 @@ Value Interpreter::evalCall(Call* c) {
     // operator-call form: infix:<+>(1,2) / postfix:<i>($x) / prefix:<[**]>(2,3,4)
     if (c->name.rfind("infix:<", 0) == 0 && c->name.back() == '>') {
         std::string op = c->name.substr(7, c->name.size() - 8);
+        if (op == "=" && c->args.size() >= 2) { // infix:<=>($x, v) assigns through
+            if (Value* lv = lvalue(c->args[0].get())) { *lv = args[1]; return *lv; }
+        }
         return args.size() >= 2 ? applyBinOp(op, args[0], args[1])
              : args.size() == 1 ? args[0] : Value::any();
     }
