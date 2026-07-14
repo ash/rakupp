@@ -2192,6 +2192,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             long long y = fld("year");
             return Value::boolean((y % 4 == 0 && y % 100 != 0) || y % 400 == 0);
         }
+        if (m == "days-in-month" || m == "last-date-in-month") {
+            long long y = fld("year"), mo = fld("month");
+            static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+            long long dim = (mo >= 1 && mo <= 12) ? mlen[mo - 1] : 30;
+            if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) dim = 29;
+            if (m == "days-in-month") return Value::integer(dim);
+            return makeDate(civilToDays(y, mo, dim)); // last-date-in-month → a Date
+        }
+        if (m == "day-of-year") {
+            long long y = fld("year"), mo = fld("month"), d = fld("day");
+            return Value::integer(civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1);
+        }
         if (m == "truncated-to" || m == "earlier" || m == "later") return inv; // best-effort (weeks etc.)
     }
 
@@ -3713,6 +3725,121 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "sprintf" && (inv.t == VT::Str || inv.t == VT::Match))
         return Value::str(doSprintf(inv.toStr(), args, langRev_));
+    // Str.parse-base($radix) — "ff".parse-base(16) == 255; fractions give a Rat
+    if (m == "parse-base" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
+        std::string s = inv.toStr(); long long base = a0().toInt();
+        if (base < 2 || base > 36) return Value::typeObj("Failure");
+        size_t i2 = 0; bool neg = false;
+        if (i2 < s.size() && (s[i2] == '-' || s[i2] == '+')) { neg = s[i2] == '-'; i2++; }
+        auto digval = [&](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+            return -1;
+        };
+        BigInt whole(0); bool any = false;
+        for (; i2 < s.size() && s[i2] != '.'; i2++) {
+            if (s[i2] == '_') continue;
+            int d = digval(s[i2]);
+            if (d < 0 || d >= base) return Value::typeObj("Failure");
+            whole = whole * BigInt(base) + BigInt(d); any = true;
+        }
+        BigInt fnum(0), fden(1);
+        if (i2 < s.size() && s[i2] == '.') {
+            for (i2++; i2 < s.size(); i2++) {
+                if (s[i2] == '_') continue;
+                int d = digval(s[i2]);
+                if (d < 0 || d >= base) return Value::typeObj("Failure");
+                fnum = fnum * BigInt(base) + BigInt(d); fden = fden * BigInt(base); any = true;
+            }
+        }
+        if (!any) return Value::typeObj("Failure");
+        if (fden.fitsLL() && fden.toLL() == 1) {
+            if (neg) whole = -whole;
+            return Value::bigint(whole);
+        }
+        BigInt num = whole * fden + fnum;
+        if (neg) num = -num;
+        return Value::rat(std::move(num), std::move(fden));
+    }
+    // Str.indices($needle, :overlap) — every start position of the substring
+    if (m == "indices" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
+        std::string s = inv.toStr(), needle = a0().toStr();
+        bool overlap = false;
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "overlap" && a.pairVal && a.pairVal->truthy()) overlap = true;
+        Value out = Value::array(); out.isList = true;
+        if (!needle.empty())
+            for (size_t p = s.find(needle); p != std::string::npos;
+                 p = s.find(needle, p + (overlap ? 1 : needle.size())))
+                out.arr->push_back(Value::integer((long long)p));
+        return out;
+    }
+    // Str.chop($n = 1)
+    if (m == "chop" && (inv.t == VT::Str || inv.t == VT::Match)) {
+        auto cps = utf8cp(inv.toStr());
+        long long n = args.empty() ? 1 : a0().toInt();
+        if (n < 0) n = 0;
+        std::string r;
+        for (size_t k = 0; k + (size_t)n < cps.size(); k++) r += cpToUtf8(cps[k]);
+        return Value::str(r);
+    }
+    // numeric .narrow — smallest type that holds the value exactly
+    if (m == "narrow" && inv.isNumeric()) {
+        if (inv.t == VT::Rat && inv.ratN && inv.ratD && inv.ratD->fitsLL() && inv.ratD->toLL() == 1)
+            return Value::bigint(*inv.ratN);
+        if (inv.t == VT::Num && !std::isinf(inv.n) && !std::isnan(inv.n) && inv.n == (long long)inv.n)
+            return Value::integer((long long)inv.n);
+        return inv;
+    }
+    // .UInt — Int coercion that fails on negatives
+    if (m == "UInt") {
+        long long v = inv.toInt();
+        if (v < 0) return Value::typeObj("Failure");
+        return Value::integer(v);
+    }
+    // Baggy.kxxv — every key repeated by its weight
+    if (m == "kxxv" && inv.t == VT::Hash && inv.hash &&
+        (inv.hashKind == "Bag" || inv.hashKind == "BagHash" || inv.hashKind == "Set" || inv.hashKind == "SetHash")) {
+        Value out = Value::array(); out.isList = true;
+        for (auto& kv : *inv.hash) {
+            long long n = inv.hashKind[0] == 'S' ? 1 : kv.second.toInt();
+            for (long long k = 0; k < n; k++) out.arr->push_back(Value::str(kv.first));
+        }
+        return out;
+    }
+    // Rat.base-repeating($radix) — (non-repeating part, repeating cycle)
+    if (m == "base-repeating" && inv.t == VT::Rat && inv.ratN && inv.ratD && !args.empty()) {
+        long long base = a0().toInt();
+        if (base < 2 || base > 36) return Value::typeObj("Failure");
+        auto digchr = [](int d) -> char { return d < 10 ? char('0' + d) : char('A' + d - 10); };
+        BigInt n = inv.ratN->abs(), d = inv.ratD->abs();
+        std::string sign = inv.ratN->sign < 0 ? "-" : "";
+        BigInt q, r; BigInt::divmod(n, d, q, r);
+        std::string whole = sign + q.toString(); // NB: decimal digits of the WHOLE part are base-10 for base 10 only
+        if (base != 10) { // re-render the whole part in the target base
+            BigInt w = q; std::string ws;
+            if (w.isZero()) ws = "0";
+            while (!w.isZero()) { BigInt q2, r2; BigInt::divmod(w, BigInt(base), q2, r2); ws.insert(ws.begin(), digchr((int)r2.toLL())); w = q2; }
+            whole = sign + ws;
+        }
+        std::string fracDigits, cycle;
+        std::map<std::string, size_t> seen; // remainder -> position in fracDigits
+        BigInt rem = r;
+        while (!rem.isZero() && fracDigits.size() < 10000) {
+            std::string key = rem.toString();
+            auto it = seen.find(key);
+            if (it != seen.end()) { cycle = fracDigits.substr(it->second); fracDigits = fracDigits.substr(0, it->second); break; }
+            seen[key] = fracDigits.size();
+            rem = rem * BigInt(base);
+            BigInt q2, r2; BigInt::divmod(rem, d, q2, r2);
+            fracDigits += digchr((int)q2.toLL());
+            rem = r2;
+        }
+        Value out = Value::array(); out.isList = true;
+        out.arr->push_back(Value::str(whole + "." + fracDigits));
+        out.arr->push_back(Value::str(cycle));
+        return out;
+    }
 
     // Pair
     if (inv.t == VT::Pair) {
@@ -4442,6 +4569,28 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (auto& x : args) a.push_back(x);
             return it->second(*this, a);
         }
+    }
+    // Any.* single-item list semantics: a scalar answers the list-y methods
+    // as a one-element list (Rakudo's Any fallbacks): 5.sum == 5, "x".join eq "x"
+    if (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
+        inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Match) {
+        if (m == "join") return Value::str(inv.toStr());
+        if (m == "sum") return inv.isNumeric() ? inv : Value::number(inv.toNum());
+        if (m == "min" || m == "max") return inv;
+        if (m == "minmax") {
+            long long v = inv.toInt();
+            return Value::range(v, v, false, false);
+        }
+    }
+    // $x.take — the method form of take
+    if (m == "take") {
+        if (!tctx_.gatherStack.empty()) {
+            auto& coll = *tctx_.gatherStack.back();
+            coll.push_back(inv);
+            size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
+            if (lim && coll.size() >= lim) throw StopGatherEx{};
+        }
+        return inv;
     }
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
@@ -5669,6 +5818,38 @@ void Interpreter::registerBuiltins() {
         // sink EXPR / sink { … }: evaluate for side effects, discard the value
         if (!a.empty() && a[0].t == VT::Code) { ValueList none; I.callCallable(a[0], none); }
         return Value::nil();
+    };
+    // sub forms that delegate to the same-named method, invocant first
+    B["splice"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::nil();
+        Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(inv, "splice", rest);
+    };
+    B["zip"] = [](Interpreter& I, ValueList& a) -> Value { // n-ary zip, like [Z]
+        ValueList items;
+        Value with;
+        for (auto& v : a) {
+            if (v.t == VT::Pair && v.namedArg && v.s == "with" && v.pairVal) { with = *v.pairVal; continue; }
+            items.push_back(v);
+        }
+        Value z = I.applyReduce("Z", items);
+        if (with.t == VT::Code && z.arr) { // zip(:with(&f)) folds each tuple with &f
+            Value out = Value::array(); out.isList = true;
+            for (auto& t : *z.arr) {
+                ValueList parts = t.t == VT::Array && t.arr ? *t.arr : ValueList{t};
+                Value acc = parts.empty() ? Value::any() : parts[0];
+                for (size_t k = 1; k < parts.size(); k++) acc = I.callCallable(with, {acc, parts[k]});
+                out.arr->push_back(acc);
+            }
+            return out;
+        }
+        return z;
+    };
+    B["classify"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::makeHash();
+        Value mapper = a[0];
+        Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
+        ValueList ma{mapper}; return I.methodCall(list, "classify", ma);
     };
     B["quietly"] = [](Interpreter& I, ValueList& a) -> Value { // suppress warn() output; run block/return arg
         if (!a.empty() && a[0].t == VT::Code) {

@@ -17,16 +17,31 @@ unknown programs on macOS produces occasional *unkillable* (UE-state) children
 cannot reap, and streams results incrementally (`results.jsonl`) so a wedge
 loses nothing.
 
-**STATUS (fix round, batches 1–3 in `b504561`): 2,663 → 3,295 solutions
-byte-identical (+632); mismatches 4,153 → 3,495.** Landed: unit-form MAIN
-body/signature binding, required-named + where-constraint dispatch
-(named & slurpy), Cool.printf/sprintf, no fabricated trailing test plan,
-÷=/×=/−=, `( stmt; stmt )` sequences, `.».method`, `<<qww>>`, `:0x` pairs,
-typed declaration-list members, `so */not *` currying, `.first` Nil/:k/:end,
-empty .max/.min = ∓Inf. Each batch passed the zero-regression Roast gate
-(latest: 433 full / 158,067). Next front: the 1,339 output-value diffs,
-660 in-solution test failures, ~430 parse remainder, ~130 hangs, and the
-method-gap list below.
+## Fix-round progress
+
+Every batch passes the zero-regression Roast gate (full run, no pass-list
+drops, benchmarks equal-or-faster) before it counts here. The **original**
+row is the baseline this document describes; the cluster sections below are
+kept as written for that baseline.
+
+| sweep | byte-identical | mismatch | roast gate |
+|---|---:|---:|---|
+| **original (2026-07-14)** | **2,663** | **4,153** | 433 / 157,905 |
+| after batches 1–3 (`b504561`) | 3,295 | 3,495 | 433 / 158,067 |
+| after batch 4 | 3,458 | 3,325 | 434 / 158,225 |
+
+Batches 1–3: unit-form MAIN body/signature binding, required-named +
+where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
+fabricated trailing test plan, ÷=/×=/−=, `( stmt; stmt )` sequences,
+`.».method`, `<<qww>>`, `:0x` pairs, typed declaration-list members,
+`so */not *` currying, `.first` Nil/:k/:end, empty .max/.min = ∓Inf.
+Batch 4: `+ints` sigilless slurpies, Any single-item list semantics
+(scalar .sum/.join/.min/.max/.minmax), `$x.take`, Str.parse-base/.indices/
+.chop(n)/.narrow/.UInt, Baggy.kxxv, Rat.base-repeating, Date
+.days-in-month/.last-date-in-month/.day-of-year, sub forms splice/zip
+(:with)/classify, Array()/List()/Set()/Bag()/Mix() as call-position
+constructors. Next front: output-value diffs, the 660 in-solution test
+failures, the `Confused` parse cascade, hang triage.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both

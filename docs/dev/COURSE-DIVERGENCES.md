@@ -12,12 +12,18 @@ Blocks that do not run under Rakudo (theory fragments, output samples,
 incomplete code) were ignored, as were snippets whose Rakudo output is not
 reproducible across two runs (nondeterminism).
 
-**STATUS after the fix round (2026-07-13): 116 → 12 deduped mismatches**
-(148 → 14 raw), of which 5 are harness artifacts and 6 are prompt-EOF
-nuances — one real feature gap remains (the Iterator role).
-Fixed across two commits (round 1 `3324752`, round 2 follows this file).
-Every batch passed the zero-regression gate: full Roast run with no
-pass-list drops, benchmarks equal-or-faster.
+## Fix-round progress
+
+| sweep | deduped mismatches | raw | notes |
+|---|---:|---:|---|
+| **original (2026-07-13)** | **116** | **148** | the baseline this document describes |
+| after round 1 (`3324752`) | ~32 | 40 | containers, gists, ops, quoting adverbs |
+| after round 2 (`a84ed9a`) | 12 | 14 | the post-GLR list batch + regex/date fixes |
+
+Of the 12 remaining, 5 are harness artifacts and 6 are prompt-EOF nuances —
+one real feature gap remains (the Iterator role). Every batch passed the
+zero-regression gate: full Roast run with no pass-list drops, benchmarks
+equal-or-faster.
 
 ## Fixed (30 of the 34 findings)
 

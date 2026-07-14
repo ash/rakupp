@@ -2334,6 +2334,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!matchKind(Tok::Comma)) break;
             continue;
         }
+        // sigilless slurpy: `+ints` — binds the list under the bare name
+        if (p.slurpy && isKind(Tok::Ident)) {
+            p.name = advance().text;
+            p.sigil = '\\';
+            sigilless_.insert(p.name);
+            params.push_back(std::move(p));
+            if (!matchKind(Tok::Comma)) break;
+            continue;
+        }
         if (matchOp("\\")) {
             // sigilless capture parameter: \a  -> bound under bare name
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;

@@ -6600,6 +6600,27 @@ Value Interpreter::evalCall(Call* c) {
     // coercion-type functions: Str(x), Int(x), Num(x), Bool(x), … and the no-arg
     // defaults Str()=='' / Int()==0 / Num()==0e0 / Bool()==False.
     {
+        // container constructors called as functions: Array(...)/Set(...)/Bag(...)/Mix(...)
+        // (the bareword without a call stays the type object)
+        if ((c->name == "Array" || c->name == "List" || c->name == "Set" ||
+             c->name == "Bag" || c->name == "Mix") && !args.empty()) {
+            if (c->name == "Array" || c->name == "List") {
+                Value out = Value::array();
+                out.isList = (c->name == "List");
+                for (auto& v : args) {
+                    if ((v.t == VT::Array || v.t == VT::Range) && !v.itemized)
+                        for (auto& x : v.flatten()) out.arr->push_back(x);
+                    else out.arr->push_back(v);
+                }
+                return out;
+            }
+            ValueList flat;
+            for (auto& v : args) {
+                if (v.t == VT::Array || v.t == VT::Range) for (auto& x : v.flatten()) flat.push_back(x);
+                else flat.push_back(v);
+            }
+            return methodCall(Value::list(flat), c->name, ValueList{});
+        }
         static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
         if (coerce.count(c->name)) {
             if (args.empty())
