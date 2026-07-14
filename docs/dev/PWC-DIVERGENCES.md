@@ -33,6 +33,7 @@ kept as written for that baseline.
 | after batch 6 (`1fe6351`) | 3,525 | 3,246 | 437 / 158,267 |
 | after batch 7 (`b90ae70`) | 3,811 | 2,960 | 437 / 158,277 |
 | after batch 8 (`dfa43f8`) | 3,907 | 2,863 | 438 / 159,043 |
+| after batch 9 (`da81842`) | 3,931 | 2,839 | 439 / 159,076 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -68,6 +69,10 @@ Batch 8 (parse cluster + iteration): statement-condition brace rule
 autoviv, `for %h`/`for set()` → Pairs, push-autoviv, `#|[…]` multi-line
 declarator comments, the full bitwise/shift family (`+<` `+>` and all
 compound assigns), `[\,]`, `start =>` pairs, scalar .Array/.List.
+Batch 9: infix:<=>-family calls (label/fused-token/assign-through),
+with/given statement modifiers run without an implicit block (the
+"Variable not declared" class), anon slurpy decls, `^^=`, sub-grep →
+Seq, combinations inners are Lists.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
