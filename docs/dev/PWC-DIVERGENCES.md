@@ -142,13 +142,13 @@ The remaining 2,707 mismatches, top clusters:
 | 40 | "Variable not declared" | residual scoping shapes |
 | 20 | Rakudo dies, we succeed | module-deep death paths (was 371 at baseline) |
 
-**Author concentration is the current leverage.** Six authors account for
-51% of the remainder — athanasius (399), 0rir (262), mark-anderson (262),
-feng-chang (211), laurent-rosenfeld (143), bruce-gray (127). Each reuses
-one template across hundreds of solutions, layering 2–3 divergences per
-file. The working method: run a first-divergence sampler over one author,
-fix the top recurring shape corpus-wide, re-sweep, repeat. Batch 15 peeled
-athanasius's first stratum ($*USAGE / MAIN dispatch); his next strata are
+**Author concentration is the current leverage.** Six prolific authors
+account for 51% of the remainder (399, 262, 262, 211, 143 and 127 files
+respectively). Each reuses one personal template across hundreds of
+solutions, layering 2–3 divergences per file. The working method: run a
+first-divergence sampler over one author's set, fix the top recurring
+shape corpus-wide, re-sweep, repeat. Batch 15 peeled the first stratum of
+the largest set ($*USAGE / MAIN dispatch); the next strata there are
 prompt-echo ordering and date formatting.
 
 ## Clusters, by leverage (original baseline analysis)
@@ -238,9 +238,9 @@ one-to-four-file gaps (see pwc-buckets.txt).
 
 1. The 107-file `Usage:` cluster — audit the batch-15 MAIN bind check
    against argv shapes Rakudo accepts (optional/coercion/default params).
-2. Author strata, biggest first: sample athanasius / 0rir /
-   mark-anderson with the first-divergence probe, fix the top shape,
-   re-sweep after each batch.
+2. Author strata, biggest sets first: sample one author's files with
+   the first-divergence probe, fix the top shape, re-sweep after each
+   batch.
 3. Hang triage (105) with the process-group runner; expect per-file
    causes (lazy self-reference, FatRat cost).
 4. Parse tail (~180) — a few files per construct.
