@@ -1,0 +1,919 @@
+  662  TEST FAIL inside solution (assert diff)   e.g. challenge-014/kevin-colyer/perl6/ch-1.p6
+  416  MAIN SIG: unit-form signature vars unbound   e.g. challenge-001/arne-sommer/perl6/ch-1.p6
+  312  RC: rakudo dies, rakupp succeeds (leniency / old P6 code)   e.g. challenge-004/jo-christian-oterhals/perl6/ch-2.p6
+  250  METHOD GAP: No such method 'printf'   e.g. challenge-026/athanasius/perl6/ch-1.p6
+  191  MAIN DISPATCH: multi MAIN(:$named!) not skipped   e.g. challenge-080/wambash/raku/ch-1.raku
+  155  TEST: trailing auto-plan emitted where Rakudo prints none   e.g. challenge-012/kevin-colyer/perl6/ch-1.p6
+  126  HANG (rakupp timeout)   e.g. challenge-001/antonio-gamiz/perl6/ch-1.p6
+  112  PARSE: expected ) (got …)   e.g. challenge-003/doug-schrag/perl6/ch-1.p6
+  109  PARSE: unexpected operator in term position (got …)   e.g. challenge-002/mark-senn/perl6/ch-1.p6
+  107  PARSE: Confused (got …)   e.g. challenge-021/simon-proctor/perl6/ch-1.p6
+  101  GIST: (..) vs [..] or similar list/array   e.g. challenge-020/stuart-little/raku/ch-2.p6
+   42  METHOD GAP: No such method 'join'   e.g. challenge-003/ryan-thompson/perl6/ch-2.p6
+   32  PARSE: expected method name after '.' (got …)   e.g. challenge-002/ruben-westerberg/perl6/ch-2.p6
+   29  NOISE: 'Potential difficulties' on stderr treated as error   e.g. challenge-002/laurent-rosenfeld/perl6/ch-1.p6
+   29  PARSE: expected { (got …)   e.g. challenge-035/jaldhar-h-vyas/perl6/ch-1.p6
+   27  NUMERIC: Inf/empty-reduce defaults   e.g. challenge-017/fjwhittle/perl6/ch-2.p6
+   23  METHOD GAP: No such method 'parse-base'   e.g. challenge-002/0rir/raku/ch-2.raku
+   22  METHOD GAP: No such method 'sprintf'   e.g. challenge-022/athanasius/perl6/ch-1.p6
+   20  DIES: Target is not assignable   e.g. challenge-025/ruben-westerberg/perl6/ch-2.p6
+   18  SUB GAP: Undefined routine 'splice'   e.g. challenge-048/roger-bell-west/raku/ch-1.p6
+   17  SUB GAP: Undefined routine 'zip'   e.g. challenge-040/colin-crain/perl6/ch-1.p6
+   16  METHOD GAP: No such method 'key'   e.g. challenge-072/colin-crain/raku/ch-2.raku
+   16  PARSE: expected } (got …)   e.g. challenge-100/athanasius/raku/ch-2.raku
+   15  PARSE: expected ] (got …)   e.g. challenge-006/simon-proctor/perl6/ch-1.p6
+   15  METHOD GAP: No such method 'sum'   e.g. challenge-020/arne-sommer/perl6/ch-2.p6
+   15  METHOD GAP: No such method 'take'   e.g. challenge-030/ozzy/perl6/ch-2.p6
+   15  PARSE: expected variable in declaration (got …)   e.g. challenge-073/ben-davies/raku/ch-2.raku
+   15  SUB GAP: Undefined routine 'Array'   e.g. challenge-176/cheok-yin-fung/raku/ch-1.raku
+   13  NUMERIC formatting/precision   e.g. challenge-004/arne-sommer/perl6/ch-1.p6
+   12  METHOD GAP: No such method 'new'   e.g. challenge-027/stuart-little/raku/ch-2.p6
+   11  METHOD GAP: No such method 'last-date-in-month'   e.g. challenge-013/stuart-little/raku/ch-1.p6
+   11  METHOD GAP: No such method 'push'   e.g. challenge-036/ulrich-rieke/perl6/ch-2.p6
+   11  SUB GAP: Undefined routine 'Set'   e.g. challenge-094/roger-bell-west/raku/ch-1.p6
+   10  METHOD GAP: No such method 'days-in-month'   e.g. challenge-013/kevin-colyer/perl6/ch-1.p6
+   10  DIES-MID: Target is not assignable   e.g. challenge-018/stuart-little/raku/ch-2.p6
+   10  METHOD GAP: No such method 'minmax'   e.g. challenge-092/aaronreidsmith/raku/ch-2.raku
+    9  METHOD GAP: No such method 'indices'   e.g. challenge-001/sean-meininger/perl6/ch-1.p6
+    9  GIST: Nil vs (Any)   e.g. challenge-018/mark-senn/perl6/ch-1.p6
+    9  METHOD GAP: No such method 'base-repeating'   e.g. challenge-021/ruben-westerberg/perl6/ch-1.p6
+    9  METHOD GAP: No such method 'kxxv'   e.g. challenge-124/bruce-gray/raku/ch-2.raku
+    8  METHOD GAP: No such method 'UInt'   e.g. challenge-069/athanasius/raku/ch-1.raku
+    8  METHOD GAP: No such method 'narrow'   e.g. challenge-116/mark-anderson/raku/ch-2.raku
+    7  OUTPUT DIFF: 'Usage:' vs '(Any)'   e.g. challenge-010/simon-proctor/perl6/ch-1.p6
+    7  OUTPUT DIFF: '1' vs '0'   e.g. challenge-115/polettix/raku/ch-1.raku
+    7  METHOD GAP: No such method 'Any'   e.g. challenge-188/0rir/raku/ch-2.raku
+    6  DIES: Type Array does not support associative indexing   e.g. challenge-053/mohammad-anwar/raku/ch-1a.p6
+    6  DIES: Too many levels of recursion   e.g. challenge-070/colin-crain/raku/ch-2.raku
+    6  METHOD GAP: No such method 'chop'   e.g. challenge-119/richard-park/raku/ch-1.raku
+    5  OUTPUT DIFF: '1' vs ''   e.g. challenge-001/alex-daniel/perl6/ch-2.p6
+    5  METHOD GAP: No such method 'value'   e.g. challenge-036/ruben-westerberg/perl6/ch-2.p6
+    5  SUB GAP: Undefined routine 'classify'   e.g. challenge-059/laurent-rosenfeld/raku/ch-1a.p6
+    5  METHOD GAP: No such method 'Array'   e.g. challenge-064/stuart-little/raku/ch-1.p6
+    5  OUTPUT DIFF: '0' vs '1'   e.g. challenge-070/ash/raku/ch-2.raku
+    5  DIES: ===WARNING=== Module XML::Writer parse error at line N: expe   e.g. challenge-124/mark-anderson/raku/ch-1.raku
+    5  OUTPUT DIFF: 'Output: 2' vs 'Output: 0'   e.g. challenge-192/robert-dicicco/raku/ch-1.raku
+    5  SUB GAP: Undefined routine 'Bag'   e.g. challenge-249/barroff/raku/ch-1.p6
+    5  OUTPUT DIFF: 'True' vs 'False'   e.g. challenge-266/luca-ferrari/raku/ch-2.raku
+    4  METHOD GAP: No such method 'day-of-week'   e.g. challenge-019/jo-christian-oterhals/perl6/ch-1.p6
+    4  PARSE: expected variable after declarator (got …)   e.g. challenge-023/athanasius/perl6/ch-1.p6
+    4  OUTPUT DIFF: '0' vs '(Any)'   e.g. challenge-053/stuart-little/raku/ch-1.p6
+    4  OUTPUT DIFF: '2' vs '0'   e.g. challenge-072/jason-messer/raku/ch-1.p6
+    4  SUB GAP: Undefined routine 'val'   e.g. challenge-078/athanasius/raku/ch-2.raku
+    4  OUTPUT DIFF: 'ok 1 - ' vs '0'   e.g. challenge-091/aaronreidsmith/raku/ch-2.raku
+    4  METHOD GAP: No such method 'set'   e.g. challenge-092/athanasius/raku/ch-1.raku
+    4  METHOD GAP: No such method 'pairup'   e.g. challenge-109/maxim-kolodyazhny/raku/ch-2.raku
+    4  METHOD GAP: No such method 'week-number'   e.g. challenge-137/ash/raku/ch-1.raku
+    4  SUB GAP: Undefined routine 'Inf'   e.g. challenge-146/wambash/raku/ch-1.raku
+    4  DIES-MID: Died   e.g. challenge-219/bruce-gray/raku/ch-2.raku
+    4  DIES-MID: Cannot resolve caller task(); no matching multi candidate   e.g. challenge-278/0rir/raku/ch-2.raku
+    4  DIES: Rakudo version is too old; need max with named args.   e.g. challenge-289/0rir/raku/ch-1.raku
+    3  METHOD GAP: No such method 'base'   e.g. challenge-002/ryan-thompson/perl6/ch-2.p6
+    3  METHOD GAP: No such method 'max'   e.g. challenge-040/arne-sommer/perl6/ch-1.p6
+    3  DIES: Failed to open file r	True: no such file or directory   e.g. challenge-045/jaldhar-h-vyas/raku/ch-2.p6
+    3  OUTPUT DIFF: '100' vs '110'   e.g. challenge-047/kevin-colyer/raku/ch-2.p6
+    3  DIES-MID: Too many levels of recursion   e.g. challenge-055/noud/raku/ch-2.p6
+    3  OUTPUT DIFF: '10' vs ''   e.g. challenge-060/markus-holzer/raku/ch-2.raku
+    3  METHOD GAP: No such method 'isa'   e.g. challenge-071/jeongoon/raku/ch-2.raku
+    3  OUTPUT DIFF: '2' vs '1'   e.g. challenge-077/jason-messer/raku/ch-2.p6
+    3  METHOD GAP: No such method 'map'   e.g. challenge-081/wambash/raku/ch-1.raku
+    3  METHOD GAP: No such method 'end'   e.g. challenge-088/laurent-rosenfeld/raku/ch-2.raku
+    3  DIES: Usage:   e.g. challenge-093/feng-chang/raku/ch-1.raku
+    3  METHOD GAP: No such method 'roots'   e.g. challenge-105/luca-ferrari/raku/ch-1.p6
+    3  SUB GAP: Undefined routine 'parse-base'   e.g. challenge-114/stuart-little/raku/ch-2.p6
+    3  PARSE: expected parameter variable (got …)   e.g. challenge-129/polettix/raku/ch-2.raku
+    3  METHOD GAP: No such method 'daycount'   e.g. challenge-132/roger-bell-west/raku/ch-1.p6
+    3  OUTPUT DIFF: '2' vs ''   e.g. challenge-147/mark-senn/raku/ch-1.raku
+    3  METHOD GAP: No such method 'samemark'   e.g. challenge-186/arne-sommer/raku/ch-2.raku
+    3  METHOD GAP: No such method 'day-of-year'   e.g. challenge-187/arne-sommer/raku/ch-1.raku
+    3  DIES-MID: Undefined routine ''   e.g. challenge-230/athanasius/raku/ch-2.raku
+    3  OUTPUT DIFF: 'ok 1 - Example 1' vs 'ok 1 - Example 1  '   e.g. challenge-254/athanasius/raku/ch-1.raku
+    3  OUTPUT DIFF: 'Output: 1' vs 'Output: 0'   e.g. challenge-275/packy-anderson/raku/ch-1.raku
+    3  DIES: ===WARNING=== Module JSON::Fast parse error at line N: unexp   e.g. challenge-312/mark-anderson/raku/ch-1.raku
+    2  OUTPUT DIFF: 'Modified string: PErl WEEkly ChallEn' vs 'Modified string: Perl Weekly Challen'   e.g. challenge-001/ruben-westerberg/perl6/ch-1.p6
+    2  OUTPUT DIFF: '' vs '0'   e.g. challenge-002/nick-logan/perl6/ch-2.p6
+    2  DIES: Attempt to divide by zero when coercing Rational to Str   e.g. challenge-004/doug-schrag/perl6/ch-1.p6
+    2  OUTPUT DIFF: '12769' vs '(Any)'   e.g. challenge-009/daniel-mita/perl6/ch-1.p6
+    2  OUTPUT DIFF: 'F/C cross over at -40' vs ''   e.g. challenge-011/aaron-sherman/perl6/ch-1.p6
+    2  OUTPUT DIFF: '30031' vs '(Any)'   e.g. challenge-012/aaron-sherman/perl6/ch-1.p6
+    2  OUTPUT DIFF: '30031' vs ''   e.g. challenge-012/mark-senn/perl6/ch-1.p6
+    2  PARSE: expected variable in named-parameter alias (got …)   e.g. challenge-012/stuart-little/raku/ch-2.p6
+    2  OUTPUT DIFF: '(0 0 1 0 2 0 2 2 1 6 0 5 0 2 6 5 4 0' vs '(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'   e.g. challenge-014/noud/perl6/ch-1.p6
+    2  DIES: Cannot resolve caller A(); no matching multi candidate   e.g. challenge-017/joelle-maslak/perl6/ch-1.p6
+    2  METHOD GAP: No such method 'append'   e.g. challenge-018/jaldhar-h-vyas/perl6/ch-2.p6
+    2  METHOD GAP: No such method 'shift'   e.g. challenge-018/kevin-colyer/perl6/ch-2.p6
+    2  DIES-MID: Cannot modify a readonly value   e.g. challenge-021/laurent-rosenfeld/perl6/ch-2.p6
+    2  OUTPUT DIFF: '5 11' vs ''   e.g. challenge-022/joelle-maslak/perl6/ch-1.p6
+    2  SUB GAP: Undefined routine 'comb'   e.g. challenge-022/ruben-westerberg/perl6/ch-2.p6
+    2  OUTPUT DIFF: '' vs 'sub { ... }         0'   e.g. challenge-032/laurent-rosenfeld/perl6/ch-1.p6
+    2  METHOD GAP: No such method 'keys'   e.g. challenge-033/kevin-colyer/perl6/ch-1.p6
+    2  OUTPUT DIFF: '' vs ''   e.g. challenge-035/daniel-mita/perl6/ch-1.p6
+    2  OUTPUT DIFF: 'ciphertext: 101010101110001010111011' vs 'ciphertext: . . . . -000. . - - -000'   e.g. challenge-035/mark-senn/perl6/ch-1.p6
+    2  METHOD GAP: No such method 'polymod'   e.g. challenge-037/kevin-colyer/perl6/ch-2.p6
+    2  METHOD GAP: No such method 'all'   e.g. challenge-038/stuart-little/raku/ch-1.p6
+    2  OUTPUT DIFF: 'Lights on for 110 minutes' vs 'Lights on for 0 minutes'   e.g. challenge-039/ruben-westerberg/perl6/ch-1.p6
+    2  OUTPUT DIFF: 'n: 3 l: 5' vs 'n: 3 l: 3'   e.g. challenge-041/ruben-westerberg/perl6/ch-2.p6
+    2  OUTPUT DIFF: 'Starting generation for base 10' vs 'Starting generation for base '   e.g. challenge-043/luca-ferrari/raku/ch-2.p6
+    2  OUTPUT DIFF: '234' vs ''   e.g. challenge-051/mark-anderson/raku/ch-2.p6
+    2  OUTPUT DIFF: '(())' vs '()'   e.g. challenge-051/stuart-little/raku/ch-1.p6
+    2  OUTPUT DIFF: 'aei' vs 'a'   e.g. challenge-053/colin-crain/raku/ch-2.p6
+    2  OUTPUT DIFF: '[1 2 3]' vs '[1, 2, 3]'   e.g. challenge-053/laurent-rosenfeld/raku/ch-1.p6
+    2  OUTPUT DIFF: '1 → 2 → 2 → 4 → 3 → 5' vs '1 2 2 → 4 3 5'   e.g. challenge-059/arne-sommer/raku/ch-1.p6
+    2  OUTPUT DIFF: '001' vs '0'   e.g. challenge-069/ash/raku/ch-2-seq-func.raku
+    2  DIES: Cannot resolve caller MAIN(); no matching multi candidate   e.g. challenge-072/javier-luque/raku/ch-2.p6
+    2  OUTPUT DIFF: '0' vs '()'   e.g. challenge-073/ash/raku/ch-2.raku
+    2  METHOD GAP: No such method 'min'   e.g. challenge-073/markus-holzer/raku/ch-2.raku
+    2  METHOD GAP: No such method 'return'   e.g. challenge-076/shahed-nooshmand/raku/ch-1.raku
+    2  DIES-MID: Numeric underflow   e.g. challenge-090/athanasius/raku/ch-2.raku
+    2  PARSE: expected '!!' in ternary (got …)   e.g. challenge-090/colin-crain/raku/ch-2.raku
+    2  METHOD GAP: No such method 'sort'   e.g. challenge-094/athanasius/raku/ch-1.raku
+    2  OUTPUT DIFF: '-1' vs '(Any)'   e.g. challenge-095/luca-ferrari/raku/ch-2.p6
+    2  SUB GAP: Undefined routine 's'   e.g. challenge-099/athanasius/raku/ch-1.raku
+    2  OUTPUT DIFF: 'ok 1 - ' vs ''   e.g. challenge-101/aaronreidsmith/raku/ch-1.raku
+    2  PARSE: Malformed radix number   e.g. challenge-101/mark-anderson/raku/ch-2.raku
+    2  DIES-MID: Failed to open file r	True: no such file or directory   e.g. challenge-103/roger-bell-west/raku/ch-2.p6
+    2  OUTPUT DIFF: 'add' vs 'sub { ... }'   e.g. challenge-107/aaronreidsmith/raku/ch-2.raku
+    2  OUTPUT DIFF: 'new' vs 'sub { ... }'   e.g. challenge-107/arne-sommer/raku/ch-2.raku
+    2  METHOD GAP: No such method 'methods'   e.g. challenge-107/luca-ferrari/raku/ch-2.p6
+    2  METHOD GAP: No such method 'tail'   e.g. challenge-108/wambash/raku/ch-2.raku
+    2  OUTPUT DIFF: '()' vs '(Any)'   e.g. challenge-109/wambash/raku/ch-2.raku
+    2  METHOD GAP: No such method 'add_children'   e.g. challenge-113/colin-crain/raku/ch-2.raku
+    2  METHOD GAP: No such method 'deepmap'   e.g. challenge-113/mark-anderson/raku/ch-2.raku
+    2  METHOD GAP: No such method 'log2'   e.g. challenge-136/athanasius/raku/ch-1.raku
+    2  SUB GAP: Undefined routine 'Date'   e.g. challenge-137/feng-chang/raku/ch-1.raku
+    2  SUB GAP: Undefined routine 'SetHash'   e.g. challenge-144/roger-bell-west/raku/ch-1.p6
+    2  METHOD GAP: No such method 'EXISTS-KEY'   e.g. challenge-149/polettix/raku/ch-2.raku
+    2  DIES: Died   e.g. challenge-151/bruce-gray/raku/ch-2.raku
+    2  OUTPUT DIFF: '3, 5, 7, 13, 17, 19, 23, 37' vs ''   e.g. challenge-155/2colours/raku/ch-1.raku
+    2  OUTPUT DIFF: '3, 5, 6, 7, 9, 10, 11, 12, 13, 14' vs ''   e.g. challenge-156/0rir/raku/ch-1.raku
+    2  DIES: No such method '&take' for type Int   e.g. challenge-170/0rir/raku/ch-1.raku
+    2  OUTPUT DIFF: '142857' vs '(Any)'   e.g. challenge-176/mark-anderson/raku/ch-1.raku
+    2  METHOD GAP: No such method 'hh-mm-ss'   e.g. challenge-178/mark-anderson/raku/ch-2.raku
+    2  OUTPUT DIFF: '(1 a 2 b 3 c)' vs '((1 a) (2 b) (3 c))'   e.g. challenge-186/jaldhar-h-vyas/raku/ch-1.raku
+    2  METHOD GAP: No such method 'remove'   e.g. challenge-194/bruce-gray/raku/ch-2.raku
+    2  OUTPUT DIFF: '1' vs '2'   e.g. challenge-194/deadmarshal/raku/ch-1.raku
+    2  OUTPUT DIFF: '2' vs '(Any)'   e.g. challenge-198/steve-g-lynn/raku/ch-1.p6
+    2  METHOD GAP: No such method 'Date'   e.g. challenge-206/feng-chang/raku/ch-1.raku
+    2  OUTPUT DIFF: 'ok 1 - Example 1' vs 'ok 1 - Example 1 '   e.g. challenge-212/athanasius/raku/ch-1.raku
+    2  OUTPUT DIFF: '[[1 2 3] [1 2 3] [5 6 7]]' vs '-1'   e.g. challenge-212/laurent-rosenfeld/raku/ch-2.raku
+    2  OUTPUT DIFF: '(2 4 6 1 3 5)' vs '((2 4 6) (1 3 5))'   e.g. challenge-213/laurent-rosenfeld/raku/ch-1.raku
+    2  METHOD GAP: No such method 'classify'   e.g. challenge-218/jaldhar-h-vyas/raku/ch-2.raku
+    2  METHOD GAP: No such method 'unique'   e.g. challenge-229/bruce-gray/raku/ch-2.raku
+    2  OUTPUT DIFF: '(3 2)' vs '(3 2 1 4)'   e.g. challenge-231/ash/raku/ch-1.raku
+    2  OUTPUT DIFF: '((1 0 0) (0 1 0) (1 1 1))' vs '(1 0 0 0 1 0 1 1 1)'   e.g. challenge-242/clifton-wood/raku/ch-2.raku
+    2  METHOD GAP: No such method 'elems'   e.g. challenge-248/athanasius/raku/ch-2.raku
+    2  OUTPUT DIFF: '(1 2)' vs '(2 2)'   e.g. challenge-263/ash/raku/ch-1.raku
+    2  OUTPUT DIFF: 'PeRlwEeKLy: L' vs 'PeRlwEeKLy: -'   e.g. challenge-264/ash/raku/ch-1.raku
+    2  OUTPUT DIFF: 'ok 1 - Example 1' vs ''   e.g. challenge-278/athanasius/raku/ch-1.raku
+    2  OUTPUT DIFF: '[]' vs ''   e.g. challenge-327/jaldhar-h-vyas/raku/ch-2.raku
+    2  DIES: Need rakudo version 2023.08 or later for min and max.   e.g. challenge-351/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'fizzbuzzing: 1 2 fizz 4 buzz fizz 7 ' vs 'fizzbuzzing: &fizzbuzz()'   e.g. challenge-001/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '1' vs 'FizzBuzz'   e.g. challenge-001/jo-christian-oterhals/perl6/ch-2.p6
+    1  METHOD GAP: No such method 'conj'   e.g. challenge-001/martin-mugeni/perl6/ch-1.p6
+    1  PARSE: Malformed numeric literal   e.g. challenge-002/alex-daniel/perl6/ch-2.p6
+    1  OUTPUT DIFF: '' vs 'all'   e.g. challenge-002/nick-logan/perl6/ch-1.p6
+    1  DIES: Bad programmer   e.g. challenge-004/0rir/raku/ch-1.raku
+    1  METHOD GAP: No such method 't'   e.g. challenge-005/jo-christian-oterhals/perl6/ch-1.p6
+    1  OUTPUT DIFF: '     This' vs 'This'   e.g. challenge-008/laurent-rosenfeld/perl6/ch-2.p6
+    1  OUTPUT DIFF: '6' vs '(Any)'   e.g. challenge-008/simon-proctor/perl6/ch-1.p6
+    1  OUTPUT DIFF: '' vs '(Any)'   e.g. challenge-008/simon-proctor/perl6/ch-2.p6
+    1  OUTPUT DIFF: '12769 = 113 * 113' vs '0 =  * '   e.g. challenge-009/feng-chang/raku/ch-1-one-liner.p6
+    1  OUTPUT DIFF: '12769 = 113 * 113' vs '10201 = 101 * 101'   e.g. challenge-009/feng-chang/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Standard: 1 2 2 4' vs 'Standard: 1 1 3 4'   e.g. challenge-009/kevin-colyer/perl6/ch-2.p6
+    1  OUTPUT DIFF: '2' vs '3'   e.g. challenge-009/ruben-westerberg/perl6/bug.p6
+    1  OUTPUT DIFF: '1224 Ranking: 1 2 2 4' vs '1224 Ranking: 1 0 -1 -2 -3 -4 -5 -6'   e.g. challenge-009/ruben-westerberg/perl6/ch-2.p6
+    1  OUTPUT DIFF: '19\t=>\tXIX' vs '19\t=>\tsub { ... }XVIV'   e.g. challenge-010/laurent-rosenfeld/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'True False False False' vs '1 0 0 0'   e.g. challenge-011/jo-christian-oterhals/perl6/ch-2.p6
+    1  OUTPUT DIFF: '0 1 0 0 0 0 0 0 0 0' vs '0 0 0 0 0 0 0 0 0 1'   e.g. challenge-011/ruben-westerberg/perl6/ch-2.p6
+    1  OUTPUT DIFF: '2 3 5 7 11 13 30031' vs '2 3 5 7 11 13 '   e.g. challenge-012/feng-chang/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'E_1 = 3' vs ''   e.g. challenge-012/ozzy/perl6/ch-1.p6
+    1  OUTPUT DIFF: '/a/b/' vs '<no common path>'   e.g. challenge-012/ozzy/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'Female: 1, 1, 2, 2, 3, 3, 4, 5, 5, 6' vs 'Female: '   e.g. challenge-013/jaldhar-h-vyas/perl6/ch-2.p6
+    1  DIES-MID: Cannot resolve caller female(); no matching multi candidate   e.g. challenge-013/laurent-rosenfeld/perl6/ch-2a.p6
+    1  DIES: Cannot resolve caller van-eck(); no matching multi candidate   e.g. challenge-014/joelle-maslak/perl6/ch-1.p6
+    1  OUTPUT DIFF: '0, 0, 1, 0, 2, 0, 2, 2, 1, 6, 0' vs '0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9'   e.g. challenge-014/ruben-westerberg/perl6/ch-1.p6
+    1  OUTPUT DIFF: "With key 'LEMON', 'ATTACKATDAWN' -->" vs "With key 'LEMON', 'ATTACKATDAWN' -->"   e.g. challenge-015/athanasius/perl6/ch-2.p6
+    1  SUB GAP: Undefined routine 'categorize'   e.g. challenge-015/laurent-rosenfeld/perl6/ch-1b.p6
+    1  SUB GAP: Undefined routine 'FatRat'   e.g. challenge-016/joelle-maslak/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'The person that gets the biggest pie' vs 'The person that gets the biggest pie'   e.g. challenge-016/noud/perl6/ch-1.p6
+    1  SUB GAP: Undefined routine 'BABCA'   e.g. challenge-018/feng-chang/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'ABC' vs '(Any)'   e.g. challenge-018/jaldhar-h-vyas/perl6/ch-1.p6
+    1  OUTPUT DIFF: '# Subtest: Start empty' vs '    ok 1 - '   e.g. challenge-018/joelle-maslak/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'March 1901' vs ''   e.g. challenge-019/fjwhittle/perl6/ch-1.p6
+    1  METHOD GAP: No such method 'year'   e.g. challenge-019/joelle-maslak/perl6/ch-1.p6
+    1  OUTPUT DIFF: '(1901 3)' vs '10'   e.g. challenge-019/markus-holzer/raku/ch-1.p6
+    1  OUTPUT DIFF: ' Lorem ipsum dolor sit amet, consect' vs ''   e.g. challenge-019/markus-holzer/raku/ch-2.p6
+    1  OUTPUT DIFF: '1901 March' vs ''   e.g. challenge-019/ruben-westerberg/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'changes of character: "A", "BB", "C"' vs 'changes of character: "A", "B", "B",'   e.g. challenge-020/athanasius/perl6/ch-1.p6
+    1  OUTPUT DIFF: '220 284' vs ' 0'   e.g. challenge-020/joelle-maslak/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'A BB C D EE F' vs ''   e.g. challenge-020/ozzy/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'aa|b|c|DD|e|fff|g|h' vs 'aa|b|c|D|D|e|f|f|f|g'   e.g. challenge-020/ruben-westerberg/perl6/ch-1.p6
+    1  OUTPUT DIFF: '( A BBB C D EE F )' vs '(ABBBCDEEF)'   e.g. challenge-020/yary-h/perl6/ch-1a.p6
+    1  OUTPUT DIFF: 'After 21 steps of the H J Brothers c' vs 'After 22 steps of the H J Brothers c'   e.g. challenge-021/athanasius/perl6/ch-1.p6
+    1  OUTPUT DIFF: '5 11' vs ' 6'   e.g. challenge-022/laurent-rosenfeld/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'Sexy Pair: 5,11' vs ''   e.g. challenge-022/ruben-westerberg/perl6/ch-1.p6
+    1  OUTPUT DIFF: '((5 11) (7 13) (11 17) (13 19) (17 2' vs '(5 11 7 13 11 17 13 19 17 23 23 29 3'   e.g. challenge-022/stuart-little/raku/ch-1.p6
+    1  SUB GAP: Undefined routine 'INIT_DICT_SIZE'   e.g. challenge-022/yet-ebreo/perl6/ch-2.p6
+    1  OUTPUT DIFF: '(2 2 3 19)' vs '(2 2 3 19 (Any))'   e.g. challenge-023/noud/perl6/ch-2.p6
+    1  METHOD GAP: No such method 'im'   e.g. challenge-026/noud/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'Storing <15> (was [20])' vs ''   e.g. challenge-027/jaldhar-h-vyas/perl6/ch-2.p6
+    1  OUTPUT DIFF: '15' vs ''   e.g. challenge-027/joelle-maslak/perl6/ch-2.p6
+    1  DIES: Cannot modify an immutable 'x'   e.g. challenge-027/kevin-colyer/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'Current: 15' vs 'Current: 10'   e.g. challenge-027/laurent-rosenfeld/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'Historical Values: 4 10 100' vs 'Historical Values: '   e.g. challenge-027/ruben-westerberg/perl6/ch-2.p6
+    1  METHOD GAP: No such method 'history'   e.g. challenge-027/yet-ebreo/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'Perl Daily Challenge' vs 'Perl   '   e.g. challenge-029/laurent-rosenfeld/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'Perl Daily Challenge' vs ''   e.g. challenge-029/ozzy/perl6/ch-1.p6
+    1  METHOD GAP: No such method 'list'   e.g. challenge-029/ruben-westerberg/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'Perl Daily Challenge' vs 'Perl Challenge'   e.g. challenge-029/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: '[1 2 9]' vs ''   e.g. challenge-030/arne-sommer/perl6/ch-2.p6
+    1  OUTPUT DIFF: ' 1| 1|10' vs ' 2|10'   e.g. challenge-030/daniel-mita/perl6/ch-2.p6
+    1  OUTPUT DIFF: '2022-12-25' vs '2022-12-25T00:00:00Z'   e.g. challenge-030/joelle-maslak/perl6/ch-1.p6
+    1  SUB GAP: Undefined routine 'cross'   e.g. challenge-030/joelle-maslak/perl6/ch-2.p6
+    1  OUTPUT DIFF: '(1 1 10)' vs ''   e.g. challenge-030/laurent-rosenfeld/perl6/ch-2.p6
+    1  OUTPUT DIFF: '2022' vs ''   e.g. challenge-030/markus-holzer/perl6/ch-1.p6
+    1  OUTPUT DIFF: '(1 1 10)' vs '1'   e.g. challenge-030/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: '(0 0 12)' vs '(0 12)'   e.g. challenge-030/yet-ebreo/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'Division by zero detected.' vs 'a/b = 0'   e.g. challenge-031/arne-sommer/perl6/ch-1.p6
+    1  OUTPUT DIFF: '1 / 0 = DIVIDE BY ZERO ERROR' vs ''   e.g. challenge-031/athanasius/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'divide by 0 error, Attempt to divide' vs '1'   e.g. challenge-031/javier-luque/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'div3:  /0 or other problem  5' vs 'div3:  Inf  5'   e.g. challenge-031/mark-senn/perl6/ch-1.p6
+    1  OUTPUT DIFF: '0.5' vs ''   e.g. challenge-031/noud/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'Tried to divide by 0, eh?' vs 'NaN'   e.g. challenge-031/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: '     apple | ############ ' vs ''   e.g. challenge-032/javier-luque/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'banana | #####' vs 's | #####'   e.g. challenge-032/kevin-colyer/perl6/ch-2.p6
+    1  OUTPUT DIFF: '         cherry | ############' vs '          apple | ######'   e.g. challenge-032/laurent-rosenfeld/perl6/ch-2a.p6
+    1  METHOD GAP: No such method 'eof'   e.g. challenge-032/ryan-thompson/perl6/ch-1.p6
+    1  OUTPUT DIFF: ' x|   1   2   3   4   5   6   7   8 ' vs ' x|'   e.g. challenge-033/daniel-mita/perl6/ch-2.p6
+    1  OUTPUT DIFF: '' vs 'd: 1'   e.g. challenge-033/jaldhar-h-vyas/perl6/ch-1.p6
+    1  OUTPUT DIFF: '  1|   1   2   3   4   5   6   7   8' vs '  1|   0   0   0   0   0   0   0   0'   e.g. challenge-033/jaldhar-h-vyas/perl6/ch-2.p6
+    1  OUTPUT DIFF: '  x|   1   2   3   4   5   6   7   8' vs 's|ddddddddddd'   e.g. challenge-033/joelle-maslak/perl6/ch-2.p6
+    1  OUTPUT DIFF: '  x|   1   2   3   4   5   6   7   8' vs '  x|sssssssssss'   e.g. challenge-033/kevin-colyer/perl6/ch-2.p6
+    1  OUTPUT DIFF: '  x|   1   2   3   4   5   6   7   8' vs 's|sssssssssss'   e.g. challenge-033/markus-holzer/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'a: 0' vs 'a b c d e f g h i j k l m n o p q r '   e.g. challenge-033/noud/perl6/ch-1.p6
+    1  OUTPUT DIFF: '  x|   1   2   3   4   5   6   7   8' vs '  x|1 2 3 4 5 6 7 8 9 10 11         '   e.g. challenge-033/rnuttall/perl6/ch-2.p6
+    1  OUTPUT DIFF: '  x|   1    2    3    4    5    6   ' vs '  x|1 2 3 4 5 6 7 8 9 10 11         '   e.g. challenge-033/roger-bell-west/perl6/ch-2.p6
+    1  OUTPUT DIFF: '     |    1   2   3   4   5   6   7 ' vs 's s s'   e.g. challenge-033/ryan-thompson/perl6/ch-2.p6
+    1  OUTPUT DIFF: '(  1   2   3   4   5   6   7   8   9' vs 'd'   e.g. challenge-033/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: '(zero one twice thrice four fifth VI' vs '(zero one twice thrice four fifth VI'   e.g. challenge-034/arne-sommer/perl6/ch-1.p6
+    1  PARSE: expected ] (got '2];   e.g. challenge-034/noud/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'First and last 5 Fibonacci numbers 1' vs 'First and last 5 Fibonacci numbers 1'   e.g. challenge-034/simon-proctor/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'Last number in the array is 90' vs 'Last number in the array is 10'   e.g. challenge-034/steven-wilson/perl6/ch-1.p6
+    1  DIES: Cannot invoke non-Callable value of type Any   e.g. challenge-034/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: 'SCFFDAAM4EGA15321 is valid.' vs 'SCFFDAAM4EGA15321 is not valid.'   e.g. challenge-036/javier-luque/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'Best boxes are B G P R' vs 'Best boxes are '   e.g. challenge-036/kevin-colyer/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'Feb: 20 days' vs 'Oct: 23 days'   e.g. challenge-037/javier-luque/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'Loss of daylength in november : 5220' vs 'Loss of daylength in november : 0 se'   e.g. challenge-037/ulrich-rieke/perl6/ch-2.p6
+    1  DIES: First digit should be 1 or 2   e.g. challenge-038/laurent-rosenfeld/perl6/ch-1.p6
+    1  OUTPUT DIFF: '2230120 is equivalent to 1923-01-20.' vs 'Invalid input value '   e.g. challenge-038/laurent-rosenfeld/perl6/ch-1a.p6
+    1  OUTPUT DIFF: 'Lights on for: 110 minutes' vs 'Lights on for: 0 minutes'   e.g. challenge-039/javier-luque/perl6/ch-1.p6
+    1  OUTPUT DIFF: '110 minutes the lights were on' vs '0 minutes the lights were on'   e.g. challenge-039/kevin-colyer/perl6/ch-1.p6
+    1  OUTPUT DIFF: '110' vs '1'   e.g. challenge-039/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: 'After: 1 - 4 - 3 - 8 - 12 - 10' vs 'After: 10 - 4 - 1 - 1 3 10 - 12 - 3'   e.g. challenge-040/burkhard-nickels/perl6/ch-2.p6
+    1  OUTPUT DIFF: '1 4 3 8 12 10' vs '1 4 10 8 12 3'   e.g. challenge-040/jaldhar-h-vyas/raku/ch-2.p6
+    1  OUTPUT DIFF: 'E  222           %%      e  ' vs ''   e.g. challenge-040/laurent-rosenfeld/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'E\t222\t%%\te' vs ''   e.g. challenge-040/laurent-rosenfeld/perl6/ch-1a.p6
+    1  OUTPUT DIFF: 'I\t244\t!\ta' vs ''   e.g. challenge-040/laurent-rosenfeld/perl6/ch-1b.p6
+    1  OUTPUT DIFF: '[1 4 3 8 12 10]' vs '[10 4 1 [1 3 10] 12 3]'   e.g. challenge-040/laurent-rosenfeld/perl6/ch-2.p6
+    1  OUTPUT DIFF: 'I 2 !' vs ''   e.g. challenge-040/noud/perl6/ch-1.p6
+    1  DIES: No such method '&roundrobin' for type List   e.g. challenge-040/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: '2     --> 2                        ' vs ''   e.g. challenge-041/colin-crain/perl6/ch-1.p6
+    1  OUTPUT DIFF: 'the first 20 Leonardo numbers:' vs 'the first (Int) Leonardo numbers:'   e.g. challenge-041/colin-crain/perl6/ch-2.p6
+    1  OUTPUT DIFF: '(4 6 8 9 10 12 14 15 18 20 21 22 25 ' vs '()'   e.g. challenge-041/laurent-rosenfeld/perl6/ch-1a.p6
+    1  OUTPUT DIFF: '4' vs '2'   e.g. challenge-041/noud/perl6/ch-1.p6
+    1  OUTPUT DIFF: '(1 1 3 5 9 15 25 41 67 109 177 287 4' vs '(1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'   e.g. challenge-041/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: 'Decimal  1 = Octal  1' vs 'Decimal  1 = Octal  0'   e.g. challenge-042/ryan-thompson/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Values: 8 3 7 1 6 4 5 2 9 (from left' vs ''   e.g. challenge-043/arne-sommer/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Base:  4, Nmbr:                     ' vs 'Base:  4, Nmbr:                     '   e.g. challenge-043/burkhard-nickels/raku/ch-2.p6
+    1  DIES-MID: Can't find index (0, 8)   e.g. challenge-043/markus-holzer/raku/ch-1.p6
+    1  OUTPUT DIFF: 'red/green      2' vs 'red/green      0'   e.g. challenge-043/ruben-westerberg/raku/ch-1.p6
+    1  OUTPUT DIFF: '1, 2, 3, 6, 12, 24, 25, 50, 100, 200' vs '(Int)'   e.g. challenge-044/colin-crain/raku/ch-2.p6
+    1  OUTPUT DIFF: 'double, add one, double, double, dou' vs ''   e.g. challenge-044/jaldhar-h-vyas/raku/ch-2.p6
+    1  OUTPUT DIFF: '123+45-67+8-9' vs ''   e.g. challenge-044/jokraft/raku/ch-1.p6
+    1  DIES: Type check failed in assignment to $acc; expected Int but go   e.g. challenge-044/kevin-colyer/raku/ch-1.p6
+    1  OUTPUT DIFF: '1+2+3-4+5+6+78+9' vs ''   e.g. challenge-044/laurent-rosenfeld/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Expression [1+2+3+45+67-8-9+] = 100' vs ''   e.g. challenge-044/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '[-1 2 -3 4 5 6 78 9]' vs ''   e.g. challenge-044/markus-holzer/raku/ch-1.p6
+    1  OUTPUT DIFF: '1' vs '200'   e.g. challenge-044/markus-holzer/raku/ch-2.p6
+    1  DIES: Cannot resolve caller selections(); no matching multi candid   e.g. challenge-044/simon-proctor/raku/ch-1.p6
+    1  OUTPUT DIFF: 'tbjrd hruto eomhg qwpe unsl ifoa cov' vs 't h e q u i c k b r o w n f o x j u '   e.g. challenge-045/colin-crain/raku/ch-1.p6
+    1  OUTPUT DIFF: 'use v6;' vs 'Nil'   e.g. challenge-045/laurent-rosenfeld/raku/ch-2a.p6
+    1  OUTPUT DIFF: 'tbjrd hruto eomhg qwpe unsl ifoa cov' vs 'thequickbrownfoxjumpsoverthelazydog'   e.g. challenge-045/mark-anderson/raku/ch-1.p6
+    1  OUTPUT DIFF: 'room   1 is open' vs ''   e.g. challenge-046/colin-crain/raku/ch-2.p6
+    1  OUTPUT DIFF: 'PerlRaku' vs '! + 0 2 3 5 8 P R a e k l r u'   e.g. challenge-046/laurent-rosenfeld/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Hello' vs '(Any)'   e.g. challenge-046/mark-anderson/raku/ch-1.p6
+    1  OUTPUT DIFF: 'PerlRaku' vs '00000000'   e.g. challenge-046/mohammad-anwar/raku/ch-1.p6
+    1  OUTPUT DIFF: 'PerlRaku' vs ''   e.g. challenge-046/ruben-westerberg/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Gapful number : 100' vs 'Gapful number : 110'   e.g. challenge-047/alicia-bielsa/raku/ch-2.p6
+    1  OUTPUT DIFF: 'First 20 Gapful numbers: 100,105,108' vs 'First 20 Gapful numbers: 110,121,132'   e.g. challenge-047/arne-sommer/raku/ch-2.p6
+    1  OUTPUT DIFF: '100 105 108 110 120 121 130 132 135 ' vs '110 121 132 143 154 165 176 187 198 '   e.g. challenge-047/ruben-westerberg/raku/ch-2.p6
+    1  OUTPUT DIFF: '(100 105 108 110 120 121 130 132 135' vs '(110 121 132 143 154 165 176 187 198'   e.g. challenge-047/ryan-thompson/raku/ch-2.p6
+    1  OUTPUT DIFF: '10022001' vs '00022000'   e.g. challenge-048/alicia-bielsa/raku/ch-2.p6
+    1  OUTPUT DIFF: '0  1  2  3  4  5  6  7  8  9  10  11' vs ''   e.g. challenge-048/colin-crain/raku/ch-1.p6
+    1  OUTPUT DIFF: '10-02-2001' vs '11-02-2011'   e.g. challenge-048/colin-crain/raku/ch-2.p6
+    1  OUTPUT DIFF: '10/02/2001 is a palindromic date.' vs ''   e.g. challenge-048/laurent-rosenfeld/raku/ch-2.p6
+    1  OUTPUT DIFF: 'The person who survives is 37' vs 'The person who survives is 2'   e.g. challenge-048/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '10022001' vs '2001-01-00'   e.g. challenge-048/markus-holzer/raku/ch-2.p6
+    1  OUTPUT DIFF: '01022010' vs '01(Any)22(Any)10'   e.g. challenge-048/noud/raku/ch-2.p6
+    1  OUTPUT DIFF: '10-02-2001' vs '01 20-02 01-10 2002 10'   e.g. challenge-048/ryan-thompson/raku/ch-2.p6
+    1  OUTPUT DIFF: '01022010' vs '0101-10-10'   e.g. challenge-048/simon-proctor/raku/ch-2.p6
+    1  METHOD GAP: No such method 'day'   e.g. challenge-048/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: 'Survivors, in order: [1 3 5 7 9 11 1' vs 'Survivors, in order: [1 2 3 4 5 6 7 '   e.g. challenge-048/xkr47/raku/ch-1.p6
+    1  OUTPUT DIFF: '(10022001 01022010 11022011 02022020' vs '(01010000 01010000 01010000 01010000'   e.g. challenge-048/xkr47/raku/ch-2.p6
+    1  OUTPUT DIFF: '5' vs '-1'   e.g. challenge-049/jaldhar-h-vyas/raku/ch-2.p6
+    1  OUTPUT DIFF: '10110001' vs '743'   e.g. challenge-049/laurent-rosenfeld/raku/ch-1.p6
+    1  DIES-MID: Cannot invoke non-Callable value of type Bool   e.g. challenge-049/ryan-thompson/raku/ch-2.p6
+    1  OUTPUT DIFF: '((2 9) (10 12) (15 22))' vs '(((2 7) (18 22)))'   e.g. challenge-050/ben-davies/raku/ch-1.p6
+    1  OUTPUT DIFF: '' vs '[-10 2 8]'   e.g. challenge-051/laurent-rosenfeld/raku/ch-1.p6
+    1  OUTPUT DIFF: '[236] => [2, 3, 6, 6, 18, 36]' vs '[237] => [2, 3, 7, 6, 21, 42]'   e.g. challenge-051/mohammad-anwar/raku/ch-2.p6
+    1  OUTPUT DIFF: '234 is Colourful' vs '100 is Colourful'   e.g. challenge-051/ruben-westerberg/raku/ch-2.p6
+    1  OUTPUT DIFF: '234' vs '111'   e.g. challenge-051/simon-proctor/raku/ch-2.p6
+    1  OUTPUT DIFF: '(234 235 237 238 239 243 245 246 247' vs '()'   e.g. challenge-051/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: '101' vs '111'   e.g. challenge-052/markus-holzer/raku/ch-1.p6
+    1  DIES-MID: Cannot resolve caller pick-best(); no matching multi candida   e.g. challenge-052/markus-holzer/raku/ch-2.p6
+    1  OUTPUT DIFF: '123' vs ''   e.g. challenge-052/mohammad-anwar/raku/ch-1.p6
+    1  OUTPUT DIFF: '123' vs '0'   e.g. challenge-052/simon-proctor/raku/ch-1.p6
+    1  OUTPUT DIFF: '(101 102 103 104 105 106 107 108 109' vs '(100 101 102 103 104 105 106 107 108'   e.g. challenge-052/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: 'Rotation is 90' vs 'Rotation is (Int)'   e.g. challenge-053/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: 'ae' vs ''   e.g. challenge-053/mohammad-anwar/raku/ch-2.p6
+    1  DIES: ERROR: Invalid size 0.   e.g. challenge-053/mohammad-anwar/raku/ch-2a.p6
+    1  OUTPUT DIFF: '0-0: 1 1 0 1 1' vs '0-4: 1 1 1 1 1'   e.g. challenge-055/laurent-rosenfeld/raku/ch-1.p6
+    1  DIES: ERROR: Invalid array size [0]   e.g. challenge-055/mohammad-anwar/raku/ch-2a.p6
+    1  OUTPUT DIFF: '22 -> 5 4 11 2' vs '22 ->  5 4 11 2'   e.g. challenge-056/laurent-rosenfeld/raku/ch-2.p6
+    1  OUTPUT DIFF: '5 -> 4 -> 11 -> 2 == 22' vs ''   e.g. challenge-056/mark-anderson/raku/ch-2.p6
+    1  DIES: Cannot resolve caller find-path-sum(); no matching multi can   e.g. challenge-056/markus-holzer/raku/ch-2.p6
+    1  OUTPUT DIFF: '5 -> 4 -> 11 -> 2' vs '5 -> 4 11 2'   e.g. challenge-056/noud/raku/ch-2.p6
+    1  OUTPUT DIFF: '184, 345, 200, 538, ∅, 988, 784, 207' vs '184, 345, 200, 538, ∅, 988, 784, 207'   e.g. challenge-057/colin-crain/raku/ch-1.p6
+    1  OUTPUT DIFF: '(1 2 3 4 5 6 7 8 9 a b c d e f g h i' vs '(1..9 (a b c d e f g h i j k l m n o'   e.g. challenge-057/laurent-rosenfeld/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Before: ${"1" => $[[2, [[4], [5]]], ' vs 'Before: {"1" => [[2, [[4], [5]]], [3'   e.g. challenge-057/mohammad-anwar/raku/ch-1.p6
+    1  METHOD GAP: No such method 'enums'   e.g. challenge-058/laurent-rosenfeld/raku/ch-1.p6
+    1  OUTPUT DIFF: '35 23 5 64 37 9 13 25 16 44 50 40 2 ' vs '1 10 11 12 13 14 15 16 17 18 19 2 20'   e.g. challenge-058/laurent-rosenfeld/raku/ch-2.p6
+    1  OUTPUT DIFF: '[35 23 5 64 37 9 13 25 16 44 50 40 2' vs '[35 23 5 64 => 0 37 9 13 25 16 44 50'   e.g. challenge-058/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: 'ERROR: Missing arguments' vs 'X::Args<obj>'   e.g. challenge-059/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: [ 1 -> 2 -> 2 -> 4 -> 3 -> 5' vs 'Output: [ 1 2 2 -> 4 3 5 ]'   e.g. challenge-059/mohammad-anwar/raku/ch-1.p6
+    1  DIES-MID: next without loop construct   e.g. challenge-059/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: '10, 11, 12, 15, 20' vs ''   e.g. challenge-060/mohammad-anwar/raku/ch-2.p6
+    1  SUB GAP: Undefined routine 'truncate'   e.g. challenge-060/roger-bell-west/raku/ch-1.p6
+    1  OUTPUT DIFF: '255.250.113.5' vs ''   e.g. challenge-061/colin-crain/raku/ch-2.p6
+    1  OUTPUT DIFF: '[55 20 51 139]' vs ''   e.g. challenge-061/colin-crain/raku/ch-2a.p6
+    1  OUTPUT DIFF: '122.202.12.8' vs ''   e.g. challenge-061/laurent-rosenfeld/raku/ch-2.p6
+    1  OUTPUT DIFF: '255.255.111.35' vs ''   e.g. challenge-061/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '[ 2, 5, -1, 3 ] => [ 2, 5 ]' vs '[  ] => '   e.g. challenge-061/mohammad-anwar/raku/ch-1.p6
+    1  OUTPUT DIFF: '' vs 'sub { ... }'   e.g. challenge-062/laurent-rosenfeld/raku/ch-1.p6
+    1  OUTPUT DIFF: '[[[1 0] [0 0]] [[0 0] [0 0]]]' vs '[[[0 0] [0 0]] [[0 0] [0 0]]]'   e.g. challenge-062/sangeet-kar/raku/ch-2-brute.raku
+    1  OUTPUT DIFF: 'Queens placed : 1' vs 'Queens placed : 0'   e.g. challenge-062/sangeet-kar/raku/ch-2.raku
+    1  OUTPUT DIFF: '[[0 0] [0 1]]' vs '[[0 0] [0 0]]'   e.g. challenge-062/shahed-nooshmand/raku/ch-2.raku
+    1  OUTPUT DIFF: '7' vs '4'   e.g. challenge-063/jaldhar-h-vyas/raku/ch-2.p6
+    1  OUTPUT DIFF: 'minimum sum: 170' vs 'minimum sum: 0'   e.g. challenge-064/colin-crain/raku/ch-1.p6
+    1  OUTPUT DIFF: '[perl weekly challenge]' vs '[2]'   e.g. challenge-064/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: '21: 1 → 2 → 3 → 6 → 9' vs '21: '   e.g. challenge-064/javier-luque/raku/ch-1.p6
+    1  OUTPUT DIFF: 'perl weekly challenge' vs '0'   e.g. challenge-064/javier-luque/raku/ch-2.p6
+    1  OUTPUT DIFF: 'perl weekly week challenge ' vs '0'   e.g. challenge-064/laurent-rosenfeld/raku/ch-2.p6
+    1  OUTPUT DIFF: '1 2 3 6 9 => 21' vs '1 2 3 6 9 => 11'   e.g. challenge-064/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '21 (1 → 2 → 3 → 6 → 9)' vs '276 (1 → 2 → 1 → 3 → 1 → 2 → 1 → 6 →'   e.g. challenge-064/shahed-nooshmand/raku/ch-1.p6
+    1  OUTPUT DIFF: 'aaaBBaacXXyz' vs ''   e.g. challenge-065/colin-crain/raku/ch-2.p6
+    1  OUTPUT DIFF: 'Searching non overlapping palindrome' vs 'Searching non overlapping palindrome'   e.g. challenge-065/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '13, 22, 31, 40' vs ''   e.g. challenge-065/mohammad-anwar/raku/ch-1.p6
+    1  OUTPUT DIFF: 'aa, baab' vs '0'   e.g. challenge-065/mohammad-anwar/raku/ch-2.p6
+    1  OUTPUT DIFF: '(13 22 31 40)' vs '()'   e.g. challenge-065/noud/raku/ch-1.p6
+    1  OUTPUT DIFF: '-5 / 2 = -3' vs '-5 / 0 = 1'   e.g. challenge-066/mohammad-anwar/raku/ch-1.p6
+    1  OUTPUT DIFF: '1 2, 1 3, 1 4, 1 5, 2 3, 2 4, 2 5, 3' vs ''   e.g. challenge-067/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '[ [1,2], [1,3], [1,4], [1,5], [2,3],' vs '[ [] ]'   e.g. challenge-067/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: "[ 'dj', 'dl', 'dk', 'ej', 'el', 'ek'" vs "[ '' ]"   e.g. challenge-067/mohammad-anwar/raku/ch-2.raku
+    1  OUTPUT DIFF: '0 0 0' vs '1 0 1'   e.g. challenge-068/ash/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Node.new(value => "L0", next => Node' vs 'Node.new(value => "L0", next => Node'   e.g. challenge-068/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '[ 1, 1, 0 ]' vs 'Zero Matrix:'   e.g. challenge-068/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: '0 0 0' vs '0 0 0 0 0 0 0'   e.g. challenge-068/shahed-nooshmand/raku/ch-1.raku
+    1  PARSE: expected ] (got '2] = @list[*/2].key => Nil;   e.g. challenge-068/shahed-nooshmand/raku/ch-2.raku
+    1  DIES: ERROR: Invalid start number [(Int)].   e.g. challenge-069/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: '0010011000110110001001110011011' vs ''   e.g. challenge-069/mohammad-anwar/raku/ch-2.raku
+    1  DIES: Cannot resolve caller strb_bd(); no matching multi candidate   e.g. challenge-069/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: 'pndraerlaku' vs 'per llandraku'   e.g. challenge-070/ash/raku/ch-1.raku
+    1  OUTPUT DIFF: '[0, 1, 3, 2, 6, 7, 5, 4, 12, 13, 15,' vs '[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,'   e.g. challenge-070/javier-luque/raku/ch-2.p6
+    1  OUTPUT DIFF: 'pndraerlaku' vs 'pperlandrakuperlandrakuperlandrakupe'   e.g. challenge-070/jeongoon/raku/ch-1.raku
+    1  DIES: Input: $N = 5   e.g. challenge-070/jeongoon/raku/ch-2.raku
+    1  OUTPUT DIFF: '0, 1, 3, 2, 6, 7, 5, 4, 12, 13, 15, ' vs ''   e.g. challenge-070/lubos-kolouch/raku/ch-2.raku
+    1  OUTPUT DIFF: '' vs '(Str)'   e.g. challenge-070/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '[0, 1, 3, 2, 6, 7, 5, 4]' vs '[0, 0, 0, 0, 0, 0, 0, 0]'   e.g. challenge-070/mohammad-anwar/raku/ch-2.raku
+    1  METHOD GAP: No such method 'payload'   e.g. challenge-072/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: '3628800 => 2' vs '0 => 0'   e.g. challenge-072/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: '0 0 0 2 3 3 4 4' vs '1 5 0 2 9 3 7 6 4 8'   e.g. challenge-073/markus-holzer/raku/ch-1.raku
+    1  OUTPUT DIFF: '0, 0, 0, 2, 3, 3, 4, 4' vs '(Empty), 1 5 0, 5 0 2, 0 2 9, 2 9 3,'   e.g. challenge-073/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: '0, 7, 0, 3, 3' vs '0, 7, 7 8, 7 8 3, 7 8 3 12'   e.g. challenge-073/mohammad-anwar/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'BUILD'   e.g. challenge-074/jason-messer/raku/ch-2.p6
+    1  OUTPUT DIFF: '4' vs 'Bag(1 2(4) 3 4)'   e.g. challenge-074/markus-holzer/raku/ch-1.raku
+    1  OUTPUT DIFF: 'The biggest rectangle is between the' vs 'The biggest rectangle is between the'   e.g. challenge-075/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: 'The area of a biggest rectangle is 1' vs 'The area of a biggest rectangle is 3'   e.g. challenge-075/ash/raku/ch-2a.raku
+    1  OUTPUT DIFF: '[2 1 4 5 3 7] -> 12' vs '[2 1 4 5 3 7] -> [2 2 2 2 2 2]'   e.g. challenge-075/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: '7           #' vs '2 1 4 5 3 7           #'   e.g. challenge-075/jason-messer/raku/ch-2.p6
+    1  OUTPUT DIFF: '7           #' vs '7  '   e.g. challenge-075/markus-holzer/raku/ch-2.bonus.raku
+    1  OUTPUT DIFF: '(5 7 5)' vs '(7)'   e.g. challenge-075/markus-holzer/raku/ch-2.raku
+    1  OUTPUT DIFF: '[[1 1 1 1 1 1] [1 1 1 1 2] [1 1 2 2]' vs '[]'   e.g. challenge-075/noud/raku/ch-1.p6
+    1  DIES: Unsupported operator '..'   e.g. challenge-075/shahed-nooshmand/raku/ch-2.raku
+    1  OUTPUT DIFF: '(5 1523)' vs '5'   e.g. challenge-076/markus-holzer/raku/ch-1.raku
+    1  OUTPUT DIFF: '' vs '1 0'   e.g. challenge-077/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: '' vs '[]'   e.g. challenge-077/jeongoon/raku/ch-2.raku
+    1  OUTPUT DIFF: '(0 2)' vs ''   e.g. challenge-077/shahed-nooshmand/raku/ch-2.raku
+    1  OUTPUT DIFF: '(10 7 6 1)' vs '(() 0 1 2 3 4 5)'   e.g. challenge-078/juliodcs/raku/ch-1.raku
+    1  OUTPUT DIFF: '10, 7, 6, 1' vs '(Empty), 10, 7, 6, 1'   e.g. challenge-078/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: '40 50 10 20 30' vs '(Empty)'   e.g. challenge-078/mohammad-anwar/raku/ch-2.raku
+    1  OUTPUT DIFF: '6' vs '11'   e.g. challenge-079/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Rain capacity is: 6' vs 'Rain capacity is: 4'   e.g. challenge-079/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Input: @N = ()' vs ''   e.g. challenge-080/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: '1' vs '1..9223372036854775807'   e.g. challenge-080/jeongoon/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Total candies required for [3 1 5 8 ' vs 'Total candies required for [3 1 5 8 '   e.g. challenge-080/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '1' vs 'none()'   e.g. challenge-080/simon-proctor/raku/ch-1.raku
+    1  OUTPUT DIFF: '0' vs '2'   e.g. challenge-080/simon-proctor/raku/ch-2.raku
+    1  OUTPUT DIFF: '1' vs '(Any)'   e.g. challenge-080/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: '1    adaptation' vs ''   e.g. challenge-081/colin-crain/raku/ch-2.raku
+    1  PARSE: expected ) (got ',$s;   e.g. challenge-081/roger-bell-west/raku/ch-2.p6
+    1  OUTPUT DIFF: '(...)' vs '()'   e.g. challenge-082/stuart-little/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Number of sign flips: 2; min sum: 86' vs 'Number of sign flips: Inf; min sum: '   e.g. challenge-083/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Usage:' vs 'ERROR: Too few words in the input st'   e.g. challenge-083/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: '4' vs '14'   e.g. challenge-084/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: '#=> squares -> 1' vs '#=> squares -> 0'   e.g. challenge-084/gugod/raku/ch-2.raku
+    1  METHOD GAP: No such method 'shape'   e.g. challenge-084/markus-holzer/raku/ch-2.raku
+    1  OUTPUT DIFF: '8 = 2^3' vs ''   e.g. challenge-085/ash/raku/ch-2.raku
+    1  DIES-MID: last without loop construct   e.g. challenge-085/wambash/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'exists-diff-by'   e.g. challenge-086/gugod/raku/ch-1.raku
+    1  OUTPUT DIFF: 'There’s a unit-only rectangle 2✕5 at' vs 'No such rectangles found.'   e.g. challenge-087/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Rectangle corners: ((2 0) (3 1))' vs 'Rectangle corners: sub { ... }'   e.g. challenge-087/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '1..3' vs '0'   e.g. challenge-087/mark-anderson/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Output: (1 2 4 3)' vs 'Output: (1 2 4 3 1 2 4 3 1 2 4 3 1 2'   e.g. challenge-088/gugod/raku/ch-2.raku
+    1  OUTPUT DIFF: '1..2' vs '()'   e.g. challenge-088/mark-anderson/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Solution: [1 2 3 4 8 12 16 15 14 13 ' vs 'Solution: []'   e.g. challenge-088/pjdurai/raku/ch-2.p6
+    1  OUTPUT DIFF: '(1 2 3 6 9 8 7 4 5)' vs '(1 2 3 4 7 7 Nil)'   e.g. challenge-088/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: '[ 2 7 6 ]' vs ''   e.g. challenge-089/aaronreidsmith/raku/ch-2.raku
+    1  OUTPUT DIFF: 'A normal magic square of order 3:' vs 'A normal magic square of order (UInt'   e.g. challenge-089/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Input: Output: 0' vs 'Input: Output: 1'   e.g. challenge-089/xliff/raku/ch-1.raku
+    1  OUTPUT DIFF: '\tCATTTGGGGAAAAGTAAATCTGTCTAGCTGAGGAA' vs '\t'   e.g. challenge-090/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: 'one 4 one 2 ' vs 'one  one  '   e.g. challenge-091/juliodcs/raku/ch-1.raku
+    1  METHOD GAP: No such method 'head'   e.g. challenge-091/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '1..2' vs '1'   e.g. challenge-091/mark-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '((1 6) (8 10)) <- ((1 4) (8 10)) (+)' vs '((1 4) (8 10) ((8 10) 6)) <- ((1 4) '   e.g. challenge-092/gugod/raku/ch-2.raku
+    1  OUTPUT DIFF: '(1, 6),  (8, 10)' vs '(1 2 3 4, 2 3 4 5 6),  (8 9 10, 8 9 '   e.g. challenge-092/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '()' vs '(( 1))'   e.g. challenge-092/stuart-little/raku/ch-2.p6
+    1  OUTPUT DIFF: '7 | x' vs ' |xxxxxxxxxxxxxxxxx'   e.g. challenge-093/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '13' vs '0'   e.g. challenge-093/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 26' vs 'Output: 0'   e.g. challenge-093/pkmnx/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Valid anagrams: opt pot top - bat ta' vs 'Valid anagrams: '   e.g. challenge-094/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '[1 2 3 4 5 6 7 8]' vs '[1 2 3 4 5]'   e.g. challenge-095/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Current stack: ' vs 'Current stack: 2 -1 0 10'   e.g. challenge-095/stuart-little/raku/ch-2.p6
+    1  DIES: Cannot modify an immutable List ((0 0 0 0 0 0 0))   e.g. challenge-096/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: 'QEB NRFZH YOLTK CLU GRJMP LSBO QEB I' vs 'THE QUICK BROWN FOX JUMPS OVER THE L'   e.g. challenge-097/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '1' vs '4'   e.g. challenge-097/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '0' vs '-1'   e.g. challenge-098/arne-sommer/raku/ch-2.raku
+    1  DIES-MID: Failed to open file input.txt: no such file or directory   e.g. challenge-098/mark-anderson/raku/ch-1.raku
+    1  METHOD GAP: No such method 'read'   e.g. challenge-098/roger-bell-west/raku/ch-1.p6
+    1  OUTPUT DIFF: 'a*d: 0' vs 'a*d: 1'   e.g. challenge-099/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '1 -> 2 -> 4 -> 7' vs '1 2 4 -> 7'   e.g. challenge-100/colin-crain/raku/ch-2.raku
+    1  OUTPUT DIFF: '8' vs '1'   e.g. challenge-100/luca-ferrari/raku/ch-2.p6
+    1  MAIN USAGE: rakudo prints usage, rakupp runs   e.g. challenge-101/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: '0.1' vs '0'   e.g. challenge-102/stuart-little/raku/ch-1.p6
+    1  DIES: ===WARNING=== Module Text::CSV parse error at line N: expect   e.g. challenge-103/aaronreidsmith/raku/ch-2.raku
+    1  DIES-MID: ===WARNING=== Module Text::CSV parse error at line N: expect   e.g. challenge-103/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 1 - ' vs '(0 1 1 2 1 3 2 3 1 4 3 5 2 5 3 4 1 5'   e.g. challenge-104/aaronreidsmith/raku/ch-1.raku
+    1  DIES: Cannot resolve caller fusc(); no matching multi candidate   e.g. challenge-104/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: 'I took 1 piece(s)!' vs 'I took 3 piece(s)!'   e.g. challenge-104/ulrich-rieke/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 1 - ' vs '(Any)'   e.g. challenge-106/aaronreidsmith/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 1 - ' vs '1210, 2020, 21200'   e.g. challenge-107/aaronreidsmith/raku/ch-1.raku
+    1  OUTPUT DIFF: 'C210000000001000' vs '7FFFFFFFFFFFFFFF'   e.g. challenge-107/colin-crain/raku/ch-1.raku
+    1  OUTPUT DIFF: '(1210 2020 21200)' vs '((Empty) (Empty) (Empty))'   e.g. challenge-107/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'The methods of class Stack are top, ' vs 'The methods of class Stack are sub {'   e.g. challenge-107/ulrich-rieke/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 1 - ' vs '(1 1 2 5 15 52 203 877 4140 21147)'   e.g. challenge-108/aaronreidsmith/raku/ch-2.raku
+    1  OUTPUT DIFF: 'The first 10 Bell numbers:' vs 'The first (UInt) Bell numbers:'   e.g. challenge-108/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: '[{a => 1, b => 2, c => 3, d => 4, e ' vs '[]'   e.g. challenge-109/brtastic/raku/ch-2.raku
+    1  OUTPUT DIFF: 'a = 3' vs '0 = 3'   e.g. challenge-109/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: '{a => 3, b => 7, c => 2, d => 1, e =' vs '{a => (Any), b => (Any), c => (Any),'   e.g. challenge-109/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '0,0,0,2,0,5,0,6,3,7,0,15,0,9,8,14,0,' vs '1,1,1,3,1,6,1,7,4,8,1,16,1,10,9,15,1'   e.g. challenge-109/pjdurai/raku/ch-1.raku
+    1  OUTPUT DIFF: '0044 1148820341' vs '0044 '   e.g. challenge-110/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: 'name,Mohammad,Joe,Julie,Cristina' vs ''   e.g. challenge-110/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Adelops alloquy beefily begorry bill' vs ''   e.g. challenge-111/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: '(27 (26 (24 (21))) (25 (23) (22)))' vs '()'   e.g. challenge-113/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: '7: 0' vs '7: 1'   e.g. challenge-113/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '    1' vs '  '   e.g. challenge-113/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 1 - ' vs '1'   e.g. challenge-115/aaronreidsmith/raku/ch-1.raku
+    1  OUTPUT DIFF: '1 3 2 6: Solution: 6312' vs '1 3 2 6: Solution: 636 21'   e.g. challenge-115/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '1, 2, 3, 4' vs '1234'   e.g. challenge-116/laurent-rosenfeld/raku/ch-1.raku
+    1  METHOD GAP: No such method 'is-square'   e.g. challenge-116/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: 'RR, LHR, LRH, LLHH, RLH, LHLH' vs 'RR LHR, LRH LLHH RLH LHLH'   e.g. challenge-117/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: 'c7' vs ''   e.g. challenge-118/stuart-little/raku/ch-2.raku
+    1  OUTPUT DIFF: '13' vs '(Any)'   e.g. challenge-119/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '86' vs '4'   e.g. challenge-119/polettix/raku/ch-1.raku
+    1  METHOD GAP: No such method 'osname'   e.g. challenge-120/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: '10 15 20 25 30 35 40 45 50 55 60 65 ' vs ''   e.g. challenge-122/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Insert a number at time' vs '[]'   e.g. challenge-122/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '(10 15 20 25 30 35 40 45 50)' vs '1..9223372036854775807'   e.g. challenge-122/markus-holzer/raku/ch-1.raku
+    1  OUTPUT DIFF: '3 2' vs ''   e.g. challenge-122/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '()' vs '0..9223372036854775807'   e.g. challenge-122/wambash/raku/ch-1.raku
+    1  OUTPUT DIFF: '8' vs '(Any)'   e.g. challenge-123/laurent-rosenfeld/raku/ch-1.raku
+    1  METHOD GAP: No such method 'length_2'   e.g. challenge-123/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '   ^^^^^   ' vs '               ^^^^^               '   e.g. challenge-124/roger-bell-west/raku/ch-1.p6
+    1  OUTPUT DIFF: '(30, 40, 60, 70, 80)' vs '(10, 20, 30, 40, 50, 60, 70, 80, 90,'   e.g. challenge-124/roger-bell-west/raku/ch-2.p6
+    1  SUB GAP: Undefined routine 'tree-hight'   e.g. challenge-125/mimosinnet/raku/ch-2.raku
+    1  OUTPUT DIFF: '(3, 4, 5)' vs '(5, 4, 5)'   e.g. challenge-125/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: 'There are 8 numbers between 1 and 15' vs 'There are 14 numbers between 1 and 1'   e.g. challenge-126/ash/raku/ch-1.raku
+    1  DIES-MID: Cannot convert -1+1i to Real: imaginary part not zero   e.g. challenge-126/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'x 1 0 1 x 2 x x x x' vs ''   e.g. challenge-126/mimosinnet/raku/ch-2.raku
+    1  OUTPUT DIFF: 'x 1 0 1 x 2 x x x x ' vs 'x '   e.g. challenge-126/stuart-little/raku/ch-2.raku
+    1  OUTPUT DIFF: '0 as the given two sets have common ' vs '0 as the given two sets have common '   e.g. challenge-127/ash/raku/ch-1.raku
+    1  OUTPUT DIFF: '3 5 conflicts 1 times' vs '3 20 conflicts 2 times'   e.g. challenge-127/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '(Nil)' vs '()'   e.g. challenge-127/stuart-little/raku/ch-2.raku
+    1  OUTPUT DIFF: '{area => 6, depth => 3, i => 0, j =>' vs '{area => 0, depth => 0, i => (Any), '   e.g. challenge-128/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: '[ 0 0 ]' vs ''   e.g. challenge-128/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '0' vs ''   e.g. challenge-130/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '1915/11/28, 2081/11/05' vs '1915-06-21, 2082-01-24'   e.g. challenge-132/jaldhar-h-vyas/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Mirror dates for 2021-09-18 are: 202' vs 'Mirror dates for 2021-01-01 are: 202'   e.g. challenge-132/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '20 Alex Stewart' vs ''   e.g. challenge-132/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '20 AlexStewart' vs '20 Alex'   e.g. challenge-132/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '(1907/09/17 2085/12/11)' vs '(1907-06-21 2086-01-24)'   e.g. challenge-132/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '20 Alex  Stewart' vs ''   e.g. challenge-132/mark-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '1907-09-17, 2085-12-11' vs '3927-03-30, -1954-11-18'   e.g. challenge-132/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '20, Alex, Stewart' vs '20 Alex 18 Alex, Stewart'   e.g. challenge-132/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '20, Alex, Stewart' vs ''   e.g. challenge-132/ulrich-rieke/raku/ch-2.raku
+    1  DIES: Cannot resolve caller is-smith(); no matching multi candidat   e.g. challenge-133/james-raspass/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Distinct terms: 1 2 3 4 5 6 7 8 9 10' vs 'Distinct terms: 1 10 12 14 15 16 18 '   e.g. challenge-134/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '  x\t|\t1\t2\t3\t4\t5' vs '  x\t|\t'   e.g. challenge-134/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '      x | 1  2  3  4  5' vs '      s | d d d d d'   e.g. challenge-134/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: 'x | 1 2 3' vs 'x |     0'   e.g. challenge-134/roger-bell-west/raku/ch-2.p6
+    1  METHOD GAP: No such method 'exception'   e.g. challenge-135/bruce-gray/raku/ch-1.raku
+    1  DIES-MID: Invalid format   e.g. challenge-135/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: '2936921: 1' vs '2936921: 0'   e.g. challenge-135/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '8, 24 => 1' vs ',  => 0'   e.g. challenge-136/laurent-rosenfeld/raku/ch-1.raku
+    1  METHOD GAP: No such method 'combinations'   e.g. challenge-136/mark-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '1903, 1908, 1914, 1920, 1925, 1931, ' vs '1904, 1905, 1916, 1922, 1927, 1932, '   e.g. challenge-137/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '10 -> 0' vs '10 11 12 13 14 15 16 17 18 19 20 -> '   e.g. challenge-137/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '2000 -> 260' vs '2000 -> 261'   e.g. challenge-138/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '    1\t1' vs '    1\t0'   e.g. challenge-138/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '1000' vs '112'   e.g. challenge-140/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '3' vs '4'   e.g. challenge-140/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '24 30 40 42 54 56 66 70 78 88' vs ''   e.g. challenge-141/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: '40' vs '42'   e.g. challenge-141/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '24 34 -> 2' vs '24 34 -> 0'   e.g. challenge-142/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '0' vs '7'   e.g. challenge-142/mark-anderson/raku/ch-2.raku
+    1  DIES-MID: bad token    e.g. challenge-143/roger-bell-west/raku/ch-1.p6
+    1  OUTPUT DIFF: '10 is Semiprime as 10 = 2 x 5' vs ''   e.g. challenge-144/david-santiago/raku/ch-1.raku
+    1  OUTPUT DIFF: '4 6 9 10 14 15 21 22 25 26 33 34 35 ' vs ''   e.g. challenge-144/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: '4,6,9,10,14,15,21,22,25,26,33,34,35,' vs ''   e.g. challenge-144/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '4, 6, 9, 10, 14, 15, 21, 22, 25, 26,' vs ''   e.g. challenge-144/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '1, 2, 3, 4, 6, 8, 11, 13, 16, 18' vs '1, 2, 3, 4, 6, 10, 11, 15, 18, 20'   e.g. challenge-144/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '32' vs '0'   e.g. challenge-145/arne-sommer/raku/ch-1.raku
+    1  OUTPUT DIFF: '104743' vs '(Any)'   e.g. challenge-146/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '7933' vs 'sub { ... }'   e.g. challenge-146/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '104743' vs ''   e.g. challenge-146/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '2 3 5 7 13 17 23 37 43 47 53 67 73 8' vs ''   e.g. challenge-147/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: '[2 3 5 7 13 17 23 37 43 47 53 67 73 ' vs '[]'   e.g. challenge-147/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '(2 4 6 30 32 34 36 40 42 44 46 50 52' vs '(3 4 5 (60) 2 4 6)'   e.g. challenge-148/wambash/raku/ch-1.raku
+    1  OUTPUT DIFF: '0, 1, 2, 3, 5, 8, 10, 11, 12, 14, 17' vs '0, 0..^9223372036854775807'   e.g. challenge-149/bruce-gray/raku/ch-1.raku
+    1  DIES: Type check failed in assignment to $sum; expected Int but go   e.g. challenge-149/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: '0' vs '3'   e.g. challenge-149/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '1 2 3 5 6 7 10 11 13 14 15 17 19 21 ' vs ''   e.g. challenge-150/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Input: Output: 0' vs 'Input: Output: '   e.g. challenge-151/2colours/raku/ch-1.raku
+    1  OUTPUT DIFF: '(2 4 5) -> 7' vs '(2 4 5) -> 0'   e.g. challenge-151/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '8' vs '2'   e.g. challenge-152/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '22' vs '20'   e.g. challenge-152/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '(1 2 4 10 34 154 874 5914 46234 4091' vs '(1 1 1 1 1 1 1 1 1 1)'   e.g. challenge-153/alexander-pankoff/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Missing:  LERP' vs 'Missing:  LERP\tTrue'   e.g. challenge-154/0rir/raku/ch-1.raku
+    1  DIES: next without loop construct   e.g. challenge-154/arne-sommer/raku/ch-2.raku
+    1  OUTPUT DIFF: '(2 3 5 7 37 151 3329 23833 130912042' vs '()'   e.g. challenge-154/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: 'LERP' vs ''   e.g. challenge-154/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '2, 3, 5, 7, 37, 151, 3329, 23833, 13' vs ''   e.g. challenge-154/mark-senn/raku/ch-2.raku
+    1  OUTPUT DIFF: '3, 5, 7, 13, 17, 19, 23, 37' vs '3, 7, 19, 23, 37, 67, 71, 107'   e.g. challenge-155/jaldhar-h-vyas/raku/ch-1.raku
+    1  DIES-MID: bad annot -- unreachable w/ (Int)   e.g. challenge-156/0rir/raku/ch-2.raku
+    1  DIES: Cannot resolve caller is-brazilian(); no matching multi cand   e.g. challenge-157/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '2, 3, 5, 7, 11, 23, 29, 41, 43, 47, ' vs ''   e.g. challenge-158/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: '7, 19, 37, 61, 127, 271, 331, 397, 5' vs ''   e.g. challenge-158/feng-chang/raku/ch-2.raku
+    1  OUTPUT DIFF: '(2 3 5 7 11 23 29 41 43 47 61 67 83 ' vs '()'   e.g. challenge-158/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '...' vs ''   e.g. challenge-158/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '(7 19 37 61 127 271 331 397 547 631 ' vs '()'   e.g. challenge-158/mark-anderson/raku/ch-2.raku
+    1  DIES-MID: Impossible case: $rem = (UInt)   e.g. challenge-159/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Input: @n = Output: 0' vs 'Input: @n = Output: '   e.g. challenge-160/2colours/raku/ch-2.raku
+    1  OUTPUT DIFF: 'One is three, three is five, five is' vs 'Zero is zero, four is magic.'   e.g. challenge-160/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Five is four, four is magic.' vs 'Zero is four, four is magic.'   e.g. challenge-160/polettix/raku/ch-1.raku
+    1  METHOD GAP: No such method 'from-Str'   e.g. challenge-162/0rir/raku/ch-1.raku
+    1  DIES: [p l a y f i r e x m b c d g h k n o q s t u v w z]   e.g. challenge-162/2colours/raku/ch-2.raku
+    1  OUTPUT DIFF: 'hide the gold in the tree stump -> b' vs 'hide the gold in the tree stump -> '   e.g. challenge-162/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '[[p l a y f] [i r e x m] [b c d g h]' vs '[[a b c d e] [f g h k l] [m n o p q]'   e.g. challenge-162/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: 'bmodzbxdnabekudmuixmmouvif' vs ''   e.g. challenge-162/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: "'bmodzbxdnabekudmuixmkzzryi'" vs "''"   e.g. challenge-162/rick-bychowski/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ISBN-13 check digit for 978-0-306-40' vs 'ISBN-13 check digit for 978-0-306-40'   e.g. challenge-162/robert-dicicco/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 7' vs 'Output: 0'   e.g. challenge-163/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '   1   5   4   3   2   6   7' vs '%$(4)s%$(4)s%$(4)s%$(4)s%$(4)s%$(4)s'   e.g. challenge-163/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Input: @n = Output: -1' vs 'Input: @n = Output: 0'   e.g. challenge-163/2colours/raku/ch-1.raku
+    1  METHOD GAP: No such method 'item'   e.g. challenge-164/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'First 8 Happy Numbers:' vs 'All Happy Numbers Found:'   e.g. challenge-164/rick-bychowski/raku/ch-2.raku
+    1  OUTPUT DIFF: '333,129' vs '333,'   e.g. challenge-165/polettix/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'once'   e.g. challenge-167/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '113 131 197 199 311 337 373 719 733 ' vs ''   e.g. challenge-167/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '(2 3 5 7 17 29 277 367 853 14197 437' vs '(2 3)'   e.g. challenge-168/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '(2 3 5 7 17 29 277 367 853 14197 437' vs '(3)'   e.g. challenge-168/mark-anderson/raku/ch-1.raku
+    1  DIES: Cannot resolve caller brilliant(); no matching multi candida   e.g. challenge-169/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '(72 108 200 288 392 432 500 648 675 ' vs '(1000 103823 10648 110592 117649 121'   e.g. challenge-169/mark-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '4, 6, 9, 10, 14, 15, 21, 25, 35, 49,' vs ''   e.g. challenge-169/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '72, 108, 200, 288, 392, 432, 500, 64' vs ''   e.g. challenge-169/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: 'P(1) = 2' vs ''   e.g. challenge-170/2colours/raku/ch-1.raku
+    1  OUTPUT DIFF: '1 2 6 30 210 2310 30030 510510 96996' vs ' 0'   e.g. challenge-170/habere-et-dispetire/raku/ch-1.raku
+    1  OUTPUT DIFF: ' 5  6 10 12 ' vs ' 5 '   e.g. challenge-170/jaldhar-h-vyas/raku/ch-2.raku
+    1  OUTPUT DIFF: '(5 6 10 12)' vs '5'   e.g. challenge-170/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: 'P(1) = 2           (1x2)' vs 'P(1) = 1           (1x)'   e.g. challenge-170/rick-bychowski/raku/ch-1.raku
+    1  OUTPUT DIFF: '[  5  6 10 12 ]' vs '[  5  0  0  0 ]'   e.g. challenge-170/rick-bychowski/raku/ch-2.raku
+    1  DIES: Unsupported operator '∘'   e.g. challenge-171/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: '1..8' vs '(0 0 0 0 0)'   e.g. challenge-172/bruce-gray/raku/ch-2.raku
+    1  DIES: logic error   e.g. challenge-173/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '(2 3 7 43 1807 3263443 1065005695080' vs '(2 3 2 2 2 2 2 2 2 2)'   e.g. challenge-173/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: '3' vs ''   e.g. challenge-173/mark-anderson/raku/ch-2.raku
+    1  DIES-MID: stupid   e.g. challenge-174/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '0' vs '[]'   e.g. challenge-174/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: '[[0 1 2] [0 2 1] [1 0 2] [1 2 0] [2 ' vs '[0 1 2 sub { ... } 0 1 sub { ... } 2'   e.g. challenge-174/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'checking length 1...' vs '[]'   e.g. challenge-174/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '10, 12, 14, 16, 18, 21, 23, 25, 27, ' vs '1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1'   e.g. challenge-176/2colours/raku/ch-2.raku
+    1  DIES-MID: Type check failed in assignment to $t; expected Int but got    e.g. challenge-176/roger-bell-west/raku/ch-2.p6
+    1  OUTPUT DIFF: '(10 12 14 16 18 21 23 25 27 30 32 34' vs '(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15'   e.g. challenge-176/simon-proctor/raku/ch-2.raku
+    1  OUTPUT DIFF: '10,12,14,16,18,21,23,25,27,30,32,34,' vs '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,'   e.g. challenge-176/ulrich-rieke/raku/ch-2.raku
+    1  DIES-MID: Failed   e.g. challenge-177/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'False' vs 'True'   e.g. challenge-177/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: '13' vs '1'   e.g. challenge-177/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '101' vs ''   e.g. challenge-177/simon-proctor/raku/ch-2.raku
+    1  METHOD GAP: No such method 'day-fraction'   e.g. challenge-178/athanasius/raku/ch-2.raku
+    1  METHOD GAP: No such method 'DateTime'   e.g. challenge-178/cheok-yin-fung/raku/ch-2.raku
+    1  OUTPUT DIFF: '2022-08-01T14:30:00Z' vs '2022-08-01T10:30:00Z'   e.g. challenge-178/luca-ferrari/raku/ch-2.p6
+    1  SUB GAP: Undefined routine 'SparkSteps'   e.g. challenge-179/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ninety-ninth' vs 'th'   e.g. challenge-179/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: "Output: 0 as 'R' is the first unique" vs "Output: R as 'R' is the first unique"   e.g. challenge-180/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '(4,5)' vs '()'   e.g. challenge-180/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Input: @n = (@1 4 2 3 5) and $i = 3' vs 'Input: @n = (@$1 4 2 3 5) and $i = 3'   e.g. challenge-180/robert-dicicco/raku/ch-2.raku
+    1  METHOD GAP: No such method 'collate'   e.g. challenge-181/2colours/raku/ch-1.raku
+    1  OUTPUT DIFF: 'about All all could end he how it th' vs 'All.... about all could end he how i'   e.g. challenge-181/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '2022-08-02' vs '1'   e.g. challenge-181/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: 'about All all could end he how it th' vs 'All about all could end he how it su'   e.g. challenge-181/steve-g-lynn/raku/ch-1.p6
+    1  OUTPUT DIFF: '    /a/b/c' vs '    /a/b/c/1'   e.g. challenge-182/0rir/raku/ch-2.raku
+    1  DIES: No such method '&zip' for type List   e.g. challenge-182/massa/raku/ch-2.raku
+    1  OUTPUT DIFF: '/a/b/c' vs ''   e.g. challenge-182/polettix/raku/ch-2.raku
+    1  METHOD GAP: No such method 'day-of-month'   e.g. challenge-183/cheok-yin-fung/raku/ch-2.raku
+    1  OUTPUT DIFF: '2019-02-10 2022-11-01: 3 year(s) 264' vs '2019-01-01 2022-01-01: 3 year(s)   0'   e.g. challenge-183/laurent-rosenfeld/raku/ch-2.raku
+    1  DIES-MID: Ill formed ab1234   e.g. challenge-184/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '[001122 013334]' vs '[031122 043334]'   e.g. challenge-184/arne-sommer/raku/ch-1.raku
+    1  OUTPUT DIFF: '(001234 015678 021342)' vs '(001234 15678 21342)'   e.g. challenge-184/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '12__34567.a\t => xx__xx567.a' vs '1234567.a\t => xxxx567.a'   e.g. challenge-185/laurent-rosenfeld/raku/ch-2.raku
+    1  DIES: Cannot modify a readonly value   e.g. challenge-185/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'xx-xxe-123' vs 'ab-cde-123'   e.g. challenge-185/polettix/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'List'   e.g. challenge-186/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: "Output: 'startᎱ썀AEIOUaEiOUIEeଽߗᎭ ᏂߵᎵ" vs "Output: '(Any)'"   e.g. challenge-186/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '@a: @b: zip(@a, @b):  ' vs '@a: @b: zip(@a, @b): '   e.g. challenge-186/feng-chang/raku/ch-1.raku
+    1  SUB GAP: Undefined routine 'NFKD'   e.g. challenge-186/kueppo-wesley/raku/ch-2.raku
+    1  OUTPUT DIFF: '(1 2 3 4 a b c d)' vs '1a2b3c4d'   e.g. challenge-186/luca-ferrari/raku/ch-1.p6
+    1  DIES: Unsupported operator ','   e.g. challenge-186/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'aEiOU whatever123 AEIOU' vs 'aEiOU32whatever49505132AEIOU'   e.g. challenge-186/polettix/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'qqx'   e.g. challenge-186/steve-g-lynn/raku/ch-2.p6
+    1  OUTPUT DIFF: 'Running the test suite' vs 'ERROR: Invalid month ""'   e.g. challenge-187/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: '1..6' vs '1..0'   e.g. challenge-187/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Number of days together for dates 12' vs 'Number of days together for dates 12'   e.g. challenge-187/laurent-rosenfeld/raku/ch-1.raku
+    1  SUB GAP: Undefined routine 'ff'   e.g. challenge-187/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 5' vs 'Output: 2'   e.g. challenge-188/robert-dicicco/raku/ch-2.raku
+    1  DIES: Cannot resolve caller total-zero(); no matching multi candid   e.g. challenge-188/steve-g-lynn/raku/ch-2.p6
+    1  OUTPUT DIFF: '1 3 3 2 \t => 3 3' vs '1 3 3 2 \t => 2'   e.g. challenge-189/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'e' vs '(e)'   e.g. challenge-189/robert-dicicco/raku/ch-1.raku
+    1  OUTPUT DIFF: '11 \t -> AA, K' vs '11 \t -> , '   e.g. challenge-190/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Perl:1' vs 'Perl:0'   e.g. challenge-190/steve-g-lynn/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Input: @list = $(2, 6, 3, 1)' vs 'Input: @list = (2, 6, 3, 1)'   e.g. challenge-191/0rir/raku/ch-1.raku
+    1  DIES: Type check failed in assignment to $max; expected Int but go   e.g. challenge-191/mohammad-anwar/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 4' vs 'Output: Int'   e.g. challenge-192/0rir/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'task1'   e.g. challenge-192/bruce-gray/raku/ch-1.raku
+    1  DIES: Cannot modify an immutable List ((0 5))   e.g. challenge-192/massa/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: bob' vs 'Output: Nil'   e.g. challenge-193/0rir/raku/ch-2.raku
+    1  DIES: Cannot resolve caller task1(); no matching multi candidate   e.g. challenge-193/bruce-gray/raku/ch-1.raku
+    1  DIES-MID: More than one oddball   e.g. challenge-193/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: '(adc wzy abc) -> abc' vs ''   e.g. challenge-193/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '00' vs ''   e.g. challenge-193/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '(abc)' vs '()'   e.g. challenge-193/steve-g-lynn/raku/ch-2.p6
+    1  OUTPUT DIFF: 'Output: 1   because: aaaa cccc iiii ' vs 'Output: sub { ... }   because: aaaa '   e.g. challenge-194/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '?5:00 => 1' vs '?5:00 => (Any)'   e.g. challenge-194/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '1' vs 'Invalid input'   e.g. challenge-194/steve-g-lynn/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Output: 147' vs 'Output: 1'   e.g. challenge-195/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Input: @array =  (9, 10, 11, 12, 13,' vs 'Input: @array =  ((9, 10, 11, 12, 13'   e.g. challenge-196/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '1 3 5 0 0 0' vs '1 0 3 0 0 5'   e.g. challenge-197/deadmarshal/raku/ch-1.raku
+    1  OUTPUT DIFF: '1 0 3 0 0 5     => (1 3 5 0 0 0)' vs '1 0 3 0 0 5     => ((1 3 5) (0 0 0))'   e.g. challenge-197/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '(5 6 1 4 1 1)' vs '((5 6) (1 4) (1 1))'   e.g. challenge-197/steve-g-lynn/raku/ch-2.p6
+    1  OUTPUT DIFF: '2 5 8 1              => 2' vs '2 5 8 1              => 1'   e.g. challenge-198/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 2 - 4 <-- 7 2 3 $[3, 0, 1, 1, 9, ' vs 'ok 2 - 4 <-- 7 2 3 [3, 0, 1, 1, 9, 7'   e.g. challenge-199/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '4' vs '20'   e.g. challenge-199/steve-g-lynn/raku/ch-2.p6
+    1  OUTPUT DIFF: ' ------   --------   -------- ' vs ' ------         |        |  ------  '   e.g. challenge-200/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '(1,2,3), (2,3,4), (1,2,3,4)' vs '(1 2 3,2 3 4,1 2 3 4)'   e.g. challenge-200/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: '      | |     | |     |' vs '      | |     | |     |       | |   '   e.g. challenge-200/polettix/raku/ch-2.raku
+    1  METHOD GAP: No such method 'next'   e.g. challenge-201/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '0' vs 'std\terr'   e.g. challenge-202/polettix/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 1 - Example 1' vs 'ERROR: Malformed matrix string "[ 1,'   e.g. challenge-204/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: '[ 1 2 ]' vs '[ @1 2 ]'   e.g. challenge-204/pip/raku/ch-2.raku
+    1  OUTPUT DIFF: '1..3' vs '(Any)'   e.g. challenge-205/barroff/raku/ch-1.raku
+    1  OUTPUT DIFF: '(1,2,3,4,5,6,7) => 7;' vs '(1,2,3,4,5,6,7) => 0;'   e.g. challenge-205/pip/raku/ch-2.raku
+    1  DIES: No such method 'Int×60×60' for type Str   e.g. challenge-206/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '00:00 23:55 20:00         => ()' vs '00:00 23:55 20:00         => (Any)'   e.g. challenge-206/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '("00:00", "23:55", "20:00"         )' vs '("00:00", "23:55", "20:00"         )'   e.g. challenge-206/pip/raku/ch-1.raku
+    1  OUTPUT DIFF: '(1,2,3,4) => 4;' vs '(1,2,3,4) => 0;'   e.g. challenge-206/pip/raku/ch-2.raku
+    1  OUTPUT DIFF: '[alaska dad]' vs '[]'   e.g. challenge-207/deadmarshal/raku/ch-1.raku
+    1  OUTPUT DIFF: '[Alaska Dad]' vs '[Hello Hello Hello Alaska Alaska Ala'   e.g. challenge-207/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '10 8 5 4 3      => 4' vs '10 8 5 4 3      => 3'   e.g. challenge-207/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '(10,8,5,4,3) => 4;' vs '(3,4,5,8,10,sub { ... }) => 6;'   e.g. challenge-207/pip/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Running the test suite' vs 'ERROR: Missing list separator "-"'   e.g. challenge-208/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Perl,Raku' vs 'Perl'   e.g. challenge-208/luca-ferrari/raku/ch-1.p6
+    1  OUTPUT DIFF: '' vs 'Missing value 0'   e.g. challenge-208/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: '(1,2,2,4) => (2,3);' vs '(1,2,2,4,sub { ... }) => (2,3);'   e.g. challenge-208/pip/raku/ch-2.raku
+    1  DIES-MID: Cannot invoke non-Callable value of type Version   e.g. challenge-208/roger-bell-west/raku/ch-1.p6
+    1  OUTPUT DIFF: '1..6666' vs '1..0'   e.g. challenge-209/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '    $["A01", "a010", "a011", "CCCC"]' vs '    ["A01", "a010", "a011", "CCCC"]'   e.g. challenge-209/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '\t[A a1@a.com a2@a.com a3@a.com]' vs '\t[A a1@a.com a3@a.com]'   e.g. challenge-209/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: "[ ['A', 'a1@a.com', 'a2@a.com']," vs "[ ['A a1@a.com a2@a.com', 'B b1@b.co"   e.g. challenge-209/pip/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 24' vs 'Output: &sum-all-occurances-me-prece'   e.g. challenge-210/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '()' vs '(, , )'   e.g. challenge-210/polettix/raku/ch-2.raku
+    1  METHOD GAP: No such method 'skip'   e.g. challenge-211/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: '[ [4, 3, 2, 1],' vs '[  ] => 1;'   e.g. challenge-211/pip/raku/ch-1.raku
+    1  OUTPUT DIFF: '-----> (1 2 7 8) (3 4 5 6)   4.5 : 4' vs '-----> (1 2 3 4) (1 2 3 4)   2.5 : 2'   e.g. challenge-211/robert-dicicco/raku/ch-2.raku
+    1  DIES-MID: No such method 'Mu::new' for type Rot-n   e.g. challenge-212/0rir/raku/ch-1.raku
+    1  DIES-MID: No such method 'Mu::new' for type All-seq   e.g. challenge-212/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: Raku' vs 'Output: Cwtj'   e.g. challenge-212/robert-dicicco/raku/ch-1.raku
+    1  OUTPUT DIFF: '(1,2,3,4,5,6) => (2,4,6,1,3,5);' vs '(1,2,3,4,5,6) => (2,4,6,1,3,5,sub { '   e.g. challenge-213/pip/raku/ch-1.raku
+    1  OUTPUT DIFF: '-1' vs '()'   e.g. challenge-213/robert-dicicco/raku/ch-1.raku
+    1  OUTPUT DIFF: '0 - 0 0 0 1          => 0' vs '0 - 0 0 0 1          => '   e.g. challenge-215/laurent-rosenfeld/raku/ch-2.raku
+    1  METHOD GAP: No such method 'Order'   e.g. challenge-217/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '10 3 2          => 3210' vs '10 3 2          => 1032'   e.g. challenge-217/laurent-rosenfeld/raku/ch-2.raku
+    1  METHOD GAP: No such method 'size'   e.g. challenge-222/polettix/raku/ch-2.raku
+    1  OUTPUT DIFF: '3 1 5 8    => 167' vs '3 1 5 8    => 99'   e.g. challenge-223/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: True             set require' vs 'Output: &func(apple, leap)          '   e.g. challenge-224/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '(0)' vs '(2)'   e.g. challenge-225/luca-ferrari/raku/ch-2.p6
+    1  DIES: Unsupported operator '-='   e.g. challenge-226/bruce-gray/raku/ch-2.raku
+    1  METHOD GAP: No such method 'mm-dd-yyyy'   e.g. challenge-227/ash/raku/ch-1.raku
+    1  OUTPUT DIFF: 'IV + V => (9) IX' vs 'IV + V => () nulla (they knew about '   e.g. challenge-227/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: 'IV + V     => IX' vs 'IV + V     => VIV'   e.g. challenge-227/laurent-rosenfeld/raku/ch-2.raku
+    1  METHOD GAP: No such method 'arabic'   e.g. challenge-227/mark-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'There are 1 Friday 13th in !' vs 'There are 2 Friday 13th in !'   e.g. challenge-227/ulrich-rieke/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 0' vs 'Output: &func(@str)'   e.g. challenge-229/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 4 - Disjoint' vs 'ok 4 - Disjoint '   e.g. challenge-229/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'abc bce cae  => 1' vs 'abc bce cae  => 3'   e.g. challenge-229/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '4,2' vs '2,4'   e.g. challenge-229/luca-ferrari/raku/ch-2.p6
+    1  OUTPUT DIFF: 'Output: (1, 3, 4, 5, 6)' vs 'Output: ()'   e.g. challenge-230/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: ( 3 2 )' vs 'Output: ( )'   e.g. challenge-231/robert-dicicco/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Ouput: 1 -1 -2 -2 4 4 4 4 -4 -4 -4 -' vs 'Ouput: &freq(@int)'   e.g. challenge-233/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '1 1 2 2 2 3               => [3 1 1 ' vs '1 1 2 2 2 3               => [1 1 2 '   e.g. challenge-233/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: e, l, l' vs 'Output: &_str(func( @word))'   e.g. challenge-234/0rir/raku/ch-1.raku
+    1  SUB GAP: Undefined routine 'BagHash'   e.g. challenge-234/roger-bell-west/raku/ch-1.p6
+    1  OUTPUT DIFF: 'Output: (1, 0, 0, 2, 3, 0, 0, 4)' vs 'Output: ()'   e.g. challenge-235/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: True' vs 'Output: &func(@bill)'   e.g. challenge-236/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '\tLoop: [3 8 7 18 9 16 12 17 2]' vs '\tLoop: [6 13 5 0 4 15 1]'   e.g. challenge-236/robert-dicicco/raku/ch-2.raku
+    1  METHOD GAP: No such method 'first-date-in-month'   e.g. challenge-237/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 7' vs 'Output: &func( @int)'   e.g. challenge-237/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 6 - All 3653 are correct' vs 'ok 6 - All 0 are correct'   e.g. challenge-237/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 50 707 57 777 999 1999 9991' vs 'Output: &sort-by-mult-reds-then-valu'   e.g. challenge-238/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '15 99 1 34      => 1, 15, 34, 99' vs '15 99 1 34      => 1, 15, 34, 99, su'   e.g. challenge-238/laurent-rosenfeld/raku/ch-2.raku
+    1  METHOD GAP: No such method 'invert'   e.g. challenge-238/robert-dicicco/raku/ch-2.raku
+    1  METHOD GAP: No such method 'last'   e.g. challenge-239/ianrifkin/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 2' vs 'Output: 5'   e.g. challenge-239/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '2' vs '13'   e.g. challenge-239/razetime/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'fc'   e.g. challenge-240/deadmarshal/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: true' vs 'Output: false'   e.g. challenge-240/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Running the test suite' vs 'ERROR: No separator character found'   e.g. challenge-242/athanasius/raku/ch-1.raku
+    1  DIES: Unsupported operator '='   e.g. challenge-242/clifton-wood/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Array One: Array Two: [] []' vs ''   e.g. challenge-242/feng-chang/raku/ch-1.raku
+    1  OUTPUT DIFF: '(1, 4) => num[1] (3) = 3 > 2 * num[4' vs '------------------------------------'   e.g. challenge-243/clifton-wood/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 1 - (8, 1, 2, 2, 3) -> (4, 0, 1, ' vs 'ok 1 - (8, 1, 2, 2, 3) -> @(4, 0, 1,'   e.g. challenge-244/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Running the test suite' vs 'ERROR: The input lists have differen'   e.g. challenge-245/athanasius/raku/ch-1.raku
+    1  SUB GAP: Undefined routine 'Hash'   e.g. challenge-245/barroff/raku/ch-1.p6
+    1  OUTPUT DIFF: 'abcdbca              => bc' vs 'abcdbca              => ab'   e.g. challenge-247/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'e - loveleetcode    => 3 2 1 0 1 0 0' vs 'e - loveleetcode    => 3 2 1 0 1 2 3'   e.g. challenge-248/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 1 -   0 <-  10 R% $(0, 1, 2)' vs 'ok 1 -   0 <-  10 R% (0, 1, 2)'   e.g. challenge-250/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '6' vs '2'   e.g. challenge-250/deadmarshal/raku/ch-2.raku
+    1  OUTPUT DIFF: '6' vs '[4 2 0 6 4]'   e.g. challenge-250/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 87' vs 'Output: &cat-head-tail( @int)'   e.g. challenge-251/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '15 => True' vs 'Set(15)'   e.g. challenge-251/bn-ssotka/raku/ch-2.raku
+    1  OUTPUT DIFF: '((3 7 8) (9 11 13) (15 16 17))      ' vs '((3 7 8) (9 11 13) (15 16 17))      '   e.g. challenge-251/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: '15' vs '3'   e.g. challenge-251/lubos-kolouch/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 15' vs 'Output: 15\tTrue'   e.g. challenge-251/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '(1 3 5 7 9 11 13 15)' vs '0'   e.g. challenge-252/bn-ssotka/raku/ch-1.raku
+    1  DIES-MID: Failed: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 2   e.g. challenge-252/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: 'one.two.three four.five six    => [o' vs 'one.two.three                  => [o'   e.g. challenge-253/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: '2, 0, 3, 1, 4' vs '0, 1, 2, 3, 4'   e.g. challenge-253/luca-ferrari/raku/ch-2.raku
+    1  DIES-MID: $t ('') should be 1 char more than $s ('')   e.g. challenge-255/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Perl     Preel    => e' vs 'Perl     Preel    => e\t1'   e.g. challenge-255/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Joe hit a ball, the hit ball  ... =>' vs 'Joe hit a ball, the hit ball  ... =>'   e.g. challenge-255/laurent-rosenfeld/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 2' vs 'Output: &reversed-wordpair-ct( @word'   e.g. challenge-256/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'a1b2c3d4' vs 'a 1b 2c 3d 4'   e.g. challenge-256/clifton-wood/raku/ch-2.raku
+    1  OUTPUT DIFF: 'abcd 1234    => a1b2c3d4' vs 'abcd 1234    => a 1 slip\tTrueb 2c 3d'   e.g. challenge-256/laurent-rosenfeld/raku/ch-2.raku
+    1  METHOD GAP: No such method 'any'   e.g. challenge-257/mark-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Input: @int = (2, 8, 1024, 256)' vs 'Input: @int = @(2, 8, 1024, 256)'   e.g. challenge-258/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 38' vs 'Output: &func(4, @int)'   e.g. challenge-258/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 2' vs 'Output: 3'   e.g. challenge-258/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '[｢video=foobar｣' vs '{}'   e.g. challenge-259/luca-ferrari/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 35133' vs 'Output: &gen(Supercad)'   e.g. challenge-260/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: ' Output: 9' vs ' Output: &func(3, @in)'   e.g. challenge-262/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Running the test suite' vs 'ERROR: Malformed item pair "(Str)"'   e.g. challenge-263/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: (1 2)' vs 'Output: (1, 2)'   e.g. challenge-263/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Running the test suite' vs 'ERROR: "(Str)" is not a valid intege'   e.g. challenge-264/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'There are 2 letters that are both up' vs 'There is no greatest letter.'   e.g. challenge-264/clifton-wood/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: L' vs 'Output: Y'   e.g. challenge-264/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '3' vs '[3]'   e.g. challenge-265/asherbhs/raku/ch-1.raku
+    1  OUTPUT DIFF: 'accbbb' vs ''   e.g. challenge-265/asherbhs/raku/ch-2.raku
+    1  OUTPUT DIFF: 'accbbb' vs 'abc'   e.g. challenge-265/deadmarshal/raku/ch-2.raku
+    1  OUTPUT DIFF: 'aBc 11c  - accbbb abc abbc      => a' vs 'aBc 11c  - accbbb abc abbc      => ['   e.g. challenge-265/laurent-rosenfeld/raku/ch-2.raku
+    1  METHOD GAP: No such method 'splice'   e.g. challenge-266/mark-anderson/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'hyper'   e.g. challenge-267/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: (3, 60)' vs 'Output: (1, 0)'   e.g. challenge-267/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: (3, 2, 5, 4)' vs 'Output: (3 2, 5 4)'   e.g. challenge-268/packy-anderson/raku/ch-2.raku
+    1  DIES-MID: Cannot modify an immutable List ((2 3 3 3))   e.g. challenge-270/bruce-gray/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: (64, 128, 256, 512, 1024)' vs 'Output: (1024, 512, 256, 128, 64)'   e.g. challenge-271/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 1 - Example 1' vs 'ERROR: Invalid IP "1.1.1.1    "'   e.g. challenge-272/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: '(Any)' vs ''   e.g. challenge-272/ulrich-rieke/raku/ch-1.raku
+    1  DIES-MID: Unsupported prefix 'dimslip'   e.g. challenge-273/mark-anderson/raku/ch-2.raku
+    1  METHOD GAP: No such method 'match'   e.g. challenge-273/roger-bell-west/raku/ch-1.p6
+    1  SUB GAP: Undefined routine 'Xx'   e.g. challenge-274/bruce-gray/raku/ch-1.raku
+    1  METHOD GAP: No such method 'repeated'   e.g. challenge-277/bruce-gray/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 2' vs 'Output: 1'   e.g. challenge-277/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "Perl and Raku are cousins"' vs 'Output: "1\tPerl 2\tand 3\tRaku 4\tare 5'   e.g. challenge-278/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 1 - Example 1' vs 'ERROR: Invalid letter "R"'   e.g. challenge-279/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: 'PERL' vs '0000'   e.g. challenge-279/deadmarshal/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: PERL' vs 'Output: 1\tP2\tE3\tR4\tL'   e.g. challenge-279/packy-anderson/raku/ch-1.raku
+    1  SUB GAP: Undefined routine 'Δ2N-ct'   e.g. challenge-281/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'g2 a8  => 4' vs 'g2 a8  => (Any)'   e.g. challenge-281/laurent-rosenfeld/raku/ch-2.raku
+    1  DIES: Unsupported operator '.[1]'   e.g. challenge-282/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Set(1)' vs 'Set(1 3)'   e.g. challenge-283/deadmarshal/raku/ch-1.raku
+    1  SUB GAP: Undefined routine 'Slip'   e.g. challenge-284/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '((B C) (D B) (C A))  => A' vs '((B C) (D B) (C A))  => A\tTrue'   e.g. challenge-285/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: A' vs 'Output: A\tTrue'   e.g. challenge-285/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: '$?FILE.IO.words.pick;' vs '/Users/ash/perlweeklychallenge-club/'   e.g. challenge-286/laurent-rosenfeld/raku/ch-1.raku
+    1  OUTPUT DIFF: 'true' vs 'false'   e.g. challenge-287/ppentchev/raku/scripts/ch-2.raku
+    1  OUTPUT DIFF: 'ok 5 - Zero' vs 'ok 5 - Zero     '   e.g. challenge-288/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 11' vs 'Output: 9 11'   e.g. challenge-288/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '1' vs '-1'   e.g. challenge-292/asherbhs/raku/ch-1.raku
+    1  SUB GAP: Undefined routine 'Ro'   e.g. challenge-294/wambash/raku/ch-2.raku
+    1  DIES-MID: No such method '&abs' for type Int   e.g. challenge-301/0rir/raku/ch-2.raku
+    1  DIES-MID: Undefined routine 'R÷'   e.g. challenge-304/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 1 - Example 1' vs 'ERROR: Invalid character found in wo'   e.g. challenge-305/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: '(, )' vs '()'   e.g. challenge-310/jaldhar-h-vyas/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'with'   e.g. challenge-311/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: False' vs 'Output: &task(coffeescript, coffescr'   e.g. challenge-313/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 1' vs 'Output: &task( cba daf ghi)'   e.g. challenge-314/0rir/raku/ch-2.raku
+    1  DIES-MID: List contains "".   e.g. challenge-317/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: { pretty task aaabcddddeefff' vs 'Output: "aaa", "dddd", "fff"'   e.g. challenge-318/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "cccc"' vs 'Output: ""'   e.g. challenge-318/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 4' vs 'Output: &task( @list)'   e.g. challenge-319/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 3' vs 'Output: 3 4'   e.g. challenge-319/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '3' vs '2'   e.g. challenge-320/ash/raku/ch-1a.raku
+    1  OUTPUT DIFF: 'ok 14 - True  <- ab*c ∘∘ ad*c' vs 'ok 14 - True  <- @ab*c ∘∘ @ad*c'   e.g. challenge-321/0rir/raku/ch-2.raku
+    1  DIES: Need rakudo version 2023.08 or later.   e.g. challenge-322/0rir/raku/ch-2.raku
+    1  SUB GAP: Undefined routine 'Rxx'   e.g. challenge-326/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '(3 4 4)' vs '((3) (4 4))'   e.g. challenge-326/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: '((4 3) (1 2) (2 3))' vs '()'   e.g. challenge-327/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: [1,2], [2,3], [3,4]' vs 'Output: [1 2,], [2 3,], [3 4,]'   e.g. challenge-327/packy-anderson/raku/ch-2.raku
+    1  METHOD GAP: No such method 'replace-with'   e.g. challenge-328/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "Weekly"' vs 'Output: ""'   e.g. challenge-328/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: "48957, 10, 7430, 105973, 59' vs 'Output: "&task(pqwo48957u10qt7430qr1'   e.g. challenge-329/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'aaA' vs 'YaaAh'   e.g. challenge-329/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: "aaA"' vs 'Output: "Y"'   e.g. challenge-329/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '"Perl is Great"' vs '"Perl is great"'   e.g. challenge-330/massa/raku/ch-2.raku
+    1  OUTPUT DIFF: 'ok 4 - Question' vs 'ok 4 - Question '   e.g. challenge-331/athanasius/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 1 - Example 1' vs 'ok 1 - Example 1   '   e.g. challenge-332/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 9' vs 'Output: &task( @int,2,5)'   e.g. challenge-334/0rir/raku/ch-1.raku
+    1  DIES-MID: Cannot resolve caller expand(); no matching multi candidate   e.g. challenge-335/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Pending' vs 'Draw'   e.g. challenge-335/ash/raku/ch-2.raku
+    1  DIES: Cannot modify an immutable List ((0 0 0))   e.g. challenge-335/mark-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: A' vs 'Output: Pending'   e.g. challenge-335/packy-anderson/raku/ch-2.raku
+    1  DIES: No matching multi candidate for method move   e.g. challenge-335/simon-proctor/raku/ch-2.raku
+    1  METHOD GAP: No such method 'values'   e.g. challenge-336/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Running the test suite' vs '1..0'   e.g. challenge-336/athanasius/raku/ch-2.raku
+    1  DIES-MID: Cannot convert 0+1i to Real: imaginary part not zero   e.g. challenge-337/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 42' vs 'Output: 3'   e.g. challenge-339/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "a"' vs 'Output: &task(aabccba).raku()'   e.g. challenge-340/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 1 - Example 1' vs 'WARNING: Ignoring invalid token ""'   e.g. challenge-340/athanasius/raku/ch-2.raku
+    1  DIES: Unrecognized regex adverb: :r   e.g. challenge-340/mark-anderson/raku/ch-1.raku
+    1  DIES-MID: Value '5' is illegal   e.g. challenge-345/0rir/raku/ch-2.raku
+    1  METHOD GAP: No such method 'none'   e.g. challenge-345/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 2' vs 'Output: &task(()(())'   e.g. challenge-346/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: '6' vs '0'   e.g. challenge-346/ash/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 4' vs 'Output: 6'   e.g. challenge-346/packy-anderson/raku/ch-1.raku
+    1  DIES-MID: Multiple digits required got '12'   e.g. challenge-347/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '1 "-234 567" ' vs '1 "-567" '   e.g. challenge-347/ash/raku/ch-2.raku
+    1  METHOD GAP: No such method 'parse'   e.g. challenge-347/ash/raku/ch-2a.raku
+    1  OUTPUT DIFF: 'Output: Day out of range. Is: 31, sh' vs 'Output: "2025-02-31"'   e.g. challenge-347/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "123-456"' vs 'Output: "123456-456"'   e.g. challenge-347/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: { &task book }' vs 'Output: book'   e.g. challenge-348/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output:  28' vs 'Output:  &task(11:55, 10:47)'   e.g. challenge-348/0rir/raku/ch-2.raku
+    1  DIES-MID: Type check failed in assignment to $diff; expected Int but g   e.g. challenge-348/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: '1st half: "text" (1 vowel)' vs '1st half: "textbook" (3 vowels)'   e.g. challenge-348/packy-anderson/raku/ch-1.raku
+    1  DIES: Unsupported operator '.Str'   e.g. challenge-349/ash/raku/ch-1.raku
+    1  DIES-MID: Impossible case: " "   e.g. challenge-349/athanasius/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 5' vs 'Output: 0'   e.g. challenge-350/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: ("hell", world", wor", ellow' vs 'Output: ("&task(@word).join(\'", \' )"'   e.g. challenge-352/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: (true, false, true, false, t' vs 'Output: (false, false, false, false,'   e.g. challenge-353/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '((9 1 2) (3 4 5) (6 7 8))' vs '(((7 8 9) (1 2 3) (4 5 6)))'   e.g. challenge-354/ash/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: [ [9, 1, 2],' vs 'Output: [ [7, 1, 4],'   e.g. challenge-354/packy-anderson/raku/ch-2.raku
+    1  OUTPUT DIFF: '1,234' vs '1,2,3,4'   e.g. challenge-355/ash/raku/ch-1.raku
+    1  METHOD GAP: No such method 'flat'   e.g. challenge-355/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'ok 6 - OEIS' vs 'ok 6 - OEIS     '   e.g. challenge-356/athanasius/raku/ch-1.raku
+    1  DIES-MID: ===WARNING=== Module JSON::Fast parse error at line N: unexp   e.g. challenge-356/mark-anderson/raku/ch-2.raku
+    1  DIES: Cannot resolve caller kaprekar(); no matching multi candidat   e.g. challenge-357/mark-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: 123' vs 'Output: 123 45 6'   e.g. challenge-358/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "bcd"' vs 'Output: "abc"'   e.g. challenge-358/packy-anderson/raku/ch-2.raku
+    1  DIES-MID: No such method 'Mu::new' for type PerDig   e.g. challenge-359/0rir/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "one pick Raku raku raku Rak' vs 'Output: "&task(Raku raku raku Raku, '   e.g. challenge-360/0rir/raku/ch-2.raku
+    1  METHOD GAP: No such method 'attributes'   e.g. challenge-361/0rir/raku/ch-2.raku
+    1  OUTPUT DIFF: '[4]' vs '-1'   e.g. challenge-361/luca-ferrari/raku/ch-2.raku
+    1  OUTPUT DIFF: 'Output: 8,3,1' vs 'Output: 8,3 1'   e.g. challenge-361/packy-anderson/raku/ch-1.raku
+    1  OUTPUT DIFF: 'Output: "coodddeeee"' vs 'Output: "&task(code)"'   e.g. challenge-362/0rir/raku/ch-1.raku
