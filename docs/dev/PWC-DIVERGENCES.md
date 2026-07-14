@@ -32,6 +32,7 @@ kept as written for that baseline.
 | after batch 5 | 3,480 | 3,294 | — (gated with 6) |
 | after batch 6 (`1fe6351`) | 3,525 | 3,246 | 437 / 158,267 |
 | after batch 7 (`b90ae70`) | 3,811 | 2,960 | 437 / 158,277 |
+| after batch 8 (`dfa43f8`) | 3,907 | 2,863 | 438 / 159,043 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -62,6 +63,11 @@ prompt-at-EOF death class in headless runs); reading a missing file dies
 with Rakudo's message; typed-array gaps read as their type's default
 (`my int @a` → 0, `my Int @b` → (Int)); `sub MAIN (sig);` unit form;
 `~~ tr///` returns a real StrDistance (Str = result, + = count).
+Batch 8 (parse cluster + iteration): statement-condition brace rule
+(`when asc { }`), `.&{…}` calls, real `[X;Y]` multislices with lvalue
+autoviv, `for %h`/`for set()` → Pairs, push-autoviv, `#|[…]` multi-line
+declarator comments, the full bitwise/shift family (`+<` `+>` and all
+compound assigns), `[\,]`, `start =>` pairs, scalar .Array/.List.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
