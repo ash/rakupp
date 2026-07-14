@@ -38,6 +38,7 @@ kept as written for that baseline.
 | after batch 11 (`4580aff`) | 4,045 | 2,724 | 439 / 159,119 |
 | after batch 12 (`1827ddd`) | 4,087 | 2,682 | 440 / 159,205 |
 | batch 12, full re-verification | 4,037 | 2,726 | (same binary) |
+| after batch 13 (`3b526ff`) | 4,043 | 2,720 | 441 / 159,117 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -93,6 +94,8 @@ file could stick as "pass"). Result: ~50 of the ledger passes were
 such flaps; exactly one file regressed vs the round start and it
 proved to be hash-order nondeterminism. The verified figures are the
 honest baseline going forward.
+Batch 13: paramless blocks no longer define implicit $a/$b (a Perl-5-ism
+that shadowed outer variables of those names in every such block).
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
