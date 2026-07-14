@@ -34,6 +34,7 @@ kept as written for that baseline.
 | after batch 7 (`b90ae70`) | 3,811 | 2,960 | 437 / 158,277 |
 | after batch 8 (`dfa43f8`) | 3,907 | 2,863 | 438 / 159,043 |
 | after batch 9 (`da81842`) | 3,931 | 2,839 | 439 / 159,076 |
+| after batch 10 (`e53f4a9`) | 4,044 | 2,725 | 439 / 159,105 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -73,6 +74,10 @@ Batch 9: infix:<=>-family calls (label/fused-token/assign-through),
 with/given statement modifiers run without an implicit block (the
 "Variable not declared" class), anon slurpy decls, `^^=`, sub-grep →
 Seq, combinations inners are Lists.
+Batch 10 (+113 — the majority/histogram cascade): sub min/max/minmax
+flatten list args (`max(values %s)`), for-loop rw params (`<->` /
+`-> $i is rw` write back), rotor(size => gap), dynamic-handle attribute
+assignment ($*OUT.out-buffer = 0).
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
