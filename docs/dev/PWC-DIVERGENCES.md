@@ -39,6 +39,7 @@ kept as written for that baseline.
 | after batch 12 (`1827ddd`) | 4,087 | 2,682 | 440 / 159,205 |
 | batch 12, full re-verification | 4,037 | 2,726 | (same binary) |
 | after batch 13 (`3b526ff`) | 4,043 | 2,720 | 441 / 159,117 |
+| after batch 14 (`ab6e52e`) | 4,047 | 2,716 | 440 / 159,461 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -96,6 +97,9 @@ proved to be hash-order nondeterminism. The verified figures are the
 honest baseline going forward.
 Batch 13: paramless blocks no longer define implicit $a/$b (a Perl-5-ism
 that shadowed outer variables of those names in every such block).
+Batch 14: hyper postfixes (`@w»[0]`, `@n»**2`, `»++`), Str-as-one-item
+indexing (`"ab"[0]` is "ab"; Blob/Buf keep byte views — encode.t
+gained), parameterized types in declaration lists.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
