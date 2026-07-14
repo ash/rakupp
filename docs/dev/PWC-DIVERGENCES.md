@@ -42,70 +42,22 @@ kept as written for that baseline.
 | after batch 14 (`ab6e52e`) | 4,047 | 2,716 | 440 / 159,461 |
 | after batch 15 (`69cbe3e`) | 4,056 | 2,707 | 440 / 159,464 |
 
-Batches 1–3: unit-form MAIN body/signature binding, required-named +
-where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
-fabricated trailing test plan, ÷=/×=/−=, `( stmt; stmt )` sequences,
-`.».method`, `<<qww>>`, `:0x` pairs, typed declaration-list members,
-`so */not *` currying, `.first` Nil/:k/:end, empty .max/.min = ∓Inf.
-Batch 4: `+ints` sigilless slurpies, Any single-item list semantics
-(scalar .sum/.join/.min/.max/.minmax), `$x.take`, Str.parse-base/.indices/
-.chop(n)/.narrow/.UInt, Baggy.kxxv, Rat.base-repeating, Date
-.days-in-month/.last-date-in-month/.day-of-year, sub forms splice/zip
-(:with)/classify, Array()/List()/Set()/Bag()/Mix() as call-position
-constructors. Next front: output-value diffs, the 660 in-solution test
-failures, the `Confused` parse cascade, hang triage.
-Batch 5: subset types in multi-dispatch (base chain + `where`, +2
-specificity), literal signature returns (`--> 1`) at all three `-->`
-sites, `sort {comparator}, @list`.
-Batch 6 (post-GLR list semantics): map/flatmap keep each block result as
-one element (only Slips splice) across all three map paths; prefix `|`
-produces a real Slip outside call arguments too; bare comma lists are
-Lists; .pairs/.kv/.antipairs return Seq; List.minmax → Range and
-Range.minmax → (min max); `ff`/`fff` flip-flop operators. Side effect:
-the roast sprintf-*.t files now build their full test tables (2,282 and
-4,565 rows) and still fully pass.
-Batch 7 (the strictness batch, +286): Str.index/.rindex start positions
-(X::OutOfRange when out of range) — ends the while-index-advance hang
-class; string methods on an undefined Any die like Rakudo (the
-prompt-at-EOF death class in headless runs); reading a missing file dies
-with Rakudo's message; typed-array gaps read as their type's default
-(`my int @a` → 0, `my Int @b` → (Int)); `sub MAIN (sig);` unit form;
-`~~ tr///` returns a real StrDistance (Str = result, + = count).
-Batch 8 (parse cluster + iteration): statement-condition brace rule
-(`when asc { }`), `.&{…}` calls, real `[X;Y]` multislices with lvalue
-autoviv, `for %h`/`for set()` → Pairs, push-autoviv, `#|[…]` multi-line
-declarator comments, the full bitwise/shift family (`+<` `+>` and all
-compound assigns), `[\,]`, `start =>` pairs, scalar .Array/.List.
-Batch 9: infix:<=>-family calls (label/fused-token/assign-through),
-with/given statement modifiers run without an implicit block (the
-"Variable not declared" class), anon slurpy decls, `^^=`, sub-grep →
-Seq, combinations inners are Lists.
-Batch 10 (+113 — the majority/histogram cascade): sub min/max/minmax
-flatten list args (`max(values %s)`), for-loop rw params (`<->` /
-`-> $i is rw` write back), rotor(size => gap), dynamic-handle attribute
-assignment ($*OUT.out-buffer = 0).
-Batch 11: stacked X/Z metaops (`XZ+`), one-level cross/zip operands
-(sublists stay whole), Slip() as a routine.
-Batch 12: element-read itemization (`my @row = @m[0]` keeps the row
-whole — the is-deeply nested-structure class), Z/X at list-infix
-precedence with `Z,` tuples, native-container element types
-(`state int @a` zeros), `*²` superscripts, spaced `/` quote delimiters.
-The re-verification row re-ran the full pass set from scratch (the
-incremental sweeps only re-test mismatches, so a transiently-flapping
-file could stick as "pass"). Result: ~50 of the ledger passes were
-such flaps; exactly one file regressed vs the round start and it
-proved to be hash-order nondeterminism. The verified figures are the
-honest baseline going forward.
-Batch 13: paramless blocks no longer define implicit $a/$b (a Perl-5-ism
-that shadowed outer variables of those names in every such block).
-Batch 14: hyper postfixes (`@w»[0]`, `@n»**2`, `»++`), Str-as-one-item
-indexing (`"ab"[0]` is "ab"; Blob/Buf keep byte views — encode.t
-gained), parameterized types in declaration lists.
-Batch 15 (MAIN strictness): single-MAIN bind checks print Usage and
-exit 2 like Rakudo; `sub USAGE` takes over the failure path; numeric
-argv binds Int params (CLI allomorphs); $*USAGE returns the generated
-usage text byte-identical to Rakudo's, including the aligned option
-list from `#=` trailing declarator pod with [default: X].
+| batch | what changed |
+|---|---|
+| 1–3 | unit-form MAIN body/signature binding; required-named + where-constraint dispatch (named & slurpy); Cool.printf/sprintf; no fabricated trailing test plan; ÷=/×=/−=; `( stmt; stmt )` sequences; `.».method`; `<<qww>>`; `:0x` pairs; typed declaration-list members; `so */not *` currying; `.first` Nil/:k/:end; empty .max/.min = ∓Inf |
+| 4 | `+ints` sigilless slurpies; Any single-item list semantics (scalar .sum/.join/.min/.max/.minmax); `$x.take`; Str.parse-base/.indices/.chop(n)/.narrow/.UInt; Baggy.kxxv; Rat.base-repeating; Date .days-in-month/.last-date-in-month/.day-of-year; sub forms splice/zip(:with)/classify; Array()/List()/Set()/Bag()/Mix() as call-position constructors |
+| 5 | subset types in multi-dispatch (base chain + `where`, +2 specificity); literal signature returns (`--> 1`) at all three `-->` sites; `sort {comparator}, @list` |
+| 6 | post-GLR list semantics: map/flatmap keep each block result as one element (only Slips splice) across all three map paths; prefix `|` produces a real Slip outside call arguments too; bare comma lists are Lists; .pairs/.kv/.antipairs return Seq; List.minmax → Range and Range.minmax → (min max); `ff`/`fff` flip-flop operators. Side effect: the roast sprintf-*.t files now build their full test tables (2,282 and 4,565 rows) and still fully pass |
+| 7 | the strictness batch (+286): Str.index/.rindex start positions (X::OutOfRange when out of range) — ends the while-index-advance hang class; string methods on an undefined Any die like Rakudo (the prompt-at-EOF death class); reading a missing file dies with Rakudo's message; typed-array gaps read as their type's default (`my int @a` → 0, `my Int @b` → (Int)); `sub MAIN (sig);` unit form; `~~ tr///` returns a real StrDistance (Str = result, + = count) |
+| 8 | parse cluster + iteration: statement-condition brace rule (`when asc { }`); `.&{…}` calls; real `[X;Y]` multislices with lvalue autoviv; `for %h`/`for set()` → Pairs; push-autoviv; `#|[…]` multi-line declarator comments; the full bitwise/shift family (`+<` `+>` and all compound assigns); `[\,]`; `start =>` pairs; scalar .Array/.List |
+| 9 | infix:<=>-family calls (label/fused-token/assign-through); with/given statement modifiers run without an implicit block (the "Variable not declared" class); anon slurpy decls; `^^=`; sub-grep → Seq; combinations inners are Lists |
+| 10 | the majority/histogram cascade (+113): sub min/max/minmax flatten list args (`max(values %s)`); for-loop rw params (`<->` / `-> $i is rw` write back); rotor(size => gap); dynamic-handle attribute assignment ($*OUT.out-buffer = 0) |
+| 11 | stacked X/Z metaops (`XZ+`); one-level cross/zip operands (sublists stay whole); Slip() as a routine |
+| 12 | element-read itemization (`my @row = @m[0]` keeps the row whole — the is-deeply nested-structure class); Z/X at list-infix precedence with `Z,` tuples; native-container element types (`state int @a` zeros); `*²` superscripts; spaced `/` quote delimiters |
+| — | the re-verification row re-ran the full pass set from scratch (incremental sweeps only re-test mismatches, so a transiently-flapping file could stick as "pass"): ~50 ledger passes were such flaps; exactly one file regressed vs the round start and it proved to be hash-order nondeterminism. The verified figures are the honest baseline |
+| 13 | paramless blocks no longer define implicit $a/$b (a Perl-5-ism that shadowed outer variables of those names in every such block) |
+| 14 | hyper postfixes (`@w»[0]`, `@n»**2`, `»++`); Str-as-one-item indexing (`"ab"[0]` is "ab"; Blob/Buf keep byte views — encode.t gained); parameterized types in declaration lists |
+| 15 | MAIN strictness: single-MAIN bind checks print Usage and exit 2 like Rakudo; `sub USAGE` takes over the failure path; numeric argv binds Int params (CLI allomorphs); $*USAGE returns the generated usage text byte-identical to Rakudo's, including the aligned option list from `#=` trailing declarator pod with [default: X] |
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
