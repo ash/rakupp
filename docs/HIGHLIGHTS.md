@@ -57,6 +57,10 @@
   anything unsupported falls back to `--bundle` automatically
   ([ARCHITECTURE.md](ARCHITECTURE.md), [NATIVE.md](NATIVE.md)).
 
+…and a fifth: **in the browser**. As **[Raku.js](../rakujs/)** the interpreter
+compiles to **WebAssembly** — same semantics as native, running client-side with
+no server, with an embeddable in-page playground.
+
 ## Speed
 
 - **~12 ms cold start** (vs ~150 ms for Rakudo) — fast enough to shell out to.
@@ -72,6 +76,8 @@
 - Prebuilt archives on [GitHub Releases](https://github.com/ash/rakupp/releases);
   macOS also via `brew install ash/rakupp/rakupp`.
 - CI builds and smoke-tests all three on every push.
+- **The browser**, too — compiled to WebAssembly as **[Raku.js](../rakujs/)**
+  (no server; embeddable playground).
 
 ## Tooling
 

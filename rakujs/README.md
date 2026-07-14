@@ -134,11 +134,3 @@ output through Emscripten's `print` / `printErr` and call the exported function:
   worker on Stop/restart doesn't pile up memory. If the module ever fails to
   instantiate (memory pressure after very heavy use), the page auto-retries a
   couple of times and only then asks for a reload — it doesn't silently hang.
-
-## Publishing (GitHub Pages)
-
-`rakujs.js` / `rakujs.wasm` (and generated `examples.js`) are git-ignored by
-default. To publish the playground, either commit them deliberately
-(`git add -f rakujs/playground/rakujs.* rakujs/playground/examples.js`) or build
-them in CI and upload `rakujs/playground/` as the Pages artifact. Serve `.wasm`
-with `Content-Type: application/wasm` (GitHub Pages already does).

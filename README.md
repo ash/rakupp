@@ -4,8 +4,9 @@ A from-scratch implementation of the [Raku](https://raku.org) programming
 language in **C++17, with no third-party dependencies** — a hand-written lexer,
 parser, and tree-walking evaluator that runs real Raku (classes, roles, grammars,
 regexes, multi-dispatch, junctions, lazy sequences, a bignum tower,
-Unicode-correct strings, and concurrency) and can also **compile** a program to a
-standalone native binary. It is not a fork of Rakudo and shares no code with it;
+Unicode-correct strings, and concurrency), can also **compile** a program to a
+standalone native binary, and — as **[Raku.js](rakujs/)** — **runs in the browser**
+via WebAssembly, no server required. It is not a fork of Rakudo and shares no code with it;
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
@@ -85,6 +86,16 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 `RAKUPP_PARALLEL=1` opts into true CPU parallelism for `start`/worker threads
 (default coordinates under a GIL). Full option and environment-variable reference:
 [the guide](docs/GUIDE.md#command-line-options).
+
+## Run Raku in the browser — Raku.js
+
+**[Raku.js](rakujs/)** is the *same* interpreter compiled to **WebAssembly** with
+Emscripten — the exact semantics as native `rakupp`, running entirely client-side
+with no server. It powers an in-page [playground](rakujs/playground/) (editor +
+live output, with all the [examples/](examples/) built in) and can be embedded in
+any static page to make Raku snippets runnable — handy for docs, tutorials, or a
+course. Build it with `rakujs/build.sh`; details in
+[rakujs/README.md](rakujs/README.md).
 
 ## Documentation
 

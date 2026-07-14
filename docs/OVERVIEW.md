@@ -14,7 +14,8 @@ a hand-written lexer, recursive-descent/Pratt parser, and tree-walking evaluator
 that runs real Raku — classes, roles, grammars, regexes, multi-dispatch,
 junctions, lazy sequences, an arbitrary-precision number tower, and
 Unicode-correct strings — and can additionally **compile** a program to a
-standalone native binary.
+standalone native binary or, as **[Raku.js](../rakujs/)**, run in the browser via
+WebAssembly.
 
 It is **not a fork of Rakudo** and shares no code with it. It targets the Raku
 *language*, measured against [**Roast**](https://github.com/Raku/roast), the
@@ -29,7 +30,7 @@ official specification test suite. The guiding motto:
 | **Language** | Raku, defaulting to 6.d (with 6.e features available) |
 | **Written in** | C++17, zero third-party dependencies |
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
-| **Runs as** | an interpreter **and** an ahead-of-time / native compiler |
+| **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../rakujs/)**) |
 | **Startup** | ~12 ms cold (vs Rakudo's ~150 ms) |
 | **Correctness target** | the Roast suite — ~82% of all individual tests pass; ~29% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
@@ -100,6 +101,11 @@ One front end, four back ends (details in [ARCHITECTURE.md](ARCHITECTURE.md)):
 [OPTIMIZATION.md](OPTIMIZATION.md)). Any construct the native compiler can't yet
 transpile (mainly grammars) transparently falls back to bundling, so `--exe`
 never refuses a program.
+
+**And a fifth target, outside the CLI:** the interpreter also compiles to
+**WebAssembly** as **[Raku.js](../rakujs/)**, so Raku runs entirely in the browser
+with no server. It ships an in-page playground (editor + live output) that you can
+embed anywhere to make Raku examples runnable — see [rakujs/](../rakujs/).
 
 ## How it relates to Rakudo
 
