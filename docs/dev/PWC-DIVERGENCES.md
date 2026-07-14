@@ -35,6 +35,7 @@ kept as written for that baseline.
 | after batch 8 (`dfa43f8`) | 3,907 | 2,863 | 438 / 159,043 |
 | after batch 9 (`da81842`) | 3,931 | 2,839 | 439 / 159,076 |
 | after batch 10 (`e53f4a9`) | 4,044 | 2,725 | 439 / 159,105 |
+| after batch 11 (`4580aff`) | 4,045 | 2,724 | 439 / 159,119 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -78,6 +79,8 @@ Batch 10 (+113 — the majority/histogram cascade): sub min/max/minmax
 flatten list args (`max(values %s)`), for-loop rw params (`<->` /
 `-> $i is rw` write back), rotor(size => gap), dynamic-handle attribute
 assignment ($*OUT.out-buffer = 0).
+Batch 11: stacked X/Z metaops (`XZ+`), one-level cross/zip operands
+(sublists stay whole), Slip() as a routine.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
