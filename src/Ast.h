@@ -179,6 +179,7 @@ struct Param {
     ExprPtr litVal;     // literal parameter, e.g. MAIN('population') — arg must equal this
     ExprPtr defaultVal; // may be null
     std::string namedKey; // external name for `:name($var)` (else = var name)
+    std::string pod;      // `#= description` trailing declarator pod (drives $*USAGE)
     char slurpyKind = 0;  // 'f'=*@ (flatten), 'n'=**@ (no-flatten), '1'=+@ (single-arg rule)
     bool named = false;
     bool slurpy = false;

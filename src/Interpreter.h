@@ -423,6 +423,7 @@ public:
     std::vector<Value> podDom_;       // $=pod structured DOM (Pod::Block values)
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     std::string srcFile_;             // source file path (for $?FILE)
+    std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
     int quietDepth_ = 0;              // inside a `quietly {…}`, warn() is suppressed (codegen bumps it too)
 private:

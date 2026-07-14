@@ -2682,6 +2682,11 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // an rw param must bind a writable container, a default is a fresh value
         if (p.isRw && p.defaultVal)
             error("Cannot use trait 'is rw' on a parameter with a default value");
+        { // trailing `#= description` on this param's line (or continued next line)
+            auto di = declPod_.find(cur().line);
+            if (di == declPod_.end() && pos_ > 0) di = declPod_.find(toks_[pos_ - 1].line);
+            if (di != declPod_.end()) p.pod = di->second;
+        }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
             if (isKind(Tok::Ident)) sigRetType_ = cur().text;
@@ -2872,7 +2877,9 @@ StmtPtr Parser::parseSub(bool isMulti) {
         }
         advance();
     }
+    bool hadBlock = false;
     if (isKind(Tok::LBrace)) {
+        hadBlock = true;
         bool saved = inReactBlock_; inReactBlock_ = false; // whenever in a nested sub is out of scope
         auto blk = parseBlock();
         inReactBlock_ = saved;
@@ -2884,8 +2891,9 @@ StmtPtr Parser::parseSub(bool isMulti) {
         s->body.push_back(std::move(es));
     }
     // `sub MAIN (sig);` with no block: like `unit sub MAIN` — the rest of the
-    // file is the body (a common PWC idiom Rakudo accepts).
-    if (s->body.empty() && s->name == "MAIN" && isKind(Tok::Semicolon)) {
+    // file is the body (a common PWC idiom Rakudo accepts). An explicit `{}`
+    // (however empty) is a real body — no capture.
+    if (!hadBlock && s->body.empty() && s->name == "MAIN" && isKind(Tok::Semicolon)) {
         advance();
         while (!isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;

@@ -389,6 +389,15 @@ void Lexer::skipWhitespaceAndComments() {
                 }
                 continue;
             }
+            if (peek(1) == '=') { // trailing declarator pod `#= text` — record by line
+                advance(); advance(); // # =
+                while (peek() == ' ' || peek() == '\t') advance();
+                std::string txt;
+                while (!eof() && peek() != '\n') txt += advance();
+                while (!txt.empty() && (txt.back() == ' ' || txt.back() == '\t')) txt.pop_back();
+                declPod_[line_] = txt;
+                continue;
+            }
             while (!eof() && peek() != '\n') advance();
             continue;
         }

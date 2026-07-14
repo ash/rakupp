@@ -28,6 +28,9 @@ public:
 
 private:
     std::vector<Token> toks_;
+public:
+    std::map<int, std::string> declPod_; // `#= text` by line (from the Lexer)
+private:
     size_t pos_ = 0;
     std::map<std::string, int> userInfix_;   // user infix name → left binding power (from is tighter/looser/equiv)
     std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`

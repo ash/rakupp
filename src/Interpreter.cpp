@@ -361,12 +361,79 @@ Value listToArray(const ValueList& items) {
 // Turn a raw argv into MAIN's argument list: --opt / --opt=val / --/opt become
 // named args, everything else stays a positional string. Shared by the
 // interpreter's auto-invoke and the native-codegen main().
+// Rakudo-format usage text generated from &MAIN's signature(s): the `Usage:`
+// header, one line per candidate, then an option list built from `#=` trailing
+// declarator pod, aligned, with [default: X] for defaulted params.
+std::string Interpreter::mainUsage() {
+    Value* mainSub = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+    if (!mainSub && global_) mainSub = global_->find("&MAIN");
+    if (!mainSub || mainSub->t != VT::Code || !mainSub->code) return "";
+    ValueList cands;
+    if (mainSub->code->isMultiDispatcher)
+        for (auto& c : mainSub->code->candidates) cands.push_back(c);
+    else cands.push_back(*mainSub);
+    std::string out = "Usage:\n";
+    struct Opt { std::string label, desc, def; };
+    std::vector<Opt> opts;
+    auto bare = [](const Param& p) {
+        const std::string& n = p.namedKey.empty() ? p.name : p.namedKey;
+        return (!n.empty() && (n[0] == '$' || n[0] == '@' || n[0] == '%' || n[0] == '&'))
+             ? n.substr(1) : n;
+    };
+    for (auto& cand : cands) {
+        if (!cand.code || !cand.code->params) continue;
+        std::string line = "  " + (srcFile_.empty() ? std::string("<program>") : srcFile_);
+        for (auto& p : *cand.code->params) {
+            std::string label;
+            if (p.litVal) { line += " " + eval(p.litVal.get()).toStr(); continue; }
+            if (p.named) {
+                label = "--" + bare(p);
+                if (!(p.type.empty() || p.type == "Bool")) label += "=<" + p.type + ">";
+                line += " [" + label + "]";
+            }
+            else if (p.slurpy) { label = "[<" + bare(p) + "> ...]"; line += " " + label; }
+            else if (p.optional || p.defaultVal) { label = "[<" + bare(p) + ">]"; line += " " + label; }
+            else { label = "<" + bare(p) + ">"; line += " " + label; }
+            if (!p.pod.empty()) {
+                std::string def;
+                if (p.defaultVal) { try { def = eval(p.defaultVal.get()).gist(); } catch (...) {} }
+                opts.push_back({label, p.pod, def});
+            }
+        }
+        out += line + "\n";
+    }
+    if (!opts.empty()) {
+        out += "  \n";
+        size_t w = 0;
+        for (auto& o : opts) w = std::max(w, o.label.size());
+        for (auto& o : opts) {
+            out += "    " + o.label + std::string(w - o.label.size() + 4, ' ') + o.desc;
+            if (!o.def.empty()) out += " [default: " + o.def + "]";
+            out += "\n";
+        }
+    }
+    return out;
+}
+
 ValueList rtMainArgs(const std::vector<std::string>& argv) {
     ValueList margs;
     auto named = [](std::string key, Value v) { // --opt args bind to :$named params
         Value p = Value::pair(std::move(key), std::move(v));
         p.namedArg = true;
         return p;
+    };
+    auto allomorph = [](const std::string& str) { // numeric-looking argv binds Int/Num params too
+        Value v = Value::str(str);
+        if (str.empty()) return v;
+        size_t k = (str[0] == '-' || str[0] == '+') ? 1 : 0;
+        if (k >= str.size()) return v;
+        bool digits = true, dot = false;
+        for (size_t j = k; j < str.size(); j++) {
+            if (str[j] == '.' && !dot) { dot = true; continue; }
+            if (!std::isdigit((unsigned char)str[j])) { digits = false; break; }
+        }
+        if (digits) v.hashKind = "Allomorph";
+        return v;
     };
     for (auto& a : argv) {
         if (a.rfind("--", 0) == 0 && a.size() > 2) {
@@ -378,7 +445,7 @@ ValueList rtMainArgs(const std::vector<std::string>& argv) {
                 else margs.push_back(named(rest, Value::boolean(true)));
             }
         } else {
-            margs.push_back(Value::str(a));
+            margs.push_back(allomorph(a));
         }
     }
     return margs;
@@ -1337,19 +1404,18 @@ int Interpreter::run(Program& prog) {
                 for (auto& cand : mainSub->code->candidates)
                     if (scoreCandidate(cand, margs) >= 0) { mainMatches = true; break; }
             }
+            else if (mainSub->code && mainSub->code->params) // single MAIN: same bind check
+                mainMatches = scoreCandidate(*mainSub, margs) >= 0;
             if (!mainMatches) {
-                std::cerr << "Usage:\n";
-                for (auto& cand : mainSub->code->candidates) {
-                    if (!cand.code || !cand.code->params) continue;
-                    std::string line = "  rakupp <program>";
-                    for (auto& p : *cand.code->params) {
-                        if (p.litVal) line += " " + eval(p.litVal.get()).toStr();
-                        else if (p.named) { std::string nm = p.name.size() > 1 ? p.name.substr(1) : p.name; line += " [--" + nm + (p.type == "Bool" || p.type.empty() ? "" : "=<value>") + "]"; }
-                        else line += " <" + (p.name.size() > 1 ? p.name.substr(1) : p.name) + ">";
-                    }
-                    std::cerr << line << "\n";
+                // a user-defined USAGE takes over (it prints to stdout, like Rakudo)
+                Value* usage = tctx_.cur->find("&USAGE");
+                if (!usage && global_) usage = global_->find("&USAGE");
+                if (usage) {
+                    try { callCallable(*usage, {}); } catch (ExitEx& e) { code = e.code; goto mainDone; }
                 }
+                else std::cerr << mainUsage();
                 code = 2;
+                mainDone: ;
             } else {
                 callCallable(*mainSub, margs);
             }
@@ -2665,6 +2731,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
 // Does an argument satisfy a parameter type-constraint name?
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // command-line allomorphs: a numeric-looking argv string binds Int/Num/Rat
+    // params as well as Str ones (Rakudo passes IntStr/RatStr to MAIN)
+    if (arg.t == VT::Str && arg.hashKind == "Allomorph" &&
+        (type == "Int" || type == "UInt" || type == "Num" || type == "Rat" ||
+         type == "Numeric" || type == "Real"))
+        return arg.s.find('.') == std::string::npos || (type != "Int" && type != "UInt");
     switch (arg.t) {
         case VT::Int:  return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || type == "Rat";
         case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real";
@@ -3052,6 +3124,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$?FILE") return Value::str(srcFile_);
     if (name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; }
     if (name == "$*PROGRAM-NAME") return Value::str(srcFile_);
+    if (name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
     if (name == "$*EXECUTABLE" || name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
     if (name == "$*OUT" || name == "$*ERR" || name == "$*IN") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash)["std"] = Value::str(name == "$*ERR" ? "err" : name == "$*IN" ? "in" : "out"); return h; }
     if (name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash)["name"] = Value::str("macos"); return h; }
@@ -7432,6 +7505,7 @@ Value Interpreter::eval(Expr* e) {
             }
             if (ve->name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; } // running script, as IO::Path
             if (ve->name == "$*PROGRAM-NAME") return Value::str(srcFile_);
+            if (ve->name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
             if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
             if (ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") {
                 Value h = Value::makeHash(); h.hashKind = "FileHandle";

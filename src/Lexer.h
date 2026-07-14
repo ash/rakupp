@@ -1,6 +1,7 @@
 #pragma once
 #include "Token.h"
 #include <cstdint>
+#include <map>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -21,6 +22,9 @@ private:
     size_t pos_ = 0;
     size_t atomDropEnd_ = (size_t)-1; // pos right after a dropped ⚛ marker (not whitespace)
     int line_ = 1;
+public:
+    std::map<int, std::string> declPod_; // `#= text` trailing declarator pod, by line
+private:
     int col_ = 1;
 
     char peek(size_t off = 0) const;
