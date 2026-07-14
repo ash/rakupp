@@ -375,8 +375,10 @@ void Lexer::skipWhitespaceAndComments() {
         }
         if (c == '#') {
             // embedded comment #`( ... ) / #`[ ... ] / #`{ ... }: skip the balanced
-            // bracket group only — the rest of the line still parses
-            if (peek(1) == '`' && (peek(2) == '(' || peek(2) == '[' || peek(2) == '{' || peek(2) == '<')) {
+            // bracket group only — the rest of the line still parses. The declarator
+            // comments #|[ ... ] / #=[ ... ] take the same multi-line bracket forms.
+            if ((peek(1) == '`' || peek(1) == '|' || peek(1) == '=') &&
+                (peek(2) == '(' || peek(2) == '[' || peek(2) == '{' || peek(2) == '<')) {
                 char open = peek(2), close = open == '(' ? ')' : open == '[' ? ']' : open == '{' ? '}' : '>';
                 advance(); advance(); advance(); // # ` open
                 int d = 1;
@@ -1169,6 +1171,11 @@ Token Lexer::lexOperator() {
         int len = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
         std::string s;
         for (int k = 0; k < len && !eof(); k++) s += advance();
+        // metaop assign on set-combiners: ∩= ∪= ∖= ⊖= ⊎= ⊍= (X= for infix X)
+        static const std::set<std::string> combines = {
+            "\xE2\x88\xA9", "\xE2\x88\xAA", "\xE2\x88\x96",
+            "\xE2\x8A\x96", "\xE2\x8A\x8E", "\xE2\x8A\x8D"};
+        if (combines.count(s) && peek() == '=' && peek(1) != '=') { advance(); s += "="; }
         return make(Tok::Op, s);
     }
     // hyper binary metaop: >>OP>> / <<OP<< / >>OP<< / <<OP>>  (e.g. @a >>->> @b)
@@ -1192,11 +1199,29 @@ Token Lexer::lexOperator() {
         // bitwise/boolean (numeric +&/+|/+^, string ~&/~|/~^, boolean ?&/?|/?^) before single + ? ~.
         // NB: the shift forms +</+>/~</~> are deliberately omitted — `<`/`>` collide with
         // word-lists (`+<a b>`), operator-name brackets, and comparison in one-pass parsing.
-        "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^",
+        "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^", "+>", "~>",
         "??", "!!", "**", "//", "||", "&&", "^^", "==", "!=", "<=", ">=", "~~", "=>",
         "-->", "->", "=:=", ":=", "++", "--", "+=", "-=", "*=", "/=", "~=", "%%", "%=",
         "x=", "..", "::", "<<", ">>", "andthen", // (textual handled elsewhere)
     };
+    // `+<` / `~<` shifts: only when `<` clearly isn't opening a word list
+    // (`+<a b>` stays prefix-plus on a QwList). Shift uses follow with space,
+    // a digit, `$`, `(` or `=` (compound assign).
+    if ((peek() == '+' || peek() == '~') && peek(1) == '<') {
+        // Shift vs word list (one-pass-parsing/less-than.t): `+< foo bar >` and
+        // `+<3 4>` are prefix-on-word-list; a shift's amount starts with a digit,
+        // `$`, `(` or `-` after optional spaces — `$n +< 3`, `+< ($x-1)`, `+<= 2`.
+        int k = 2;
+        while (peek(k) == ' ' || peek(k) == '\t') k++;
+        char cN = peek(k);
+        bool shifty = (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-'))
+                    || peek(2) == '='; // compound `+<=` is always a shift
+        if (shifty) {
+            std::string op; op += advance(); op += advance(); // + <
+            if (peek() == '=' && peek(1) != '=') { advance(); op += "="; }
+            return make(Tok::Op, op);
+        }
+    }
     // try longest first (skip the textual placeholder)
     for (const char* op : ops) {
         std::string s(op);
@@ -1208,6 +1233,10 @@ Token Lexer::lexOperator() {
         if (ok) {
             for (size_t k = 0; k < s.size(); k++) advance();
             if (s == "=>") return make(Tok::FatArrow, s);
+            // bitwise/shift compound assigns: +|= +&= +^= ?^= +<= +>= …
+            static const std::set<std::string> bitwiseOps = {
+                "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^", "+<", "+>", "~<", "~>"};
+            if (bitwiseOps.count(s) && peek() == '=' && peek(1) != '=') { advance(); s += "="; }
             return make(Tok::Op, s);
         }
     }

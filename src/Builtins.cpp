@@ -3900,6 +3900,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "antipair") return Value::pair((inv.pairVal ? inv.pairVal->toStr() : ""), Value::str(inv.s));
     }
 
+    // scalar .Array / .List — a 1-element container: "LLL".Array is ["LLL"]
+    if ((m == "Array" || m == "List") &&
+        (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
+         inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair)) {
+        Value one = Value::array(); one.arr->push_back(inv);
+        one.isList = (m == "List");
+        return one;
+    }
     // list methods on a lone scalar treat it as a 1-element list: 42.grep(*>3), 'x'.map(...)
     if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
          inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair) &&

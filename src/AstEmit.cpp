@@ -103,7 +103,7 @@ struct Emit {
                 for (auto& a : n->args) b << "  n->args.push_back(" << expr(a.get()) << "());\n"; break; }
             case NK::Index: { auto* n = static_cast<const Index*>(e);
                 b << "  auto n = std::make_unique<Index>();\n  n->base=" << expr(n->base.get()) << "();\n  n->index=" << expr(n->index.get())
-                  << "();\n  n->isHash=" << B(n->isHash) << "; n->adverb=" << S(n->adverb) << ";\n"; break; }
+                  << "();\n  n->isHash=" << B(n->isHash) << "; n->multiDim=" << B(n->multiDim) << "; n->adverb=" << S(n->adverb) << ";\n"; break; }
             case NK::Ternary: { auto* n = static_cast<const Ternary*>(e);
                 b << "  auto n = std::make_unique<Ternary>();\n  n->cond=" << expr(n->cond.get()) << "();\n  n->then=" << expr(n->then.get())
                   << "();\n  n->els=" << expr(n->els.get()) << "();\n"; break; }

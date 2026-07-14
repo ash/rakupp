@@ -147,6 +147,7 @@ struct Index : Expr { // base[idx] or base{key}
     ExprPtr base;
     ExprPtr index;
     bool isHash = false;
+    bool multiDim = false; // @a[X;Y]: index is a ListExpr of dims, sliced level-by-level
     std::string adverb; // :exists / :delete / :k / :v / :kv / :p  (may start with '!')
     Index(): Expr(NK::Index) {}
 };

@@ -2283,6 +2283,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (oneItem) items.push_back(lv);
                     else if (lv.t == VT::Array && lv.arr) items = *lv.arr;
                     else if (lv.t == VT::Range) items = lv.flatten();
+                    else if (lv.t == VT::Hash && lv.hash &&
+                             (lv.hashKind.empty() || lv.hashKind == "Map" ||
+                              lv.hashKind == "Set" || lv.hashKind == "SetHash" ||
+                              lv.hashKind == "Bag" || lv.hashKind == "BagHash" ||
+                              lv.hashKind == "Mix" || lv.hashKind == "MixHash")) {
+                        for (auto& kv : *lv.hash) items.push_back(Value::pair(kv.first, kv.second));
+                    }
                     else items.push_back(lv);
                     for (size_t i = 0; i < items.size(); i++) {
                         env->vars["$_"] = items[i];
@@ -2347,6 +2354,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
             else if (listv.t == VT::Array && listv.arr) items = *listv.arr; // one-level
             else if (listv.t == VT::Range) items = listv.flatten();
+            else if (listv.t == VT::Hash && listv.hash &&
+                     (listv.hashKind.empty() || listv.hashKind == "Map" ||
+                      listv.hashKind == "Set" || listv.hashKind == "SetHash" ||
+                      listv.hashKind == "Bag" || listv.hashKind == "BagHash" ||
+                      listv.hashKind == "Mix" || listv.hashKind == "MixHash")) {
+                // a bare hash/set/bag iterates its Pairs (elem => True / count)
+                for (auto& kv : *listv.hash) items.push_back(Value::pair(kv.first, kv.second));
+            }
             else items.push_back(listv);
             // `-> (:key($k), :value($v))` / nested sub-signatures: real signature
             // binding — each element is the single argument of the pointy signature.
@@ -3789,6 +3804,20 @@ Value* Interpreter::lvalue(Expr* e) {
     if (e->kind == NK::Index) {
         auto* idx = static_cast<Index*>(e);
         Value* base = lvalue(idx->base.get());
+        if (idx->multiDim && base) { // @a[0;1] = v — walk/autoviv nested containers
+            auto* dims = static_cast<ListExpr*>(idx->index.get());
+            Value* node = base;
+            for (auto& de : dims->items) {
+                if (node->t != VT::Array) *node = Value::array();
+                long long i = eval(de.get()).toInt();
+                if (i < 0) i += (long long)node->arr->size();
+                if (i < 0) i = 0;
+                while ((long long)node->arr->size() <= i)
+                    node->arr->push_back(node->ofType.empty() ? Value::any() : typedElemDefault(*node));
+                node = &(*node->arr)[i];
+            }
+            return node;
+        }
         if (idx->isHash) {
             if (base->t != VT::Hash) *base = Value::makeHash();
             std::string key = eval(idx->index.get()).toStr();
@@ -6442,6 +6471,13 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
+    if (u->op == "+^") return Value::integer(~v.toInt()); // bitwise NOT
+    if (u->op == "?^") return Value::boolean(!boolify(v));
+    if (u->op == "~^") { // string bitwise NOT (byte-wise complement)
+        std::string r = v.toStr();
+        for (auto& ch : r) ch = (char)~(unsigned char)ch;
+        return Value::str(r);
+    }
     if (u->op == "^") return Value::range(0, v.toInt(), false, true);
     if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
@@ -6746,6 +6782,14 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     if (scan) { // yield (a, a op b, a op b op c, …)
         Value out = Value::array(); out.isList = true;
         if (items.empty()) return out;
+        if (op == ",") { // [\,] : growing prefixes — ((1) (1 2) (1 2 3))
+            for (size_t k = 0; k < items.size(); k++) {
+                Value pre = Value::array(); pre.isList = true;
+                pre.arr->assign(items.begin(), items.begin() + k + 1);
+                out.arr->push_back(pre);
+            }
+            return out;
+        }
         if (op == "**") { // right-assoc scan: suffix reductions — [\**] 1,2,3 → (3 8 1)
             Value acc = items.back();
             out.arr->push_back(acc);
@@ -6875,6 +6919,38 @@ Value Interpreter::postfixI(Value v) {
 }
 
 Value Interpreter::evalIndex(Index* idx) {
+    // multidim slice @a[X;Y(;Z)]: walk level by level; Whatever selects all
+    // elements at its level; scalar/list/range dims select those; flattened List.
+    if (idx->multiDim) {
+        auto* dims = static_cast<ListExpr*>(idx->index.get());
+        Value out = Value::array(); out.isList = true;
+        bool anyMulti = false; // all-scalar dims yield the lone element, not a 1-list
+        std::function<void(const Value&, size_t)> walk = [&](const Value& node, size_t d) {
+            if (d == dims->items.size()) { out.arr->push_back(node); return; }
+            Expr* de = dims->items[d].get();
+            if (de->kind == NK::Whatever) {
+                anyMulti = true;
+                if (node.t == VT::Array && node.arr) for (auto& el : *node.arr) walk(el, d + 1);
+                else if (node.t == VT::Range) for (auto& el : node.flatten()) walk(el, d + 1);
+                return;
+            }
+            Value dv = eval(de);
+            ValueList keys;
+            if (dv.t == VT::Range || (dv.t == VT::Array && dv.arr)) { keys = dv.flatten(); anyMulti = true; }
+            else keys.push_back(dv);
+            for (auto& k : keys) {
+                if (node.t == VT::Array && node.arr) {
+                    long long i = k.toInt(), n = (long long)node.arr->size();
+                    if (i < 0) i += n;
+                    walk(i >= 0 && i < n ? (*node.arr)[i] : Value::any(), d + 1);
+                }
+                else walk(Value::any(), d + 1);
+            }
+        };
+        walk(eval(idx->base.get()), 0);
+        if (!anyMulti && out.arr->size() == 1) return (*out.arr)[0]; // @a[1;0] is a scalar
+        return out;
+    }
     // Fast path: `@plainvar[intexpr]` — the overwhelmingly common array read.
     // Grab the array's shared_ptr (one refcount, safe across the index eval)
     // instead of copying the whole ~300-byte Value three times through eval().
@@ -7588,6 +7664,17 @@ Value Interpreter::eval(Expr* e) {
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
             Value inv = eval(mc->inv.get());
+            // mutators autovivify an undefined container: `my $x; $x.push(1)` → [1],
+            // `%h<k>.push(v)` fills the slot. Rakudo: Any.push vivifies an Array.
+            if ((inv.t == VT::Any || inv.t == VT::Nil) && !mc->meta && !mc->methodExpr &&
+                (mc->method == "push" || mc->method == "append" ||
+                 mc->method == "unshift" || mc->method == "prepend")) {
+                if (Value* lv = lvalue(mc->inv.get())) {
+                    if (lv->t == VT::Any || lv->t == VT::Nil) *lv = Value::array();
+                    inv = *lv;
+                }
+                else inv = Value::array(); // no container: still act on a fresh Array
+            }
             // `.DEFINITE` as a literal identifier is a metamodel macro: it always
             // reports concreteness and never a user-declared DEFINITE method. The
             // quoted `."DEFINITE"()` form (methodExpr set) still dispatches normally.
