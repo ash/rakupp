@@ -114,20 +114,48 @@ full signature table in [pwc/pwc-buckets.txt](pwc/pwc-buckets.txt).
 
 ## The numbers
 
-| outcome | files |
-|---|---:|
-| **byte-identical output + status** | **2,663** |
-| **mismatch** | **4,153** |
-| skipped: Rakudo can't run it headlessly | 3,112 |
-| skipped: Rakudo timeout | 294 |
-| skipped: nondeterministic | 206 |
-| **total** | **10,428** |
+| outcome | original (2026-07-14) | current (after batch 15) |
+|---|---:|---:|
+| **byte-identical output + status** | **2,663** | **4,056** |
+| **mismatch** | **4,153** | **2,707** |
+| skipped: Rakudo can't run it headlessly | 3,112 | 3,112 |
+| skipped: Rakudo timeout | 294 | 309 |
+| skipped: nondeterministic | 206 | 244 |
+| **total** | **10,428** | **10,428** |
 
-Of the 6,816 programs comparable at all, **39% already match byte-for-byte**.
-The 4,153 mismatches collapse into a much smaller set of causes — the top 40
-signatures cover 3,031 of them.
+Of the ~6,800 comparable programs, **60% now match byte-for-byte** (39% at
+the baseline). The current pass count is verified by a from-scratch re-run
+of the whole pass set (see the progress table) — the incremental sweeps
+only re-test mismatches, so the ledger is re-verified every few batches.
 
-## Clusters, by leverage
+## Current state (after batch 15)
+
+The remaining 2,707 mismatches, top clusters:
+
+| files | cluster | note |
+|---:|---|---|
+| 107 | we print `Usage:` where Rakudo runs | batch-15 bind check possibly over-strict — first target of the next batch |
+| 105 | rakupp hangs (8 s timeout) | heterogeneous: lazy self-reference, FatRat perf, per-file loops |
+| ~180 | parse tail (`expected )` 76, term-position 46, `Confused` 45, …) | one-off constructs, a few files each |
+| ~130 | test files where we fail asserts Rakudo passes | per-file algorithm diffs |
+| 55 | gist `(..)` vs `[..]` | residual list/array marking |
+| 40 | "Variable not declared" | residual scoping shapes |
+| 20 | Rakudo dies, we succeed | module-deep death paths (was 371 at baseline) |
+
+**Author concentration is the current leverage.** Six authors account for
+51% of the remainder — athanasius (399), 0rir (262), mark-anderson (262),
+feng-chang (211), laurent-rosenfeld (143), bruce-gray (127). Each reuses
+one template across hundreds of solutions, layering 2–3 divergences per
+file. The working method: run a first-divergence sampler over one author,
+fix the top recurring shape corpus-wide, re-sweep, repeat. Batch 15 peeled
+athanasius's first stratum ($*USAGE / MAIN dispatch); his next strata are
+prompt-echo ordering and date formatting.
+
+## Clusters, by leverage (original baseline analysis)
+
+*This section describes the original 4,153-mismatch set as classified on
+2026-07-14 and is kept for the record; most of these clusters are now
+fixed (see the progress table above).*
 
 ### One-fix, hundreds-of-files
 
@@ -206,10 +234,17 @@ one-to-four-file gaps (see pwc-buckets.txt).
 - **Stderr noise**: 29 files differ only because we print a
   `Potential difficulties:` warning where Rakudo does not (or vice versa).
 
-## Suggested fix order (next round)
+## Suggested fix order (updated after batch 15)
 
-Items 1–4 are single fixes worth ~1,000 files combined. Then the parse
-tail (already on the 1.0 campaign roadmap — the same buckets), then the
-hang triage, then the method-gap list top-down. The 662 test-fail files
-become the regression harness for all of it: re-sweep after each batch and
-watch the pass count climb from 2,663.
+1. The 107-file `Usage:` cluster — audit the batch-15 MAIN bind check
+   against argv shapes Rakudo accepts (optional/coercion/default params).
+2. Author strata, biggest first: sample athanasius / 0rir /
+   mark-anderson with the first-divergence probe, fix the top shape,
+   re-sweep after each batch.
+3. Hang triage (105) with the process-group runner; expect per-file
+   causes (lazy self-reference, FatRat cost).
+4. Parse tail (~180) — a few files per construct.
+
+The original suggested order (items worth ~1,000 files) is complete;
+batches 1–15 in the progress table carried it out. Re-sweep after each
+batch and keep both the original and current numbers in this document.
