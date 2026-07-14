@@ -2712,6 +2712,15 @@ StmtPtr Parser::parseSub(bool isMulti) {
         es->e = std::move(s->retLiteral);
         s->body.push_back(std::move(es));
     }
+    // `sub MAIN (sig);` with no block: like `unit sub MAIN` — the rest of the
+    // file is the body (a common PWC idiom Rakudo accepts).
+    if (s->body.empty() && s->name == "MAIN" && isKind(Tok::Semicolon)) {
+        advance();
+        while (!isKind(Tok::End)) {
+            if (matchKind(Tok::Semicolon)) continue;
+            s->body.push_back(parseStatement());
+        }
+    }
     return s;
 }
 

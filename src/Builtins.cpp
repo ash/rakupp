@@ -614,6 +614,18 @@ static bool isCombiningMark(uint32_t c) {
 // Count grapheme clusters via the full UAX #29 algorithm (emoji/flags/Hangul-aware).
 static long long graphemeCount(const std::string& s) { return (long long)uniGraphemeCount(utf8cp(s)); }
 
+// Rakudo dies opening a missing file for reading ("Failed to open file
+// /abs/path: No such file or directory") — match it, absolute path included.
+[[noreturn]] static void throwFailedOpen(const std::string& path) {
+    std::string abs = path;
+    if (abs.empty() || (abs[0] != '/' && !(abs.size() > 1 && abs[1] == ':'))) {
+        char buf[4096];
+        if (getcwd(buf, sizeof buf)) abs = std::string(buf) + "/" + path;
+    }
+    throw RakuError{Value::typeObj("X::IO::Open"),
+                    "Failed to open file " + abs + ": No such file or directory"};
+}
+
 static std::string joinValues(const ValueList& items, const std::string& sep) {
     std::string out;
     for (size_t i = 0; i < items.size(); i++) {
@@ -1063,6 +1075,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         for (const std::string& anc : typeAncestry(tn))
             if (anc != tn) if (Value* f = lookup(anc)) return invokeMethod(*f, inv, std::move(args), rwArgs);
     }
+    // Any is not Cool: string methods on an UNDEFINED invocant die in Rakudo
+    // ("Cannot resolve caller split(Any:U: …)"), typically after `prompt`/`get`
+    // hit EOF. Everything else on Any stays lenient.
+    if (inv.t == VT::Any) {
+        static const std::set<std::string> strOnUndef = {
+            "split", "comb", "words", "chars", "codes", "lc", "uc", "tc", "fc",
+            "tclc", "wordcase", "flip", "substr", "subst", "trans", "index",
+            "rindex", "starts-with", "ends-with", "contains", "match", "base",
+            "ord", "ords", "encode", "parse-base"};
+        if (strOnUndef.count(m))
+            throw RakuError{Value::typeObj("X::Method::NotFound"),
+                "Cannot resolve caller " + m + "(Any:U); the invocant is a type object, not an instance"};
+    }
     // IterationBuffer — a low-level mutable element buffer (the iterator protocol's
     // scratch space), a growable list under the hood. Handled up front so its
     // `.elems`/`.List`/… win over the generic Hash methods (it is a hashKind Hash).
@@ -1317,9 +1342,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "StrDistance") {
         auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second : Value::str(""); };
         if (m == "before" || m == "after") return fld(m.c_str());
+        if (m == "Str" || m == "gist") return fld("after"); // "$dist" interpolates the resulting string
         if (m == "Bool") return Value::boolean(fld("before").toStr() != fld("after").toStr());
         if (m == "Rat" || m == "FatRat" || m == "Numeric" || m == "Int" || m == "Num" || m == "chars") {
-            long long c = methodCall(fld("after"), "chars", ValueList{}).toInt(); // numifies to .after.chars
+            // a tr/// result carries the substitution count; .new-built ones numify to .after.chars
+            auto di = inv.hash->find("distance");
+            long long c = di != inv.hash->end() ? di->second.toInt()
+                        : methodCall(fld("after"), "chars", ValueList{}).toInt();
             if (m == "Num") return Value::number((double)c);
             if (m == "Int" || m == "Numeric" || m == "chars") return Value::integer(c);
             Value v = Value::rat(BigInt(c), BigInt(1));
@@ -3114,7 +3143,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "IO") { Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p; }
     if (m == "slurp" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) { // FileHandle has its own slurp
         std::ifstream in(inv.toStr(), std::ios::binary);
-        if (!in) return Value::nil();
+        if (!in) throwFailedOpen(inv.toStr());
         std::ostringstream ss; ss << in.rdbuf();
         Value v = Value::str(ss.str());
         // slurp(:bin) yields a Blob (the raw bytes), not a decoded Str
@@ -3394,7 +3423,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
     if (m == "lines" && inv.hashKind == "IO") {
-        std::ifstream in(inv.toStr()); Value out = Value::array();
+        std::ifstream in(inv.toStr()); Value out = Value::array(); out.isList = true; out.s = "Seq";
+        if (!in) throwFailedOpen(inv.toStr());
         std::string line; while (std::getline(in, line)) out.arr->push_back(Value::str(line));
         return out;
     }
@@ -3469,13 +3499,34 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::string r; for (long long k = start; k < start + len; k++) r += cpToUtf8(cps[k]);
         return Value::str(r);
     }
-    if (m == "index") {
-        std::string s = inv.toStr(); auto p = s.find(a0().toStr());
-        return p == std::string::npos ? Value::nil() : Value::integer((long long)p);
-    }
-    if (m == "rindex") {
-        std::string s = inv.toStr(); auto p = s.rfind(a0().toStr());
-        return p == std::string::npos ? Value::nil() : Value::integer((long long)p);
+    if (m == "index" || m == "rindex") {
+        // positions are in characters, not bytes; the optional 2nd arg is the
+        // start (index) / rightmost-allowed start (rindex) position.
+        auto cps = utf8cp(inv.toStr()); auto ncps = utf8cp(a0().toStr());
+        long long n = (long long)cps.size(), k = (long long)ncps.size();
+        long long from = m == "index" ? 0 : n;
+        if (args.size() > 1 && args[1].isNumeric()) {
+            double fd = args[1].toNum(); // huge positions must not saturate into the loop bound
+            if (fd < 0 || fd > (double)n)
+                throw RakuError{Value::typeObj("X::OutOfRange"),
+                    "start argument to " + m + " out of range. Is: " + args[1].gist() +
+                    "; should be in 0.." + std::to_string(n)};
+            from = args[1].toInt();
+        }
+        auto eq = [&](long long at) {
+            if (at < 0 || at + k > n) return false;
+            for (long long j = 0; j < k; j++) if (cps[at + j] != ncps[j]) return false;
+            return true;
+        };
+        if (m == "index") {
+            for (long long at = from; at + k <= n; at++)
+                if (eq(at)) return Value::integer(at);
+        }
+        else {
+            for (long long at = std::min(from, n - k); at >= 0; at--)
+                if (eq(at)) return Value::integer(at);
+        }
+        return Value::nil();
     }
     // ---- regex-argument string methods ----
     // Find the Regex argument and the replacement — a named adverb (`:g`) may come
@@ -5240,7 +5291,7 @@ void Interpreter::registerBuiltins() {
     B["slurp"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) { std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); } // slurp() = $*IN.slurp
         std::ifstream in(a[0].toStr());
-        if (!in) return Value::nil();
+        if (!in) throwFailedOpen(a[0].toStr());
         std::ostringstream ss; ss << in.rdbuf();
         return Value::str(ss.str());
     };
@@ -5328,6 +5379,10 @@ void Interpreter::registerBuiltins() {
     };
     B["subtest"] = [](Interpreter& I, ValueList& a) -> Value {
         Value code; std::string desc;
+        // NB: the Pair form `subtest "title" => {…}` is deliberately NOT unpacked
+        // yet — running those bodies exposes unimplemented features across ~23
+        // roast files (is rw on a class, Mu.iterator, Rational subclassing, …).
+        // Tracked as the subtest-Pair-form batch; unlock once those gaps close.
         for (auto& v : a) { if (v.t == VT::Code) code = v; else if (v.t == VT::Str) desc = v.s; }
         // A pending `todo` marks this whole subtest TODO: inner failures neither die nor count.
         bool todod = false; std::string todoReason;

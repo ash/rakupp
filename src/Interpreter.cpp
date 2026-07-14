@@ -3126,7 +3126,13 @@ Value& Interpreter::dynVarRef(const std::string& name) {
 static Value typedElemDefault(const Value& base) {
     if (base.ofType.empty()) return Value::nil();
     std::string first = base.ofType.substr(0, base.ofType.find(','));
-    if (!first.empty() && std::isupper((unsigned char)first[0])) return Value::typeObj(first);
+    if (first.empty()) return Value::nil();
+    if (std::isupper((unsigned char)first[0])) return Value::typeObj(first);
+    // native element types are zero-initialized (my int @a — gaps read as 0)
+    if (first == "num" || first == "num32" || first == "num64") return Value::number(0.0);
+    if (first == "str") return Value::str("");
+    if (first.compare(0, 3, "int") == 0 || first.compare(0, 4, "uint") == 0 || first == "byte")
+        return Value::integer(0);
     return Value::nil();
 }
 
@@ -3270,7 +3276,8 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
     long long i = key.toInt(), n = (long long)base.arr->size();
     if (i < 0) i += n;
     if (i < 0) i = 0;
-    if (i >= (long long)base.arr->size()) base.arr->resize(i + 1, Value::any());
+    if (i >= (long long)base.arr->size())
+        base.arr->resize(i + 1, base.ofType.empty() ? Value::any() : typedElemDefault(base));
     return (*base.arr)[i];
 }
 
@@ -3795,7 +3802,8 @@ Value* Interpreter::lvalue(Expr* e) {
             long long i = eval(idx->index.get()).toInt();
             if (i < 0) i += (long long)base->arr->size();
             if (i < 0) i = 0;
-            while ((long long)base->arr->size() <= i) base->arr->push_back(Value::any());
+            while ((long long)base->arr->size() <= i)
+                base->arr->push_back(base->ofType.empty() ? Value::any() : typedElemDefault(*base));
             return &(*base->arr)[i];
         }
     }
@@ -5919,10 +5927,15 @@ Value Interpreter::evalBinary(Binary* b) {
         if (b->rhs->kind == NK::SubstLit) {
             auto* sub = static_cast<SubstLit*>(b->rhs.get());
             Value l = eval(b->lhs.get());
-            if (isTrSubst(sub->pattern)) { // tr/from/to/ — transliteration, returns the count changed
-                long long n; std::string out = translit(l.toStr(), sub->pattern.substr(1), sub->repl, n);
+            if (isTrSubst(sub->pattern)) { // tr/from/to/ — transliteration, returns a StrDistance
+                long long n; std::string before = l.toStr();
+                std::string out = translit(before, sub->pattern.substr(1), sub->repl, n);
                 if (Value* lv = lvalue(b->lhs.get())) *lv = Value::str(out);
-                return Value::integer(n);
+                Value sd = Value::makeHash(); sd.hashKind = "StrDistance";
+                (*sd.hash)["before"] = Value::str(before);
+                (*sd.hash)["after"] = Value::str(out);
+                (*sd.hash)["distance"] = Value::integer(n);
+                return sd;
             }
             long nsub = 0; ValueList noArgs; Value mres;
             std::string out = substSelect(l.toStr(), sub->pattern, nullptr, noArgs, nsub, false, &sub->repl, &mres);
@@ -6406,7 +6419,8 @@ Value Interpreter::evalUnary(Unary* u) {
     // except a Proc / Proc::Async, which numifies to its exit status (+$proc).
     if ((u->op == "+" || u->op == "-") &&
         (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) &&
-        !(v.t == VT::Hash && (v.hashKind == "Proc" || v.hashKind == "Proc::Async"))) {
+        !(v.t == VT::Hash && (v.hashKind == "Proc" || v.hashKind == "Proc::Async" ||
+                              v.hashKind == "StrDistance"))) {
         long long n;
         if (v.t == VT::Array) n = (long long)v.arr->size();
         else if (v.t == VT::Hash) n = (long long)v.hash->size();

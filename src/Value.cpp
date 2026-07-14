@@ -94,6 +94,11 @@ long long Value::toInt() const {
         case VT::Match: { try { return std::stoll(s); } catch (...) { return 0; } } // matched text as a number
         case VT::Array: return arr ? (long long)arr->size() : 0;
         case VT::Hash:
+            // A tr/// StrDistance numifies to the substitution count.
+            if (hash && hashKind == "StrDistance") {
+                auto it = hash->find("distance");
+                if (it != hash->end()) return it->second.toInt();
+            }
             // A Proc / Proc::Async numifies to its exit status (+$proc), like Rakudo.
             if (hash && (hashKind == "Proc" || hashKind == "Proc::Async")) {
                 auto it = hash->find("exitcode");
@@ -222,6 +227,8 @@ std::string Value::toStr() const {
         }
         case VT::Hash: {
             if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
+            if (hashKind == "StrDistance" && hash && hash->count("after"))
+                return hash->at("after").toStr(); // "$dist" is the resulting string
             if ((hashKind == "Date" || hashKind == "DateTime") && hash) return dateGist(*hash, hashKind == "Date");
             ReprDepthGuard g; if (g.tooDeep()) return "...";
             std::string out;
