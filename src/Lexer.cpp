@@ -533,7 +533,10 @@ Token Lexer::lexNumber() {
         }
         return false;
     };
-    if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b' || peek(1) == 'd')) {
+    if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'o' || peek(1) == 'b' || peek(1) == 'd') &&
+        // `0x` with no digit at all is not a radix literal: `:0x` is the pair
+        // shorthand x => 0, and `0x` followed by punctuation lexes as 0 then x
+        (std::isalnum((unsigned char)peek(2)) || peek(2) == '_' || (unsigned char)peek(2) >= 0x80)) {
         char base = peek(1);
         advance(); advance();
         std::string digits;
@@ -1294,12 +1297,16 @@ std::vector<Token> Lexer::tokenize() {
             t = make(Tok::Op, b == 0xA4 ? "<=" : b == 0xA5 ? ">=" : "!=");
         } else if ((unsigned char)c == 0xC3 && ((unsigned char)peek(1) == 0x97 || (unsigned char)peek(1) == 0xB7)) {
             bool mul = (unsigned char)peek(1) == 0x97; advance(); advance();
-            t = make(Tok::Op, mul ? "*" : "/");
+            std::string op = mul ? "*" : "/";
+            if (peek() == '=' && peek(1) != '=') { advance(); op += "="; } // ×= ÷= compound assign
+            t = make(Tok::Op, op);
         } else if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x88 &&
                    (unsigned char)peek(2) == 0x92) {
             // − (U+2212 minus sign) → -
             advance(); advance(); advance();
-            t = make(Tok::Op, "-");
+            std::string op = "-";
+            if (peek() == '=' && peek(1) != '=') { advance(); op += "="; } // −= compound assign
+            t = make(Tok::Op, op);
         } else if (std::isdigit((unsigned char)c) ||
             (!afterBareSigil && (unsigned char)c >= 0x80 &&
              (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {

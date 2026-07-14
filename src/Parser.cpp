@@ -183,7 +183,7 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "&" || // operator-as-value `&[+]` (bare `&` in term position is only `&[OP]`)
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
                    t.text == "::" || // symbolic reference `::($name)` / `::Foo`
-                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
+                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
                    t.text == "$" || t.text == "@" || t.text == "%" || // contextualizers $( $[ @( %(
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident:
@@ -223,7 +223,7 @@ bool Parser::startsListopArg(const Token& t) const {
                    t.text == "$" || // item contextualizer `ok $%*ENV` / `say $(1,2)` (bare `$` is never an infix)
                    ((t.text == "%" || t.text == "@") && &t == &cur() &&
                     peek().kind == Tok::LParen && !peek().spaceBefore) || // hash/list contextualizer `is-deeply %(...)…` / `push @(...)…`
-                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || // ∞  and  «qw»
+                   t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
             // A word-infix operator right after a bareword term is an INFIX, not the
@@ -581,6 +581,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         if ((isOp(">>") || isOp("<<") || isOp("»") || isOp("«")) && peek().kind == Tok::Op && peek().text == ".") {
             advance(); hyperNext = true; continue;
         }
+        // dot-hyper spelling: @a.».method / @a.>>.method — same hyper call
+        if (isOp(".") && peek().kind == Tok::Op && (peek().text == "»" || peek().text == ">>") &&
+            peek(2).kind == Tok::Op && peek(2).text == ".") {
+            advance(); advance(); hyperNext = true; continue;
+        }
         // subscript adverb: %h{k}:exists / :delete / :!exists / :kv / :k / :v / :p
         // and the variable form %h{k}:$delete (applied when the variable is true)
         if (isOp(":") && base->kind == NK::Index &&
@@ -867,7 +872,13 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 continue;
             }
             std::string t2;
-            if (isKind(Tok::Ident) && peek().kind == Tok::Var) t2 = advance().text;
+            if (isKind(Tok::Ident) &&
+                (peek().kind == Tok::Var ||
+                 (peek().kind == Tok::Op && peek().text == ":" && peek(2).kind == Tok::Ident &&
+                  peek(3).kind == Tok::Var))) {
+                t2 = advance().text;
+                if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
+            }
             if (!isKind(Tok::Var)) error("expected variable in declaration");
             auto ve = std::make_unique<VarExpr>(advance().text);
             ve->declare = true; ve->declScope = scope; ve->declType = t2;
@@ -1337,6 +1348,20 @@ ExprPtr Parser::parsePrimary() {
                 call->args.push_back(std::move(list));
                 e = std::move(call);
             }
+            // `( stmt; stmt; … )` — a parenthesized STATEMENT SEQUENCE, evaluating
+            // to the last statement's value (like a `do { }` block):
+            // `( say "found: $_"; last ) if $cond;`
+            if (isKind(Tok::Semicolon)) {
+                auto be = std::make_unique<BlockExpr>();
+                { auto es = std::make_unique<ExprStmt>(); es->e = std::move(e); be->body.push_back(std::move(es)); }
+                while (matchKind(Tok::Semicolon)) {
+                    if (isKind(Tok::RParen)) break; // trailing ;
+                    be->body.push_back(parseStatement());
+                }
+                expectKind(Tok::RParen, ")");
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                return u;
+            }
             expectKind(Tok::RParen, ")");
             if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
             return e;
@@ -1510,6 +1535,20 @@ ExprPtr Parser::parsePrimary() {
                 advance();
                 auto arr = std::make_unique<ArrayLit>();
                 for (auto& w : readAngleWords("\xC2\xBB")) arr->items.push_back(std::make_unique<StrLit>(w));
+                arr->isList = true;
+                return arr;
+            }
+            if (t.text == "<<") {
+                // ASCII guillemets: `<<0 +4 'a b'>>` — a qww word list in term position
+                advance();
+                auto arr = std::make_unique<ArrayLit>();
+                for (auto& w : readAngleWords(">>")) {
+                    // strip one level of quotes around a word ('a b' / "a b")
+                    std::string s = w;
+                    if (s.size() >= 2 && (s.front() == '\'' || s.front() == '"') && s.back() == s.front())
+                        s = s.substr(1, s.size() - 2);
+                    arr->items.push_back(std::make_unique<StrLit>(s));
+                }
                 arr->isList = true;
                 return arr;
             }
@@ -1831,6 +1870,10 @@ ExprPtr Parser::parsePrimary() {
             // the trailing `~ "]"` (prefix ~) as an argument. (callwith/nextwith/
             // samewith DO take args and are left alone.)
             if (name == "callsame" || name == "nextsame") listopOk = false;
+            // `so *` / `not *` — a bare Whatever curries through the boolish prefix
+            // (a general `name *` stays multiplication)
+            if (!listopOk && cur().kind == Tok::Op && cur().text == "*" &&
+                (name == "so" || name == "not")) listopOk = true;
             if (listopOk && cur().kind == Tok::Op &&
                 (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|" || cur().text == "!!") &&
                 peek(1).spaceBefore)
@@ -3023,10 +3066,21 @@ StmtPtr Parser::parseStatementImpl() {
             kw == "anon" || kw == "unit" || kw == "augment") {
             if (peek().kind == Tok::Ident && declKw.count(peek().text)) {
                 bool wasOur = (kw == "our");
+                bool wasUnit = (kw == "unit");
                 advance(); // strip scope/unit; re-dispatch on the declaration keyword
                 StmtPtr st = parseStatement();
                 // `our sub`/`our multi` — remember package scope so it installs globally.
                 if (wasOur && st && st->kind == NK::SubDecl) static_cast<SubDecl*>(st.get())->isOur = true;
+                // `unit sub MAIN(…);` — no block: the REST OF THE FILE is the body
+                if (wasUnit && st && st->kind == NK::SubDecl &&
+                    static_cast<SubDecl*>(st.get())->body.empty()) {
+                    auto* sd = static_cast<SubDecl*>(st.get());
+                    matchKind(Tok::Semicolon);
+                    while (!isKind(Tok::End)) {
+                        if (matchKind(Tok::Semicolon)) continue;
+                        sd->body.push_back(parseStatement());
+                    }
+                }
                 return st;
             }
             // typed scoped decl:  my Int sub / my Num constant / our Str sub

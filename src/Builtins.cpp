@@ -3706,6 +3706,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "fmt" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)
         return Value::str(doSprintf(args.empty() ? "%s" : a0().toStr(), {inv}));
+    // Cool.printf / Cool.sprintf: the invocant IS the format ("%s\n".printf($x))
+    if (m == "printf" && (inv.t == VT::Str || inv.t == VT::Match)) {
+        std::cout << doSprintf(inv.toStr(), args, langRev_);
+        return Value::boolean(true);
+    }
+    if (m == "sprintf" && (inv.t == VT::Str || inv.t == VT::Match))
+        return Value::str(doSprintf(inv.toStr(), args, langRev_));
 
     // Pair
     if (inv.t == VT::Pair) {
@@ -4017,7 +4024,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::typeObj(lub);
         }
         if (m == "min" || m == "max") {
-            if (items.empty()) return Value::any();
+            // Rakudo: the extremum of an empty list is ±Inf (min → Inf, max → -Inf)
+            if (items.empty()) return Value::number(m == "min" ? INFINITY : -INFINITY);
             bool wantMax = (m == "max");
             // an optional &mapper: compare by mapper($_), returning the original element.
             Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
@@ -4068,10 +4076,26 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return o;
         }
         if (m == "first") {
-            if (!args.empty() && args[0].t == VT::Code)
-                for (auto& v : items) { if (callCallable(args[0], {v}).truthy()) return v; }
-            else if (!items.empty()) return items.front();
-            return Value::any();
+            bool wantK = false, wantEnd = false; // :k → index; :end → last match
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal && a.pairVal->truthy()) {
+                if (a.s == "k") wantK = true;
+                else if (a.s == "end") wantEnd = true;
+            }
+            Value pred; bool havePred = false;
+            for (auto& a : args) if (a.t != VT::Pair) { pred = a; havePred = true; break; }
+            auto match = [&](const Value& v) {
+                if (!havePred) return true;
+                return pred.t == VT::Code ? callCallable(pred, {v}).truthy()
+                                          : applyArith("~~", v, pred).truthy();
+            };
+            if (wantEnd) {
+                for (size_t i = items.size(); i-- > 0; )
+                    if (match(items[i])) return wantK ? Value::integer((long long)i) : items[i];
+            } else {
+                for (size_t i = 0; i < items.size(); i++)
+                    if (match(items[i])) return wantK ? Value::integer((long long)i) : items[i];
+            }
+            return Value::nil(); // no match: Nil (like Rakudo)
         }
         if (m == "pick" || m == "roll") { // random element(s); pick = without replacement
             // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs
@@ -5342,8 +5366,30 @@ void Interpreter::registerBuiltins() {
     B["uc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), true, 0)); };
     B["lc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 0)); };
     B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 1)); };
-    B["so"] = [](Interpreter& I, ValueList& a) -> Value { return Value::boolean(!a.empty() && I.boolify(a[0])); };
-    B["not"] = [](Interpreter& I, ValueList& a) -> Value { return Value::boolean(a.empty() || !I.boolify(a[0])); };
+    // `so *` / `not *` curry like operators do (Rakudo: (so *).^name is WhateverCode)
+    auto boolCurry = [](bool negate, const Value& w) -> Value {
+        Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+        code.code->isWhateverCode = true;
+        code.code->whateverArity = (w.t == VT::Code && w.code && w.code->whateverArity > 0) ? w.code->whateverArity : 1;
+        Value inner = w;
+        code.code->builtin = [negate, inner](Interpreter& I, ValueList& xs) -> Value {
+            Value v = inner.t == VT::Whatever ? (xs.empty() ? Value::any() : xs[0])
+                                              : I.callCallable(inner, xs);
+            bool b = I.boolify(v);
+            return Value::boolean(negate ? !b : b);
+        };
+        return code;
+    };
+    B["so"] = [boolCurry](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code && a[0].code->isWhateverCode)))
+            return boolCurry(false, a[0]);
+        return Value::boolean(!a.empty() && I.boolify(a[0]));
+    };
+    B["not"] = [boolCurry](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code && a[0].code->isWhateverCode)))
+            return boolCurry(true, a[0]);
+        return Value::boolean(a.empty() || !I.boolify(a[0]));
+    };
     // Junction constructors: all()/any()/one()/none() (also written via & | ^).
     for (const char* jt : {"all", "any", "one", "none"})
         B[jt] = [jt](Interpreter&, ValueList& a) -> Value {

@@ -1381,11 +1381,8 @@ int Interpreter::run(Program& prog) {
         try { runPhaser(*it); } catch (ExitEx& e) { code = e.code; } catch (...) {}
     }
     runEnds(); // END phasers (reverse source order), after the mainline
-    // Emit a trailing plan only on normal completion — never fabricate `1..0`
-    // after an uncaught error (that would look like a passing empty/skip-all plan).
-    if (usedTest_ && planned_ < 0 && !crashed && !bailedOut_) {
-        std::cout << "1.." << testNum_ << "\n";
-    }
+    // Rakudo's Test module never fabricates a trailing plan (and does not warn):
+    // a file that ran tests without `plan`/`done-testing` just ends its TAP.
     // Rakudo's end-of-run summary when some tests failed.
     if (usedTest_ && failCount_ > 0 && !crashed && !bailedOut_) {
         std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")
@@ -2656,17 +2653,36 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     const auto& params = *cand.code->params;
     ValueList pos; for (auto& a : args) if (!isNamedArg(a)) pos.push_back(a);
     size_t required = 0, total = 0; bool slurpy = false;
+    const Param* slurpyParam = nullptr;
     std::vector<const Param*> positional;
     for (auto& p : params) {
         if (p.named) continue;
         if (p.invocant) continue; // the invocant (`Foo:D:`) is matched by the dispatch, not a positional arg
-        if (p.slurpy) { slurpy = true; continue; }
+        if (p.slurpy) { slurpy = true; if (!p.named) slurpyParam = &p; continue; }
         positional.push_back(&p);
         total++;
         if (!p.optional && !p.defaultVal) required++;
     }
     if (pos.size() < required) return -1;
     if (!slurpy && pos.size() > total) return -1;
+    // a `where` on the slurpy is checked against the list it would bind
+    // (`multi MAIN(*@ints where { .elems > 0 })` must lose to MAIN() bare)
+    if (slurpyParam && slurpyParam->whereExpr) {
+        Value lst = Value::array();
+        for (size_t i = total; i < pos.size(); i++) lst.arr->push_back(pos[i]);
+        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+        if (!slurpyParam->name.empty()) env->define(slurpyParam->name, lst);
+        env->define("$_", lst);
+        auto saved = tctx_.cur; tctx_.cur = env;
+        bool ok = false;
+        try {
+            Value cv = eval(slurpyParam->whereExpr.get());
+            if (cv.t == VT::Code && cv.code) cv = callCallable(cv, ValueList{lst});
+            ok = boolify(cv);
+        } catch (...) { tctx_.cur = saved; return -1; }
+        tctx_.cur = saved;
+        if (!ok) return -1;
+    }
     int score = 0;
     for (size_t i = 0; i < positional.size() && i < pos.size(); i++) {
         const Param* p = positional[i];
@@ -2721,6 +2737,38 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             tctx_.cur = saved;
             if (!ok) return -1;
             score += 2; // a satisfied where-constraint is more specific
+        }
+    }
+    // named params: a REQUIRED named (`:$test!`) disqualifies the candidate when
+    // that named arg wasn't passed — `multi MAIN(:$test!)` must lose to the
+    // default candidate on a bare invocation. A supplied match adds specificity,
+    // and a `where` constraint participates (evaluated against the supplied
+    // value, or the type object / default when absent).
+    for (auto& p : params) {
+        if (!p.named) continue;
+        std::string key = !p.namedKey.empty() ? p.namedKey
+                        : (p.name.size() > 1 ? p.name.substr(1) : p.name); // strip the sigil
+        bool supplied = false; Value sval;
+        for (auto& a : args)
+            if (isNamedArg(a) && a.s == key) { supplied = true; sval = a.pairVal ? *a.pairVal : Value::boolean(true); break; }
+        if (p.required && !supplied) return -1;
+        if (supplied) score += 2;
+        if (p.whereExpr) {
+            Value v = supplied ? sval
+                    : p.defaultVal ? eval(p.defaultVal.get())
+                    : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
+            auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+            if (!p.name.empty()) env->define(p.name, v);
+            env->define("$_", v);
+            auto saved = tctx_.cur; tctx_.cur = env;
+            bool ok = false;
+            try {
+                Value cv = eval(p.whereExpr.get());
+                if (cv.t == VT::Code && cv.code) cv = callCallable(cv, ValueList{v});
+                ok = boolify(cv);
+            } catch (...) { tctx_.cur = saved; return -1; }
+            tctx_.cur = saved;
+            if (!ok) return -1;
         }
     }
     return score;
