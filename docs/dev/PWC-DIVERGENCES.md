@@ -29,6 +29,8 @@ kept as written for that baseline.
 | **original (2026-07-14)** | **2,663** | **4,153** | 433 / 157,905 |
 | after batches 1–3 (`b504561`) | 3,295 | 3,495 | 433 / 158,067 |
 | after batch 4 | 3,458 | 3,325 | 434 / 158,225 |
+| after batch 5 | 3,480 | 3,294 | — (gated with 6) |
+| after batch 6 (`1fe6351`) | 3,525 | 3,246 | 437 / 158,267 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -42,6 +44,16 @@ Batch 4: `+ints` sigilless slurpies, Any single-item list semantics
 (:with)/classify, Array()/List()/Set()/Bag()/Mix() as call-position
 constructors. Next front: output-value diffs, the 660 in-solution test
 failures, the `Confused` parse cascade, hang triage.
+Batch 5: subset types in multi-dispatch (base chain + `where`, +2
+specificity), literal signature returns (`--> 1`) at all three `-->`
+sites, `sort {comparator}, @list`.
+Batch 6 (post-GLR list semantics): map/flatmap keep each block result as
+one element (only Slips splice) across all three map paths; prefix `|`
+produces a real Slip outside call arguments too; bare comma lists are
+Lists; .pairs/.kv/.antipairs return Seq; List.minmax → Range and
+Range.minmax → (min max); `ff`/`fff` flip-flop operators. Side effect:
+the roast sprintf-*.t files now build their full test tables (2,282 and
+4,565 rows) and still fully pass.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
