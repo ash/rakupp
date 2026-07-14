@@ -89,6 +89,8 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 
 ## Run Raku in the browser — Raku.js
 
+▶ **Try it live: [course.raku.org/playground](https://course.raku.org/playground/)**
+
 **[Raku.js](rakujs/)** is the *same* interpreter compiled to **WebAssembly** with
 Emscripten — the exact semantics as native `rakupp`, running entirely client-side
 with no server. It powers an in-page [playground](rakujs/playground/) (editor +

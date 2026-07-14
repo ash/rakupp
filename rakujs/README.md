@@ -1,5 +1,7 @@
 # Raku.js — Raku in the browser (WebAssembly)
 
+▶ **Try it live: [course.raku.org/playground](https://course.raku.org/playground/)**
+
 **Raku.js** builds the Raku++ interpreter to **WebAssembly** so Raku programs run
 entirely in the browser — no server, no round-trips. The intended use is
 embedding runnable Raku examples directly in web pages (e.g. a Raku course).
@@ -36,6 +38,21 @@ cd rakujs/playground
 python3 -m http.server 8000
 # open http://localhost:8000/
 ```
+
+## Deploy
+
+The playground is five self-contained, same-directory files
+(`index.html` + `worker.js` + `rakujs.js` + `rakujs.wasm` + `examples.js`, ~4 MB),
+so it drops into any static site under a `/playground/` path. Copy them with:
+
+```sh
+rakujs/deploy.sh /path/to/your-site/playground   # builds first if needed
+```
+
+The live playground at
+[course.raku.org/playground](https://course.raku.org/playground/) is deployed this
+way (the built files are git-ignored here; they live in the site that serves them).
+Serve `.wasm` as `application/wasm` (most static hosts already do).
 
 Edit code on the left, press **▶ Run** (or ⌘/Ctrl-Enter); stdout/stderr appear
 on the right. State resets each run (a fresh `Interpreter` per call). Output
