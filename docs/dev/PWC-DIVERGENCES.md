@@ -31,6 +31,7 @@ kept as written for that baseline.
 | after batch 4 | 3,458 | 3,325 | 434 / 158,225 |
 | after batch 5 | 3,480 | 3,294 | — (gated with 6) |
 | after batch 6 (`1fe6351`) | 3,525 | 3,246 | 437 / 158,267 |
+| after batch 7 (`b90ae70`) | 3,811 | 2,960 | 437 / 158,277 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -54,6 +55,13 @@ Lists; .pairs/.kv/.antipairs return Seq; List.minmax → Range and
 Range.minmax → (min max); `ff`/`fff` flip-flop operators. Side effect:
 the roast sprintf-*.t files now build their full test tables (2,282 and
 4,565 rows) and still fully pass.
+Batch 7 (the strictness batch, +286): Str.index/.rindex start positions
+(X::OutOfRange when out of range) — ends the while-index-advance hang
+class; string methods on an undefined Any die like Rakudo (the
+prompt-at-EOF death class in headless runs); reading a missing file dies
+with Rakudo's message; typed-array gaps read as their type's default
+(`my int @a` → 0, `my Int @b` → (Int)); `sub MAIN (sig);` unit form;
+`~~ tr///` returns a real StrDistance (Str = result, + = count).
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
