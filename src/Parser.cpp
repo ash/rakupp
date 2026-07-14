@@ -3069,11 +3069,13 @@ StmtPtr Parser::parseWhile(bool isUntil) {
 StmtPtr Parser::parseFor() {
     auto s = std::make_unique<ForStmt>();
     { bool sv = stmtCond_; stmtCond_ = true; s->list = parseExpression(); stmtCond_ = sv; }
+    bool doubly = isOp("<->");
     if (matchOp("->") || matchOp("<->")) {
+        if (doubly) s->rwVars = true; // `<->`: params alias the source elements
         if (isKind(Tok::LParen)) s->destructure = true; // `-> ($a,$b)`: unpack each element
         std::vector<Param> ps = parsePointyParams();
         bool anySub = false;
-        for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+        for (auto& p : ps) { anySub = anySub || (bool)p.subSig; if (p.isRw) s->rwVars = true; }
         if (anySub) s->params = std::move(ps); // real signature binding (named/nested destructure)
         else for (auto& p : ps) s->vars.push_back(p.name);
     }

@@ -2337,7 +2337,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     auto arr = listv.arr; // share, don't copy the elements
                     // `$_` is rw-aliased to the elements when the source is a mutable
                     // `@`-variable, so `for @a { $_ *= 10 }` writes back into @a.
-                    bool rw = fs->vars.empty() && fs->list->kind == NK::VarExpr &&
+                    // `<-> $i` / `-> $i is rw` params alias the same way.
+                    bool rw = (fs->vars.empty() || fs->rwVars) && fs->list->kind == NK::VarExpr &&
                               !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                               static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
                     for (size_t i = 0; i < arr->size(); i++) {
@@ -3853,6 +3854,18 @@ Value* Interpreter::lvalue(Expr* e) {
     // method-call lvalue: $obj.accessor = value  (rw accessors)
     if (e->kind == NK::MethodCall) {
         auto* mc = static_cast<MethodCall*>(e);
+        // dynamic handle attribute: `$*OUT.out-buffer = 0` — the dynamic var has no
+        // container (lvalue would throw); hold the evaluated handle so the slot
+        // pointer stays valid across the assignment
+        if (mc->inv->kind == NK::VarExpr &&
+            static_cast<VarExpr*>(mc->inv.get())->name.compare(0, 2, "$*") == 0) {
+            Value hv = eval(mc->inv.get());
+            if (hv.t == VT::Hash && hv.hashKind == "FileHandle" && hv.hash) {
+                static thread_local Value dynHandleHold;
+                dynHandleHold = hv;
+                return &(*dynHandleHold.hash)[mc->method];
+            }
+        }
         Value* base = lvalue(mc->inv.get());
         if (base->t == VT::Hash && base->hashKind == "FileHandle") {
             if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();

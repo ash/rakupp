@@ -303,6 +303,7 @@ struct WhileStmt : Stmt {
 struct ForStmt : Stmt {
     ExprPtr list;
     std::vector<std::string> vars; // loop variables ($_ if empty)
+    bool rwVars = false;           // `<-> $i` / `-> $i is rw`: writes copy back to the source
     bool destructure = false;      // `-> ($a,$b,$c)`: unpack each element into vars
     std::vector<Param> params;     // full pointy signature when it has sub-signatures
                                    // (named/nested destructure) — bound via bindParams

@@ -1201,7 +1201,7 @@ Token Lexer::lexOperator() {
         // word-lists (`+<a b>`), operator-name brackets, and comparison in one-pass parsing.
         "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^", "+>", "~>",
         "??", "!!", "**", "//", "||", "&&", "^^", "==", "!=", "<=", ">=", "~~", "=>",
-        "-->", "->", "=:=", ":=", "++", "--", "+=", "-=", "*=", "/=", "~=", "%%", "%=",
+        "-->", "<->", "->", "=:=", ":=", "++", "--", "+=", "-=", "*=", "/=", "~=", "%%", "%=",
         "x=", "..", "::", "<<", ">>", "andthen", // (textual handled elsewhere)
     };
     // `+<` / `~<` shifts: only when `<` clearly isn't opening a word list

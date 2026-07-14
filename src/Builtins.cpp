@@ -4157,16 +4157,28 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return h;
         }
         if (m == "rotor" || m == "batch") { // chunk into sublists of a fixed size
-            long long n = args.empty() ? 1 : args[0].toInt();
-            if (n < 1) n = 1;
+            long long n = 1, step;
+            bool haveStep = false;
             bool partial = (m == "batch"); // batch always keeps a short final chunk; rotor drops it unless :partial
-            for (auto& a : args) if (a.t == VT::Pair && a.s == "partial" && a.pairVal && a.pairVal->truthy()) partial = true;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.s == "partial") { if (a.pairVal && a.pairVal->truthy()) partial = true; }
+                else if (a.t == VT::Pair && a.pairVal) {
+                    // rotor(2 => -1): chunk size => gap — the next chunk starts size+gap later
+                    n = a.pairKey ? a.pairKey->toInt() : std::atoll(a.s.c_str());
+                    step = n + a.pairVal->toInt(); haveStep = true;
+                }
+                else if (a.isNumeric()) n = a.toInt();
+            }
+            if (n < 1) n = 1;
+            if (!haveStep) step = n;
+            if (step < 1) step = 1;
             Value out = Value::array(); out.isList = true;
-            for (size_t i = 0; i < items.size(); i += (size_t)n) {
+            for (size_t i = 0; i < items.size(); i += (size_t)step) {
                 if (i + (size_t)n > items.size() && !partial) break;
                 Value chunk = Value::array(); chunk.isList = true;
                 for (size_t j = i; j < i + (size_t)n && j < items.size(); j++) chunk.arr->push_back(items[j]);
                 out.arr->push_back(chunk);
+                if (i + (size_t)n >= items.size()) break;
             }
             return out;
         }
@@ -5557,11 +5569,12 @@ void Interpreter::registerBuiltins() {
         std::string s = a[0].toStr(), needle = a[1].toStr();
         size_t p = a.size() > 2 ? s.rfind(needle, (size_t)a[2].toInt()) : s.rfind(needle);
         return p == std::string::npos ? Value::nil() : Value::integer((long long)p); };
-    B["min"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = a; Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) < 0) { best = v; s = true; } } return s ? best : Value::any(); };
-    B["max"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = a; Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) > 0) { best = v; s = true; } } return s ? best : Value::any(); };
+    B["min"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = flattenArgs(a); Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) < 0) { best = v; s = true; } } return s ? best : Value::any(); };
+    B["max"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = flattenArgs(a); Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) > 0) { best = v; s = true; } } return s ? best : Value::any(); };
     B["minmax"] = [](Interpreter&, ValueList& a) -> Value {
         Value lo, hi; bool s = false;
-        for (auto& v : a) { if (!s) { lo = hi = v; s = true; } else { if (valueCmp(v, lo) < 0) lo = v; if (valueCmp(v, hi) > 0) hi = v; } }
+        ValueList f = flattenArgs(a);
+        for (auto& v : f) { if (!s) { lo = hi = v; s = true; } else { if (valueCmp(v, lo) < 0) lo = v; if (valueCmp(v, hi) > 0) hi = v; } }
         if (!s) return Value::any();
         return Value::range(lo.toInt(), hi.toInt(), false, false);
     };
