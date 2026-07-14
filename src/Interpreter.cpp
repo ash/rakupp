@@ -1872,6 +1872,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             namedRegexKind_[nr->name] = nr->kind;
             return Value::any();
         }
+        case NK::SubsetDecl: {
+            auto* sd = static_cast<SubsetDecl*>(s);
+            if (!sd->name.empty()) subsets_[sd->name] = SubsetInfo{sd->baseType, sd->where.get()};
+            return Value::any();
+        }
         case NK::UseStmt: {
             auto* u = static_cast<UseStmt*>(s);
             if (u->isNo && u->module == "strict") { noStrict_ = true; return Value::any(); }
@@ -2648,6 +2653,35 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
     }
 }
 
+// Does value v satisfy subset `name` (base type chain + where constraint)?
+bool Interpreter::subsetMatches(const std::string& name, const Value& v, int depth) {
+    if (depth > 16) return false; // subset cycle backstop
+    auto it = subsets_.find(name);
+    if (it == subsets_.end()) return typeMatchesArg(v, name);
+    const SubsetInfo& si = it->second;
+    if (!si.base.empty() && !subsetMatches(si.base, v, depth + 1)) return false;
+    if (si.where) {
+        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+        env->define("$_", v);
+        auto saved = tctx_.cur; tctx_.cur = env;
+        bool ok = false;
+        try {
+            Value cv = eval(const_cast<Expr*>(si.where));
+            if (cv.t == VT::Code && cv.code) cv = callCallable(cv, ValueList{v});
+            else if (cv.t == VT::Regex) cv = regexMatch(v.toStr(), cv.s);
+            ok = boolify(cv);
+        } catch (...) { tctx_.cur = saved; return false; }
+        tctx_.cur = saved;
+        return ok;
+    }
+    return true;
+}
+
+bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
+    if (subsets_.count(type)) return subsetMatches(type, v);
+    return typeMatchesArg(v, type);
+}
+
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     if (cand.t != VT::Code || !cand.code || !cand.code->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code->params;
@@ -2712,7 +2746,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             score += 3; // a matching-arity destructure is very specific
             continue;
         }
-        if (!typeMatchesArg(pos[i], p->type)) return -1;
+        if (subsets_.count(p->type)) {
+            if (!subsetMatches(p->type, pos[i])) return -1;
+            score += 2; // a satisfied subset is very specific
+        }
+        else if (!typeMatchesArg(pos[i], p->type)) return -1;
         // type smiley: :D requires a defined arg, :U requires an undefined one
         if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
         if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
@@ -5747,7 +5785,7 @@ Value Interpreter::evalBinary(Binary* b) {
         static const std::set<std::string> special = {
             "~", "does", "but", "xx", "==>", "<==", "...", "...^", "~~", "!~~",
             "&&", "and", "||", "or", "andthen", "orelse", "//", "^^", "xor", "&", "|", "^",
-            "=:=", "!=:="};
+            "=:=", "!=:=", "ff", "fff"};
         bool rmeta = op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]);
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
     }
@@ -5948,6 +5986,29 @@ Value Interpreter::evalBinary(Binary* b) {
             return Value::boolean(op == "~~" ? ok : !ok);
         }
         return applyArith(op, lTopic, r); // generic smartmatch on the already-evaluated operands
+    }
+    if (op == "ff" || op == "fff") {
+        // flip-flop: stateful per site. Off: test LHS; a hit turns it on (and for
+        // `ff` the RHS is tested on the SAME element, so a one-element range works).
+        // On: test RHS; a hit turns it off — the closing element still returns True.
+        bool& on = ffState_[b];
+        auto test = [&](Expr* side) -> bool {
+            Value v = eval(side);
+            if (v.t == VT::Bool) return v.truthy();
+            if (v.t == VT::Whatever) return op == "ff" ? false : false; // `ff *`: never end
+            Value* tp = tctx_.cur->find("$_");
+            Value topic = tp ? *tp : Value::any();
+            if (v.t == VT::Regex) return regexMatch(topic.toStr(), v.s).truthy();
+            return applyArith("~~", topic, v).truthy();
+        };
+        if (!on) {
+            if (!test(b->lhs.get())) return Value::boolean(false);
+            on = true;
+            if (op == "ff" && test(b->rhs.get())) on = false;
+            return Value::boolean(true);
+        }
+        if (test(b->rhs.get())) on = false;
+        return Value::boolean(true);
     }
     if (op == "&&" || op == "and") {
         Value l = eval(b->lhs.get());
@@ -6368,7 +6429,16 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
     if (u->op == "^") return Value::range(0, v.toInt(), false, true);
-    if (u->op == "|") return v; // slip: spread handled in evalArgs
+    if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
+        // value IS a Slip — mark it so list consumers (map, list literals) splice it.
+        if (v.t == VT::Array && v.arr) {
+            Value out = Value::array(); *out.arr = *v.arr;
+            out.isList = true; out.s = "Slip";
+            return out;
+        }
+        if (v.t == VT::Range) { Value out = Value::array(v.flatten()); out.isList = true; out.s = "Slip"; return out; }
+        return v;
+    }
     // user-defined prefix operator: `sub prefix:<§>($x) { … }`
     if (Value* f = tctx_.cur->find("&prefix:<" + u->op + ">"))
         return callCallable(*f, ValueList{v});
@@ -7417,7 +7487,7 @@ Value Interpreter::eval(Expr* e) {
                 items.push_back(eval(it.get()));
             }
             Value lout = listToArray(items);
-            if (l->parenned) lout.isList = true; // (1, 2, 3) is a List — immutable, .WHAT (List)
+            lout.isList = true; // a comma list — parenned or bare — is a List, .WHAT (List)
             return lout;
         }
         case NK::ArrayLit: {

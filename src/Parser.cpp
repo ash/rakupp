@@ -140,6 +140,7 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
         if (o == "and" || o == "andthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
+        if (o == "ff" || o == "fff") { in.valid = true; in.lbp = BP_TERNARY; return in; } // flip-flop
         return in;
     }
     return in;
@@ -2269,6 +2270,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // (Positional[Int], (Int, Str)) don't trip the `)`-expectation.
         if (matchOp("-->")) {
             if (isKind(Tok::Ident)) sigRetType_ = cur().text; // remember the return type
+            else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) || isKind(Tok::StrLit) || isKind(Tok::StrInterp))
+                sigRetLiteral_ = parsePrimary(); // `(… --> 1)`: literal return value
             int depth = 0;
             while (!isKind(Tok::End)) {
                 if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
@@ -2518,6 +2521,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
             if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+            else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
+                     isKind(Tok::StrLit) || isKind(Tok::StrInterp))
+                sigRetLiteral_ = parsePrimary(); // `($n --> 99)`: literal return value
             int depth = 0;
             while (!isKind(Tok::End)) {
                 if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
@@ -2594,12 +2600,17 @@ StmtPtr Parser::parseSub(bool isMulti) {
         s->name += ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
     }
     if (isKind(Tok::LParen)) {
-        sigRetType_.clear(); advance(); s->params = parseSignature();
+        sigRetType_.clear(); sigRetLiteral_.reset(); advance(); s->params = parseSignature();
         // a `--> T` that follows a parameter (not comma-separated) is left for us
-        if (isOp("-->")) { advance(); if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+        if (isOp("-->")) { advance();
+                           if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+                           else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
+                                    isKind(Tok::StrLit) || isKind(Tok::StrInterp))
+                               sigRetLiteral_ = parsePrimary(); // `(2 --> 1)`: literal return
                            while (!isKind(Tok::RParen) && !isKind(Tok::End)) advance(); }
         expectKind(Tok::RParen, ")");
         if (!sigRetType_.empty()) s->retType = sigRetType_; // `--> T` inside the signature
+        if (sigRetLiteral_) s->retLiteral = std::move(sigRetLiteral_);
     }
     // alternative signatures sharing one body: `sub f (sig1) | (sig2) | (sig3) { … }`
     while (isOp("|") && peek().kind == Tok::LParen) {
@@ -2682,6 +2693,11 @@ StmtPtr Parser::parseSub(bool isMulti) {
             advance(); s->retType = cur().text;
         } else if (isOp("-->") && peek().kind == Tok::Ident) {
             advance(); s->retType = cur().text;
+        } else if (isOp("-->") && (peek().kind == Tok::IntLit || peek().kind == Tok::NumLit ||
+                                   peek().kind == Tok::StrLit || peek().kind == Tok::StrInterp)) {
+            advance(); // -->
+            s->retLiteral = parsePrimary(); // `--> 1`: an empty body returns this literal
+            continue;
         }
         advance();
     }
@@ -2691,15 +2707,21 @@ StmtPtr Parser::parseSub(bool isMulti) {
         inReactBlock_ = saved;
         s->body = std::move(blk->stmts);
     }
+    if (s->body.empty() && s->retLiteral) { // `multi f (2 --> 1) {}` returns the literal
+        auto es = std::make_unique<ExprStmt>();
+        es->e = std::move(s->retLiteral);
+        s->body.push_back(std::move(es));
+    }
     return s;
 }
 
 StmtPtr Parser::parseSubset() {
     // 'subset' already consumed:  subset NAME [of TYPE] [where EXPR] ;
-    if (isKind(Tok::Ident)) advance(); // name (becomes a typeObj on use)
-    if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) advance(); }
-    if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN); } // constraint not enforced
-    return std::make_unique<Block>(); // no-op declaration
+    auto sd = std::make_unique<SubsetDecl>();
+    if (isKind(Tok::Ident)) sd->name = advance().text;
+    if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) sd->baseType = advance().text; }
+    if (isIdent("where")) { advance(); sd->where = parseExpr(BP_ASSIGN); }
+    return sd;
 }
 
 StmtPtr Parser::parseEnum() {

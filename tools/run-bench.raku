@@ -56,7 +56,7 @@ sub compile-native(Str $path, Str $out --> Bool) {
 printf "%-12s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'rakudo', 'note';
 for @benches -> %b {
     my $path = $bench.add(%b<file>).Str;
-    my $nbin = "/tmp/rakupp-bench-{%b<name>}";
+    my $nbin = "/tmp/rakupp-bench-$*PID-{%b<name>}"; # unique per run: macOS wedges re-execs of an overwritten exe path
 
     my $interp = sprintf '%.1fms', measure([$RAKUPP, $path]);
     my $rakudo = sprintf '%.1fms', measure([$RAKUDO, $path]);

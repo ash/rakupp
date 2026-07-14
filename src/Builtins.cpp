@@ -4150,6 +4150,26 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (size_t k = 1; k < items.size(); k++) lub = lubType(lub, typeOfVal(items[k]));
             return Value::typeObj(lub);
         }
+        if (m == "minmax") {
+            // Range.minmax → the (min max) List; List.minmax → a min..max Range
+            if (inv.t == VT::Range) {
+                Value out = Value::array(); out.isList = true;
+                out.arr->push_back(Value::integer(inv.rFrom + (inv.rExFrom ? 1 : 0)));
+                out.arr->push_back(Value::integer(inv.rTo - (inv.rExTo ? 1 : 0)));
+                return out;
+            }
+            Value lo, hi; bool started = false;
+            for (auto& v : items) {
+                if (!started) { lo = hi = v; started = true; continue; }
+                if (valueCmp(v, lo) < 0) lo = v;
+                if (valueCmp(v, hi) > 0) hi = v;
+            }
+            if (started && lo.t == VT::Int && hi.t == VT::Int)
+                return Value::range(lo.toInt(), hi.toInt(), false, false);
+            Value out = Value::array(); out.isList = true; // non-Int endpoints (our Range is Int-only)
+            if (started) { out.arr->push_back(lo); out.arr->push_back(hi); }
+            return out;
+        }
         if (m == "min" || m == "max") {
             // Rakudo: the extremum of an empty list is ±Inf (min → Inf, max → -Inf)
             if (items.empty()) return Value::number(m == "min" ? INFINITY : -INFINITY);
@@ -4340,12 +4360,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     ValueList ca;
                     for (size_t k = 0; k < ar && i + k < items.size(); k++) ca.push_back(items[i + k]);
                     Value r = callCallable(args[0], ca);
-                    if (r.t == VT::Array) for (auto& x : *r.arr) out.arr->push_back(x);
-                    else if (r.t == VT::Range) for (auto& x : r.flatten()) out.arr->push_back(x);
+                    // post-GLR: map keeps each block result as ONE element; only a
+                    // Slip (or flatmap, which flattens one level by design) spreads.
+                    if (m == "flatmap") {
+                        if (r.t == VT::Array) for (auto& x : *r.arr) out.arr->push_back(x);
+                        else if (r.t == VT::Range) for (auto& x : r.flatten()) out.arr->push_back(x);
+                        else out.arr->push_back(r);
+                    }
+                    else if (r.t == VT::Array && r.isList && r.s == "Slip")
+                        for (auto& x : *r.arr) out.arr->push_back(x);
                     else out.arr->push_back(r);
                 }
             }
-            out.isList = true;
+            out.isList = true; out.s = "Seq";
             return out;
         }
         if (m == "grep") {
@@ -4498,7 +4525,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "pairs" || m == "kv" || m == "antipairs") {
-            Value out = Value::array();
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
             if (inv.t == VT::Hash) {
                 for (auto& kv : *inv.hash) {
                     if (m == "kv") { out.arr->push_back(Value::str(kv.first)); out.arr->push_back(kv.second); }
@@ -5596,7 +5623,15 @@ void Interpreter::registerBuiltins() {
         ValueList items; for (auto& v : a) { ValueList l = toList(v); items.insert(items.end(), l.begin(), l.end()); }
         std::reverse(items.begin(), items.end()); return Value::array(items);
     };
-    B["sort"] = [](Interpreter&, ValueList& a) -> Value {
+    B["sort"] = [](Interpreter& I, ValueList& a) -> Value {
+        // `sort {comparator}, @list` / `sort &by, @list`: a leading Code is the
+        // comparator/key extractor, not an element — delegate to List.sort
+        if (!a.empty() && a[0].t == VT::Code) {
+            Value cmp = a[0];
+            ValueList items; for (size_t i = 1; i < a.size(); i++) { ValueList l = toList(a[i]); items.insert(items.end(), l.begin(), l.end()); }
+            Value lst = Value::list(items);
+            ValueList ma{cmp}; return I.methodCall(lst, "sort", ma);
+        }
         ValueList items; for (auto& v : a) { ValueList l = toList(v); items.insert(items.end(), l.begin(), l.end()); }
         std::stable_sort(items.begin(), items.end(), [](const Value& x, const Value& y) { return valueCmp(x, y) < 0; });
         return Value::array(items);
@@ -5726,9 +5761,9 @@ void Interpreter::registerBuiltins() {
         return I.methodCall(list, "snip", {a[0]});
     };
     B["map"] = [](Interpreter& I, ValueList& a) -> Value {
-        Value out = Value::array();
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (a.size() >= 2 && a[0].t == VT::Code)
-            for (auto& v : toList(a[1])) { Value r = I.callCallable(a[0], {v}); if (r.t == VT::Array) for (auto& x : *r.arr) out.arr->push_back(x); else out.arr->push_back(r); }
+            for (auto& v : toList(a[1])) { Value r = I.callCallable(a[0], {v}); if (r.t == VT::Array && r.isList && r.s == "Slip") for (auto& x : *r.arr) out.arr->push_back(x); else out.arr->push_back(r); }
         return out;
     };
     B["grep"] = [](Interpreter& I, ValueList& a) -> Value {

@@ -15,6 +15,7 @@ enum class NK {
     ExprStmt, VarDecl, SubDecl, IfStmt, WhileStmt, ForStmt, LoopStmt,
     Block, ReturnStmt, LastStmt, NextStmt, RedoStmt, UseStmt, EmptyStmt,
     GivenStmt, WhenStmt, RepeatStmt, Whatever, ClassDecl, SelfTerm, EnumDecl, NamedRegexDecl,
+    SubsetDecl,
 };
 
 struct Node {
@@ -226,6 +227,7 @@ struct SubDecl : Stmt {
     std::vector<std::vector<Param>> altParams; // extra `(sig1) | (sig2)` signatures, share the body
     std::vector<StmtPtr> body;
     std::vector<SubTraitSpec> traits; // non-built-in `is` traits, dispatched to user trait_mod:<is> multis
+    ExprPtr retLiteral; // `--> 1` literal return: an empty body yields this value
     bool isMulti = false;
     bool isMethod = false;
     bool isSubmethod = false;
@@ -328,6 +330,14 @@ struct UseStmt : Stmt {
 };
 
 struct EmptyStmt : Stmt { EmptyStmt(): Stmt(NK::EmptyStmt) {} };
+
+// subset NAME of BASE where EXPR — a refinement type participating in dispatch
+struct SubsetDecl : Stmt {
+    std::string name;
+    std::string baseType;  // "" = Any
+    ExprPtr where;         // may be null (pure alias)
+    SubsetDecl(): Stmt(NK::SubsetDecl) {}
+};
 
 struct WhateverExpr : Expr { bool hyper = false; WhateverExpr(): Expr(NK::Whatever) {} }; // hyper: `**` (HyperWhatever)
 

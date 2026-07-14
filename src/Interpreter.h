@@ -199,6 +199,12 @@ public:
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
+    // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
+    struct SubsetInfo { std::string base; const Expr* where = nullptr; };
+    std::unordered_map<std::string, SubsetInfo> subsets_;
+    std::unordered_map<const void*, bool> ffState_; // per-site `ff`/`fff` flip-flop latch
+    bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
+    bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
     bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
