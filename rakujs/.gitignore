@@ -1,0 +1,17 @@
+# Local Emscripten toolchain bootstrapped by build.sh (~1 GB)
+emsdk/
+
+# build.sh log
+build.log
+
+# Build artifacts. They're a few MB each; regenerate with build.sh. If you want
+# to publish the playground via GitHub Pages, either commit these deliberately
+# (git add -f) or build them in CI — see README.md.
+playground/rakujs.js
+playground/rakujs.wasm
+
+# Generated from examples/*.raku by gen-examples.py (build.sh regenerates it).
+playground/examples.js
+
+# Scratch dir used when diffing WASM vs native example output.
+playground/_native/

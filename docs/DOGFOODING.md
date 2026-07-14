@@ -14,6 +14,7 @@ project honest about what the language implementation can actually do.
 | [`tools/run-bench.raku`](../tools/run-bench.raku) | The benchmark harness behind [BENCHMARKS.md](BENCHMARKS.md): times interp / `--exe` / Rakudo as fresh subprocesses. Also runs under Rakudo, so the harness language can't bias the results. | `build/rakupp tools/run-bench.raku` |
 | [`tools/run-optbench.raku`](../tools/run-optbench.raku) | Same idea for the `--exe -O` optimizer measurements in [OPTIMIZATION.md](OPTIMIZATION.md). | `build/rakupp tools/run-optbench.raku` |
 | [`tools/rc-compare.raku`](../tools/rc-compare.raku) | The RosettaCode survey ([docs/ROSETTACODE.md](dev/ROSETTACODE.md)): fetches real programs off the wiki and diffs Raku++ against Rakudo on each. Written to run under either engine. | `raku tools/rc-compare.raku` (or rakupp) |
+| [`rakujs/gen-examples.raku`](../rakujs/gen-examples.raku) | Generates the [Raku.js](../rakujs/README.md) browser playground's example list (`rakujs/playground/examples.js`) from `examples/*.raku`, JSON-encoding each program with a hand-rolled string escaper. The WebAssembly build regenerates it with `rakupp` on every build — the interpreter produces the data for its own web playground. | `build/rakupp rakujs/gen-examples.raku` |
 
 Beyond the repo, the same principle drives validation against real
 applications: the [covid.observer](https://github.com/ash/covid.observer) site
@@ -40,6 +41,9 @@ found *by these tools themselves* while building Raku++:
 - The RosettaCode comparator needed heredocs (`q:to/…/`), quote-aware regex
   lexing, and `run` with closed stdin before it could even fetch and time its
   first task.
+- Writing `rakujs/gen-examples.raku` surfaced a missing `IO::Path.relative` —
+  the generator wanted it for a status line and hit `No such method`. A small
+  gap Roast hadn't flagged, now queued to implement.
 
 **It proves the claims.** "Raku++ runs real Raku" is easy to say; a
 1,400-line harness, a UCD parser chewing a 40k-line data file, and a benchmark

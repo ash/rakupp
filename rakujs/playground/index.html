@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raku.js Playground</title>
+<style>
+  :root {
+    --bg: #1b1d23; --panel: #24262e; --panel2: #2b2e37; --ink: #e6e6e6;
+    --muted: #9aa0ab; --accent: #d33682; --accent2: #268bd2; --ok: #859900;
+    --border: #363a45; --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --panel:#fff; --panel2:#eef0f3; --ink:#1b1d23;
+            --muted:#5b616e; --border:#dcdfe5; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+           padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  header .tag { color: var(--muted); font-size: 12px; }
+  header a { color: var(--accent2); text-decoration: none; }
+  .spacer { flex: 1; }
+  select, button { font: inherit; color: var(--ink); background: var(--panel2);
+                   border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; }
+  /* One button for both Run and Stop. Fixed min-width fits "▶ Run", "■ Stop" and
+     "⟳ Stop", so it never changes size and nothing to its left shifts. */
+  button.run { background: var(--accent); color: #fff; border-color: transparent;
+               font-weight: 600; cursor: pointer; padding: 6px 16px; min-width: 98px;
+               display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  button.run:disabled { opacity: .5; cursor: default; }
+  button.run.running { background: transparent; color: var(--accent); border-color: var(--accent); }
+  .spinner { width: 12px; height: 12px; border-radius: 50%;
+             border: 2px solid var(--border); border-top-color: var(--accent);
+             animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  [hidden] { display: none !important; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+         background: var(--border); height: calc(100vh - 54px); }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; height: auto; } }
+  .pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
+  .pane > .label { padding: 6px 14px; font-size: 11px; letter-spacing: .08em;
+                   text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); }
+  textarea#code { flex: 1; resize: none; border: 0; outline: 0; padding: 14px;
+                  background: var(--bg); color: var(--ink); font-family: var(--font-mono);
+                  font-size: 13.5px; line-height: 1.55; tab-size: 2; }
+  #out { flex: 1; margin: 0; padding: 14px; overflow: auto; white-space: pre-wrap;
+         font-family: var(--font-mono); font-size: 13px; }
+  #out .err { color: var(--accent); }
+  #out .meta { color: var(--muted); }
+  .status { padding: 4px 14px; font-size: 12px; color: var(--muted);
+            border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Raku<span style="color:var(--accent)">.js</span> Playground</h1>
+  <span class="tag" id="ver">loading WebAssembly…</span>
+  <div class="spacer"></div>
+  <label class="tag" for="examples">example:</label>
+  <select id="examples"></select>
+  <button class="run" id="runBtn" disabled>▶ Run</button>
+</header>
+<main>
+  <section class="pane">
+    <div class="label">Raku source</div>
+    <textarea id="code" spellcheck="false" autocomplete="off"></textarea>
+  </section>
+  <section class="pane">
+    <div class="label">Output</div>
+    <pre id="out"><span class="meta">Press ▶ Run (or ⌘/Ctrl-Enter).</span></pre>
+    <div class="status" id="status"></div>
+  </section>
+</main>
+
+<script src="examples.js"></script>
+<script>
+// The WebAssembly module runs in a Web Worker (worker.js) so the main thread
+// stays free to animate the spinner and stream output live. See worker.js.
+//
+// Examples come from examples.js (generated from ../examples/*.raku by
+// gen-examples.raku). Fallback keeps the page usable if that file is missing.
+const EXAMPLES = (window.RAKU_EXAMPLES && window.RAKU_EXAMPLES.length)
+  ? window.RAKU_EXAMPLES
+  : [{ name: "Hello, world", category: "Basics", code: 'say "Hello, Raku from the browser!";' }];
+
+const codeEl = document.getElementById('code');
+const outEl  = document.getElementById('out');
+const statusEl = document.getElementById('status');
+const verEl  = document.getElementById('ver');
+const runBtn = document.getElementById('runBtn');
+const sel = document.getElementById('examples');
+
+// Build the dropdown as <optgroup>s in first-seen category order. Each <option>
+// value is its index into EXAMPLES, so we can recover the full example object.
+const groups = {};
+EXAMPLES.forEach((ex, i) => {
+  const cat = ex.category || "Examples";
+  const g = groups[cat] || (groups[cat] = document.createElement('optgroup'), groups[cat].label = cat, groups[cat]);
+  const o = document.createElement('option');
+  o.value = i;
+  o.textContent = ex.name;
+  if (ex.desc) o.title = ex.desc;
+  g.appendChild(o);
+});
+for (const cat of Object.keys(groups)) sel.appendChild(groups[cat]);
+
+function currentExample() { return EXAMPLES[+sel.value] || EXAMPLES[0]; }
+sel.onchange = () => { codeEl.value = currentExample().code; };
+codeEl.value = EXAMPLES[0].code;
+
+// ---- output screen, with minimal ANSI handling for in-place redraws ----
+const OUT_CAP = 400000; // render at most ~400 KB of output
+let screen = [];        // [ [text, cls], … ]
+let screenChars = 0, truncated = false, renderPending = false;
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+function renderScreen() {
+  renderPending = false;
+  outEl.innerHTML = screen.map(([s, cls]) => `<span class="${cls}">${esc(s)}</span>`).join('');
+  outEl.scrollTop = outEl.scrollHeight;
+}
+// Coalesce with a short timer, not requestAnimationFrame: rAF is paused in
+// background / non-visible tabs, which would silently drop all output there.
+function scheduleRender() { if (!renderPending) { renderPending = true; setTimeout(renderScreen, 16); } }
+function clearScreen() { screen = []; screenChars = 0; truncated = false; scheduleRender(); }
+function pushText(text, cls) {
+  if (truncated || !text) return;
+  if (screenChars + text.length > OUT_CAP) {
+    screen.push(["\n…output truncated at " + (OUT_CAP/1000|0) + " KB…\n", "meta"]);
+    truncated = true; scheduleRender(); return;
+  }
+  screenChars += text.length; screen.push([text, cls]); scheduleRender();
+}
+// Strip ANSI escapes, but treat screen-clear (\e[2J) and cursor-home (\e[H) as a
+// pane reset, so in-place animations (e.g. Game of Life) render frame by frame.
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+function feed(text, cls) {
+  ANSI.lastIndex = 0;
+  let last = 0, m;
+  while ((m = ANSI.exec(text))) {
+    pushText(text.slice(last, m.index), cls);
+    const f = m[0][m[0].length - 1];            // final byte of the escape
+    if (m[0] === '\x1b[2J' || m[0] === '\x1b[3J' || f === 'H' || f === 'f') clearScreen();
+    last = ANSI.lastIndex;                       // other escapes are dropped
+  }
+  pushText(text.slice(last), cls);
+}
+
+// ---- worker lifecycle ----
+let worker = null, ready = false, running = false, pendingRun = false, spinTimer = null;
+let loadTimer = null, loadTries = 0;
+const LOAD_TIMEOUT = 12000, MAX_LOAD_TRIES = 2;
+const RECURSION_MSG = "Recursion too deep for the browser (a few hundred levels). This is a"
+  + " WebAssembly stack limit, not a Raku one — the same code runs natively."
+  + " Rewrite it iteratively, or run it with native rakupp.";
+
+// The single Run button doubles as Stop while a program runs. After 300 ms a
+// spinner joins the "Stop" label so long runs visibly show progress (quick runs
+// don't flash it). The button's min-width fits every label so it never resizes.
+function setRunning(on) {
+  running = on;
+  runBtn.classList.toggle('running', on);
+  clearTimeout(spinTimer);
+  if (on) {
+    runBtn.textContent = '■ Stop';
+    spinTimer = setTimeout(() => {
+      if (running) runBtn.innerHTML = '<span class="spinner"></span> Stop';
+    }, 300);
+  } else {
+    runBtn.textContent = '▶ Run';
+  }
+}
+
+// If a worker never signals 'ready' (the WASM instantiate hung — usually memory
+// pressure after heavy use), don't leave the user stuck at "loading…" with only a
+// manual page reload to recover. Terminating the worker frees its memory, so a
+// fresh one usually loads; retry a couple of times, then fall back to a clear note.
+function onLoadStuck() {
+  if (loadTries < MAX_LOAD_TRIES) {
+    loadTries++;
+    verEl.textContent = "loading WebAssembly… (retry " + loadTries + ")";
+    worker.terminate();
+    createWorker();
+  } else {
+    verEl.textContent = "⚠ WebAssembly didn't load";
+    statusEl.textContent = "load stuck";
+    clearScreen();
+    pushText("The interpreter didn't finish loading — this can happen after heavy use\n"
+      + "(the browser tab running low on memory). Reloading the page fixes it.\n", "err");
+  }
+}
+
+function createWorker() {
+  worker = new Worker('worker.js');
+  clearTimeout(loadTimer);
+  loadTimer = setTimeout(onLoadStuck, LOAD_TIMEOUT);
+  worker.onmessage = ({ data: m }) => {
+    if (m.type === 'ready' || m.type === 'loaderror') clearTimeout(loadTimer);
+    switch (m.type) {
+      case 'ready':
+        ready = true; runBtn.disabled = false; loadTries = 0;
+        verEl.textContent = "Raku++ " + m.version + " · compiled to WebAssembly · no server";
+        if (pendingRun) { pendingRun = false; startRun(); }   // a restart was queued
+        else if (!running) statusEl.textContent = "ready";
+        break;
+      case 'out':
+        feed(m.text, m.cls);
+        break;
+      case 'done':
+        if (!screen.length) pushText(" (no output)\n", "meta");
+        pushText(`\n— exit ${m.rc} · ${m.ms} ms —`, "meta");
+        statusEl.textContent = `exit code ${m.rc} · ${m.ms} ms`;
+        setRunning(false);
+        break;
+      case 'runerror':
+        pushText("\n" + (m.deep ? RECURSION_MSG : "[host error] " + m.message) + "\n", "err");
+        statusEl.textContent = m.deep ? "recursion limit" : "host error";
+        setRunning(false);
+        break;
+      case 'loaderror':
+        verEl.textContent = "⚠ failed to load WebAssembly";
+        statusEl.textContent = "load failed";
+        clearScreen();
+        pushText("Could not load rakujs.wasm — " + m.message + "\n\n"
+          + "The playground must be served over HTTP, not opened as a file://.\n"
+          + "  cd rakujs/playground && python3 -m http.server 8000\n", "err");
+        setRunning(false);
+        break;
+    }
+  };
+  worker.onerror = e => {
+    clearTimeout(loadTimer);
+    verEl.textContent = "⚠ worker error";
+    statusEl.textContent = "worker error";
+    pushText("\n[worker error] " + (e.message || e) + "\n", "err");
+    setRunning(false);
+  };
+}
+createWorker();
+
+// A running program lives in a synchronous ccall, so the only way to interrupt
+// it is to terminate the worker. Kill it and spin up a fresh one (which re-posts
+// 'ready', re-enabling Run — and running any queued restart).
+function killAndRecreate() {
+  worker.terminate();
+  ready = false;
+  runBtn.disabled = true;
+  createWorker();
+}
+function startRun() {
+  clearScreen();
+  statusEl.textContent = "running…";
+  setRunning(true);
+  worker.postMessage({ type: 'run', src: codeEl.value });
+}
+
+function run() {
+  if (running) {                 // Run during a run = restart with the current source
+    pendingRun = true;
+    killAndRecreate();
+    setRunning(false);
+    statusEl.textContent = "restarting…";
+    return;
+  }
+  if (!ready) return;
+  startRun();
+}
+
+// Stop a runaway (or just long) program: kill the worker, don't re-run.
+function stop() {
+  if (!running) return;
+  pendingRun = false;
+  killAndRecreate();
+  setRunning(false);
+  pushText("\n— stopped —", "meta");
+  statusEl.textContent = "stopped";
+}
+
+// Click the button to run; while running it shows Stop and clicking halts.
+runBtn.onclick = () => running ? stop() : run();
+document.addEventListener('keydown', e => {
+  // ⌘/Ctrl-Enter always runs the current source (restarts if one is running);
+  // Escape stops.
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); run(); }
+  else if (e.key === "Escape" && running) { e.preventDefault(); stop(); }
+});
+// Safety net: editing the source frees the Run button if it ever got stuck
+// disabled while idle. Never touches the mid-run state.
+codeEl.addEventListener('input', () => { if (!running && ready) runBtn.disabled = false; });
+</script>
+</body>
+</html>
