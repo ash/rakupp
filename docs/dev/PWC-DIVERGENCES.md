@@ -36,6 +36,7 @@ kept as written for that baseline.
 | after batch 9 (`da81842`) | 3,931 | 2,839 | 439 / 159,076 |
 | after batch 10 (`e53f4a9`) | 4,044 | 2,725 | 439 / 159,105 |
 | after batch 11 (`4580aff`) | 4,045 | 2,724 | 439 / 159,119 |
+| after batch 12 (`1827ddd`) | 4,087 | 2,682 | 440 / 159,205 |
 
 Batches 1–3: unit-form MAIN body/signature binding, required-named +
 where-constraint dispatch (named & slurpy), Cool.printf/sprintf, no
@@ -81,6 +82,10 @@ flatten list args (`max(values %s)`), for-loop rw params (`<->` /
 assignment ($*OUT.out-buffer = 0).
 Batch 11: stacked X/Z metaops (`XZ+`), one-level cross/zip operands
 (sublists stay whole), Slip() as a routine.
+Batch 12: element-read itemization (`my @row = @m[0]` keeps the row
+whole — the is-deeply nested-structure class), Z/X at list-infix
+precedence with `Z,` tuples, native-container element types
+(`state int @a` zeros), `*²` superscripts, spaced `/` quote delimiters.
 
 Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
