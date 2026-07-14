@@ -4,15 +4,55 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Raku.js Playground</title>
-<style>
-  :root {
-    --bg: #1b1d23; --panel: #24262e; --panel2: #2b2e37; --ink: #e6e6e6;
-    --muted: #9aa0ab; --accent: #d33682; --accent2: #268bd2; --ok: #859900;
-    --border: #363a45; --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+<script>
+/* Theme switcher: 'system' | 'light' | 'dark'. Runs in <head> so the resolved
+   theme is applied before first paint (no flash). Mirrors — and shares the
+   localStorage key with — the Raku course's switcher, so on course.raku.org the
+   playground follows the same choice. */
+(function () {
+  var KEY = 'raku-theme';
+  var mql = window.matchMedia('(prefers-color-scheme: dark)');
+  var ICON = { system: '◐', light: '☀', dark: '☾' };
+  function stored() { try { return localStorage.getItem(KEY) || 'system'; } catch (e) { return 'system'; } }
+  function effective(s) { return (s === 'dark' || (s === 'system' && mql.matches)) ? 'dark' : 'light'; }
+  function apply(s) {
+    var d = document.documentElement;
+    d.setAttribute('data-theme', s);
+    d.setAttribute('data-theme-active', effective(s));
+    var btn = document.querySelector('.theme-btn');
+    if (btn) btn.textContent = ICON[s] || ICON.system;
+    document.querySelectorAll('.theme-menu [data-theme-set]').forEach(function (el) {
+      el.setAttribute('aria-checked', el.getAttribute('data-theme-set') === s ? 'true' : 'false');
+    });
   }
-  @media (prefers-color-scheme: light) {
-    :root { --bg:#f6f7f9; --panel:#fff; --panel2:#eef0f3; --ink:#1b1d23;
-            --muted:#5b616e; --border:#dcdfe5; }
+  apply(stored());
+  mql.addEventListener('change', function () { if (stored() === 'system') apply('system'); });
+  window.__setTheme = function (s) { try { localStorage.setItem(KEY, s); } catch (e) {} apply(s); };
+  document.addEventListener('DOMContentLoaded', function () {
+    apply(stored());
+    var sw = document.querySelector('.theme-switch');
+    if (!sw) return;
+    var btn = sw.querySelector('.theme-btn'), menu = sw.querySelector('.theme-menu');
+    function open(o) { menu.hidden = !o; btn.setAttribute('aria-expanded', o ? 'true' : 'false'); }
+    btn.addEventListener('click', function (e) { e.stopPropagation(); open(menu.hidden); });
+    menu.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-theme-set]');
+      if (b) { window.__setTheme(b.getAttribute('data-theme-set')); open(false); btn.focus(); }
+    });
+    document.addEventListener('click', function (e) { if (!sw.contains(e.target)) open(false); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !menu.hidden) { e.stopPropagation(); open(false); btn.focus(); } });
+  });
+})();
+</script>
+<style>
+  :root {   /* light (default) */
+    --bg:#f6f7f9; --panel:#fff; --panel2:#eef0f3; --ink:#1b1d23;
+    --muted:#5b616e; --accent:#d33682; --accent2:#268bd2; --ok:#859900;
+    --border:#dcdfe5; --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme-active="dark"] {   /* dark */
+    --bg:#1b1d23; --panel:#24262e; --panel2:#2b2e37; --ink:#e6e6e6;
+    --muted:#9aa0ab; --border:#363a45;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
@@ -24,6 +64,26 @@
   header .tag { color: var(--muted); font-size: 12px; }
   header a { color: var(--accent2); text-decoration: none; }
   .spacer { flex: 1; }
+  /* Theme switcher — an icon button that opens a System/Light/Dark menu
+     (same mechanism as the Raku course). */
+  .theme-switch { position: relative; display: inline-flex; }
+  .theme-btn { display: inline-flex; align-items: center; justify-content: center;
+               width: 30px; height: 30px; padding: 0; font-size: 15px; line-height: 1;
+               cursor: pointer; border: 1px solid var(--border); border-radius: 8px;
+               background: var(--panel2); color: var(--muted); }
+  .theme-btn:hover { color: var(--ink); }
+  .theme-menu { position: absolute; top: calc(100% + 6px); right: 0; margin: 0; padding: 4px;
+               list-style: none; min-width: 132px; background: var(--panel);
+               border: 1px solid var(--border); border-radius: 10px;
+               box-shadow: 0 8px 30px rgba(0,0,0,.28); z-index: 20; }
+  .theme-menu li { margin: 0; }
+  .theme-menu button { display: flex; align-items: center; gap: 8px; width: 100%;
+               padding: 6px 9px; font-size: 13px; text-align: left; cursor: pointer;
+               border: 0; border-radius: 7px; background: transparent; color: var(--ink); }
+  .theme-menu button .ti { width: 1.1em; text-align: center; }
+  .theme-menu button:hover { background: var(--panel2); }
+  .theme-menu button[aria-checked="true"] { color: var(--accent2); font-weight: 600; }
+  .theme-menu button[aria-checked="true"]::after { content: '✓'; margin-left: auto; }
   select, button { font: inherit; color: var(--ink); background: var(--panel2);
                    border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; }
   /* One button for both Run and Stop. Fixed min-width fits "▶ Run", "■ Stop" and
@@ -50,7 +110,7 @@
   #hl, textarea#code {
     position: absolute; inset: 0; margin: 0; padding: 14px; border: 0;
     font-family: var(--font-mono); font-size: 13.5px; line-height: 1.55;
-    letter-spacing: normal; tab-size: 2; white-space: pre; overflow: auto; }
+    letter-spacing: normal; tab-size: 4; white-space: pre; overflow: auto; }
   #hl { color: var(--ink); pointer-events: none; overflow: hidden; }
   textarea#code { resize: none; outline: 0; background: transparent;
                   color: transparent; caret-color: var(--ink); }
@@ -79,6 +139,14 @@
   <h1>Raku<span style="color:var(--accent)">.js</span> Playground</h1>
   <span class="tag" id="ver">loading WebAssembly…</span>
   <div class="spacer"></div>
+  <span class="theme-switch">
+    <button class="theme-btn" aria-label="Theme" aria-haspopup="true" aria-expanded="false">◐</button>
+    <ul class="theme-menu" hidden>
+      <li><button data-theme-set="system"><span class="ti">◐</span> System</button></li>
+      <li><button data-theme-set="light"><span class="ti">☀</span> Light</button></li>
+      <li><button data-theme-set="dark"><span class="ti">☾</span> Dark</button></li>
+    </ul>
+  </span>
   <label class="tag" for="examples">example:</label>
   <select id="examples"></select>
   <button class="run" id="runBtn" disabled>▶ Run</button>
@@ -352,10 +420,19 @@ document.addEventListener('keydown', e => {
 // disabled while idle. Never touches the mid-run state.
 codeEl.addEventListener('input', () => { paintHL(); if (!running && ready) runBtn.disabled = false; });
 
-// Tab indents instead of moving focus out of the editor; Shift-Tab outdents.
-// A selection spanning lines indents/outdents every line it touches.
-const INDENT = '  ';
+// Editor keys: Enter keeps the current line's indentation; Tab indents (Shift-Tab
+// outdents), and a selection spanning lines indents/outdents every line it touches.
+const INDENT = '    ';   // 4 spaces
 codeEl.addEventListener('keydown', e => {
+  // Enter → newline + the leading whitespace of the current line.
+  if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+    const v = codeEl.value, s = codeEl.selectionStart;
+    const from = v.lastIndexOf('\n', s - 1) + 1;
+    const indent = (v.slice(from, s).match(/^[ \t]*/) || [''])[0];
+    e.preventDefault();
+    document.execCommand('insertText', false, '\n' + indent);   // fires input → paintHL
+    return;
+  }
   if (e.key !== 'Tab') return;
   e.preventDefault();
   const el = codeEl, v = el.value, s = el.selectionStart, en = el.selectionEnd;
@@ -374,7 +451,7 @@ codeEl.addEventListener('keydown', e => {
   let firstCut = 0, region;
   if (e.shiftKey) {
     region = lines.map((l, i) => {
-      const cut = (l.match(/^( {1,2}|\t)/) || [''])[0].length;
+      const cut = (l.match(/^( {1,4}|\t)/) || [''])[0].length;
       if (i === 0) firstCut = cut;
       return l.slice(cut);
     }).join('\n');
