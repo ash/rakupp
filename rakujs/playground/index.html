@@ -44,9 +44,24 @@
   .pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
   .pane > .label { padding: 6px 14px; font-size: 11px; letter-spacing: .08em;
                    text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); }
-  textarea#code { flex: 1; resize: none; border: 0; outline: 0; padding: 14px;
-                  background: var(--bg); color: var(--ink); font-family: var(--font-mono);
-                  font-size: 13.5px; line-height: 1.55; tab-size: 2; }
+  /* Editor: a transparent textarea sits exactly over a highlighted <pre>. Both
+     must share identical metrics or the caret drifts from the coloured text. */
+  .editor { position: relative; flex: 1; min-height: 0; }
+  #hl, textarea#code {
+    position: absolute; inset: 0; margin: 0; padding: 14px; border: 0;
+    font-family: var(--font-mono); font-size: 13.5px; line-height: 1.55;
+    letter-spacing: normal; tab-size: 2; white-space: pre; overflow: auto; }
+  #hl { color: var(--ink); pointer-events: none; overflow: hidden; }
+  textarea#code { resize: none; outline: 0; background: transparent;
+                  color: transparent; caret-color: var(--ink); }
+  textarea#code::selection { background: rgba(120,140,170,.35); }
+  /* Raku token colours (Solarized accents — legible on both themes) */
+  .t-k  { color: #859900; }                            /* keyword */
+  .t-nb { color: #b58900; }                            /* builtin / type */
+  .t-v  { color: #268bd2; }                            /* variable */
+  .t-s  { color: #2aa198; }                            /* string */
+  .t-m  { color: #d33682; }                            /* number */
+  .t-c  { color: var(--muted); font-style: italic; }   /* comment */
   #out { flex: 1; margin: 0; padding: 14px; overflow: auto; white-space: pre-wrap;
          font-family: var(--font-mono); font-size: 13px; }
   #out .err { color: var(--accent); }
@@ -71,7 +86,10 @@
 <main>
   <section class="pane">
     <div class="label">Raku source</div>
-    <textarea id="code" spellcheck="false" autocomplete="off"></textarea>
+    <div class="editor">
+      <pre id="hl" aria-hidden="true"></pre>
+      <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+    </div>
   </section>
   <section class="pane">
     <div class="label">Output</div>
@@ -97,11 +115,44 @@ const EXAMPLES = (window.RAKU_EXAMPLES && window.RAKU_EXAMPLES.length)
   : [{ name: "Hello, world", category: "Basics", code: 'say "Hello, Raku from the browser!";' }];
 
 const codeEl = document.getElementById('code');
+const hlEl   = document.getElementById('hl');
 const outEl  = document.getElementById('out');
 const statusEl = document.getElementById('status');
 const verEl  = document.getElementById('ver');
 const runBtn = document.getElementById('runBtn');
 const sel = document.getElementById('examples');
+
+// HTML-escape, shared by the highlighter and the output pane.
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---- editor syntax highlighting (transparent textarea over a coloured <pre>) ----
+// A lightweight regex tokenizer, not a full Raku parser — instant per keystroke,
+// but it can mis-colour the genuinely ambiguous bits (regex-vs-division, exotic
+// quotes/heredocs). Good enough to give the editor structure.
+const RAKU_KEYWORDS = new Set('my our has state let temp constant sub method submethod multi proto only if elsif else unless with without orwith while until for loop given when default repeat return return-rw make take take-rw gather do class role grammar token rule regex enum subset package module unit use need require does but is where returns handles will start react whenever supply emit done last next redo succeed proceed try and or not so xor andthen orelse lazy eager sink hyper race quietly BEGIN END ENTER LEAVE FIRST LAST NEXT KEEP UNDO PRE POST CATCH CONTROL INIT CHECK self'.split(' '));
+const RAKU_BUILTINS = new Set('Int UInt Str Num Rat FatRat Complex Bool Array Hash List Seq Map Bag Set Pair Range Junction Any Mu Cool Nil Whatever Callable Sub Method Signature Capture IO Date DateTime Version Order Numeric Real Stringy Buf Blob say print put note printf sprintf warn die fail map grep sort reverse join split first head tail elems end keys values pairs kv push pop shift unshift splice append prepend classify sum min max sqrt abs floor ceiling round sign exp log rand roll pick chars codes lc uc tc fc flip trans index substr comb match subst ord chr defined so chomp chop trim lines words slurp spurt open close get prompt exit sleep run shell zip cross flat reduce unique squish rotor True False Inf NaN pi tau e now time'.split(' '));
+const RAKU_RE = new RegExp([
+  /(#[^\n]*)/.source,                                              // comment
+  /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/.source,                 // string
+  /(\b0[xob][0-9a-fA-F_]+|\b\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?)/.source, // number
+  /([$@%&][.!^*?=:~<]?(?:[A-Za-z_][\w'-]*|\d+|[/!_]))/.source,     // variable
+  /([A-Za-z_][\w'-]*)/.source,                                     // word
+].join('|'), 'g');
+function rakuHighlight(code) {
+  let out = '', last = 0, m; RAKU_RE.lastIndex = 0;
+  while ((m = RAKU_RE.exec(code))) {
+    out += esc(code.slice(last, m.index));
+    const t = m[0];
+    const cls = m[1] !== undefined ? 'c' : m[2] !== undefined ? 's' : m[3] !== undefined ? 'm'
+              : m[4] !== undefined ? 'v' : RAKU_KEYWORDS.has(t) ? 'k' : RAKU_BUILTINS.has(t) ? 'nb' : '';
+    out += cls ? `<span class="t-${cls}">${esc(t)}</span>` : esc(t);
+    last = m.index + t.length;
+  }
+  return out + esc(code.slice(last));
+}
+function syncScroll() { hlEl.scrollTop = codeEl.scrollTop; hlEl.scrollLeft = codeEl.scrollLeft; }
+function paintHL() { hlEl.innerHTML = rakuHighlight(codeEl.value); syncScroll(); }
+codeEl.addEventListener('scroll', syncScroll);
 
 // Build the dropdown as <optgroup>s in first-seen category order. Each <option>
 // value is its index into EXAMPLES, so we can recover the full example object.
@@ -118,14 +169,14 @@ EXAMPLES.forEach((ex, i) => {
 for (const cat of Object.keys(groups)) sel.appendChild(groups[cat]);
 
 function currentExample() { return EXAMPLES[+sel.value] || EXAMPLES[0]; }
-sel.onchange = () => { codeEl.value = currentExample().code; };
+sel.onchange = () => { codeEl.value = currentExample().code; paintHL(); };
 codeEl.value = EXAMPLES[0].code;
+paintHL();
 
 // ---- output screen, with minimal ANSI handling for in-place redraws ----
 const OUT_CAP = 400000; // render at most ~400 KB of output
 let screen = [];        // [ [text, cls], … ]
 let screenChars = 0, truncated = false, renderPending = false;
-const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 function renderScreen() {
   renderPending = false;
@@ -299,7 +350,7 @@ document.addEventListener('keydown', e => {
 });
 // Safety net: editing the source frees the Run button if it ever got stuck
 // disabled while idle. Never touches the mid-run state.
-codeEl.addEventListener('input', () => { if (!running && ready) runBtn.disabled = false; });
+codeEl.addEventListener('input', () => { paintHL(); if (!running && ready) runBtn.disabled = false; });
 
 // Tab indents instead of moving focus out of the editor; Shift-Tab outdents.
 // A selection spanning lines indents/outdents every line it touches.
@@ -334,6 +385,7 @@ codeEl.addEventListener('keydown', e => {
   el.value = v.slice(0, from) + region + v.slice(to);
   if (hasSel) { el.selectionStart = from; el.selectionEnd = from + region.length; }
   else { el.selectionStart = el.selectionEnd = Math.max(from, s - firstCut); }
+  paintHL();
 });
 </script>
 </body>
