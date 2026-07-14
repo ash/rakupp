@@ -17,7 +17,18 @@ unknown programs on macOS produces occasional *unkillable* (UE-state) children
 cannot reap, and streams results incrementally (`results.jsonl`) so a wedge
 loses nothing.
 
-**Findings only — nothing fixed yet.** Raw data:
+**STATUS (fix round, batches 1–3 in `b504561`): 2,663 → 3,295 solutions
+byte-identical (+632); mismatches 4,153 → 3,495.** Landed: unit-form MAIN
+body/signature binding, required-named + where-constraint dispatch
+(named & slurpy), Cool.printf/sprintf, no fabricated trailing test plan,
+÷=/×=/−=, `( stmt; stmt )` sequences, `.».method`, `<<qww>>`, `:0x` pairs,
+typed declaration-list members, `so */not *` currying, `.first` Nil/:k/:end,
+empty .max/.min = ∓Inf. Each batch passed the zero-regression Roast gate
+(latest: 433 full / 158,067). Next front: the 1,339 output-value diffs,
+660 in-solution test failures, ~430 parse remainder, ~130 hangs, and the
+method-gap list below.
+
+Raw data (original sweep):
 [pwc/pwc-mismatches.json](pwc/pwc-mismatches.json) (file, rc pair, both
 outputs truncated to 600 chars, first stderr line for rakupp failures);
 full signature table in [pwc/pwc-buckets.txt](pwc/pwc-buckets.txt).
