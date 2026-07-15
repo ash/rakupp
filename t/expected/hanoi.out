@@ -1,0 +1,21 @@
+Towers of Hanoi with 4 disks:
+
+  move  1: disk 1   A -> B
+  move  2: disk 2   A -> C
+  move  3: disk 1   B -> C
+  move  4: disk 3   A -> B
+  move  5: disk 1   C -> A
+  move  6: disk 2   C -> B
+  move  7: disk 1   A -> B
+  move  8: disk 4   A -> C
+  move  9: disk 1   B -> C
+  move 10: disk 2   B -> A
+  move 11: disk 1   C -> A
+  move 12: disk 3   B -> C
+  move 13: disk 1   A -> B
+  move 14: disk 2   A -> C
+  move 15: disk 1   B -> C
+
+Solved in 15 moves.
+Minimum for 4 disks is 2^4 - 1 = 15.
+Optimal? True

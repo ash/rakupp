@@ -1,0 +1,19 @@
+Parsed JSON into a live Raku structure:
+active: True (Bool)
+distance_au: 163.9 (Rat)
+instruments:
+  [0] ISS (Str)
+  [1] PLS (Str)
+  [2] MAG (Str)
+launched: 1977 (Int)
+mission: Voyager 1 (Str)
+target: (Any) (Null)
+trajectory:
+  escaped: True (Bool)
+  speed_km_s: 17 (Rat)
+
+mission is a Str: Voyager 1
+first instrument: ISS
+instrument count: 3
+distance stayed exact: 1639/10
+nested speed: 17 (Rat)

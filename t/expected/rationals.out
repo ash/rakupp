@@ -1,0 +1,20 @@
+Floating-point folklore, done exactly:
+  0.1 + 0.2        = 0.3
+  0.1 + 0.2 - 0.3  = 0
+  (0.1 + 0.2).nude = 3/10
+
+Harmonic numbers H_n (exact):
+  H_1 = 1/1
+  H_5 = 137/60
+  H_10 = 7381/2520
+
+Rational approximations of pi from its continued fraction:
+  3/1       = 3.0000000000  (error 1.42e-01)
+  22/7      = 3.1428571429  (error 1.26e-03)
+  333/106   = 3.1415094340  (error 8.32e-05)
+  355/113   = 3.1415929204  (error 2.67e-07)
+  103993/33102 = 3.1415926530  (error 5.78e-10)
+  104348/33215 = 3.1415926539  (error 3.32e-10)
+  208341/66317 = 3.1415926535  (error 1.22e-10)
+
+Continued fraction of 355/113 is [3, 7, 16]

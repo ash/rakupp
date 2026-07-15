@@ -1,0 +1,11 @@
+  n     roman              back   ok
+  ----  -----------------  -----  --
+     4  IV                    4   True
+     9  IX                    9   True
+    14  XIV                  14   True
+    40  XL                   40   True
+    90  XC                   90   True
+   444  CDXLIV              444   True
+  1984  MCMLXXXIV          1984   True
+  2026  MMXXVI             2026   True
+  3888  MMMDCCCLXXXVIII    3888   True

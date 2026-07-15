@@ -1,0 +1,13 @@
+Primes below 100000, counted on 8 threads:
+  [     2 ..  12499] -> 1492 primes
+  [ 12500 ..  24999] -> 1270 primes
+  [ 25000 ..  37499] -> 1206 primes
+  [ 37500 ..  49999] -> 1165 primes
+  [ 50000 ..  62499] -> 1142 primes
+  [ 62500 ..  74999] -> 1118 primes
+  [ 75000 ..  87499] -> 1099 primes
+  [ 87500 ..  99999] -> 1100 primes
+  total = 9592
+
+Squares received over a Channel: 1 4 9 16 25 36 49 64 81 100 121 144
+Their sum is 650

@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>md2html</title><style>
+  body { font: 17px/1.6 Georgia, serif; max-width: 42rem; margin: 3rem auto; padding: 0 1.2rem; color: #1a1a1a; }
+  h1,h2,h3 { font-family: system-ui, sans-serif; line-height: 1.25; }
+  code { background: #f2f2f4; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
+  pre { background: #f2f2f4; padding: 1rem; overflow-x: auto; border-radius: 8px; }
+  pre code { background: none; padding: 0; }
+  blockquote { border-left: 4px solid #d0d0d8; margin: 1rem 0; padding: 0.2rem 1rem; color: #555; }
+  a { color: #2563eb; } img { max-width: 100%; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 2rem 0; }
+</style>
+</head><body>
+<h1>Raku++ Markdown</h1>
+<p>A small <strong>Markdown</strong> converter written in <em>Raku</em>, parsing with a real <code>grammar</code>. It handles the common blocks and inline spans.</p>
+<h2>Features</h2>
+<ul><li>Headings, <code># </code> through <code>###### </code></li>
+<li><strong>bold</strong>, <em>italic</em>, and <code>inline code</code></li>
+<li><a href="https://github.com/ash/rakupp">links</a> and lists</li>
+<li>Fenced code blocks and blockquotes</li></ul>
+<h2>A code block</h2>
+<pre><code>sub greet($name) {
+    say "hello, $name";
+}
+greet('world');</code></pre>
+<h2>A quote</h2>
+<blockquote>Simplicity is prerequisite for reliability. — Edsger Dijkstra</blockquote>
+<h2>Ordered steps</h2>
+<ol><li>Read the Markdown source</li>
+<li>Split it into blocks</li>
+<li>Parse each inline span with the grammar</li>
+<li>Emit HTML</li></ol>
+<hr>
+<p>That's it — a single file, no dependencies.</p>
+</body></html>

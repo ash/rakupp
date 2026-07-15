@@ -15,7 +15,6 @@
 /1.raku
 /comb.testing
 /results.json
-/t
 
 # Test-run temp files (created by the Roast I/O tests when run from the repo root)
 /temp-*

@@ -1,0 +1,5 @@
+Client -> server -> client, over TCP on 127.0.0.1:
+  sent 'hello'          got back HELLO
+  sent 'raku sockets'   got back RAKU SOCKETS
+  sent 'goodbye'        got back GOODBYE
+Server stopped cleanly.

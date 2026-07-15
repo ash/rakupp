@@ -1,0 +1,17 @@
+The lazy sequence, first 16 terms:
+(1 1 2 3 5 8 13 21 34 55 89 144 233 377 610 987)
+
+Lazy list and fast doubling agree for F(1)..F(30):
+  all 30 match
+
+Big Fibonacci numbers, in full:
+  F(100) has 21 digits: 354224848179261915075
+  F(250) has 52 digits: 7896325826131730509282738943634332893686268675876375
+  F(500) has 105 digits: 139423224561697880139724382870407283950070256587697307264108962948325571622863290691557658876222521294125
+
+Ratios F(n+1)/F(n) approach the golden ratio phi:
+  F(5+1)/F(5) = 1.600000000000   (phi - ratio = 1.80e-02)
+  F(10+1)/F(10) = 1.618181818182   (phi - ratio = -1.48e-04)
+  F(20+1)/F(20) = 1.618033998522   (phi - ratio = -9.77e-09)
+  F(40+1)/F(40) = 1.618033988750   (phi - ratio = 0.00e+00)
+  phi        = 1.618033988750

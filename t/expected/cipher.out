@@ -1,0 +1,16 @@
+message: Attack at Dawn!
+
+ROT13
+  encrypt: Nggnpx ng Qnja!
+  decrypt: Attack at Dawn!
+  round-trips: True
+
+Caesar (shift 3)
+  encrypt: Dwwdfn dw Gdzq!
+  decrypt: Attack at Dawn!
+  round-trips: True
+
+Vigenere (key LEMON)
+  encrypt: Lxfopv ef Rnhr!
+  decrypt: Attack at Dawn!
+  round-trips: True

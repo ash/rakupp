@@ -1,0 +1,16 @@
+Prime factorizations (with divisor counts):
+  360            = 2^3 * 3^2 * 5           24 divisors
+  97             = 97                      2 divisors
+  1024           = 2^10                    11 divisors
+  5040           = 2^4 * 3^2 * 5 * 7       60 divisors
+  600851475143   = 71 * 839 * 1471 * 6857  16 divisors
+
+gcd and lcm (built-in infix vs. Euclid by hand):
+  48, 36:  gcd = 12  lcm = 144   (Euclid check: ok)
+  1071, 462:  gcd = 21  lcm = 23562   (Euclid check: ok)
+  17, 5:  gcd = 1  lcm = 85   (Euclid check: ok)
+
+Reductions across a list:
+  numbers      = 24 60 36 90
+  [gcd] 24 60 36 90 = 6
+  [lcm] 24 60 36 90 = 360
