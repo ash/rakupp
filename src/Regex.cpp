@@ -1187,6 +1187,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
     long budget = 0; // shared across start positions: a whole search is bounded, not each attempt
     for (long start = startPos; start <= (long)subject.size(); start++) {
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+        st.hooks = runHooks; // standalone matches may still run {…} blocks
         st.steps = budget;
         long endPos = -1;
         try {

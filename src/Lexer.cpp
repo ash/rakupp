@@ -368,9 +368,12 @@ void Lexer::skipWhitespaceAndComments() {
             atomDropEnd_ = pos_;
             continue;
         }
-        // unspace: backslash followed by whitespace is ignored (token-joining)
+        // unspace: backslash + whitespace run is ignored and JOINS the tokens
+        // (`.doit\ ()` parses like `.doit()` — the next token is not spaceBefore)
         if (c == '\\' && (peek(1) == ' ' || peek(1) == '\t' || peek(1) == '\n' || peek(1) == '\r')) {
-            advance();
+            advance(); // backslash
+            while (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r') advance();
+            atomDropEnd_ = pos_; // like the ⚛ drop: this movement is not whitespace
             continue;
         }
         if (c == '#') {

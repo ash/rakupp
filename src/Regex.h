@@ -98,6 +98,9 @@ public:
     bool search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r) const;
     // Match anchored exactly at `pos` (used for grammar subrule calls).
     bool matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r) const;
+    // Optional interpreter callbacks for standalone (non-grammar) matches — lets a
+    // plain `/ … { make 1 } … /` execute its code blocks. Null = lenient no-op.
+    const GrammarHooks* runHooks = nullptr;
 
 private:
     enum class K { Lit, Any, Class, Seq, Alt, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart };

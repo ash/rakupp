@@ -59,6 +59,7 @@ bool Value::truthy() const {
                 auto it = hash->find("exitcode");
                 return it == hash->end() || it->second.toInt() == 0;
             }
+            if (hashKind == "Failure") return false; // a Failure boolifies False (soft failure)
             return (hashKind == "Raku" || hashKind == "Compiler") // object-like: always defined/true
                             || (hash && !hash->empty());
         case VT::Range: return true;

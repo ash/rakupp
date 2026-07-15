@@ -1,5 +1,7 @@
 #include "Interpreter.h"
+#if !defined(_WIN32)
 #include <sys/resource.h>
+#endif
 #include <cstdint>
 #include <climits>
 #include <limits>
@@ -598,6 +600,16 @@ static std::string upperCase1(uint32_t c) {
         case 0xFB02: return "FL";  case 0xFB03: return "FFI";  // ﬂ ﬃ
         case 0xFB04: return "FFL"; case 0xFB05: return "ST";   // ﬄ ﬅ
         case 0xFB06: return "ST";                          // ﬆ
+        case 0x0390: return "\xCE\x99\xCC\x88\xCC\x81"; // ΐ -> Ι + combining diaeresis + acute
+        case 0x03B0: return "\xCE\xA5\xCC\x88\xCC\x81"; // ΰ -> Υ + combining diaeresis + acute
+        case 0x0149: return "\xCA\xBCN";                    // ŉ -> ʼN
+        case 0x01F0: return "J\xCC\x8C";                    // ǰ -> J + combining caron
+        case 0x1E96: return "H\xCC\xB1";                    // ẖ -> H + combining macron below
+        case 0x1E97: return "T\xCC\x88";                    // ẗ -> T + combining diaeresis
+        case 0x1E98: return "W\xCC\x8A";                    // ẘ -> W + combining ring above
+        case 0x1E99: return "Y\xCC\x8A";                    // ẙ -> Y + combining ring above
+        case 0x1E9A: return "A\xCA\xBE";                    // ẚ -> A + modifier right half ring
+        case 0x1FE4: return "\xCE\xA1\xCC\x93";           // ῤ -> Ρ + combining comma above
     }
     return cpToUtf8(toUpperCp(c));
 }
@@ -1559,6 +1571,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "gist" || m == "raku" || m == "perl") return Value::str("v" + inv.s);
         if (m == "plus") return Value::boolean(!inv.s.empty() && inv.s.back() == '+');
         if (m == "whatever") return Value::boolean(inv.s.find('*') != std::string::npos);
+    }
+    if (inv.t == VT::Type && inv.s == "Slip" && m == "new") {
+        Value sl = Value::array(args); sl.isList = true; sl.s = "Slip"; return sl;
     }
     if (inv.t == VT::Type && inv.s == "Bool" && (m == "pick" || m == "roll")) {
         ValueList tf{Value::boolean(false), Value::boolean(true)};
@@ -2580,9 +2595,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::integer(civilToDays(y, mo, d) + 40587);
         }
         if (m == "day-fraction") {
-            double frac = (fld("hour") * 3600.0 + fld("minute") * 60.0 +
-                           (inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0)) / 86400.0;
-            return Value::number(frac);
+            // a UTC day with a leap second is 86401 seconds long (finite frozen list)
+            static const std::set<long long> leapDays = {
+                19720630, 19721231, 19731231, 19741231, 19751231, 19761231, 19771231,
+                19781231, 19791231, 19810630, 19820630, 19830630, 19850630, 19871231,
+                19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
+                19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
+            long long ymd = fld("year") * 10000 + fld("month") * 100 + fld("day");
+            long long dayLen = 86400 + (leapDays.count(ymd) ? 1 : 0);
+            double sec = inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0;
+            double total = fld("hour") * 3600.0 + fld("minute") * 60.0 + sec;
+            if (total == std::floor(total)) // integral seconds: exact Rat (43200/86401)
+                return applyArith("/", Value::integer((long long)total), Value::integer(dayLen));
+            return Value::number(total / (double)dayLen);
         }
         if (m == "julian-date" || m == "modified-julian-date") {
             long long y = fld("year"), mo = fld("month"), d = fld("day");
@@ -3449,7 +3474,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "truncate") return Value::integer((long long)inv.toNum());
     if (m == "sign") {
-        if (inv.t == VT::Complex) throw RakuError{Value::typeObj("X::Numeric::Real"), "Complex is not in the Real domain, so it has no sign"};
+        if (inv.t == VT::Type)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call sign on a type object"};
+        if (inv.t == VT::Complex) { // 6.e: v / |v|; 6.c/6.d keep the historical throw
+            if (langRev_ < 2)
+                throw RakuError{Value::typeObj("X::Numeric::Real"), "Complex is not in the Real domain, so it has no sign"};
+            double mag = std::hypot(inv.n, inv.im);
+            if (mag == 0) return Value::complex(0, 0);
+            return Value::complex(inv.n / mag, inv.im / mag);
+        }
         double n = inv.toNum();
         if (std::isnan(n)) return Value::number(NAN); // sign(NaN) is NaN
         return Value::integer(n < 0 ? -1 : n > 0 ? 1 : 0);
@@ -4708,6 +4741,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return h;
         }
         if (m == "rotor" || m == "batch") { // chunk into sublists of a fixed size
+            for (auto& a : args)
+                if (a.isNumeric() && a.toInt() <= 0)
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "batch size is out of range. Is: " + std::to_string(a.toInt()) + ", should be in 1..^Inf"};
             long long n = 1, step;
             bool haveStep = false;
             bool partial = (m == "batch"); // batch always keeps a short final chunk; rotor drops it unless :partial
@@ -6177,10 +6214,16 @@ void Interpreter::registerBuiltins() {
         Value p = Value::str(a[0].toStr()); p.hashKind = "IO"; return p; // IO::Path of the new cwd
     };
     B["times"] = [](Interpreter&, ValueList&) -> Value {
+#if defined(_WIN32)
+        // clock() approximates CPU time on Windows; child times unavailable
+        double u = (double)std::clock() / CLOCKS_PER_SEC;
+        Value out = Value::array({Value::number(u), Value::number(0.0), Value::number(0.0), Value::number(0.0)});
+#else
         struct rusage ru, rc;
         getrusage(RUSAGE_SELF, &ru); getrusage(RUSAGE_CHILDREN, &rc);
         auto sec = [](const timeval& tv) { return Value::number(tv.tv_sec + tv.tv_usec / 1e6); };
         Value out = Value::array({sec(ru.ru_utime), sec(ru.ru_stime), sec(rc.ru_utime), sec(rc.ru_stime)});
+#endif
         out.isList = true; return out;
     };
     B["elems"] = [](Interpreter&, ValueList& a) -> Value {
@@ -6526,7 +6569,8 @@ void Interpreter::registerBuiltins() {
         for (auto& v : a) { ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x); }
         return out;
     };
-    B["Slip"] = B["slip"]; // Slip(...) coercer-as-routine
+    // NB: no B["Slip"] — a bareword `Slip` must stay a type object (Slip.new);
+    // the call form Slip(...) routes through the evalCall coercer block.
     B["roundrobin"] = [](Interpreter&, ValueList& a) -> Value {
         // interleave the input lists: round 0 = one from each, round 1 = next, … skipping exhausted lists
         std::vector<ValueList> lists;

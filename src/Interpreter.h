@@ -157,7 +157,8 @@ public:
     Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false);
     bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",
                      bool isFirst = true, bool isLast = true,
-                     ValueList* collect = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
+                     ValueList* collect = nullptr,
+                     const std::function<void()>& rebind = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
                                                     // collect!=null: append each iteration's value (value context)
 
     // calling

@@ -116,7 +116,7 @@ sub start-server(Str $script, Int $port) {
     }
     False;
 }
-sub stop-server(Str $script) { shell("pkill -f '$script' 2>/dev/null"); }
+sub stop-server(Str $script) { try shell("pkill -f '$script' 2>/dev/null"); }
 
 sub recv-all($sock --> Str) {              # read until the peer closes
     my $r = '';

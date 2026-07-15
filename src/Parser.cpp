@@ -453,7 +453,14 @@ ExprPtr Parser::parseExpr(int minbp) {
                 list = std::make_unique<ListExpr>();
                 list->items.push_back(std::move(lhs));
             }
-            if (startsTermToken(cur())) {
+            // a statement-modifier keyword after a comma TERMINATES the list —
+            // `(1,2, without Nil)` applies the modifier to the whole list
+            bool modNext = cur().kind == Tok::Ident &&
+                (cur().text == "if" || cur().text == "unless" || cur().text == "with" ||
+                 cur().text == "without" || cur().text == "for" || cur().text == "while" ||
+                 cur().text == "until" || cur().text == "given") &&
+                peek().kind != Tok::FatArrow; // `if => 2` is a pair
+            if (!modNext && startsTermToken(cur())) {
                 list->items.push_back(parseExpr(BP_COMMA + 1));
             }
             lhs = std::move(list);
@@ -509,6 +516,13 @@ ExprPtr Parser::parseExpr(int minbp) {
         // list; binding does too (`my @r := &min, &max, &minmax` is a 3-element bind)
         bool listAssign = false;
         if (in.isAssign && (in.op == "=" || in.op == ":=")) {
+            // `$/ = "x"` (a bare string-literal rhs) is the P5 input-record-separator
+            // idiom — a compile error in Raku. `$/ = ('x')` and non-string rhs are fine.
+            if (in.op == "=" && lhs->kind == NK::VarExpr &&
+                static_cast<VarExpr*>(lhs.get())->name == "$/" &&
+                !static_cast<VarExpr*>(lhs.get())->declare &&
+                (cur().kind == Tok::StrLit || cur().kind == Tok::StrInterp)) // rhs first token (op already consumed)
+                throw ParseError("Unsupported use of $/ variable; in Raku please use the filehandle's .nl-in attribute", cur().line);
             if (lhs->kind == NK::ListExpr) listAssign = true;
             else if (lhs->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(lhs.get())->name;
@@ -1613,7 +1627,7 @@ ExprPtr Parser::parsePrimary() {
             // `(if COND { } elsif ... else { })` — an if STATEMENT in term position
             // evaluates to the chosen block's value (likewise unless)
             if ((isIdent("if") || isIdent("unless")) &&
-                !(peek().kind == Tok::Op && (peek().text == "=>" || peek().text == ","))) {
+                peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
                 bool isUnless = cur().text == "unless";
                 advance();
                 auto st = parseIf(isUnless);
@@ -1647,7 +1661,7 @@ ExprPtr Parser::parsePrimary() {
                     bool neg = (mod == "unless");
                     auto tern = std::make_unique<Ternary>();
                     tern->cond = std::move(cond);
-                    auto empty = std::make_unique<ArrayLit>();
+                    ExprPtr empty = std::make_unique<NameTerm>("Empty"); // vanishes in list context
                     if (neg) { tern->then = std::move(empty); tern->els = std::move(e); }
                     else { tern->then = std::move(e); tern->els = std::move(empty); }
                     e = std::move(tern);

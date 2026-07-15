@@ -1673,7 +1673,11 @@ Value Interpreter::evalString(const std::string& src) {
             deferredEnds_.push_back({static_cast<Block*>(s.get()), tctx_.cur});
             continue;
         }
-        last = exec(s.get());
+        // loop control with no loop in the EVAL is a CATCHABLE error, not a crash
+        try { last = exec(s.get()); }
+        catch (RedoEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "redo without a supporting loop construct"}; }
+        catch (NextEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "next without a supporting loop construct"}; }
+        catch (LastEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "last without a supporting loop construct"}; }
     }
     return last;
 }
@@ -1868,7 +1872,8 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
 }
 
 bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
-                             bool isFirst, bool isLast, ValueList* collect) {
+                             bool isFirst, bool isLast, ValueList* collect,
+                             const std::function<void()>& rebind) {
     safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
     // FIRST/LAST run in the loop-body scope so the loop variable ($_) is visible.
     auto inScope = [&](void (Interpreter::*ph)(const std::vector<StmtPtr>&)) {
@@ -1892,12 +1897,12 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               if (tctx_.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
               if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
                   int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
-                  if (ctl == 3) continue; // redo: rerun the body
+                  if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params)
                   if (ctl == 1) { runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
                   runLast(); suppressLoopFirst_ = savedSF; return false; // last
               }
               if (collect) collect->push_back(v); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
-        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } continue; }
+        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } if (rebind) rebind(); continue; }
         catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
         catch (LastEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runLast(); suppressLoopFirst_ = savedSF; return false; }
@@ -2326,6 +2331,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         scope->define(bv.substr(1), l);
                     }
                     else if (!bv.empty()) scope->define(bv, cv); // if/elsif EXPR -> $x
+                    else { // a lone $^placeholder in the branch body receives the condition
+                        auto ph = computePlaceholders(br.second->stmts);
+                        if (ph.size() == 1) scope->define(ph[0], cv);
+                    }
                     return execBlock(br.second.get(), scope);
                 }
                 if (is->isUnless) break; // unless has single branch
@@ -2339,7 +2348,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 return execBlock(is->elseBlock.get(), scope);
             }
-            return Value::any();
+            { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; } // if/unless not taken: Empty
         }
         case NK::WhileStmt: {
             auto* ws = static_cast<WhileStmt*>(s);
@@ -2440,7 +2449,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (long long k = lo; k <= hi; k++) {
                         freshScope();
                         scope->define(var, Value::integer(k));
-                        if (!runLoopBody(fs->body.get(), scope, fs->label, k == lo, k == hi, col)) break;
+                        auto rb = [&] { scope->define(var, Value::integer(k)); }; // redo re-copies
+                        if (!runLoopBody(fs->body.get(), scope, fs->label, k == lo, k == hi, col, rb)) break;
                     }
                     return forResult();
                 }
@@ -2455,7 +2465,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (size_t i = 0; i < arr->size(); i++) {
                         freshScope();
                         scope->define(var, (*arr)[i]);
-                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col);
+                        auto rb = [&] { if (!rw) scope->define(var, (*arr)[i]); }; // redo re-copies (aliases keep writes)
+                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col, rb);
                         if (rw) { auto it = scope->vars.find(var); if (it != scope->vars.end()) (*arr)[i] = it->second; }
                         if (!cont) break;
                     }
@@ -2521,7 +2532,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 bool hadTopic = env->vars.count("$_");
                 Value savedTopic = hadTopic ? env->vars["$_"] : Value::any();
                 env->vars["$_"] = topic;
+                // `{ $^x } without X` — a placeholder block receives the topic as its argument
+                if (g->body) {
+                    auto ph = computePlaceholders(g->body->stmts);
+                    if (ph.size() == 1) env->vars[ph[0]] = topic;
+                }
                 Value r = Value::any();
+                if (skip && !g->hasElse) { // `(42 without $def)` contributes NOTHING to a list
+                    r = Value::array(); r.isList = true; r.s = "Slip";
+                    if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
+                    return r;
+                }
                 try {
                     if (skip) { if (g->hasElse) r = execBlock(g->elseBody.get(), env); }
                     else r = execBlock(g->body.get(), env);
@@ -2538,7 +2559,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // the value of the block's last statement.
             if (skip) {
                 if (g->hasElse) { try { return execBlock(g->elseBody.get(), scope); } catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); } }
-                return Value::any();
+                Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; // Empty
             }
             try { return execBlock(g->body.get(), scope); }
             catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); }
@@ -3907,6 +3928,7 @@ Value* Interpreter::lvalue(Expr* e) {
                              ve->name == "$*EXECUTABLE-NAME") && !tctx_.cur->find(ve->name))
             throw RakuError{Value::typeObj("X::Assignment::RO"),
                             "Cannot modify an immutable value (" + ve->name + ")"};
+
         if (ve->declare) {
             if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
                 if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
@@ -4045,6 +4067,7 @@ Value Interpreter::evalValueOf(Expr* e) {
 }
 
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+
     if (a->op == "=" && a->target->kind == NK::ListExpr) {
         auto* lst = static_cast<ListExpr*>(a->target.get());
         Value rhs = eval(a->value.get());
@@ -5256,8 +5279,24 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     }
     RxMatch m;
     Value mv;
+    std::shared_ptr<Value> inlineMade; // `{ make … }` inside a plain regex
+    GrammarHooks rmHooks;
+    // engage ONLY for make-blocks: running arbitrary {…} side effects during
+    // backtracking/LTM measurement broke subst.t and longest-alternative.t
+    if (pat.find("make") != std::string::npos && pat.find('{') != std::string::npos) {
+        rmHooks.run = [this, &inlineMade](const std::string& code, long, long,
+                                          const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) {
+            if (code.find("make") == std::string::npos) return; // other blocks stay inert
+            Value tgt; tctx_.makeTargets.push_back(&tgt);
+            try { evalString(code); } catch (...) {}
+            tctx_.makeTargets.pop_back();
+            if (tgt.pairVal) inlineMade = tgt.pairVal;
+        };
+        re.runHooks = &rmHooks;
+    }
     if (re.ok() && re.search(subject, 0, m, resolver)) mv = build(m);
     else mv = Value::nil();
+    if (mv.t == VT::Match && inlineMade) mv.pairVal = inlineMade; // $/.ast
     setMatchVar(mv);
     if (mv.t == VT::Match) {
         if (mv.arr) for (size_t k = 0; k < mv.arr->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*mv.arr)[k]);
@@ -7084,6 +7123,15 @@ Value Interpreter::evalCall(Call* c) {
     {
         // container constructors called as functions: Array(...)/Set(...)/Bag(...)/Mix(...)
         // (the bareword without a call stays the type object)
+        if (c->name == "Slip" && !args.empty()) { // Slip(...) coercer call
+            Value sl = Value::array(); sl.isList = true; sl.s = "Slip";
+            for (auto& v : args) {
+                if (v.t == VT::Array && v.arr) for (auto& x : *v.arr) sl.arr->push_back(x);
+                else if (v.t == VT::Range) for (auto& x : v.flatten()) sl.arr->push_back(x);
+                else sl.arr->push_back(v);
+            }
+            return sl;
+        }
         if ((c->name == "Array" || c->name == "List" || c->name == "Set" ||
              c->name == "Bag" || c->name == "Mix") && !args.empty()) {
             if (c->name == "Array" || c->name == "List") {
@@ -7286,8 +7334,19 @@ long long Interpreter::tzOffsetDyn() {
         if (*it) tp = (*it)->find("$*TZ");
     if (!tp && tctx_.cur) tp = tctx_.cur->find("$*TZ");
     if (tp) return tp->toInt();
-    time_t t = ::time(nullptr); struct tm lt; localtime_r(&t, &lt);
-    return (long long)lt.tm_gmtoff;
+    // portable UTC offset: local time minus UTC of the same instant
+    time_t t = ::time(nullptr);
+    struct tm lt, gt;
+#if defined(_WIN32)
+    localtime_s(&lt, &t); gmtime_s(&gt, &t);
+#else
+    localtime_r(&t, &lt); gmtime_r(&t, &gt);
+#endif
+    long long off = (lt.tm_hour - gt.tm_hour) * 3600LL + (lt.tm_min - gt.tm_min) * 60LL;
+    int dd = lt.tm_yday - gt.tm_yday;
+    if (dd == 1 || dd < -1) off += 86400;      // local is a day ahead (incl. year wrap)
+    else if (dd == -1 || dd > 1) off -= 86400; // local is a day behind
+    return off;
 }
 
 double Interpreter::toleranceDyn() {
@@ -7925,6 +7984,9 @@ Value Interpreter::eval(Expr* e) {
             return p ? *p : Value::any();
         }
         case NK::NameTerm: {
+            if (static_cast<NameTerm*>(e)->name == "Empty") { // the Empty term: an empty Slip
+                Value es = Value::array(); es.isList = true; es.s = "Slip"; return es;
+            }
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
             if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
@@ -8107,6 +8169,13 @@ Value Interpreter::eval(Expr* e) {
                     return callCallable(mv, ca);
                 }
                 mc->method = mv.toStr(); // resolved here so write- routing below sees it
+            }
+            // $/.make(v) attaches the ast to the MATCH ITSELF (not a copy)
+            if (inv.t == VT::Match && !mc->meta && mc->method == "make") {
+                ValueList margs = evalArgs(mc->args);
+                Value v = margs.empty() ? Value::any() : margs[0];
+                if (Value* lv = lvalue(mc->inv.get())) { lv->pairVal = std::make_shared<Value>(v); return v; }
+                return v;
             }
             // Buf writes mutate the invocant's container in place
             if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
