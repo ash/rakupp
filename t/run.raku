@@ -116,7 +116,9 @@ sub start-server(Str $script, Int $port) {
     }
     False;
 }
-sub stop-server(Str $script) { try shell("pkill -f '$script' 2>/dev/null"); }
+# `|| true` so a no-match pkill (or a server that already exited) can't fail the
+# suite. Leaking a server between sections is harmless — the ports differ.
+sub stop-server(Str $script) { try shell("pkill -f '$script' 2>/dev/null || true"); }
 
 sub recv-all($sock --> Str) {              # read until the peer closes
     my $r = '';
