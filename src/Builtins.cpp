@@ -3389,6 +3389,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                   : m == "asinh" ? std::asinh(z) : m == "acosh" ? std::acosh(z) : std::atanh(z);
                 return Value::complex(r.real(), r.imag());
             }
+        // reciprocal trig (sec/cosec/cotan + hyperbolic + inverses) via 1/z forms
+        {
+            auto C = [&](std::complex<double> r) { return Value::complex(r.real(), r.imag()); };
+            std::complex<double> one(1.0, 0.0);
+            if (m == "sec")   return C(one / std::cos(z));
+            if (m == "cosec" || m == "csc") return C(one / std::sin(z));
+            if (m == "cotan" || m == "cot") return C(one / std::tan(z));
+            if (m == "sech")  return C(one / std::cosh(z));
+            if (m == "cosech" || m == "csch") return C(one / std::sinh(z));
+            if (m == "cotanh" || m == "coth") return C(one / std::tanh(z));
+            if (m == "asec")  return C(std::acos(one / z));
+            if (m == "acosec" || m == "acsc") return C(std::asin(one / z));
+            if (m == "acotan" || m == "acot") return C(std::atan(one / z));
+            if (m == "asech") return C(std::acosh(one / z));
+            if (m == "acosech" || m == "acsch") return C(std::asinh(one / z));
+            if (m == "acotanh" || m == "acoth") return C(std::atanh(one / z));
+        }
         if (m == "polar") return Value::array({Value::number(std::abs(z)), Value::number(std::arg(z))});
         if (m == "arg") return Value::number(std::arg(z));
         if (m == "Complex") return inv;
@@ -3405,6 +3422,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         static const std::set<std::string> numMeths = {
             "abs","sqrt","sin","cos","tan","asin","acos","atan","atan2","sinh","cosh","tanh",
             "asinh","acosh","atanh","sec","cosec","csc","cotan","cot","asec","acosec","acsc",
+            "sech","cosech","csch","cotanh","coth","asech","acosech","acsch","acotanh","acoth",
             "acotan","acot","floor","ceiling","round","truncate","sign","exp","log","log10","log2"};
         if (numMeths.count(m)) {
             for (const char* acc : {"Bridge", "Numeric"}) {
@@ -3472,6 +3490,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "asec") return Value::number(std::acos(1.0 / x));
         if (m == "acosec" || m == "acsc") return Value::number(std::asin(1.0 / x));
         if (m == "acotan" || m == "acot") return Value::number(std::atan(1.0 / x));
+        if (m == "sech") return Value::number(1.0 / std::cosh(x));
+        if (m == "cosech" || m == "csch") return Value::number(1.0 / std::sinh(x));
+        if (m == "cotanh" || m == "coth") return Value::number(1.0 / std::tanh(x));
+        if (m == "asech") return Value::number(std::acosh(1.0 / x));
+        if (m == "acosech" || m == "acsch") return Value::number(std::asinh(1.0 / x));
+        if (m == "acotanh" || m == "acoth") return Value::number(std::atanh(1.0 / x));
     }
     if (m == "floor" || m == "ceiling" || m == "round" || m == "truncate") {
         // zero-denominator Rats cannot round — they FAIL (X::Numeric::DivideByZero)
@@ -3593,6 +3617,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         for (auto& anc : typeAncestry(tn)) if (anc == want) return Value::boolean(true);
         return Value::boolean(false);
     }
+    if (m == "package" && inv.t == VT::Code && inv.code)
+        return Value::typeObj(inv.code->pkg.empty() ? "GLOBAL" : inv.code->pkg);
     if (m == "of" && inv.t == VT::Type) // array[int].of / Array[Str].of
         return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
     if (m == "new" && inv.t == VT::Array) { // @a.new: fresh empty array of the same type
@@ -6297,7 +6323,7 @@ void Interpreter::registerBuiltins() {
     B["ceiling"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::ceil(a.empty() ? 0 : a[0].toNum())); };
     B["round"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::llround(a.empty() ? 0 : a[0].toNum())); };
     B["exp"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (!a.empty() && a[0].t == VT::Complex) { ValueList none; return I.methodCall(a[0], "exp", none); }
+        if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "exp", none); }
         if (a.size() >= 2) return Value::number(std::pow(a[1].toNum(), a[0].toNum())); // exp($x,$base)
         return Value::number(std::exp(a.empty() ? 0 : a[0].toNum())); };
     // Trigonometry (radians). Also available as methods below.
@@ -6319,13 +6345,55 @@ void Interpreter::registerBuiltins() {
                 return Value::number(f(numArg(I, a)));
             };
         }
-        B["sec"]    = [](Interpreter&, ValueList& a){ return Value::number(1.0 / std::cos(a.empty()?0:a[0].toNum())); };
-        B["cosec"]  = [](Interpreter&, ValueList& a){ return Value::number(1.0 / std::sin(a.empty()?0:a[0].toNum())); };
-        B["cotan"]  = [](Interpreter&, ValueList& a){ return Value::number(1.0 / std::tan(a.empty()?0:a[0].toNum())); };
-        B["asec"]   = [](Interpreter&, ValueList& a){ return Value::number(std::acos(1.0 / (a.empty()?1:a[0].toNum()))); };
-        B["acosec"] = [](Interpreter&, ValueList& a){ return Value::number(std::asin(1.0 / (a.empty()?1:a[0].toNum()))); };
-        B["acotan"] = [](Interpreter&, ValueList& a){ return Value::number(std::atan(1.0 / (a.empty()?1:a[0].toNum()))); };
+        B["sec"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "sec", none); }
+            return Value::number(1.0 / std::cos(a.empty()?0:a[0].toNum()));
+        };
+        B["cosec"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "cosec", none); }
+            return Value::number(1.0 / std::sin(a.empty()?0:a[0].toNum()));
+        };
+        B["cotan"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "cotan", none); }
+            return Value::number(1.0 / std::tan(a.empty()?0:a[0].toNum()));
+        };
+        B["asec"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "asec", none); }
+            return Value::number(std::acos(1.0 / (a.empty()?1:a[0].toNum())));
+        };
+        B["acosec"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "acosec", none); }
+            return Value::number(std::asin(1.0 / (a.empty()?1:a[0].toNum())));
+        };
+        B["acotan"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "acotan", none); }
+            return Value::number(std::atan(1.0 / (a.empty()?1:a[0].toNum())));
+        };
         B["atan2"]  = [](Interpreter&, ValueList& a){ double y=a.empty()?0:a[0].toNum(), x=a.size()>1?a[1].toNum():1.0; return Value::number(std::atan2(y,x)); };
+        B["sech"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "sech", none); }
+            return Value::number(1.0 / std::cosh(a.empty()?0:a[0].toNum()));
+        };
+        B["cosech"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "cosech", none); }
+            return Value::number(1.0 / std::sinh(a.empty()?0:a[0].toNum()));
+        };
+        B["cotanh"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "cotanh", none); }
+            return Value::number(1.0 / std::tanh(a.empty()?0:a[0].toNum()));
+        };
+        B["asech"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "asech", none); }
+            return Value::number(std::acosh(1.0 / (a.empty()?1:a[0].toNum())));
+        };
+        B["acosech"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "acosech", none); }
+            return Value::number(std::asinh(1.0 / (a.empty()?1:a[0].toNum())));
+        };
+        B["acotanh"] = [](Interpreter& I, ValueList& a) -> Value {
+            if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "acotanh", none); }
+            return Value::number(std::atanh(1.0 / (a.empty()?1:a[0].toNum())));
+        };
     }
     B["log"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) { ValueList rest(a.begin() + 1, a.end()); return I.methodCall(a[0], "log", rest); }
@@ -6368,6 +6436,39 @@ void Interpreter::registerBuiltins() {
         Value p = Value::str(a[0].toStr()); p.hashKind = "IO"; return p; // IO::Path of the new cwd
     };
     // (loop-control escaping a dies-ok/lives-ok block is a death — see those below)
+    B["cross"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value withF;
+        std::vector<ValueList> rows;
+        for (auto& v : a) {
+            if (v.t == VT::Pair && v.s == "with" && v.pairVal) { withF = *v.pairVal; continue; }
+            if (v.t == VT::Array && v.arr) rows.push_back(*v.arr);
+            else if (v.t == VT::Range) rows.push_back(v.flatten());
+            else rows.push_back(ValueList{v});
+        }
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        bool any = !rows.empty();
+        for (auto& r : rows) if (r.empty()) any = false;
+        if (any) {
+            std::vector<size_t> idx(rows.size(), 0);
+            for (;;) {
+                if (withF.t == VT::Code) {
+                    ValueList tup;
+                    for (size_t k = 0; k < rows.size(); k++) tup.push_back(rows[k][idx[k]]);
+                    Value acc = tup[0];
+                    for (size_t k = 1; k < tup.size(); k++) acc = I.callCallable(withF, ValueList{acc, tup[k]});
+                    out.arr->push_back(acc);
+                } else {
+                    Value t = Value::array(); t.isList = true;
+                    for (size_t k = 0; k < rows.size(); k++) t.arr->push_back(rows[k][idx[k]]);
+                    out.arr->push_back(t);
+                }
+                size_t k = rows.size();
+                while (k > 0 && ++idx[k - 1] == rows[k - 1].size()) idx[--k] = 0;
+                if (k == 0) break;
+            }
+        }
+        return out;
+    };
     B["leave"] = [](Interpreter&, ValueList& a) -> Value {
         LeaveEx ex; if (!a.empty()) { ex.v = a[0]; ex.hasVal = true; }
         throw ex;

@@ -1624,6 +1624,8 @@ ExprPtr Parser::parsePrimary() {
             return arr;
         }
         case Tok::Var: {
+            if (cur().text.rfind("&?ROUTINE", 0) == 0 && routineDepth_ == 0)
+                throw ParseError("&?ROUTINE is only available inside a routine (X::Undeclared::Symbols)", cur().line);
             // `$.^name` / `$.?meth` etc.: a bare `$` glued to a `.` postfix is the
             // `$.` self-shortcut (self followed by a method/meta call). `$.foo` is a
             // single twigil token handled elsewhere; this only fires when the char
@@ -1963,6 +1965,11 @@ ExprPtr Parser::parsePrimary() {
                     u->operand = parseExpr(BP_ASSIGN);
                 return u;
             }
+            if (name == "INIT" && peek().kind != Tok::LBrace &&
+                peek().kind != Tok::Semicolon && peek().kind != Tok::End) { // INIT <expr> — a value phaser
+                advance(); // consume INIT
+                return parseExpr(BP_ASSIGN);
+            }
             if (name == "sub" || name == "method") {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
@@ -1970,7 +1977,12 @@ ExprPtr Parser::parsePrimary() {
                 if (isKind(Tok::Ident)) advance(); // optional name (anon use)
                 if (isKind(Tok::LParen)) { advance(); be->params = parseSignature(); expectKind(Tok::RParen, ")"); }
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
-                if (isKind(Tok::LBrace)) { auto blk = parseBlock(); be->body = std::move(blk->stmts); }
+                if (isKind(Tok::LBrace)) {
+                    routineDepth_++; // &?ROUTINE is legal inside an anon sub too
+                    auto blk = parseBlock();
+                    routineDepth_--;
+                    be->body = std::move(blk->stmts);
+                }
                 return be;
             }
             // anonymous type as an expression term: `$x does role {…}`, `my $r = role {…}`,
@@ -3136,7 +3148,9 @@ StmtPtr Parser::parseSub(bool isMulti) {
     if (isKind(Tok::LBrace)) {
         hadBlock = true;
         bool saved = inReactBlock_; inReactBlock_ = false; // whenever in a nested sub is out of scope
+        routineDepth_++; // &?ROUTINE is legal inside
         auto blk = parseBlock();
+        routineDepth_--;
         inReactBlock_ = saved;
         s->body = std::move(blk->stmts);
     }

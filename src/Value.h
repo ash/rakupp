@@ -20,6 +20,7 @@ using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
 
 // A callable: either a user sub (params+body+closure) or a builtin.
 struct Callable {
+    std::string pkg; // enclosing package name ("" = GLOBAL) — &?ROUTINE.package
     std::string name;
     const std::vector<Param>* params = nullptr;   // borrowed from AST
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST

@@ -483,6 +483,7 @@ public:
     // $*TOLERANCE (dynamic, then lexical), default 1e-15 — Complex→Real coercions
     static double toleranceDyn();
     static long long tzOffsetDyn(); // $*TZ resolution: user dynamic, else system offset
+    double initInstant_ = 0; // process start time ($*INIT-INSTANT)
 private:
     Value evalCall(Call* c);
     Value evalIndex(Index* idx);

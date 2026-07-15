@@ -158,6 +158,7 @@ double Value::toNum() const {
 static std::string numToStr(double n) {
     if (std::isinf(n)) return n < 0 ? "-Inf" : "Inf";
     if (std::isnan(n)) return "NaN";
+    if (n == 0.0 && std::signbit(n)) return "-0"; // negative zero keeps its sign (Rakudo)
     if (n == (long long)n && std::fabs(n) < 1e15) {
         return std::to_string((long long)n);
     }

@@ -132,7 +132,8 @@ static long long dateDays(const Value& v) {
 static bool isSpecialVar(const std::string& n) {
     if (n.size() < 2) return true;          // bare sigil
     char sig = n[0];
-    if (sig == '&') return true;            // &foo code refs (builtins not in env)
+    if (sig == '&') return n[1] != '?';     // &foo code refs (builtins not in env);
+                                             // &?ROUTINE/&?BLOCK exist only inside callables
     char c = n[1];
     if (c == '*' || c == '?' || c == '.' || c == '!' || c == '<' ||
         c == '=' || c == '~' || c == ':' || c == '^' || c == '/' || c == '_')
@@ -868,6 +869,7 @@ thread_local std::vector<std::shared_ptr<ReactCtx>> Interpreter::reactStack_;
 thread_local int Interpreter::threadDepth_ = 0;
 
 Interpreter::Interpreter() {
+    { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); initInstant_ = ts.tv_sec + ts.tv_nsec / 1e9; }
     mainThread_ = std::this_thread::get_id();
     parallelMode_ = std::getenv("RAKUPP_PARALLEL") != nullptr;
     global_ = std::make_shared<Env>();
@@ -2007,6 +2009,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto makeCand = [&](const std::vector<Param>* prms) {
                 Value c; c.t = VT::Code; c.code = std::make_shared<Callable>();
                 c.code->name = sd->name;
+                c.code->pkg = tctx_.pkgPrefix.empty() ? "GLOBAL"
+                            : tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2); // strip trailing ::
                 c.code->params = prms;
                 c.code->body = &sd->body;
                 c.code->closure = tctx_.cur;
@@ -3238,6 +3242,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
     if (name == "$*TZ") return Value::integer(tzOffsetDyn());
+    if (name == "$*INIT-INSTANT") { Value v = Value::number(initInstant_); v.hashKind = "Instant"; return v; }
     if (name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
     if (name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
     if (name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
@@ -3708,6 +3713,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // restore() puts the caller's scope back; called on every exit path. (ENTER
     // phasers now run inside the try, and the CATCH body is wrapped, so a throw
     // from either restores instead of leaking dynStack / bleeding scope.)
+    // the current block/routine are introspectable magicals
+    env->define("&?BLOCK", codeVal);
+    if (!c.isBlock) env->define("&?ROUTINE", codeVal);
     auto restore = [&] {
         // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
         if (topicWB && implicitTopic_local) {
@@ -8001,6 +8009,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
             if (ve->name == "$*PID") return Value::integer((long long)::getpid());
             if (ve->name == "$*TZ") return Value::integer(tzOffsetDyn());
+            if (ve->name == "$*INIT-INSTANT") { Value v = Value::number(initInstant_); v.hashKind = "Instant"; return v; }
             if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
             }
             if (ve->declare) {
