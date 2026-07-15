@@ -16,7 +16,7 @@ Reproduce any of them with:
 Scope note: this reflects the current build, defaulting to **Raku 6.d**. Where
 `rakupp` differs from Rakudo or omits something, it is called out inline and
 collected in [§14 rakupp-specific notes](#14-rakupp-specific-notes--caveats). The
-full machine-extracted inventories (161 subroutines, 446 methods) are in the
+full machine-extracted inventories (168 subroutines, 477 methods) are in the
 [appendices](#appendix-a--all-built-in-subroutines).
 
 ---
@@ -944,23 +944,24 @@ while writing this sheet:
 
 ## Appendix A — all built-in subroutines
 
-The 161 subroutines registered by `Interpreter::registerBuiltins()`
+The 168 subroutines registered by `Interpreter::registerBuiltins()`
 (`src/Builtins.cpp`), alphabetically:
 
 ```
-!!! ... ??? EVAL VAR __format__ __radix abs acosec acotan append asec atan2 await
-bag bail-out bail_out cache callsame callwith ceiling chars chmod chr chrs cis
-close cmp-ok cosec cotan dd defined diag die dies-ok dir does-ok done done-testing
-done_testing eager elems emit end eval-dies-ok eval-lives-ok exit exp fail
-fails-like first flat floor flunk get getc grep hash index is is-approx is-deeply
-is-prime isa-ok isnt item join keys kv lastcall lazy lc like lines list lives-ok
-log log10 log2 make make-temp-dir make-temp-file map max min minmax mix mkdir
-nextsame nextwith nok not note ok open ord ords pass plan pop prepend print printf
-proceed produce prompt push put quietly react reduce reverse rindex rmdir round
-roundrobin run samewith say sec set shell shift sign skip skip-rest sleep
-sleep-till sleep-timer slip slurp snip so sort split sprintf spurt sqrt srand
-start subtest succeed sum supply take tc throws-like todo uc uniname uniprop
-unival univals unlike unlink unshift use-ok values warn whenever words
+!!! ... ??? EVAL Slip VAR __format__ __radix abs acosec acotan append asec atan2
+await bag bail-out bail_out cache callsame callwith ceiling chars chmod chr chrs
+cis classify close cmp-ok cosec cotan dd defined diag die dies-ok dir does-ok
+done done-testing done_testing eager elems emit end eval-dies-ok eval-lives-ok
+exit exp expmod fail fails-like first flat floor flunk get getc grep hash index
+is is-approx is-deeply is-prime isa-ok isnt item join keys kv lastcall lazy lc
+like lines list lives-ok log log10 log2 make make-temp-dir make-temp-file map
+max min minmax mix mkdir nextsame nextwith nok not note ok open ord ords pass
+plan pop prepend print printf proceed produce prompt push put quietly react
+reduce reverse rindex rmdir round roundrobin run samewith say sec set shell
+shift sign sink skip skip-rest sleep sleep-till sleep-timer slip slurp snip so
+sort splice split sprintf spurt sqrt srand start subtest succeed sum supply take
+tc throws-like todo uc unimatch uniname uniprop unival univals unlike unlink
+unshift use-ok values warn whenever words zip
 ```
 
 (Test-suite subroutines — `plan`, `ok`, `is`, `like`, `dies-ok`, `subtest`, … —
@@ -971,52 +972,56 @@ are internal helpers. `!!!` / `???` / `...` are the stub operators — die / war
 
 ## Appendix B — all methods
 
-The 446 method names dispatched in `Interpreter::methodCall()`
+The 477 method names dispatched in `Interpreter::methodCall()`
 (`src/Builtins.cpp`), alphabetically. Names in `TitleCase` are coercion/type
 methods (`.Int`, `.Str`, `.Bag`, `.NFC`); `UPPER-CASE` are introspection/protocol
 methods (`.WHAT`, `.AT-POS`, `.BIND-POS`); the rest are ordinary methods.
 
 ```
-ASSIGN-POS AT-POS Array BIND-POS Bag BagHash Bool Channel Complex DEFINITE
-DELETE-POS DISTROnames Date EVAL EXISTS-POS Failure FatRat HOW Hash IO Int
-KERNELnames List Map Mix MixHash NFC NFD NFKC NFKD Num Numeric Range Rat Real
-Seq Set SetHash Slip Str Stringy Supply VAR VMnames WHAT WHICH abs absolute
-accept accessed acos acosec acosh acot acotan acquire acsc act add add_method
-after all allocate allof antipair antipairs any anyof api-matcher append archname
-are arg arity asec asin asinh assuming ast at atan atan2 atanh attributes auth
-auth-matcher authority backend base basename batch before bless bool-only break
-broken bytes cache can candidates canonpath caps categorize categorize-list cause
-ceiling changed chars child chmod chomp chr chrs cis classify classify-list
+. .. ASSIGN-KEY ASSIGN-POS AT-KEY AT-POS Array BIND-POS Bag BagHash Bool Channel
+Complex DEFINITE DELETE-KEY DELETE-POS DISTROnames Date EVAL EXISTS-KEY EXISTS-
+POS Failure FatRat HOW Hash IO Int KERNELnames List Map Mix MixHash NFC NFD NFKC
+NFKD Num Numeric Range Rat Real Seq Set SetHash Slip Str Stringy Supply UInt VAR
+VMnames WHAT WHICH WHO ^name abs absolute accept accessed acos acosec acosh acot
+acotan acquire acsc act add add_method after all allocate allof antipair
+antipairs any anyof api-matcher append archname are arg arity asec asin asinh
+assuming ast at atan atan2 atanh attributes auth auth-matcher authority backend
+base base-repeating basename batch before bits bless bool-only break broken
+bytes cache can candidates canonpath caps categorize categorize-list cause
+ceiling changed chars child chmod chomp chop chr chrs cis classify classify-list
 cleanup clear clone close close-stdin closed codename codes comb combinations
-command compiler condition config conj contains contents cos cosec cosh cot cotan
-count count-only cpu-arch cpu-cores created csc d day day-of-week decode default
-defined delayed denominator desc dir dirname do does done dow e eager earlier
-elems emit empty encode end endian ends-with enums eof err exception exists
-exitcode exp extension f fail fc find_method finish first first-index flat flatmap
-flip floor fmt from from-list from-posix get getc getline gist grab grep
-grep-index handled has_accessor hash head hour hyper id im in index infinite
-interval invert is-absolute is-deterministic is-initial-thread is-lazy
-is-monotonically-increasing is-prime is-relative is-win isNaN is_dispatcher
-iterator join keep kept key keyof keys kill kv l lang-version later lazy lc level
-lines list live lock log lookup made magnitude map match max maxpairs merge
-message methods migrate min minmax minpairs minute mkdir mode modified month mro
-multi name narrow new nl-in nl-out none norm not note now nude numerator of
-on-demand one open ord ords orig out pair pairs parent parents parse parsefile
+command compiler condition config conj contains contents cos cosec cosh cot
+cotan count count-only cpu-arch cpu-cores created csc d day day-fraction day-of-
+week day-of-year daycount days-in-month decode default defined delayed
+denominator desc dir dirname do does done dow e eager earlier elems emit empty
+encode end endian ends-with enums eof err exception exists exitcode exp expmod
+extension f fail fc find_method finish first first-index flat flatmap flip floor
+fmt from from-list from-posix get getc getline gist grab grep grep-index handled
+has_accessor hash head hour hyper id im in index indices infinite interval
+invert is-absolute is-deterministic is-initial-thread is-lazy is-leap-year is-
+monotonically-increasing is-prime is-relative is-win isNaN is_dispatcher
+iterator join julian-date keep kept key keyof keys kill kv kxxv l lang-version
+last-date-in-month later lazy lc level lines list live lock log lookup made
+magnitude map match max maxpairs merge message methods migrate min minmax
+minpairs minute mkdir mode modified modified-julian-date month mro multi name
+narrow new nl-in nl-out none norm not note now nude numerator of on-demand one
+open ord ords orig out pair pairs parent parents parse parse-base parsefile
 parts path path-sep perl permutations pick pid plus polar poll polymod pop posix
-postmatch pred prematch prepend preserving print printf produce protect
-protect-or-queue-on-recursion pull-one push push-all push-at-least push-exactly
-push-until-lazy put quit r race raku rand re read readchars readonly reals receive
-recv reduce release repeated resolve result resume rethrow returns reverse rindex
-rmdir role_typecheck_list roles roll rotate rotor round run rw s samecase say
-schedule-on sec second self send shift short-name sibling sign signal signature
-sin sinh sink sink-all skip skip-at-least skip-at-least-pull-one skip-one slurp
-slurp-rest snip snitch so sort splice split sprintf spurt sqrt squish stable
-start starts-with status stderr stdout subparse subst subst-mutate substr
-substr-rw succ sum tail tan tanh tap tc tclc then throw to today toggle total
-trans trim trim-leading trim-trailing truncate truncated-to try-acquire
-try_acquire type uc uniname uniprop unique unival univals unlink unlock unpolar
-unshift unwrap value values version version-matcher vow w wait whatever wordcase
-words wrap write x year yyyy-mm-dd z zip
+postmatch pred prematch prepend preserving print printf produce protect protect-
+or-queue-on-recursion pull-one push push-all push-at-least push-exactly push-
+until-lazy put quit r race raku rand re read read-bits read-ubits readchars
+readonly reals receive recv reduce release repeated resolve result resume
+rethrow returns reverse rindex rmdir role_typecheck_list roles roll rotate rotor
+round run rw s samecase say schedule-on sec second self send shift short-name
+sibling sign signal signature sin sinh sink sink-all skip skip-at-least skip-at-
+least-pull-one skip-one slurp slurp-rest snip snitch so sort splice split
+sprintf spurt sqrt squish stable start starts-with status stderr stdout subparse
+subst subst-mutate substr substr-eq substr-rw succ sum tail take tan tanh tap tc
+tclc then throw to today toggle total trans trim trim-leading trim-trailing
+truncate truncated-to try-acquire try_acquire type uc unimatch uniname uniprop
+unique unival univals unlink unlock unpolar unshift unwrap value values version
+version-matcher vow w wait whatever wordcase words wrap write write-bits write-
+ubits x year yyyy-mm-dd z zip
 ```
 
 ---
