@@ -72,6 +72,14 @@ jobs:
         if: runner.os == 'Windows'
         run: build\Release\rakupp.exe tools/smoke.raku
 
+      # Byte-for-byte checks of every example + showcase against t/expected/,
+      # plus live pastebin/chat servers. POSIX only: the server tests background
+      # a process through the shell and stop it with pkill. The goldens are
+      # arch-portable (exact int/Rat, IEEE basic ops, correctly-rounded sqrt).
+      - name: Example & showcase suite (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/run.raku
+
       # Package the --exe-capable install layout: bin/rakupp, lib/librakupp_rt.a,
       # include/rakupp/*.h (main.cpp's findRuntime() expects exactly this).
       - name: Install layout
