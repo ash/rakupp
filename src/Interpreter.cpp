@@ -1753,7 +1753,9 @@ static bool isBlockPhaser(Stmt* s) {
            p == "NEXT" || p == "LAST";
 }
 void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope) {
-    for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
+    // NEXT phasers run in REVERSE declaration order (like LEAVE)
+    for (auto it = stmts.rbegin(); it != stmts.rend(); ++it) if ((*it)->kind == NK::Block) {
+        auto* b = static_cast<Block*>(it->get());
         if (b->phaser == "NEXT") { auto sc = std::make_shared<Env>(); sc->parent = scope; execBlock(b, sc); } }
 }
 void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts) {
@@ -1898,12 +1900,13 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
                   int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
                   if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params)
-                  if (ctl == 1) { runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+                  if (ctl == 1) { try { runNextPhasers(body->stmts, scope); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
                   runLast(); suppressLoopFirst_ = savedSF; return false; // last
               }
-              if (collect) collect->push_back(v); runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+              if (collect) collect->push_back(v); try { runNextPhasers(body->stmts, scope); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
+        catch (LeaveEx&) { runLast(); suppressLoopFirst_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } if (rebind) rebind(); continue; }
-        catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runNextPhasers(body->stmts, scope); runLast(); suppressLoopFirst_ = savedSF; return true; }
+        catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } try { runNextPhasers(body->stmts, scope); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
         catch (LastEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runLast(); suppressLoopFirst_ = savedSF; return false; }
         catch (...) { suppressLoopFirst_ = savedSF; throw; }
@@ -2653,7 +2656,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
 static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.namedArg; }
 
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
-                             std::shared_ptr<Env>& env) {
+                             std::shared_ptr<Env>& env, bool methodCtx) {
     // Fast path: every parameter is a plain mandatory positional scalar and no
     // named arguments were passed — the overwhelmingly common signature. Bind
     // positionally, skipping the named-map / explicit-named-set / substr /
@@ -2688,9 +2691,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     }
     // names captured by explicit named params are NOT collected by a slurpy *%hash
     std::set<std::string> explicitNamed;
-    for (auto& p : params)
-        if (p.named && !p.slurpy)
-            explicitNamed.insert(p.name.size() > 1 ? p.name.substr(1) : p.name);
+    bool hasNamedSlurpy = false;
+    for (auto& p : params) {
+        if (p.slurpy) { if (p.sigil == '%') hasNamedSlurpy = true; continue; }
+        if (!p.named) continue;
+        if (!p.namedKey.empty()) explicitNamed.insert(p.namedKey);
+        if (p.namedKey.empty() || p.aliasBoth) {
+            // strip sigil AND any twigil: `:$!bar` answers `bar => …`
+            std::string key = p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')
+                            ? p.name.substr(2) : (p.name.size() > 1 ? p.name.substr(1) : p.name);
+            explicitNamed.insert(key);
+        }
+    }
     // A default value is evaluated in the param scope being built, so it can refer
     // to earlier parameters (`sub f($g, $a = $g/2)`).
     auto evalDefault = [&](Expr* e) -> Value {
@@ -2756,7 +2768,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         };
         if (p.named) {
             auto it = named.find(bareName);
+            if (it == named.end() && p.aliasBoth && p.name.size() > 1)
+                it = named.find(p.name.substr(1)); // :a(:$b) also answers b => …
             if (it != named.end()) {
+                // a bare `:j` (Bool True) cannot bind a %- or @-sigil named param
+                if ((p.sigil == '%' || p.sigil == '@') && it->second.t == VT::Bool)
+                    throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+                        "Type check failed in binding to parameter '" + p.name + "'"};
                 if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
                 if (!p.name.empty() || !p.subSig) env->define(p.name, it->second);
             }
@@ -2793,6 +2811,17 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             env->define(p.name, typedDefault(p.type, p.sigil));
         }
     }
+
+    // unknown named arguments are an error unless a *%slurpy collects them.
+    // Only enforced when the signature DECLARES named params — adverbed calls to
+    // positional-only subs keep the historical tolerance (our signature model
+    // still under-parses some named forms; see named-renaming.t for the case
+    // this must catch: sub g(:a($b)) rejects g(b => 1)).
+    if (!hasNamedSlurpy && !methodCtx && !explicitNamed.empty())
+        for (auto& kv : named)
+            if (!explicitNamed.count(kv.first))
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Unexpected named argument '" + kv.first + "' passed"};
 }
 
 // Does an argument satisfy a parameter type-constraint name?
@@ -3082,6 +3111,7 @@ bool Interpreter::boolify(const Value& v) {
              : v.enumName == "one" ? t == 1 : t == 0;
     }
     return v.truthy();
+
 }
 
 Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
@@ -3576,6 +3606,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         std::string fmt = codeVal.hash && codeVal.hash->count("fmt") ? (*codeVal.hash)["fmt"].toStr() : "";
         return Value::str(doSprintf(fmt, args));
     }
+    if (isJunction(codeVal)) { // a junction of callables autothreads the invocation
+        Value out = Value::array(); out.enumName = codeVal.enumName; out.isList = true;
+        out.arr = std::make_shared<ValueList>();
+        for (auto& e : *codeVal.arr) { ValueList a2 = args; out.arr->push_back(callCallable(e, a2)); }
+        return out;
+    }
     if (codeVal.t != VT::Code || !codeVal.code)
         throw RakuError{Value::str("Not callable"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
     DepthGuard guard(tctx_.callDepth);
@@ -3644,7 +3680,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         args.erase(args.begin());
     }
     if (c.params && !c.params->empty()) {
-        bindParams(*c.params, args, env);
+        bindParams(*c.params, args, env, c.isMethod);
     } else if (!c.placeholders.empty()) {
         implicitTopic_local = false;
         for (size_t k = 0; k < c.placeholders.size(); k++) {
@@ -3755,6 +3791,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (c.body) runLeavePhasers(*c.body);
         tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
         throw;
+    } catch (LeaveEx& le) {
+        if (c.body) runLeavePhasers(*c.body);
+        tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+        return le.hasVal ? le.v : Value::nil(); // `leave` exits this block with its value
     } catch (...) {
         if (c.body) runLeavePhasers(*c.body);
         tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
@@ -3885,7 +3925,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     auto env = std::make_shared<Env>();
     env->parent = c.closure ? c.closure : global_;
     env->define("self", self);
-    if (c.params && !c.params->empty()) bindParams(*c.params, args, env);
+    if (c.params && !c.params->empty()) bindParams(*c.params, args, env, /*methodCtx=*/true);
     else if (!c.placeholders.empty()) {
         for (size_t k = 0; k < c.placeholders.size(); k++) {
             Value v = k < args.size() ? args[k] : Value::any();
@@ -3978,6 +4018,18 @@ Value* Interpreter::lvalue(Expr* e) {
         }
         Value* p = tctx_.cur->find(ve->name);
         if (p) return p;
+        // inside a method, a bare `@something` may be the twigil-less attribute
+        // `has @something` — resolve it against the invocant's declared attrs
+        if (ve->name.size() > 1) {
+            if (Value* selfp = tctx_.cur->find("self")) {
+                if (selfp->t == VT::Object && selfp->obj && selfp->obj->cls) {
+                    std::string an = ve->name.substr(1);
+                    for (auto& at : selfp->obj->cls->attrs)
+                        if (at.name == an && at.sigil == ve->name[0])
+                            return &selfp->obj->attrs[an];
+                }
+            }
+        }
         if (!isSpecialVar(ve->name) && !noStrict_)
             throw RakuError{Value::typeObj("X::Undeclared"),
                             "Variable '" + ve->name + "' is not declared"};
@@ -4584,8 +4636,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
     };
     if ((isJunction(l) || isJunction(r)) && !whateverish(l) && !whateverish(r)) {
-        const Value& j = isJunction(l) ? l : r;
-        bool jleft = isJunction(l);
+        // when BOTH sides are junctions, all/none is the OUTER (tighter) thread:
+        // ('a'|'b') eq ($x & $y) threads the & first, then the | inside it
+        bool bothJ = isJunction(l) && isJunction(r);
+        auto rank = [](const Value& v) { return v.enumName == "all" || v.enumName == "none" ? 1 : 0; };
+        bool pickL = !bothJ ? isJunction(l) : (rank(l) >= rank(r));
+        const Value& j = pickL ? l : r;
+        bool jleft = pickL;
         static const std::set<std::string> cmp = {"==", "!=", "eq", "ne", "<", ">", "<=", ">=", "~~", "!~~", "<=>", "cmp", "lt", "gt", "le", "ge", "===", "eqv"};
         if (cmp.count(op)) {
             int t = 0, total = 0;
@@ -5167,6 +5224,40 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));
+            // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
+            // array[int] ~~ Positional[int], Mix ~~ Associative, …)
+            if (!res && l.t == VT::Type) {
+                std::string ln = l.s;
+                size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
+                static const std::map<std::string, std::set<std::string>> typeDoes = {
+                    {"array", {"array", "Array", "List", "Positional", "Iterable", "Cool"}},
+                    {"Array", {"Array", "List", "Positional", "Iterable", "Cool"}},
+                    {"List",  {"List", "Positional", "Iterable", "Cool"}},
+                    {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
+                    {"Slip",  {"Slip", "List", "Positional", "Iterable", "Cool"}},
+                    {"Hash",  {"Hash", "Map", "Associative", "Cool"}},
+                    {"Map",   {"Map", "Associative", "Cool"}},
+                    {"Set",   {"Set", "Setty", "QuantHash", "Associative"}},
+                    {"SetHash", {"SetHash", "Setty", "QuantHash", "Associative"}},
+                    {"Bag",   {"Bag", "Baggy", "QuantHash", "Associative"}},
+                    {"BagHash", {"BagHash", "Baggy", "QuantHash", "Associative"}},
+                    {"Mix",   {"Mix", "Mixy", "Baggy", "QuantHash", "Associative"}},
+                    {"MixHash", {"MixHash", "Mixy", "Baggy", "QuantHash", "Associative"}},
+                };
+                std::string rn = r.s;
+                auto td = typeDoes.find(ln);
+                bool baseOk = (td != typeDoes.end() && td->second.count(rn));
+                if (!baseOk) { // numeric/string tower (Int -> Real -> Numeric -> Cool -> Any -> Mu)
+                    static const std::map<std::string, std::vector<std::string>> tower = {
+                        {"Int", {"Real", "Numeric", "Cool"}}, {"Num", {"Real", "Numeric", "Cool"}},
+                        {"Rat", {"Real", "Numeric", "Cool"}}, {"Complex", {"Numeric", "Cool"}},
+                        {"Str", {"Stringy", "Cool"}}, {"Bool", {"Cool"}},
+                    };
+                    auto tw = tower.find(ln);
+                    if (tw != tower.end()) for (auto& anc : tw->second) if (anc == rn) { baseOk = true; break; }
+                }
+                if (baseOk && (r.ofType.empty() || r.ofType == l.ofType)) res = true;
+            }
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {
                 if ((r.s == "Positional" || r.s == "Iterable") && l.t == VT::Array) res = true;
@@ -7447,6 +7538,15 @@ Value Interpreter::evalIndex(Index* idx) {
         if (!anyMulti && out.arr->size() == 1) return (*out.arr)[0]; // @a[1;0] is a scalar
         return out;
     }
+    // A shaped DECLARATION `my int @a[5]` (or anonymous `my int @[5]`) used as an
+    // expression evaluates to the typed array itself, not to an element of it.
+    if (!idx->isHash && idx->base->kind == NK::VarExpr &&
+        static_cast<VarExpr*>(idx->base.get())->declare &&
+        !static_cast<VarExpr*>(idx->base.get())->name.empty() &&
+        static_cast<VarExpr*>(idx->base.get())->name[0] == '@') {
+        Value* slot = lvalue(idx->base.get());
+        if (slot) { (void)eval(idx->index.get()); return *slot; } // shape dims noted, value is the array
+    }
     // Fast path: `@plainvar[intexpr]` — the overwhelmingly common array read.
     // Grab the array's shared_ptr (one refcount, safe across the index eval)
     // instead of copying the whole ~300-byte Value three times through eval().
@@ -7600,6 +7700,16 @@ Value Interpreter::evalIndex(Index* idx) {
                     part = part.substr(1);
                     neg = false;
                 }
+                size_t qm = part.find('?'); // `:exists($dont)` — variable-valued adverb
+                if (qm != std::string::npos) {
+                    Value* vp = tctx_.cur->find(part.substr(qm + 1));
+                    bool on = vp && vp->truthy();
+                    std::string nm = part.substr(0, qm);
+                    if (nm == "exists") { if (!on) neg = !neg; }      // :exists(False) tests NON-existence
+                    else if (nm == "delete") { if (!on) continue; }    // :delete(False) doesn't delete
+                    // k/kv/p/v: the arg only tunes missing-element filtering — stay active
+                    part = nm;
+                }
                 if (part == "exists") { wantExists = true; negExists = neg; }
                 else if (part == "delete") wantDelete = true;
                 else if (part == "kv") kvF = true;
@@ -7613,6 +7723,11 @@ Value Interpreter::evalIndex(Index* idx) {
         if (wantExists && negExists && wantDelete)
             throw RakuError{Value::typeObj("X::Adverb"),
                 "Unexpected adverbs passed to subscript: combination of :!exists and :delete"};
+        // the presentation adverbs (k/v/kv/p) are mutually exclusive; :exists
+        // combines with :kv/:p/:delete but not :v
+        if ((int)kF + (int)vF + (int)kvF + (int)pF > 1 || (wantExists && vF))
+            throw RakuError{Value::typeObj("X::Adverb"),
+                "Unexpected adverbs passed to subscript"};
         Value iv = eval(idx->index.get());
         bool slice = iv.t == VT::Array || iv.t == VT::Range;
         ValueList sliceKeys;

@@ -535,6 +535,19 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             if (v.hash) seen.erase(v.hash.get());
             return o + "}";
         }
+        case VT::Object: {
+            if (!v.obj || !v.obj->cls) return v.gist();
+            std::string r = v.obj->cls->name + ".new";
+            std::string inner;
+            for (auto& at : v.obj->cls->attrs) {
+                if (!at.pub) continue;
+                auto it = v.obj->attrs.find(at.name);
+                if (it == v.obj->attrs.end()) continue;
+                if (!inner.empty()) inner += ", ";
+                inner += at.name + " => " + rakuRepr(it->second, depth + 1, seen);
+            }
+            return inner.empty() ? r : r + "(" + inner + ")";
+        }
         default: return v.gist();
     }
 }
@@ -1574,6 +1587,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Type && inv.s == "Slip" && m == "new") {
         Value sl = Value::array(args); sl.isList = true; sl.s = "Slip"; return sl;
+    }
+    if (inv.t == VT::Type && (m == "Baggy" || m == "Setty" || m == "Mixy")) {
+        // quanthash coercion types: Set.Baggy is Bag, BagHash.Setty is SetHash, …
+        static const std::map<std::string, std::map<std::string, std::string>> co = {
+            {"Baggy", {{"Set","Bag"},{"SetHash","BagHash"},{"Bag","Bag"},{"BagHash","BagHash"},{"Mix","Mix"},{"MixHash","MixHash"}}},
+            {"Setty", {{"Set","Set"},{"SetHash","SetHash"},{"Bag","Set"},{"BagHash","SetHash"},{"Mix","Set"},{"MixHash","SetHash"}}},
+            {"Mixy",  {{"Set","Mix"},{"SetHash","MixHash"},{"Bag","Mix"},{"BagHash","MixHash"},{"Mix","Mix"},{"MixHash","MixHash"}}},
+        };
+        auto ci2 = co.find(m); auto ti = ci2->second.find(inv.s);
+        if (ti != ci2->second.end()) return Value::typeObj(ti->second);
     }
     if (inv.t == VT::Type && inv.s == "Bool" && (m == "pick" || m == "roll")) {
         ValueList tf{Value::boolean(false), Value::boolean(true)};
@@ -2893,7 +2916,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
                 return self;
             }
-            if (m == "gist" || m == "Str" || m == "raku") return Value::str("(" + inv.s + ")");
+            if (m == "raku" || m == "perl") return Value::str(inv.s); // type-object .raku is the bare name
+            if (m == "gist") return Value::str("(" + inv.s + ")");
+            if (m == "Str") return Value::str(""); // type objects stringify empty
         }
     }
     // exception object .throw / .fail: raise it (message from its .message method)
@@ -3554,6 +3579,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 Value p = Value::pair(kv.first.toStr(), kv.second);
                 out.arr->push_back(p);
             }
+        return out;
+    }
+    if (m == "isa" && (inv.t == VT::Type || inv.t == VT::Object) && !args.empty()) {
+        // Foo.isa(Foo) / $obj.isa("Any") — walk the class chain, then built-in ancestry
+        std::string want = args[0].t == VT::Type ? args[0].s : args[0].toStr();
+        std::string tn = inv.t == VT::Type ? inv.s : (inv.obj && inv.obj->cls ? inv.obj->cls->name : inv.typeName());
+        if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
+        ClassInfo* c0 = inv.t == VT::Object && inv.obj ? inv.obj->cls.get() : nullptr;
+        if (!c0) { auto cit = classes_.find(tn); if (cit != classes_.end()) c0 = cit->second.get(); }
+        for (ClassInfo* c = c0; c; c = c->parent.get())
+            if (c->name == want) return Value::boolean(true);
+        for (auto& anc : typeAncestry(tn)) if (anc == want) return Value::boolean(true);
+        return Value::boolean(false);
+    }
+    if (m == "of" && inv.t == VT::Type) // array[int].of / Array[Str].of
+        return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
+    if (m == "new" && inv.t == VT::Array) { // @a.new: fresh empty array of the same type
+        Value out = Value::array();
+        out.ofType = inv.ofType;
         return out;
     }
     if (m == "keyof") { // key type of an Associative (unparameterized: Mu / Str(Any))
@@ -4943,6 +4987,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 bool all = args[0].t == VT::Whatever ||
                            (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
                            (args[0].isNumeric() && std::isinf(args[0].toNum()));
+                if (all && m == "roll") { // roll(*): an INFINITE lazy stream of weighted draws
+                    Value out = Value::array(); out.isList = true; out.s = "Seq";
+                    auto st = std::make_shared<LazySeqState>();
+                    st->infinite = true;
+                    auto poolC = pool; double totalC = total;
+                    st->appendNext = [poolC, totalC](ValueList& cache) -> bool {
+                        double r = randDouble() * totalC;
+                        for (auto& pw : poolC) {
+                            if (r < pw.second) { cache.push_back(Value::str(pw.first)); return true; }
+                            r -= pw.second;
+                        }
+                        if (!poolC.empty()) { cache.push_back(Value::str(poolC.back().first)); return true; }
+                        return false;
+                    };
+                    out.ext = st;
+                    return out;
+                }
                 double totalUnits = 0; for (auto& pw : pool) totalUnits += setty.count(inv.hashKind) ? 1 : std::ceil(pw.second);
                 long long n = all ? (long long)totalUnits : args[0].toInt();
                 Value out = Value::array(); out.isList = true; out.s = "Seq";
@@ -5734,6 +5795,7 @@ void Interpreter::registerBuiltins() {
             {"Method", {"Method", "Routine", "Block", "Code", "Callable", "Any", "Mu"}},
             {"Block", {"Block", "Code", "Callable", "Any", "Mu"}},
             {"Array", {"Array", "List", "Any", "Mu", "Positional"}},
+            {"array", {"array", "Array", "List", "Any", "Mu", "Positional", "Iterable"}},
             {"Seq", {"Seq", "List", "Any", "Mu", "Positional", "Iterable"}},
             {"IO::Path", {"IO::Path", "IO", "Cool", "Any", "Mu"}},
             {"Version", {"Version", "Any", "Mu"}},
@@ -6304,6 +6366,11 @@ void Interpreter::registerBuiltins() {
             return f;
         }
         Value p = Value::str(a[0].toStr()); p.hashKind = "IO"; return p; // IO::Path of the new cwd
+    };
+    // (loop-control escaping a dies-ok/lives-ok block is a death — see those below)
+    B["leave"] = [](Interpreter&, ValueList& a) -> Value {
+        LeaveEx ex; if (!a.empty()) { ex.v = a[0]; ex.hasVal = true; }
+        throw ex;
     };
     B["times"] = [](Interpreter&, ValueList&) -> Value {
 #if defined(_WIN32)

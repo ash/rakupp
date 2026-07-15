@@ -826,15 +826,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (isOp("!")) { advance(); adv = "!"; }
             if (isKind(Tok::Ident)) adv += advance().text;
             else if (isKind(Tok::Var)) adv += advance().text; // "$delete" — conditional
-            // literal argument: `:delete(0)` / `:delete(False)` — a falsy literal
-            // negates the adverb, a truthy one keeps it (general exprs unsupported)
+            // argument forms: `:delete(0)` / `:delete(False)` — a falsy literal
+            // negates the adverb; `:exists($var)` is conditional on the variable
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 advance();
-                bool falsy = (isKind(Tok::IntLit) && cur().text == "0") ||
-                             (isKind(Tok::Ident) && cur().text == "False");
-                advance();
+                if (isKind(Tok::Var)) { // runtime conditional: encoded as name?$var
+                    adv += "?" + cur().text;
+                    advance();
+                } else {
+                    bool falsy = (isKind(Tok::IntLit) && cur().text == "0") ||
+                                 (isKind(Tok::Ident) && cur().text == "False");
+                    advance();
+                    if (falsy && adv[0] != '!') adv = "!" + adv;
+                }
                 expectKind(Tok::RParen, ")");
-                if (falsy && adv[0] != '!') adv = "!" + adv;
             }
             // `:!delete` (and a falsified `:delete(0)`) is a plain non-deleting fetch
             if (adv == "!delete") { continue; }
@@ -845,7 +850,18 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         }
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
             advance();
-            if (isKind(Tok::RBracket)) { advance(); continue; } // zen slice @a[] == @a
+            if (isKind(Tok::RBracket)) { // zen slice @a[] == @a (an adverbed zen keeps an Index for :exists etc.)
+                advance();
+                if (isOp(":") && (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
+                                  (peek().kind == Tok::Op && peek().text == "!"))) {
+                    auto zi = std::make_unique<Index>();
+                    zi->base = std::move(base);
+                    zi->index = std::make_unique<WhateverExpr>();
+                    zi->isHash = false;
+                    base = std::move(zi);
+                }
+                continue;
+            }
             auto idx = std::make_unique<Index>();
             idx->base = std::move(base);
             idx->index = parseExpression();
@@ -866,7 +882,18 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             base = std::move(idx);
         } else if (isKind(Tok::LBrace) && !cur().spaceBefore) {
             advance();
-            if (isKind(Tok::RBrace)) { advance(); continue; } // zen slice %h{} == %h
+            if (isKind(Tok::RBrace)) { // zen slice %h{} == %h (adverbed zen keeps an Index)
+                advance();
+                if (isOp(":") && (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
+                                  (peek().kind == Tok::Op && peek().text == "!"))) {
+                    auto zi = std::make_unique<Index>();
+                    zi->base = std::move(base);
+                    zi->index = std::make_unique<WhateverExpr>();
+                    zi->isHash = true;
+                    base = std::move(zi);
+                }
+                continue;
+            }
             auto idx = std::make_unique<Index>();
             idx->base = std::move(base);
             idx->index = parseExpression();
@@ -2274,10 +2301,9 @@ ExprPtr Parser::parsePrimary() {
                 // The colon must be TIGHT against the invocant (no space before) — a
                 // space before ':' is an adverb (`slurp $p :bin`), not an invocant.
                 // Restricted to the IO writer verbs to keep colon parsing unambiguous.
-                static const std::set<std::string> dativeVerbs = {
-                    "print", "say", "put", "note", "printf", "write",
-                };
-                if (isOp(":") && !cur().spaceBefore && dativeVerbs.count(name)) {
+                // Any method name may be called indirect-object style (`doit $obj: args`);
+                // the tight ':' after the invocant expression is the marker.
+                if (isOp(":") && !cur().spaceBefore) {
                     advance(); // consume the invocant-marking ':'
                     auto mc = std::make_unique<MethodCall>();
                     mc->inv = std::move(firstArg);
@@ -2766,7 +2792,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 continue;
             }
             if (isKind(Tok::Ident)) p.type = advance().text; // optional inner type constraint
-            matchOp(":"); // allow :name(:$var)
+            p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
             else error("expected variable in named-parameter alias");
             p.named = true;
@@ -2839,7 +2865,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 if (!matchKind(Tok::RParen)) error("expected ')' in nested sub-signature");
                 p.name = ""; p.sigil = '$';
             } else {
-                matchOp(":");
+                p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
                 if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
                 else error("expected variable in named-parameter alias");
             }

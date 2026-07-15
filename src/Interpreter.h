@@ -59,6 +59,7 @@ struct LastEx { std::string label; };
 struct NextEx { std::string label; };
 struct RedoEx { std::string label; };
 struct BreakGivenEx { Value v; bool hasVal = false; }; // `when`/`succeed` exits the enclosing given/loop, carrying its value
+struct LeaveEx { Value v; bool hasVal = false; };       // `leave` exits the enclosing block (loop bodies skip NEXT)
 struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the throw point
 struct StopGatherEx {}; // a lazy gather has produced enough — unwind the (possibly infinite) block
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
@@ -488,7 +489,8 @@ private:
     Value evalInterp(InterpStr* s);
 
     Value makeClosure(BlockExpr* be);
-    void bindParams(const std::vector<Param>& params, ValueList& args, std::shared_ptr<Env>& env);
+    void bindParams(const std::vector<Param>& params, ValueList& args, std::shared_ptr<Env>& env,
+                    bool methodCtx = false); // methods have an implicit *%_ (extra nameds ignored)
 };
 
 // helpers
