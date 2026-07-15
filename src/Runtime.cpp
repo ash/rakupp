@@ -4,6 +4,7 @@
 #include "Parser.h"
 #include "Pod.h"
 #include <cstdlib>
+#include <csignal>
 #include <functional>
 #include <iostream>
 #if defined(_WIN32)
@@ -113,6 +114,12 @@ int rakuppRunProgram(Program& prog, std::vector<std::string> args,
 // stdout is a pipe (e.g. a parent capturing us). Flushing here makes output complete
 // and deterministic regardless of exit ordering.
 static int onBigStack(const std::function<int()>& fn) {
+#if !defined(_WIN32)
+    // Ignore SIGPIPE process-wide: writing to a socket whose peer has closed
+    // must raise a catchable error (EPIPE), not terminate the process. Without
+    // this a TCP server dies the moment any client disconnects mid-write.
+    signal(SIGPIPE, SIG_IGN);
+#endif
     struct Ctx { const std::function<int()>* fn; int rc; } ctx{&fn, 0};
 #if defined(_WIN32)
     auto body = [](void* p) {
