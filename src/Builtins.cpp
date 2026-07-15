@@ -4557,8 +4557,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     self->materializeLazy(src, *spos + 1);
                     if (*spos >= src.arr->size()) return false;
                     Value v = (*src.arr)[(*spos)++];
-                    bool match = pred.t == VT::Code ? self->callCallable(pred, {v}).truthy()
-                                                    : applyArith("~~", v, pred).truthy();
+                    bool match;
+                    if (pred.t == VT::Code) {
+                        self->topicWriteback_ = &(*src.arr)[*spos - 1]; // $_ mutations alias the element
+                        try { match = self->callCallable(pred, {v}).truthy(); }
+                        catch (LastEx&) { self->topicWriteback_ = nullptr; return false; } // `last` ends the grep
+                        catch (NextEx&) { self->topicWriteback_ = nullptr; continue; }     // `next` skips
+                        catch (RedoEx&) { self->topicWriteback_ = nullptr; (*spos)--; continue; } // `redo` retries
+                        v = (*src.arr)[*spos - 1]; // keep the (possibly mutated) value
+                    } else match = applyArith("~~", v, pred).truthy();
                     if (match) { cache.push_back(v); return true; }
                 }
                 return false;
@@ -4910,6 +4917,51 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 Value ev = Value::enumVal(pr.s, pr.pairVal ? pr.pairVal->toInt() : 0);
                 ev.enumType = inv.enumType; enumVals.push_back(ev);
             }
+            // quanthashes pick from their KEYS (Bag/Mix: weighted by count — sampled,
+            // never materialized: a bag with a count of 10^9 must not build a pool)
+            static const std::set<std::string> setty = {"Set", "SetHash"};
+            static const std::set<std::string> baggy = {"Bag", "BagHash", "Mix", "MixHash"};
+            if (inv.t == VT::Hash && inv.hash && (setty.count(inv.hashKind) || baggy.count(inv.hashKind))) {
+                std::vector<std::pair<std::string, double>> pool; // key, weight
+                double total = 0;
+                for (auto& kv : *inv.hash) {
+                    double w = setty.count(inv.hashKind) ? 1.0 : kv.second.toNum();
+                    if (w > 0) { pool.push_back({kv.first, w}); total += w; }
+                }
+                auto draw = [&]() -> long long { // weighted index, -1 when exhausted
+                    if (total <= 0) return -1;
+                    double r = randDouble() * total;
+                    for (size_t k = 0; k < pool.size(); k++) {
+                        if (r < pool[k].second) return (long long)k;
+                        r -= pool[k].second;
+                    }
+                    for (size_t k = pool.size(); k-- > 0;) if (pool[k].second > 0) return (long long)k;
+                    return -1;
+                };
+                if (pool.empty()) return args.empty() ? Value::nil() : Value::array();
+                if (args.empty()) { long long k = draw(); return k < 0 ? Value::nil() : Value::str(pool[k].first); }
+                bool all = args[0].t == VT::Whatever ||
+                           (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
+                           (args[0].isNumeric() && std::isinf(args[0].toNum()));
+                double totalUnits = 0; for (auto& pw : pool) totalUnits += setty.count(inv.hashKind) ? 1 : std::ceil(pw.second);
+                long long n = all ? (long long)totalUnits : args[0].toInt();
+                Value out = Value::array(); out.isList = true; out.s = "Seq";
+                if (m == "pick") { // without replacement: consume one unit of weight per draw
+                    for (long long i = 0; i < n; i++) {
+                        long long k = draw();
+                        if (k < 0) break;
+                        out.arr->push_back(Value::str(pool[k].first));
+                        double dec = std::min(1.0, pool[k].second);
+                        pool[k].second -= dec; total -= dec;
+                    }
+                }
+                else for (long long i = 0; i < n; i++) {
+                    long long k = draw();
+                    if (k < 0) break;
+                    out.arr->push_back(Value::str(pool[k].first));
+                }
+                return out;
+            }
             const ValueList& pool0 = inv.enumType.empty() ? items : enumVals;
             if (pool0.empty()) return args.empty() ? Value::nil() : Value::array();
             bool all = !args.empty() && (args[0].t == VT::Whatever ||
@@ -5015,10 +5067,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 // A block of arity N consumes N elements per iteration
                 // (e.g. `%h.kv.map(-> $k, $v {…})` or `{ $^a … $^b }`).
                 size_t ar = codeArity(args[0]);
+                bool aliasable = ar == 1 && inv.t == VT::Array && inv.arr && items.size() == inv.arr->size();
                 for (size_t i = 0; i < items.size(); i += ar) {
                     ValueList ca;
                     for (size_t k = 0; k < ar && i + k < items.size(); k++) ca.push_back(items[i + k]);
-                    Value r = callCallable(args[0], ca);
+                    if (aliasable) topicWriteback_ = &(*inv.arr)[i]; // $_ mutations alias the element
+                    Value r;
+                    try { r = callCallable(args[0], ca); }
+                    catch (LastEx&) { topicWriteback_ = nullptr; break; }   // `last` in the block ends the map
+                    catch (NextEx&) { topicWriteback_ = nullptr; continue; } // `next` skips the element
                     // post-GLR: map keeps each block result as ONE element; only a
                     // Slip (or flatmap, which flattens one level by design) spreads.
                     if (m == "flatmap") {
@@ -5037,13 +5094,48 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "grep") {
             Value out = Value::array(); out.isList = true;
             if (args.empty()) return out;
-            Value mt = args[0];
-            for (auto& v : items) {
+            // adverbs: :v values (default), :k indices, :kv, :p pairs
+            std::string adv = "v";
+            Value mt; bool haveMt = false;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && (a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p")) {
+                    if (!a.pairVal || a.pairVal->truthy()) adv = a.s;
+                    else if (a.s == "v") // :!v is an error (specifying "not values" is meaningless)
+                        throw RakuError{Value::typeObj("X::Adverb"), "Cannot use :!v adverb with grep"};
+                }
+                else if (!haveMt) { mt = a; haveMt = true; }
+            }
+            if (!haveMt) return out;
+            if (mt.t == VT::Bool)
+                throw RakuError{Value::typeObj("X::Match::Bool"),
+                    "Cannot use Bool as Matcher with '.grep'.  Did you mean to use $_ inside a block?"};
+            bool aliasable = inv.t == VT::Array && inv.arr && items.size() == inv.arr->size();
+            auto emit = [&](size_t idx, const Value& v) {
+                if (adv == "k") out.arr->push_back(Value::integer((long long)idx));
+                else if (adv == "kv") { out.arr->push_back(Value::integer((long long)idx)); out.arr->push_back(v); }
+                else if (adv == "p") { Value pr = Value::pair(std::to_string(idx), v); pr.pairKey = std::make_shared<Value>(Value::integer((long long)idx)); out.arr->push_back(pr); }
+                else out.arr->push_back(v);
+            };
+            size_t ar = mt.t == VT::Code ? codeArity(mt) : 1; // arity-N blocks test N at a time
+            if (ar < 1) ar = 1;
+            for (size_t gi = 0; gi < items.size(); gi += ar) {
+                Value v = items[gi];
                 bool match;
-                if (mt.t == VT::Code) match = callCallable(mt, {v}).truthy();
+                if (mt.t == VT::Code) {
+                    ValueList ca;
+                    for (size_t k = 0; k < ar && gi + k < items.size(); k++) ca.push_back(items[gi + k]);
+                    if (aliasable && ar == 1) topicWriteback_ = &(*inv.arr)[gi]; // $_ mutations alias the element
+                    try { match = callCallable(mt, ca).truthy(); }
+                    catch (LastEx&) { topicWriteback_ = nullptr; break; }   // `last` in the block ends the grep
+                    catch (NextEx&) { topicWriteback_ = nullptr; continue; } // `next` skips the element
+                    catch (RedoEx&) { topicWriteback_ = nullptr; gi -= ar; continue; } // `redo` retries it
+                    if (aliasable && ar == 1) v = (*inv.arr)[gi];
+                    if (match) { for (size_t k = 0; k < ar && gi + k < items.size(); k++) emit(gi + k, gi + k == gi ? v : items[gi + k]); continue; }
+                    continue;
+                }
                 else if (mt.t == VT::Regex) match = regexMatch(v.toStr(), mt.s).truthy(); // .grep(/re/)
-                else match = applyArith("~~", v, mt).truthy();                            // .grep(Int) / value
-                if (match) out.arr->push_back(v);
+                else match = applyArith("~~", v, mt).truthy();                            // .grep(Int) / junction / value
+                if (match) emit(gi, v);
             }
             return out;
         }
@@ -6526,9 +6618,19 @@ void Interpreter::registerBuiltins() {
     };
     B["grep"] = [](Interpreter& I, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; out.s = "Seq";
-        if (a.size() >= 2 && a[0].t == VT::Code)
-            for (auto& v : toList(a[1])) if (I.callCallable(a[0], {v}).truthy()) out.arr->push_back(v);
-        return out;
+        if (a.empty()) return out;
+        Value mt = a[0];
+        Value list = Value::array(); list.isList = true;
+        ValueList margs{mt};
+        for (size_t i = 1; i < a.size(); i++) {
+            if (a[i].t == VT::Pair && (a[i].s == "k" || a[i].s == "v" || a[i].s == "kv" || a[i].s == "p"))
+                margs.push_back(a[i]); // adverb, pass through
+            else if (a[i].t == VT::Array && a[i].arr && !a[i].itemized)
+                for (auto& x : *a[i].arr) list.arr->push_back(x);
+            else if (a[i].t == VT::Range) for (auto& x : a[i].flatten()) list.arr->push_back(x);
+            else list.arr->push_back(a[i]);
+        }
+        return I.methodCall(list, "grep", margs); // one implementation
     };
     B["first"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() >= 2 && a[0].t == VT::Code)

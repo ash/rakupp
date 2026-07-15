@@ -2525,6 +2525,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::GivenStmt: {
             auto* g = static_cast<GivenStmt*>(s);
             Value topic = eval(g->topic.get());
+            // `with 'literal' { tr/// }` must die: a LITERAL topic is not a container
+            // (`given my $x = …`, expression topics, and `-> $_ is copy` stay writable)
+            if (g->topic && g->var.empty() &&
+                (g->topic->kind == NK::StrLit || g->topic->kind == NK::InterpStr ||
+                 g->topic->kind == NK::IntLit || g->topic->kind == NK::NumLit ||
+                 g->topic->kind == NK::BoolLit))
+                topic.readonly = true;
             // with/without definedness guard
             bool skip = (g->defGuard == 1 && !isDefined(topic)) || (g->defGuard == 2 && isDefined(topic));
             if (g->modifier) { // `EXPR with X`: no implicit block — a `my` in EXPR leaks out
@@ -3561,6 +3568,8 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
 #undef NC_DISPATCH
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
+    bool implicitTopic_local = false;
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
     if (codeVal.t == VT::Code && codeVal.code && codeVal.code->isNative) return callNative(*codeVal.code, args);
     if (codeVal.t == VT::Hash && codeVal.hashKind == "Format") {
@@ -3637,6 +3646,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env);
     } else if (!c.placeholders.empty()) {
+        implicitTopic_local = false;
         for (size_t k = 0; k < c.placeholders.size(); k++) {
             Value v = k < args.size() ? args[k] : Value::any();
             env->define(c.placeholders[k], v);
@@ -3645,7 +3655,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             if (pn.size() > 2 && pn[1] == '^') env->define(std::string(1, pn[0]) + pn.substr(2), v);
         }
         env->define("@_", Value::array(args));
+        implicitTopic_local = false; // placeholders bound: no implicit topic
     } else {
+        implicitTopic_local = true;
         // implicit $_ / @_ — NB: no implicit $a/$b (Perl-5 style sort vars are
         // invalid Raku; defining them here shadowed legitimate outer $a/$b in
         // every paramless block: `map {$_+$a}, @k` doubled elements)
@@ -3660,7 +3672,14 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // restore() puts the caller's scope back; called on every exit path. (ENTER
     // phasers now run inside the try, and the CATCH body is wrapped, so a throw
     // from either restores instead of leaking dynStack / bleeding scope.)
-    auto restore = [&] { tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back(); };
+    auto restore = [&] {
+        // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
+        if (topicWB && implicitTopic_local) {
+            auto it = env->vars.find("$_");
+            if (it != env->vars.end()) *topicWB = it->second;
+        }
+        tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+    };
     // cooperative-return frame bookkeeping: every callable bumps frameTop;
     // a ROUTINE (not a bare block) is a return boundary
     ++tctx_.frameTop;
@@ -3743,6 +3762,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     if (c.body) runLeavePhasers(*c.body);
     tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+    // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
+    if (topicWB && implicitTopic_local) {
+        auto it = env->vars.find("$_");
+        if (it != env->vars.end()) *topicWB = it->second;
+    }
     copyOutRw(c.params, env, rwArgs, false);
     return last;
 }
@@ -4517,10 +4541,23 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         Value ru = (r.t == VT::Object && r.obj && r.obj->hasBoxed) ? r.obj->boxed : r;
         return applyArith(op, lu, ru);
     }
-    if (op == "!%%") return Value::boolean(!applyArith("%%", l, r).truthy()); // negated divisibility
-    // generic op negation (`!eq`, `!before`, …): apply the base op, negate the Bool
-    if (op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==" && op != "!===" && op != "!~~")
-        return Value::boolean(!applyArith(op.substr(1), l, r).truthy());
+    // negated ops (`!%%`, `!eq`, `!before`, …): apply the base op, negate the Bool.
+    // A curried base (`* !%% 3` -> WhateverCode) stays curried, negation wrapped in.
+    if (op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==" && op != "!===" && op != "!~~" &&
+        !isSetOpStr(op)) {
+        Value base = applyArith(op.substr(1), l, r);
+        if (base.t == VT::Code && base.code && base.code->isWhateverCode) {
+            Value wrap; wrap.t = VT::Code; wrap.code = std::make_shared<Callable>();
+            wrap.code->isWhateverCode = true;
+            wrap.code->whateverArity = base.code->whateverArity;
+            Value inner = base;
+            wrap.code->builtin = [inner](Interpreter& I, ValueList& a) -> Value {
+                return Value::boolean(!I.callCallable(inner, a).truthy());
+            };
+            return wrap;
+        }
+        return Value::boolean(!base.truthy());
+    }
     if (isSetOpStr(op)) return setOp(op, l, r);
     // hyper binary metaop  >>OP>>  : element-wise apply OP over the two lists
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
@@ -4541,8 +4578,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         add(l); add(r);
         return j;
     }
-    // autothreading over a junction operand
-    if (isJunction(l) || isJunction(r)) {
+    // autothreading over a junction operand — but Whatever-currying WINS:
+    // `* eq 'a'|'b'` is a WhateverCode over the junction, not a collapsed Bool
+    auto whateverish = [](const Value& v) {
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
+    };
+    if ((isJunction(l) || isJunction(r)) && !whateverish(l) && !whateverish(r)) {
         const Value& j = isJunction(l) ? l : r;
         bool jleft = isJunction(l);
         static const std::set<std::string> cmp = {"==", "!=", "eq", "ne", "<", ">", "<=", ">=", "~~", "!~~", "<=>", "cmp", "lt", "gt", "le", "ge", "===", "eqv"};
@@ -7779,6 +7820,8 @@ Value Interpreter::eval(Expr* e) {
             auto* sl = static_cast<SubstLit*>(e);
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
             if (isTrSubst(sl->pattern)) { // tr/// against $_
+                if (topic.readonly)
+                    throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify a readonly value"};
                 long long n; std::string out = translit(topic.toStr(), sl->pattern.substr(1), sl->repl, n);
                 if (Value* p = tctx_.cur->find("$_")) *p = Value::str(out);
                 return Value::integer(n);
@@ -8298,7 +8341,12 @@ Value Interpreter::eval(Expr* e) {
             }
             // Autothread a junction argument: `$s.contains(all("a","b"))` becomes
             // all($s.contains("a"), $s.contains("b")) — a junction that collapses later.
-            if (!mc->meta) for (size_t ai = 0; ai < args.size(); ai++) {
+            // MATCHER positions are exempt: a junction to grep/first is a smartmatch
+            // target (`@a.grep(any(@b))` filters, it does not autothread).
+            static const std::set<std::string> junctionMatcherMethods = {
+                "grep", "first", "classify", "categorize", "index-of", "split", "comb", "match", "subst"};
+            if (!mc->meta && !junctionMatcherMethods.count(mc->method))
+                for (size_t ai = 0; ai < args.size(); ai++) {
                 if (isJunction(args[ai])) {
                     Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
                     for (auto& e : *args[ai].arr) {

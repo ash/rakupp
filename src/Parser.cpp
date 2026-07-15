@@ -3669,7 +3669,7 @@ StmtPtr Parser::parseStatementImpl() {
             if (isOp("->") || isOp("<->")) { // `given X -> $y is copy { }`
                 advance();
                 auto ps = parsePointyParams();
-                if (!ps.empty() && !ps[0].name.empty() && ps[0].name != "$_") g->var = ps[0].name;
+                if (!ps.empty() && !ps[0].name.empty()) g->var = ps[0].name; // "$_" too: marks an explicit binder
             }
             g->body = parseBlock();
             // orwith/orwithout chain:  with A {} orwith B {}  ==  with A {} else { with B {} }

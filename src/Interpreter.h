@@ -163,6 +163,9 @@ public:
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+    // When set (one-shot), a paramless block's mutated implicit $_ is copied back
+    // here after the call — `@a.grep({ $_++; True })` writes into @a's element.
+    Value* topicWriteback_ = nullptr;
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs); // no wrap layer
     Value callNative(Callable& c, ValueList& args); // `is native` C FFI
     // Live-Supply transform chain: run one emitted value through a tap's chain of
