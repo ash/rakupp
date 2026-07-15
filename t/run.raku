@@ -88,6 +88,14 @@ golden([$lisp, $ROOT.add('t/fixtures/lisp-features.scm').Str],
        "lisp: (fact 100) is exact to all 158 digits");
 }
 
+# ---- forth showcase ---------------------------------------------------
+section('showcase/forth (a stack machine)');
+{
+    my $forth = $ROOT.add('showcase/forth/forth.raku').Str;
+    golden([$forth, $ROOT.add('showcase/forth/examples/demo.fth').Str],
+           $EXP.add('forth-demo.out').Str, "forth: demo.fth → golden output");
+}
+
 # ---- markdown showcase ------------------------------------------------
 section('showcase/markdown (grammar → HTML)');
 my $md = $ROOT.add('showcase/markdown/md2html.raku').Str;
@@ -167,6 +175,31 @@ section('showcase/chat (concurrent TCP)');
         diag($out.trim) unless $out.contains('CHAT-OK');
     }
     else { ok(False, "chat: server did not start"); }
+    stop-server($script);
+}
+
+section('showcase/kvstore (a key-value protocol)');
+{
+    my $script = $ROOT.add('showcase/kvstore/kvstore.raku').Str;
+    my $port = 6392;
+    if start-server($script, $port) {
+        # one connection, a sequence of commands, each reply read in turn
+        my $s = IO::Socket::INET.new(:host('127.0.0.1'), :port($port));
+        $s.recv;                                   # greeting
+        sub cmd(Str $c --> Str) { $s.print("$c\r\n"); ($s.recv // '').trim }
+        ok(cmd('SET name ada') eq 'OK',            "kvstore: SET replies OK");
+        ok(cmd('GET name') eq 'ada',               "kvstore: GET returns the value");
+        ok(cmd('SET g "hello world"') eq 'OK' && cmd('GET g') eq 'hello world',
+                                                   "kvstore: quoted values keep their spaces");
+        cmd('INCR hits');
+        ok(cmd('INCR hits') eq '2',                "kvstore: INCR counts up");
+        ok(cmd('EXISTS name') eq '1' && cmd('EXISTS nope') eq '0',
+                                                   "kvstore: EXISTS reports presence");
+        ok(cmd('DEL name') eq '1' && cmd('GET name') eq '(nil)',
+                                                   "kvstore: DEL removes the key");
+        $s.print("QUIT\r\n"); $s.close;
+    }
+    else { ok(False, "kvstore: server did not start"); }
     stop-server($script);
 }
 
