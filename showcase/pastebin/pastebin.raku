@@ -168,8 +168,8 @@ sub parse-request(Str $raw) {
     ($method // 'GET', $path // '/', $body // '');
 }
 
-sub MAIN() {
-    my $port = (%*ENV<PORT> // 8080).Int;
+sub MAIN($port-arg?) {
+    my $port = ($port-arg // %*ENV<PORT> // 8080).Int;
     my $listener = IO::Socket::INET.new(:localhost(HOST), :localport($port), :listen);
     note "rakupp pastebin listening on http://127.0.0.1:$port  (Ctrl-C to stop)";
     loop {

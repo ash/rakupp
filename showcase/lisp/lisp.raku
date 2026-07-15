@@ -272,10 +272,10 @@ sub apply($proc, @args) {
         return eval-seq($proc.body, $new);
     }
     elsif $proc ~~ Callable {
-        # Pass the whole argument list as one itemised value: every builtin takes a
-        # single `(@a)` parameter. This dodges rakupp's `|@list` over-flattening and
-        # the slurpy single-argument rule, so a list argument stays one element.
-        return $proc($(@args));
+        # Every builtin takes a single `(@a)` parameter holding the argument list.
+        # Passing a fresh `[@args]` binds it as one Positional (no flattening, no
+        # single-argument-rule surprise), so a list argument stays one element.
+        return $proc([@args]);
     }
     die "not a procedure: {write-str($proc)}";
 }
