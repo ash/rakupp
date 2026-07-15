@@ -24,8 +24,21 @@ static std::string dateGist(const std::map<std::string, Value>& h, bool isDate) 
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
     char buf[40];
     if (isDate) std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", f("year"), f("month"), f("day"));
-    else std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lldZ",
-                       f("year"), f("month"), f("day"), f("hour"), f("minute"), f("second"));
+    else {
+        long long tz = f("timezone");
+        char suf[12];
+        if (tz == 0) std::snprintf(suf, sizeof suf, "Z");
+        else std::snprintf(suf, sizeof suf, "%c%02lld:%02lld", tz < 0 ? '-' : '+',
+                           (tz < 0 ? -tz : tz) / 3600, ((tz < 0 ? -tz : tz) % 3600) / 60);
+        auto sit = h.find("second");
+        double sd = sit != h.end() ? sit->second.toNum() : 0.0;
+        if (sd != (double)(long long)sd)
+            std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s",
+                          f("year"), f("month"), f("day"), f("hour"), f("minute"), sd, suf);
+        else
+            std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s",
+                          f("year"), f("month"), f("day"), f("hour"), f("minute"), f("second"), suf);
+    }
     return buf;
 }
 
@@ -244,6 +257,10 @@ std::string Value::toStr() const {
         case VT::Whatever: return "*";
         case VT::Object:
             if (obj && obj->hasBoxed) return obj->boxed.toStr(); // but/does mixin over a value
+            if (obj && obj->cls && obj->cls->name.rfind("X::", 0) == 0) { // exceptions stringify to their message
+                auto it = obj->attrs.find("message");
+                if (it != obj->attrs.end() && it->second.t == VT::Str) return it->second.s;
+            }
             return obj && obj->cls ? obj->cls->name + "<obj>" : "Object";
         case VT::Regex: return s;
         case VT::Match: return s;
@@ -360,7 +377,7 @@ std::string Value::typeName() const {
         case VT::Num:  return hashKind == "Duration" ? "Duration"
                             : hashKind == "Instant" ? "Instant" : "Num";
         case VT::Complex: return "Complex";
-        case VT::Str:  return hashKind == "IO" ? "IO::Path" : hashKind == "Version" ? "Version" : hashKind == "Blob" ? "Blob" : hashKind == "Buf" ? "Buf" : "Str";
+        case VT::Str:  return hashKind == "IO" ? "IO::Path" : hashKind == "Version" ? "Version" : hashKind == "Blob" ? "Blob" : hashKind == "Buf" ? "Buf" : hashKind == "IO::Special" ? "IO::Special" : "Str";
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";

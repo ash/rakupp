@@ -62,6 +62,10 @@ private:
 
     // statements
     StmtPtr parseStatement();
+    void enforceStmtSep(); // same-line statement juxtaposition is "two terms in a row"
+public:
+    bool strictSep_ = false; // set by EVAL: strict statement separation in snippets
+private:
     StmtPtr parseStatementImpl();
     StmtPtr applyModifiers(StmtPtr s);
     std::unique_ptr<Block> parseBlock();

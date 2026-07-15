@@ -138,6 +138,7 @@ struct MethodCall : Expr {
     ExprPtr methodExpr; // indirect call $obj."$name"() — method name computed at runtime
     std::vector<ExprPtr> args;
     bool maybe = false; // .?
+    bool bang = false;  // $obj!priv — private-method call syntax
     bool mutate = false; // .= mutating call
     bool hyper = false;  // >>.method  (apply to each element)
     bool meta = false;   // .^method  (metamodel call, e.g. .^name)
@@ -234,6 +235,8 @@ struct SubDecl : Stmt {
     bool isMulti = false;
     bool isMethod = false;
     bool isSubmethod = false;
+    std::vector<ExprPtr> immediateArgs; // `sub f($n) {…}(1)` — declare, then call at once
+    bool immediateCall = false;
     bool isExport = false; // `is export` — visible to importers of the enclosing module
     bool isOur = false;    // `our sub` — also installed in the package/global scope (visible to sibling blocks)
     std::string retType;   // `of Num` / `returns Int` / `--> T` return type (for .returns/.of)
@@ -289,6 +292,8 @@ struct EnumDecl : Stmt {
 struct IfStmt : Stmt {
     std::string thenVar; // `if EXPR -> $x { }` / `with EXPR -> $x { }` binds the value
     std::vector<std::pair<ExprPtr, std::unique_ptr<Block>>> branches; // if/elsif
+    std::vector<std::string> branchVars; // `elsif EXPR -> $x { }` per-branch binders ("" = none)
+    std::string elseVar; // `else -> $x { }` binds the last (falsy) condition value
     std::unique_ptr<Block> elseBlock; // may be null
     bool isUnless = false;
     IfStmt(): Stmt(NK::IfStmt) {}

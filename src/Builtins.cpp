@@ -1,4 +1,5 @@
 #include "Interpreter.h"
+#include <sys/resource.h>
 #include <cstdint>
 #include <climits>
 #include <limits>
@@ -409,6 +410,11 @@ static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any &&
 // to `.gist`, which is the human-readable form). Recursive over containers.
 static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 static std::string rakuRepr(const Value& v) { std::set<const void*> seen; return rakuRepr(v, 0, seen); }
+static void rejectNulPath(const std::string& path) {
+    if (path.find('\0') != std::string::npos)
+        throw RakuError{Value::typeObj("X::IO::Null"),
+            "Cannot use null character (U+0000) as part of the path"};
+}
 static std::string rakuStrLit(const std::string& s) {
     std::string o = "\"";
     for (unsigned char c : s) {
@@ -416,6 +422,8 @@ static std::string rakuStrLit(const std::string& s) {
         else if (c == '\n') o += "\\n";
         else if (c == '\t') o += "\\t";
         else if (c == '\r') o += "\\r";
+        else if (c == '$' || c == '@' || c == '%' || c == '&' || c == '{') { o += '\\'; o += (char)c; } // would interpolate
+        else if (c == '\0') o += "\\0";
         else o += (char)c;
     }
     return o + "\"";
@@ -466,6 +474,17 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             }
             return "<" + n + "/" + d + ">";
         }
+        case VT::Num: { // Nums round-trip with an exponent so EVAL doesn't read a Rat
+            std::string g = v.toStr();
+            if (g == "Inf" || g == "-Inf" || g == "NaN") return g;
+            if (g.find('e') == std::string::npos && g.find('E') == std::string::npos) {
+                if (g.find('.') == std::string::npos) g += "e0";
+                else g += "e0";
+            }
+            return g;
+        }
+        case VT::Regex:
+            return v.s.find('/') == std::string::npos ? "rx/" + v.s + "/" : "rx{" + v.s + "}";
         case VT::Complex: return "<" + v.gist() + ">";
         case VT::Range:
             return std::to_string(v.rFrom) + (v.rExFrom ? "^" : "") + ".." + (v.rExTo ? "^" : "") + std::to_string(v.rTo);
@@ -1541,6 +1560,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "plus") return Value::boolean(!inv.s.empty() && inv.s.back() == '+');
         if (m == "whatever") return Value::boolean(inv.s.find('*') != std::string::npos);
     }
+    if (inv.t == VT::Type && inv.s == "Bool" && (m == "pick" || m == "roll")) {
+        ValueList tf{Value::boolean(false), Value::boolean(true)};
+        Value l = Value::array(tf); l.isList = true;
+        return methodCall(l, m, args); // Bool.pick(*) shuffles (False, True)
+    }
+    if (inv.t == VT::Type && inv.s == "IO::Path" && m == "new") {
+        std::string path = args.empty() ? "" : args[0].toStr();
+        rejectNulPath(path);
+        Value p = Value::str(path); p.hashKind = "IO"; return p;
+    }
+    if (inv.t == VT::Type && inv.s == "IO::Special" && m == "new") {
+        Value sp = Value::str(args.empty() ? "" : args[0].toStr());
+        sp.hashKind = "IO::Special"; return sp;
+    }
     if (inv.t == VT::Type && inv.s == "Version" && m == "new") {
         std::string s = args.empty() ? "" : args[0].toStr();
         if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) s = s.substr(1);
@@ -1576,6 +1609,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return h;
     }
     if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
+        if (m == "allocate")
+            for (size_t k = 1; k < args.size(); k++) // fill args must be numeric-ish
+                if (args[k].t == VT::Str && args[k].hashKind.empty())
+                    throw RakuError{Value::typeObj("X::TypeCheck"),
+                        "Cannot use a Str as a fill value in " + inv.s + ".allocate"};
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
             if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) add(e); }
@@ -2349,44 +2387,146 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // user-defined class: type-object methods (.new and custom constructors)
     // DateTime / Date constructors
     if (inv.t == VT::Type && (inv.s == "DateTime" || inv.s == "Date")) {
-        auto mk = [&](long long y, long long mo, long long d, long long h, long long mi, long long s, long long posix) {
+        auto mk = [&](long long y, long long mo, long long d, long long h, long long mi, Value sec, long long posix, long long tz) {
             Value v = Value::makeHash(); v.hashKind = inv.s;
             (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
-            (*v.hash)["hour"] = Value::integer(h); (*v.hash)["minute"] = Value::integer(mi); (*v.hash)["second"] = Value::integer(s);
+            (*v.hash)["hour"] = Value::integer(h); (*v.hash)["minute"] = Value::integer(mi);
+            (*v.hash)["second"] = sec; // exact: Int, or Rat/Num for fractional seconds
             (*v.hash)["posix"] = Value::integer(posix);
+            if (inv.s == "DateTime") (*v.hash)["timezone"] = Value::integer(tz);
             return v;
+        };
+        // leap seconds: second 60 must land on UTC 23:59:60
+        auto checkLeap = [&](long long y, long long mo, long long d, long long h, long long mi, long long s, long long tz) {
+            if (s < 60) return;
+            long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + 59 - tz;
+            if (ep % 86400 != 86399)
+                throw RakuError{Value::typeObj("X::OutOfRange"),
+                    "second 60 is only valid as a UTC leap second (23:59:60)"};
         };
         if (m == "now" || m == "today") {
             time_t t = time(nullptr); struct tm* lt = localtime(&t);
-            return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, lt->tm_sec, (long long)t);
+            return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, Value::integer(lt->tm_sec), (long long)t, tzOffsetDyn());
         }
         if (m == "new") {
-            long long y = 0, mo = 1, d = 1, h = 0, mi = 0, s = 0;
-            std::vector<long long> pos;
+            long long y = 0, mo = 1, d = 1, h = 0, mi = 0, tz = 0;
+            Value secV = Value::integer(0);
+            std::vector<Value> pos;
+            bool isoStr = false;
             for (auto& a : args) {
                 if (a.t == VT::Pair) {
                     long long val = a.pairVal ? a.pairVal->toInt() : 0;
                     if (a.s == "year") y = val; else if (a.s == "month") mo = val; else if (a.s == "day") d = val;
-                    else if (a.s == "hour") h = val; else if (a.s == "minute") mi = val; else if (a.s == "second") s = val;
-                } else pos.push_back(a.toInt());
+                    else if (a.s == "hour") h = val; else if (a.s == "minute") mi = val;
+                    else if (a.s == "second") secV = a.pairVal ? *a.pairVal : Value::integer(0); // exact (frac OK)
+                    else if (a.s == "timezone") tz = val;
+                } else if (a.t == VT::Str && a.s.find('-', 1) != std::string::npos) {
+                    // ISO 8601: YYYY-MM-DD[THH:MM:SS[.frac]][Z|±HH:MM|±HHMM]
+                    isoStr = true;
+                    const std::string& is = a.s;
+                    double fs = 0;
+                    (void)sscanf(is.c_str(), "%lld-%lld-%lld", &y, &mo, &d);
+                    size_t tp = is.find('T');
+                    if (tp != std::string::npos) {
+                        (void)sscanf(is.c_str() + tp + 1, "%lld:%lld:%lf", &h, &mi, &fs);
+                        secV = (fs == (long long)fs) ? Value::integer((long long)fs) : Value::number(fs);
+                        size_t zp = is.find_first_of("Z+-", tp);
+                        if (zp != std::string::npos) {
+                            if (is[zp] == 'Z') tz = 0;
+                            else {
+                                long long oh = 0, om = 0;
+                                if (is.find(':', zp) != std::string::npos) (void)sscanf(is.c_str() + zp + 1, "%lld:%lld", &oh, &om);
+                                else { (void)sscanf(is.c_str() + zp + 1, "%2lld%2lld", &oh, &om); }
+                                tz = (is[zp] == '-' ? -1 : 1) * (oh * 3600 + om * 60);
+                            }
+                        }
+                    }
+                } else pos.push_back(a);
             }
-            if (pos.size() >= 1) y = pos[0];
-            if (pos.size() >= 2) mo = pos[1];
-            if (pos.size() >= 3) d = pos[2];
-            if (pos.size() >= 4) h = pos[3];   // DateTime.new(y, m, d, H, M, S)
-            if (pos.size() >= 5) mi = pos[4];
-            if (pos.size() >= 6) s = pos[5];
-            return mk(y, mo, d, h, mi, s, 0);
+            if (!isoStr && inv.s == "DateTime" && pos.size() == 1 && pos[0].isNumeric()) {
+                // DateTime.new($posix) — seconds since the POSIX epoch (frac OK), UTC
+                double pep = pos[0].toNum();
+                long long ip = (long long)std::floor(pep);
+                double frac = pep - (double)ip;
+                long long days = ip >= 0 ? ip / 86400 : -((-ip + 86399) / 86400);
+                long long rem = ip - days * 86400;
+                daysToCivil(days, y, mo, d);
+                h = rem / 3600; mi = (rem % 3600) / 60;
+                long long si = rem % 60;
+                secV = frac != 0.0 ? Value::number(si + frac) : Value::integer(si);
+                return mk(y, mo, d, h, mi, secV, ip, 0);
+            }
+            if (!isoStr) {
+                if (pos.size() >= 1) y = pos[0].toInt();
+                if (pos.size() >= 2) mo = pos[1].toInt();
+                if (pos.size() >= 3) d = pos[2].toInt();
+                if (pos.size() >= 4) h = pos[3].toInt();   // DateTime.new(y, m, d, H, M, S)
+                if (pos.size() >= 5) mi = pos[4].toInt();
+                if (pos.size() >= 6) secV = pos[5];        // exact (frac OK)
+            }
+            long long sInt = secV.toInt(); // floor for epoch/leap math
+            if (inv.s == "DateTime") checkLeap(y, mo, d, h, mi, sInt, tz);
+            long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + (sInt >= 60 ? 59 : sInt) - tz;
+            return mk(y, mo, d, h, mi, secV, ep, tz);
         }
     }
     if (inv.t == VT::Hash && (inv.hashKind == "DateTime" || inv.hashKind == "Date")) {
         auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second.toInt() : 0; };
-        if (m == "year" || m == "month" || m == "day" || m == "hour" || m == "minute" || m == "second" || m == "posix")
+        if (m == "second" || m == "whole-second") {
+            auto it = inv.hash->find("second");
+            Value sv = it != inv.hash->end() ? it->second : Value::integer(0);
+            return m == "whole-second" ? Value::integer(sv.toInt()) : sv; // .second keeps the fraction
+        }
+        if (m == "year" || m == "month" || m == "day" || m == "hour" || m == "minute" || m == "posix")
             return Value::integer(fld(m.c_str()));
+        if ((m == "timezone" || m == "offset") && inv.hashKind == "DateTime") return Value::integer(fld("timezone"));
+        if ((m == "in-timezone" || m == "utc" || m == "local") && inv.hashKind == "DateTime") {
+            long long newTz = m == "utc" ? 0 : m == "local" ? tzOffsetDyn()
+                            : (args.empty() ? 0 : args[0].toInt());
+            auto sit = inv.hash->find("second");
+            Value secV = sit != inv.hash->end() ? sit->second : Value::integer(0);
+            long long sInt = secV.toInt();
+            double frac = secV.toNum() - (double)sInt; // fractional seconds survive the shift
+            long long leap = sInt >= 60 ? 1 : 0;
+            long long ep = civilToDays(fld("year"), fld("month"), fld("day")) * 86400 +
+                           fld("hour") * 3600 + fld("minute") * 60 +
+                           (leap ? 59 : sInt) - fld("timezone");
+            long long lt = ep + newTz;
+            long long days = lt >= 0 ? lt / 86400 : -((-lt + 86399) / 86400);
+            long long rem = lt - days * 86400;
+            long long y, mo, d; daysToCivil(days, y, mo, d);
+            long long outSec = rem % 60 + leap;
+            Value v = Value::makeHash(); v.hashKind = "DateTime";
+            (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
+            (*v.hash)["hour"] = Value::integer(rem / 3600); (*v.hash)["minute"] = Value::integer((rem % 3600) / 60);
+            (*v.hash)["second"] = frac != 0.0 ? Value::number(outSec + frac) : Value::integer(outSec);
+            (*v.hash)["posix"] = Value::integer(ep); (*v.hash)["timezone"] = Value::integer(newTz);
+            return v;
+        }
+        if ((m == "raku" || m == "perl") && inv.hashKind == "DateTime") {
+            char buf[160];
+            snprintf(buf, sizeof buf,
+                "DateTime.new(:year(%lld), :month(%lld), :day(%lld), :hour(%lld), :minute(%lld), :second(%lld), :timezone(%lld))",
+                fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"), fld("timezone"));
+            return Value::str(buf);
+        }
         if (m == "Str" || m == "gist" || m == "yyyy-mm-dd" || m == "Date") {
-            char buf[32];
-            if (inv.hashKind == "Date") snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", fld("year"), fld("month"), fld("day"));
-            else snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lldZ", fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"));
+            char buf[48];
+            if (inv.hashKind == "Date" || m == "yyyy-mm-dd")
+                snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", fld("year"), fld("month"), fld("day"));
+            else {
+                long long tz = fld("timezone");
+                char suf[12];
+                if (tz == 0) snprintf(suf, sizeof suf, "Z");
+                else snprintf(suf, sizeof suf, "%c%02lld:%02lld", tz < 0 ? '-' : '+', (tz < 0 ? -tz : tz) / 3600, ((tz < 0 ? -tz : tz) % 3600) / 60);
+                auto sit2 = inv.hash->find("second");
+                double sd = sit2 != inv.hash->end() ? sit2->second.toNum() : 0.0;
+                if (sd != (double)(long long)sd)
+                    snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s", fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), sd, suf);
+                else
+                    snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s", fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"), suf);
+            }
+            if (m == "Date") return makeDate(civilToDays(fld("year"), fld("month"), fld("day")));
             return Value::str(buf);
         }
         if (m == "day-of-week" || m == "dow") { // 1=Monday .. 7=Sunday (Sakamoto's algorithm)
@@ -2868,13 +3008,44 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "close") { if (fd >= 0) ::close(fd); (*inv.hash)["fd"] = Value::integer(-1); return Value::boolean(true); }
     }
 
+    if (inv.t == VT::Range && (m == "pick" || m == "roll")) {
+        long long lo = inv.rFrom, hi = inv.rTo;
+        // integer spans sample directly — flattening ^2**40 (or ^2**20, 200 times) hangs
+        if (hi >= lo && (unsigned long long)(hi - lo) >= 1024) {
+            unsigned long long span = (unsigned long long)(hi - lo) + 1; // 0 == full 64-bit width
+            auto draw = [&]() -> long long {
+                unsigned long long r = ((unsigned long long)(randDouble() * 4294967296.0) << 32)
+                                     | (unsigned long long)(randDouble() * 4294967296.0);
+                return lo + (long long)(span ? r % span : r);
+            };
+            if (args.empty()) return Value::integer(draw());
+            bool all = args[0].t == VT::Whatever ||
+                       (args[0].isNumeric() && std::isinf(args[0].toNum()));
+            // pick(*) shuffles the whole range when that is sane; a 2**64 request is degenerate
+            long long n = all ? (span && span <= (1ULL << 22) ? (long long)span : 0) : args[0].toInt();
+            if (m == "pick" && span && (unsigned long long)n > span) n = (long long)span;
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            if (m == "pick") {
+                std::set<long long> seen;
+                while ((long long)out.arr->size() < n) {
+                    long long v = draw();
+                    if (seen.insert(v).second) out.arr->push_back(Value::integer(v));
+                }
+            }
+            else for (long long i = 0; i < n; i++) out.arr->push_back(Value::integer(draw()));
+            return out;
+        }
+    }
     // universal
     bool isFH = (inv.t == VT::Hash && inv.hashKind == "FileHandle");
     if (m == "say" && !isFH) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
     if (m == "print" && !isFH) return ioEmit(strOf(inv), "$*OUT", false);
     if (m == "put") return ioEmit(strOf(inv) + "\n", "$*OUT", false);
     if (m == "note") return ioEmit(gistOf(inv) + "\n", "$*ERR", true);
-    if (m == "Str") return Value::str(inv.toStr());
+    if (m == "Str" || (inv.t == VT::Type && m == "Stringy")) {
+        if (inv.t == VT::Type) return Value::str(""); // type objects stringify empty (with a warning in Rakudo)
+        return Value::str(inv.toStr());
+    }
     if ((m == "Int" || m == "Num" || m == "Real" || m == "Rat" || m == "FatRat") && inv.t == VT::Complex) {
         // Complex → Real conversions need |im| within $*TOLERANCE (default 1e-15),
         // so Num(exp i*π) works but a tightened tolerance throws (X::Numeric::Real)
@@ -2948,6 +3119,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
         if (inv.t == VT::Range) { Value r = Value::array(); *r.arr = inv.flatten(); r.isList = true; r.s = "Slip"; return r; }
         return inv;
+    }
+    // IO::Special: the .path of the standard streams ("<STDOUT>" etc.)
+    if (inv.t == VT::Str && inv.hashKind == "IO::Special") {
+        if (m == "Str" || m == "what" || m == "gist") return Value::str(inv.s);
+        if (m == "IO") return inv;
+        if (m == "e") return Value::boolean(true);
+        if (m == "d" || m == "f" || m == "l" || m == "x" || m == "z") return Value::boolean(false);
+        if (m == "s") return Value::integer(0);
+        if (m == "r") return Value::boolean(inv.s == "<STDIN>");
+        if (m == "w") return Value::boolean(inv.s != "<STDIN>");
+        if (m == "modified" || m == "accessed" || m == "changed") return Value::typeObj("Instant");
+        if (m == "mode") return Value::nil();
+        if (m == "raku" || m == "perl") return Value::str("IO::Special.new(\"" + inv.s + "\")");
+        if (m == "WHICH") { Value w = Value::str("IO::Special|" + inv.s); w.hashKind = "ObjAt"; return w; }
     }
     // a Blob/Buf (Str-tagged internally) is Positional over its BYTES, not a scalar
     if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
@@ -3318,6 +3503,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             out.arr->push_back(Value::pair("0", inv));
             return out;
         }
+        // holes in a sparse array (and undefined values generally) do not compete
+        kvs.erase(std::remove_if(kvs.begin(), kvs.end(),
+            [&](const std::pair<Value, Value>& kv) {
+                const Value& v = kv.second;
+                return v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type;
+            }), kvs.end());
         if (kvs.empty()) return out;
         Value best = kvs[0].second;
         bool wantMax = (m == "maxpairs");
@@ -3334,6 +3525,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "keyof") { // key type of an Associative (unparameterized: Mu / Str(Any))
         if (inv.t == VT::Hash && !inv.hashKind.empty()) return Value::typeObj("Mu"); // quanthashes key on Mu
+        if (inv.t == VT::Type) {
+            static const std::set<std::string> qh = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+            if (qh.count(inv.s)) // Mix[Str].keyof is Str; unparameterized quanthashes key on Mu
+                return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
+            return Value::typeObj("Str");
+        }
         return Value::typeObj("Str");
     }
     if (m == "Rat" || m == "FatRat") {
@@ -3379,7 +3576,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // ---- IO::Path (string-as-path) ----
-    if (m == "IO") { Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p; }
+    if (m == "IO") { rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p; }
     if (m == "slurp" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) { // FileHandle has its own slurp
         std::ifstream in(inv.toStr(), std::ios::binary);
         if (!in) throwFailedOpen(inv.toStr());
@@ -3455,7 +3652,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "rmdir") { // $path.IO.rmdir — remove the (empty) directory
         return Value::boolean(::rmdir(inv.toStr().c_str()) == 0);
     }
-    if (m == "path") return Value::str(inv.toStr());
+    if (m == "path") {
+        if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
+            auto st = inv.hash->find("std"); // standard streams: an IO::Special
+            if (st != inv.hash->end()) {
+                std::string nm = st->second.toStr() == "err" ? "<STDERR>" : st->second.toStr() == "in" ? "<STDIN>" : "<STDOUT>";
+                Value sp = Value::str(nm); sp.hashKind = "IO::Special"; return sp;
+            }
+            auto pt = inv.hash->find("path");
+            if (pt != inv.hash->end()) return pt->second;
+        }
+        return Value::str(inv.toStr());
+    }
     if (m == "basename") { std::string s = inv.toStr(); auto p = s.find_last_of('/'); return Value::str(p == std::string::npos ? s : s.substr(p + 1)); }
     // ---- more IO::Path methods (operate on the path string) ----
     {
@@ -3475,6 +3683,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "dirname") return Value::str(dirOf(inv.toStr()));
         if (m == "sibling") return asIO(dirOf(inv.toStr()) + "/" + (args.empty() ? "" : a0().toStr()));
         if (m == "child" || m == "add") {
+            if (!args.empty()) rejectNulPath(args[0].toStr());
             std::string s = inv.toStr(); if (!s.empty() && s.back() == '/') s.pop_back();
             return asIO(s + "/" + (args.empty() ? "" : a0().toStr()));
         }
@@ -3544,7 +3753,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "chomp")  { auto it = inv.hash->find("chomp");  return it != inv.hash->end() ? it->second : Value::boolean(true); }
         if (m == "nl-in")  { auto it = inv.hash->find("nl-in");  return it != inv.hash->end() ? it->second : Value::str("\n"); }
         if (m == "nl-out") { auto it = inv.hash->find("nl-out"); return it != inv.hash->end() ? it->second : Value::str("\n"); }
-        if (m == "path" || m == "IO") return (*inv.hash)["path"];
+        if (m == "path" || m == "IO") {
+            auto st = inv.hash->find("std"); // standard streams: an IO::Special
+            if (st != inv.hash->end()) {
+                std::string nm = st->second.toStr() == "err" ? "<STDERR>" : st->second.toStr() == "in" ? "<STDIN>" : "<STDOUT>";
+                Value sp = Value::str(nm); sp.hashKind = "IO::Special"; return sp;
+            }
+            return (*inv.hash)["path"];
+        }
         if (m == "say" || m == "print" || m == "put" || m == "printf") {
             std::string s;
             if (m == "printf") { // $fh.printf(FMT, args…) — FMT stringifies via .Str (junctions too)
@@ -3694,13 +3910,41 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         auto it = builtins_.find("unimatch");
         if (it != builtins_.end()) return it->second(*this, a2);
     }
+    if (m == "uninames") { // one name per grapheme, as a Seq
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        for (uint32_t cp : utf8cp(inv.toStr())) {
+            std::string nm = uniNameOf(cp);
+            out.arr->push_back(Value::str(nm.empty() ? "<unassigned>" : nm));
+        }
+        return out;
+    }
     if (m == "unival" || m == "univals" || m == "uniname") {
+        if (inv.t == VT::Type)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call " + m + " with a type object"};
         auto univ = [](uint32_t cp) -> Value { long long num, den; if (!uniNumValue(cp, num, den)) return Value::nil(); return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den)); };
         if (m == "univals") { Value out = Value::array(); out.isList = true; for (uint32_t cp : utf8cp(inv.toStr())) out.arr->push_back(univ(cp)); return out; }
         uint32_t cp; bool have = true;
         if (inv.t == VT::Int || inv.t == VT::Bool) cp = (uint32_t)inv.toInt();
         else { auto cps = utf8cp(inv.toStr()); if (cps.empty()) have = false; else cp = cps[0]; }
-        if (m == "uniname") { std::string nm = have ? uniNameOf(cp) : ""; return Value::str(nm.empty() ? "<unassigned>" : nm); }
+        if (m == "uniname") {
+            if (inv.t == VT::Str && inv.s.empty()) return Value::nil(); // uniname("") is Nil
+            if ((inv.t == VT::Int || inv.t == VT::Bool) && inv.toInt() < 0)
+                return Value::str("<illegal>"); // negative codepoints
+            char lb[32];
+            std::string gc = have ? uniGeneralCategory(cp) : "";
+            if (have && gc == "Cc") { // controls have no Name property, only a label
+                snprintf(lb, sizeof lb, "<control-%04X>", cp); return Value::str(lb);
+            }
+            std::string nm = have ? uniNameOf(cp) : "";
+            if (!nm.empty()) return Value::str(nm);
+            if (!have || cp > 0x10FFFF) return Value::str("<unassigned>");
+            const char* kind = ((cp & 0xFFFE) == 0xFFFE || (cp >= 0xFDD0 && cp <= 0xFDEF)) ? "noncharacter"
+                             : gc == "Cs" ? "surrogate"
+                             : gc == "Co" ? "private-use"
+                             : "reserved";
+            snprintf(lb, sizeof lb, "<%s-%04X>", kind, cp);
+            return Value::str(lb);
+        }
         return have ? univ(cp) : Value::nil();
     }
     if (m == "uniprop") {
@@ -4636,7 +4880,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                        (args[0].isNumeric() && std::isinf(args[0].toNum())));
             if (args.empty()) return pool0[(size_t)(randDouble() * pool0.size())]; // single element
             long long n = all ? (long long)pool0.size() : args[0].toInt();
-            Value out = Value::array(); out.isList = true;
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; // .pick(n)/.roll(n) return a Seq
             if (m == "pick") { // without replacement
                 ValueList pool = pool0;
                 for (long long i = 0; i < n && !pool.empty(); i++) {
@@ -4929,7 +5173,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // mutators on real arrays
         if (inv.t == VT::Array && inv.arr) {
             // push/unshift add each argument as one element; append/prepend flatten
-            if (m == "push") { for (auto& a : args) inv.arr->push_back(a); return Value::integer((long long)inv.arr->size()); }
+            if (m == "push") { for (auto& a : args) inv.arr->push_back(a); return inv; } // returns the array (shared storage)
             // append/prepend follow the single-argument rule: a lone Positional arg is
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
@@ -4938,9 +5182,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     return *args[0].arr;   // one-level: the sole list's own elements
                 return args;               // 2+ args: each as-is
             };
-            if (m == "append") { for (auto& a : appendValues(args)) inv.arr->push_back(a); return Value::integer((long long)inv.arr->size()); }
-            if (m == "unshift") { inv.arr->insert(inv.arr->begin(), args.begin(), args.end()); return Value::integer((long long)inv.arr->size()); }
-            if (m == "prepend") { auto f = appendValues(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return Value::integer((long long)inv.arr->size()); }
+            if (m == "append") { for (auto& a : appendValues(args)) inv.arr->push_back(a); return inv; }
+            if (m == "unshift") { inv.arr->insert(inv.arr->begin(), args.begin(), args.end()); return inv; }
+            if (m == "prepend") { auto f = appendValues(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return inv; }
             if (m == "pop") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->back(); inv.arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
             if (m == "shift") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
@@ -5013,6 +5257,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (lim && coll.size() >= lim) throw StopGatherEx{};
         }
         return inv;
+    }
+    if (m == "pick" || m == "roll") {
+        if (inv.t == VT::Type && inv.s == "Order") { // built-in enum: its three values
+            ValueList vs;
+            for (auto& nv : {std::pair<const char*, int>{"Less", -1}, {"Same", 0}, {"More", 1}}) {
+                Value e = Value::enumVal(nv.first, nv.second); e.enumType = "Order"; vs.push_back(e);
+            }
+            Value l = Value::array(vs); l.isList = true;
+            return methodCall(l, m, args);
+        }
+        if (inv.t != VT::Type) { // any scalar picks from a one-element pool: 42.pick == 42
+            Value l = Value::array({inv}); l.isList = true;
+            return methodCall(l, m, args);
+        }
     }
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
@@ -5614,6 +5872,7 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(::rmdir(a[0].toStr().c_str()) == 0);
     };
     B["spurt"] = [](Interpreter&, ValueList& a) -> Value {
+        if (!a.empty()) rejectNulPath(a[0].toStr());
         if (a.empty()) return Value::boolean(false);
         bool append = false, createonly = false;
         std::string content;
@@ -5633,6 +5892,7 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(true);
     };
     B["slurp"] = [](Interpreter&, ValueList& a) -> Value {
+        if (!a.empty()) rejectNulPath(a[0].toStr());
         if (a.empty()) { std::ostringstream ss; ss << std::cin.rdbuf(); return Value::str(ss.str()); } // slurp() = $*IN.slurp
         std::ifstream in(a[0].toStr());
         if (!in) throwFailedOpen(a[0].toStr());
@@ -5675,6 +5935,7 @@ void Interpreter::registerBuiltins() {
         return out;
     };
     B["open"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: open($path, :r/:w/:a)
+        if (!a.empty()) rejectNulPath(a[0].toStr());
         std::string path = a.empty() ? "" : a[0].toStr();
         std::string mode = "r";
         for (auto& x : a) if (x.t == VT::Pair) { if (x.s == "w") mode = "w"; else if (x.s == "a") mode = "a"; else if (x.s == "r") mode = "r"; }
@@ -5902,7 +6163,31 @@ void Interpreter::registerBuiltins() {
         if (!s) return Value::any();
         return Value::range(lo.toInt(), hi.toInt(), false, false);
     };
-    B["elems"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer(a.empty() ? 0 : (long long)toList(a[0]).size()); };
+    B["chdir"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+            "Cannot call chdir without an argument"};
+        if (a[0].toStr().find('\0') != std::string::npos)
+            throw RakuError{Value::typeObj("X::IO::Null"),
+                "Cannot use null character (U+0000) as part of the path"};
+        if (::chdir(a[0].toStr().c_str()) != 0) {
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash)["message"] = Value::str("Failed to change the working directory to '" + a[0].toStr() + "'");
+            return f;
+        }
+        Value p = Value::str(a[0].toStr()); p.hashKind = "IO"; return p; // IO::Path of the new cwd
+    };
+    B["times"] = [](Interpreter&, ValueList&) -> Value {
+        struct rusage ru, rc;
+        getrusage(RUSAGE_SELF, &ru); getrusage(RUSAGE_CHILDREN, &rc);
+        auto sec = [](const timeval& tv) { return Value::number(tv.tv_sec + tv.tv_usec / 1e6); };
+        Value out = Value::array({sec(ru.ru_utime), sec(ru.ru_stime), sec(rc.ru_utime), sec(rc.ru_stime)});
+        out.isList = true; return out;
+    };
+    B["elems"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.size() > 1) throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+            "Calling elems() with more than one positional argument will never work"};
+        return Value::integer(a.empty() ? 0 : (long long)toList(a[0]).size());
+    };
     B["defined"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(!a.empty() && defined(a[0])); };
     // Prefix forms of the metamethods: WHAT($x) === $x.WHAT, etc.
     for (const char* mm : {"WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY"})
@@ -5931,11 +6216,14 @@ void Interpreter::registerBuiltins() {
         if (!a.empty()) for (uint32_t cp : utf8cp(a[0].toStr())) out.arr->push_back(univalOf(cp));
         return out;
     };
-    B["uniname"] = [cpOfArg](Interpreter&, ValueList& a) -> Value {
-        if (a.empty()) return Value::str("");
-        bool ok; uint32_t cp = cpOfArg(a[0], ok);
-        std::string nm = ok ? uniNameOf(cp) : "";
-        return Value::str(nm.empty() ? "<unassigned>" : nm); // out-of-range / unassigned codepoints
+    B["uninames"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value v = a.empty() ? Value::str("") : a[0];
+        ValueList none; return I.methodCall(v, "uninames", none);
+    };
+    B["uniname"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty() || a[0].t == VT::Type)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call uniname with a type object"};
+        ValueList none; return I.methodCall(a[0], "uniname", none);
     };
     B["uniprop"] = [cpOfArg](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
@@ -6205,7 +6493,7 @@ void Interpreter::registerBuiltins() {
         return Value::any();
     };
     B["push"] = [](Interpreter&, ValueList& a) -> Value {
-        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr->push_back(a[i]); return Value::integer((long long)a[0].arr->size()); }
+        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr->push_back(a[i]); return a[0]; }
         return Value::any();
     };
     B["pop"] = [](Interpreter&, ValueList& a) -> Value {
@@ -6269,9 +6557,18 @@ void Interpreter::registerBuiltins() {
     };
     B["hash"] = [](Interpreter&, ValueList& a) -> Value {
         Value h = Value::makeHash();
-        for (size_t i = 0; i < a.size(); i++) {
-            if (a[i].t == VT::Pair) (*h.hash)[a[i].s] = a[i].pairVal ? *a[i].pairVal : Value::any();
-            else if (i + 1 < a.size()) { (*h.hash)[a[i].toStr()] = a[i + 1]; i++; }
+        ValueList items; // spread list args so hash(<a 1 b 2>) pairs up (and <1 2 3> dies)
+        for (auto& v : a) {
+            if (v.t == VT::Array && v.arr) for (auto& x : *v.arr) items.push_back(x);
+            else if (v.t == VT::Hash && !v.hashKind.size()) { for (auto& kv : *v.hash) (*h.hash)[kv.first] = kv.second; }
+            else items.push_back(v);
+        }
+        for (size_t i = 0; i < items.size(); i++) {
+            if (items[i].t == VT::Pair) (*h.hash)[items[i].s] = items[i].pairVal ? *items[i].pairVal : Value::any();
+            else if (i + 1 < items.size()) { (*h.hash)[items[i].toStr()] = items[i + 1]; i++; }
+            else throw RakuError{Value::typeObj("X::AdHoc"),
+                "Odd number of elements found where hash initializer expected: found " +
+                std::to_string(items.size()) + " elements, last element seen: " + items[i].toStr()};
         }
         return h;
     };

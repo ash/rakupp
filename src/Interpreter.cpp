@@ -545,6 +545,17 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                         (seed.back().t == VT::Str || seed.back().t == VT::Object);
         bool succDesc = succSeed && seed.size() >= 2 &&
                         seed[seed.size() - 2].toStr() > seed.back().toStr();
+        // exact geometric ratio: Rat/Int seeds continue in Rat space (Rakudo keeps
+        // 1, 1/2, 1/4 ... 0 as Rats; doubles would leak an e-suffix via .raku)
+        Value ratioV; bool exactRatio = false;
+        if (geometric) {
+            bool seedsExact = true;
+            for (auto& sv : seed) if (sv.t != VT::Int && sv.t != VT::Bool && sv.t != VT::Rat) seedsExact = false;
+            if (seedsExact && seed.size() >= 2) {
+                ratioV = applyArith("/", seed[1], seed[0]);
+                exactRatio = (ratioV.t == VT::Rat || ratioV.t == VT::Int);
+            }
+        }
         bool ascending = hasGen ? true : (geometric ? ratio >= 1 : step >= 0);
         long long arity = 1;
         if (hasGen && gen.code) arity = gen.code->whateverArity > 0 ? gen.code->whateverArity
@@ -556,7 +567,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             st->infinite = true; // unbounded: list assignment must keep it lazy, not drain it
             Interpreter* self = this;
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
-                              succSeed, succDesc](ValueList& cache) -> bool {
+                              succSeed, succDesc, ratioV, exactRatio](ValueList& cache) -> bool {
                 if (cache.empty()) return false;
                 double lastV = cache.back().toNum();
                 Value next;
@@ -576,8 +587,11 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                         next = self->methodCall(lastE, succDesc ? "pred" : "succ", none);
                     }
                 } else if (geometric) {
-                    double nv = lastV * ratio;
-                    next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
+                    const Value& lastE = cache.back();
+                    if (allInt && ratio == std::floor(ratio)) next = Value::integer((long long)std::llround(lastV * ratio));
+                    else if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
+                        next = applyArith("*", lastE, ratioV); // stays Rat
+                    else next = Value::number(lastV * ratio);
                 } else {
                     double nv = lastV + step;
                     next = allInt ? Value::integer((long long)nv) : Value::number(nv);
@@ -620,8 +634,11 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     next = methodCall(lastE, succDesc ? "pred" : "succ", none);
                 }
             } else if (geometric) {
-                double nv = lastV * ratio;
-                next = (allInt && ratio == std::floor(ratio)) ? Value::integer((long long)std::llround(nv)) : Value::number(nv);
+                const Value& lastE = out.arr->back();
+                if (allInt && ratio == std::floor(ratio)) next = Value::integer((long long)std::llround(lastV * ratio));
+                else if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
+                    next = applyArith("*", lastE, ratioV); // stays Rat
+                else next = Value::number(lastV * ratio);
             } else {
                 double nv = lastV + step;
                 next = allInt ? Value::integer((long long)nv) : Value::number(nv);
@@ -1631,6 +1648,7 @@ Value Interpreter::evalString(const std::string& src) {
     auto prog = std::make_shared<Program>();
     try {
         Parser parser(lexer.tokenize());
+        parser.strictSep_ = true; // EVAL snippets get "two terms in a row" strictness
         // seed user-defined operators (sub infix:<…>) so EVAL'd custom operators parse
         for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
             for (auto& kv : e->vars) {
@@ -1644,7 +1662,7 @@ Value Interpreter::evalString(const std::string& src) {
             }
         *prog = parser.parseProgram();
     } catch (ParseError& e) {
-        throw RakuError{Value::str(e.what()), std::string("EVAL parse error: ") + e.what()};
+        throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
     }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
     Value last = Value::any();
@@ -2040,6 +2058,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // (or an `our &name;` re-declaration) can reach it.
                 if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) curPkgEnv_->define("&" + sd->name, code);
             }
+            if (sd->immediateCall) { // `sub f(...) {...}(args)` — call right away
+                ValueList ia;
+                for (auto& a : sd->immediateArgs) ia.push_back(eval(a.get()));
+                return callCallable(code, ia);
+            }
             return code;
         }
         case NK::EnumDecl: {
@@ -2296,13 +2319,24 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (is->isUnless) c = !c;
                 if (c) {
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                    if (bi == 0 && !is->thenVar.empty()) scope->define(is->thenVar, cv); // if EXPR -> $x
+                    std::string bv = bi < is->branchVars.size() ? is->branchVars[bi]
+                                     : (bi == 0 ? is->thenVar : "");
+                    if (!bv.empty() && bv[0] == '*') { // slurpy binder: one-element list
+                        Value l = Value::array({cv}); l.isList = false;
+                        scope->define(bv.substr(1), l);
+                    }
+                    else if (!bv.empty()) scope->define(bv, cv); // if/elsif EXPR -> $x
                     return execBlock(br.second.get(), scope);
                 }
                 if (is->isUnless) break; // unless has single branch
             }
             if (is->elseBlock) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                if (!is->elseVar.empty() && !is->branches.empty()) { // else -> $x gets the last cond value
+                    Value lv = eval(is->branches.back().first.get());
+                    if (is->elseVar[0] == '*') { Value l = Value::array({lv}); scope->define(is->elseVar.substr(1), l); }
+                    else scope->define(is->elseVar, lv);
+                }
                 return execBlock(is->elseBlock.get(), scope);
             }
             return Value::any();
@@ -3145,6 +3179,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
+    if (name == "$*TZ") return Value::integer(tzOffsetDyn());
     if (name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
     if (name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
     if (name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
@@ -3867,6 +3902,11 @@ Value* Interpreter::lvalue(Expr* e) {
     if (e->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(e);
         char sigil = ve->name.empty() ? '$' : ve->name[0];
+        // process-immutable dynamics; a user `my $*PID` shadow stays assignable
+        if (!ve->declare && (ve->name == "$*PID" || ve->name == "$*EXECUTABLE" ||
+                             ve->name == "$*EXECUTABLE-NAME") && !tctx_.cur->find(ve->name))
+            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                            "Cannot modify an immutable value (" + ve->name + ")"};
         if (ve->declare) {
             if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
                 if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
@@ -4964,7 +5004,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // kept for | and ^, dropped for &
     if (op == "~&" || op == "~|" || op == "~^") {
         std::string a = l.toStr(), b = r.toStr(), out;
-        size_t n = (op == "~&") ? std::min(a.size(), b.size()) : std::max(a.size(), b.size());
+        // Blob/Buf extend rightwards for all three; plain Str ~& truncates to the shorter
+        bool bufish = (l.t == VT::Str && !l.hashKind.empty()) || (r.t == VT::Str && !r.hashKind.empty());
+        size_t n = (op == "~&" && !bufish) ? std::min(a.size(), b.size()) : std::max(a.size(), b.size());
         for (size_t k = 0; k < n; k++) {
             unsigned char ca = k < a.size() ? (unsigned char)a[k] : 0;
             unsigned char cb = k < b.size() ? (unsigned char)b[k] : 0;
@@ -5143,7 +5185,8 @@ static std::string quoteMetaRx(const std::string& s) {
 Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern) {
     std::string pat = pattern;
     bool global = false;
-    { size_t gp = pat.find(":g "); if (gp != std::string::npos) { global = true; pat.erase(gp, 3); } } // :g adverb
+    for (const char* adv : {":g ", ":global "}) // :g / :global adverb
+        { size_t gp = pat.find(adv); if (gp != std::string::npos) { global = true; pat.erase(gp, strlen(adv)); } }
     // Interpolate $scalar variables into the pattern as their literal (quotemeta'd)
     // value — `/$x/` matches the contents of $x. Leaves $0.. backrefs, $<name>,
     // special vars, escaped \$, and the end-anchor $ untouched.
@@ -6085,7 +6128,8 @@ Value Interpreter::evalBinary(Binary* b) {
         static const std::set<std::string> special = {
             "~", "does", "but", "xx", "==>", "<==", "...", "...^", "~~", "!~~",
             "&&", "and", "||", "or", "andthen", "orelse", "//", "^^", "xor", "&", "|", "^",
-            "=:=", "!=:=", "ff", "fff"};
+            "=:=", "!=:=", "ff", "fff",
+            "Z", "X"}; // plain Z/X: chained forms are ONE n-ary list-infix
         bool rmeta = op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]);
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
     }
@@ -6107,7 +6151,7 @@ Value Interpreter::evalBinary(Binary* b) {
             };
             return code;
         }
-        if (l.t == VT::Object || r.t == VT::Object)
+        if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty())
             if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
                 try { return callCallable(*f, ValueList{l, r}); } catch (RakuError&) {}
         // hyper metaop `>>op<<` — element-wise, resolving a user inner operator
@@ -6386,12 +6430,28 @@ Value Interpreter::evalBinary(Binary* b) {
         Value r = evalValueOf(b->rhs.get());
         return applyArith(op, l, r);
     }
+    if ((op == "Z" || op == "X") && b->lhs->kind == NK::Binary &&
+        static_cast<Binary*>(b->lhs.get())->op == op) {
+        // `@a Z @b Z @c` is ONE list-infix chain producing 3-tuples — a pairwise
+        // fold would zip tuples-with-a-list and come out mangled. Same for X.
+        std::vector<Expr*> chain;
+        Expr* cur = b;
+        while (cur->kind == NK::Binary && static_cast<Binary*>(cur)->op == op) {
+            chain.push_back(static_cast<Binary*>(cur)->rhs.get());
+            cur = static_cast<Binary*>(cur)->lhs.get();
+        }
+        chain.push_back(cur);
+        std::reverse(chain.begin(), chain.end());
+        ValueList items;
+        for (Expr* e : chain) items.push_back(eval(e));
+        return applyReduce(op, items);
+    }
     Value l = eval(b->lhs.get());
     Value r = eval(b->rhs.get());
     // operator overloading: a built-in operator on a user object dispatches to a
     // user `sub infix:<op>` if one is in scope (falling back to the built-in when
     // no candidate matches the operands).
-    if (l.t == VT::Object || r.t == VT::Object)
+    if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty())
         if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError&) {}
@@ -7191,9 +7251,43 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         }
         return out;
     }
+    if (op == "X") { // n-ary cross: [X] 1..2, 3..4, 5..6 yields 3-tuples
+        std::vector<ValueList> rows;
+        for (auto& it : items) {
+            if (it.t == VT::Array && it.arr) rows.push_back(*it.arr);
+            else if (it.t == VT::Range) rows.push_back(it.flatten());
+            else rows.push_back(ValueList{it});
+        }
+        Value out = Value::array(); out.isList = true;
+        bool any = !rows.empty();
+        for (auto& r : rows) if (r.empty()) any = false;
+        if (any) {
+            std::vector<size_t> idx(rows.size(), 0);
+            for (;;) {
+                Value t = Value::array(); t.isList = true;
+                for (size_t k = 0; k < rows.size(); k++) t.arr->push_back(rows[k][idx[k]]);
+                out.arr->push_back(t);
+                size_t k = rows.size();
+                while (k > 0 && ++idx[k - 1] == rows[k - 1].size()) idx[--k] = 0;
+                if (k == 0) break;
+            }
+        }
+        return out;
+    }
     Value acc = items[0];
     for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
     return acc;
+}
+
+// $*TZ: a user-assigned dynamic wins; otherwise the system UTC offset
+long long Interpreter::tzOffsetDyn() {
+    Value* tp = nullptr;
+    for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend() && !tp; ++it)
+        if (*it) tp = (*it)->find("$*TZ");
+    if (!tp && tctx_.cur) tp = tctx_.cur->find("$*TZ");
+    if (tp) return tp->toInt();
+    time_t t = ::time(nullptr); struct tm lt; localtime_r(&t, &lt);
+    return (long long)lt.tm_gmtoff;
 }
 
 double Interpreter::toleranceDyn() {
@@ -7689,6 +7783,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
             if (ve->name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
             if (ve->name == "$*PID") return Value::integer((long long)::getpid());
+            if (ve->name == "$*TZ") return Value::integer(tzOffsetDyn());
             if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
             }
             if (ve->declare) {
@@ -7905,7 +8000,7 @@ Value Interpreter::eval(Expr* e) {
                     if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
                     items.push_back(v); continue;
                 }
-                items.push_back(eval(it.get()));
+                items.push_back(evalValueOf(it.get())); // a bare /pat/ list element stays a Regex object
             }
             Value lout = listToArray(items);
             lout.isList = true; // a comma list — parenned or bare — is a List, .WHAT (List)
@@ -7994,6 +8089,9 @@ Value Interpreter::eval(Expr* e) {
         case NK::Index: return evalIndex(static_cast<Index*>(e));
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
+            if (mc->bang && !tctx_.cur->find("self")) // private call outside any method body
+                throw RakuError{Value::typeObj("X::Method::NotFound"),
+                    "Private method call to '" + mc->method + "' outside the defining class"};
             Value inv = eval(mc->inv.get());
             if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
                 Value mv = eval(mc->methodExpr.get());

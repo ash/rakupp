@@ -560,6 +560,16 @@ ExprPtr Parser::parsePrefix(bool tight) {
             // the operand parses "tight" (its own postfixes stop at a space-preceded
             // `.method`), so `^30 .map` is (^30).map while `^30.map` stays ^(30.map).
             u->op = o; u->operand = parsePrefix(true);
+            // `**` binds tighter than symbolic unary: -2**2 == -(2**2) and
+            // ^2**64 == ^(2**64)  (++/-- keep their assignable-operand parse)
+            if (o != "++" && o != "--" && cur().kind == Tok::Op && cur().text == "**") {
+                advance();
+                auto pw = std::make_unique<Binary>();
+                pw->op = "**";
+                pw->lhs = std::move(u->operand);
+                pw->rhs = parseExpr(BP_POW); // right-assoc tier
+                u->operand = std::move(pw);
+            }
             return parsePostfix(std::move(u), tight);
         }
         if (o == "!!") { // prefix double-negation == boolify
@@ -802,6 +812,18 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (isOp("!")) { advance(); adv = "!"; }
             if (isKind(Tok::Ident)) adv += advance().text;
             else if (isKind(Tok::Var)) adv += advance().text; // "$delete" — conditional
+            // literal argument: `:delete(0)` / `:delete(False)` — a falsy literal
+            // negates the adverb, a truthy one keeps it (general exprs unsupported)
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                advance();
+                bool falsy = (isKind(Tok::IntLit) && cur().text == "0") ||
+                             (isKind(Tok::Ident) && cur().text == "False");
+                advance();
+                expectKind(Tok::RParen, ")");
+                if (falsy && adv[0] != '!') adv = "!" + adv;
+            }
+            // `:!delete` (and a falsified `:delete(0)`) is a plain non-deleting fetch
+            if (adv == "!delete") { continue; }
             auto* ix = static_cast<Index*>(base.get());
             // stacked adverbs (`:exists:kv:$delete`) accumulate ':'-joined
             ix->adverb += (ix->adverb.empty() ? "" : ":") + adv;
@@ -878,12 +900,14 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 u->operand = std::move(base);
                 base = std::move(u);
             }
-        } else if (isOp("!") && !cur().spaceBefore && peek().kind == Tok::Ident && !peek().spaceBefore) {
-            // private method call: self!method / $obj!method (shares the method table)
+        } else if (isOp("!") && !cur().spaceBefore && !peek().spaceBefore &&
+                   (peek().kind == Tok::Ident || peek().kind == Tok::StrLit || peek().kind == Tok::StrInterp)) {
+            // private method call: self!method / self!"method"() / $obj!method
             advance(); // !
             auto mc = std::make_unique<MethodCall>();
             mc->inv = std::move(base);
             mc->method = advance().text;
+            mc->bang = true; // private call: only valid with a self in scope
             if (isKind(Tok::LParen)) { advance(); mc->args = parseCallArgs(); }
             base = std::move(mc);
             continue;
@@ -999,7 +1023,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
             if (indirectName && !isKind(Tok::LParen))
                 error("indirect method call requires parentheses: $obj.'name'()");
-            if (isKind(Tok::LParen)) { advance(); mc->args = parseCallArgs(); } // .method(args) or .method (args)
+            if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); } // .method(args) — tight only; `.doit ()` is Confused (use unspace)
             else if (isOp(":") && (startsTermToken(peek()) ||
                      (peek().kind == Tok::Ident && (peek().text == "my" || peek().text == "our" || peek().text == "state")))) {
                 // colon method-args:  @x.sort: -*.value   ==  @x.sort(-*.value)
@@ -1586,6 +1610,20 @@ ExprPtr Parser::parsePrimary() {
             }
             bool svCond = stmtCond_; stmtCond_ = false; // parens re-allow block listop args
             struct CondRestore { bool* f; bool v; ~CondRestore() { *f = v; } } cr{&stmtCond_, svCond};
+            // `(if COND { } elsif ... else { })` — an if STATEMENT in term position
+            // evaluates to the chosen block's value (likewise unless)
+            if ((isIdent("if") || isIdent("unless")) &&
+                !(peek().kind == Tok::Op && (peek().text == "=>" || peek().text == ","))) {
+                bool isUnless = cur().text == "unless";
+                advance();
+                auto st = parseIf(isUnless);
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(st));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                ExprPtr e = std::move(u);
+                expectKind(Tok::RParen, ")");
+                return e;
+            }
             ExprPtr e = parseExpression();
             // statement modifier inside parens:  (42 if $x)  (42 unless $x)  (42 with $y)
             if (isIdent("if") || isIdent("unless") || isIdent("with") || isIdent("without")) {
@@ -2261,6 +2299,11 @@ ExprPtr Parser::parsePrimary() {
                     c->args.clear();
                 return c;
             }
+            // a bare IO verb as a term is a compile error in Raku ('put;' vs 'put()')
+            // — only when the statement truly ends here (`say if …` has a modifier)
+            if ((name == "put" || name == "say" || name == "print") &&
+                (isKind(Tok::Semicolon) || isKind(Tok::End) || isKind(Tok::RBrace)))
+                throw ParseError("Unsupported use of bare '" + name + "'. In Raku please use: '" + name + "()'", cur().line);
             return std::make_unique<NameTerm>(name);
         }
         default:
@@ -2590,6 +2633,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
         blk->stmts.push_back(parseStatement());
+        if (!isKind(Tok::Semicolon)) enforceStmtSep();
     }
     expectKind(Tok::RBrace, "}");
     return blk;
@@ -3071,6 +3115,13 @@ StmtPtr Parser::parseSub(bool isMulti) {
             s->body.push_back(parseStatement());
         }
     }
+    // `sub f($n) {…}(1)` — declaration immediately invoked
+    if (isKind(Tok::LParen) && !cur().spaceBefore) {
+        advance();
+        s->immediateCall = true;
+        if (!isKind(Tok::RParen)) s->immediateArgs = parseCallArgs();
+        else advance();
+    }
     return s;
 }
 
@@ -3284,18 +3335,23 @@ StmtPtr Parser::parseIf(bool isUnless) {
     s->isUnless = isUnless;
     ExprPtr cond;
     { bool sv = stmtCond_; stmtCond_ = true; cond = parseExpression(); stmtCond_ = sv; }
-    if (matchOp("->")) { if (isKind(Tok::Var)) s->thenVar = advance().text; }
+    if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->thenVar = (sl ? "*" : "") + advance().text; }
     auto blk = parseBlock();
     s->branches.emplace_back(std::move(cond), std::move(blk));
+    s->branchVars.push_back(s->thenVar);
     while (isIdent("elsif")) {
         advance();
         ExprPtr c;
         { bool sv = stmtCond_; stmtCond_ = true; c = parseExpression(); stmtCond_ = sv; }
+        std::string bv;
+        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) bv = (sl ? "*" : "") + advance().text; } // elsif EXPR -> $x / -> *@x
         auto b = parseBlock();
         s->branches.emplace_back(std::move(c), std::move(b));
+        s->branchVars.push_back(bv);
     }
     if (isIdent("else")) {
         advance();
+        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->elseVar = (sl ? "*" : "") + advance().text; } // else -> $x / -> *@x
         s->elseBlock = parseBlock();
     }
     return s;
@@ -3749,9 +3805,21 @@ Program Parser::parseProgram() {
     while (!isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
         prog.stmts.push_back(parseStatement());
-        matchKind(Tok::Semicolon);
+        if (!matchKind(Tok::Semicolon)) enforceStmtSep();
     }
     return prog;
+}
+
+// After a statement with no `;`: the next token must start a new line or follow
+// a block's closing brace — `$obj.doit ()` is "two terms in a row" (Confused).
+// Enforced only in EVAL'd snippets (strictSep_): whole test files keep the
+// tolerant statement-split behavior so one bad line cannot kill their TAP.
+void Parser::enforceStmtSep() {
+    if (!strictSep_) return;
+    if (isKind(Tok::End) || isKind(Tok::RBrace) || pos_ == 0) return;
+    const Token& pv = toks_[pos_ - 1];
+    if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line == pv.line)
+        throw ParseError("Two terms in a row (missing semicolon?)", cur().line);
 }
 
 } // namespace rakupp
