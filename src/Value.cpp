@@ -357,9 +357,10 @@ std::string Value::typeName() const {
         case VT::Any:  return "Any";
         case VT::Bool: return "Bool";
         case VT::Int:  return "Int";
-        case VT::Num:  return "Num";
+        case VT::Num:  return hashKind == "Duration" ? "Duration"
+                            : hashKind == "Instant" ? "Instant" : "Num";
         case VT::Complex: return "Complex";
-        case VT::Str:  return hashKind == "IO" ? "IO::Path" : hashKind == "Version" ? "Version" : hashKind == "Blob" ? "Blob" : "Str";
+        case VT::Str:  return hashKind == "IO" ? "IO::Path" : hashKind == "Version" ? "Version" : hashKind == "Blob" ? "Blob" : hashKind == "Buf" ? "Buf" : "Str";
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";

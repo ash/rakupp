@@ -1092,6 +1092,7 @@ void Interpreter::gilUnpark(bool wasParked) {
 // True only on `start`/async worker threads — gates the safe-point abort (defined
 // inline in the header) so the main thread is never unwound.
 thread_local bool t_isWorker = false;
+thread_local Value t_threadSelf;
 thread_local unsigned t_safePtCtr = 0;
 
 // Called from a worker's safe point every few thousand loop iterations: release the
@@ -1110,7 +1111,7 @@ void Interpreter::workerYield() {
 // Spawn a real worker thread that runs `code` and keeps/breaks a Promise backed
 // by a PromiseState. The worker blocks on the GIL until the main thread yields
 // (inside awaitPromise) or the program drains, so nothing runs truly in parallel.
-Value Interpreter::spawnPromise(Value code) {
+Value Interpreter::spawnPromise(Value code, Value threadVal) {
     engageGil();
     auto ps = std::make_shared<PromiseState>();
     Value p = Value::makeHash(); p.hashKind = "Promise";
@@ -1127,8 +1128,9 @@ Value Interpreter::spawnPromise(Value code) {
         reapFinishedWorkers();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
-        workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope]() mutable {
+        workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
             t_isWorker = true;
+            if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
             tctx_.cur = spawnScope;        // anchor: dynamics visible at the spawn point
             tctx_.dynStack.push_back(spawnScope.get());
             Value r; bool broke = false; Value cause;
@@ -1152,8 +1154,9 @@ Value Interpreter::spawnPromise(Value code) {
     reapFinishedWorkers();                 // release stacks of already-finished workers
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_; // dynamics visible at the spawn point
-    workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope]() mutable {
+    workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
         t_isWorker = true;
+        if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
         self->loadCtx(wctx);
@@ -2099,6 +2102,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
                         ca.pub = a.pub; ca.rw = a.rw; ca.def = a.def.get(); ca.type = a.type;
+                        ca.containerIs = a.containerIs;
                         ci->attrs.push_back(ca);
                     }
                     for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; }
@@ -2200,6 +2204,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; }
             for (auto& a : cd->attrs) {
                 ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.type = a.type;
+                ca.containerIs = a.containerIs;
                 ca.def = a.def.get();
                 ci->attrs.push_back(ca);
             }
@@ -2731,19 +2736,27 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
 // Does an argument satisfy a parameter type-constraint name?
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // an enum VALUE as a parameter type (`multi f(\b, int $i, LittleEndian)`)
+    // matches exactly that value; the enum TYPE name matches any of its values
+    if (!arg.enumName.empty() && (type == arg.enumName || type == arg.enumType ||
+        (!arg.enumType.empty() && type == arg.enumType + "::" + arg.enumName))) return true;
     // command-line allomorphs: a numeric-looking argv string binds Int/Num/Rat
     // params as well as Str ones (Rakudo passes IntStr/RatStr to MAIN)
     if (arg.t == VT::Str && arg.hashKind == "Allomorph" &&
         (type == "Int" || type == "UInt" || type == "Num" || type == "Rat" ||
          type == "Numeric" || type == "Real"))
         return arg.s.find('.') == std::string::npos || (type != "Int" && type != "UInt");
+    // native-typed params (`int $i`, `num $x`, `str $s`) take the boxed kind
+    static const std::set<std::string> natIntTypes = {"int", "int8", "int16", "int32", "int64",
+        "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
+    static const std::set<std::string> natNumTypes = {"num", "num32", "num64"};
     switch (arg.t) {
-        case VT::Int:  return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || type == "Rat";
-        case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real";
+        case VT::Int:  return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || type == "Rat" || natIntTypes.count(type) > 0;
+        case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real" || natNumTypes.count(type) > 0;
         case VT::Complex: return type == "Complex" || type == "Cool" || type == "Numeric";
         case VT::Rat:  return type == "Rat" || type == "Cool" || type == "Numeric" || type == "Real";
         case VT::Bool: return type == "Bool";
-        case VT::Str:  return type == "Str" || type == "Cool" || type == "Stringy";
+        case VT::Str:  return type == "Str" || type == "Cool" || type == "Stringy" || type == "str";
         case VT::Array: return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
@@ -3132,7 +3145,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
-    if (name == "$*THREAD") { Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); return h; }
+    if (name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
     if (name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
     if (name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
     // anything else: resolve from the live env chain (covers %*ENV, $*REPO,
@@ -3832,6 +3845,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             }
         }
     } catch (ReturnEx& r) { tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true); return r.v; }
+    catch (BreakGivenEx& b) {
+        // a matched `when` in the method body: the routine is its topicalizer,
+        // so it exits the method with the when-block's value (mirrors callCallable)
+        tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
+        return b.hasVal ? b.v : last;
+    }
     catch (...) { tctx_.cur = saved; throw; }
     tctx_.cur = saved;
     copyOutRw(c.params, env, rwArgs, true);
@@ -3854,6 +3873,8 @@ Value* Interpreter::lvalue(Expr* e) {
                 return &tctx_.curStateEnv->vars[ve->name];
             }
             Value init = typedDefault(ve->declType, sigil);
+            if (!ve->containerIs.empty() && sigil == '%') // my %h is Set — an empty Setty
+                init = makeBaggy({}, ve->containerIs);
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 init = eval(ve->declDefault.get());
                 tctx_.cur->varDefault[ve->name] = init;
@@ -3891,6 +3912,12 @@ Value* Interpreter::lvalue(Expr* e) {
         // `(my $a = …)<key> = v` — a parenthesized assignment is an lvalue via its target
         auto* a = static_cast<Assign*>(e);
         evalAssign(a);
+        if (a->target->kind == NK::VarExpr) {
+            // answer the just-assigned slot directly: recursing into a declaring
+            // VarExpr would re-declare it and wipe the value
+            auto* ve = static_cast<VarExpr*>(a->target.get());
+            if (Value* p = tctx_.cur->find(ve->name)) return p;
+        }
         return lvalue(a->target.get());
     }
     if (e->kind == NK::Index) {
@@ -4037,6 +4064,46 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 return sink ? Value::any() : rhs;
             }
         }
+        // slice assignment: %h{K1,K2,…} = v1,v2,… / @a[I1,I2,…] = … distributes the
+        // (flattened) RHS across the keys. A slice subscript is a syntactic list, a
+        // Range (^$n), or an @-var — a scalar subscript keeps the ordinary path.
+        if (a->op == "=" && a->target->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            bool sliceForm = ix->index && !ix->multiDim &&
+                (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+                 (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
+                  static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
+                 (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^"));
+            if (sliceForm) {
+                Value keys = eval(ix->index.get());
+                if (keys.t == VT::Array || keys.t == VT::Range) {
+                    ValueList ks = keys.flatten();
+                    Value rv = evalValueOf(a->value.get());
+                    ValueList vs;
+                    if (rv.t == VT::Array || rv.t == VT::Range) vs = rv.flatten();
+                    else vs.push_back(rv);
+                    Value* bp = lvalue(ix->base.get());
+                    if (bp) {
+                        if (bp->t == VT::Any || bp->t == VT::Nil)
+                            *bp = ix->isHash ? Value::makeHash() : Value::array();
+                        Value out = Value::array(); out.isList = true;
+                        for (size_t i = 0; i < ks.size(); i++) {
+                            Value v = i < vs.size() ? vs[i] : Value::any();
+                            if (ix->isHash && bp->t == VT::Hash && bp->hash) (*bp->hash)[ks[i].toStr()] = v;
+                            else if (bp->t == VT::Array && bp->arr) {
+                                long long j = ks[i].toInt();
+                                if (j >= 0) {
+                                    if ((long long)bp->arr->size() <= j) bp->arr->resize(j + 1, Value::any());
+                                    (*bp->arr)[j] = v;
+                                }
+                            }
+                            out.arr->push_back(v);
+                        }
+                        return sink ? Value::any() : out;
+                    }
+                }
+            }
+        }
         // `@a := item, item, …` binds the list AS-IS — a Range/List element stays
         // one element (ListExpr eval would flatten it, which is `=` semantics).
         // `my constant @m = Nil, <a b>, …` binds too: constants are := in disguise.
@@ -4129,7 +4196,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             else *lv = coerceArray(rhs);
             if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
         }
-        else if (sigil == '%') *lv = coerceHash(rhs);
+        else if (sigil == '%') {
+            static const std::set<std::string> setty = {
+                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+            if (lv->t == VT::Hash && setty.count(lv->hashKind)) // my %h is Set = 1,2,3
+                *lv = makeBaggy(rhs.flatten(), lv->hashKind);
+            else *lv = coerceHash(rhs);
+        }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
             const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
@@ -4287,6 +4360,35 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
 
 static bool isJunction(const Value& v) {
     return v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
+}
+
+// +&/+|/+^ past int64: infinite two's complement over base-2^32 limbs.
+// Negatives get sign-extension headroom so the top limb is pure sign, which
+// also makes the result's sign readable off its top bit.
+static BigInt bigBitwise(const BigInt& a, const BigInt& b, char which) {
+    const BigInt two32(4294967296LL);
+    auto rawLimbs = [&](const BigInt& x) {
+        std::vector<uint32_t> limbs;
+        BigInt cur = x.abs(), q, r;
+        while (!cur.isZero()) { BigInt::divmod(cur, two32, q, r); limbs.push_back((uint32_t)r.toLL()); cur = q; }
+        return limbs;
+    };
+    std::vector<uint32_t> la = rawLimbs(a), lb = rawLimbs(b);
+    size_t n = std::max(la.size(), lb.size()) + 1;
+    auto twos = [&](std::vector<uint32_t>& v, int sign) {
+        v.resize(n, 0);
+        if (sign < 0) { uint64_t carry = 1; for (auto& L : v) { uint64_t t = (uint64_t)(uint32_t)~L + carry; L = (uint32_t)t; carry = t >> 32; } }
+    };
+    twos(la, a.sign); twos(lb, b.sign);
+    std::vector<uint32_t> res(n);
+    for (size_t i = 0; i < n; i++)
+        res[i] = which == '&' ? (la[i] & lb[i]) : which == '|' ? (la[i] | lb[i]) : (la[i] ^ lb[i]);
+    bool neg = (res[n - 1] & 0x80000000u) != 0;
+    if (neg) { uint64_t carry = 1; for (auto& L : res) { uint64_t t = (uint64_t)(uint32_t)~L + carry; L = (uint32_t)t; carry = t >> 32; } }
+    BigInt out(0);
+    for (size_t i = n; i-- > 0;) out = out * two32 + BigInt((long long)res[i]);
+    if (neg && !out.isZero()) out.sign = -1;
+    return out;
 }
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
@@ -4827,11 +4929,33 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return a;
     }
     // numeric bitwise / shift
-    if (op == "+&") return Value::integer(l.toInt() & r.toInt());
-    if (op == "+|") return Value::integer(l.toInt() | r.toInt());
-    if (op == "+^") return Value::integer(l.toInt() ^ r.toInt());
-    if (op == "+<") return Value::integer(l.toInt() << r.toInt());
-    if (op == "+>") return Value::integer(l.toInt() >> r.toInt());
+    if (op == "+&" || op == "+|" || op == "+^") {
+        if (l.big || r.big) {
+            BigInt res = bigBitwise(l.big ? *l.big : BigInt(l.toInt()),
+                                    r.big ? *r.big : BigInt(r.toInt()), op[1]);
+            return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
+        }
+        long long a = l.toInt(), b = r.toInt();
+        return Value::integer(op[1] == '&' ? (a & b) : op[1] == '|' ? (a | b) : (a ^ b));
+    }
+    if (op == "+<") { // escalate to BigInt when the result would overflow long long
+        long long sh = r.toInt();
+        if (sh < 0) return Value::integer(0);
+        if (!l.big && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
+            return Value::integer(l.toInt() << sh);
+        BigInt lb = l.big ? *l.big : BigInt(l.toInt());
+        BigInt res = lb * BigInt(2).pow(sh);
+        return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
+    }
+    if (op == "+>") {
+        long long sh = r.toInt();
+        if (sh < 0) return Value::integer(0);
+        if (!l.big) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
+        BigInt q, rem;
+        BigInt::divmod(*l.big, BigInt(2).pow(sh), q, rem);
+        if (l.big->sign < 0 && !rem.isZero()) q = q - BigInt(1); // arithmetic shift = floor
+        return q.fitsLL() ? Value::integer(q.toLL()) : Value::bigint(q);
+    }
     // boolean bitwise (return Bool)
     if (op == "?&") return Value::boolean(l.truthy() && r.truthy());
     if (op == "?|") return Value::boolean(l.truthy() || r.truthy());
@@ -4945,6 +5069,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 else if (r.s == "Callable" && l.t == VT::Code) res = true;
                 else if (r.s == "Stringy" && l.t == VT::Str) res = true;
                 else if (r.s == "Real" && l.isNumeric() && l.t != VT::Complex) res = true;
+                // Buf does Blob; the sized views (buf8/blob8/utf8…) share our
+                // byte representation, so a Buf answers any buf* type
+                else if (l.t == VT::Str && (l.hashKind == "Buf" || l.hashKind == "Blob")) {
+                    if (r.s == "Blob") res = true;
+                    else if (l.hashKind == "Buf" && r.s.rfind("buf", 0) == 0) res = true;
+                    else if (l.hashKind == "Blob" && (r.s.rfind("blob", 0) == 0 || r.s.rfind("utf", 0) == 0)) res = true;
+                }
             }
             // native numeric types conform to Num/Int/Numeric/Real/Cool (`num64 ~~ Num`)
             if (!res && l.t == VT::Type) {
@@ -5866,6 +5997,17 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     return mv;
 }
 
+// Instant/Duration algebra: Instant−Instant→Duration, Instant±Duration→Instant,
+// Duration±x→Duration; everything else drops to plain numbers (like Rakudo's *).
+static void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& res) {
+    if (!(op == "+" || op == "-") || !res.isNumeric() || !res.hashKind.empty()) return;
+    bool li = l.hashKind == "Instant", ri = r.hashKind == "Instant";
+    bool ld = l.hashKind == "Duration", rd = r.hashKind == "Duration";
+    if (!(li || ri || ld || rd)) return;
+    if (op == "-") res.hashKind = (li && ri) ? "Duration" : li ? "Instant" : "Duration";
+    else res.hashKind = (li || ri) ? "Instant" : "Duration";
+}
+
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
@@ -5950,6 +6092,12 @@ Value Interpreter::evalBinary(Binary* b) {
     if (b->simpleOp == 1) {
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
+        if ((op == "+" || op == "-") &&
+            (!l.hashKind.empty() || !r.hashKind.empty())) { // Instant/Duration algebra
+            Value res = applyArith(op, l, r);
+            tagTemporal(op, l, r, res);
+            return res;
+        }
         // function composition `f ∘ g` / `f o g` → a callable computing f(g(...))
         if (op == "\xE2\x88\x98" || op == "o") {
             Value fV = l, gV = r;
@@ -5995,7 +6143,9 @@ Value Interpreter::evalBinary(Binary* b) {
             else { for (auto& x : a) for (auto& y : bb) emit(x, y); }
             return out;
         }
-        return applyArith(op, l, r);
+        Value res = applyArith(op, l, r);
+        tagTemporal(op, l, r, res);
+        return res;
     }
     if (op == "=:=" || op == "!=:=") {
         // container identity: two variables are =:= only when they are the SAME
@@ -6751,6 +6901,24 @@ Value Interpreter::evalCall(Call* c) {
         return callCallable(f, args, &c->args);
     }
     if (!c->name.empty()) {
+        // cas $x, {code} — atomic read-modify-write; cas($x, $expected, $new) —
+        // conditional swap. Returns the value seen. Serialized by a mutex so it
+        // stays atomic in parallel (no-GIL) mode too.
+        if (c->name == "cas" && c->args.size() >= 2 && !tctx_.cur->find("&cas")) {
+            Value* lv = nullptr;
+            try { lv = lvalue(c->args[0].get()); } catch (RakuError&) {}
+            if (lv) {
+                static std::mutex casM;
+                std::lock_guard<std::mutex> lk(casM);
+                Value seen = *lv;
+                if (args.size() >= 3) {
+                    if (applyArith("eqv", seen, args[1]).truthy()) *lv = args[2];
+                    return seen;
+                }
+                if (args[1].t == VT::Code) *lv = callCallable(args[1], ValueList{seen});
+                return *lv; // the code form returns the value it stored (Rakudo behavior)
+            }
+        }
         // `temp $x` / `temp @a` — snapshot the container now, restore it when the current
         // scope leaves (dynamic-scope save, like Perl's local). Modifications persist until then.
         if (c->name == "temp" && c->args.size() == 1 && !tctx_.cur->find("&temp")) {
@@ -7518,7 +7686,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash)["name"] = Value::str("darwin"); return h; }
             if (ve->name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }
             if (ve->name == "$*SPEC") return Value::typeObj("IO::Spec::Unix"); // POSIX platform
-            if (ve->name == "$*THREAD") { Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); return h; }
+            if (ve->name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
             if (ve->name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
             if (ve->name == "$*PID") return Value::integer((long long)::getpid());
             if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
@@ -7691,13 +7859,23 @@ Value Interpreter::eval(Expr* e) {
             if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);
             if (n == "PromiseStatus::Broken"  || n == "Broken")  return Value::enumVal("Broken", 1);
             if (n == "PromiseStatus::Kept"    || n == "Kept")    return Value::enumVal("Kept", 2);
+            // enum Endian <NativeEndian LittleEndian BigEndian> (byte order of Blob reads/writes)
+            if (n == "Endian::NativeEndian" || n == "NativeEndian" ||
+                n == "Endian::LittleEndian" || n == "LittleEndian" ||
+                n == "Endian::BigEndian"    || n == "BigEndian") {
+                std::string key = n.rfind("Endian::", 0) == 0 ? n.substr(8) : n;
+                Value ev = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
+                ev.enumType = "Endian"; return ev;
+            }
             if (n == "pi" || n == "π") return Value::number(M_PI);
             if (n == "e") return Value::number(M_E);
             if (n == "i") return Value::complex(0, 1); // imaginary unit
             if (n == "tau" || n == "τ") return Value::number(2 * M_PI);
             if (n == "now") { // Instant: high-resolution seconds since the epoch
                 auto d = std::chrono::system_clock::now().time_since_epoch();
-                return Value::number(std::chrono::duration<double>(d).count());
+                Value v = Value::number(std::chrono::duration<double>(d).count());
+                v.hashKind = "Instant";
+                return v;
             }
             if (n == "time") return Value::integer((long long)::time(nullptr)); // POSIX seconds (Int)
             if (n == "rand") return Value::number(randDouble()); // random Num in [0, 1)
@@ -7817,6 +7995,43 @@ Value Interpreter::eval(Expr* e) {
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
             Value inv = eval(mc->inv.get());
+            if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
+                Value mv = eval(mc->methodExpr.get());
+                if (mv.t == VT::Code) { // a method object / callable: invoke with the invocant
+                    ValueList ca; ca.push_back(inv);
+                    for (auto& a : mc->args) ca.push_back(eval(a.get()));
+                    if (mc->hyper) { // ».$var maps it
+                        Value out = Value::array(); out.isList = true;
+                        if (inv.t == VT::Array && inv.arr)
+                            for (auto& el : *inv.arr) out.arr->push_back(callCallable(mv, ValueList{el}));
+                        return out;
+                    }
+                    return callCallable(mv, ca);
+                }
+                mc->method = mv.toStr(); // resolved here so write- routing below sees it
+            }
+            // Buf writes mutate the invocant's container in place
+            if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
+                !mc->meta && mc->method.rfind("write-", 0) == 0) {
+                ValueList wargs = evalArgs(mc->args);
+                if (Value* lv = lvalue(mc->inv.get())) {
+                    if (lv->hashKind == "Blob")
+                        throw RakuError{Value::typeObj("X::Buf::RO"), "Cannot write to an immutable Blob"};
+                    return bufBitOp(*lv, mc->method, wargs);
+                }
+                return bufBitOp(inv, mc->method, wargs); // temporary: mutate the copy
+            }
+            // a write- on the buf8/buf16/… TYPE object autocreates a zero buffer of
+            // the needed size; blob types stay immutable
+            if (inv.t == VT::Type && !mc->meta && mc->method.rfind("write-", 0) == 0 &&
+                (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("blob", 0) == 0 || inv.s.rfind("utf", 0) == 0) &&
+                inv.s.size() > 3 && std::isdigit((unsigned char)inv.s.back())) {
+                if (inv.s.rfind("buf", 0) != 0)
+                    throw RakuError{Value::typeObj("X::Buf::RO"), "Cannot write to an immutable Blob"};
+                ValueList wargs = evalArgs(mc->args);
+                Value fresh = Value::str(""); fresh.hashKind = "Buf";
+                return bufBitOp(fresh, mc->method, wargs);
+            }
             // mutators autovivify an undefined container: `my $x; $x.push(1)` → [1],
             // `%h<k>.push(v)` fills the slot. Rakudo: Any.push vivifies an Array.
             if ((inv.t == VT::Any || inv.t == VT::Nil) && !mc->meta && !mc->methodExpr &&
@@ -7853,7 +8068,6 @@ Value Interpreter::eval(Expr* e) {
                     return sc;
                 }
             }
-            if (mc->methodExpr) mc->method = eval(mc->methodExpr.get()).toStr(); // indirect ."$name"()
             ValueList args = evalArgs(mc->args);
             // `$x.&foo(...)` — call the sub `foo` (not a method) with the invocant prepended:
             // foo($x, ...). Used a lot for "method-ish" helpers, e.g. `@a.sort: { .&naturally }`.

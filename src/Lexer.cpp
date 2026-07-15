@@ -1209,6 +1209,11 @@ Token Lexer::lexOperator() {
         std::string inner;
         while (!eof() && peek() != '>' && peek() != '<' && !std::isspace((unsigned char)peek()) && inner.size() < 4)
             inner += advance();
+        // fat-arrow inner: `<<=>>>` is hyper << => >> (the inner scan can't cross '>')
+        if (inner == "=" && peek() == '>' && peek(1) == '>' && peek(2) == '>') {
+            s += "=>"; advance(); s += advance(); s += advance();
+            return make(Tok::Op, s);
+        }
         if (!inner.empty() && ((peek() == '>' && peek(1) == '>') || (peek() == '<' && peek(1) == '<'))) {
             s += inner; s += advance(); s += advance();
             return make(Tok::Op, s);
@@ -1234,11 +1239,12 @@ Token Lexer::lexOperator() {
     if ((peek() == '+' || peek() == '~') && peek(1) == '<') {
         // Shift vs word list (one-pass-parsing/less-than.t): `+< foo bar >` and
         // `+<3 4>` are prefix-on-word-list; a shift's amount starts with a digit,
-        // `$`, `(` or `-` after optional spaces — `$n +< 3`, `+< ($x-1)`, `+<= 2`.
+        // `$`, `(`, `-` or `*` (WhateverCode: `1 +< * - 1`) after optional spaces —
+        // `$n +< 3`, `+< ($x-1)`, `+<= 2`.
         int k = 2;
         while (peek(k) == ' ' || peek(k) == '\t') k++;
         char cN = peek(k);
-        bool shifty = (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-'))
+        bool shifty = (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-' || cN == '*'))
                     || peek(2) == '='; // compound `+<=` is always a shift
         if (shifty) {
             std::string op; op += advance(); op += advance(); // + <

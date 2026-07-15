@@ -63,6 +63,7 @@ struct VarExpr : Expr {
     std::string declType;        // optional type constraint (ignored at runtime for now)
     std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
     ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
+    std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
 };
 
@@ -245,6 +246,7 @@ struct SubDecl : Stmt {
 struct AttrDecl {
     std::string name;   // bare name, no sigil/twigil
     char sigil = '$';
+    std::string containerIs; // `has %.a is Set` — container type trait
     bool pub = true;    // has $.x (public accessor) vs has $!x (private)
     bool rw = false;    // `is rw` — public accessor is writable
     std::string type;   // declared type name (`has Int $.x`), "" = none (Mu)

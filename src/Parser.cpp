@@ -363,16 +363,45 @@ ExprPtr Parser::parseExpr(int minbp) {
         // reduce-metaop assign `$x [+]= 6, 7` — just like `+=` (item assignment);
         // `[` is not an infix, so this must be recognized before the validity break
         if (!in.valid && cur().kind == Tok::LBracket && cur().spaceBefore &&
-            peek().kind == Tok::Op && peek(2).kind == Tok::RBracket &&
-            peek(3).kind == Tok::Op && peek(3).text == "=" && BP_ASSIGN >= minbp) {
-            advance(); // [
+            ((peek().kind == Tok::Op && peek(2).kind == Tok::RBracket &&
+              peek(3).kind == Tok::Op && peek(3).text == "=") ||
+             (peek().kind == Tok::LBracket && peek(2).kind == Tok::Op &&
+              peek(3).kind == Tok::RBracket && peek(4).kind == Tok::RBracket &&
+              peek(5).kind == Tok::Op && peek(5).text == "=")) &&
+            BP_ASSIGN >= minbp) {
+            bool nested = peek().kind == Tok::LBracket; // [[+]]= — same as [+]=
+            advance(); if (nested) advance(); // [ ([)
             std::string op = advance().text;
-            advance(); advance(); // ] =
+            advance(); if (nested) advance(); // ] (])
+            advance(); // =
             auto as = std::make_unique<Assign>();
             as->op = op + "=";
             as->target = std::move(lhs);
             as->value = parseExpr(BP_ASSIGN);
             lhs = std::move(as);
+            continue;
+        }
+        // hyper with a bracketed operator value: $a >>[&infix:<+>]<< $b — the
+        // marker + [ + CALLABLE + ] + marker; desugars to zip(:with(CALLABLE))
+        if (!in.valid && cur().kind == Tok::Op &&
+            (cur().text == ">>" || cur().text == "<<" ||
+             cur().text == "\xC2\xBB" || cur().text == "\xC2\xAB") &&
+            peek().kind == Tok::LBracket && BP_ZIP >= minbp) {
+            advance(); advance(); // marker [
+            ExprPtr opv = parseExpression();
+            expectKind(Tok::RBracket, "]");
+            if (cur().kind == Tok::Op &&
+                (cur().text == ">>" || cur().text == "<<" ||
+                 cur().text == "\xC2\xBB" || cur().text == "\xC2\xAB")) advance();
+            ExprPtr rhs = parseExpr(BP_ZIP + 1);
+            auto c = std::make_unique<Call>();
+            c->name = "zip";
+            c->args.push_back(std::move(lhs));
+            c->args.push_back(std::move(rhs));
+            auto pw = std::make_unique<PairExpr>();
+            pw->key = "with"; pw->value = std::move(opv);
+            c->args.push_back(std::move(pw));
+            lhs = std::move(c);
             continue;
         }
         if (!in.valid || in.lbp < minbp) break;
@@ -484,6 +513,17 @@ ExprPtr Parser::parseExpr(int minbp) {
             else if (lhs->kind == NK::VarExpr) {
                 const std::string& nm = static_cast<VarExpr*>(lhs.get())->name;
                 if (!nm.empty() && (nm[0] == '@' || nm[0] == '%')) listAssign = true;
+            }
+            else if (lhs->kind == NK::Index) {
+                // a slice target (`@a[1,2] = …`, `%h{^3} = …`, `%h{@ks} = …`)
+                // takes the whole comma list too
+                auto* ix = static_cast<Index*>(lhs.get());
+                if (ix->index && !ix->multiDim &&
+                    (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+                     (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
+                      static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
+                     (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^")))
+                    listAssign = true;
             }
         }
 
@@ -636,9 +676,31 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance(); hyperNext = true; continue;
         }
         // hyper postfix index / power / increment: @w»[0], @n»**2 (from »²), %h{…}»++
-        if ((isOp(">>") || isOp("»")) &&
+        // — but NOT the hyper-infix bracket-op form `@a >>[&infix:<+>]<< @b`,
+        // recognizable by a hyper marker right after the matching `]`.
+        auto bracketOpHyper = [&]() {
+            if (peek().kind != Tok::LBracket) return false;
+            int d = 0;
+            for (size_t k = 1; peek(k).kind != Tok::End; k++) {
+                if (peek(k).kind == Tok::LBracket) d++;
+                else if (peek(k).kind == Tok::RBracket) {
+                    if (--d == 0) {
+                        const Token& nx = peek(k + 1);
+                        return nx.kind == Tok::Op &&
+                               (nx.text == ">>" || nx.text == "<<" ||
+                                nx.text == "\xC2\xBB" || nx.text == "\xC2\xAB");
+                    }
+                }
+            }
+            return false;
+        };
+        if ((isOp(">>") || isOp("»")) && !bracketOpHyper() &&
             (peek().kind == Tok::LBracket ||
-             (peek().kind == Tok::Op && (peek().text == "**" || peek().text == "++" || peek().text == "--")))) {
+             (peek().kind == Tok::Op && (peek().text == "**" || peek().text == "++" || peek().text == "--")) ||
+             ((peek().kind == Tok::Op || peek().kind == Tok::Ident) &&
+              (userPostfix_.count(peek().text) || peek().text == "i")) || // built-in postfix:<i>
+             (peek().kind == Tok::Op && peek().text == "." &&
+              (peek(2).kind == Tok::Op || peek(2).kind == Tok::Ident) && userPostfix_.count(peek(2).text)))) {
             advance(); // the hyper marker
             auto mc = std::make_unique<MethodCall>();
             mc->inv = std::move(base);
@@ -662,12 +724,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 bin->rhs = parsePrefix(true);
                 es->e = std::move(bin);
             }
-            else { // »++ / »-- — mutate each element in place
+            else if (cur().text == "++" || cur().text == "--") { // »++ — mutate each in place
                 std::string op = advance().text;
                 auto u = std::make_unique<Unary>();
                 u->op = op; u->postfix = true;
                 u->operand = std::make_unique<VarExpr>("$_");
                 es->e = std::move(u);
+            }
+            else { // »OP / ».OP with a user postfix — call it per element
+                if (cur().kind == Tok::Op && cur().text == ".") advance(); // dotted form
+                std::string opname = advance().text;
+                auto call = std::make_unique<Call>();
+                call->name = "postfix:<" + opname + ">";
+                call->args.push_back(std::make_unique<VarExpr>("$_"));
+                es->e = std::move(call);
             }
             blk->body.push_back(std::move(es));
             mc->args.push_back(std::move(blk));
@@ -678,6 +748,49 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         if (isOp(".") && peek().kind == Tok::Op && (peek().text == "»" || peek().text == ">>") &&
             peek(2).kind == Tok::Op && peek(2).text == ".") {
             advance(); advance(); hyperNext = true; continue;
+        }
+        // dot-form hyper postfix: (@r).»++ — drop the dot, let the »++ branch run
+        if (isOp(".") && peek().kind == Tok::Op && (peek().text == "»" || peek().text == ">>") &&
+            peek(2).kind == Tok::Op &&
+            (peek(2).text == "++" || peek(2).text == "--" || peek(2).text == "**")) {
+            advance();
+            continue;
+        }
+        // dot-postfix operator: $x.++ / $x.??? (and hyper .».++ / ».??? forms).
+        // The postfix must touch the dot: `$o. ++` is the obsolete P5 concat form
+        // and must fail to parse (minimal-whitespace.t).
+        if (isOp(".") && (peek().kind == Tok::Op || peek().kind == Tok::Ident) &&
+            peek().line == cur().line && peek().col == cur().col + (int)peek().text.size() &&
+            (peek().text == "++" || peek().text == "--" || userPostfix_.count(peek().text))) {
+            advance(); // .
+            std::string op = advance().text;
+            bool userOp = op != "++" && op != "--";
+            auto mkApply = [&](ExprPtr operand) -> ExprPtr {
+                if (userOp) {
+                    auto call = std::make_unique<Call>();
+                    call->name = "postfix:<" + op + ">";
+                    call->args.push_back(std::move(operand));
+                    return call;
+                }
+                auto u = std::make_unique<Unary>();
+                u->op = op; u->postfix = true;
+                u->operand = std::move(operand);
+                return u;
+            };
+            if (hyperNext) { // map the postfix over the elements
+                hyperNext = false;
+                auto mc = std::make_unique<MethodCall>();
+                mc->inv = std::move(base);
+                mc->method = "map";
+                auto blk = std::make_unique<BlockExpr>();
+                auto es = std::make_unique<ExprStmt>();
+                es->e = mkApply(std::make_unique<VarExpr>("$_"));
+                blk->body.push_back(std::move(es));
+                mc->args.push_back(std::move(blk));
+                base = std::move(mc);
+            }
+            else base = mkApply(std::move(base));
+            continue;
         }
         // subscript adverb: %h{k}:exists / :delete / :!exists / :kv / :k / :v / :p
         // and the variable form %h{k}:$delete (applied when the variable is true)
@@ -829,6 +942,14 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             bool maybe = false;
             if (isOp("?")) { advance(); maybe = true; }
+            else if (isOp("?&") && peek().kind == Tok::Ident) {
+                // `.?&elems` — the lexer fused `?&`; maybe-call of a sub-as-method
+                advance(); maybe = true;
+            }
+            else if ((isOp("+&") || isOp("*&")) && peek().kind == Tok::Ident) {
+                // `.+&elems` / `.*&elems` — fused dispatch-mode + sub-as-method
+                advance(); // best-effort: treat as a plain call of the sub
+            }
             bool metaCall = false;
             if (isOp("^")) { metaCall = true; advance(); } // .^meta
             else if (isOp("&") && (peek().kind == Tok::LBrace || peek().kind == Tok::Var)) {
@@ -858,8 +979,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             mc->mutate = mutate;
             mc->hyper = hyperNext; hyperNext = false;
             bool indirectName = false;
-            if (cur().kind == Tok::Ident || cur().kind == Tok::Var) {
+            if (cur().kind == Tok::Var) {
+                // `.$var` — the var holds a Callable (or a name); computed at runtime
+                mc->methodExpr = std::make_unique<VarExpr>(advance().text);
+            } else if (cur().kind == Tok::Ident) {
                 mc->method = advance().text;
+                // qualified `Any::elems` — method lookup takes the last segment
+                auto q = mc->method.rfind("::");
+                if (q != std::string::npos && q + 2 < mc->method.size())
+                    mc->method = mc->method.substr(q + 2);
             } else if (cur().kind == Tok::StrLit) {
                 mc->method = advance().text; indirectName = true;   // ."literal-name"()
             } else if (cur().kind == Tok::StrInterp) {
@@ -939,7 +1067,12 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
             expectKind(Tok::RParen, ")");
             continue;
         }
-        if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); // trait name / type
+        if (isKind(Tok::Ident) || isKind(Tok::Var)) {
+            static const std::set<std::string> containers = {
+                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+            if (wasIs && containers.count(cur().text)) lastContainerIs_ = cur().text; // my %h is Set
+            advance(); // trait name / type
+        }
         if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
         if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
     }
@@ -1043,7 +1176,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
         // Hash[valueType,keyType]
         if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
+        lastContainerIs_.clear();
         skipTraits(scope != "has", &ve->declDefault);
+        if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
         return ve;
     }
     if (scope == "constant" && isKind(Tok::Ident)) {
@@ -1923,10 +2058,29 @@ ExprPtr Parser::parsePrimary() {
             // operator-name call: infix:<+>(1,2) / postfix:<i>($x) — canonical op name
             if ((name == "infix" || name == "prefix" || name == "postfix") &&
                 isOp(":") && !cur().spaceBefore &&
+                peek().kind == Tok::Op && peek().text == "<" &&
+                peek(2).kind == Tok::Op && peek(2).text.size() > 1 &&
+                peek(3).kind == Tok::Op && peek(3).text == ">") {
+                // `: < OPTOKEN >` where OPTOKEN is a fused multi-char op (e.g. the
+                // hyper `>>+<<` from `infix:<»+«>`) — take it whole (must run before
+                // the generic readAngleWords path, whose prefix-glue would split it)
+                advance(); advance(); // : <
+                name += ":<" + advance().text + ">";
+                advance(); // >
+            }
+            else if ((name == "infix" || name == "prefix" || name == "postfix") &&
+                isOp(":") && !cur().spaceBefore &&
                 peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
                 advance(); advance(); // : <
                 auto w = readAngleWords(">");
                 name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
+            }
+            else if ((name == "infix" || name == "prefix" || name == "postfix") &&
+                     isOp(":") && !cur().spaceBefore && peek().kind == Tok::QwList &&
+                     !peek().spaceBefore) {
+                // the lexer took `<»+«>` as a word list — its text is the op name
+                advance(); // :
+                name += ":<" + advance().text + ">";
             }
             else if ((name == "infix" || name == "prefix" || name == "postfix") &&
                      isOp(":") && !cur().spaceBefore &&
@@ -3045,6 +3199,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     std::string tr = advance().text;
                     if (tr == "where") { parseExpr(BP_ASSIGN); continue; }
                     if (tr == "is" && isIdent("rw")) a.rw = true;
+                    if (tr == "is" && isKind(Tok::Ident)) {
+                        static const std::set<std::string> containers = {
+                            "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+                        if (containers.count(cur().text)) a.containerIs = cur().text; // has %.a is Set
+                    }
                     if (isKind(Tok::Ident) || isKind(Tok::Var)) advance();
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
                 }

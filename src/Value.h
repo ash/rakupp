@@ -180,6 +180,7 @@ struct ClassAttr {
     bool pub = true;
     bool rw = false;  // `is rw` — the public accessor is a writable lvalue
     std::string type; // declared type name (`has Int $.x`), "" = Mu
+    std::string containerIs; // `has %.a is Set` — container type trait
     const Expr* def = nullptr; // borrowed from AST
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`

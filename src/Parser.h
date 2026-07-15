@@ -37,6 +37,7 @@ private:
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
     std::set<std::string> sigilless_; // names declared sigilless (my \x, \a params, -> \d) — parse as terms, not listops
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
+    std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
     std::string pcfxClose_; // active postcircumfix close bracket (don't re-open it inside its own content)
     std::string sigRetType_; // return type from an in-signature `--> T` (read by parseSub)

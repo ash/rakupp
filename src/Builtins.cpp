@@ -9,6 +9,7 @@
 #include <functional>
 #include "Regex.h"
 #include <algorithm>
+#include <atomic>
 #include <ctime>
 #include <fstream>
 #include <cctype>
@@ -965,7 +966,155 @@ static bool deepEq(const Value& a, const Value& b) {
 }
 
 // Build a Set/Bag/Mix (hash-backed, hashKind tag) from a flat list of values/pairs.
-static Value makeBaggy(const ValueList& items, const std::string& kind) {
+// Buf/Blob binary IO: bit-addressed (read|write)-(u)bits and byte-addressed
+// numeric forms. Bits are MSB-first within the byte stream; values may exceed
+// 64 bits (BigInt). Writes mutate `buf` in place (the caller routes an lvalue).
+Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
+    std::string& bytes = buf.s;
+    auto endianOf = [&](const Value& v) -> int { // 0 native, 1 little, 2 big
+        std::string e = !v.enumName.empty() ? v.enumName : v.toStr();
+        if (e == "LittleEndian") return 1;
+        if (e == "BigEndian") return 2;
+        return 0;
+    };
+    static const bool hostLittle = [] { uint16_t x = 1; return *(uint8_t*)&x == 1; }();
+    auto isLittle = [&](int e) { return e == 1 || (e == 0 && hostLittle); };
+    if (m == "read-ubits" || m == "read-bits") {
+        long long from = args.size() > 0 ? args[0].toInt() : 0;
+        long long bits = args.size() > 1 ? args[1].toInt() : 0;
+        long long total = (long long)bytes.size() * 8;
+        if (from < 0 || bits < 1 || from + bits > total)
+            throw RakuError{Value::typeObj("X::OutOfRange"),
+                "bit range " + std::to_string(from) + "+" + std::to_string(bits) +
+                " out of 0.." + std::to_string(total)};
+        BigInt acc(0);
+        for (long long i = 0; i < bits; i++) {
+            long long bp = from + i;
+            int bit = ((unsigned char)bytes[bp / 8] >> (7 - bp % 8)) & 1;
+            acc = acc * BigInt(2) + BigInt(bit);
+        }
+        if (m == "read-bits" && bits > 0) { // two's complement sign
+            long long tp = from;
+            if (((unsigned char)bytes[tp / 8] >> (7 - tp % 8)) & 1)
+                acc = acc - BigInt(2).pow(bits);
+        }
+        return acc.fitsLL() ? Value::integer(acc.toLL()) : Value::bigint(acc);
+    }
+    if (m == "write-ubits" || m == "write-bits") {
+        long long from = args.size() > 0 ? args[0].toInt() : 0;
+        long long bits = args.size() > 1 ? args[1].toInt() : 0;
+        if (from < 0 || bits < 1)
+            throw RakuError{Value::typeObj("X::OutOfRange"),
+                "bit range " + std::to_string(from) + "+" + std::to_string(bits) + " out of range"};
+        Value val = args.size() > 2 ? args[2] : Value::integer(0);
+        BigInt v = val.big ? *val.big : BigInt(val.toInt());
+        if (v.sign < 0) v = v + BigInt(2).pow(bits); // low `bits` bits of the 2's complement
+        // grow to fit
+        long long need = (from + bits + 7) / 8;
+        if ((long long)bytes.size() < need) bytes.resize(need, '\0');
+        // peel value bits LSB-first into positions from+bits-1 .. from
+        for (long long i = bits - 1; i >= 0; i--) {
+            BigInt q, r; BigInt::divmod(v, BigInt(2), q, r);
+            v = q;
+            long long bp = from + i;
+            unsigned char& byte = (unsigned char&)bytes[bp / 8];
+            unsigned char mask = (unsigned char)(1u << (7 - bp % 8));
+            if (!r.isZero()) byte |= mask; else byte &= (unsigned char)~mask;
+        }
+        return buf;
+    }
+    // byte-addressed numeric forms: (read|write)-(num|int|uint)(32|64)?(offset[,value][,endian])
+    bool isWrite = m.rfind("write-", 0) == 0;
+    std::string kind = m.substr(isWrite ? 6 : 5); // num32 / num64 / uint64 / int32 / …
+    int width = 0;
+    if (!kind.empty() && isdigit((unsigned char)kind.back()))
+        { size_t d = kind.find_first_of("0123456789"); width = std::atoi(kind.c_str() + d); kind = kind.substr(0, d); }
+    if ((kind != "num" && kind != "int" && kind != "uint") ||
+        (width != 0 && width != 8 && width != 16 && width != 32 && width != 64 && width != 128) ||
+        (kind == "num" && width != 0 && width < 32))
+        throw RakuError{Value::str("op"), "No such method '" + m + "' for Buf"};
+    long long off = args.size() > 0 ? args[0].toInt() : 0;
+    size_t vi = isWrite ? 1 : 1; // value index for writes; endian index varies
+    Value val = (isWrite && args.size() > 1) ? args[1] : Value::number(0);
+    int endian = 0;
+    for (size_t k = vi + (isWrite ? 1 : 0); k < args.size(); k++)
+        if (args[k].t != VT::Pair) { endian = endianOf(args[k]); break; }
+    int nb = width ? width / 8 : 8;
+    if (off < 0)
+        throw RakuError{Value::typeObj("X::OutOfRange"), "offset " + std::to_string(off) + " out of range"};
+    if (nb > 8) { // int128/uint128: BigInt byte-peeling (the raw[8] fast path below caps at 64 bits)
+        if (isWrite) {
+            if ((long long)bytes.size() < off + nb) bytes.resize(off + nb, '\0');
+            BigInt v = val.big ? *val.big : BigInt(val.toInt());
+            if (v.sign < 0) v = v + BigInt(2).pow(nb * 8);
+            for (int i = 0; i < nb; i++) { // peel LSB-first
+                BigInt q, r; BigInt::divmod(v, BigInt(256), q, r); v = q;
+                int pos = isLittle(endian) ? i : nb - 1 - i;
+                bytes[off + pos] = (char)(unsigned char)r.toLL();
+            }
+            return buf;
+        }
+        if ((long long)bytes.size() < off + nb)
+            throw RakuError{Value::typeObj("X::OutOfRange"), "read past end of buffer"};
+        BigInt acc(0);
+        for (int i = 0; i < nb; i++) { // accumulate MSB-first
+            int pos = isLittle(endian) ? nb - 1 - i : i;
+            acc = acc * BigInt(256) + BigInt((long long)(unsigned char)bytes[off + pos]);
+        }
+        if (kind == "int") { // two's complement sign
+            int top = isLittle(endian) ? nb - 1 : 0;
+            if ((unsigned char)bytes[off + top] & 0x80) acc = acc - BigInt(2).pow(nb * 8);
+        }
+        return acc.fitsLL() ? Value::integer(acc.toLL()) : Value::bigint(acc);
+    }
+    if (isWrite) {
+        if ((long long)bytes.size() < off + nb) bytes.resize(off + nb, '\0');
+        unsigned char raw[8] = {0};
+        if (kind == "num") {
+            if (nb == 4) { float f = (float)val.toNum(); std::memcpy(raw, &f, 4); }
+            else { double d = val.toNum(); std::memcpy(raw, &d, 8); }
+        } else {
+            unsigned long long u;
+            if (val.big) { // low 64 bits (toInt would saturate past int64)
+                BigInt v = *val.big; if (v.sign < 0) v = v + BigInt(2).pow(64);
+                BigInt q, lo; BigInt::divmod(v, BigInt(4294967296LL), q, lo);
+                BigInt q2, hi; BigInt::divmod(q, BigInt(4294967296LL), q2, hi);
+                u = ((unsigned long long)hi.toLL() << 32) | (unsigned long long)lo.toLL();
+            }
+            else u = (unsigned long long)val.toInt();
+            std::memcpy(raw, &u, nb <= 8 ? nb : 8);
+        }
+        // raw[] is host order; reorder per requested endianness
+        for (int i = 0; i < nb; i++) {
+            int src = isLittle(endian) == hostLittle ? i : nb - 1 - i;
+            bytes[off + i] = (char)raw[src];
+        }
+        return buf;
+    }
+    if ((long long)bytes.size() < off + nb)
+        throw RakuError{Value::typeObj("X::OutOfRange"), "read past end of buffer"};
+    unsigned char raw[8] = {0};
+    for (int i = 0; i < nb; i++) {
+        int dst = isLittle(endian) == hostLittle ? i : nb - 1 - i;
+        raw[dst] = (unsigned char)bytes[off + i];
+    }
+    if (kind == "num") {
+        if (nb == 4) { float f; std::memcpy(&f, raw, 4); return Value::number((double)f); }
+        double d; std::memcpy(&d, raw, 8); return Value::number(d);
+    }
+    unsigned long long u = 0; std::memcpy(&u, raw, nb <= 8 ? nb : 8);
+    if (kind == "int") { // sign-extend from nb bytes
+        if (nb < 8 && (u & (1ULL << (nb * 8 - 1)))) u |= ~((1ULL << (nb * 8)) - 1);
+        return Value::integer((long long)u);
+    }
+    if (nb == 8 && (u >> 63)) { // uint64 beyond long long
+        BigInt b((long long)(u & 0x7FFFFFFFFFFFFFFFULL));
+        return Value::bigint(b + BigInt(2).pow(63));
+    }
+    return Value::integer((long long)u);
+}
+
+Value makeBaggy(const ValueList& items, const std::string& kind) {
     Value h = Value::makeHash();
     h.hashKind = kind;
     bool isSet = kind.find("Set") == 0;
@@ -1058,6 +1207,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "note") { std::cerr << s << "\n"; return Value::boolean(true); }
         std::cout << s << (m == "print" ? "" : "\n");
         return Value::boolean(true);
+    }
+    // any other method on a junction AUTOTHREADS: call it on each eigenstate,
+    // return a junction of the results (`($a & $b).finish`, `$j.defined`, …)
+    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr &&
+        (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none")) {
+        static const std::set<std::string> junctionOwn = {
+            "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
+            "WHICH", "WHY", "item", "new", "defined-or", "THREAD"};
+        if (!junctionOwn.count(m)) {
+            Value out = Value::array(); out.enumName = inv.enumName;
+            out.arr = std::make_shared<ValueList>();
+            for (auto& el : *inv.arr) out.arr->push_back(methodCall(el, m, args, rwArgs));
+            return out;
+        }
     }
     // `augment class Int {…}`: methods added to a built-in type are parked in
     // builtinExt_ (keyed by type name). Consult it — walking the native ancestry,
@@ -1328,10 +1491,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
             if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) add(e); }
+            else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) bytes += v.s; // copy an existing buffer's bytes
             else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
         };
         for (auto& a : args) add(a);
-        Value b = Value::str(bytes); b.hashKind = "Blob"; return b;
+        Value b = Value::str(bytes); b.hashKind = inv.s.rfind("buf", 0) == 0 ? "Buf" : "Blob"; return b; // buf* is mutable
     }
     if (inv.t == VT::Type &&
         (inv.s == "Set" || inv.s == "SetHash" || inv.s == "Bag" || inv.s == "BagHash" ||
@@ -1382,9 +1546,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (!s.empty() && (s[0] == 'v' || s[0] == 'V')) s = s.substr(1);
         Value v = Value::str(s); v.hashKind = "Version"; return v;
     }
-    if (inv.t == VT::Type && inv.s == "Duration" && m == "new") {
-        // Duration is a number of seconds (a tagged Num, like `now - now`)
-        return Value::number(args.empty() ? 0.0 : args[0].toNum());
+    if ((inv.t == VT::Type && inv.s == "Duration" ||
+         inv.t == VT::Num && inv.hashKind == "Duration") && m == "new") {
+        // Duration is a number of seconds, tagged so .WHAT/.^name answer Duration
+        Value d = Value::number(args.empty() ? 0.0 : args[0].toNum());
+        d.hashKind = "Duration";
+        return d;
+    }
+    if (inv.t == VT::Num && inv.hashKind == "Duration") {
+        if (m == "Num" || m == "Real") return Value::number(inv.n);
+        if (m == "Int") return Value::integer((long long)inv.n);
+    }
+    if (inv.t == VT::Type && m == "bits") { // native int/num width (2026.06 addition)
+        static const std::map<std::string, int> widths = {
+            {"int",64},{"uint",64},{"int64",64},{"uint64",64},{"num",64},{"num64",64},
+            {"int32",32},{"uint32",32},{"num32",32},{"int16",16},{"uint16",16},
+            {"int8",8},{"uint8",8},{"byte",8}};
+        auto it = widths.find(inv.s);
+        if (it != widths.end()) return Value::integer(it->second);
     }
     if (inv.t == VT::Type && inv.s == "Instant" && m == "from-posix") {
         // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
@@ -1403,7 +1582,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
         };
         for (auto& a : args) add(a);
-        Value b = Value::str(bytes); b.hashKind = "Blob"; return b;
+        Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob"; return b; // Buf is mutable
     }
     if (inv.t == VT::Type && inv.s == "Pair" && m == "new") {
         Value key = Value::any(), val = Value::any();
@@ -1541,12 +1720,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Thread — under the GIL a Thread.start runs its block eagerly, but we bump
     // threadDepth_ so `is-initial-thread` correctly reads False inside the block.
     if (inv.t == VT::Type && inv.s == "Thread") {
-        if (m == "is-initial-thread") return Value::boolean(threadDepth_ == 0);
-        if (m == "start" || m == "run") {
+        if (m == "is-initial-thread") return Value::boolean(threadDepth_ == 0 && !t_isWorker);
+        if (m == "start" || m == "run") { // a REAL thread, via the promise machinery
             Value code; for (auto& x : args) if (x.t == VT::Code) code = x;
             Value t = Value::makeHash(); t.hashKind = "Thread";
             for (auto& x : args) if (x.t == VT::Pair && x.s == "name" && x.pairVal) (*t.hash)["name"] = *x.pairVal;
-            if (code.t == VT::Code) { threadDepth_++; try { callCallable(code, {}); } catch (...) { threadDepth_--; throw; } threadDepth_--; }
+            static std::atomic<long long> nextThreadId{2}; // 1 = the initial thread
+            (*t.hash)["id"] = Value::integer(nextThreadId++);
+            (*t.hash)["initial"] = Value::boolean(false);
+            if (code.t == VT::Code) {
+                t.ext = std::static_pointer_cast<void>(
+                    std::static_pointer_cast<PromiseState>(spawnPromise(code, t).ext));
+                yieldToWorker();
+            }
             return t;
         }
         if (m == "new") {
@@ -1557,11 +1743,27 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Hash && inv.hashKind == "Thread") {
         if (m == "is-initial-thread") return Value::boolean(inv.hash->count("initial") ? (*inv.hash)["initial"].b : (threadDepth_ == 0));
-        if (m == "finish" || m == "join") return inv;
-        if (m == "run" || m == "start") { if (inv.hash->count("code")) { threadDepth_++; try { callCallable((*inv.hash)["code"], {}); } catch (...) { threadDepth_--; throw; } threadDepth_--; } return inv; }
-        if (m == "id") return Value::integer(1);
-        if (m == "name") return inv.hash->count("name") ? (*inv.hash)["name"] : Value::str("");
-        if (m == "Str" || m == "gist") return Value::str("Thread");
+        if (m == "finish" || m == "join") {
+            if (inv.ext) awaitPromise(std::static_pointer_cast<PromiseState>(inv.ext));
+            return inv;
+        }
+        if (m == "run" || m == "start") { // Thread.new(:code).run — start it now
+            if (inv.hash->count("code") && !inv.ext) {
+                Value t = inv;
+                t.ext = std::static_pointer_cast<void>(
+                    std::static_pointer_cast<PromiseState>(spawnPromise((*inv.hash)["code"]).ext));
+                yieldToWorker();
+                return t;
+            }
+            return inv;
+        }
+        if (m == "id") return inv.hash->count("id") ? (*inv.hash)["id"] : Value::integer(1);
+        if (m == "name") return inv.hash->count("name") ? (*inv.hash)["name"] : Value::str("<anon>");
+        if (m == "Str" || m == "gist") { // Thread<ID>(NAME)
+            std::string id = inv.hash->count("id") ? (*inv.hash)["id"].toStr() : "1";
+            std::string nm = inv.hash->count("name") ? (*inv.hash)["name"].toStr() : "<anon>";
+            return Value::str("Thread<" + id + ">(" + nm + ")");
+        }
     }
     if (inv.t == VT::Type && (inv.s == "Supplier" || inv.s == "Supplier::Preserving")) {
         if (m == "new" || m == "preserving") { Value s = Value::makeHash(); s.hashKind = "Supplier"; (*s.hash)["taps"] = Value::array(); return s; }
@@ -2491,6 +2693,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     for (auto& arg : args) if (arg.t == VT::Pair) od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
+                if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
                     return self;
                 }
                 auto od = std::make_shared<ObjectData>();
@@ -2512,6 +2715,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                             else if (at.type.rfind("num", 0) == 0) dv = Value::number(0);
                             else if (at.type == "str") dv = Value::str("");
                         }
+                        if (!at.containerIs.empty() && at.sigil == '%')
+                            dv = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
                         od->attrs[at.name] = dv;
                     }
                 for (auto& arg : args)
@@ -2520,6 +2725,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 // bless does not re-run BUILD-from-new args the same way, but running
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
                 if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
+                if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
                 return self;
             }
             if (m == "gist" || m == "Str" || m == "raku") return Value::str("(" + inv.s + ")");
@@ -2742,6 +2948,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
         if (inv.t == VT::Range) { Value r = Value::array(); *r.arr = inv.flatten(); r.isList = true; r.s = "Slip"; return r; }
         return inv;
+    }
+    // a Blob/Buf (Str-tagged internally) is Positional over its BYTES, not a scalar
+    if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
+        if (m == "list" || m == "List" || m == "Array" || m == "values" ||
+            m == "Seq" || m == "flat" || m == "eager" || m == "cache") {
+            Value out = Value::array(); out.isList = (m != "Array");
+            for (unsigned char c : inv.s) out.arr->push_back(Value::integer(c));
+            return out;
+        }
+        if (m == "elems") return Value::integer((long long)inv.s.size());
+        if (m == "head") return inv.s.empty() ? Value::any() : Value::integer((unsigned char)inv.s[0]);
+        if (m == "tail") return inv.s.empty() ? Value::any() : Value::integer((unsigned char)inv.s.back());
+        if (m == "AT-POS" && !args.empty()) {
+            long long i = args[0].toInt(), n = (long long)inv.s.size();
+            if (i < 0) i += n;
+            return (i >= 0 && i < n) ? Value::integer((unsigned char)inv.s[i]) : Value::any();
+        }
     }
     // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
     // yields a one-element list. Restricted to scalar types so list/array/range/seq values —
@@ -3449,6 +3672,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Str/Blob byte views. rakupp stores a Blob/Buf as a Str tagged hashKind="Blob";
     // its raw UTF-8 bytes are the buffer, so encode/decode are (tagged) identity.
     if (m == "new" && inv.t == VT::Str) return Value::str(""); // "literal".new — a fresh empty Str
+    if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
+        if (m.rfind("read-", 0) == 0) { // read-(u)bits / read-num* / read-(u)int*
+            Value tmp = inv;
+            return bufBitOp(tmp, m, args);
+        }
+    }
     if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
     if (m == "encode" && inv.t == VT::Str) { Value b = Value::str(inv.s); b.hashKind = "Blob"; return b; }
     if (m == "decode" && inv.t == VT::Str) return Value::str(inv.s);
@@ -3680,7 +3909,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "ends-with") { std::string s = inv.toStr(), n = a0().toStr(); return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0); }
     if (m == "ord") { auto c = utf8cp(inv.toStr()); return c.empty() ? Value::nil() : Value::integer(c[0]); }
-    if (m == "chr") return Value::str(cpToUtf8((uint32_t)inv.toInt()));
+    if (m == "chr") {
+        long long cp = inv.big ? LLONG_MAX : inv.toInt(); // BigInt is certainly out of bounds
+        if (cp < 0 || cp > 0x10FFFF)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "chr codepoint " + (inv.big ? inv.big->toString() : std::to_string(cp)) + " is out of bounds"};
+        return Value::str(cpToUtf8((uint32_t)cp));
+    }
     if (m == "split") {
         std::string s = inv.toStr();
         Value d0 = a0();
@@ -3688,7 +3923,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::vector<Delim> delims;
         auto add = [&](const Value& d) { if (d.t == VT::Regex) delims.push_back({true, d.s}); else delims.push_back({false, d.toStr()}); };
         if (d0.t == VT::Array) { for (auto& e : *d0.arr) add(e); } else add(d0);
-        bool keepSep = false, skipEmpty = false;
+        bool keepSep = false, skipEmpty = false, fromEnd = false;
         long long limit = -1; bool haveLimit = false; // second positional (a `*` means unlimited)
         { bool first = true;
           for (auto& a : args) {
@@ -3696,12 +3931,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                   if (a.pairVal && a.pairVal->truthy()) {
                       if (a.s == "v" || a.s == "kv") keepSep = true;
                       else if (a.s == "skip-empty") skipEmpty = true;
+                      else if (a.s == "end") fromEnd = true; // limit applies from the END (2026.06)
                   }
                   continue;
               }
               if (first) { first = false; continue; } // the delimiter itself
-              if (a.t != VT::Whatever) { limit = a.toInt(); haveLimit = true; }
-              break;
+              if (!haveLimit && a.t != VT::Whatever) { limit = a.toInt(); haveLimit = true; }
+              // keep scanning: adverbs may follow the limit (.split(",", 2, :v))
           }
         }
         Value out = Value::array();
@@ -3729,9 +3965,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (!haveLimit || (long long)out.arr->size() < limit) emit("");
             return out;
         }
+        // collect every separator match, then apply the limit by VALUE count
+        // (separators from :v never count) from the front — or the end (:end)
+        std::vector<std::pair<size_t, size_t>> seps;
         size_t pos = 0;
         while (pos <= s.size()) {
-            if (haveLimit && (long long)out.arr->size() >= limit - 1) { emit(s.substr(pos)); break; }
             size_t bestStart = std::string::npos, bestLen = 0; // earliest, then longest match
             for (auto& d : delims) {
                 if (d.isRx) {
@@ -3745,11 +3983,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     if (f != std::string::npos && (f < bestStart || (f == bestStart && d.str.size() > bestLen))) { bestStart = f; bestLen = d.str.size(); }
                 }
             }
-            if (bestStart == std::string::npos) { emit(s.substr(pos)); break; }
-            emit(s.substr(pos, bestStart - pos));
-            if (keepSep) out.arr->push_back(Value::str(s.substr(bestStart, bestLen)));
-            pos = bestStart + bestLen;
+            if (bestStart == std::string::npos) break;
+            seps.push_back({bestStart, bestLen});
+            pos = bestStart + (bestLen ? bestLen : 1);
         }
+        size_t keep = haveLimit ? (size_t)std::max(0LL, limit - 1) : seps.size();
+        if (keep > seps.size()) keep = seps.size();
+        size_t k0 = (fromEnd && haveLimit) ? seps.size() - keep : 0;
+        size_t k1 = (fromEnd && haveLimit) ? seps.size() : keep;
+        size_t at = 0;
+        for (size_t k = k0; k < k1; k++) {
+            emit(s.substr(at, seps[k].first - at));
+            if (keepSep) out.arr->push_back(Value::str(s.substr(seps[k].first, seps[k].second)));
+            at = seps[k].first + seps[k].second;
+        }
+        emit(s.substr(at));
         return out;
     }
     if (m == "words") {
@@ -5752,7 +6000,14 @@ void Interpreter::registerBuiltins() {
         auto c = utf8cp(a[0].toStr());
         return c.empty() ? Value::nil() : Value::integer(c[0]);
     };
-    B["chr"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(cpToUtf8((uint32_t)(a.empty() ? 0 : a[0].toInt()))); };
+    B["chr"] = [](Interpreter&, ValueList& a) -> Value {
+        Value v = a.empty() ? Value::integer(0) : a[0];
+        long long cp = v.big ? LLONG_MAX : v.toInt();
+        if (cp < 0 || cp > 0x10FFFF)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "chr codepoint " + (v.big ? v.big->toString() : std::to_string(cp)) + " is out of bounds"};
+        return Value::str(cpToUtf8((uint32_t)cp));
+    };
     B["ords"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "ords", none); };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "sign", none); };

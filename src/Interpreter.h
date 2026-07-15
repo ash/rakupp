@@ -32,6 +32,8 @@ void           bigStackJoin(std::uintptr_t h);
 void           bigStackClose(std::uintptr_t h);
 #endif
 
+Value makeBaggy(const ValueList& items, const std::string& kind); // Set/Bag/Mix builder (Builtins.cpp)
+
 struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
@@ -66,6 +68,7 @@ struct RakuError { Value payload; std::string message; };
 // exception — user CATCH handles RakuError, never this.
 struct WorkerAbortEx {};
 extern thread_local bool t_isWorker;     // true only on `start`/async worker threads
+extern thread_local Value t_threadSelf;   // the Thread instance running this worker (empty on main)
 extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
 
 // Per-thread execution "registers": the state that belongs to a single thread
@@ -379,7 +382,7 @@ public:
     // Spawn a worker running `code` (no args); returns a Promise Value backed by
     // a PromiseState. awaitPromise blocks the caller until `ps` completes, dropping
     // the GIL so the worker can run. drainWorkers joins everything at program end.
-    Value spawnPromise(Value code);
+    Value spawnPromise(Value code, Value threadVal = Value());
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
@@ -424,6 +427,7 @@ public:
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     std::string srcFile_;             // source file path (for $?FILE)
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
+    Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
     int quietDepth_ = 0;              // inside a `quietly {…}`, warn() is suppressed (codegen bumps it too)
 private:
