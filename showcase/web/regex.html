@@ -102,27 +102,28 @@ const subjEl = document.getElementById('subject');
 const rout = document.getElementById('rout');
 
 async function runRegex() {
-  const subject = subjEl.value;
-  // Print every match's [from, to) so we can highlight the ranges.
-  let prog = rakuHeredoc('$__t', subject) + '$__t = $__t.chomp;\n';
-  prog += 'for $__t ~~ m:g/ ' + patEl.value + ' / -> $__m { say $__m.from ~ "\\t" ~ $__m.to; }\n';
+  // Let Raku's own engine wrap each match in sentinel chars (STX/ETX) via subst,
+  // then print the whole marked-up text. This avoids mapping Raku's match
+  // positions onto JavaScript string indices — the two disagree on non-ASCII
+  // text (grapheme vs UTF-16), which misaligned the old position-based highlight.
+  let prog = rakuHeredoc('$__t', subjEl.value) + '$__t = $__t.chomp;\n';
+  prog += 'my $__n = 0;\n';
+  prog += 'my $__m = $__t.subst(/ ' + patEl.value + ' /, -> $x { $__n++; "\\x[2]" ~ $x.Str ~ "\\x[3]" }, :g);\n';
+  prog += 'say $__n;\n';       // first line: match count
+  prog += 'say $__m;\n';       // then: the marked-up subject
   const r = await raku.run(prog);
   if (r.err && !r.out) {
     rout.innerHTML = '<div class="count err">regex error</div><pre>' + esc(r.err.trim()) + '</pre>';
     status.textContent = 'error';
     return;
   }
-  const spans = r.out.trim().split('\n').filter(Boolean)
-                  .map(l => l.split('\t').map(Number)).filter(a => a.length === 2 && a[1] > a[0]);
-  // build highlighted subject
-  let html = '', i = 0;
-  for (const [from, to] of spans) {
-    html += esc(subject.slice(i, from)) + '<mark>' + esc(subject.slice(from, to)) + '</mark>';
-    i = to;
-  }
-  html += esc(subject.slice(i));
-  rout.innerHTML = '<div class="count">' + spans.length + ' match' + (spans.length === 1 ? '' : 'es') + '</div>' + html;
-  status.textContent = spans.length + ' matches in ' + r.ms + ' ms · rakupp ' + raku.version;
+  const nl = r.out.indexOf('\n');
+  const count = parseInt(r.out.slice(0, nl), 10) || 0;
+  const marked = r.out.slice(nl + 1).replace(/\n$/, '');
+  // escape HTML first (control sentinels survive it), then turn sentinels into <mark>
+  const html = esc(marked).replaceAll('\u0002', '<mark>').replaceAll('\u0003', '</mark>');
+  rout.innerHTML = '<div class="count">' + count + ' match' + (count === 1 ? '' : 'es') + '</div>' + html;
+  status.textContent = count + ' match' + (count === 1 ? '' : 'es') + ' in ' + r.ms + ' ms · rakupp ' + raku.version;
 }
 
 // ---- Grammar tab ----
