@@ -2653,6 +2653,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"), fld("timezone"));
             return Value::str(buf);
         }
+        if (m == "mm-dd-yyyy" || m == "dd-mm-yyyy") { // US / European date strings
+            char buf[48];
+            if (m == "mm-dd-yyyy") snprintf(buf, sizeof buf, "%02lld-%02lld-%04lld", fld("month"), fld("day"), fld("year"));
+            else                   snprintf(buf, sizeof buf, "%02lld-%02lld-%04lld", fld("day"), fld("month"), fld("year"));
+            return Value::str(buf);
+        }
         if (m == "Str" || m == "gist" || m == "yyyy-mm-dd" || m == "Date") {
             char buf[48];
             if (inv.hashKind == "Date" || m == "yyyy-mm-dd")

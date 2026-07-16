@@ -2775,7 +2775,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // a capture can carry a `where`/trait constraint: `| where { … }`
             while (isIdent("where") || isIdent("is") || isIdent("of")) {
                 std::string trait = advance().text;
-                if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
+                if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
                 else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End)) advance();
             }
             p.slurpy = true; p.sigil = '\\';
@@ -2840,7 +2840,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             else if (matchOp("!")) p.required = true;
             while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of")) {
                 std::string trait = advance().text;
-                if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
+                if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
                 else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
                     if (trait == "is" && (isIdent("rw") || isIdent("copy"))) { p.isRw = (cur().text == "rw"); p.isCopy = (cur().text == "copy"); }
                     advance();
@@ -2960,7 +2960,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // where / is / returns / of trait clauses
         while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of") || isIdent("of")) {
             std::string trait = advance().text;
-            if (trait == "where") p.whereExpr = parseExpr(BP_COMMA + 1);
+            if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
             else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
                 if (trait == "is" && (isIdent("rw") || isIdent("copy"))) p.isRw = (cur().text == "rw");
                 advance(); // the trait word (rw/copy/encoded/…)
