@@ -13,57 +13,42 @@ code plus your input) and shows what it prints.
 
 ## Run them
 
-```sh
-showcase/web/serve.sh          # port 8000
-# open http://127.0.0.1:8000/
-```
-
-That's it. [`serve.sh`](serve.sh) gathers everything the apps load into `lib/` —
-the Raku.js WebAssembly build (`rakujs.js` + `rakujs.wasm`, building it with
-[`rakujs/build.sh`](../../rakujs/build.sh) first if needed) and the two CLI
-showcase sources they reuse — then serves **this folder** with the
-[`rakus`](../rakus/) showcase (rakupp serving its own WebAssembly build). URLs
-stay short: `/` is the launcher, `/regex.html` an app. Pass a port as the first
-argument (`serve.sh 9000`).
-
-`lib/` is git-ignored; re-run `serve.sh` to refresh it after rebuilding Raku.js.
-
-<details>
-<summary>Serving by hand</summary>
-
-Any static server works, and a `file://` open won't (Web Workers and
-WebAssembly need `http(s)`). To serve without `serve.sh`, gather the assets into
-`lib/` yourself, then point any server at this folder:
+No server. Generate the embedded assets once, then just open the HTML files:
 
 ```sh
-mkdir -p showcase/web/lib
-cp rakujs/playground/rakujs.js rakujs/playground/rakujs.wasm showcase/web/lib/
-cp showcase/markdown/md2html.raku showcase/json/json.raku      showcase/web/lib/
-python3 -m http.server 8000 -d showcase/web    # or any static server
+showcase/web/bundle.sh
+# then open showcase/web/index.html  (double-click, or `open showcase/web/index.html`)
 ```
 
-The apps load `lib/rakujs.{js,wasm}` and their `lib/*.raku` sources by relative
-path, so the served root must be this folder (which contains `lib/`), not the
-repo root.
-</details>
+[`bundle.sh`](bundle.sh) builds Raku.js if needed
+([`rakujs/build.sh`](../../rakujs/build.sh)), then writes `lib/`: the Emscripten
+loader, the WebAssembly binary **as base64** (`lib/rakujs-wasm.js`), and the two
+CLI showcase sources the JSON/Markdown apps reuse (`lib/sources.js`). The pages
+load those with plain `<script src>` and run the interpreter on the page — so
+they work opened straight from disk, `file://`, no `http` server at all.
+
+`lib/` is git-ignored; re-run `bundle.sh` to refresh it after rebuilding Raku.js.
 
 ## How it works
 
-- **`worker.js`** loads `lib/rakujs.js`/`lib/rakujs.wasm` off the main thread and
-  exposes one call: `rakupp_run(source)` runs a Raku program to completion,
-  streaming whatever it prints back to the page.
-- **`runner.js`** wraps that worker in a small `Raku` client (`raku.run(src) →
-  Promise<{out, err, rc}>`), plus a `debounced()` helper for live editing and a
-  `rakuHeredoc()` that embeds arbitrary user text as a non-interpolating Raku
-  heredoc.
-- **Each app** fetches the relevant showcase (e.g. `lib/md2html.raku`), strips its
-  file-reading `MAIN`, appends a driver that binds your input and calls the
-  showcase's function (`render`, `to-json`, …), runs it, and renders the result —
-  on every keystroke, debounced. (`regex.html` builds its program inline, so it
-  fetches nothing.)
+- **`runner.js`** is a tiny main-thread `Raku` client: `raku.run(src)` returns a
+  `Promise<{out, err, rc, ms}>`, plus a `debounced()` helper for live editing and
+  a `rakuHeredoc()` that embeds arbitrary user text as a non-interpolating Raku
+  heredoc. It instantiates the interpreter by handing Emscripten the embedded
+  wasm as a `data:` URL (`locateFile`), so nothing is fetched over the network.
+- **Each app** reuses the relevant showcase from `lib/sources.js` (e.g. the
+  `md2html` source), strips its file-reading `MAIN`, appends a driver that binds
+  your input and calls the showcase's function (`render`, `to-json`, …), runs it,
+  and renders the result — on every keystroke, debounced. (`regex.html` builds
+  its program inline, so it needs no source.)
 
 So the app is thin; the actual Markdown/JSON/grammar work is the very same Raku
 code the CLI showcases run.
+
+Running on the main thread (rather than a Web Worker like the
+[playground](../../rakujs/playground/)) keeps this simple and `file://`-openable;
+the trade-off is no Stop button and a brief freeze on heavy input — fine for
+these keystroke-fast apps.
 
 ## Notes / gotchas
 

@@ -48,9 +48,10 @@
   </div>
 
   <p class="foot">
-    These reuse the CLI showcase programs directly, and bundle the Raku.js
-    WebAssembly build (<code>rakujs/build.sh</code>, copied in by
-    <code>serve.sh</code>). Servers (pastebin, chat, …) can't run here — the
+    These reuse the CLI showcase programs directly, and embed the Raku.js
+    WebAssembly build (<code>rakujs/build.sh</code>, bundled in by
+    <code>bundle.sh</code>) so they open straight from disk. Servers (pastebin,
+    chat, …) can't run here — the
     sandbox has no sockets.
   </p>
 </main>

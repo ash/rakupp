@@ -43,16 +43,20 @@ python3 -m http.server 8000
 
 The playground is five self-contained, same-directory files
 (`index.html` + `worker.js` + `rakujs.js` + `rakujs.wasm` + `examples.js`, ~4 MB),
-so it drops into any static site under a `/playground/` path. Copy them with:
+so it drops into any static site under a `/playground/` path. Build them
+(`build.sh`), then copy the `playground/` contents to your site:
 
 ```sh
-rakujs/deploy.sh /path/to/your-site/playground   # builds first if needed
+rakujs/build.sh
+cp rakujs/playground/{index.html,worker.js,rakujs.js,rakujs.wasm,examples.js} \
+   /path/to/your-site/playground/
 ```
 
 The live playground at
-[course.raku.org/playground](https://course.raku.org/playground/) is deployed this
+[course.raku.org/playground](https://course.raku.org/playground/) is served this
 way (the built files are git-ignored here; they live in the site that serves them).
-Serve `.wasm` as `application/wasm` (most static hosts already do).
+Serve `.wasm` as `application/wasm` (most static hosts already do). All links are
+relative, so any `/playground/` path works.
 
 Edit code on the left, press **▶ Run** (or ⌘/Ctrl-Enter); stdout/stderr appear
 on the right. State resets each run (a fresh `Interpreter` per call). Output

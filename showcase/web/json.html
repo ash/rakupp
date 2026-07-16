@@ -41,6 +41,9 @@
 </main>
 <div class="status" id="status">starting…</div>
 
+<script src="lib/rakujs.js"></script>
+<script src="lib/rakujs-wasm.js"></script>
+<script src="lib/sources.js"></script>
 <script src="runner.js"></script>
 <script>
 const raku = new Raku();
@@ -49,14 +52,12 @@ const outEl = document.getElementById('out');
 const status = document.getElementById('status');
 const beautifyBtn = document.getElementById('beautify');
 const minifyBtn = document.getElementById('minify');
-let LIB = '', pretty = true;
+let pretty = true;
+// Reuse parse-json / to-json (inlined by bundle.sh); drop the file-reading MAIN.
+const LIB = RAKU_SOURCES.json.replace(/\n\s*sub MAIN\b[\s\S]*$/, '\n');
 
 async function boot() {
-  const [lib] = await Promise.all([
-    fetch('lib/json.raku', {cache: 'no-store'}).then(r => r.text()),
-    raku.ready,
-  ]);
-  LIB = lib.replace(/\n\s*sub MAIN\b[\s\S]*$/, '\n');   // reuse parse-json / to-json / run-query
+  await raku.ready;
   status.textContent = 'rakupp ' + raku.version;
   format();
 }

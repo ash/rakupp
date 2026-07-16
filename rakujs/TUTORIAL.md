@@ -80,9 +80,16 @@ RakuJS({ locateFile: name => BASE + name,   // and let it find rakujs.wasm
 
 That's the whole placement story: **two library files together, served over
 http; your page and worker just need a path that reaches them.** The
-[`showcase/web/`](../showcase/web/) apps do exactly this — see
-[`worker.js`](../showcase/web/worker.js), whose `BASE` points at
-`playground/` where `build.sh` left the pair.
+[`playground/`](playground/) app does exactly this — see
+[`worker.js`](playground/worker.js), which loads `rakujs.js`/`rakujs.wasm` from
+its own directory.
+
+> A page can also **avoid the fetch entirely** and open straight from `file://`,
+> by embedding the wasm as base64 and pointing Emscripten's `locateFile` at a
+> `data:application/wasm;base64,…` URL (data URLs are fetchable even from
+> `file://`). The [`showcase/web/`](../showcase/web/) apps do this — no server
+> needed; see their [`bundle.sh`](../showcase/web/bundle.sh) and
+> [`runner.js`](../showcase/web/runner.js).
 
 ## 1. Run a program
 
@@ -246,19 +253,21 @@ browser.
 ## 6. Keep the UI responsive (a worker)
 
 `rakupp_run` is **synchronous** — it runs the whole program before returning, so
-on the main thread a slow program freezes the page. For anything non-trivial,
-run the module in a **Web Worker** and talk to it with messages. You don't have
-to write this from scratch:
+on the main thread a slow program freezes the page. For a long-running or
+interruptible program, run the module in a **Web Worker** and talk to it with
+messages — [`playground/worker.js`](playground/worker.js) is a ready-made worker
+that loads the module and runs `rakupp_run` off the main thread, streaming
+output back and able to be terminated (the playground's Stop button).
 
-- [`playground/worker.js`](playground/worker.js) — a ready-made worker that loads
-  the module and runs `rakupp_run` off the main thread, streaming output back.
-- [`showcase/web/runner.js`](../showcase/web/runner.js) — a small `Raku` client
-  around that worker: `raku.run(src)` returns a `Promise<{out, err, rc}>`, plus a
-  `debounced()` helper for live editing and the `rakuHeredoc()` from §3.
+For short, keystroke-fast programs the main thread is fine and simpler.
+[`showcase/web/runner.js`](../showcase/web/runner.js) is a small `Raku` client
+that runs the module right on the page: `raku.run(src)` returns a
+`Promise<{out, err, rc, ms}>`, plus a `debounced()` helper for live editing and
+the `rakuHeredoc()` from §3.
 
 The [`showcase/web/`](../showcase/web/) apps (live Markdown, JSON formatter,
-regex/grammar explorer) are complete, working examples built on exactly these
-pieces — a good next read.
+regex/grammar explorer) are complete, working examples — main-thread, no server,
+openable from `file://` — a good next read.
 
 ## 7. Reusing an existing `.raku` program
 

@@ -1,49 +1,67 @@
-// runner.js — a tiny client around worker.js shared by all three apps.
+// runner.js — a tiny main-thread client shared by all three apps.
 //
-// `new Raku()` spins up the worker and instantiates the wasm. `raku.run(src)`
-// returns a Promise of { out, err, rc, ms, deep }. Runs are serialised (one at a
-// time); a `debounced(fn, ms)` helper coalesces keystrokes for live editing.
+// It runs the Raku.js interpreter directly on the page — no Web Worker and no
+// network. The WebAssembly binary is embedded as base64 (lib/rakujs-wasm.js) and
+// handed to Emscripten as a data: URL via locateFile, so the "fetch" of the wasm
+// resolves against that inline data (data: URLs are fetchable even from file://)
+// and nothing touches the network or filesystem: the apps work opened straight
+// from disk. rakupp_run() is synchronous; run() returns a Promise for a uniform
+// API and to serialise calls.
+//
+// (Why locateFile and not Module.wasmBinary: the -Oz build tree-shakes the
+// wasmBinary incoming-API path out of the glue, but keeps locateFile.)
+//
+// Globals expected before this file (plain <script src>, which works over
+// file://):
+//   RakuJS           – the Emscripten MODULARIZE factory   (lib/rakujs.js)
+//   RAKUJS_WASM_B64  – the interpreter wasm, base64         (lib/rakujs-wasm.js)
 
 class Raku {
   constructor() {
-    this.worker = new Worker('worker.js');
     this.version = null;
-    this._cur = null;          // { resolve } for the in-flight run
-    this._queue = [];
     this._out = '';
     this._err = '';
-    this.ready = new Promise((res, rej) => { this._readyRes = res; this._readyRej = rej; });
-    this.worker.onmessage = (e) => this._onmsg(e.data);
-    this.worker.onerror = (e) => { if (this._readyRej) this._readyRej(String(e.message || e)); };
+    this._queue = Promise.resolve();            // serialises run() calls
+    this.ready = this._make().then(() => this.version);
   }
 
-  _onmsg(m) {
-    switch (m.type) {
-      case 'ready':     this.version = m.version; this._readyRes(m.version); break;
-      case 'loaderror': if (this._readyRej) this._readyRej(m.message);
-                        if (this._cur) { this._finish({ out: '', err: m.message, rc: -1 }); } break;
-      case 'start':     this._out = ''; this._err = ''; break;
-      case 'out':       (m.cls === 'err' ? this._err += m.text : this._out += m.text); break;
-      case 'done':      this._finish({ out: this._out, err: this._err, rc: m.rc, ms: m.ms }); break;
-      case 'runerror':  this._finish({ out: this._out, err: this._err + m.message, rc: 1, deep: m.deep }); break;
-    }
+  _make() {
+    return RakuJS({
+      locateFile: () => 'data:application/wasm;base64,' + RAKUJS_WASM_B64,
+      print:    t => { this._out += t + '\n'; },
+      printErr: t => { this._err += t + '\n'; },
+    }).then(m => {
+      this._mod = m;
+      this.version = m.ccall('rakupp_version', 'string', [], []);
+      return m;
+    });
   }
 
-  _finish(result) {
-    const cur = this._cur;
-    this._cur = null;
-    if (cur) cur.resolve(result);
-    this._next();
-  }
-
+  // Run `src` to completion; resolves { out, err, rc, ms, deep }.
   run(src) {
-    return new Promise((resolve) => { this._queue.push({ src, resolve }); this._next(); });
+    const result = this._queue.then(() => this._runNow(src));
+    this._queue = result.then(() => {}, () => {});   // keep the chain alive on error
+    return result;
   }
 
-  _next() {
-    if (this._cur || !this._queue.length) return;
-    this._cur = this._queue.shift();
-    this.worker.postMessage({ type: 'run', src: this._cur.src });
+  async _runNow(src) {
+    await this.ready;
+    this._out = '';
+    this._err = '';
+    const t0 = performance.now();
+    let rc, deep = false;
+    try {
+      rc = this._mod.ccall('rakupp_run', 'number', ['string'], [src]);
+    } catch (e) {
+      // A deep-recursion overflow (RangeError) or abort leaves the instance in an
+      // unknown state — rebuild a clean one for the next run.
+      deep = e instanceof RangeError || /call stack|unreachable|abort/i.test(String(e));
+      this._err += String((e && e.message) || e);
+      rc = 1;
+      this.ready = this._make();
+      await this.ready.catch(() => {});
+    }
+    return { out: this._out, err: this._err, rc, ms: Math.round(performance.now() - t0), deep };
   }
 }
 

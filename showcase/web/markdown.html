@@ -51,21 +51,20 @@ sub greet($name) { say "hello, $name" }
 </main>
 <div class="status" id="status">starting…</div>
 
+<script src="lib/rakujs.js"></script>
+<script src="lib/rakujs-wasm.js"></script>
+<script src="lib/sources.js"></script>
 <script src="runner.js"></script>
 <script>
 const raku = new Raku();
 const srcEl = document.getElementById('src');
 const preview = document.getElementById('preview');
 const status = document.getElementById('status');
-let LIB = '';   // md2html showcase with its MAIN stripped
+// Reuse the md2html showcase (inlined by bundle.sh); drop its file-reading MAIN.
+const LIB = RAKU_SOURCES.md2html.replace(/\n\s*sub MAIN\b[\s\S]*$/, '\n');
 
 async function boot() {
-  const [lib] = await Promise.all([
-    fetch('lib/md2html.raku', {cache: 'no-store'}).then(r => r.text()),
-    raku.ready,
-  ]);
-  // Reuse render(); drop the file-reading MAIN.
-  LIB = lib.replace(/\n\s*sub MAIN\b[\s\S]*$/, '\n');
+  await raku.ready;
   status.textContent = 'rakupp ' + raku.version;
   render();
 }

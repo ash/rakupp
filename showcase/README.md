@@ -177,8 +177,8 @@ highlighting and parse-tree output. The server showcases can't run there — the
 sandbox has no sockets.
 
 ```sh
-showcase/web/serve.sh          # port 8000, then open http://127.0.0.1:8000/
+showcase/web/bundle.sh         # then open showcase/web/index.html — no server
 ```
 
-`serve.sh` builds Raku.js if needed, gathers it in, and serves the folder with
-the `rakus` showcase — see [`web/README.md`](web/README.md).
+`bundle.sh` builds Raku.js if needed and embeds it (WebAssembly as base64) so the
+apps open straight from disk, `file://` — see [`web/README.md`](web/README.md).
