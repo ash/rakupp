@@ -1,0 +1,127 @@
+# Changelog
+
+Release notes for tagged releases. Numbers are measured, not projected;
+methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
+
+## v0.7.1 — 2026-07-16
+
+Everything since v0.5.1 (2026-07-13), ~100 commits. (A 0.7.0 tag was cut but
+never published — its Windows build was broken — and is folded into this
+release.)
+
+### Headline
+
+- **Roast: 501 / 1,462 files fully pass** (was 419) — the 500-files milestone.
+  Passing assertions grew from 157,293 to **171,817**; the declared-test
+  denominator also grew (191,546 → 213,617) because parse fixes keep
+  surfacing plans that previously died unannounced, so per-test percentage
+  moves less than the absolute counts (~80% declared).
+- Ten zero-regression campaign batches (R1–R3, NM1–NM6), each gated on the
+  full suite with no pass-list drops and equal-or-faster benchmarks.
+
+### Language & runtime
+
+- **`$*SCHEDULER.cue`** is implemented: `:at`/`:in`/`:every`/`:times`/`:stop`/
+  `:catch`, `Cancellation` (`.cancel`/`.cancelled`), `.loads`,
+  `.uncaught_handler`, `CurrentThreadScheduler`; NaN/±Inf delay semantics and
+  argument-combination errors match the spec. Cued jobs run on worker threads
+  with a drift-free deadline clock.
+- **`subtest 'desc' => { … }` (the Pair form) now executes its body** — it
+  used to pass vacuously. Landed together with seven batches of the
+  pre-existing bugs it exposed (Rat 0-denominator cluster, `categorize-list`/
+  `classify-list`, `.toggle`, non-flattening `:=`, strict `fails-like`,
+  `substr-eq`, Capture semantics, …).
+- `return` is `Routine`-only (a bare block's `return` returns from the
+  enclosing routine); cooperative `return` works inside a method's loops.
+- `&?BLOCK` / `&?ROUTINE` resolve lazily from the frame (`&?ROUTINE` outside
+  a routine is a parse error, as in Rakudo).
+- `X but VALUE` mixins compose a constant method named by the value's type.
+- Weighted `pick`/`roll` on Bag/Mix draw without materializing pools;
+  `roll(*)` is an infinite lazy sequence.
+- DateTime: exact (non-float) seconds, leap-second table, fixed-offset
+  timezones, single-numeric POSIX constructor.
+- Junctions: `all`/`none` autothread outside `any`/`one`; whatever-curry wins
+  over junction autothreading; the standard matcher-method exemptions
+  (`grep`, `first`, `classify`, `comb`, `subst`, …).
+- MAIN: Rakudo-compatible dispatch strictness, generated `$*USAGE` (including
+  `#=` declarator-pod option descriptions), `sub USAGE` takes over the
+  failure path, CLI arguments bind as allomorphs.
+- Implicit `$a`/`$b` in paramless blocks removed (post-GLR semantics sweeps:
+  element itemization, `Z`-comma, stacked zip/cross metaops, one-level
+  operands, min/max flattening, rotor pairs, rw loop params, …).
+- New builtins and methods across the campaign — inventories now stand at
+  **179 subroutines / 505 methods** ([docs/REFERENCE.md](docs/REFERENCE.md)):
+  `Lock::Async`, minimal `IO::CatHandle`, `FileHandle.encoding`,
+  `List.lazy`, `cross(:with)`, the hyperbolic-trig family
+  (`sech`/`cosech`/`cotanh` + inverses), `%%` by zero throwing
+  `X::Numeric::DivideByZero`, Set↔Bag↔Mix coercions, `TYPE ~~ TYPE` role
+  smartmatch, and more.
+- `SIGPIPE` is ignored process-wide: TCP servers survive client disconnects.
+- EVAL-only statement strictness ("two terms in a row") with typed
+  `X::Syntax::Confused` parse errors.
+
+### Parser
+
+- A `}` at end of line terminates the statement (Rakudo's rule) — previously
+  `x => {…}` followed by an `if`/`else` chain could silently re-parse as a
+  statement modifier.
+- The tight-paren reduce call `[+](…)` takes only its parens — it used to
+  swallow the rest of the enclosing comma list, inflating some test files'
+  emitted-test counts for years.
+- Variable subscript adverbs (`%h{$k}:exists`-family with variable keys),
+  adverbed zen slices, dative method syntax (`name $obj: args`), `INIT` as an
+  expression, contextualizer circumfixes, comma-list shapes.
+
+### Native codegen (`--exe`)
+
+- `s///`, `$0` captures, and post-GLR slips compile natively (the pastebin
+  showcase no longer needs `--bundle`).
+
+### Raku.js — new subproject
+
+- The unmodified C++ interpreter compiled to WebAssembly, with a browser
+  playground: worker-based execution with live streaming output and a Stop
+  button, syntax-highlighting editor, theme switcher, 24 bundled examples.
+  Live at [course.raku.org/playground](https://course.raku.org/playground/).
+- First performance measurements (experimental; [rakujs/README.md](rakujs/README.md)):
+  1.3–6.8× slower than the native interpreter on a clean host, dominated by
+  the `-fexceptions` call trampolines; Node vs Bun comparison included.
+
+### Real-world output parity
+
+- **Perl Weekly Challenge corpus** (10,428 community solutions run under
+  both engines): byte-identical stdout+status went **2,663 → 4,056** across
+  15 fix batches ([docs/dev/PWC-DIVERGENCES.md](docs/dev/PWC-DIVERGENCES.md)).
+- **Raku course**: the generator reproduces the full 1,483-page course
+  byte-for-byte identically to Rakudo after two rounds of divergence fixes.
+
+### Showcases & tests
+
+- Seven new showcase programs, each with a README: **lisp** (a Scheme on a
+  Raku grammar), **pastebin** (HTTP on raw sockets), **markdown** (grammar →
+  HTML), **chat** (concurrent TCP), **forth** (a stack machine), **kvstore**
+  (a key-value protocol), **rakus** (a static HTTP file server).
+- New `t/` regression suite (47 checks: golden example outputs + showcase
+  behaviour), wired into CI on the POSIX platforms.
+
+### Performance
+
+- Cold start is **~2 ms** (best of 200 spawns; previously documented ~12 ms).
+- Full benchmark refresh against Rakudo v2026.06
+  ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)): the interpreter is ahead on 8
+  of 9 kernels (fib remains Rakudo's, 1.7×), `--exe` ahead on all 9.
+- A perf regression found and reversed mid-campaign: eager `&?BLOCK`/
+  `&?ROUTINE` frame bindings cost +40% on call-heavy code; the lazy
+  resolution above restored the baseline.
+
+### Platforms & CI
+
+- MSVC: `clock_gettime(CLOCK_REALTIME)` replaced with `std::chrono` (this is
+  what broke the unpublished 0.7.0 tag's Windows build); srand seeding
+  widened to 64-bit (was UB on LLP64 and wasm32).
+- Windows suite: portable process cleanup in `t/run.raku`.
+
+## v0.5.1 — 2026-07-13 and earlier
+
+Pre-changelog releases: v0.5.1, v0.5.0, v0.1.0. History is in git and the
+docs as they stood at each tag.
