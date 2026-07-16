@@ -1,0 +1,22 @@
+/* served by rakus with Content-Type: text/css */
+body {
+  font: 16px/1.6 system-ui, -apple-system, sans-serif;
+  color: #1a1a1a;
+  background: #fafafa;
+  margin: 0;
+}
+main {
+  max-width: 40rem;
+  margin: 4rem auto;
+  padding: 0 1.25rem;
+}
+h1 { font-size: 1.5rem; margin: 0.75rem 0; }
+code {
+  background: #ececef;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+a { color: #2563eb; }
+ul { padding-left: 1.1rem; }
+li { margin: 0.3rem 0; }

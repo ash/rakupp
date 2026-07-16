@@ -1,0 +1,4 @@
+Hello from rakus!
+
+This file is served with Content-Type: text/plain; charset=utf-8.
+rakus reads it off disk and streams the exact bytes back — text or binary.

@@ -9,6 +9,7 @@ together they answer "what can it actually build?"
 | [**forth/**](forth/) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
 | [**markdown/**](markdown/) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
 | [**pastebin/**](pastebin/) | Deployable — a hand-written HTTP server on raw sockets | native binary you point a browser at |
+| [**rakus/**](rakus/) | Deployable — a general static HTTP file server | point it at a folder, open it in a browser |
 | [**chat/**](chat/) | Concurrency — many clients, one thread each | TCP chat server you connect to with `nc` |
 | [**kvstore/**](kvstore/) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
 
@@ -89,6 +90,22 @@ PORT=9000 build/rakupp --exe -o pastebin showcase/pastebin/pastebin.raku && ./pa
 | `POST /paste` | store `content=…` → 303 redirect to the new paste |
 | `GET /p/<id>` | view one paste (HTML) |
 | `GET /raw/<id>` | view one paste (text/plain) |
+
+## rakus — the general-server story
+
+Where the pastebin is one app with a fixed route table, **rakus** is a reusable
+static HTTP file server — the Raku answer to `python3 -m http.server`, on nothing
+but `IO::Socket::INET`. Point it at a folder and it serves the files with the
+right `Content-Type` (text and binary), `index.html` or an auto directory listing,
+`HEAD`, `301`/`403`/`404`, one thread per connection.
+
+```sh
+build/rakupp showcase/rakus/rakus.raku              # serves ./public on :8080
+build/rakupp showcase/rakus/rakus.raku 9000 ~/site  # choose the port and root
+```
+
+Open <http://127.0.0.1:8080/> — the bundled `public/` folder has a styled page,
+an SVG logo, and a `files/` directory with no index so you can see the listing.
 
 ## chat — the concurrency story
 

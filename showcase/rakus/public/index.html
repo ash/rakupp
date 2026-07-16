@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rakus</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <img src="/logo.svg" alt="rakus logo" width="72" height="72">
+    <h1>rakus is serving this page</h1>
+    <p>
+      A static HTTP file server written in Raku, on nothing but
+      <code>IO::Socket::INET</code>. It is delivering this HTML, the stylesheet,
+      and the logo above — each with the right <code>Content-Type</code>.
+    </p>
+    <ul>
+      <li><a href="/hello.txt">hello.txt</a> — a plain text file</li>
+      <li><a href="/files/">files/</a> — a directory with no index (auto listing)</li>
+      <li><a href="/nope">/nope</a> — a 404</li>
+    </ul>
+  </main>
+</body>
+</html>

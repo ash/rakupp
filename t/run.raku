@@ -203,6 +203,32 @@ section('showcase/kvstore (a key-value protocol)');
     stop-server($script);
 }
 
+section('showcase/rakus (a static HTTP file server)');
+{
+    my $script = $ROOT.add('showcase/rakus/rakus.raku').Str;
+    my $port = 8493;
+    if start-server($script, $port) {
+        my $home = http($port, "GET / HTTP/1.0\r\nHost: x\r\n\r\n");
+        ok($home.contains('200') && $home.contains('rakus is serving'), "rakus: serves index.html at /");
+
+        my $css = http($port, "GET /style.css HTTP/1.0\r\nHost: x\r\n\r\n");
+        ok($css.contains('200') && $css.contains('text/css'), "rakus: serves a file with the right Content-Type");
+
+        my $list = http($port, "GET /files/ HTTP/1.0\r\nHost: x\r\n\r\n");
+        ok($list.contains('200') && $list.contains('Index of /files/') && $list.contains('data.json'),
+                                                   "rakus: auto directory listing when there's no index");
+
+        my $miss = http($port, "GET /nope HTTP/1.0\r\nHost: x\r\n\r\n");
+        ok($miss.contains('404'),                  "rakus: 404 for a missing path");
+
+        my $redir = http($port, "GET /files HTTP/1.0\r\nHost: x\r\n\r\n");
+        ok($redir.contains('301') && $redir.contains('Location: /files/'),
+                                                   "rakus: redirects a dir without a trailing slash");
+    }
+    else { ok(False, "rakus: server did not start"); }
+    stop-server($script);
+}
+
 # ---- summary ----------------------------------------------------------
 note "";
 say "1..$count";
