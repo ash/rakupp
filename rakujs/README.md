@@ -81,6 +81,11 @@ recursion cap; all shipped examples stay well under it.
 
 ## Embedding in your own page
 
+> **New to this? See [TUTORIAL.md](TUTORIAL.md)** — a short, worked guide to
+> writing real browser Raku programs: multi-line source, feeding them input
+> (there's no stdin/argv/files), reading results back, and a complete live
+> example. The snippet below is just the wiring.
+
 The build is `MODULARIZE`d under the global `RakuJS`. Capture the program's
 output through Emscripten's `print` / `printErr` and call the exported function:
 
