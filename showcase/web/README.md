@@ -16,14 +16,18 @@ code plus your input) and shows what it prints.
 They need the Raku.js WebAssembly build (`rakujs.js` + `rakujs.wasm`), which
 [`rakujs/build.sh`](../../rakujs/build.sh) produces into
 [`rakujs/playground/`](../../rakujs/playground/); these apps load it from there.
-Then serve the **repo root** over HTTP and open the apps:
+Then serve the **repo root** over HTTP and open the apps. Any static server
+works — but you can use another showcase, the [`rakus`](../rakus/) file server,
+to serve these ones (rakupp serving its own WebAssembly build):
 
 ```sh
-python3 -m http.server 8000        # from the repository root
+# from the repository root:
+build/rakupp showcase/rakus/rakus.raku 8000 .     # port 8000, root = repo
 # open http://localhost:8000/showcase/web/
 ```
 
-(A plain `file://` open won't work — Web Workers and WebAssembly need `http(s)`.)
+(`python3 -m http.server 8000` works too. A plain `file://` open won't — Web
+Workers and WebAssembly need `http(s)`.)
 
 ## How it works
 
