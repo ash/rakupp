@@ -16,7 +16,10 @@ set -euo pipefail
 RAKUJS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$RAKUJS_DIR/.." && pwd)"
 SRC_DIR="$ROOT_DIR/src"
-OUT_DIR="$RAKUJS_DIR/playground"
+# Overridable for non-playground builds, e.g. the Node/Bun benchmark target:
+#   RAKUJS_ENV=node RAKUJS_OUT=/tmp/rakujs-node rakujs/build.sh
+OUT_DIR="${RAKUJS_OUT:-$RAKUJS_DIR/playground}"
+RAKUJS_ENV="${RAKUJS_ENV:-web,worker}"
 
 OPT="-Oz"
 EXTRA_S=()
@@ -112,7 +115,7 @@ em++ \
   -sINITIAL_MEMORY=33554432 \
   -sMODULARIZE=1 \
   -sEXPORT_NAME=RakuJS \
-  -sENVIRONMENT=web,worker \
+  -sENVIRONMENT="$RAKUJS_ENV" \
   -sINVOKE_RUN=0 \
   -sEXIT_RUNTIME=0 \
   -sERROR_ON_UNDEFINED_SYMBOLS=0 \

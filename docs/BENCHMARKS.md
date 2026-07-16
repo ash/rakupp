@@ -22,9 +22,11 @@ mode that changes runtime performance, so it's the one the `native` column
 tracks.
 
 (A fourth environment — **[Raku.js](../rakujs/)**, the interpreter compiled to
-WebAssembly — is measured against `interp` on these same kernels in
-[rakujs/README.md](../rakujs/README.md#performance-vs-native): 3.4–27× slower
-than native, dominated by the `-fexceptions` call trampolines.)
+WebAssembly — is measured against `interp` on these same kernels under Node,
+Bun, and the browser in
+[rakujs/README.md](../rakujs/README.md#performance-vs-native-and-node-vs-bun-vs-browser):
+1.3–6.8× slower than native on a clean host, dominated by the `-fexceptions`
+call trampolines.)
 
 ## The short version
 
