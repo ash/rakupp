@@ -16,8 +16,9 @@ running (their `plan N` is read from source). On the stricter all-or-nothing bar
 **501 / 1,462 files fully pass (~34%)** — a file counts only if *every* assertion
 in it passes. Early-stage, growing test-first. See [the highlights](docs/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/OVERVIEW.md) for
-a one-page tour, [the full guide](docs/GUIDE.md) for the complete picture, or
-[COUNTING.md](docs/COUNTING.md) for exactly how these are defined.
+a one-page tour, [the full guide](docs/GUIDE.md) for the complete picture,
+[COUNTING.md](docs/COUNTING.md) for exactly how these are defined, or the
+[CHANGELOG](CHANGELOG.md) for what each release brought.
 
 ## Install
 
