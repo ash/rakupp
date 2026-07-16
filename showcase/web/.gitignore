@@ -1,4 +1,4 @@
-# Assets gathered by serve.sh so this folder is a self-contained static site:
-# the Raku.js WebAssembly build (rakujs.js + rakujs.wasm) and the CLI showcase
-# sources the apps reuse. A few MB; regenerate by re-running serve.sh.
+# Assets embedded by bundle.sh so the apps open straight from disk (file://):
+# the Raku.js WebAssembly build (base64) and the CLI showcase sources the apps
+# reuse. A few MB; regenerate by re-running bundle.sh.
 lib/
