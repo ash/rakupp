@@ -1954,9 +1954,11 @@ ExprPtr Parser::parsePrimary() {
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
             if (name == "self") { advance(); return std::make_unique<SelfTerm>(); }
-            // mathematical constants are TERMS, never listops: `e + 1`, `pi + 0`.
+            // mathematical constants are TERMS, never listops: `e + 1`, `pi + 0`,
+            // `Inf+100` (else `+100` is misread as a listop argument to `Inf`).
             // A tight `pi()` is left as a call so it dies as an undeclared routine.
-            if ((name == "pi" || name == "tau" || name == "e" || name == "\xCF\x80" || name == "\xCF\x84")
+            if ((name == "pi" || name == "tau" || name == "e" || name == "\xCF\x80" || name == "\xCF\x84"
+                 || name == "Inf" || name == "NaN")
                 && !(peek().kind == Tok::LParen && !peek().spaceBefore))
                 { advance(); return std::make_unique<NameTerm>(name); }
             // control-flow in expression position: `... or return X`, `... or last`

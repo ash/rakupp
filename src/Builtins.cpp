@@ -3316,6 +3316,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "sink") return Value::nil(); // Mu.sink: evaluate for side effects, yield Nil (user `sink` dispatched earlier)
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
+    if (m == "item") { // .item: decontainerize to a single item (itemize a list)
+        Value v = inv;
+        if (v.t == VT::Array) v.itemized = true;
+        return v;
+    }
+    // Bool is an enum (False => 0, True => 1): .key is the name, .value the ordinal.
+    if (inv.t == VT::Bool && m == "key")   return Value::str(inv.b ? "True" : "False");
+    if (inv.t == VT::Bool && m == "value") return Value::integer(inv.b ? 1 : 0);
     // .VAR.name on an anonymous container is "element" in Rakudo; some code (Text::CSV)
     // uses `@x.VAR.name ne "element"` to detect an explicitly-passed array.
     if (m == "name" && (inv.t == VT::Array || inv.t == VT::Hash)) return Value::str("element");
@@ -3595,6 +3603,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "acotanh" || m == "acoth") return Value::number(std::atanh(1.0 / x));
     }
     if (m == "floor" || m == "ceiling" || m == "round" || m == "truncate") {
+        // Inf/NaN round to themselves (they stay Num) — only .Int coercion throws.
+        if (inv.t == VT::Num && !std::isfinite(inv.n)) return inv;
         // zero-denominator Rats cannot round — they FAIL (X::Numeric::DivideByZero)
         if (inv.t == VT::Rat && inv.ratD && inv.ratD->isZero()) {
             Value f = Value::makeHash(); f.hashKind = "Failure";
@@ -3702,8 +3712,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
         return out;
     }
-    if (m == "isa" && (inv.t == VT::Type || inv.t == VT::Object) && !args.empty()) {
-        // Foo.isa(Foo) / $obj.isa("Any") — walk the class chain, then built-in ancestry
+    if (m == "isa" && !args.empty()) {
+        // Foo.isa(Foo) / $obj.isa("Any") / 5.isa(Int) — walk the class chain, then
+        // built-in ancestry. Works on any value via its type name.
         std::string want = args[0].t == VT::Type ? args[0].s : args[0].toStr();
         std::string tn = inv.t == VT::Type ? inv.s : (inv.obj && inv.obj->cls ? inv.obj->cls->name : inv.typeName());
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
@@ -6431,6 +6442,7 @@ void Interpreter::registerBuiltins() {
     B["floor"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::floor(a.empty() ? 0 : a[0].toNum())); };
     B["ceiling"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::ceil(a.empty() ? 0 : a[0].toNum())); };
     B["round"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::llround(a.empty() ? 0 : a[0].toNum())); };
+    B["truncate"] = [](Interpreter& I, ValueList& a) -> Value { return I.methodCall(a.empty() ? Value::integer(0) : a[0], "truncate", {}); };
     B["exp"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "exp", none); }
         if (a.size() >= 2) return Value::number(std::pow(a[1].toNum(), a[0].toNum())); // exp($x,$base)
