@@ -561,9 +561,17 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             }
         }
         bool ascending = hasGen ? true : (geometric ? ratio >= 1 : step >= 0);
+        // How many trailing elements the generator consumes: a `* + *` WhateverCode
+        // by its whateverArity, `{ $^a + $^b }` by its placeholder count (the
+        // canonical `1, 1, { $^a + $^b } … *` fibonacci), `-> $a, $b {…}` by its
+        // signature — and a topic block `{ $_ … }` or a bare block by 1 (an EMPTY
+        // params vector must not read as arity 0, which fed the block nothing).
         long long arity = 1;
-        if (hasGen && gen.code) arity = gen.code->whateverArity > 0 ? gen.code->whateverArity
-                                       : (gen.code->params ? (long long)gen.code->params->size() : 1);
+        if (hasGen && gen.code) {
+            if (gen.code->whateverArity > 0)            arity = gen.code->whateverArity;
+            else if (!gen.code->placeholders.empty())   arity = (long long)gen.code->placeholders.size();
+            else if (gen.code->params && !gen.code->params->empty()) arity = (long long)gen.code->params->size();
+        }
         // An infinite sequence (`… … *`) is LAZY: keep only the seed materialised and
         // attach a generator that computes one more element on demand.
         if (infinite) {
