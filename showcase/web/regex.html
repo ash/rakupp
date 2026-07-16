@@ -102,6 +102,16 @@ const subjEl = document.getElementById('subject');
 const rout = document.getElementById('rout');
 
 async function runRegex() {
+  // An empty (or whitespace-only) pattern is `/ /`, which matches the zero-width
+  // string at every position — including inside a grapheme, between a base letter
+  // and its combining mark — so wrapping those "matches" in sentinels would split
+  // graphemes and mangle the text. Treat it as "no pattern": show the plain text.
+  if (!patEl.value.trim()) {
+    rout.innerHTML = '<div class="count">enter a pattern to match</div>' +
+                     esc(subjEl.value.replace(/\n$/, ''));
+    status.textContent = 'rakupp ' + raku.version;
+    return;
+  }
   // Let Raku's own engine wrap each match in sentinel chars (STX/ETX) via subst,
   // then print the whole marked-up text. This avoids mapping Raku's match
   // positions onto JavaScript string indices — the two disagree on non-ASCII
