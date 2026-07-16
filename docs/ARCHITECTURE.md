@@ -137,7 +137,7 @@ re-`exec`s its body block; `square($_)` looks the sub up in the `Env` chain and
 `callCallable`s it; `$total += …` re-dispatches through `applyArith("+", …)`.
 
 Nothing is cached or compiled — the same AST nodes are re-interpreted on every
-iteration. Startup is instant (~12 ms); throughput pays the tree-walking tax.
+iteration. Startup is instant (~2 ms); throughput pays the tree-walking tax.
 
 ### Mode 2 — bundle: `rakupp --bundle demo.raku -o demo`
 

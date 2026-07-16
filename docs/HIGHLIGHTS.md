@@ -63,7 +63,7 @@ no server, with an embeddable in-page playground.
 
 ## Speed
 
-- **~12 ms cold start** (vs ~150 ms for Rakudo) — fast enough to shell out to.
+- **~2 ms cold start** (vs ~166 ms for Rakudo) — fast enough to shell out to.
 - Competitive interpreter performance and native-compiled hot code; raw
   numbers and methodology in [BENCHMARKS.md](BENCHMARKS.md) and
   [OPTIMIZATION.md](OPTIMIZATION.md).

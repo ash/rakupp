@@ -25,7 +25,7 @@ network/timer wall-clock, not compute.
 
 **User CPU is not wall clock** — don't compare these numbers with the
 `startup` row in [BENCHMARKS.md](BENCHMARKS.md). That row is wall time
-through the bench harness (spawn + output capture, 16–21 ms there, ~12 ms
+through the bench harness (spawn + output capture, ~2 ms there, 1.8 ms
 for a bare cold start). User CPU counts only the cycles the program itself
 burns — process creation, the dynamic linker, and kernel time are excluded —
 which is how a do-almost-nothing program reads ~1 ms here (measured on this
