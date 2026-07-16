@@ -7046,11 +7046,29 @@ Value Interpreter::evalUnary(Unary* u) {
         // "-5"++ is "-6"). strSucc/strPred pick the magic window themselves
         // and leave strings with nothing incrementable unchanged.
         bool strMagic = lv->t == VT::Str;
-        if (strMagic && u->op == "++") {
+        // ++/-- IS .succ/.pred: Bool saturates (True++ stays True, --$b is
+        // False), and an object whose class defines succ/pred dispatches there
+        // (autoincrement.t's Incrementor). Everything else goes numeric.
+        auto classHas = [&](const char* m) -> bool {
+            if (lv->t != VT::Object || !lv->obj || !lv->obj->cls) return false;
+            for (ClassInfo* c = lv->obj->cls.get(); c; c = c->parent ? c->parent.get() : nullptr) {
+                if (c->methods.count(m)) return true;
+                for (auto& ep : c->extraParents) if (ep && ep->methods.count(m)) return true;
+            }
+            return false;
+        };
+        if (lv->t == VT::Bool || (lv->t == VT::Type && lv->s == "Bool")) {
+            newv = Value::boolean(u->op == "++");
+            // postfix on an undefined Bool returns False (the S03 "postfix on
+            // undefined returns the type's zero" rule), not the type object
+            if (oldv.t == VT::Type) oldv = Value::boolean(false);
+        } else if (strMagic && u->op == "++") {
             newv = Value::str(strSucc(lv->s));
         } else if (strMagic && u->op == "--") {
             bool ok; std::string r = strPred(lv->s, ok);
             newv = ok ? Value::str(r) : Value::typeObj("Failure");
+        } else if (classHas(u->op == "++" ? "succ" : "pred")) {
+            newv = methodCall(*lv, u->op == "++" ? "succ" : "pred", {});
         } else {
             newv = applyArith(u->op == "++" ? "+" : "-", *lv, Value::integer(1));
             if (lv->natBits) wrapNative(newv, lv->natBits, lv->natSigned); // native int wraparound

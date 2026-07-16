@@ -1,5 +1,6 @@
 #include "Value.h"
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
+#include "Unicode.h"     // uniGeneralCategory (magic-increment window over non-ASCII)
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -448,37 +449,149 @@ static bool succWindow(const std::string& s, int& lo, int& hi) {
     return false;
 }
 
-std::string strSucc(const std::string& s) {
-    int lo, hi;
-    if (!succWindow(s, lo, hi)) return s; // nothing incrementable: unchanged (Rakudo)
-    std::string r = s;
-    int pos = hi - 1;
-    for (; pos >= lo; --pos) {
-        char c = r[pos];
-        if (c >= '0' && c <= '9') { if (c != '9') { r[pos] = c + 1; return r; } r[pos] = '0'; }
-        else if (c >= 'a' && c <= 'z') { if (c != 'z') { r[pos] = c + 1; return r; } r[pos] = 'a'; }
-        else { if (c != 'Z') { r[pos] = c + 1; return r; } r[pos] = 'A'; }
+// ---- non-ASCII magic increment (verified against Rakudo v2026.06) ----------
+// Each incrementable range: [lo..hi] with an optional excluded codepoint
+// (Greek uppercase has the U+03A2 hole; lowercase treats final sigma ς as not
+// part of the alphabet), the wrap target on carry, and the codepoint prepended
+// when the carry escapes the window (letters prepend their first letter,
+// digit families their ONE, circled numbers ①).
+struct SuccRange { uint32_t lo, hi, skip, wrap, prepend; };
+static const SuccRange kSuccRanges[] = {
+    {'0', '9', 0, '0', '1'},
+    {'a', 'z', 0, 'a', 'a'},
+    {'A', 'Z', 0, 'A', 'A'},
+    {0x03B1, 0x03C9, 0x03C2, 0x03B1, 0x03B1}, // Greek α..ω, ς is not a member
+    {0x0391, 0x03A9, 0x03A2, 0x0391, 0x0391}, // Greek Α..Ω, U+03A2 is unassigned
+    {0x0430, 0x044F, 0, 0x0430, 0x0430},      // Cyrillic а..я
+    {0x0410, 0x042F, 0, 0x0410, 0x0410},      // Cyrillic А..Я
+    {0x05D0, 0x05EA, 0, 0x05D0, 0x05D0},      // Hebrew א..ת
+    {0x0660, 0x0669, 0, 0x0660, 0x0661},      // Arabic-Indic digits
+    {0x0966, 0x096F, 0, 0x0966, 0x0967},      // Devanagari digits
+    {0x09E6, 0x09EF, 0, 0x09E6, 0x09E7},      // Bengali digits
+    {0x0E50, 0x0E59, 0, 0x0E50, 0x0E51},      // Thai digits
+    {0xFF10, 0xFF19, 0, 0xFF10, 0xFF11},      // fullwidth digits
+    {0x2460, 0x2473, 0, 0x2460, 0x2460},      // circled ①..⑳ (no zero: wraps to ①)
+};
+static const SuccRange* succRangeOf(uint32_t cp) {
+    for (auto& r : kSuccRanges)
+        if (cp >= r.lo && cp <= r.hi && cp != r.skip) return &r;
+    return nullptr;
+}
+static std::vector<uint32_t> sxDecode(const std::string& s) {
+    std::vector<uint32_t> out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = s[i];
+        uint32_t cp; int n;
+        if (c < 0x80)      { cp = c; n = 1; }
+        else if (c < 0xE0) { cp = c & 0x1F; n = 2; }
+        else if (c < 0xF0) { cp = c & 0x0F; n = 3; }
+        else               { cp = c & 0x07; n = 4; }
+        for (int k = 1; k < n && i + k < s.size(); k++) cp = (cp << 6) | (s[i + k] & 0x3F);
+        out.push_back(cp); i += n;
     }
-    // carried past the window start: grow the window with its first char's class
-    char k = r[lo];
-    char ins = (k == '0') ? '1' : (k == 'a') ? 'a' : (k == 'A') ? 'A' : '1';
-    r.insert(lo, 1, ins);
-    return r;
+    return out;
+}
+static std::string sxEncode(const std::vector<uint32_t>& cps) {
+    std::string o;
+    for (uint32_t cp : cps) {
+        if (cp < 0x80) o += (char)cp;
+        else if (cp < 0x800)   { o += (char)(0xC0 | (cp >> 6));  o += (char)(0x80 | (cp & 0x3F)); }
+        else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+        else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+    }
+    return o;
+}
+static bool sxAlnum(uint32_t cp) {
+    if (cp < 128) return (cp >= '0' && cp <= '9') || (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z');
+    std::string gc = uniGeneralCategory(cp);
+    return !gc.empty() && (gc[0] == 'L' || gc[0] == 'N');
+}
+// The codepoint window: final non-extension ALPHANUMERIC run, then its maximal
+// suffix of range-member codepoints. An alnum that is in no range blocks:
+// "ας"++ is unchanged (ς can't increment, and being a letter it can't be
+// skipped like punctuation), while "ςα"++ is "ςβ".
+static bool succWindowCp(const std::vector<uint32_t>& c, int& lo, int& hi) {
+    int i = (int)c.size() - 1;
+    while (i >= 0) {
+        while (i >= 0 && !sxAlnum(c[i])) i--;
+        if (i < 0) return false;
+        int end = i;
+        while (i >= 0 && sxAlnum(c[i])) i--;
+        if (i >= 0 && c[i] == '.') { i--; continue; } // an extension segment
+        if (!succRangeOf(c[end])) return false;       // blocked (e.g. trailing ς)
+        int wlo = end;
+        while (wlo - 1 > i && succRangeOf(c[wlo - 1])) wlo--;
+        lo = wlo; hi = end + 1; return true;
+    }
+    return false;
+}
+static bool sxAscii(const std::string& s) {
+    for (unsigned char c : s) if (c >= 0x80) return false;
+    return true;
+}
+
+std::string strSucc(const std::string& s) {
+    if (sxAscii(s)) { // fast byte path for the overwhelmingly common case
+        int lo, hi;
+        if (!succWindow(s, lo, hi)) return s; // nothing incrementable: unchanged (Rakudo)
+        std::string r = s;
+        int pos = hi - 1;
+        for (; pos >= lo; --pos) {
+            char c = r[pos];
+            if (c >= '0' && c <= '9') { if (c != '9') { r[pos] = c + 1; return r; } r[pos] = '0'; }
+            else if (c >= 'a' && c <= 'z') { if (c != 'z') { r[pos] = c + 1; return r; } r[pos] = 'a'; }
+            else { if (c != 'Z') { r[pos] = c + 1; return r; } r[pos] = 'A'; }
+        }
+        // carried past the window start: grow the window with its first char's class
+        char k = r[lo];
+        char ins = (k == '0') ? '1' : (k == 'a') ? 'a' : (k == 'A') ? 'A' : '1';
+        r.insert(lo, 1, ins);
+        return r;
+    }
+    std::vector<uint32_t> c = sxDecode(s);
+    int lo, hi;
+    if (!succWindowCp(c, lo, hi)) return s;
+    for (int pos = hi - 1; pos >= lo; --pos) {
+        const SuccRange* r = succRangeOf(c[pos]);
+        uint32_t nxt = c[pos] + 1;
+        if (nxt == r->skip) nxt++;
+        if (nxt <= r->hi) { c[pos] = nxt; return sxEncode(c); }
+        c[pos] = r->wrap; // carry
+    }
+    c.insert(c.begin() + lo, succRangeOf(c[lo])->prepend);
+    return sxEncode(c);
 }
 
 std::string strPred(const std::string& s, bool& ok) {
     ok = true;
-    int lo, hi;
-    if (!succWindow(s, lo, hi)) return s; // nothing decrementable: unchanged
-    std::string r = s;
-    int pos = hi - 1;
-    for (; pos >= lo; --pos) {
-        char c = r[pos];
-        if (c >= '0' && c <= '9') { if (c != '0') { r[pos] = c - 1; return r; } r[pos] = '9'; }
-        else if (c >= 'a' && c <= 'z') { if (c != 'a') { r[pos] = c - 1; return r; } r[pos] = 'z'; }
-        else { if (c != 'A') { r[pos] = c - 1; return r; } r[pos] = 'Z'; }
+    if (sxAscii(s)) {
+        int lo, hi;
+        if (!succWindow(s, lo, hi)) return s; // nothing decrementable: unchanged
+        std::string r = s;
+        int pos = hi - 1;
+        for (; pos >= lo; --pos) {
+            char c = r[pos];
+            if (c >= '0' && c <= '9') { if (c != '0') { r[pos] = c - 1; return r; } r[pos] = '9'; }
+            else if (c >= 'a' && c <= 'z') { if (c != 'a') { r[pos] = c - 1; return r; } r[pos] = 'z'; }
+            else { if (c != 'A') { r[pos] = c - 1; return r; } r[pos] = 'Z'; }
+        }
+        ok = false; // borrowed past the window start: "Decrement out of range"
+        return s;
     }
-    ok = false; // borrowed past the window start: "Decrement out of range"
+    std::vector<uint32_t> c = sxDecode(s);
+    int lo, hi;
+    if (!succWindowCp(c, lo, hi)) return s;
+    for (int pos = hi - 1; pos >= lo; --pos) {
+        const SuccRange* r = succRangeOf(c[pos]);
+        if (c[pos] > r->lo) {
+            uint32_t prv = c[pos] - 1;
+            if (prv == r->skip) prv--;
+            c[pos] = prv;
+            return sxEncode(c);
+        }
+        c[pos] = r->hi == r->skip ? r->hi - 1 : r->hi; // borrow (skip can't sit at hi in our table)
+    }
+    ok = false; // borrowed past the window start
     return s;
 }
 

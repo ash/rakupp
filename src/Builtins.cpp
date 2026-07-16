@@ -3767,8 +3767,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         r.fatRat = fat; // FatRat is the arbitrary-precision Rat, tagged for type identity
         return r;
     }
-    if (m == "succ") return inv.t == VT::Str ? Value::str(strSucc(inv.s)) : Value::integer(inv.toInt() + 1);
-    if (m == "pred") return inv.t == VT::Str ? inv : Value::integer(inv.toInt() - 1);
+    if (m == "succ") {
+        if (inv.t == VT::Bool) return Value::boolean(true);   // Bool saturates
+        return inv.t == VT::Str ? Value::str(strSucc(inv.s)) : Value::integer(inv.toInt() + 1);
+    }
+    if (m == "pred") {
+        if (inv.t == VT::Bool) return Value::boolean(false);
+        if (inv.t == VT::Str) {
+            bool ok; std::string r = strPred(inv.s, ok);
+            if (!ok) throw RakuError{Value::typeObj("X::AdHoc"), "Decrement out of range"};
+            return Value::str(r);
+        }
+        return Value::integer(inv.toInt() - 1);
+    }
     if (m == "is-prime") {
         long long n = inv.toInt(); bool p = n > 1;
         for (long long d = 2; d * d <= n && p; d++) if (n % d == 0) p = false;
