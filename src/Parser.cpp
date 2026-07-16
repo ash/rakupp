@@ -1768,6 +1768,16 @@ ExprPtr Parser::parsePrimary() {
                         auto empty = std::make_unique<ListExpr>();
                         u->operand = std::move(empty);
                     }
+                    else if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                        // function-call form `[+](@a)`: ONLY the parenthesized args —
+                        // a following comma belongs to the ENCLOSING list
+                        advance();
+                        if (isKind(Tok::RParen)) { advance(); u->operand = std::make_unique<ListExpr>(); }
+                        else {
+                            u->operand = parseExpr(BP_COMMA);
+                            expectKind(Tok::RParen, ")");
+                        }
+                    }
                     else u->operand = parseExpr(BP_COMMA);
                     return u;
                 }
@@ -3444,6 +3454,11 @@ static std::unique_ptr<Block> wrapStmt(StmtPtr s) {
 }
 
 StmtPtr Parser::applyModifiers(StmtPtr s) {
+    // a `}` at end-of-line TERMINATES the statement (Rakudo's rule) — so
+    // `x => {…}\n if COND {…}` starts a NEW if statement, while a modifier on
+    // a continuation line after a non-brace token still attaches
+    if (pos_ > 0 && toks_[pos_ - 1].kind == Tok::RBrace &&
+        cur().line != toks_[pos_ - 1].line) return s;
     if (cur().kind == Tok::Ident) {
         const std::string& kw = cur().text;
         if (kw == "if" || kw == "unless") {

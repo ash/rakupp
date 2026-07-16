@@ -106,11 +106,18 @@ struct ExecContext {
     // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
     int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
     uint64_t curLoopFrame = 0;    // frameTop when the innermost native loop body runs
+    // current callable/routine for the &?BLOCK / &?ROUTINE magicals — raw pointers
+    // into the live callCallableRaw frame (resolved lazily at lookup, zero per-call cost)
+    const Value* curBlockVal = nullptr;
+    const Value* curRoutineVal = nullptr;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
 // holds the materialised prefix in its `arr`; `appendNext` computes one more element
 // on demand (returns false when exhausted). Reached via Value::ext.
+// State shared between a cued job's worker and its Cancellation value.
+struct CueState { std::atomic<bool> cancelled{false}; };
+
 struct LazySeqState {
     std::function<bool(ValueList&)> appendNext;
     bool infinite = false; // a truly unbounded source (…..Inf): elems/pop/tail/[*-1] must die
@@ -388,6 +395,9 @@ public:
     // a PromiseState. awaitPromise blocks the caller until `ps` completes, dropping
     // the GIL so the worker can run. drainWorkers joins everything at program end.
     Value spawnPromise(Value code, Value threadVal = Value());
+    Value cueJob(Value code, double delaySecs, double everySecs, long long times,
+                 Value stopF, Value catchF); // $*SCHEDULER.cue — returns a Cancellation
+    std::atomic<long> cuedLoads_{0}; // outstanding cued jobs ($*SCHEDULER.loads)
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
@@ -484,6 +494,7 @@ public:
     static double toleranceDyn();
     static long long tzOffsetDyn(); // $*TZ resolution: user dynamic, else system offset
     double initInstant_ = 0; // process start time ($*INIT-INSTANT)
+    Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash, so attr writes persist)
 private:
     Value evalCall(Call* c);
     Value evalIndex(Index* idx);

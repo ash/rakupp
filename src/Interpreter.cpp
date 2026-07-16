@@ -25,6 +25,7 @@ static char** rakupp_environ() { return environ; }
 #include <cstdlib>
 #include <cstdio>
 #include <chrono>
+#include <thread>
 #include <ctime>
 #include <fstream>
 #include <iostream>
@@ -870,6 +871,8 @@ thread_local int Interpreter::threadDepth_ = 0;
 
 Interpreter::Interpreter() {
     { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); initInstant_ = ts.tv_sec + ts.tv_nsec / 1e9; }
+    defaultScheduler_ = Value::makeHash(); defaultScheduler_.hashKind = "Scheduler";
+    (*defaultScheduler_.hash)["name"] = Value::str("ThreadPoolScheduler");
     mainThread_ = std::this_thread::get_id();
     parallelMode_ = std::getenv("RAKUPP_PARALLEL") != nullptr;
     global_ = std::make_shared<Env>();
@@ -1081,7 +1084,11 @@ void Interpreter::yieldToWorker() {
 // actually interleave. Capped so a runaway `sleep 10000` can't wedge the suite.
 void Interpreter::sleepYield(double secs) {
     if (secs <= 0) return;
-    if (secs > 1.0) secs = 1.0; // cap: preserves small relative delays (sleep-sort), bounded for the harness
+    // cap: preserves small relative delays (sleep-sort), bounded for the harness.
+    // With workers outstanding the full duration matters (scheduler cues fire
+    // during the sleep) — allow it, still bounded.
+    double cap = (liveWorkers_.load() > 0 || cuedLoads_.load() > 0) ? 35.0 : 1.0;
+    if (secs > cap) secs = cap;
     // No GIL held (single-threaded) or parallel mode (no GIL at all): just sleep.
     if (!gilHeld_ || parallelMode_) { std::this_thread::sleep_for(std::chrono::duration<double>(secs)); return; }
     static thread_local ExecContext parked;
@@ -1199,6 +1206,78 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         fin->store(true, std::memory_order_release);
     }), fin});
     return p;
+}
+
+// $*SCHEDULER.cue(&code, :in/:at → delaySecs, :every, :times, :stop, :catch).
+// A worker sleeps GIL-free, takes the GIL per run, and re-arms for :every.
+Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long long times,
+                          Value stopF, Value catchF) {
+    engageGil();
+    auto cs = std::make_shared<CueState>();
+    Value cancellation = Value::makeHash(); cancellation.hashKind = "Cancellation";
+    cancellation.ext = cs;
+    cuedLoads_++;
+    liveWorkers_++;
+    reapFinishedWorkers();
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    workers_.push_back({BigStackThread([self, code, cs, fin, spawnScope, delaySecs, everySecs, times, stopF, catchF]() mutable {
+        t_isWorker = true;
+        auto clock0 = std::chrono::steady_clock::now();
+        auto napUntil = [&](double secsFromStart) { // GIL not held here; drift-free deadline
+            auto dl = clock0 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                          std::chrono::duration<double>(std::min(secsFromStart, 600.0)));
+            std::this_thread::sleep_until(dl);
+        };
+        double firedAt = delaySecs;
+        napUntil(delaySecs);
+        self->gil_.lock();
+        ExecContext wctx;
+        self->loadCtx(wctx);
+        tctx_.cur = spawnScope;
+        tctx_.dynStack.push_back(spawnScope.get());
+        long long ran = 0;
+        for (;;) {
+            if (cs->cancelled.load(std::memory_order_relaxed)) break;
+            if (stopF.t == VT::Code) {
+                bool stop = false;
+                try { ValueList na; stop = self->callCallable(stopF, na).truthy(); } catch (...) {}
+                if (stop) break;
+            }
+            try { ValueList na; self->callCallable(code, na); }
+            catch (const RakuError& e) {
+                if (catchF.t == VT::Code) {
+                    try { ValueList ca{self->exceptionFor(e)}; self->callCallable(catchF, ca); } catch (...) {}
+                }
+            }
+            catch (const WorkerAbortEx&) { break; } // shutdown: unwind the cue loop
+            catch (...) {}
+            if (self->workerAbort_.load(std::memory_order_relaxed)) break;
+            ran++;
+            // :times(N) without :every repeats back-to-back; :every repeats on the
+            // interval; neither -> one-shot
+            long long target = times > 0 ? times : (everySecs > 0 ? -1 : 1);
+            if (target > 0 && ran >= target) break;
+            if (everySecs > 0) {
+                // park like workerYield: the live registers belong to whoever holds
+                // the GIL — save ours, sleep unlocked, re-acquire, restore
+                static thread_local ExecContext parked; // reused buffers: no per-tick allocs
+                self->saveCtx(parked);
+                self->gilYieldNotify();
+                firedAt += everySecs;      // fixed cadence from the START, not from run end
+                napUntil(firedAt);
+                self->gil_.lock();
+                self->loadCtx(parked);
+            }
+        }
+        self->saveCtx(wctx);
+        self->cuedLoads_--;
+        self->liveWorkers_--;
+        self->gilYieldNotify();
+        fin->store(true, std::memory_order_release);
+    }), fin});
+    return cancellation;
 }
 
 // Block the caller until `ps` completes, dropping the GIL while parked so a
@@ -3244,7 +3323,10 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*TZ") return Value::integer(tzOffsetDyn());
     if (name == "$*INIT-INSTANT") { Value v = Value::number(initInstant_); v.hashKind = "Instant"; return v; }
     if (name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
-    if (name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
+    if (name == "$*SCHEDULER") {
+        if (tctx_.cur) if (Value* p = tctx_.cur->find("$*SCHEDULER")) return *p; // user-assigned wins
+        return defaultScheduler_; // shared .hash: attr writes (uncaught_handler) persist
+    }
     if (name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
     // anything else: resolve from the live env chain (covers %*ENV, $*REPO,
     // program-declared dynamics, $!, $/ — used by native codegen)
@@ -3713,9 +3795,16 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // restore() puts the caller's scope back; called on every exit path. (ENTER
     // phasers now run inside the try, and the CATCH body is wrapped, so a throw
     // from either restores instead of leaking dynStack / bleeding scope.)
-    // the current block/routine are introspectable magicals
-    env->define("&?BLOCK", codeVal);
-    if (!c.isBlock) env->define("&?ROUTINE", codeVal);
+    // &?BLOCK / &?ROUTINE resolve lazily via these frame pointers (no per-call defines)
+    struct MagicalGuard {
+        ExecContext& t; const Value* savedB; const Value* savedR;
+        MagicalGuard(ExecContext& tc, const Value* cv, bool routine)
+            : t(tc), savedB(tc.curBlockVal), savedR(tc.curRoutineVal) {
+            t.curBlockVal = cv;
+            if (routine) t.curRoutineVal = cv;
+        }
+        ~MagicalGuard() { t.curBlockVal = savedB; t.curRoutineVal = savedR; }
+    } magicalGuard{tctx_, &codeVal, !c.isBlock};
     auto restore = [&] {
         // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
         if (topicWB && implicitTopic_local) {
@@ -4026,6 +4115,8 @@ Value* Interpreter::lvalue(Expr* e) {
         }
         Value* p = tctx_.cur->find(ve->name);
         if (p) return p;
+        // &?BLOCK / &?ROUTINE: not real slots — nothing assignable here
+        // (reads go through the VarExpr eval path)
         // inside a method, a bare `@something` may be the twigil-less attribute
         // `has @something` — resolve it against the invocant's declared attrs
         if (ve->name.size() > 1) {
@@ -4110,14 +4201,14 @@ Value* Interpreter::lvalue(Expr* e) {
         if (mc->inv->kind == NK::VarExpr &&
             static_cast<VarExpr*>(mc->inv.get())->name.compare(0, 2, "$*") == 0) {
             Value hv = eval(mc->inv.get());
-            if (hv.t == VT::Hash && hv.hashKind == "FileHandle" && hv.hash) {
+            if (hv.t == VT::Hash && (hv.hashKind == "FileHandle" || hv.hashKind == "Scheduler") && hv.hash) {
                 static thread_local Value dynHandleHold;
-                dynHandleHold = hv;
+                dynHandleHold = hv; // shares .hash with the persistent handle
                 return &(*dynHandleHold.hash)[mc->method];
             }
         }
         Value* base = lvalue(mc->inv.get());
-        if (base->t == VT::Hash && base->hashKind == "FileHandle") {
+        if (base->t == VT::Hash && (base->hashKind == "FileHandle" || base->hashKind == "Scheduler")) {
             if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
             return &(*base->hash)[mc->method];
         }
@@ -4979,7 +5070,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (anyRat && (op == "%" || op == "%%")) {
                 // Rat modulo stays exact: a % b = a - b * floor(a/b)  (10.3 % 3 == 1.3)
                 BigInt an = getN(l), ad = getD(l), bn = getN(r), bd = getD(r);
-                if (bn.isZero()) return Value::typeObj("Failure");
+                if (bn.isZero()) {
+                    if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                        "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
+                    return Value::typeObj("Failure");
+                }
                 BigInt N = an * bd, D = ad * bn;
                 if (D.sign < 0) { N = -N; D = -D; }
                 BigInt q, rm; BigInt::divmod(N, D, q, rm);
@@ -4990,7 +5085,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             }
             if (smallInt && op != "div") { // native fast path for small ints (div stays on BigInt for identical rounding)
                 long long a = l.toInt(), b = r.toInt();
-                if (b == 0) return Value::typeObj("Failure");
+                if (b == 0) {
+                    if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                        "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
+                    return Value::typeObj("Failure");
+                }
                 if (b == -1) return op == "%%" ? Value::boolean(true) : Value::integer(0); // a % -1 == 0 (avoids LLONG_MIN%-1 UB)
                 long long rem = a % b;
                 if (op == "%%") return Value::boolean(rem == 0); // divisibility is sign-independent
@@ -4998,7 +5097,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 return Value::integer(rem); // % / mod
             }
             BigInt a = l.toBig(), b = r.toBig();
-            if (b.isZero()) return Value::typeObj("Failure");
+            if (b.isZero()) {
+                if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                    "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
+                return Value::typeObj("Failure");
+            }
             BigInt q, rem; BigInt::divmod(a, b, q, rem);
             // Raku `div` floors (rounds toward -∞); BigInt::divmod truncates toward
             // zero, so adjust when the remainder is nonzero and the signs differ.
@@ -8006,10 +8109,15 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }
             if (ve->name == "$*SPEC") return Value::typeObj("IO::Spec::Unix"); // POSIX platform
             if (ve->name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
-            if (ve->name == "$*SCHEDULER") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str("ThreadPoolScheduler"); return s; }
+            if (ve->name == "$*SCHEDULER") {
+                if (tctx_.cur) if (Value* p = tctx_.cur->find("$*SCHEDULER")) return *p; // user-assigned wins
+                return defaultScheduler_;
+            }
             if (ve->name == "$*PID") return Value::integer((long long)::getpid());
             if (ve->name == "$*TZ") return Value::integer(tzOffsetDyn());
             if (ve->name == "$*INIT-INSTANT") { Value v = Value::number(initInstant_); v.hashKind = "Instant"; return v; }
+            if (ve->name == "&?BLOCK" && tctx_.curBlockVal) return *tctx_.curBlockVal;
+            if (ve->name == "&?ROUTINE" && tctx_.curRoutineVal) return *tctx_.curRoutineVal;
             if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
             }
             if (ve->declare) {

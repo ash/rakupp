@@ -1608,6 +1608,103 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         rejectNulPath(path);
         Value p = Value::str(path); p.hashKind = "IO"; return p;
     }
+    if (inv.t == VT::Type && inv.s == "CurrentThreadScheduler" && m == "new") {
+        Value v = Value::makeHash(); v.hashKind = "Scheduler";
+        (*v.hash)["name"] = Value::str("CurrentThreadScheduler");
+        (*v.hash)["sync"] = Value::boolean(true);
+        return v;
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Scheduler") {
+        if (m == "cue" && !args.empty()) {
+            Value code = args[0];
+            double delay = 0, every = 0; long long times = 0;
+            bool sawIn = false, sawAt = false, sawTimes = false;
+            Value stopF, catchF;
+            for (auto& a : args) {
+                if (a.t != VT::Pair || !a.pairVal) continue;
+                if (a.s == "in") sawIn = true;
+                if (a.s == "at") sawAt = true;
+                if (a.s == "times") sawTimes = true;
+                if (a.s == "in" || a.s == "at") {
+                    double v = a.pairVal->toNum();
+                    if (std::isnan(v)) throw RakuError{Value::typeObj("X::Scheduler::CueInNaNSeconds"),
+                        "Cannot pass NaN as a number of seconds to Scheduler.cue"};
+                    delay = a.s == "in" ? v : std::max(0.0, v - (double)::time(nullptr));
+                }
+                else if (a.s == "every") {
+                    every = a.pairVal->toNum();
+                    if (std::isnan(every)) throw RakuError{Value::typeObj("X::Scheduler::CueInNaNSeconds"),
+                        "Cannot pass NaN as a number of seconds to Scheduler.cue"};
+                    if (std::isinf(every)) every = 0; // ±Inf every: run once, immediately
+                }
+                else if (a.s == "times") times = a.pairVal->toInt();
+                else if (a.s == "stop") stopF = *a.pairVal;
+                else if (a.s == "catch") catchF = *a.pairVal;
+            }
+            if (catchF.t != VT::Code && inv.hash->count("uncaught_handler"))
+                catchF = (*inv.hash)["uncaught_handler"]; // scheduler-level handler
+            if (sawIn && sawAt)
+                throw RakuError{Value::typeObj("X::Scheduler::Cue"), "Cannot specify both :at and :in"};
+            if (every > 0 && sawTimes && stopF.t == VT::Code)
+                throw RakuError{Value::typeObj("X::Scheduler::Cue"), "Cannot specify :every, :times and :stop together"};
+            if (inv.hash->count("sync")) { // CurrentThreadScheduler: run inline, now
+                if (std::isinf(delay) && delay > 0) { // :in(Inf)/:at(Inf): never runs (-Inf runs NOW)
+                    Value c = Value::makeHash(); c.hashKind = "Cancellation";
+                    c.ext = std::make_shared<CueState>();
+                    return c;
+                }
+                long long target = times > 0 ? times : 1;
+                for (long long i = 0; i < target; i++) {
+                    if (stopF.t == VT::Code) { ValueList na; if (callCallable(stopF, na).truthy()) break; }
+                    try { ValueList na; callCallable(code, na); }
+                    catch (const RakuError& e) {
+                        if (catchF.t != VT::Code) throw;
+                        ValueList ca{exceptionFor(e)}; callCallable(catchF, ca);
+                    }
+                }
+                Value c = Value::makeHash(); c.hashKind = "Cancellation";
+                c.ext = std::make_shared<CueState>();
+                return c;
+            }
+            if (delay < 0 || std::isnan(delay)) delay = 0; // past instants / -Inf run immediately
+            return cueJob(code, delay, every, times, stopF, catchF);
+        }
+        if (m == "loads") {
+            sleepYield(0.002); // let cued workers run — a `1 while .loads` spin must not starve them
+            return Value::integer(cuedLoads_.load());
+        }
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Cancellation" && m == "can")
+        return Value::boolean(!args.empty() && (args[0].toStr() == "cancel" || args[0].toStr() == "cancelled"));
+    if (inv.t == VT::Hash && inv.hashKind == "Cancellation") {
+        auto* cs = static_cast<CueState*>(inv.ext.get());
+        if (m == "cancel")    { if (cs) cs->cancelled.store(true); return Value::boolean(true); }
+        if (m == "cancelled") return Value::boolean(cs && cs->cancelled.load());
+    }
+    if (inv.t == VT::Type && inv.s == "IO::CatHandle" && m == "new") {
+        // minimal CatHandle: a sequence of paths/handles slurped in order
+        Value v = Value::makeHash(); v.hashKind = "CatHandle";
+        Value files = Value::array();
+        for (auto& a : args) {
+            if (a.t == VT::Array && a.arr) for (auto& x : *a.arr) files.arr->push_back(x);
+            else if (a.t != VT::Pair) files.arr->push_back(a);
+        }
+        (*v.hash)["files"] = files;
+        return v;
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "CatHandle") {
+        if (m == "slurp") {
+            std::string out;
+            Value files = (*inv.hash)["files"];
+            if (files.arr) for (auto& f : *files.arr) {
+                ValueList none;
+                Value one = methodCall(Value::str(f.toStr()), "slurp", none); // path-string slurp
+                out += one.toStr();
+            }
+            return Value::str(out);
+        }
+        if (m == "close") return Value::boolean(true);
+    }
     if (inv.t == VT::Type && inv.s == "IO::Special" && m == "new") {
         Value sp = Value::str(args.empty() ? "" : args[0].toStr());
         sp.hashKind = "IO::Special"; return sp;
@@ -1677,7 +1774,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 
     // Lock / Semaphore. No-ops under the GIL (it already serialises); backed by real
     // primitives in parallel mode so mutual exclusion actually holds.
-    if (inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Semaphore")) {
+    if (inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Lock::Async" || inv.s == "Semaphore")) {
         if (m == "new") {
             Value v = Value::makeHash();
             if (inv.s == "Semaphore") {
@@ -3204,7 +3301,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
     // yields a one-element list. Restricted to scalar types so list/array/range/seq values —
     // which carry their own list semantics upstream — are never re-wrapped.
-    if ((m == "list" || m == "List" || m == "Seq" || m == "flat" || m == "eager" || m == "cache") &&
+    if ((m == "list" || m == "List" || m == "Seq" || m == "flat" || m == "eager" || m == "cache" || m == "lazy") &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
          inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair || inv.t == VT::Type ||
          inv.t == VT::Any || inv.t == VT::Nil)) {
@@ -3854,6 +3951,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
         // IO::Handle accessors (with defaults); writable via lvalue()
         if (m == "chomp")  { auto it = inv.hash->find("chomp");  return it != inv.hash->end() ? it->second : Value::boolean(true); }
+        if (m == "encoding") { auto it = inv.hash->find("encoding"); return it != inv.hash->end() ? it->second : Value::str("utf8"); }
         if (m == "nl-in")  { auto it = inv.hash->find("nl-in");  return it != inv.hash->end() ? it->second : Value::str("\n"); }
         if (m == "nl-out") { auto it = inv.hash->find("nl-out"); return it != inv.hash->end() ? it->second : Value::str("\n"); }
         if (m == "path" || m == "IO") {
@@ -4723,7 +4821,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             else out.arr = std::make_shared<ValueList>(items);
             out.isList = true; return out;
         }
-        if (m == "list" || m == "flat" || m == "cache" || m == "eager" || m == "Seq" || m == "List")
+        if (m == "list" || m == "flat" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy")
             return Value::list(items);
         if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }
         if (m == "rotate") { long n = args.empty() ? 1 : args[0].toInt(); long sz = (long)items.size();
