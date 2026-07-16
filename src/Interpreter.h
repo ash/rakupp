@@ -514,6 +514,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r); // bina
 // case as native int64, else fall back to the general applyArith. Semantics are
 // identical — this only skips the string dispatch + boxing on the hot Int path.
 inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int && r.t == VT::Int && !l.big && !r.big; }
+// -O int lanes (Codegen pass 3): may this box be read as / stored into a raw int64?
+// A store additionally requires no enum identity (writing .i under an enumName
+// would leave the stale name as the value's stringification).
+inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big; }
+inline bool rtIntSlot(const Value& v) { return v.t == VT::Int && !v.big && v.enumName.empty(); }
 inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
 inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
 inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }

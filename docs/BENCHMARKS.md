@@ -123,7 +123,7 @@ ahead.
 
 ### `-O` (the optimizer flag)
 
-The `native` column above is the default `--exe`. Adding **`-O`** enables two
+The `native` column above is the default `--exe`. Adding **`-O`** enables three
 speculative codegen passes:
 
 1. **direct-arity calls** — a fixed-arity positional sub gets direct `Value`
@@ -131,7 +131,11 @@ speculative codegen passes:
    allocation;
 2. **inline int arithmetic** — `+ - * ** % %% < <= > >= == !=` emit inline helpers
    that do the small-int case as native `int64` (overflow promotes to bignum),
-   instead of the string-dispatched `applyArith`.
+   instead of the string-dispatched `applyArith`;
+3. **guarded native-int expression lanes** — statement-position int assignments
+   (`$x = …`, `$x += …`, `$x++`) and int conditions compute in raw `int64` with
+   runtime tag guards and store into the target's existing box, constructing no
+   `Value` at all; any guard/overflow failure re-runs the boxed form.
 
 (In-place `~=` string building is *not* one of these — it is now the default in
 both the interpreter and `--exe`.) Measured by
@@ -142,22 +146,22 @@ for reference:
 
 | Benchmark | `--exe` | `--exe -O` | `-O` vs `--exe` | Rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| powmod      | 557.9 ms  | **51.1 ms**  | **10.9×** | 730.1 ms  | 1M `** 3` then `% 1000` — inline pow + mod |
-| sieve       | 1028.7 ms | **368.6 ms** | **2.8×**  | 1006.0 ms | primes < 200k by trial division — inline `* <= %%` |
-| fibcalls    | 693.2 ms  | **279.3 ms** | **2.5×**  | 1387.2 ms | fib(32) — direct-arity calls + inline `< + -` |
-| intsum      | 290.1 ms  | 249.2 ms     | 1.2×      | 644.3 ms  | 5M int accumulation — inline `+ - *` |
-| stringbuild | 23.8 ms   | 24.2 ms      | 1.0×      | 220.1 ms  | 400k `~=` appends — in-place O(n) string build |
+| sieve       | 1042.2 ms | **24.6 ms**  | **42.3×** | 1018.3 ms | primes < 200k by trial division — `* <= %%` all laned |
+| powmod      | 555.8 ms  | **50.7 ms**  | **11.0×** | 739.6 ms  | 1M `** 3` then `% 1000` — inline pow + mod lane |
+| intsum      | 281.3 ms  | **36.6 ms**  | **7.7×**  | 664.8 ms  | 5M int accumulation — `+=` lane, zero boxing |
+| fibcalls    | 691.8 ms  | **194.7 ms** | **3.6×**  | 1407.9 ms | fib(32) — direct-arity calls + int-lane condition |
+| stringbuild | 23.8 ms   | 23.6 ms      | 1.0×      | 216.8 ms  | 400k `~=` appends — in-place O(n) string build |
 
-`-O` buys the most where the generated code otherwise round-trips every
-operation through the generic runtime: `powmod` (10.9× — `**` and `%` become
-inline int ops) and the call-bound `fibcalls` (2.5× — direct-arity calls skip
-the per-call `ValueList` heap allocation). `sieve` is the honest caveat at
-plain `--exe`: its trial-division inner loop is the one kernel here where
-default codegen ties Rakudo (1028.7 vs 1006.0 ms) — and `-O` flips it to 2.7×
-ahead. `stringbuild` gains nothing because in-place append is already the
-default everywhere. It's opt-in, off by default, and produces identical output.
-See [OPTIMIZATION.md](OPTIMIZATION.md) for what each pass emits and the C++
-optimization-level forwarding (`-O3`/`-Os`/`-Ofast`).
+The lanes (pass 3) dominate this table: `sieve`'s inner loop — `while $d * $d
+<= $n`, `if $n %% $d`, `$d++` — runs as raw `int64`, taking it from a tie with
+Rakudo at plain `--exe` to 41× ahead, and `intsum` shed its four
+per-iteration `Value` constructions (1.2× → 7.7×). On the main kernels above,
+`-O` puts fib at 48.5 ms (3.5× over `--exe`, 9.7× over Rakudo) and loopsum at
+10.0 ms. `stringbuild` gains nothing because in-place append is already the
+default everywhere. It's opt-in, off by default, and produces identical output
+(validated per-program before timing, plus every deterministic example against
+its golden). See [OPTIMIZATION.md](OPTIMIZATION.md) for what each pass emits
+and the C++ optimization-level forwarding (`-O3`/`-Os`/`-Ofast`).
 
 ### Real-world: grammar parsing (YAMLish)
 

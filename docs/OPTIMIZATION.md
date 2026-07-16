@@ -105,6 +105,47 @@ static Value u_fib(Value v_n) {
 No heap allocation, no string dispatch — pure inlinable code. Under a real C++
 optimizer this collapses to tight native-int recursion.
 
+### 3. Guarded native-int expression lanes (skip the `Value` box entirely)
+
+Passes 1–2 still build a boxed `Value` for every intermediate result — `$sum +=
+$_ * 2 - 1` constructs four `Value`s per evaluation even with `rtAdd`/`rtSub`/
+`rtMul`. Pass 3 removes them: a straight-line integer expression whose leaves
+are **int literals and plain scalar variables** is computed in raw `int64`.
+Each `Value` leaf is tag-guarded at runtime (`rtIntBox`: an `Int`, not a
+bignum), each op is overflow-checked, and the result is stored **into the
+target's existing box** (`.i`) with no `Value` construction at all. Any guard,
+overflow, or domain failure falls through to the untouched boxed emission —
+lane leaves are pure (literals and variable reads), so re-evaluating them on
+the slow path is safe.
+
+```cpp
+// $sum += $_ * 2 - 1        (inside a native range loop; __i3 is the counter)
+{ bool __lok = false; do { // -O int lane
+    if (!(rtIntBox(v__t0) && rtIntSlot(v_ssum))) break;
+    long long __t1; if (rakupp::mul_ovf(v__t0.i, 2LL, &__t1)) break;
+    long long __t2; if (rakupp::sub_ovf(__t1, 1LL, &__t2)) break;
+    long long __t3; if (rakupp::add_ovf(v_ssum.i, __t2, &__t3)) break;
+    v_ssum.i = __t3; __lok = true;
+} while (0);
+if (!__lok) { v_ssum = rtAdd(v_ssum, rtSub(rtMul(v__t0, Value::integer(2LL)), Value::integer(1LL))); } }
+```
+
+The lane applies to:
+
+- **statement-position assignment** to a plain scalar — `$x = <int expr>` and
+  `$x += -= *= %= <int expr>` (in-place stores additionally require
+  `rtIntSlot`: not an enum-typed box, whose stringification is its name);
+- **statement-position `++`/`--`** on a plain scalar;
+- **conditions** (`if`/`while`/`until`/ternary) that are int comparisons or
+  `%%` — the whole comparison evaluates unboxed inside a `bool` lambda.
+
+Ops covered: `+ - *` (overflow-checked, promoting via the boxed path), unary
+minus, `%` (floored, mirroring `rtMod`'s int case bit-for-bit; a zero divisor
+falls to the boxed path, which throws), `%%`, and the six comparisons.
+Everything else — `Num`s, strings, `Rat`s, bignums, array elements, method
+calls — fails the lane at compile time or its guards at runtime and takes the
+boxed route unchanged.
+
 ## A related default: in-place `~=` (not gated by `-O`)
 
 `$s ~= …` naively rebuilds the whole string each step — `$s = $s ~ "x"` copies
@@ -156,26 +197,27 @@ default — it's for inspecting/debugging the generated C++, not for speed.
 
 ## Measured impact
 
-`--exe`, best of 10 runs (startup-inclusive, as in
-[BENCHMARKS.md](BENCHMARKS.md)).
+`--exe`, best of 6 runs after a discarded warm-up (startup-inclusive, as in
+[BENCHMARKS.md](BENCHMARKS.md)); measured 2026-07-16 on an idle machine.
 
 | Benchmark | `--exe` | `--exe -O` | speed-up | what `-O` reached |
 |---|---:|---:|---:|---|
-| fib      | 165 ms | **66 ms** | 2.5× | direct-arity calls + native-bool cond |
-| arrayops | 97 ms  | **77 ms** | 1.3× | map/grep-body boxing |
-| loopsum  | 32 ms  | 30 ms | 1.1× | `+=` |
-| hash     | 24 ms  | 24 ms | 1.0× | (`% 1000` already fast) |
-| sortnums | 53 ms  | 53 ms | 1.0× | (`.sort` dominates) |
-| regex    | 80 ms  | 80 ms | — | (regex engine) |
-| bigint   | 43 ms  | 43 ms | — | (`BigInt` multiply) |
-| strcat   | 8 ms   | 7 ms   | — | (`~=` already O(n) by default) |
+| fib      | 167.8 ms | **48.5 ms** | 3.5× | direct-arity calls + int-lane condition |
+| loopsum  | 28.1 ms  | **10.0 ms** | 2.8× | `+=` lane over the native counter |
+| arrayops | 103.8 ms | **84.9 ms** | 1.2× | map/grep-body boxing |
+| regex    | 64.1 ms  | 60.3 ms | 1.1× | (regex engine dominates) |
+| hash     | 16.5 ms  | 15.9 ms | 1.0× | (hash slots, not scalars) |
+| sortnums | 51.2 ms  | 50.5 ms | 1.0× | (`.sort` dominates) |
+| bigint   | 30.2 ms  | 30.3 ms | 1.0× | (`BigInt` multiply) |
+| strcat   | 4.4 ms   | 4.9 ms  | 1.0× | (`~=` already O(n) by default) |
 
 These `--exe` baselines are much lower than they once were: the runtime's
 `applyArith` now hot-paths `Int`/`Int` `+ - * < <= > >= == != %` with a char
 switch instead of a chain of `op == "…"` string compares, and `--exe` (which
 links that runtime) inherits it. So `-O`'s remaining edge is the boxing/allocation
-it removes *entirely* — the per-call `ValueList` (`fib` direct calls) and `Value`
-boxing in tight bodies (`arrayops`).
+it removes *entirely* — the per-call `ValueList` (`fib` direct calls), and with
+pass 3 every `Value` temporary in laneable int statements and conditions
+(`loopsum`, and the showcase kernels below).
 
 Every kernel here is already ahead of Rakudo at plain `--exe` (fib included, now
 that the runtime hot-paths integer arithmetic). Where the time is **inside a
@@ -188,9 +230,14 @@ times, where removing the per-call `ValueList` allocation still halves the time.
 `-O` is validated to produce output byte-for-byte identical to the interpreter:
 
 - all benchmark programs match with `-O` on;
+- every deterministic example in `examples/` compiles with `--exe -O` and
+  matches its golden output in `t/expected/`;
 - the arithmetic fast-path fallbacks are checked directly — int64 overflow →
   bignum, `Int`/`Num` mixes, string coercion (`"3" + 4`), `<=>` (left on the
-  general path), sorting, and `+=` at the int64 boundary.
+  general path), sorting, and `+=` at the int64 boundary;
+- the lane fallbacks likewise: `+=`/`++`/`*=` crossing int64 promote to bignum,
+  floored `%` with negative operands, `%= 0`, and comparisons whose
+  intermediate overflows all match the interpreter exactly.
 
 The design leans on the fallback: anything the fast path doesn't recognize (a
 `Rat`, a bignum operand, a non-`Int` type, a named/slurpy call) routes to the
@@ -198,16 +245,23 @@ same runtime code the non-`-O` build uses.
 
 ## Limits and what's next
 
-`-O` is deliberately conservative — it removes obvious per-operation overhead
-without changing the value model. The bigger remaining lever is **leaving the
-`Value` box entirely**: proving a parameter or local is always an `Int` and
-emitting native `int64` variables and arithmetic, so there's no `Value`
-construction/copy at all. That needs light type inference over the function body
-and is the natural next `-O` pass. Beyond it: devirtualizing monomorphic method
-calls, constant-folding literal arithmetic, and specializing common list methods
-(`.map`/`.grep`/`.sort`) on native element types.
+`-O` is deliberately conservative — it removes per-operation overhead without
+changing the value model. Pass 3 delivered the first slice of **leaving the
+`Value` box entirely** for statements and conditions; the remaining levers, in
+rough order of expected payoff:
 
-None of that is here yet; `-O` today is the two passes above.
+- **value-position lanes** — laneable int expressions inside larger
+  expressions (call arguments, list elements) still box;
+- **`Num` lanes** — the same trick for `double` arithmetic (no overflow
+  checks needed, just tag guards);
+- **array-element lanes** — `@a[$i]` reads/writes inside the lane (a bounds +
+  tag guard against the underlying vector);
+- **native int locals** — proving a `my $x` never escapes or leaves `Int` and
+  emitting a raw `long long` with no box at all (full type inference);
+- devirtualizing monomorphic method calls, constant-folding literal
+  arithmetic, and specializing `.map`/`.grep`/`.sort` on native element types.
+
+`-O` today is the three passes above.
 
 ## Showcase suite
 
@@ -221,26 +275,25 @@ reference):
 ./build/rakupp tools/run-optbench.raku
 ```
 
-Best of 5 runs each, on this machine (macOS/Darwin 25.5, Rakudo v2026.06):
+Best of 5 runs each, on this machine (macOS/Darwin 24.6, Rakudo v2026.06,
+measured 2026-07-16 with all three passes):
 
 | benchmark | `--exe` | `--exe -O` | `-O` speed-up | rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| powmod      | 570 ms  | 62 ms  | 9.2× | 582 ms | 1M `** 3` then `% 1000` |
-| sieve       | 1191 ms | 479 ms | 2.5× | 1495 ms | primes <200k — `* <= %%` |
-| fibcalls    | 781 ms  | 351 ms | 2.2× | 1262 ms | fib(32) — calls + `< + -` |
-| intsum      | 342 ms  | 296 ms | 1.2× | 830 ms | 5M `+= $_ * 2 - 1` |
-| stringbuild | 32 ms   | 32 ms  | 1.0× | 170 ms | 400k `~=` — already O(n) by default |
+| sieve       | 1042.2 ms | **24.6 ms**  | **42.3×** | 1018.3 ms | primes <200k — `* <= %%` |
+| powmod      | 555.8 ms  | **50.7 ms**  | **11.0×** | 739.6 ms  | 1M `** 3` then `% 1000` |
+| intsum      | 281.3 ms  | **36.6 ms**  | **7.7×**  | 664.8 ms  | 5M `+= $_ * 2 - 1` |
+| fibcalls    | 691.8 ms  | **194.7 ms** | **3.6×**  | 1407.9 ms | fib(32) — calls + `< + -` |
+| stringbuild | 23.8 ms   | 23.6 ms      | 1.0×      | 216.8 ms  | 400k `~=` — already O(n) by default |
 
-These deltas are smaller than they were, because plain `--exe` got a lot faster:
-the runtime's `applyArith` now hot-paths `Int`/`Int` `+ - * < <= > >= == != %` (a
-char switch instead of string dispatch), and `--exe` without `-O` links that
-runtime — so it already pays no string-dispatch cost for those ops. `-O`'s
-remaining edge is what it *removes entirely*: the per-call `ValueList` (direct
-calls — `fibcalls`), all `Value` boxing (`sieve`), and ops still outside the
-runtime fast-path like `**` (`powmod`, where `-O`'s `rtPow` still wins 9×).
-`stringbuild` is flat because in-place `~=` is default in both builds. As always
-this is only the subset of Raku both engines run identically — not a coverage
-claim (see [BENCHMARKS.md](BENCHMARKS.md)).
+The int lanes (pass 3) are what moved this table: `sieve`'s whole inner loop —
+`while $d * $d <= $n`, `if $n %% $d`, `$d++` — now runs as raw `int64`, taking
+it from a tie with Rakudo at plain `--exe` (1042 vs 1018 ms) to 41× ahead;
+`intsum` went from 1.2× (arithmetic already fast, boxing dominant) to 7.7×
+once the four per-iteration `Value` constructions disappeared. `stringbuild`
+is flat because in-place `~=` is default in both builds. As always this is
+only the subset of Raku both engines run identically — not a coverage claim
+(see [BENCHMARKS.md](BENCHMARKS.md)).
 
 ## See also
 

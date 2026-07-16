@@ -198,6 +198,22 @@ struct Codegen {
     // comparison emits a native-bool helper directly, skipping the Bool Value +
     // RT.boolify round-trip; anything else falls back to RT.boolify.
     std::string exBool(Expr* e) {
+        // -O int lane: an all-int comparison (or `%%`) evaluates guard-checked in
+        // raw int64; on any guard/domain failure the boxed form below re-evaluates.
+        if (optimize_) {
+            Lane L;
+            std::string c = laneBool(e, L);
+            if (!c.empty()) {
+                std::string out = "([&]() -> bool { do { ";
+                if (!L.guards.empty()) out += "if (!(" + joinAnd(L.guards) + ")) break; ";
+                for (auto& s : L.steps) out += s + " ";
+                out += "return " + c + "; } while (0); return " + exBoolBoxed(e) + "; }())";
+                return out;
+            }
+        }
+        return exBoolBoxed(e);
+    }
+    std::string exBoolBoxed(Expr* e) {
         if (e->kind == NK::Binary && !hasWhatever(e)) {
             auto* b = static_cast<Binary*>(e);
             static const std::map<std::string, std::string> cmp = {
@@ -630,13 +646,17 @@ struct Codegen {
                     if (u->op == "i") return "RT.postfixIPub(" + ex(u->operand.get()) + ")"; // (2+3)i
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
                     std::string delta = u->op == "++" ? "1" : "-1";
+                    std::string add = optimize_ ? "rtAdd(_o, Value::integer(" + delta + "))"
+                                                : "applyArith(\"+\", _o, Value::integer(" + delta + "))";
                     return "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
-                           "; Value _o=_r; _r=applyArith(\"+\", _o, Value::integer(" + delta + ")); return _o; }())";
+                           "; Value _o=_r; _r=" + add + "; return _o; }())";
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
                     std::string delta = u->op == "++" ? "1" : "-1";
+                    std::string add = optimize_ ? "rtAdd(_r, Value::integer(" + delta + "))"
+                                                : "applyArith(\"+\", _r, Value::integer(" + delta + "))";
                     return "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
-                           "; _r=applyArith(\"+\", _r, Value::integer(" + delta + ")); return _r; }())";
+                           "; _r=" + add + "; return _r; }())";
                 }
                 if (u->op == "quietly") { // suppress warn() output in the operand
                     std::string body = u->operand->kind == NK::BlockExpr
@@ -959,6 +979,9 @@ struct Codegen {
                         return;
                     }
                 }
+                // -O int lanes: statement-position int assignment / ++ / -- on plain scalars
+                if (optimize_ && e->kind == NK::Assign && tryLaneAssign(static_cast<Assign*>(e), ind)) return;
+                if (optimize_ && e->kind == NK::Unary && tryLaneIncDec(static_cast<Unary*>(e), ind)) return;
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
                     const std::string& nm = static_cast<VarExpr*>(e)->name;
@@ -1480,6 +1503,153 @@ struct Codegen {
             {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"}};
         auto it = m.find(op);
         return it == m.end() ? "" : it->second;
+    }
+
+    // ---- -O pass 3: guarded native-int expression lanes ----
+    // Straight-line integer arithmetic whose leaves are int literals and plain
+    // scalar variables is computed in raw int64: leaf boxes are tag-guarded at
+    // runtime, each op is overflow-checked, and the result is stored back into
+    // the target's existing box (.i) with no Value construction at all. Any
+    // guard, overflow, or domain failure falls through to the untouched boxed
+    // emission — the leaves are pure (literals and variable reads), so
+    // re-evaluating them on the slow path is safe. Semantics of `%`/`%%` mirror
+    // rtMod/rtDivides' int cases exactly (floored mod; 0 divisor → boxed path).
+    struct Lane {
+        std::vector<std::string> guards; // rtIntBox(...) checks on Value leaves
+        std::vector<std::string> steps;  // "…; if (…) break;" tmp defs + overflow/domain checks
+    };
+    // A scalar a lane may read: a plain lexical/global `$name`, or the current
+    // topic. Returns the C++ lvalue name ("" = not laneable).
+    std::string laneVar(VarExpr* v) {
+        const std::string& n = v->name;
+        if (n == "$_") return topics.empty() ? "" : topics.back();
+        if (n.size() < 2 || n[0] != '$') return "";
+        char c1 = n[1];
+        if (!(std::isalpha((unsigned char)c1) || c1 == '_')) return ""; // $!, $/, $0, $*X, $?X, $.x …
+        return mangleVar(n);
+    }
+    // Compile e into the lane; returns a C++ `long long` rvalue ("" = lane fails).
+    std::string laneInt(Expr* e, Lane& L) {
+        switch (e->kind) {
+            case NK::IntLit: {
+                auto* n = static_cast<IntLit*>(e);
+                if (!n->big.empty()) return "";
+                return std::to_string(n->v) + "LL";
+            }
+            case NK::VarExpr: {
+                std::string lv = laneVar(static_cast<VarExpr*>(e));
+                if (lv.empty()) return "";
+                L.guards.push_back("rtIntBox(" + lv + ")");
+                return lv + ".i";
+            }
+            case NK::Unary: {
+                auto* u = static_cast<Unary*>(e);
+                if (u->postfix || u->op != "-") return "";
+                std::string a = laneInt(u->operand.get(), L);
+                if (a.empty()) return "";
+                std::string t = gensym("__ln");
+                L.steps.push_back("long long " + t + "; if (rakupp::sub_ovf(0LL, " + a + ", &" + t + ")) break;");
+                return t;
+            }
+            case NK::Binary: {
+                auto* b = static_cast<Binary*>(e);
+                const std::string& op = b->op;
+                std::string ovf = op == "+" ? "add_ovf" : op == "-" ? "sub_ovf" : op == "*" ? "mul_ovf" : "";
+                if (ovf.empty() && op != "%") return "";
+                std::string a = laneInt(b->lhs.get(), L); if (a.empty()) return "";
+                std::string c = laneInt(b->rhs.get(), L); if (c.empty()) return "";
+                std::string t = gensym("__ln");
+                if (op == "%") { // rtMod's int case: floored modulo; 0 divisor → boxed path
+                    L.steps.push_back("if (" + c + " == 0) break;");
+                    L.steps.push_back("long long " + t + " = " + a + " % " + c + "; if (" + t
+                                    + " != 0 && ((" + t + " < 0) != (" + c + " < 0))) " + t + " += " + c + ";");
+                } else {
+                    L.steps.push_back("long long " + t + "; if (rakupp::" + ovf + "(" + a + ", " + c + ", &" + t + ")) break;");
+                }
+                return t;
+            }
+            default: return "";
+        }
+    }
+    // Compile a boolean condition into the lane: int comparisons and `%%`.
+    std::string laneBool(Expr* e, Lane& L) {
+        if (e->kind != NK::Binary || hasWhatever(e)) return "";
+        auto* b = static_cast<Binary*>(e);
+        static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
+        if (cmp.count(b->op)) {
+            std::string a = laneInt(b->lhs.get(), L); if (a.empty()) return "";
+            std::string c = laneInt(b->rhs.get(), L); if (c.empty()) return "";
+            return "(" + a + " " + b->op + " " + c + ")";
+        }
+        if (b->op == "%%") { // rtDivides' int case; 0 divisor → boxed path (throws)
+            std::string a = laneInt(b->lhs.get(), L); if (a.empty()) return "";
+            std::string c = laneInt(b->rhs.get(), L); if (c.empty()) return "";
+            L.steps.push_back("if (" + c + " == 0) break;");
+            return "(" + a + " % " + c + " == 0)";
+        }
+        return "";
+    }
+    static std::string joinAnd(const std::vector<std::string>& v) {
+        std::string s;
+        for (auto& g : v) { if (!s.empty()) s += " && "; s += g; }
+        return s;
+    }
+    // Statement-position `$x = <int expr>` / `$x op= <int expr>` on a plain
+    // scalar: compute native, store into the existing box; the boxed emission
+    // is the fallback. Returns true if the lane was emitted.
+    bool tryLaneAssign(Assign* a, int ind) {
+        if (a->target->kind != NK::VarExpr) return false;
+        auto* tv = static_cast<VarExpr*>(a->target.get());
+        if (tv->declare) return false;                 // `my $x = …` declares a C++ var
+        std::string lv = laneVar(tv);
+        if (lv.empty()) return false;
+        const std::string& op = a->op;
+        bool plain = op == "=";
+        if (!plain && op != "+=" && op != "-=" && op != "*=" && op != "%=") return false;
+        Lane L;
+        std::string r = laneInt(a->value.get(), L);
+        if (r.empty()) return false;
+        std::string store;
+        if (plain) {
+            // overwrite: reuse the box when it's a plain int slot, else replace it
+            store = "if (rtIntSlot(" + lv + ")) " + lv + ".i = " + r + "; else " + lv + " = Value::integer(" + r + ");";
+        } else {
+            L.guards.push_back("rtIntSlot(" + lv + ")");
+            std::string binop = op.substr(0, op.size() - 1), t = gensym("__ln");
+            if (binop == "%") {
+                L.steps.push_back("if (" + r + " == 0) break;");
+                L.steps.push_back("long long " + t + " = " + lv + ".i % " + r + "; if (" + t
+                                + " != 0 && ((" + t + " < 0) != (" + r + " < 0))) " + t + " += " + r + ";");
+            } else {
+                std::string ovf = binop == "+" ? "add_ovf" : binop == "-" ? "sub_ovf" : "mul_ovf";
+                L.steps.push_back("long long " + t + "; if (rakupp::" + ovf + "(" + lv + ".i, " + r + ", &" + t + ")) break;");
+            }
+            store = lv + ".i = " + t + ";";
+        }
+        std::string ok = gensym("__lok");
+        line(ind, "{ bool " + ok + " = false; do { // -O int lane");
+        if (!L.guards.empty()) line(ind + 1, "if (!(" + joinAnd(L.guards) + ")) break;");
+        for (auto& s : L.steps) line(ind + 1, s);
+        line(ind + 1, store + " " + ok + " = true;");
+        line(ind, "} while (0);");
+        line(ind, "if (!" + ok + ") { " + assign(a) + "; } }");
+        return true;
+    }
+    // Statement-position `$x++` / `$x--` / `++$x` / `--$x` on a plain scalar.
+    bool tryLaneIncDec(Unary* u, int ind) {
+        if (u->op != "++" && u->op != "--") return false;
+        if (u->operand->kind != NK::VarExpr) return false;
+        std::string lv = laneVar(static_cast<VarExpr*>(u->operand.get()));
+        if (lv.empty()) return false;
+        std::string ok = gensym("__lok"), t = gensym("__ln");
+        std::string ovf = u->op == "++" ? "add_ovf" : "sub_ovf";
+        line(ind, "{ bool " + ok + " = false; do { // -O int lane: " + u->op);
+        line(ind + 1, "if (!rtIntSlot(" + lv + ")) break;");
+        line(ind + 1, "long long " + t + "; if (rakupp::" + ovf + "(" + lv + ".i, 1LL, &" + t + ")) break;");
+        line(ind + 1, lv + ".i = " + t + "; " + ok + " = true;");
+        line(ind, "} while (0);");
+        line(ind, "if (!" + ok + ") { " + ex(u) + "; } }");
+        return true;
     }
 
     // ---- sub definitions ----
