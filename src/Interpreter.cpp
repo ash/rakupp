@@ -7041,8 +7041,11 @@ Value Interpreter::evalUnary(Unary* u) {
         Value* lv = lvalue(u->operand.get());
         Value oldv = *lv;
         Value newv;
-        bool strMagic = lv->t == VT::Str && !lv->s.empty() &&
-                        std::any_of(lv->s.begin(), lv->s.end(), [](char c){ return std::isalpha((unsigned char)c); });
+        // A Str always increments/decrements as a string in Rakudo — even
+        // numeric-looking ones ("42"++ is Str "43", "10"-- keeps width: "09",
+        // "-5"++ is "-6"). strSucc/strPred pick the magic window themselves
+        // and leave strings with nothing incrementable unchanged.
+        bool strMagic = lv->t == VT::Str;
         if (strMagic && u->op == "++") {
             newv = Value::str(strSucc(lv->s));
         } else if (strMagic && u->op == "--") {

@@ -427,35 +427,58 @@ ValueList Value::flatten() const {
     return out;
 }
 
+// The magic increment/decrement window (S03, Str.succ): the LAST alphanumeric
+// run that is not immediately preceded by a '.', so trailing extension-like
+// segments are skipped — "abc.txt"++ is "abd.txt", "foo.tar.gz"++ is
+// "fop.tar.gz", "v1.2.3"++ is "v2.2.3". Returns false when nothing in the
+// string is incrementable (".txt", "🐧.txt", "") — the string stays unchanged.
+static bool succWindow(const std::string& s, int& lo, int& hi) {
+    auto alnum = [](unsigned char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    };
+    int i = (int)s.size() - 1;
+    while (i >= 0) {
+        while (i >= 0 && !alnum((unsigned char)s[i])) i--;   // skip a non-alnum tail
+        if (i < 0) return false;
+        int end = i;
+        while (i >= 0 && alnum((unsigned char)s[i])) i--;    // the candidate run
+        if (i < 0 || s[i] != '.') { lo = i + 1; hi = end + 1; return true; }
+        i--; // run is a ".ext" segment — skip it and its dot, keep scanning left
+    }
+    return false;
+}
+
 std::string strSucc(const std::string& s) {
-    if (s.empty()) return "1";
+    int lo, hi;
+    if (!succWindow(s, lo, hi)) return s; // nothing incrementable: unchanged (Rakudo)
     std::string r = s;
-    int pos = (int)r.size() - 1;
-    for (; pos >= 0; --pos) {
+    int pos = hi - 1;
+    for (; pos >= lo; --pos) {
         char c = r[pos];
         if (c >= '0' && c <= '9') { if (c != '9') { r[pos] = c + 1; return r; } r[pos] = '0'; }
         else if (c >= 'a' && c <= 'z') { if (c != 'z') { r[pos] = c + 1; return r; } r[pos] = 'a'; }
-        else if (c >= 'A' && c <= 'Z') { if (c != 'Z') { r[pos] = c + 1; return r; } r[pos] = 'A'; }
-        else break; // non-alnum stops the carry
+        else { if (c != 'Z') { r[pos] = c + 1; return r; } r[pos] = 'A'; }
     }
-    char k = r[pos + 1];
+    // carried past the window start: grow the window with its first char's class
+    char k = r[lo];
     char ins = (k == '0') ? '1' : (k == 'a') ? 'a' : (k == 'A') ? 'A' : '1';
-    r.insert(pos + 1, 1, ins);
+    r.insert(lo, 1, ins);
     return r;
 }
 
 std::string strPred(const std::string& s, bool& ok) {
     ok = true;
+    int lo, hi;
+    if (!succWindow(s, lo, hi)) return s; // nothing decrementable: unchanged
     std::string r = s;
-    int pos = (int)r.size() - 1;
-    for (; pos >= 0; --pos) {
+    int pos = hi - 1;
+    for (; pos >= lo; --pos) {
         char c = r[pos];
         if (c >= '0' && c <= '9') { if (c != '0') { r[pos] = c - 1; return r; } r[pos] = '9'; }
         else if (c >= 'a' && c <= 'z') { if (c != 'a') { r[pos] = c - 1; return r; } r[pos] = 'z'; }
-        else if (c >= 'A' && c <= 'Z') { if (c != 'A') { r[pos] = c - 1; return r; } r[pos] = 'Z'; }
-        else break;
+        else { if (c != 'A') { r[pos] = c - 1; return r; } r[pos] = 'Z'; }
     }
-    ok = false; // borrowed past the start
+    ok = false; // borrowed past the window start: "Decrement out of range"
     return s;
 }
 
