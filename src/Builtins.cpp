@@ -2718,6 +2718,27 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             return Value::integer(civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1);
         }
+        if (m == "week-number" || m == "week-year" || m == "week") {
+            long long y = fld("year"), mo = fld("month"), d = fld("day");
+            long long ordinal = civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1;
+            static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+            auto dow = [&](long long yy, long long mm, long long dd) -> int { // 1=Mon..7=Sun
+                long long yr = (mm < 3) ? yy - 1 : yy;
+                int sak = (int)(((yr + yr / 4 - yr / 100 + yr / 400 + t[(mm - 1) % 12] + dd) % 7 + 7) % 7);
+                return (sak + 6) % 7 + 1;
+            };
+            auto weeksInYear = [](long long yy) -> long long { // ISO 8601: 52 or 53
+                auto p = [](long long a) { return (int)(((a + a / 4 - a / 100 + a / 400) % 7 + 7) % 7); };
+                return (p(yy) == 4 || p(yy - 1) == 3) ? 53 : 52;
+            };
+            long long wd = dow(y, mo, d);
+            long long week = (10 + ordinal - wd) / 7, wyear = y;
+            if (week < 1) { wyear = y - 1; week = weeksInYear(y - 1); }
+            else if (week > weeksInYear(y)) { wyear = y + 1; week = 1; }
+            if (m == "week-number") return Value::integer(week);
+            if (m == "week-year")   return Value::integer(wyear);
+            Value o = Value::array({Value::integer(wyear), Value::integer(week)}); o.isList = true; return o;
+        }
         if (m == "daycount") { // days since the MJD epoch (1858-11-17)
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             return Value::integer(civilToDays(y, mo, d) + 40587);

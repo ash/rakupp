@@ -818,7 +818,21 @@ Value rtHashLit(const ValueList& items) {
 // `@a = expr` for native codegen: list-assignment semantics. A List splices its
 // elements (one level, via listToArray); an Array (itemized rows included) keeps
 // its elements as they are; a Range expands; a lone scalar becomes a 1-elem array.
+// A Hash (or quanthash) in list context spreads into its Pairs: a plain Hash
+// gives `key => value`, a Set gives `elem => True`, a Bag/Mix `elem => weight`.
+// `my @a = %h` / `my @s = $set` all go through this. (Iteration order follows
+// the container; callers that need a stable order sort.)
+static Value hashToPairs(const Value& v) {
+    Value out = Value::array(); out.isList = true;
+    if (!v.hash) return out;
+    bool setty = v.hashKind == "Set" || v.hashKind == "SetHash";
+    for (auto& kv : *v.hash)
+        out.arr->push_back(Value::pair(kv.first, setty ? Value::boolean(true) : kv.second));
+    return out;
+}
+
 Value rtArrayVal(const Value& v) {
+    if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     if (v.t == VT::Array && v.arr) {
         if (v.ext) return v; // a lazy seq stays lazy; indexing/consumers materialise on demand
         if (v.isList) { Value r = listToArray(*v.arr); r.isList = false; return r; }
@@ -832,6 +846,7 @@ Value rtArrayVal(const Value& v) {
 }
 
 static Value coerceArray(const Value& v) {
+    if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     if (v.t == VT::Array) {
         if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
             Value r = Value::array(); r.arr->push_back(v); return r;
