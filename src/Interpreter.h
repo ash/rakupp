@@ -518,6 +518,8 @@ inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int &&
 // A store additionally requires no enum identity (writing .i under an enumName
 // would leave the stale name as the value's stringification).
 inline bool rtIntBox(const Value& v)  { return v.t == VT::Int && !v.big; }
+// --exe `is rw` params: bind a reference into the (caller-visible) ValueList slot.
+inline Value& rtPosRef(ValueList& a, size_t i) { if (a.size() <= i) a.resize(i + 1); return a[i]; }
 inline bool rtIntSlot(const Value& v) { return v.t == VT::Int && !v.big && v.enumName.empty(); }
 inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
 inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
