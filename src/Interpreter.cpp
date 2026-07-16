@@ -52,8 +52,10 @@ void srandSeed(long long s) {
 double randDouble() {
     if (!g_rand_seeded) {
         g_rand_seeded = true;
-        unsigned long s = (unsigned long)::time(nullptr) ^ ((unsigned long)::getpid() << 16)
-                        ^ (unsigned long)std::hash<std::thread::id>{}(std::this_thread::get_id());
+        // 64-bit on purpose: unsigned long is 32 bits on LLP64 (Windows) and
+        // wasm32, where a `>> 32` would be undefined.
+        unsigned long long s = (unsigned long long)::time(nullptr) ^ ((unsigned long long)::getpid() << 16)
+                             ^ (unsigned long long)std::hash<std::thread::id>{}(std::this_thread::get_id());
         g_rand_xs[0] = (unsigned short)s; g_rand_xs[1] = (unsigned short)(s >> 16); g_rand_xs[2] = (unsigned short)(s >> 32);
     }
     return erand48(g_rand_xs);
@@ -870,7 +872,8 @@ thread_local std::vector<std::shared_ptr<ReactCtx>> Interpreter::reactStack_;
 thread_local int Interpreter::threadDepth_ = 0;
 
 Interpreter::Interpreter() {
-    { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); initInstant_ = ts.tv_sec + ts.tv_nsec / 1e9; }
+    initInstant_ = std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
     defaultScheduler_ = Value::makeHash(); defaultScheduler_.hashKind = "Scheduler";
     (*defaultScheduler_.hash)["name"] = Value::str("ThreadPoolScheduler");
     mainThread_ = std::this_thread::get_id();
