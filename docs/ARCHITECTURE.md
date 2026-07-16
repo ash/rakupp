@@ -97,6 +97,10 @@ callables, `obj` for objects, `big`/`ratN`/`ratD` for the number tower). Copying
 a `Value` is cheap and shares the payload — which is why, e.g., mutating an
 object attribute through a copied `self` handle works.
 
+> For the full runtime model — how this one struct represents every dynamic
+> value, how variables and containers relate, how calls/dispatch work, and how
+> lazy/infinite sequences are implemented — see **[RUNTIME.md](RUNTIME.md)**.
+
 ### Environments, classes, callables
 
 - `Env` — a lexical scope: `unordered_map<string,Value>` plus a parent pointer.
