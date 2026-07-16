@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Markdown — Raku.js</title>
+<style>
+  :root { --bd: #e2e2e7; --mut: #888; --accent: #2563eb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; color: #1a1a1a; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 0.6rem 1rem; border-bottom: 1px solid var(--bd); display: flex; align-items: baseline; gap: 0.75rem; }
+  header h1 { font-size: 1rem; margin: 0; } header .sub { color: var(--mut); font-size: 0.85rem; }
+  header a { color: var(--accent); text-decoration: none; margin-left: auto; font-size: 0.85rem; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+  textarea { border: 0; border-right: 1px solid var(--bd); padding: 1rem; font: 13px/1.55 ui-monospace, monospace; resize: none; outline: none; }
+  #preview { padding: 1rem 1.5rem; overflow: auto; }
+  #preview h1 { font-size: 1.5rem; } #preview h2 { font-size: 1.25rem; }
+  #preview code { background: #f2f2f4; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
+  #preview pre { background: #f2f2f4; padding: 0.8rem; border-radius: 8px; overflow: auto; } #preview pre code { background: none; }
+  #preview blockquote { border-left: 4px solid var(--bd); margin: 1rem 0; padding: 0.2rem 1rem; color: #555; }
+  #preview a { color: var(--accent); }
+  .status { position: fixed; bottom: 0.5rem; right: 0.75rem; font-size: 0.75rem; color: var(--mut); }
+  .status.err { color: #c0392b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Live Markdown</h1>
+  <span class="sub">the <code>markdown</code> showcase, running in your browser via WebAssembly</span>
+  <a href="index.html">← all apps</a>
+</header>
+<main>
+  <textarea id="src" spellcheck="false"># Live Markdown
+
+Type on the **left**, see it *rendered* on the **right** — the HTML is produced
+by [rakupp's Markdown showcase](../markdown/) compiled to WebAssembly.
+
+## Features
+
+- **bold**, *italic*, and `inline code`
+- [links](https://github.com/ash/rakupp) and lists
+- fenced code blocks and blockquotes
+
+```
+sub greet($name) { say "hello, $name" }
+```
+
+> No JavaScript Markdown library here — a Raku grammar is doing the parsing.
+</textarea>
+  <div id="preview">loading WebAssembly…</div>
+</main>
+<div class="status" id="status">starting…</div>
+
+<script src="runner.js"></script>
+<script>
+const raku = new Raku();
+const srcEl = document.getElementById('src');
+const preview = document.getElementById('preview');
+const status = document.getElementById('status');
+let LIB = '';   // md2html showcase with its MAIN stripped
+
+async function boot() {
+  const [lib] = await Promise.all([
+    fetch('../markdown/md2html.raku', {cache: 'no-store'}).then(r => r.text()),
+    raku.ready,
+  ]);
+  // Reuse render(); drop the file-reading MAIN.
+  LIB = lib.replace(/\n\s*sub MAIN\b[\s\S]*$/, '\n');
+  status.textContent = 'rakupp ' + raku.version;
+  render();
+}
+
+async function render() {
+  const src = LIB + '\n' + rakuHeredoc('$__IN', srcEl.value) + 'say render($__IN);\n';
+  const r = await raku.run(src);
+  if (r.err && !r.out) {
+    status.textContent = 'parse error'; status.classList.add('err');
+    preview.innerHTML = '<pre style="color:#c0392b">' + escapeHtml(r.err) + '</pre>';
+  } else {
+    status.classList.remove('err');
+    status.textContent = 'rendered in ' + r.ms + ' ms · rakupp ' + raku.version;
+    preview.innerHTML = r.out;
+  }
+}
+function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+srcEl.addEventListener('input', debounced(render, 250));
+boot().catch(e => { preview.textContent = 'Failed to start: ' + e; status.textContent = 'error'; });
+</script>
+</body>
+</html>

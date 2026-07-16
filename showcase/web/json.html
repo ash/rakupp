@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JSON Formatter — Raku.js</title>
+<style>
+  :root { --bd: #e2e2e7; --mut: #888; --accent: #2563eb; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; color: #1a1a1a; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 0.6rem 1rem; border-bottom: 1px solid var(--bd); display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  header h1 { font-size: 1rem; margin: 0; } header .sub { color: var(--mut); font-size: 0.85rem; }
+  header a { color: var(--accent); text-decoration: none; margin-left: auto; font-size: 0.85rem; }
+  .tools { display: flex; gap: 0.4rem; align-items: center; }
+  button { font: inherit; font-size: 0.85rem; padding: 0.25rem 0.7rem; border: 1px solid var(--bd); background: #fff; border-radius: 6px; cursor: pointer; }
+  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  input[type=text] { font: 13px ui-monospace, monospace; padding: 0.25rem 0.5rem; border: 1px solid var(--bd); border-radius: 6px; width: 12rem; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+  textarea, #out { border: 0; padding: 1rem; font: 13px/1.55 ui-monospace, monospace; outline: none; overflow: auto; white-space: pre; }
+  textarea { border-right: 1px solid var(--bd); resize: none; }
+  #out.err { color: #c0392b; }
+  .status { position: fixed; bottom: 0.5rem; right: 0.75rem; font-size: 0.75rem; color: var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>JSON Formatter</h1>
+  <span class="sub">the <code>json</code> showcase in WebAssembly</span>
+  <div class="tools">
+    <button id="beautify" class="on">Beautify</button>
+    <button id="minify">Minify</button>
+  </div>
+  <a href="index.html">← all apps</a>
+</header>
+<main>
+  <textarea id="src" spellcheck="false">{"name":"rakupp","version":"0.7.1","released":true,"stars":42,
+"tags":["compiler","interpreter","raku"],
+"users":[{"name":"Ada","commits":120},{"name":"Grace","commits":87}],
+"note":"keys are sorted, so output is stable"}</textarea>
+  <div id="out">loading WebAssembly…</div>
+</main>
+<div class="status" id="status">starting…</div>
+
+<script src="runner.js"></script>
+<script>
+const raku = new Raku();
+const srcEl = document.getElementById('src');
+const outEl = document.getElementById('out');
+const status = document.getElementById('status');
+const beautifyBtn = document.getElementById('beautify');
+const minifyBtn = document.getElementById('minify');
+let LIB = '', pretty = true;
+
+async function boot() {
+  const [lib] = await Promise.all([
+    fetch('../json/json.raku', {cache: 'no-store'}).then(r => r.text()),
+    raku.ready,
+  ]);
+  LIB = lib.replace(/\n\s*sub MAIN\b[\s\S]*$/, '\n');   // reuse parse-json / to-json / run-query
+  status.textContent = 'rakupp ' + raku.version;
+  format();
+}
+
+async function format() {
+  // parse the input, then serialise it pretty or compact
+  let program = LIB + '\n' + rakuHeredoc('$__IN', srcEl.value);
+  program += 'say to-json(parse-json($__IN), :pretty(' + (pretty ? 'True' : 'False') + '));\n';
+
+  const r = await raku.run(program);
+  if (r.err && !r.out) {
+    outEl.classList.add('err');
+    outEl.textContent = r.err.replace(/\n?Actions.*/s, '').trim() || 'error';
+    status.textContent = 'error';
+  } else {
+    outEl.classList.remove('err');
+    outEl.textContent = r.out;
+    status.textContent = (pretty ? 'beautified' : 'minified') + ' in ' + r.ms + ' ms · rakupp ' + raku.version;
+  }
+}
+
+function setMode(p) { pretty = p; beautifyBtn.classList.toggle('on', p); minifyBtn.classList.toggle('on', !p); format(); }
+beautifyBtn.onclick = () => setMode(true);
+minifyBtn.onclick = () => setMode(false);
+srcEl.addEventListener('input', debounced(format, 250));
+boot().catch(e => { outEl.textContent = 'Failed to start: ' + e; });
+</script>
+</body>
+</html>

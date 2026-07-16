@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Regex &amp; Grammar — Raku.js</title>
+<style>
+  :root { --bd: #e2e2e7; --mut: #888; --accent: #2563eb; --mark: #fde68a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; color: #1a1a1a; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 0.6rem 1rem; border-bottom: 1px solid var(--bd); display: flex; align-items: center; gap: 0.75rem; }
+  header h1 { font-size: 1rem; margin: 0; } header .sub { color: var(--mut); font-size: 0.85rem; }
+  header a { color: var(--accent); text-decoration: none; margin-left: auto; font-size: 0.85rem; }
+  .tabs { display: flex; gap: 0.3rem; }
+  .tab { font: inherit; font-size: 0.85rem; padding: 0.25rem 0.8rem; border: 1px solid var(--bd); background: #fff; border-radius: 6px; cursor: pointer; }
+  .tab.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { flex: 1; min-height: 0; display: none; }
+  main.on { display: flex; flex-direction: column; }
+  .row { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1rem; border-bottom: 1px solid var(--bd); }
+  .row label { color: var(--mut); font-size: 0.85rem; }
+  .row .slash { color: var(--mut); font: 15px ui-monospace, monospace; }
+  input[type=text] { flex: 1; font: 14px ui-monospace, monospace; padding: 0.35rem 0.5rem; border: 1px solid var(--bd); border-radius: 6px; }
+  .split { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+  textarea { border: 0; border-right: 1px solid var(--bd); padding: 1rem; font: 13px/1.6 ui-monospace, monospace; resize: none; outline: none; }
+  .out { padding: 1rem; overflow: auto; font: 13px/1.6 ui-monospace, monospace; white-space: pre-wrap; }
+  mark { background: var(--mark); border-radius: 3px; }
+  .count { color: var(--mut); font-size: 0.85rem; margin-bottom: 0.6rem; }
+  .count.err { color: #c0392b; }
+  .status { position: fixed; bottom: 0.5rem; right: 0.75rem; font-size: 0.75rem; color: var(--mut); }
+  /* grammar tab: three panes */
+  .gsplit { flex: 1; display: grid; grid-template-columns: 1.1fr 0.9fr; min-height: 0; }
+  .gright { display: flex; flex-direction: column; min-height: 0; }
+  .gright textarea { flex: 0 0 35%; border-right: 0; border-bottom: 1px solid var(--bd); }
+  .gright .out { flex: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Regex &amp; Grammar</h1>
+  <span class="sub">Raku's own regex engine, in your browser</span>
+  <div class="tabs">
+    <button class="tab on" data-tab="regex">Regex</button>
+    <button class="tab" data-tab="grammar">Grammar</button>
+  </div>
+  <a href="index.html">← all apps</a>
+</header>
+
+<!-- ===== Regex tab ===== -->
+<main id="regex" class="on">
+  <div class="row">
+    <label>pattern</label>
+    <span class="slash">m:g/</span>
+    <input type="text" id="pat" spellcheck="false" value="\w+ | \d+">
+    <span class="slash">/</span>
+  </div>
+  <div class="split">
+    <textarea id="subject" spellcheck="false">Raku regexes match graphemes, not bytes.
+Try: café 2024, HTTP/2, and 3.14 — édition números.
+Numbers: 42, 1000, 007. Words with unicode: naïve, Zürich.</textarea>
+    <div class="out" id="rout">…</div>
+  </div>
+</main>
+
+<!-- ===== Grammar tab ===== -->
+<main id="grammar">
+  <div class="gsplit">
+    <textarea id="gsrc" spellcheck="false">grammar Calc {
+    rule  TOP    { <expr> }
+    rule  expr   { <term>+ % <addop> }
+    rule  term   { <factor>+ % <mulop> }
+    rule  factor { <number> | '(' <expr> ')' }
+    token addop  { '+' | '-' }
+    token mulop  { '*' | '/' }
+    token number { \d+ ['.' \d+]? }
+}</textarea>
+    <div class="gright">
+      <textarea id="ginput" spellcheck="false">2 + 3 * (4 - 1)</textarea>
+      <div class="out" id="gout">…</div>
+    </div>
+  </div>
+</main>
+
+<div class="status" id="status">starting…</div>
+
+<script src="runner.js"></script>
+<script>
+const raku = new Raku();
+const status = document.getElementById('status');
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// ---- tab switching ----
+for (const t of document.querySelectorAll('.tab')) {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x === t));
+    document.querySelectorAll('main').forEach(m => m.classList.toggle('on', m.id === t.dataset.tab));
+  };
+}
+
+// ---- Regex tab ----
+const patEl = document.getElementById('pat');
+const subjEl = document.getElementById('subject');
+const rout = document.getElementById('rout');
+
+async function runRegex() {
+  const subject = subjEl.value;
+  // Print every match's [from, to) so we can highlight the ranges.
+  let prog = rakuHeredoc('$__t', subject) + '$__t = $__t.chomp;\n';
+  prog += 'for $__t ~~ m:g/ ' + patEl.value + ' / -> $__m { say $__m.from ~ "\\t" ~ $__m.to; }\n';
+  const r = await raku.run(prog);
+  if (r.err && !r.out) {
+    rout.innerHTML = '<div class="count err">regex error</div><pre>' + esc(r.err.trim()) + '</pre>';
+    status.textContent = 'error';
+    return;
+  }
+  const spans = r.out.trim().split('\n').filter(Boolean)
+                  .map(l => l.split('\t').map(Number)).filter(a => a.length === 2 && a[1] > a[0]);
+  // build highlighted subject
+  let html = '', i = 0;
+  for (const [from, to] of spans) {
+    html += esc(subject.slice(i, from)) + '<mark>' + esc(subject.slice(from, to)) + '</mark>';
+    i = to;
+  }
+  html += esc(subject.slice(i));
+  rout.innerHTML = '<div class="count">' + spans.length + ' match' + (spans.length === 1 ? '' : 'es') + '</div>' + html;
+  status.textContent = spans.length + ' matches in ' + r.ms + ' ms · rakupp ' + raku.version;
+}
+
+// ---- Grammar tab ----
+const gsrc = document.getElementById('gsrc');
+const ginput = document.getElementById('ginput');
+const gout = document.getElementById('gout');
+
+async function runGrammar() {
+  const m = gsrc.value.match(/grammar\s+([\w:]+)/);
+  if (!m) { gout.textContent = 'no `grammar Name { … }` found'; return; }
+  const name = m[1];
+  let prog = gsrc.value + '\n' + rakuHeredoc('$__in', ginput.value);
+  prog += 'my $__m = ' + name + '.parse($__in.chomp);\n';
+  prog += 'say $__m ?? $__m.gist !! "\\c[CROSS MARK] no match";\n';
+  const r = await raku.run(prog);
+  if (r.err && !r.out) {
+    gout.innerHTML = '<span style="color:#c0392b">' + esc(r.err.trim()) + '</span>';
+    status.textContent = 'error';
+  } else {
+    gout.textContent = r.out.replace(/\n$/, '');
+    status.textContent = 'parsed in ' + r.ms + ' ms · rakupp ' + raku.version;
+  }
+}
+
+patEl.addEventListener('input', debounced(runRegex, 250));
+subjEl.addEventListener('input', debounced(runRegex, 250));
+gsrc.addEventListener('input', debounced(runGrammar, 300));
+ginput.addEventListener('input', debounced(runGrammar, 300));
+
+raku.ready.then(() => { status.textContent = 'rakupp ' + raku.version; runRegex(); runGrammar(); })
+          .catch(e => { rout.textContent = 'Failed to start: ' + e; });
+</script>
+</body>
+</html>

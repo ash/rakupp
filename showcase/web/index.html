@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raku.js apps</title>
+<style>
+  :root { --bd: #e2e2e7; --mut: #666; --accent: #2563eb; }
+  body { margin: 0; font: 16px/1.6 system-ui, sans-serif; color: #1a1a1a; background: #fafafa; }
+  main { max-width: 44rem; margin: 3.5rem auto; padding: 0 1.25rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 0.5rem; }
+  p.lede { color: var(--mut); margin-top: 0; }
+  .grid { display: grid; gap: 1rem; margin-top: 2rem; }
+  a.card { display: block; padding: 1.1rem 1.25rem; border: 1px solid var(--bd); border-radius: 12px; background: #fff; text-decoration: none; color: inherit; }
+  a.card:hover { border-color: var(--accent); box-shadow: 0 2px 12px rgba(0,0,0,0.05); }
+  a.card h2 { font-size: 1.1rem; margin: 0 0 0.25rem; }
+  a.card p { margin: 0; color: var(--mut); font-size: 0.92rem; }
+  code { background: #ececef; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.88em; }
+  .foot { margin-top: 2.5rem; color: #999; font-size: 0.85rem; }
+  .foot a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Raku in the browser</h1>
+  <p class="lede">
+    Three little apps, each powered by <strong>rakupp compiled to WebAssembly</strong> —
+    the same interpreter as the CLI, running entirely in your browser. No server, no
+    JavaScript port: each app feeds your input to a Raku program and shows what it prints.
+  </p>
+
+  <div class="grid">
+    <a class="card" href="markdown.html">
+      <h2>📝 Live Markdown</h2>
+      <p>Type Markdown, see it rendered as you go — by the <code>markdown</code> showcase's
+         Raku grammar, not a JS library.</p>
+    </a>
+    <a class="card" href="json.html">
+      <h2>🔧 JSON Formatter</h2>
+      <p>Beautify or minify JSON with the <code>json</code> showcase's parser and serializer
+         (keys sorted for stable output).</p>
+    </a>
+    <a class="card" href="regex.html">
+      <h2>🔍 Regex &amp; Grammar</h2>
+      <p>Test a Raku regex with live match highlighting, or watch a full <code>grammar</code>
+         parse into a tree — Raku's own engine.</p>
+    </a>
+  </div>
+
+  <p class="foot">
+    These reuse the <a href="../">showcase</a> programs directly, and load the WebAssembly
+    build from the <a href="../../rakujs/playground/">Raku.js playground</a>
+    (<code>rakujs/build.sh</code>). See <a href="../../rakujs/">rakujs/</a> for the build.
+    Servers (pastebin, chat, …) can't run here — the sandbox has no sockets.
+  </p>
+</main>
+</body>
+</html>
