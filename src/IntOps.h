@@ -69,4 +69,15 @@ inline int ctzll(unsigned long long x) {
 #endif
 }
 
+// count leading zeros of a nonzero 64-bit value.
+inline int clzll(unsigned long long x) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_clzll(x);
+#elif defined(_MSC_VER)
+    unsigned long idx; _BitScanReverse64(&idx, x); return 63 - (int)idx;
+#else
+    int n = 0; while (!(x & 0x8000000000000000ULL)) { x <<= 1; ++n; } return n;
+#endif
+}
+
 } // namespace rakupp

@@ -4578,7 +4578,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         long long v = inv.toInt();
         if (v == 0) return Value::nil();
         unsigned long long u = v < 0 ? (unsigned long long)(-v) : (unsigned long long)v;
-        return Value::integer(m == "lsb" ? __builtin_ctzll(u) : 63 - __builtin_clzll(u));
+        return Value::integer(m == "lsb" ? rakupp::ctzll(u) : 63 - rakupp::clzll(u));
     }
     if (m == "chop" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Complex))
         return methodCall(Value::str(inv.toStr()), "chop", std::move(args), rwArgs);
