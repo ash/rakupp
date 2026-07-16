@@ -102,26 +102,44 @@ course. Build it with `rakujs/build.sh`; details in
 
 ## Documentation
 
+### Start here
+
 - **[HIGHLIGHTS.md](docs/HIGHLIGHTS.md)** — the key features, in bullets, on one page.
 - **[OVERVIEW.md](docs/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[GUIDE.md](docs/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
+
+### Language reference
+
 - **[FEATURES.md](docs/FEATURES.md)** — inventory of supported language features, by theme.
 - **[REFERENCE.md](docs/REFERENCE.md)** — exhaustive lookup sheet: every operator, built-in subroutine, and method, each with a verified example.
 - **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
+- **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
+- **[ASYNC.md](docs/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
+- **[METAPROGRAMMING.md](docs/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
+
+### Code to read and run
+
 - **[examples/](examples/)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md).
 - **[showcase/](showcase/)** — mid-size showcase programs: a Scheme interpreter built on a Raku grammar, and a pastebin HTTP server on raw sockets; see [showcase/README.md](showcase/README.md).
 - **[rakujs/](rakujs/)** — **Raku.js**: the interpreter compiled to **WebAssembly** to run Raku in the browser with no server; includes a playground page with all the examples. Same interpreter as native, compiled with Emscripten; see [rakujs/README.md](rakujs/README.md).
-- **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
-- **[ASYNC.md](docs/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
+
+### Under the hood
+
 - **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
+- **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[DOGFOODING.md](docs/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
-- **[ROADMAP.md](docs/ROADMAP.md)** — done / in-progress / next.
+
+### Measurements & status
+
 - **[ROAST.md](docs/ROAST.md)** — Roast suite overview and per-section statistics.
 - **[COUNTING.md](docs/COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
 - **[BENCHMARKS.md](docs/BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
 - **[NATIVE.md](docs/NATIVE.md)** — interpreter vs compiled (`--exe`) on the example programs; every example compiles natively with identical output.
-- **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
-- **[METAPROGRAMMING.md](docs/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
+- **[ROADMAP.md](docs/ROADMAP.md)** — done / in-progress / next.
+- **[CHANGELOG.md](CHANGELOG.md)** — release notes for tagged releases.
+
+### The story
+
 - **[docs/dev/JOURNEY.md](docs/dev/JOURNEY.md)** — a memoir of how this was built: the method and the principles.
 - **[LONGREAD.md](LONGREAD.md)** — the long-form story: the whole arc from empty directory to ~82% of Roast, a native compiler, and a browser playground.
 
