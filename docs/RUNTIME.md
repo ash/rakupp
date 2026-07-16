@@ -117,9 +117,13 @@ access and trivial copyability. See [Honest limitations](#honest-limitations).
 A few tag choices are worth noting because they reuse fields cleverly:
 
 - **A `Rat`** stores its normalized numerator and denominator as two `BigInt`s
-  (`ratN`, `ratD`), so exact rational arithmetic never silently degrades — until
-  the denominator would exceed 64 bits, where it spills to `Num` (Raku's
-  `Rat`→`Num` rule).
+  (`ratN`, `ratD`). Exact rational arithmetic stays exact until the denominator
+  would exceed 64 bits, where a plain `Rat` spills to `Num` (Raku's `Rat`→`Num`
+  rule). A **`FatRat`** is the *same* storage with the `fatRat` flag set
+  (`src/Value.h:71`): it carries the `FatRat` type identity — contagious through
+  arithmetic, so any `FatRat` operand makes the result a `FatRat` — and is
+  **exempt from the spill**, staying an arbitrary-precision rational forever
+  (`src/Interpreter.cpp:5007-5012`).
 - **An `Int`** is a `long long i` until it overflows, then it grows a
   `shared_ptr<BigInt> big`; `Value::bigint` picks inline vs. heap automatically
   (`src/Value.h:88-93`).

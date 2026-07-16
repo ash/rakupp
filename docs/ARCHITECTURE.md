@@ -251,8 +251,9 @@ int main(int argc, char** argv) {
 That's then compiled with the system C++ compiler and linked against the
 runtime. The loop is a native `for`, the sub call is a direct C++ call, and only
 `Value` semantics (`applyArith`, `callBuiltin`) dip into the runtime. This is why
-loops and recursion run several times faster than interpreted (fib ≈ level with
-Rakudo).
+loops and recursion run several times faster than interpreted — compiling `fib`
+turns the interpreter's one loss to Rakudo into a ~2.8× win (see
+[BENCHMARKS.md](BENCHMARKS.md)).
 
 Passing **`-O`** (`--exe -O`, also `-O2`/`-O3`/`-Os`) turns on `Codegen`'s own
 optimizer *before* the C++ compiler sees the source: direct-arity calls (no
@@ -260,7 +261,7 @@ per-call `ValueList`), inline `int64` fast paths for arithmetic/comparison
 (skipping the string-dispatch and re-boxing `applyArith` would do), and
 native-bool conditions. Values stay boxed — the fast paths just avoid the slow
 machinery — and anything unrecognized falls back to `applyArith`, so results are
-identical. What each pass does and how much it buys (fib 165 → 66 ms) is in
+identical. What each pass does and how much it buys (fib ~168 → 49 ms) is in
 [OPTIMIZATION.md](OPTIMIZATION.md). (The `-O…` suffix also selects the backend
 C++ compiler's own optimization level.)
 
@@ -279,7 +280,7 @@ Raku constructs onto a handful of runtime hooks:
 | `class` | register a `ClassInfo` at startup; methods → `Value::closure`; `$!x` → `rtAttrGet`/`rtAttrRef` |
 | `multi` | one C++ fn per candidate + a dispatcher using `rtTypeMatch` |
 | `enum` | global `Value::enumVal` constants |
-| `gather`/`take` | push a collector onto `RT.gatherStack_`; `take` routes through `callBuiltin` |
+| `gather`/`take` | push a collector onto `RT.tctx_.gatherStack`; `take` routes through `callBuiltin` |
 | phasers, `CATCH` | reordered emission / a C++ `try`+`when`-chain |
 
 #### The fallback that makes `--exe` total
