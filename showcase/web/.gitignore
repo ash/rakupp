@@ -1,0 +1,4 @@
+# Assets gathered by serve.sh so this folder is a self-contained static site:
+# the Raku.js WebAssembly build (rakujs.js + rakujs.wasm) and the CLI showcase
+# sources the apps reuse. A few MB; regenerate by re-running serve.sh.
+lib/

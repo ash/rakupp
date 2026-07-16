@@ -61,7 +61,7 @@ let LIB = '';   // md2html showcase with its MAIN stripped
 
 async function boot() {
   const [lib] = await Promise.all([
-    fetch('../markdown/md2html.raku', {cache: 'no-store'}).then(r => r.text()),
+    fetch('lib/md2html.raku', {cache: 'no-store'}).then(r => r.text()),
     raku.ready,
   ]);
   // Reuse render(); drop the file-reading MAIN.

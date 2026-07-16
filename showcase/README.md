@@ -175,3 +175,10 @@ reuse the showcase code directly: a **live Markdown editor**, a **JSON
 beautifier/minifier**, and a **regex tester + grammar explorer** with match
 highlighting and parse-tree output. The server showcases can't run there — the
 sandbox has no sockets.
+
+```sh
+showcase/web/serve.sh          # port 8000, then open http://127.0.0.1:8000/
+```
+
+`serve.sh` builds Raku.js if needed, gathers it in, and serves the folder with
+the `rakus` showcase — see [`web/README.md`](web/README.md).

@@ -1,7 +1,8 @@
 // worker.js — runs the Raku.js WebAssembly interpreter off the main thread, for
-// the browser showcase apps. It loads the same rakujs.js / rakujs.wasm the
-// playground builds (rakujs/build.sh), so there is nothing extra to compile:
-// point a static server at the repo root and open one of the *.html apps.
+// the browser showcase apps. It loads rakujs.js / rakujs.wasm from lib/ —
+// serve.sh copies them there from the playground build (rakujs/build.sh) along
+// with the showcase .raku sources, so this directory is a self-contained static
+// site: serve it and open index.html.
 //
 // Protocol (postMessage): the page sends { type:'run', src } and gets back
 //   { type:'ready', version }        once the module has instantiated
@@ -11,7 +12,7 @@
 //   { type:'loaderror', message }    if the wasm never loaded
 
 /* global RakuJS */
-const BASE = '../../rakujs/playground/';   // where build.sh puts rakujs.js / rakujs.wasm
+const BASE = './lib/';                     // serve.sh copies rakujs.js / rakujs.wasm here
 importScripts(BASE + 'rakujs.js');         // defines the MODULARIZE factory RakuJS
 
 const post = (type, extra = {}) => self.postMessage({ type, ...extra });

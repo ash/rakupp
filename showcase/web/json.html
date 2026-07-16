@@ -53,7 +53,7 @@ let LIB = '', pretty = true;
 
 async function boot() {
   const [lib] = await Promise.all([
-    fetch('../json/json.raku', {cache: 'no-store'}).then(r => r.text()),
+    fetch('lib/json.raku', {cache: 'no-store'}).then(r => r.text()),
     raku.ready,
   ]);
   LIB = lib.replace(/\n\s*sub MAIN\b[\s\S]*$/, '\n');   // reuse parse-json / to-json / run-query
