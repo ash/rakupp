@@ -154,8 +154,10 @@ struct Codegen {
         std::string s;
         for (size_t i = 0; i < args.size(); i++) {
             if (i) s += ", ";
-            // a |slip in a list literal splices via listToArray (rtSlipVal pre-spreads it)
-            s += isSlip(args[i].get()) ? "rtSlipVal(" + ex(static_cast<Unary*>(args[i].get())->operand.get()) + ")"
+            // A |slip in a list literal splices ONE level via listToArray — nested
+            // arrays stay single elements (rtSlipShallow marks, doesn't flatten).
+            // Deep flattening is call-arg semantics (argsVL/rtSpreadArg), not this.
+            s += isSlip(args[i].get()) ? "rtSlipShallow(" + ex(static_cast<Unary*>(args[i].get())->operand.get()) + ")"
                                        : exArg(args[i].get());
         }
         return s;
@@ -922,11 +924,6 @@ struct Codegen {
                         return mangleSub(c->name) + "(" + argList(c->args) + ")";
                     return mangleSub(c->name) + "(" + vl + ")"; // boxed adapter
                 }
-                // `make` writes grammar-action AST state whose native round-trip
-                // (action callbacks ↔ match .ast) is not yet verified — the lisp
-                // showcase parses wrong through it. Keep such programs on the
-                // (correct) interpreter bundle until the actions path is proven.
-                if (c->name == "make") unsupported("grammar action state (make)");
                 return "RT.callBuiltin(" + cesc(c->name) + ", " + vl + ")";
             }
             case NK::MethodCall: {
@@ -981,7 +978,32 @@ struct Codegen {
                 return built;
             }
             case NK::HashLit:  return "rtHashLit({" + argList(static_cast<HashLit*>(e)->items) + "})";
-            case NK::ArrayLit: return "listToArray({" + argList(static_cast<ArrayLit*>(e)->items) + "})";
+            case NK::ArrayLit: { // mirror the interpreter's per-item splice rules
+                auto* l = static_cast<ArrayLit*>(e);
+                std::string s;
+                for (size_t i = 0; i < l->items.size(); i++) {
+                    if (i) s += ", ";
+                    Expr* it = l->items[i].get();
+                    bool one = l->items.size() == 1;
+                    bool isHyper = it->kind == NK::MethodCall && static_cast<MethodCall*>(it)->hyper;
+                    bool atVar = it->kind == NK::VarExpr && !static_cast<VarExpr*>(it)->name.empty()
+                              && static_cast<VarExpr*>(it)->name[0] == '@';
+                    if (isSlip(it))
+                        s += "rtSlipShallow(" + ex(static_cast<Unary*>(it)->operand.get()) + ")";
+                    else if (atVar)      // a bare @-variable flattens into the literal
+                        s += "rtSlipShallow(" + exArg(it) + ")";
+                    else if (isHyper)    // hyper results stay one (itemized) element
+                        s += (one ? "rtOneArgItem(" : "rtHyperItem(") + exArg(it) + ")";
+                    else if (one)        // single list-valued item spreads (one-arg rule)
+                        s += "rtOneArgItem(" + exArg(it) + ")";
+                    else if (!l->fromCommaList) // non-comma members: a List splices
+                        s += "rtSpliceIfList(" + exArg(it) + ")";
+                    else
+                        s += exArg(it);
+                }
+                std::string built = "listToArray({" + s + "})";
+                return l->isList ? "rtMarkList(" + built + ")" : built;
+            }
             default: unsupported(nkName(e->kind));
         }
     }

@@ -574,6 +574,10 @@ void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread int
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
+Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
+Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
+Value  rtHyperItem(const Value& v);    // [..] hyper item: stays one element, isList cleared
+inline Value rtMarkList(Value v) { v.isList = true; return v; } // word-lists are flattening Lists
 Value  rtHashLit(const ValueList& items); // { k => v, … } hash constructor
 Value  rtNamedPair(const std::string& k, Value v); // k => v as a NAMED call argument
 size_t rtPosCount(const ValueList& a, size_t from = 0); // positional-arg count (named pairs excluded)

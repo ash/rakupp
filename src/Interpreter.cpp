@@ -779,6 +779,24 @@ Value rtSlipShallow(const Value& v) {
     if (v.t != VT::Nil) out.arr->push_back(v);
     return out;
 }
+// [ … ] composer items for native codegen — mirror the interpreter's ArrayLit
+// splice rules (listToArray then splices anything tagged Slip one level):
+// a List-valued member of a non-comma [..] splices; a comma-list member stays.
+Value rtSpliceIfList(const Value& v) {
+    if (v.t == VT::Array && v.arr && v.isList) { Value r = v; r.s = "Slip"; return r; }
+    return v;
+}
+// the one-arg rule: `[<a b>».Str]` — a SINGLE list-valued, non-itemized item spreads
+Value rtOneArgItem(const Value& v) {
+    if (v.t == VT::Array && v.arr && v.isList && !v.itemized) { Value r = v; r.s = "Slip"; return r; }
+    return v;
+}
+// a hyper result kept as one element is itemized — clear isList so later list
+// contexts don't re-spread it (matches the interpreter's ArrayLit else-branch)
+Value rtHyperItem(const Value& v) {
+    if (v.t == VT::Array) { Value r = v; r.isList = false; return r; }
+    return v;
+}
 
 // next/last/redo in EXPRESSION position for native codegen (`$x > 3 && last`):
 // throw the interpreter's control-flow signals; native loop bodies catch them.
