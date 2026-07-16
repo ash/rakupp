@@ -31,7 +31,7 @@ official specification test suite. The guiding motto:
 | **Written in** | C++17, zero third-party dependencies |
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../rakujs/)**) |
-| **Startup** | ~2 ms cold (vs Rakudo's ~166 ms) |
+| **Startup** | ~2 ms cold |
 | **Correctness target** | the Roast suite — ~80% of all individual tests pass; ~34% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
@@ -125,15 +125,15 @@ They make different trade-offs:
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
 | Coverage | a growing subset (~34% of Roast) | complete |
-| Startup | ~2 ms cold | ~166 ms |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |
 
-On speed, Raku++ holds its own and then some: its lean startup and lightweight
-core make it quick across everyday workloads, and `--exe` compiles hot code down
-to native — [BENCHMARKS.md](BENCHMARKS.md) has the numbers and methodology. The
-one thing Rakudo unambiguously has today is **completeness**; Raku++ is a young
-implementation steadily growing toward the same language.
+On speed, Raku++ starts fast and its `--exe` compiles hot code down to native;
+the tree-walking interpreter trades throughput for simplicity —
+[BENCHMARKS.md](BENCHMARKS.md) has the numbers and methodology, including where
+Rakudo's JIT leads. The one thing Rakudo unambiguously has today is
+**completeness**; Raku++ is a young implementation steadily growing toward the
+same language.
 
 ## Status & how it's measured
 

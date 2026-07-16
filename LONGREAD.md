@@ -322,10 +322,11 @@ and became a thing we *used*.
 I have been proofreading the course — a separate story — which means running its
 generator again and again, hundreds of times. The generator is Raku. So it runs on
 rakupp, in production, regenerating the real site. And this is where the
-performance work stopped being an abstraction. Rakudo starts in roughly 150 ms;
-rakupp starts in about 12. On a single run that is nothing. On the two-hundredth
-run of an edit-regenerate-look loop, it is the difference between a tool that
-interrupts your thinking and one that doesn't.
+performance work stopped being an abstraction. A VM-backed engine takes a good
+fraction of a second to spin up its runtime; rakupp starts in a few
+milliseconds. On a single run that is nothing. On the two-hundredth run of an
+edit-regenerate-look loop, it is the difference between a tool that interrupts
+your thinking and one that doesn't.
 
 One piece of that pipeline deserves its own mention. The course renders its code
 blocks with Pygments, a Python highlighter that, like almost all highlighters,

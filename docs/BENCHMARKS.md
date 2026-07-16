@@ -32,15 +32,15 @@ there.)
 ## The short version
 
 - **Startup:** ~2 ms cold on this machine (best of a 200-spawn loop: 1.8 ms) —
-  two orders of magnitude quicker than a VM-backed engine (~166 ms). For
-  one-liners, CLI glue, and small programs it is instant.
+  a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
+  small programs it is instant.
 - **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.7× on
   `arrayops` to 9.6× on `loopsum`, 13.9× on `hash`, and 39× on `strcat`.
   Compiling removes interpreter overhead.
 - **`fib` is Rakudo's one remaining interpreter win (1.7×)** — deep recursion
   of a tiny body is where an optimizing JIT is hardest to beat. Compiling takes
   over: `--exe` puts it 2.8× *ahead*.
-- Even the **interpreter** beats Rakudo on 8 of 9 — everything except `fib`,
+- Even the **interpreter** beats Rakudo on 7 of 8 — everything except `fib`,
   including the heavy `loopsum` loop kernel (1.5×) that Rakudo's JIT used to
   lead.
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
@@ -66,8 +66,9 @@ there.)
 - **Fairness:** every benchmark program is byte-for-byte identical across all
   three and was verified to produce identical output before timing.
 - **Harness overhead:** spawning + capturing a subprocess adds a small fixed
-  cost per run to every engine (the `startup` row reads 2.1 ms through the
-  harness vs 1.8 ms for a bare 200-spawn loop). It hits all three equally.
+  cost per run. On top of that each engine pays its *own* process startup —
+  negligible for Raku++'s native binary, but Rakudo loads a full precompiled
+  runtime, a fixed cost included in every row below. See "How to read this".
 
 ## Results
 
@@ -81,7 +82,6 @@ recursion kernel — Rakudo's VM leads only on `fib`.
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| startup  | 2.1 ms   | 166.0 ms | **Raku++ 79×** |
 | strcat   | 11.5 ms  | 185.8 ms | **Raku++ 16.2×** |
 | bigint   | 31.6 ms  | 256.8 ms | **Raku++ 8.1×** |
 | hash     | 35.9 ms  | 227.6 ms | **Raku++ 6.3×** |
@@ -99,7 +99,6 @@ over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| startup  | 1.8 ms   | 166.0 ms | **Raku++ 92×**   | 1.2× |
 | strcat   | 4.8 ms   | 185.8 ms | **Raku++ 39×**   | 2.4× |
 | hash     | 16.4 ms  | 227.6 ms | **Raku++ 13.9×** | 2.2× |
 | loopsum  | 27.7 ms  | 265.2 ms | **Raku++ 9.6×**  | 6.5× |
@@ -193,10 +192,14 @@ that was an unbounded lookbehind scan on a document this large.
 
 ## How to read this
 
-- **Startup wins are real and matter.** A ~2 ms cold start (vs ~166 ms on this
-  machine) is the difference between "instant" and "noticeable" for scripts,
-  editor tooling, and shelling out in a loop. This is the natural advantage of a
-  tiny native binary with no VM to spin up.
+- **The short kernels are startup-inclusive — read them that way.** Every row is
+  a fresh spawn, so each engine's process startup is part of its time. Rakudo
+  loads a full precompiled runtime once per run, a fixed cost that dominates its
+  number on the fastest kernels — so those multipliers are *not* a pure
+  execution-speed comparison. The compute-heavy `-O` kernels and the in-process
+  YAMLish parse (10 parses in one process) are the execution-only picture.
+  Raku++'s own ~2 ms start is a real convenience for scripts, editor tooling, and
+  shelling out in a loop, but it's a convenience, not an execution-speed claim.
 - **Interpreter throughput losses are real, and `--exe` addresses them.** A
   tree-walker re-dispatches every AST node on every execution; compiling to
   native code removes that, which is why `loopsum`/`fib` catch or pass Rakudo.
