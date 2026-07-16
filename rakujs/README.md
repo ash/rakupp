@@ -31,6 +31,12 @@ If the Emscripten toolchain (`em++`) isn't on your `PATH`, `build.sh` clones and
 installs it into `rakujs/emsdk/` (git-ignored, ~1 GB) on first run. To use an
 existing install instead, `source /path/to/emsdk/emsdk_env.sh` beforehand.
 
+**Prebuilt, no Emscripten needed:** each tagged
+[release](https://github.com/ash/rakupp/releases) attaches `rakujs-<tag>.zip` —
+the built `rakujs.js` + `rakujs.wasm` plus the playground files, ready to drop
+into a site's `/playground/`. (The release CI builds this; see
+[`.github/workflows/release.yml`](../.github/workflows/release.yml).)
+
 ## Try it
 
 ```sh

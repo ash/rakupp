@@ -29,6 +29,10 @@ they work opened straight from disk, `file://`, no `http` server at all.
 
 `lib/` is git-ignored; re-run `bundle.sh` to refresh it after rebuilding Raku.js.
 
+**Don't want to build anything?** Each tagged [release](https://github.com/ash/rakupp/releases)
+attaches `rakujs-showcase-web-<tag>.zip` — these apps with the WebAssembly already
+embedded. Download, unzip, open `index.html`. No toolchain, no server.
+
 ## How it works
 
 - **`runner.js`** is a tiny main-thread `Raku` client: `raku.run(src)` returns a

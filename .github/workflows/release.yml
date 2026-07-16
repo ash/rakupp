@@ -5,6 +5,8 @@ name: build & release
 #   - macOS   : universal binary (arm64 + x86_64), Apple Clang
 #   - Linux   : x86_64, GCC, statically linked libstdc++/libgcc for portability
 #   - Windows : x64, native MSVC
+# The `wasm` job additionally attaches the Raku.js WebAssembly build (playground
+# bundle + ready-to-open browser showcases) so users don't need Emscripten.
 # On push/PR to main it just builds + smoke-tests (no release), so portability
 # regressions surface immediately.
 
@@ -116,6 +118,71 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: rakupp-${{ matrix.name }}.*
+
+  # Raku.js: the interpreter compiled to WebAssembly (rakujs/build.sh). Ships two
+  # release assets so users don't need Emscripten:
+  #   - rakujs-<tag>.zip        the reusable build + playground (embed anywhere)
+  #   - showcase-web-<tag>.zip  the browser showcase apps with the wasm already
+  #                             embedded — unzip and open index.html (no server)
+  # Tag-only (+ manual dispatch): the em++ -Oz compile costs a few minutes, so
+  # ordinary pushes don't pay it.
+  wasm:
+    name: wasm (Raku.js)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v7
+
+      # Native rakupp — build.sh runs it (gen-examples.raku) to regenerate the
+      # playground's examples.js from examples/*.raku.
+      - name: Build native rakupp (for examples.js)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j 4
+
+      # Cached toolchain, so no ~1 GB emsdk bootstrap that build.sh does locally.
+      # 'latest' mirrors build.sh's own `emsdk install latest`.
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: emsdk-cache
+
+      - name: Build Raku.js (WebAssembly)
+        run: rakujs/build.sh
+
+      # Embed the wasm as base64 + inline the showcase sources into showcase/web/lib/,
+      # so the apps in that folder open straight from disk.
+      - name: Bundle the browser showcases
+        run: showcase/web/bundle.sh
+
+      - name: Package
+        run: |
+          tag="${GITHUB_REF_NAME:-dev}"
+          # 1) reusable Raku.js build + playground (drop into a site's /playground/)
+          ( cd rakujs/playground &&
+            zip -q -X "$GITHUB_WORKSPACE/rakujs-$tag.zip" \
+                index.html worker.js rakujs.js rakujs.wasm examples.js )
+          # 2) ready-to-open showcase apps: wasm already embedded in web/lib/
+          zip -q -X -r "rakujs-showcase-web-$tag.zip" showcase/web \
+              -x 'showcase/web/.gitignore' '*.DS_Store'
+          for f in "rakujs-$tag.zip" "rakujs-showcase-web-$tag.zip"; do
+            sha256sum "$f" > "$f.sha256"
+          done
+          ls -lh rakujs-*.zip*
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rakujs-wasm
+          path: rakujs-*.zip*
+          if-no-files-found: error
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: rakujs-*.zip*
 
   # The Linux release binary above is built with Clang (faster); this job keeps
   # GCC compiling cleanly too — it's what most Linux users' `cmake --build` uses.
