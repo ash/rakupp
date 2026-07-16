@@ -77,6 +77,7 @@ struct NameTerm : Expr {
 struct ListExpr : Expr {
     std::vector<ExprPtr> items;
     bool parenned = false; // came from `( … )` → a distinct nested list, not a comma-chain to merge into
+    bool semicolon = false; // `( a; b )` semicolon-list: each item is one segment's value (multidim)
     ListExpr(): Expr(NK::ListExpr) {}
 };
 

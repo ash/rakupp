@@ -1383,7 +1383,17 @@ ExprPtr Parser::parseColonPair() {
         if (negate) { pair->value = std::make_unique<BoolLit>(false); return pair; }
         if (isKind(Tok::LParen) && !cur().spaceBefore) {
             advance();
-            pair->value = isKind(Tok::RParen) ? std::make_unique<ListExpr>() : parseExpression();
+            if (isKind(Tok::RParen)) { pair->value = std::make_unique<ListExpr>(); advance(); return pair; }
+            ExprPtr v = parseExpression();
+            // `:shape(2;2)` — a semicolon-list value (multidim shape/index)
+            if (isKind(Tok::Semicolon)) {
+                auto lst = std::make_unique<ListExpr>();
+                lst->parenned = true; lst->semicolon = true;
+                lst->items.push_back(std::move(v));
+                while (matchKind(Tok::Semicolon)) { if (isKind(Tok::RParen)) break; lst->items.push_back(parseExpression()); }
+                v = std::move(lst);
+            }
+            pair->value = std::move(v);
             expectKind(Tok::RParen, ")");
             return pair;
         }
@@ -1709,19 +1719,22 @@ ExprPtr Parser::parsePrimary() {
                 call->args.push_back(std::move(list));
                 e = std::move(call);
             }
-            // `( stmt; stmt; … )` — a parenthesized STATEMENT SEQUENCE, evaluating
-            // to the last statement's value (like a `do { }` block):
-            // `( say "found: $_"; last ) if $cond;`
+            // `( a; b; … )` — a SEMICOLON LIST: each `;`-separated segment is
+            // evaluated (its comma-list value) and the results collected into a
+            // list. `(2;2)` is `(2, 2)`; `(1,2; 3,4)` is `((1,2),(3,4))`; used for
+            // multidim subscripts and `:shape(2;2)`. Side effects still run in
+            // order, so `( say $_; last )` behaves as before (last exits first).
             if (isKind(Tok::Semicolon)) {
-                auto be = std::make_unique<BlockExpr>();
-                { auto es = std::make_unique<ExprStmt>(); es->e = std::move(e); be->body.push_back(std::move(es)); }
+                auto lst = std::make_unique<ListExpr>();
+                lst->parenned = true;
+                lst->semicolon = true; // a semicolon-list: segments don't flatten as a plain comma list
+                lst->items.push_back(std::move(e));
                 while (matchKind(Tok::Semicolon)) {
                     if (isKind(Tok::RParen)) break; // trailing ;
-                    be->body.push_back(parseStatement());
+                    lst->items.push_back(parseExpression());
                 }
                 expectKind(Tok::RParen, ")");
-                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
-                return u;
+                return lst;
             }
             expectKind(Tok::RParen, ")");
             if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
