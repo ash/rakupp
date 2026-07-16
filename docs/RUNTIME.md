@@ -92,7 +92,33 @@ code reads the fields that tag makes live. Small scalars (`Bool`, `Int`, `Num`,
 unbounded storage (`Array`, `Hash`, `Code`, `Object`, bignums) lives behind a
 `shared_ptr`.
 
-**Why a fat struct instead of a `variant` or a class hierarchy?**
+**Why a fat struct instead of a `union`, a `variant`, or a class hierarchy?**
+
+The instinct is "a value is one of N types, so use a union." But a union models
+*mutual exclusivity* — one active member selected by the tag — and a `Value` is
+frequently **several fields at once**, not one active member:
+
+- A **`Match`** sets the subject `s`, the span `rFrom`/`rTo`, the positional
+  captures in `arr`, *and* the named captures in `hash` — all live together
+  (`src/Value.h:141`). A **`Pair`** is the key `s` *plus* `pairVal`. An **enum**
+  value is the ordinal `i` *plus* `enumName`/`enumType`. A **`Rat`** is `ratN`
+  *plus* `ratD` *plus* `fatRat`. And cross-cutting flags — `isList`, `itemized`,
+  `readonly`, `namedArg`, `ofType`, `natBits` — are set *regardless* of the tag
+  (a `readonly` Int, an `itemized` Array). So `VT t` isn't "which one field is
+  valid"; it's "how to read a bag of fields, several of them set." That is a
+  struct, not a sum type.
+- The heavy members are **non-trivial C++ types** (a `std::string`, nine
+  `shared_ptr`s). A raw `union` of those is undefined behavior without
+  hand-written placement-`new` and a tag-switched copy ctor / move ctor / both
+  assignments / destructor — at which point you've rebuilt `std::variant`, which
+  re-imposes the one-active-member model *and* `std::get`/`std::visit` access
+  that the ~16k lines of `Interpreter`/`Builtins` (which just poke `v.i`,
+  `v.s`, `v.arr` directly) would find painful.
+- The memory a union would save is smaller than it looks: the overlap-able
+  members are mostly `shared_ptr` — **null, and thus allocation-free, when
+  unused** — and, per the first point, often can't be overlapped at all.
+
+So the fat struct is the natural fit, and it brings three concrete wins:
 
 - **No virtual dispatch, no heap allocation for scalars.** An `Int` is just a
   `Value` with `t == VT::Int` and `i` set — it fits in the struct, copies by
