@@ -126,6 +126,13 @@ output through Emscripten's `print` / `printErr` and call the exported function:
 
 ## Performance vs native (and Node vs Bun vs browser)
 
+> **Status: experimental.** Measuring the WebAssembly build is new and the
+> methodology is still settling — the host runtimes differ in wasm tiering,
+> stack limits, and timer behaviour, and the browser column in particular was
+> taken in an embedded automation context (see the † note). Treat these
+> numbers as a first sounding, not a settled benchmark like the native tables
+> in [../docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
+
 Measured 2026-07-16 on the same kernels, machine, and day as the native tables
 in [../docs/BENCHMARKS.md](../docs/BENCHMARKS.md), all hosts running the same
 Raku++ 0.7.0 wasm (`-Oz`, `-fexceptions`). Same policy everywhere: 7 runs,
