@@ -586,7 +586,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 if (hasGen) {
                     ValueList args; size_t n = cache.size();
                     for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? cache[idx] : Value::integer(0)); }
-                    next = self->callCallable(gen, args);
+                    // `last` inside the generator terminates the sequence
+                    try { next = self->callCallable(gen, args); }
+                    catch (const LastEx&) { return false; }
                 } else if (succSeed) { // 'a' ... * : step by succ/pred
                     const Value& lastE = cache.back();
                     if (lastE.t == VT::Str) {
@@ -633,7 +635,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             if (hasGen) {
                 ValueList args; size_t n = out.arr->size();
                 for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? (*out.arr)[idx] : Value::integer(0)); }
-                next = callCallable(gen, args);
+                // `last` inside the generator terminates the sequence
+                try { next = callCallable(gen, args); }
+                catch (const LastEx&) { break; }
             } else if (succSeed) { // H.new ... *.y > 10 : step by succ/pred
                 const Value& lastE = out.arr->back();
                 if (lastE.t == VT::Str) {
