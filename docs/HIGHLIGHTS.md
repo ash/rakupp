@@ -93,9 +93,13 @@ no server, with an embeddable in-page playground.
   Life, a JSON grammar, a calculator, an echo server, a quine, …); every one
   also compiles natively with `--exe`, with byte-identical output
   ([NATIVE.md](NATIVE.md)).
-- **[showcase/](../showcase/)** — mid-size showcase programs: a Scheme
-  interpreter built on a Raku grammar, and a pastebin HTTP server written
-  directly on sockets.
+- **[showcase/](../showcase/)** — eight mid-size programs, each leaning on a
+  different part of the language: a **Scheme** interpreter and a **Forth**, both
+  on Raku grammars; a **Markdown→HTML** converter and a **JSON** parser/formatter;
+  and four servers on raw sockets — a **pastebin**, a concurrent **chat** server,
+  a **key-value** store with its own protocol, and a static-file HTTP server
+  (`rakus`). The Markdown and JSON showcases also run **in the browser** (with a
+  regex/grammar explorer) via WebAssembly ([showcase/web/](../showcase/web/)).
 - Real applications run **unmodified**: the
   [raku-course](https://github.com/ash/raku-course) static-site generator
   regenerates the entire ~1500-page Raku course byte-for-byte identically to
