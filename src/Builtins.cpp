@@ -2291,7 +2291,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 #endif
             return Value::str("0");
         }
-        if (m == "cpu-cores") return Value::integer(1);
+        if (m == "cpu-cores") { unsigned n = std::thread::hardware_concurrency(); return Value::integer(n ? (long long)n : 1); }
         if (m == "archname" || m == "cpu-arch") return Value::str("x86_64");
         return Value::str(name); // lenient: any other Distro/Kernel/VM accessor
     }
@@ -4563,6 +4563,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return out;
     }
     // Str.chop($n = 1)
+    // Real numbers are their own conjugate; a Cool number chops its string form.
+    if (m == "conj" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool)) return inv;
+    // .lsb / .msb — least / most significant set bit of an Int (Nil for 0).
+    if ((m == "lsb" || m == "msb") && (inv.t == VT::Int || inv.t == VT::Bool)) {
+        long long v = inv.toInt();
+        if (v == 0) return Value::nil();
+        unsigned long long u = v < 0 ? (unsigned long long)(-v) : (unsigned long long)v;
+        return Value::integer(m == "lsb" ? __builtin_ctzll(u) : 63 - __builtin_clzll(u));
+    }
+    if (m == "chop" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Complex))
+        return methodCall(Value::str(inv.toStr()), "chop", std::move(args), rwArgs);
     if (m == "chop" && (inv.t == VT::Str || inv.t == VT::Match)) {
         auto cps = utf8cp(inv.toStr());
         long long n = args.empty() ? 1 : a0().toInt();
@@ -5606,6 +5617,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t != VT::Type) { // any scalar picks from a one-element pool: 42.pick == 42
             Value l = Value::array({inv}); l.isList = true;
             return methodCall(l, m, args);
+        }
+    }
+    // Cool list methods on a scalar treat it as a one-element list:
+    // 5.unique is (5,), 5.permutations is ((5,),), 5.classify{…} groups the one
+    // element. Whitelisted so a genuine typo still errors.
+    if (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
+        inv.t == VT::Bool || inv.t == VT::Complex) {
+        static const std::set<std::string> listCool = {
+            "unique", "squish", "repeated", "permutations", "combinations",
+            "classify", "categorize", "rotor", "batch",
+        };
+        if (listCool.count(m)) {
+            Value l = Value::array({inv}); l.isList = true;
+            return methodCall(l, m, std::move(args), rwArgs);
         }
     }
     // fallthrough: unknown method — but any method call on Nil returns Nil

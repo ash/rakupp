@@ -73,15 +73,23 @@ so worker threads read them without locking. What is *not* protected for you is
 without a `Lock` is a data race, exactly as it is under Rakudo.
 
 ```raku
-# CPU-parallel fan-out. Under RAKUPP_PARALLEL this uses every core.
+# CPU-parallel fan-out. Under RAKUPP_PARALLEL the workers run concurrently.
 sub work($n) { my $s = 0; $s += $_ for 1 .. 4_000_000; $s + $n }
-my @p = (^8).map(-> $n { start work($n) });
-say (await @p).elems;                     # → 8
-#   GIL mode: ~10.6 s   |   RAKUPP_PARALLEL=1: ~2.9 s  (3.6× on 8 cores)
+my @p = (^4).map(-> $n { start work($n) });
+say (await @p).elems;                     # → 4
+#   GIL mode: ~5.6 s   |   RAKUPP_PARALLEL=1: ~2.2 s  (2.5× — 4-perf-core Mac)
 ```
 
 `start EXPR` thunks `EXPR` and runs it *on the worker* (it is not evaluated eagerly
 on the spawning thread), so `start work($n)` parallelises just like `start { work($n) }`.
+
+**Match the fan-out to the physical *performance* cores.** The speed-up tops out
+at the number of full-speed cores, not the logical-CPU count. On the 4P+4E Apple
+Silicon machine above, four `start` blocks scale ~2.5×; spawning eight does *not*
+reach ~5× — the extra work spills onto the efficiency cores (~⅓ the speed) and
+GIL-handoff contention grows, so eight threads land around 1.4×, *slower* per
+task than four. `$*KERNEL.cpu-cores` reports the logical count; size the fan-out
+to the performance cores you actually have.
 
 ### Sharing state safely
 
@@ -98,11 +106,14 @@ say $total;                               # → 80000   (no lost updates in eith
 ### When it helps
 
 CPU-bound fan-out (parsing, transforms, number crunching across `start` blocks)
-scales with the number of workers — roughly 3× on 8 cores. Work that is dominated
-by external processes or I/O already overlaps in the default GIL mode (the waits
-release the lock), so parallel mode adds less there. If a workload doesn't speed
-up, check that the parallel unit is a real `start` thunk and not a single
-serialised bottleneck.
+scales with the number of **full-speed cores** — roughly 2.5× on a 4-performance-core
+machine, and correspondingly more on a box with more true cores. Two caveats
+decide whether you see it: keep the fan-out at or below the performance-core
+count (oversubscribing onto efficiency cores or hyperthreads gives diminishing,
+then negative, returns), and make sure the parallel unit is a real `start` thunk
+rather than a single serialised bottleneck. Work dominated by external processes
+or I/O already overlaps in the default GIL mode (the waits release the lock), so
+parallel mode adds less there.
 
 ---
 
