@@ -136,7 +136,7 @@ sub run-query($data is copy, Str $path) {
     my @steps = $path.comb(/ '.' <-[.\[]>+ | '[' \d+ ']' /);
     for @steps -> $step {
         if $step.starts-with('[') {
-            my $i = $step.substr(1, *-1).Int;
+            my $i = ($step ~~ / (\d+) /) ?? (~$0).Int !! 0;   # digits between the brackets
             die "not an array at [$i]" unless $data ~~ Positional;
             $data = $data[$i];
         }

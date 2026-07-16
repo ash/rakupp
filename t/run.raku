@@ -123,8 +123,8 @@ section('showcase/json (parse + serialize + query)');
     my $json   = $ROOT.add('showcase/json/json.raku').Str;
     my $sample = $ROOT.add('showcase/json/sample.json').Str;
     golden([$json, $sample], $EXP.add('json-sample.out').Str, "json: pretty-print → golden");
-    my ($name, $e1) = run-rakupp($json, '--query=.users[0].name', $sample);
-    ok($name.trim eq '"Ada"', "json: --query pulls a nested value");
+    my ($name, $e1) = run-rakupp($json, '--query=.users[1].name', $sample);
+    ok($name.trim eq '"Grace"', "json: --query pulls a nested value (indexes correctly)");
     my ($compact, $e2) = run-rakupp($json, '--compact', $sample);
     ok($compact.contains('"version":"0.5.1"') && !$compact.contains("\n  "),
        "json: --compact minifies to one line");
