@@ -195,6 +195,28 @@ direct-arity split are wins because the C++ compiler inlines them. At `-O0` they
 become real function calls with no fast path, so `-O0` is *slower* than the
 default — it's for inspecting/debugging the generated C++, not for speed.
 
+### Speed or size?
+
+`-O` is a **speed** switch, and the C++ level is not a size lever: the binary
+is dominated by the statically linked runtime (`librakupp_rt.a`, mostly the
+Unicode tables), not by the program's own generated code. Measured (fib /
+mandel, this machine):
+
+| | binary | fib time |
+|---|---:|---:|
+| `--exe` (default `-O2`) | 6,300 KB | 166 ms |
+| `--exe -O`  | 6,300 KB | **47 ms** |
+| `--exe -Os` | 6,307 KB | 72 ms |
+| `--exe -O3` | 6,300 KB | 47 ms |
+| `--exe -O` + `strip` | **5,380 KB** | 47 ms |
+
+`-Os` shrinks nothing that matters (it can even come out a few KB *larger*)
+and costs 20–50% of the lane speed-up, so there is no size/speed trade to
+make at this flag — use `-O` for speed and **`strip`** on the output (~15%
+smaller) if size matters. A genuinely smaller binary would need a slimmed
+runtime build (e.g. without the full Unicode tables) — a build-system project,
+not a codegen flag.
+
 ## Measured impact
 
 `--exe`, best of 6 runs after a discarded warm-up (startup-inclusive, as in
