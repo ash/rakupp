@@ -21,6 +21,11 @@ separately (`--aot` fib runs at interp's ~770 ms). `--exe` is the only
 mode that changes runtime performance, so it's the one the `native` column
 tracks.
 
+(A fourth environment — **[Raku.js](../rakujs/)**, the interpreter compiled to
+WebAssembly — is measured against `interp` on these same kernels in
+[rakujs/README.md](../rakujs/README.md#performance-vs-native): 3.4–27× slower
+than native, dominated by the `-fexceptions` call trampolines.)
+
 ## The short version
 
 - **Startup:** ~2 ms cold on this machine (best of a 200-spawn loop: 1.8 ms) —

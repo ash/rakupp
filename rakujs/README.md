@@ -124,6 +124,46 @@ output through Emscripten's `print` / `printErr` and call the exported function:
 - **Output** goes to `std::cout`/`std::cerr`, which Emscripten routes to the
   `print`/`printErr` callbacks. No interpreter changes needed.
 
+## Performance vs native
+
+Measured 2026-07-16 with [`bench.js`](bench.js) on the same kernels, machine,
+and day as the native tables in [../docs/BENCHMARKS.md](../docs/BENCHMARKS.md)
+(Chromium, Raku++ 0.7.0). Timing wraps the synchronous `rakupp_run()` ccall
+inside the worker — no UI or message-queue overhead — with the native harness's
+policy: 7 runs, first discarded, minimum of the remaining 6. One module
+instance is reused across runs (each run still gets a fresh `Interpreter`);
+the native column includes its ~2 ms process spawn.
+
+There is no process to start in the browser: a fresh worker + module instance
+is ready in **~43 ms** (after the one-time 4.3 MB `.wasm` download + compile on
+first page load, cached thereafter).
+
+| Benchmark | Raku.js (wasm) | native interp | wasm is slower by |
+|---|---:|---:|---:|
+| bigint   | 107 ms    | 31.6 ms  | 3.4×  |
+| regex    | 796 ms    | 80.8 ms  | 9.9×  |
+| sortnums | 798 ms    | 64.4 ms  | 12.4× |
+| arrayops | 1,406 ms  | 109.7 ms | 12.8× |
+| strcat   | 219 ms    | 11.5 ms  | 19.0× |
+| loopsum  | 3,669 ms  | 179.6 ms | 20.4× |
+| hash     | 797 ms    | 35.9 ms  | 22.2× |
+| fib      | 20,424 ms | 768.6 ms | 26.6× |
+
+The spread is the story: the penalty tracks **how call-dense the workload is**,
+not how heavy it is. Under `-fexceptions` (see the design note above), every
+C++ call that might throw is routed through JS `invoke_*` trampolines, so the
+call-saturated `fib` pays 26.6× while `bigint` — whose time lives inside
+exception-free `BigInt` multiply loops that compile to plain wasm — pays only
+3.4×. That floor suggests most of the gap is the exception strategy, not wasm
+itself; it would shrink under native Wasm-EH, which is blocked today by the
+emscripten personality bug described above.
+
+Perspective for playground use: these are deliberately heavy kernels — every
+shipped example still runs in browser-comfortable time (hello-world ~50 ms,
+the full 75×30 Mandelbrot ~3.6 s). And even at a 3.4× wasm penalty, `bigint`
+in the browser (107 ms) outruns *native* Rakudo (256.8 ms on the same
+machine), with `strcat` close behind (219 vs 185.8 ms).
+
 ## Known limitations (single-threaded browser build)
 
 - **Deep recursion (a few hundred Raku levels, ~200) hits a hard browser limit.**
