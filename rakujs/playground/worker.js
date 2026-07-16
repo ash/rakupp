@@ -7,7 +7,12 @@
 // frame-by-frame), and terminate a runaway program by killing the worker.
 
 /* global RakuJS */
-importScripts('rakujs.js'); // defines the MODULARIZE factory RakuJS on the worker global
+// The cache-busting tag (e.g. '?v=1a2b3c4d') is inherited from our own URL:
+// index.html loads us as worker.js?v=…, and we pass the same tag on to
+// rakujs.js and rakujs.wasm, so one release never mixes cached and fresh files.
+// When served without a tag (local testing), V is '' and the names stay plain.
+const V = self.location.search;
+importScripts('rakujs.js' + V); // defines the MODULARIZE factory RakuJS on the worker global
 
 const post = (type, extra = {}) => self.postMessage({ type, ...extra });
 
@@ -17,6 +22,8 @@ let Module = null;
 // main thread as they fire during a run.
 function makeModule() {
   return RakuJS({
+    // Version the .wasm request with the same tag as the .js files (see V above).
+    locateFile: p => p + V,
     print:    t => post('out', { text: t + '\n', cls: ''    }),
     printErr: t => post('out', { text: t + '\n', cls: 'err' }),
   }).then(m => { Module = m; return m; });
