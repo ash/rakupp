@@ -217,6 +217,10 @@ $progress.Supply.tap(-> $msg { @log.push($msg) });
 
 my $results = Channel.new;
 
+# Wait for every job to settle (Kept or Broken) before inspecting statuses —
+# `allof` keeps once all complete, and never rethrows the broken one.
+await Promise.allof(@jobs);
+
 for @jobs.kv -> $i, $p {
     my $n = $i + 1;
     if $p.status eq 'Kept' {
@@ -229,17 +233,13 @@ for @jobs.kv -> $i, $p {
 }
 $results.close;
 
-await Promise.allof(@jobs.grep(*.status eq 'Kept'));
-
 say "progress:";
 .say for @log.map({ "  $_" });
 
-my @collected;
-loop {
-    my $v = $results.poll;
-    last if $v === Nil;
-    @collected.push($v);
-}
+# `.list` drains a *closed* Channel: it yields every queued value and then ends.
+# (Don't loop on `.poll` until Nil — `.poll` returns an *undefined* value, not
+#  `Nil`, once the channel is empty, so `=== Nil` never trips.)
+my @collected = $results.list;
 say "collected results: ", @collected;
 say "sum of squares:    ", @collected.sum;
 say "closed promise:    ", $results.closed.status;

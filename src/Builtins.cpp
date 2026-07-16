@@ -1887,7 +1887,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::boolean(true);
         }
         if (m == "closed") { return (*inv.hash)["closedPromise"]; }
-        if (m == "list" || m == "Seq" || m == "Supply") { Value o = Value::array(); *o.arr = q; o.isList = true; return o; }
+        // `.list`/`.Seq` CONSUME a closed channel: they yield the queued values
+        // and drain it (so the .closed Promise then keeps). `.Supply` snapshots
+        // without draining (a Supply is a re-tappable stream).
+        if (m == "list" || m == "Seq") {
+            Value o = Value::array(); *o.arr = q; o.isList = true;
+            q.clear(); keepClosedIfDrained();
+            return o;
+        }
+        if (m == "Supply") { Value o = Value::array(); *o.arr = q; o.isList = true; return o; }
         if (m == "elems") return Value::integer((long long)q.size());
     }
     // Thread — under the GIL a Thread.start runs its block eagerly, but we bump
