@@ -236,6 +236,34 @@ section('showcase/rakus (a static HTTP file server)');
     stop-server($script);
 }
 
+# ---- native codegen coverage -------------------------------------------
+# Every example and bench kernel must stay NATIVELY compilable: `--cpp` exits
+# 0 when the transpiler covers the program, 5 when `--exe` would fall back to
+# bundling. This pins the codegen's coverage so a change can't silently knock
+# a program back onto the interpreter bundle.
+section('native codegen coverage (--exe compiles these natively)');
+for <examples tools/bench tools/optbench> -> $dir {
+    my @fellback;
+    for dir($ROOT.add($dir)).grep(*.Str.ends-with('.raku')).sort -> $f {
+        my $p = run($*EXECUTABLE, '--cpp', $f.Str, :!out, :!err);
+        @fellback.push($f.basename) if $p.exitcode != 0;
+    }
+    ok(!@fellback, "$dir: every program transpiles natively");
+    diag("fell back (or parse error): {@fellback.join(', ')}") if @fellback;
+}
+# And one full end-to-end native build: transpile + C++-compile + run + golden.
+{
+    my $bin = $*TMPDIR.add("rakupp-suite-exe-$*PID").Str;
+    my $p = run($*EXECUTABLE, '--exe', $ROOT.add('examples/fibonacci.raku').Str, '-o', $bin, :out, :err);
+    $p.out.slurp(:close);
+    my $msg = $p.err.slurp(:close);   # "Compiled (native) …" is reported on stderr
+    ok($p.exitcode == 0 && $msg.contains('(native)'), "--exe builds fibonacci as a native binary");
+    my $p = run($bin, :out);
+    my $got = $p.out.slurp(:close);
+    ok($got eq $EXP.add('fibonacci.out').IO.slurp, "the native fibonacci binary matches the golden");
+    try unlink $bin;
+}
+
 # ---- summary ----------------------------------------------------------
 note "";
 say "1..$count";
