@@ -117,6 +117,19 @@ golden([$md, $ROOT.add('showcase/markdown/sample.md').Str],
     ], "markdown: every block and inline construct is present");
 }
 
+# ---- json showcase ----------------------------------------------------
+section('showcase/json (parse + serialize + query)');
+{
+    my $json   = $ROOT.add('showcase/json/json.raku').Str;
+    my $sample = $ROOT.add('showcase/json/sample.json').Str;
+    golden([$json, $sample], $EXP.add('json-sample.out').Str, "json: pretty-print → golden");
+    my ($name, $e1) = run-rakupp($json, '--query=.users[0].name', $sample);
+    ok($name.trim eq '"Ada"', "json: --query pulls a nested value");
+    my ($compact, $e2) = run-rakupp($json, '--compact', $sample);
+    ok($compact.contains('"version":"0.5.1"') && !$compact.contains("\n  "),
+       "json: --compact minifies to one line");
+}
+
 # ---- server showcases (pastebin + chat) -------------------------------
 # The servers are long-lived accept loops. rakupp's Proc::Async deadlocks when
 # the same process then does blocking socket I/O, so we background them through

@@ -8,6 +8,7 @@ together they answer "what can it actually build?"
 | [**lisp/**](lisp/) | Language power — a grammar + a tree-walking evaluator | interpreter that runs Scheme files or a REPL |
 | [**forth/**](forth/) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
 | [**markdown/**](markdown/) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
+| [**json/**](json/) | Parsing — a grammar that round-trips data | parse, pretty-print / minify, and query JSON |
 | [**pastebin/**](pastebin/) | Deployable — a hand-written HTTP server on raw sockets | native binary you point a browser at |
 | [**rakus/**](rakus/) | Deployable — a general static HTTP file server | point it at a folder, open it in a browser |
 | [**chat/**](chat/) | Concurrency — many clients, one thread each | TCP chat server you connect to with `nc` |
@@ -71,6 +72,21 @@ cat notes.md | build/rakupp showcase/markdown/md2html.raku > notes.html
 The inline grammar uses ordered `||` alternation with a single-character
 catch-all, so a stray `*` degrades to literal text instead of failing the
 parse — the whole document always converts.
+
+## json — the round-trip story
+
+A JSON parser *and* formatter: a grammar reads JSON into native Raku values, and
+a serializer writes them back — pretty-printed or minified — with an optional
+`jq`-style path to pull one value out.
+
+```sh
+build/rakupp showcase/json/json.raku showcase/json/sample.json           # pretty-print
+build/rakupp showcase/json/json.raku --compact showcase/json/sample.json # minify
+build/rakupp showcase/json/json.raku --query='.users[0].name' showcase/json/sample.json
+```
+
+Full string escapes (`\n`, `\uXXXX`, …) decode and re-encode; object keys are
+emitted sorted, so the output is stable for diffs.
 
 ## pastebin — the deployable story
 

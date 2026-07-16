@@ -1,0 +1,24 @@
+{
+  "escapes": "a \"quote\", a \\backslash\\, and a\ttab",
+  "maintainer": null,
+  "name": "rakupp",
+  "ratio": 3.14,
+  "released": true,
+  "stars": 42,
+  "tags": [
+    "compiler",
+    "interpreter",
+    "raku"
+  ],
+  "users": [
+    {
+      "commits": 120,
+      "name": "Ada"
+    },
+    {
+      "commits": 87,
+      "name": "Grace"
+    }
+  ],
+  "version": "0.5.1"
+}
