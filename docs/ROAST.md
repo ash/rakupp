@@ -31,7 +31,7 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~80% of all declared Roast tests pass** (171,817 / 212,969); on the
+**Headline: ~80% of all declared Roast tests pass** (171,817 / 213,617); on the
 stricter file bar, ~34% of files fully pass (501 / 1,462). The per-file breakdown
 comes first below, then the per-test figures.
 
@@ -56,7 +56,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**171,817 of ~212,969 declared tests — ~81%**. "Declared" means every test the
+**171,817 of ~213,617 declared tests — ~80%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -67,12 +67,12 @@ three denominators, widest-to-strictest:
 |---|---|---|
 | tests that **ran** | 171,817 / 178,056 (~96%) | only assertions files actually emitted — flatters, ignores aborts |
 | tests **planned** (files that emitted a plan) | 171,817 / 204,251 (~84%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 171,817 / 212,969 (~81%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| **all declared** tests | 171,817 / 213,617 (~80%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
-The ~80% is the per-test analog of the ~31% file coverage. Two caveats on scope:
+The ~80% is the per-test analog of the ~34% file coverage. Two caveats on scope:
 
-1. **~9.5k of the denominator comes from no-TAP files** (202 of them, read from
-   source); 8 more no-TAP files use a dynamic `plan *` / `done-testing` and are
+1. **~9.4k of the denominator comes from no-TAP files** (199 of them, read from
+   source); 5 more no-TAP files use a dynamic `plan *` / `done-testing` and are
    genuinely uncountable, so they sit outside even this figure.
 2. **S15 (Unicode) is ~91k of the reached total**, passing at ~100%, so it lifts
    the blended rate; other synopses are lower (see the per-synopsis table).
@@ -82,7 +82,7 @@ The ~80% is the per-test analog of the ~31% file coverage. Two caveats on scope:
    the pre-existing bugs it exposes (see [dev/REVIEW-1.0.md](dev/REVIEW-1.0.md)),
    at which point these numbers are re-measured honestly.
 
-Coverage is the ~31% of files; per-test correctness across the whole suite is the
+Coverage is the ~34% of files; per-test correctness across the whole suite is the
 ~80%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
