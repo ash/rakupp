@@ -34,11 +34,17 @@ sub run-rakupp(*@args) {
 }
 
 # stdout of `rakupp @args` must equal the golden file, byte for byte.
-sub golden(@args, Str $goldenfile, Str $desc) {
-    my ($out, $exit) = run-rakupp(|@args);
-    if $exit != 0 { ok(False, $desc); diag("non-zero exit: $exit"); return }
+sub golden(@args, Str $goldenfile, Str $desc, :$retries = 0) {
     unless $goldenfile.IO.e { ok(False, $desc); diag("missing golden: $goldenfile"); return }
     my $want = $goldenfile.IO.slurp;
+    my ($out, $exit);
+    # Timing-based demos (sleep-sort) can misorder under load; a retry or
+    # two distinguishes scheduler jitter from a real regression.
+    for 0..$retries {
+        ($out, $exit) = run-rakupp(|@args);
+        last if $exit == 0 && $out eq $want;
+    }
+    if $exit != 0 { ok(False, $desc); diag("non-zero exit: $exit"); return }
     if $out eq $want { ok(True, $desc) }
     else {
         ok(False, $desc);
@@ -66,7 +72,8 @@ my @deterministic = <
     roman rpn sierpinski sleep-sort wordcount
 >;
 for @deterministic -> $name {
-    golden([$ROOT.add("examples/$name.raku").Str], $EXP.add("$name.out").Str, "example: $name");
+    golden([$ROOT.add("examples/$name.raku").Str], $EXP.add("$name.out").Str, "example: $name",
+           :retries($name eq 'sleep-sort' ?? 2 !! 0));
 }
 {
     my ($out, $exit) = run-rakupp($ROOT.add('examples/life.raku').Str);   # random seed

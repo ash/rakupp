@@ -12,8 +12,9 @@
 my @input = 5, 1, 8, 2, 9, 3, 7, 4, 6;
 
 # One tick per unit of value. Keep it comfortably larger than scheduler
-# jitter so distinct integers can't overtake each other.
-constant TICK = 0.02;
+# jitter so distinct integers can't overtake each other — 20 ms proved
+# too tight on loaded CI runners.
+constant TICK = 0.05;
 
 my $out = Channel.new;
 
