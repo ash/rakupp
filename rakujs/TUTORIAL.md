@@ -27,6 +27,63 @@ program `say`s or `print`s is handed back to your page through Emscripten's
 
 Everything below is variations on that.
 
+## The files you need, and where they go
+
+Building Raku.js ([`build.sh`](build.sh)) produces exactly two files into
+[`playground/`](playground/):
+
+| File | What it is |
+|------|------------|
+| `rakujs.js`   | the Emscripten loader — a small JS glue file that defines the global `RakuJS` factory. This is the file you `<script src>`. |
+| `rakujs.wasm` | the actual compiled interpreter (a few MB). You never reference it by name; `rakujs.js` loads it for you. |
+
+The one rule: **`rakujs.wasm` must sit in the same directory as `rakujs.js`.**
+When you load `rakujs.js`, it fetches `rakujs.wasm` *from its own directory* (a
+relative URL derived from the script's location), so as long as the two are
+side by side and served over `http(s)`, it just works — you don't write the
+`.wasm` path anywhere:
+
+```
+your-site/
+  app.html          ← your page:  <script src="lib/rakujs.js"></script>
+  lib/
+    rakujs.js        ← the loader
+    rakujs.wasm      ← must be next to rakujs.js  (auto-found)
+```
+
+`app.html` can be anywhere; only the two library files must stay together.
+
+**If you must split them** (e.g. serve the `.wasm` from a CDN), tell the loader
+where to look with `locateFile` — it's called with each filename and returns a
+URL:
+
+```js
+RakuJS({
+  locateFile: name => 'https://cdn.example.com/wasm/' + name,   // rakujs.wasm → there
+  print: line => …,
+});
+```
+
+**Using a Web Worker (§6)?** Add a third file, `worker.js`, and it too must be
+able to reach `rakujs.js`. A worker loads the loader with `importScripts`, and
+because a worker's relative paths resolve against the worker script's own URL,
+point both `importScripts` and `locateFile` at wherever the two library files
+live:
+
+```js
+// worker.js — sitting next to app.html, library one folder down in lib/
+const BASE = 'lib/';
+importScripts(BASE + 'rakujs.js');          // load the factory
+RakuJS({ locateFile: name => BASE + name,   // and let it find rakujs.wasm
+         print: … });
+```
+
+That's the whole placement story: **two library files together, served over
+http; your page and worker just need a path that reaches them.** The
+[`showcase/web/`](../showcase/web/) apps do exactly this — see
+[`worker.js`](../showcase/web/worker.js), whose `BASE` points at
+`playground/` where `build.sh` left the pair.
+
 ## 1. Run a program
 
 The build is `MODULARIZE`d under a global factory `RakuJS`. Instantiate it once,
