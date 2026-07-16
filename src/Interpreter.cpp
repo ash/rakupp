@@ -4730,7 +4730,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         return Value::boolean(!base.truthy());
     }
-    if (isSetOpStr(op)) return setOp(op, l, r);
+    // set ops (∈ ∉ ∋ …) with a Whatever operand curry into a WhateverCode
+    // (`.grep: * ∉ @seen`) instead of computing eagerly — fall through below.
+    {
+        auto wish = [](const Value& v) { return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode); };
+        if (isSetOpStr(op) && !wish(l) && !wish(r)) return setOp(op, l, r);
+    }
     // hyper binary metaop  >>OP>>  : element-wise apply OP over the two lists
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
         (op.substr(op.size() - 2) == ">>" || op.substr(op.size() - 2) == "<<")) {
@@ -4805,14 +4810,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return out;
     }
     // Whatever-currying: `* + 1`, `*.elems == 2`, `2 * *`, etc. yield a WhateverCode.
-    // Excluded by spec: smartmatch treats a Whatever as a plain value
-    // (`(**) ~~ HyperWhatever:D` is a type test, not a curry) — but `* === True`
-    // and `* eqv X` DO curry in Rakudo (matcher idioms rely on it).
-    static const std::set<std::string> kNoCurry = {"~~", "!~~"};
+    // Smartmatch curries on the LEFT — `* ~~ /rx/` and `* !~~ @x` are the matcher
+    // idioms `.grep`/`.first` rely on — but a bare Whatever on the RIGHT stays a
+    // value: `$x ~~ *` matches anything (the `when *` default), it does not curry.
     auto isWhateverish = [](const Value& v) {
         return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
     };
-    if ((isWhateverish(l) || isWhateverish(r)) && !kNoCurry.count(op)) {
+    if (isWhateverish(l) || isWhateverish(r)) {
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
         code.code->isWhateverCode = true;
         // each `*` consumes one argument left-to-right, so `* + *` has arity 2
@@ -6574,7 +6578,21 @@ Value Interpreter::evalBinary(Binary* b) {
         // regex match: $str ~~ /pat/   /   $str ~~ s/pat/repl/
         if (b->rhs->kind == NK::RegexLit) {
             Value l = eval(b->lhs.get());
-            Value m = regexMatch(l.toStr(), static_cast<RegexLit*>(b->rhs.get())->pattern);
+            std::string pat = static_cast<RegexLit*>(b->rhs.get())->pattern;
+            // `* ~~ /rx/` / `* !~~ /rx/` curry into a matcher WhateverCode (the
+            // `.grep: * !~~ /1/` idiom) instead of matching the Whatever eagerly.
+            if (l.t == VT::Whatever || (l.t == VT::Code && l.code && l.code->isWhateverCode)) {
+                bool neg = (op == "!~~");
+                Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+                code.code->isWhateverCode = true; code.code->whateverArity = 1;
+                code.code->builtin = [pat, neg](Interpreter& I, ValueList& a) -> Value {
+                    Value m = I.regexMatch((a.empty() ? Value::any() : a[0]).toStr(), pat);
+                    if (neg) return Value::boolean(!m.truthy());
+                    return m.truthy() ? m : Value::nil();
+                };
+                return code;
+            }
+            Value m = regexMatch(l.toStr(), pat);
             // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool
             if (op == "~~") return m.truthy() ? m : Value::nil();
             return Value::boolean(!m.truthy());

@@ -1782,12 +1782,14 @@ ExprPtr Parser::parsePrimary() {
                         u->operand = std::move(empty);
                     }
                     else if (isKind(Tok::LParen) && !cur().spaceBefore) {
-                        // function-call form `[+](@a)`: ONLY the parenthesized args —
-                        // a following comma belongs to the ENCLOSING list
+                        // function-call form `[+](@a)`: the parens bound the args, so
+                        // parse a FULL expression up to `)` — this includes looser
+                        // list-infix metaops like `Z*`/`X~` (`[+](@a Z* @b)`). A
+                        // comma AFTER the `)` belongs to the enclosing list.
                         advance();
                         if (isKind(Tok::RParen)) { advance(); u->operand = std::make_unique<ListExpr>(); }
                         else {
-                            u->operand = parseExpr(BP_COMMA);
+                            u->operand = parseExpression();
                             expectKind(Tok::RParen, ")");
                         }
                     }
