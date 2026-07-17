@@ -646,6 +646,23 @@ ExprPtr Parser::parsePrefix(bool tight) {
                 advance();
                 u->operand = isKind(Tok::RParen) ? ExprPtr(std::make_unique<ListExpr>())
                                                  : parseExpression();
+                // `$(stmt; stmt; expr)` — a statement sequence valued at its last
+                // statement, like `do { … }` (let.t/temp.t idiom)
+                if (isKind(Tok::Semicolon)) {
+                    auto be = std::make_unique<BlockExpr>();
+                    auto es = std::make_unique<ExprStmt>();
+                    es->e = std::move(u->operand);
+                    be->body.push_back(std::move(es));
+                    while (matchKind(Tok::Semicolon)) {
+                        if (isKind(Tok::RParen)) break;
+                        auto es2 = std::make_unique<ExprStmt>();
+                        es2->e = parseExpression();
+                        be->body.push_back(std::move(es2));
+                    }
+                    auto dou = std::make_unique<Unary>();
+                    dou->op = "stmtseq"; dou->operand = std::move(be);
+                    u->operand = std::move(dou);
+                }
                 if (u->operand->kind == NK::ListExpr) static_cast<ListExpr*>(u->operand.get())->parenned = true;
                 expectKind(Tok::RParen, ")");
                 return parsePostfix(std::move(u), tight);
@@ -712,6 +729,32 @@ std::vector<ExprPtr> Parser::parseCallArgs(ExprPtr* invocant) {
             continue;
         }
         break;
+    }
+    // semicolon argument segments — `zip(1,2; 3,4; 5,6)` / `f(@a; @b)`: each
+    // `;`-segment is ONE argument (a List when it has several items, the bare
+    // expression when it has one)
+    if (isKind(Tok::Semicolon)) {
+        auto segArg = [](std::vector<ExprPtr>& items) -> ExprPtr {
+            if (items.size() == 1) return std::move(items[0]);
+            auto seg = std::make_unique<ListExpr>();
+            seg->parenned = true;
+            for (auto& it : items) seg->items.push_back(std::move(it));
+            return seg;
+        };
+        std::vector<ExprPtr> first = std::move(args);
+        args.clear();
+        args.push_back(segArg(first));
+        while (matchKind(Tok::Semicolon)) {
+            if (isKind(Tok::RParen)) break;
+            ExprPtr se = parseExpression();
+            std::vector<ExprPtr> items;
+            if (se->kind == NK::ListExpr && !static_cast<ListExpr*>(se.get())->parenned) {
+                auto* l = static_cast<ListExpr*>(se.get());
+                for (auto& it : l->items) items.push_back(std::move(it));
+            }
+            else items.push_back(std::move(se));
+            args.push_back(segArg(items));
+        }
     }
     expectKind(Tok::RParen, ")");
     return args;
@@ -2804,6 +2847,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
 // ---------------- statements ----------------
 std::unique_ptr<Block> Parser::parseBlock() {
     expectKind(Tok::LBrace, "{");
+    size_t opMark = opUndo_.size(); // user operators are lexically scoped
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
@@ -2811,6 +2855,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
         if (!isKind(Tok::Semicolon)) enforceStmtSep();
     }
     expectKind(Tok::RBrace, "}");
+    opRollback(opMark);
     return blk;
 }
 
@@ -2946,6 +2991,21 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
             continue;
+        }
+        // compile-time class type: ::?CLASS / ::?ROLE / ::?PACKAGE (with optional
+        // :D/:U smiley and invocant colon) — no runtime constraint is enforced,
+        // the name just parses like an unconstrained type
+        if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" &&
+            peek(2).kind == Tok::Ident) {
+            advance(); advance(); advance(); // :: ? CLASS
+            if (isOp(":") && peek().kind == Tok::Ident &&
+                (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
+                advance(); std::string sm = advance().text;
+                if (sm == "D") p.defConstraint = 1; else if (sm == "U") p.defConstraint = 2;
+            }
+            // `(::?CLASS:U: Bar $b)` — a type-only INVOCANT marker: the bare
+            // colon ends it; nothing binds, move on to the real parameters
+            if (isOp(":")) { advance(); continue; }
         }
         // type-capture parameter:  ::T $x  /  ::T  /  ::Grammar:U :$named
         // Capture the type-variable name (+ optional smiley) and fall through to
@@ -3146,13 +3206,13 @@ StmtPtr Parser::parseSub(bool isMulti) {
         if ((cat == "circumfix" || cat == "postcircumfix") && w.size() >= 2) {
             // two bracket words: `circumfix:<⟦ ⟧>` — name carries both, open→close registered
             s->name = cat + ":<" + w[0] + " " + w[1] + ">";
-            if (cat == "circumfix") userCircumfix_[w[0]] = w[1];
-            else userPostcircumfix_[w[0]] = w[1];
+            if (cat == "circumfix") regMap('c', userCircumfix_, w[0], w[1]);
+            else regMap('C', userPostcircumfix_, w[0], w[1]);
         } else if (!opname.empty()) {
             s->name = cat + ":<" + opname + ">";
-            if (cat == "infix") { userInfix_[opname] = BP_ADD; declInfix = opname; } // default precedence; traits may adjust
-            else if (cat == "prefix") userPrefix_.insert(opname);
-            else if (cat == "postfix") userPostfix_.insert(opname);
+            if (cat == "infix") { regInfix(opname, BP_ADD); declInfix = opname; } // default precedence; traits may adjust
+            else if (cat == "prefix") regSet('p', userPrefix_, opname);
+            else if (cat == "postfix") regSet('P', userPostfix_, opname);
         }
     }
     // proto-regex/method candidate suffix: `method foo:sym<bar>` / `token foo:sym«bar»`.
@@ -3223,14 +3283,14 @@ StmtPtr Parser::parseSub(bool isMulti) {
                 std::string refOp = (lt != std::string::npos && gt != std::string::npos && gt > lt)
                                   ? ref.substr(lt + 1, gt - lt - 1) : ref;
                 int refBp = infixBpOf(refOp);
-                userInfix_[declInfix] = trait == "equiv" ? refBp : trait == "tighter" ? refBp + 5 : refBp - 5;
+                regInfix(declInfix, trait == "equiv" ? refBp : trait == "tighter" ? refBp + 5 : refBp - 5);
                 continue;
             }
             if (trait == "assoc") {
                 advance(); advance(); // `is` `assoc`
                 std::string kind;
                 if (isOp("<")) { advance(); auto w = readAngleWords(">"); if (!w.empty()) kind = w[0]; }
-                if (kind == "right") userInfixRight_.insert(declInfix);
+                if (kind == "right") regSet('r', userInfixRight_, declInfix);
                 else userInfixRight_.erase(declInfix);
                 continue;
             }

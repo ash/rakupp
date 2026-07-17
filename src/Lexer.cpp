@@ -1172,6 +1172,27 @@ Token Lexer::lexOperator() {
         return false;
     };
     { bool ro;
+      // A word-form infix inner (`»min«`, `«max»`) is hyper too — but ONLY for
+      // known word infixes, so guillemet word-lists (`«x»`, `«ab»`) stay lists.
+      static const std::set<std::string> kWordInfix = {
+          "min", "max", "gcd", "lcm", "div", "mod", "x", "xx", "eq", "ne",
+          "lt", "gt", "le", "ge", "leg", "cmp", "unicmp", "before", "after"};
+      if (guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
+          (std::isalpha((unsigned char)peek(2)) || peek(2) == '_')) {
+          size_t save = pos_;
+          std::string open = ro ? ">>" : "<<";
+          advance(); advance(); // opening guillemet
+          std::string word; bool rc;
+          while (!eof() && ((unsigned char)peek() < 0x80) &&
+                 (std::isalpha((unsigned char)peek()) || peek() == '_') && word.size() < 8)
+              word += advance();
+          if (kWordInfix.count(word) && guill(0, rc)) {
+              std::string close = rc ? ">>" : "<<";
+              advance(); advance(); // closing guillemet
+              return make(Tok::Op, open + word + close);
+          }
+          pos_ = save; // not a word-infix hyper — fall through
+      }
       // Only a *symbolic* inner counts as hyper (`«+»`); an alphanumeric inner is a
       // guillemet word-list (`«x»`, `«ab»`), handled elsewhere — so require the first
       // inner char to be non-word.

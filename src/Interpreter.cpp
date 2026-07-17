@@ -3765,8 +3765,20 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         for (auto& e : *codeVal.arr) { ValueList a2 = args; out.arr->push_back(callCallable(e, a2)); }
         return out;
     }
-    if (codeVal.t != VT::Code || !codeVal.code)
+    if (codeVal.t != VT::Code || !codeVal.code) {
+        // an object (or type object) with a CALL-ME method is invokable: $obj(…)
+        if (codeVal.t == VT::Object && codeVal.obj && codeVal.obj->cls) {
+            if (Value* cm = codeVal.obj->cls->findMethod("CALL-ME"))
+                return invokeMethod(*cm, codeVal, std::move(args));
+        }
+        if (codeVal.t == VT::Type) {
+            auto cit = classes_.find(codeVal.s);
+            if (cit != classes_.end())
+                if (Value* cm = cit->second->findMethod("CALL-ME"))
+                    return invokeMethod(*cm, codeVal, std::move(args));
+        }
         throw RakuError{Value::str("Not callable"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
+    }
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code;
     if (c.isMultiDispatcher) {
@@ -7654,6 +7666,16 @@ Value Interpreter::evalUnary(Unary* u) {
         if (u->operand->kind == NK::BlockExpr)
             return callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {});
         return eval(u->operand.get());
+    }
+    if (u->op == "stmtseq") {
+        // `$(stmt; stmt; expr)` — statements run in the CURRENT scope (a temp/let
+        // inside must register on the enclosing block, not a nested one); the
+        // value is the last statement's value
+        Value r;
+        if (u->operand->kind == NK::BlockExpr)
+            for (auto& s : static_cast<BlockExpr*>(u->operand.get())->body)
+                r = exec(s.get(), false);
+        return r;
     }
     if (u->op == "try") {
         try {

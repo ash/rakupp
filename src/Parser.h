@@ -39,6 +39,39 @@ private:
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
+    // Lexical scoping for user-declared operators: every registration is logged
+    // and parseBlock rolls back to its entry mark, so `sub postfix:<!!>` inside
+    // a block doesn't leak out (and eat every later ternary's `!!`).
+    struct OpUndo { char table; std::string name; bool existed; int oldBp; std::string oldClose; };
+    std::vector<OpUndo> opUndo_;
+    void regInfix(const std::string& n, int bp) {
+        auto it = userInfix_.find(n);
+        opUndo_.push_back({'i', n, it != userInfix_.end(), it != userInfix_.end() ? it->second : 0, ""});
+        userInfix_[n] = bp;
+    }
+    void regSet(char t, std::set<std::string>& s, const std::string& n) {
+        opUndo_.push_back({t, n, s.count(n) > 0, 0, ""});
+        s.insert(n);
+    }
+    void regMap(char t, std::map<std::string, std::string>& m, const std::string& n, const std::string& close) {
+        auto it = m.find(n);
+        opUndo_.push_back({t, n, it != m.end(), 0, it != m.end() ? it->second : ""});
+        m[n] = close;
+    }
+    void opRollback(size_t mark) {
+        while (opUndo_.size() > mark) {
+            OpUndo& u = opUndo_.back();
+            switch (u.table) {
+                case 'i': if (u.existed) userInfix_[u.name] = u.oldBp; else userInfix_.erase(u.name); break;
+                case 'p': if (!u.existed) userPrefix_.erase(u.name); break;
+                case 'P': if (!u.existed) userPostfix_.erase(u.name); break;
+                case 'r': if (!u.existed) userInfixRight_.erase(u.name); break;
+                case 'c': if (u.existed) userCircumfix_[u.name] = u.oldClose; else userCircumfix_.erase(u.name); break;
+                case 'C': if (u.existed) userPostcircumfix_[u.name] = u.oldClose; else userPostcircumfix_.erase(u.name); break;
+            }
+            opUndo_.pop_back();
+        }
+    }
     std::string pcfxClose_; // active postcircumfix close bracket (don't re-open it inside its own content)
     std::string sigRetType_; // return type from an in-signature `--> T` (read by parseSub)
     ExprPtr sigRetLiteral_;  // literal from an in-signature `--> 1` (read by parseSub)
