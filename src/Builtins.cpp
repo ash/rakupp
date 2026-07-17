@@ -2567,6 +2567,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // leap seconds: second 60 must land at 23:59:60 UTC on a real historical
         // leap-second day; 61+ is always out of range.
         auto checkLeap = [&](long long y, long long mo, long long d, long long h, long long mi, long long s, long long tz) {
+            if (s < 0)
+                throw RakuError{Value::typeObj("X::OutOfRange"),
+                    "Second out of range. Is: " + std::to_string(s) + ", should be in 0..^62"};
             if (s < 60) return;
             if (s >= 61)
                 throw RakuError{Value::typeObj("X::OutOfRange"),
@@ -2610,13 +2613,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     if (tp != std::string::npos) {
                         (void)sscanf(is.c_str() + tp + 1, "%lld:%lld:%lf", &h, &mi, &fs);
                         secV = (fs == (long long)fs) ? Value::integer((long long)fs) : Value::number(fs);
-                        size_t zp = is.find_first_of("Z+-", tp);
+                        size_t zp = is.find_first_of("Zz+-", tp);
                         if (zp != std::string::npos) {
-                            if (is[zp] == 'Z') tz = 0;
+                            if (is[zp] == 'Z' || is[zp] == 'z') tz = 0;
                             else {
-                                long long oh = 0, om = 0;
-                                if (is.find(':', zp) != std::string::npos) (void)sscanf(is.c_str() + zp + 1, "%lld:%lld", &oh, &om);
-                                else { (void)sscanf(is.c_str() + zp + 1, "%2lld%2lld", &oh, &om); }
+                                // the offset must be exactly ±HH or ±HH:MM (2-digit fields)
+                                std::string off = is.substr(zp + 1);
+                                auto dig = [](char c) { return c >= '0' && c <= '9'; };
+                                bool ok = (off.size() == 2 && dig(off[0]) && dig(off[1])) ||              // ±HH
+                                          (off.size() == 4 && dig(off[0]) && dig(off[1]) && dig(off[2]) && dig(off[3])) || // ±HHMM
+                                          (off.size() == 5 && off[2] == ':' && dig(off[0]) && dig(off[1]) && dig(off[3]) && dig(off[4])); // ±HH:MM
+                                if (!ok)
+                                    throw RakuError{Value::typeObj("X::DateTime::InvalidFormat"),
+                                        "Invalid DateTime string '" + is + "'"};
+                                long long oh = (off[0] - '0') * 10 + (off[1] - '0');
+                                long long om = off.size() == 4 ? (off[2] - '0') * 10 + (off[3] - '0')
+                                             : off.size() == 5 ? (off[3] - '0') * 10 + (off[4] - '0') : 0;
                                 tz = (is[zp] == '-' ? -1 : 1) * (oh * 3600 + om * 60);
                             }
                         }
@@ -2799,6 +2811,31 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             (*v.hash)["second"] = frac != 0.0 ? Value::number((double)nsec + frac) : Value::integer(nsec);
             (*v.hash)["timezone"] = Value::integer(tz);
             (*v.hash)["posix"] = Value::integer(dayNum * 86400 + totSec - tz);
+            return v;
+        }
+        if ((m == "truncated-to" || m == "truncate-to") &&
+            (inv.hashKind == "DateTime" || inv.hashKind == "Date") && !args.empty()) {
+            std::string u = args[0].toStr();
+            long long y = fld("year"), mo = fld("month"), d = fld("day"), h = fld("hour"), mi = fld("minute");
+            double sec = inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0;
+            long long si = (long long)std::floor(sec);
+            if (u == "second")      sec = (double)si;
+            else if (u == "minute") { sec = 0; }
+            else if (u == "hour")   { sec = 0; mi = 0; }
+            else if (u == "day")    { sec = 0; mi = 0; h = 0; }
+            else if (u == "week")   { sec = 0; mi = 0; h = 0;
+                long long dn = civilToDays(y, mo, d); long long wd = ((dn % 7) + 3 + 7) % 7; // 0=Mon
+                dn -= wd; daysToCivil(dn, y, mo, d); }
+            else if (u == "month")  { sec = 0; mi = 0; h = 0; d = 1; }
+            else if (u == "year")   { sec = 0; mi = 0; h = 0; d = 1; mo = 1; }
+            if (inv.hashKind == "Date") return makeDate(civilToDays(y, mo, d));
+            long long tz = fld("timezone");
+            long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + si - tz;
+            Value v = Value::makeHash(); v.hashKind = "DateTime";
+            (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
+            (*v.hash)["hour"] = Value::integer(h); (*v.hash)["minute"] = Value::integer(mi);
+            (*v.hash)["second"] = (u == "second" && sec != std::floor(sec)) ? Value::number(sec) : Value::integer((long long)sec);
+            (*v.hash)["timezone"] = Value::integer(tz); (*v.hash)["posix"] = Value::integer(ep);
             return v;
         }
         if (m == "is-leap-year" && (inv.hashKind == "Date" || inv.hashKind == "DateTime")) {
@@ -3578,6 +3615,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         (*it.hash)["items"] = items;
         (*it.hash)["pos"] = Value::integer(0);
         return it;
+    }
+    // Date/DateTime clone rebuilds via `.new` so `:field(v)` overrides apply AND
+    // validate (rejecting e.g. `.clone(month => 13)`), recomputing posix.
+    if (m == "clone" && inv.t == VT::Hash && (inv.hashKind == "DateTime" || inv.hashKind == "Date") && inv.hash) {
+        std::map<std::string, Value> merged;
+        for (const char* k : {"year", "month", "day", "hour", "minute", "second", "timezone"})
+            if (inv.hash->count(k)) merged[k] = (*inv.hash)[k];
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal) merged[a.s] = *a.pairVal;
+        ValueList na; for (auto& kv : merged) na.push_back(Value::pair(kv.first, kv.second));
+        return methodCall(Value::typeObj(inv.hashKind), "new", na);
     }
     if (m == "clone") { // non-object clone: shallow copy of containers, self for immutables
         if (inv.t == VT::Array) { Value nv = inv; nv.arr = std::make_shared<ValueList>(*inv.arr); return nv; }

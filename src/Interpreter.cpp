@@ -2883,6 +2883,14 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         // destructure a value against p's sub-signature: positionals from the
         // elements, named inner params (`:key($k)`) from the value's accessors
         auto destructure = [&](const Param& sp, const Value& v) {
+            // a hash sub-signature `%h (:$left, :$right, *%)` binds each `:$k` from the
+            // hash's KEY (not a `.k` accessor), and `*%` slurps the remaining keys.
+            if (v.t == VT::Hash && v.hash) {
+                ValueList inner;
+                for (auto& kv : *v.hash) { Value na = Value::pair(kv.first, kv.second); na.namedArg = true; inner.push_back(na); }
+                bindParams(*sp.subSig, inner, env);
+                return;
+            }
             ValueList inner = (v.t == VT::Array && v.arr) ? *v.arr
                             : (v.t == VT::Range) ? v.flatten() : ValueList{v};
             for (auto& ip : *sp.subSig)
@@ -6575,6 +6583,47 @@ Value Interpreter::evalBinary(Binary* b) {
     if (b->simpleOp == 1) {
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
+        // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
+        // not the hash's numeric coercion (which would be 0).
+        {
+            bool ldt = l.hashKind == "DateTime" || l.hashKind == "Date";
+            bool rdt = r.hashKind == "DateTime" || r.hashKind == "Date";
+            if (ldt || rdt) {
+                auto dtSec = [](const Value& v) -> double {
+                    if (v.hashKind != "DateTime" && v.hashKind != "Date") return v.toNum();
+                    double p = v.hash && v.hash->count("posix") ? (*v.hash)["posix"].toNum() : 0.0;
+                    if (v.hash && v.hash->count("second")) { double s = (*v.hash)["second"].toNum(); p += s - std::floor(s); }
+                    return p;
+                };
+                if (ldt && rdt && (op == "<" || op == ">" || op == "<=" || op == ">=" ||
+                                   op == "==" || op == "!=" || op == "<=>")) {
+                    double a = dtSec(l), c = dtSec(r);
+                    if (op == "<=>") return Value::integer(a < c ? -1 : a > c ? 1 : 0);
+                    bool res = op == "<" ? a < c : op == ">" ? a > c : op == "<=" ? a <= c
+                             : op == ">=" ? a >= c : op == "==" ? a == c : a != c;
+                    return Value::boolean(res);
+                }
+                if (op == "-" && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
+                    Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return d;
+                }
+                if ((op == "+" || op == "-") && l.hashKind == "DateTime" &&
+                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration")) {
+                    double np = dtSec(l) + (op == "-" ? -r.toNum() : r.toNum());
+                    long long tz = l.hash && l.hash->count("timezone") ? (*l.hash)["timezone"].toInt() : 0;
+                    Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(np)});
+                    if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
+                    return res;
+                }
+                if (op == "+" && r.hashKind == "DateTime" &&
+                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration")) {
+                    double np = dtSec(r) + l.toNum();
+                    long long tz = r.hash && r.hash->count("timezone") ? (*r.hash)["timezone"].toInt() : 0;
+                    Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(np)});
+                    if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
+                    return res;
+                }
+            }
+        }
         if ((op == "+" || op == "-") &&
             (!l.hashKind.empty() || !r.hashKind.empty())) { // Instant/Duration algebra
             Value res = applyArith(op, l, r);
@@ -8610,6 +8659,9 @@ Value Interpreter::eval(Expr* e) {
             for (auto& it : l->items) {
                 Value v = eval(it.get());
                 if (v.t == VT::Array) { for (auto& x : *v.arr) items.arr->push_back(x); }
+                // `{ a => 1, %more }` — a hash operand spreads its pairs into the literal
+                // (but NOT a typed/kind hash — Set/Bag/Map keep their identity as a value)
+                else if (v.t == VT::Hash && v.hash && v.hashKind.empty()) { for (auto& kv : *v.hash) items.arr->push_back(Value::pair(kv.first, kv.second)); }
                 else items.arr->push_back(v);
             }
             return coerceHash(items);
