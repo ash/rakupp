@@ -838,8 +838,11 @@ static Value hashToPairs(const Value& v) {
     Value out = Value::array(); out.isList = true;
     if (!v.hash) return out;
     bool setty = v.hashKind == "Set" || v.hashKind == "SetHash";
-    for (auto& kv : *v.hash)
-        out.arr->push_back(Value::pair(kv.first, setty ? Value::boolean(true) : kv.second));
+    for (auto& kv : *v.hash) {
+        Value p = Value::pair(kv.first, setty ? Value::boolean(true) : kv.second);
+        p.pairKey = kv.second.pairKey; // Set/Bag/Mix: recover the element's original type
+        out.arr->push_back(std::move(p));
+    }
     return out;
 }
 

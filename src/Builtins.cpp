@@ -695,7 +695,7 @@ static ValueList toList(const Value& v) {
     if (v.t == VT::Range) return v.flatten();
     if (v.t == VT::Hash && v.hash) {
         ValueList out;
-        for (auto& kv : *v.hash) out.push_back(Value::pair(kv.first, kv.second));
+        for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; out.push_back(std::move(p)); }
         return out;
     }
     return {v};
@@ -1158,30 +1158,47 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     return Value::integer((long long)u);
 }
 
+// The typed key of an element, preserved in the count Value's `pairKey` so
+// .keys/.pairs/.min/.max recover the original type (a Bag of Ints keeps Int
+// keys, not the stringified form). Null for a plain Str — that round-trips
+// through the string key, so Set-of-strings behaviour stays byte-identical.
+static std::shared_ptr<Value> baggyKey(const Value& v) {
+    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return nullptr;
+    return std::make_shared<Value>(v);
+}
 Value makeBaggy(const ValueList& items, const std::string& kind) {
     Value h = Value::makeHash();
     h.hashKind = kind;
     bool isSet = kind.find("Set") == 0;
     bool isMix = kind.find("Mix") == 0; // Mix weights keep their full numeric value (2.5 stays a Rat)
-    auto add = [&](const std::string& k, long long cnt) {
-        if (isSet) { if (cnt > 0) (*h.hash)[k] = Value::boolean(true); else h.hash->erase(k); return; }
-        long long c = 0; auto it = h.hash->find(k); if (it != h.hash->end()) c = it->second.toInt();
-        c += cnt; if (c != 0) (*h.hash)[k] = Value::integer(c); else h.hash->erase(k);
+    auto add = [&](const std::string& k, long long cnt, const std::shared_ptr<Value>& tk) {
+        auto it = h.hash->find(k);
+        auto keep = it != h.hash->end() && it->second.pairKey ? it->second.pairKey : tk;
+        if (isSet) {
+            if (cnt > 0) { Value b = Value::boolean(true); b.pairKey = keep; (*h.hash)[k] = std::move(b); }
+            else h.hash->erase(k);
+            return;
+        }
+        long long c = it != h.hash->end() ? it->second.toInt() : 0;
+        c += cnt;
+        if (c != 0) { Value cv = Value::integer(c); cv.pairKey = keep; (*h.hash)[k] = std::move(cv); }
+        else h.hash->erase(k);
     };
     for (auto& v : items) {
         if (v.t == VT::Pair) {
             Value w = v.pairVal ? *v.pairVal : Value::integer(0);
             if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
                 auto it = h.hash->find(v.s);
+                auto keep = it != h.hash->end() && it->second.pairKey ? it->second.pairKey : v.pairKey;
                 if (it != h.hash->end()) {
                     double sum = it->second.toNum() + w.toNum();
-                    if (sum == 0.0) h.hash->erase(v.s); else (*h.hash)[v.s] = Value::number(sum);
-                } else if (w.toNum() != 0.0) (*h.hash)[v.s] = w;
+                    if (sum == 0.0) h.hash->erase(v.s); else { w = Value::number(sum); w.pairKey = keep; (*h.hash)[v.s] = w; }
+                } else if (w.toNum() != 0.0) { w.pairKey = keep; (*h.hash)[v.s] = w; }
                 continue;
             }
-            add(v.s, w.toInt());
+            add(v.s, w.toInt(), v.pairKey);         // a `1 => 2` pair carries its typed key in pairKey
         }
-        else add(v.toStr(), 1);
+        else add(v.toStr(), 1, baggyKey(v));
     }
     return h;
 }
@@ -3595,9 +3612,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "hash") { Value h = Value::makeHash(); if (inv.hash) *h.hash = *inv.hash; return h; }
         if (m == "elems") return Value::integer(inv.arr ? (long long)inv.arr->size() : 0);
         Value o = Value::array(); o.isList = true;
+        // Set/Bag/Mix keep the element's original type in the count's pairKey.
+        auto typedKey = [](const std::pair<const std::string, Value>& kv) {
+            return kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+        };
         if (m == "keys") {
             if (inv.arr) for (size_t i = 0; i < inv.arr->size(); i++) o.arr->push_back(Value::integer((long long)i));
-            if (inv.hash) for (auto& kv : *inv.hash) o.arr->push_back(Value::str(kv.first));
+            if (inv.hash) for (auto& kv : *inv.hash) o.arr->push_back(typedKey(kv));
         } else if (m == "values" || m == "list" || m == "caps") {
             if (inv.arr) for (auto& e : *inv.arr) o.arr->push_back(e);
             if ((m == "values") && inv.hash) for (auto& kv : *inv.hash) o.arr->push_back(kv.second);
@@ -3607,8 +3628,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 else o.arr->push_back(Value::pair(std::to_string(i), (*inv.arr)[i]));
             }
             if (inv.hash) for (auto& kv : *inv.hash) {
-                if (m == "kv") { o.arr->push_back(Value::str(kv.first)); o.arr->push_back(kv.second); }
-                else o.arr->push_back(Value::pair(kv.first, kv.second));
+                if (m == "kv") { o.arr->push_back(typedKey(kv)); o.arr->push_back(kv.second); }
+                else { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; o.arr->push_back(std::move(p)); }
             }
         }
         return o;
@@ -5713,7 +5734,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "keys") {
             Value out = Value::array();
-            if (inv.t == VT::Hash) { for (auto& kv : *inv.hash) out.arr->push_back(Value::str(kv.first)); }
+            // Set/Bag/Mix recover the element's original type from the count's pairKey.
+            if (inv.t == VT::Hash) { for (auto& kv : *inv.hash) out.arr->push_back(kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first)); }
             else for (size_t i = 0; i < items.size(); i++) out.arr->push_back(Value::integer((long long)i));
             out.isList = true;
             return out;
@@ -5810,7 +5832,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "antipairs" && inv.t == VT::Hash) { // (value => key) pairs, like invert
             Value out = Value::array(); out.isList = true; out.s = "Seq";
-            for (auto& kv : *inv.hash) out.arr->push_back(Value::pair(kv.second.toStr(), Value::str(kv.first)));
+            for (auto& kv : *inv.hash) out.arr->push_back(Value::pair(kv.second.toStr(), kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first)));
             return out;
         }
         if (m == "pairup") { // (1,2,3,4).pairup → (1=>2, 3=>4); odd tail pairs with Any
@@ -5827,8 +5849,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             if (inv.t == VT::Hash) {
                 for (auto& kv : *inv.hash) {
-                    if (m == "kv") { out.arr->push_back(Value::str(kv.first)); out.arr->push_back(kv.second); }
-                    else out.arr->push_back(Value::pair(kv.first, kv.second));
+                    Value key = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+                    if (m == "kv") { out.arr->push_back(key); out.arr->push_back(kv.second); }
+                    else if (m == "antipairs") { Value p = Value::pair(kv.second.toStr(), key); out.arr->push_back(std::move(p)); }
+                    else { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; out.arr->push_back(std::move(p)); }
                 }
             } else {
                 for (size_t i = 0; i < items.size(); i++) {
