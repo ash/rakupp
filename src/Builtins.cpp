@@ -6014,6 +6014,10 @@ Value rtBOrd(Interpreter&, const Value& v) {
     auto c = utf8cp(v.toStr());
     return c.empty() ? Value::nil() : Value::integer(c[0]);
 }
+Value rtBSay(Interpreter& I, const Value& v)   { std::string out = I.gistOf(v); out += "\n"; return I.ioEmit(out, "$*OUT", false); }
+Value rtBPrint(Interpreter& I, const Value& v) { return I.ioEmit(I.strOf(v), "$*OUT", false); }
+Value rtBPut(Interpreter& I, const Value& v)   { std::string out = I.strOf(v); out += "\n"; return I.ioEmit(out, "$*OUT", false); }
+Value rtBNote(Interpreter& I, const Value& v)  { std::string out = I.gistOf(v); out += "\n"; return I.ioEmit(out, "$*ERR", true); }
 Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), true, 0)); }
 Value rtBLc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), false, 0)); }
 Value rtBChars(Interpreter&, const Value& v) { return Value::integer(graphemeCount(v.toStr())); }
@@ -6057,6 +6061,7 @@ void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
     B["say"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() == 1) return rtBSay(I, a[0]);
         std::string out;
         for (auto& v : a) out += I.gistOf(v);
         out += "\n"; return I.ioEmit(out, "$*OUT", false);

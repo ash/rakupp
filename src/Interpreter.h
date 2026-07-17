@@ -581,6 +581,10 @@ inline Value rtBAbs(Interpreter& I, const Value& v) {
 // old registered lambda's 1-arg case, verbatim). Delegators keep full
 // methodCall semantics (augment, objects, junctions); the two with bypassing
 // fast paths (abs above, sign below) are augment-guarded via builtinExt_.
+Value rtBSay(Interpreter& I, const Value& v);      // say/print/put/note, 1-arg forms
+Value rtBPrint(Interpreter& I, const Value& v);
+Value rtBPut(Interpreter& I, const Value& v);
+Value rtBNote(Interpreter& I, const Value& v);
 Value rtBUc(Interpreter& I, const Value& v);       // Str case-mapping (Builtins.cpp statics)
 Value rtBLc(Interpreter& I, const Value& v);
 Value rtBChars(Interpreter& I, const Value& v);    // grapheme count

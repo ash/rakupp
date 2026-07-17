@@ -943,6 +943,7 @@ struct Codegen {
                 if (optimize_ && c->args.size() == 1 && simpleArgs(c->args)) {
                     static const std::map<std::string, const char*> fastB = {
                         {"abs", "rtBAbs"}, {"chr", "rtBChr"}, {"ord", "rtBOrd"},
+                        {"say", "rtBSay"}, {"print", "rtBPrint"}, {"put", "rtBPut"}, {"note", "rtBNote"},
                         {"sign", "rtBSign"}, {"floor", "rtBFloor"}, {"ceiling", "rtBCeiling"},
                         {"round", "rtBRound"}, {"truncate", "rtBTruncate"}, {"sqrt", "rtBSqrt"},
                         {"exp", "rtBExp"}, {"log", "rtBLog"}, {"log10", "rtBLog10"}, {"log2", "rtBLog2"},
