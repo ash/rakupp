@@ -4875,6 +4875,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             m == "Array" || m == "eager" || m == "join" || m == "Str" || m == "gist")
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " an infinite range"};
     }
+    // `.all`/`.any`/`.one`/`.none` on a single (non-container) value → a one-element
+    // junction (Rakudo: `5.all` === `all(5)`); containers are handled just below.
+    if ((m == "all" || m == "any" || m == "none" || m == "one") &&
+        inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash) {
+        Value j = Value::array(); j.enumName = m;
+        j.arr = std::make_shared<ValueList>(ValueList{inv});
+        return j;
+    }
     if (inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Hash) {
         ValueList items = toList(inv);
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction

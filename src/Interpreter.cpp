@@ -6554,6 +6554,26 @@ Value Interpreter::evalBinary(Binary* b) {
         // hyper metaop `>>op<<` — element-wise, resolving a user inner operator
         if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
             (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
+            // `* <<+>> @b` / `@a >>+>> *` — a Whatever(Code) operand curries the metaop
+            auto whr = [](const Value& v) { return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode); };
+            if (whr(l) || whr(r)) {
+                Value lc = l, rc = r; std::string opc = op;
+                Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+                code.code->isWhateverCode = true;
+                code.code->whateverArity = (whr(l) ? 1 : 0) + (whr(r) ? 1 : 0);
+                code.code->builtin = [lc, rc, opc](Interpreter& I, ValueList& a) -> Value {
+                    size_t ai = 0;
+                    auto resolve = [&](const Value& v) -> Value {
+                        if (v.t == VT::Whatever) return ai < a.size() ? a[ai++] : Value::any();
+                        if (v.t == VT::Code && v.code && v.code->isWhateverCode)
+                            return I.callCallable(v, ValueList{ai < a.size() ? a[ai++] : Value::any()});
+                        return v;
+                    };
+                    Value nl = resolve(lc), nr = resolve(rc);
+                    return I.applyBinOp(opc, nl, nr);
+                };
+                return code;
+            }
             std::string inner = op.substr(2, op.size() - 4);
             ValueList a = l.flatten(), bb = r.flatten();
             Value out = Value::array(); out.isList = true;
@@ -8543,24 +8563,32 @@ Value Interpreter::eval(Expr* e) {
         case NK::Binary: return evalBinary(static_cast<Binary*>(e));
         case NK::ChainExpr: {
             auto* ch = static_cast<ChainExpr*>(e);
-            // a literal `*` operand curries the whole chain (60 < * < 70) — check
+            // a Whatever operand curries the whole chain (`60 < * < 70`, and also
+            // `0 <= *.all <= $n` where the slot is a `*.method` WhateverCode) — check
             // the AST up front so short-circuiting still guards the normal path
+            std::vector<bool> isW; isW.reserve(ch->operands.size());
             bool anyWhatever = false;
-            for (auto& o : ch->operands) if (o->kind == NK::Whatever) anyWhatever = true;
+            for (auto& o : ch->operands) { bool w = exprHasWhateverLit(o.get()); isW.push_back(w); anyWhatever = anyWhatever || w; }
             if (anyWhatever) {
                 ValueList ops;
                 for (auto& o : ch->operands) ops.push_back(eval(o.get()));
-                // Whatever in a chain curries the whole chain: 60 < * < 70 is a
-                // one-arg WhateverCode testing both comparisons
                 Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
                 code.code->isWhateverCode = true;
-                long long stars = 0; for (auto& v : ops) if (v.t == VT::Whatever) stars++;
+                long long stars = 0; for (bool w : isW) if (w) stars++;
                 code.code->whateverArity = stars;
                 std::vector<std::string> cops = ch->ops;
-                code.code->builtin = [cops, ops](Interpreter& I, ValueList& a) -> Value {
+                code.code->builtin = [cops, ops, isW](Interpreter& I, ValueList& a) -> Value {
                     size_t ai = 0;
                     ValueList filled;
-                    for (auto& v : ops) filled.push_back(v.t == VT::Whatever && ai < a.size() ? a[ai++] : v);
+                    for (size_t k = 0; k < ops.size(); k++) {
+                        if (!isW[k]) { filled.push_back(ops[k]); continue; }
+                        Value arg = ai < a.size() ? a[ai++] : Value::any();
+                        // a bare `*` fills with the arg; a `*.method` slot is itself a
+                        // WhateverCode and must be applied to the arg
+                        if (ops[k].t == VT::Code && ops[k].code && ops[k].code->isWhateverCode)
+                            filled.push_back(I.callCallable(ops[k], ValueList{arg}));
+                        else filled.push_back(arg);
+                    }
                     for (size_t k = 0; k < cops.size(); k++)
                         if (!I.applyBinOp(cops[k], filled[k], filled[k + 1]).truthy()) return Value::boolean(false);
                     return Value::boolean(true);
@@ -8722,7 +8750,16 @@ Value Interpreter::eval(Expr* e) {
                 else
                     for (auto& el : inv.flatten()) out.arr->push_back(methodCall(el, mc->method, args));
                 out.isList = true;
-                if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) { out.isList = false; *lv = out; } }
+                if (mc->mutate) {
+                    // `($a, $b)>>.=meth` writes each result back to that element's own
+                    // container; a plain `@a>>.=meth` writes the whole list back to @a.
+                    if (mc->inv->kind == NK::ListExpr) {
+                        auto* le = static_cast<ListExpr*>(mc->inv.get());
+                        for (size_t k = 0; k < le->items.size() && k < out.arr->size(); k++)
+                            if (Value* elv = lvalue(le->items[k].get())) *elv = (*out.arr)[k];
+                    }
+                    else if (Value* lv = lvalue(mc->inv.get())) { out.isList = false; *lv = out; }
+                }
                 return out;
             }
             // Autothread a junction argument: `$s.contains(all("a","b"))` becomes
