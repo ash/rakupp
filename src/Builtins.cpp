@@ -2753,8 +2753,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "Str" || m == "gist" || m == "yyyy-mm-dd" || m == "Date") {
             char buf[48];
+            const char* ys = fld("year") > 9999 ? "+" : ""; // ISO 8601: 5+ digit years carry a leading +
             if (inv.hashKind == "Date" || m == "yyyy-mm-dd")
-                snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", fld("year"), fld("month"), fld("day"));
+                snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lld", ys, fld("year"), fld("month"), fld("day"));
             else {
                 long long tz = fld("timezone");
                 char suf[12];
@@ -2763,9 +2764,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 auto sit2 = inv.hash->find("second");
                 double sd = sit2 != inv.hash->end() ? sit2->second.toNum() : 0.0;
                 if (sd != (double)(long long)sd)
-                    snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s", fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), sd, suf);
+                    snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s", ys, fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), sd, suf);
                 else
-                    snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s", fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"), suf);
+                    snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s", ys, fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"), suf);
             }
             if (m == "Date") return makeDate(civilToDays(fld("year"), fld("month"), fld("day")));
             return Value::str(buf);

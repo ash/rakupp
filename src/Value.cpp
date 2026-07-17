@@ -23,8 +23,9 @@ struct ReprDepthGuard {
 
 static std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
-    char buf[40];
-    if (isDate) std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lld", f("year"), f("month"), f("day"));
+    char buf[48];
+    const char* ys = f("year") > 9999 ? "+" : ""; // ISO 8601: years past 9999 carry a leading +
+    if (isDate) std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lld", ys, f("year"), f("month"), f("day"));
     else {
         long long tz = f("timezone");
         char suf[12];
@@ -34,11 +35,11 @@ static std::string dateGist(const std::map<std::string, Value>& h, bool isDate) 
         auto sit = h.find("second");
         double sd = sit != h.end() ? sit->second.toNum() : 0.0;
         if (sd != (double)(long long)sd)
-            std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s",
-                          f("year"), f("month"), f("day"), f("hour"), f("minute"), sd, suf);
+            std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s",
+                          ys, f("year"), f("month"), f("day"), f("hour"), f("minute"), sd, suf);
         else
-            std::snprintf(buf, sizeof buf, "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s",
-                          f("year"), f("month"), f("day"), f("hour"), f("minute"), f("second"), suf);
+            std::snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s",
+                          ys, f("year"), f("month"), f("day"), f("hour"), f("minute"), f("second"), suf);
     }
     return buf;
 }
