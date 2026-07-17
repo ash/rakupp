@@ -3322,6 +3322,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             auto it = inv.obj->attrs.find(m);
             return it != inv.obj->attrs.end() ? it->second : Value::any();
         }
+        // Real-role bridge: numeric coercions/methods the class doesn't define
+        // dispatch through .Bridge BEFORE the generic Cool handlers (else `.Int`
+        // would numify the object itself to 0)
+        static const std::set<std::string> bridgeable = {
+            "Int", "Num", "Rat", "FatRat", "Numeric", "Real", "Complex", "Str", "gist",
+            "abs", "floor", "ceiling", "round", "truncate", "sign", "sqrt", "succ", "pred",
+            "exp", "log", "log10", "log2", "sin", "cos", "tan", "asin", "acos", "atan",
+            "atan2", "sec", "cosec", "cotan", "sinh", "cosh", "tanh", "isNaN", "narrow",
+            "base", "chr", "fmt"};
+        if (bridgeable.count(m)) {
+            if (Value* br = ci->findMethod("Bridge")) {
+                Value bv = invokeMethod(*br, inv, {});
+                return methodCall(bv, m, std::move(args), rwArgs);
+            }
+        }
         // else fall through to universal methods (.defined/.WHAT/.gist/...)
     }
 
@@ -3525,8 +3540,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Int || inv.t == VT::Bool) return Value::boolean(false);
     }
     if (m == "Num" || m == "Numeric" || m == "Real") return Value::number(inv.toNum());
-    if (m == "Bool" || m == "so") return Value::boolean(inv.truthy());
-    if (m == "not") return Value::boolean(!inv.truthy());
+    if (m == "Bool" || m == "so") {
+        if (inv.t == VT::Object) return Value::boolean(boolify(inv)); // honours user Bool / Real Bridge
+        return Value::boolean(inv.truthy());
+    }
+    if (m == "not") {
+        if (inv.t == VT::Object) return Value::boolean(!boolify(inv));
+        return Value::boolean(!inv.truthy());
+    }
     if (m == "defined") return Value::boolean(defined(inv));
     if (m == "DEFINITE") return Value::boolean(defined(inv)); // defined instance vs type/undef
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
@@ -3865,6 +3886,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.isNumeric() || inv.t == VT::Str) {
         double x = inv.toNum();
         if (m == "cis") return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
+        if (m == "roots") { // the n n-th roots, as Complexes around the circle
+            long long n = args.empty() ? 1 : a0().toInt();
+            Value out = Value::array(); out.isList = true;
+            if (n <= 0) { out.arr->push_back(Value::number(std::nan(""))); return out; }
+            double mag = std::pow(std::abs(x), 1.0 / (double)n);
+            double th0 = x < 0 ? 3.14159265358979323846 : 0.0;
+            for (long long k = 0; k < n; k++) {
+                double th = (th0 + 2 * 3.14159265358979323846 * k) / (double)n;
+                out.arr->push_back(Value::complex(mag * std::cos(th), mag * std::sin(th)));
+            }
+            return out;
+        }
         if (m == "unpolar") { // $mag.unpolar($angle) — Complex from polar coordinates
             double ang = args.empty() ? 0.0 : a0().toNum();
             return Value::complex(x * std::cos(ang), x * std::sin(ang));
@@ -3946,6 +3979,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (!args.empty()) return Value::number(std::log(inv.toNum()) / std::log(args[0].toNum()));
         return Value::number(std::log(inv.toNum()));
     }
+    if (m == "log10") return Value::number(std::log10(inv.toNum()));
+    if (m == "log2")  return Value::number(std::log2(inv.toNum()));
     if (m == "sin") return Value::number(std::sin(inv.toNum()));
     if (m == "cos") return Value::number(std::cos(inv.toNum()));
     if (m == "numerator") return inv.t == VT::Rat ? Value::bigint(*inv.ratN) : Value::integer(inv.toInt());
@@ -6031,6 +6066,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return methodCall(l, m, std::move(args), rwArgs);
         }
     }
+    // Real numification protocol: built-in numerics answer .Bridge with a Num
+    if (m == "Bridge" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool))
+        return Value::number(inv.toNum());
+    // Real-role bridge: an object whose class defines .Bridge (`class F does Real
+    // { method Bridge() {…} }`) answers unknown methods through the bridged
+    // value — .succ/.Int/.Bool/.sqrt/… all come from Real via the bridge.
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls && m != "Bridge") {
+        if (Value* br = inv.obj->cls->findMethod("Bridge")) {
+            Value bv = invokeMethod(*br, inv, {});
+            return methodCall(bv, m, std::move(args), rwArgs);
+        }
+    }
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
     throw RakuError{Value::str("No method '" + m + "'"),
@@ -6916,6 +6963,11 @@ void Interpreter::registerBuiltins() {
     B["cis"] = [](Interpreter&, ValueList& a) -> Value {
         double x = a.empty() ? 0.0 : a[0].toNum();
         return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
+    };
+    B["unpolar"] = [](Interpreter&, ValueList& a) -> Value { // Complex from (magnitude, angle)
+        double r = a.empty() ? 0.0 : a[0].toNum();
+        double th = a.size() > 1 ? a[1].toNum() : 0.0;
+        return Value::complex(r * std::cos(th), r * std::sin(th));
     };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSqrt(I, a.empty() ? Value::integer(0) : a[0]); };
     B["floor"] = [](Interpreter& I, ValueList& a) -> Value { return rtBFloor(I, a.empty() ? Value::integer(0) : a[0]); };

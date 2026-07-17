@@ -3249,6 +3249,8 @@ bool Interpreter::boolify(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         if (Value* b = v.obj->cls->findMethod("Bool"))
             return invokeMethod(*b, v, {}).truthy();
+        if (Value* br = v.obj->cls->findMethod("Bridge")) // a Real bridges to its numeric value
+            return invokeMethod(*br, v, {}).truthy();
     }
     if (isJunction(v)) { // collapse a junction to Bool per its kind
         int t = 0, total = 0;
@@ -6643,6 +6645,22 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     }
 }
 
+// Real-role bridge: a user object that defines .Bridge (or .Numeric) numifies
+// through it, so numeric operators work on `class F does Real` instances.
+static Value bridgeReal(Interpreter& I, const Value& v) {
+    if (v.t == VT::Object && v.obj && v.obj->cls) {
+        if (Value* br = v.obj->cls->findMethod("Bridge"))  { ValueList none; return I.invokeMethod(*br, v, none); }
+        if (Value* nu = v.obj->cls->findMethod("Numeric")) { ValueList none; return I.invokeMethod(*nu, v, none); }
+    }
+    return v;
+}
+static bool isNumOp(const std::string& op) {
+    static const std::set<std::string> ops = {
+        "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%",
+        "<", "<=", ">", ">=", "==", "!=", "<=>", "cmp", "before", "after"};
+    return ops.count(op) > 0;
+}
+
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
     // Fast path for plain operators (`+ - * < == …`): skip the ~20 string compares
@@ -6736,6 +6754,15 @@ Value Interpreter::evalBinary(Binary* b) {
         if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty())
             if (Value* f = tctx_.cur->find("&infix:<" + op + ">"))
                 try { return callCallable(*f, ValueList{l, r}); } catch (RakuError&) {}
+        // numeric operators on a .Bridge/.Numeric object work through the bridge
+        if ((l.t == VT::Object || r.t == VT::Object) && isNumOp(op)) {
+            Value l2 = bridgeReal(*this, l), r2 = bridgeReal(*this, r);
+            if (l2.t != VT::Object && r2.t != VT::Object) {
+                Value res = applyArith(op, l2, r2);
+                tagTemporal(op, l2, r2, res);
+                return res;
+            }
+        }
         // hyper metaop `>>op<<` — element-wise, resolving a user inner operator
         if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
             (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
@@ -8905,7 +8932,12 @@ Value Interpreter::eval(Expr* e) {
             Value prev = eval(ch->operands[0].get());
             for (size_t k = 0; k < ch->ops.size(); k++) {
                 Value next = eval(ch->operands[k + 1].get());
-                if (!applyArith(ch->ops[k], prev, next).truthy()) return Value::boolean(false);
+                // a .Bridge/.Numeric object compares through its bridged value
+                Value pc = prev, nc = next;
+                if ((pc.t == VT::Object || nc.t == VT::Object) && isNumOp(ch->ops[k])) {
+                    pc = bridgeReal(*this, pc); nc = bridgeReal(*this, nc);
+                }
+                if (!applyArith(ch->ops[k], pc, nc).truthy()) return Value::boolean(false);
                 prev = next;
             }
             return Value::boolean(true);
