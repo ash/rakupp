@@ -2531,6 +2531,27 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // DateTime / Date constructors
     if (inv.t == VT::Type && (inv.s == "DateTime" || inv.s == "Date")) {
         auto mk = [&](long long y, long long mo, long long d, long long h, long long mi, Value sec, long long posix, long long tz) {
+            // reject out-of-range fields (Rakudo dies): month 1..12, day 1..days-in-month,
+            // and for DateTime hour 0..23, minute 0..59 (seconds are leap-checked separately).
+            {
+                if (mo < 1 || mo > 12)
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "Month out of range. Is: " + std::to_string(mo) + ", should be in 1..12"};
+                static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                long long dim = mlen[mo - 1];
+                if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) dim = 29;
+                if (d < 1 || d > dim)
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "Day out of range. Is: " + std::to_string(d) + ", should be in 1.." + std::to_string(dim)};
+                if (inv.s == "DateTime") {
+                    if (h < 0 || h > 23)
+                        throw RakuError{Value::typeObj("X::OutOfRange"),
+                            "Hour out of range. Is: " + std::to_string(h) + ", should be in 0..23"};
+                    if (mi < 0 || mi > 59)
+                        throw RakuError{Value::typeObj("X::OutOfRange"),
+                            "Minute out of range. Is: " + std::to_string(mi) + ", should be in 0..59"};
+                }
+            }
             Value v = Value::makeHash(); v.hashKind = inv.s;
             (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
             (*v.hash)["hour"] = Value::integer(h); (*v.hash)["minute"] = Value::integer(mi);
@@ -2539,13 +2560,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (inv.s == "DateTime") (*v.hash)["timezone"] = Value::integer(tz);
             return v;
         };
-        // leap seconds: second 60 must land on UTC 23:59:60
+        // leap seconds: second 60 must land at 23:59:60 UTC on a real historical
+        // leap-second day; 61+ is always out of range.
         auto checkLeap = [&](long long y, long long mo, long long d, long long h, long long mi, long long s, long long tz) {
             if (s < 60) return;
-            long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + 59 - tz;
-            if (ep % 86400 != 86399)
+            if (s >= 61)
                 throw RakuError{Value::typeObj("X::OutOfRange"),
-                    "second 60 is only valid as a UTC leap second (23:59:60)"};
+                    "Second out of range. Is: " + std::to_string(s) + ", should be in 0..^61"};
+            long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + 59 - tz;
+            long long uDays = ep >= 0 ? ep / 86400 : -((-ep + 86399) / 86400);
+            long long uy, umo, ud; daysToCivil(uDays, uy, umo, ud);
+            long long ymd = uy * 10000 + umo * 100 + ud;
+            static const std::set<long long> leapDays = {
+                19720630, 19721231, 19731231, 19741231, 19751231, 19761231, 19771231,
+                19781231, 19791231, 19810630, 19820630, 19830630, 19850630, 19871231,
+                19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
+                19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
+            if (ep % 86400 != 86399 || !leapDays.count(ymd))
+                throw RakuError{Value::typeObj("X::OutOfRange"),
+                    "Second out of range. Is: 60, should be in 0..^60"};
         };
         if (m == "now" || m == "today") {
             time_t t = time(nullptr); struct tm* lt = localtime(&t);
@@ -2716,6 +2749,48 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (d > lim) d = lim;
             }
             return makeDate(civilToDays(y, mo, d) + sign * days);
+        }
+        if ((m == "later" || m == "earlier") && inv.hashKind == "DateTime") {
+            long long sign = (m == "later") ? 1 : -1;
+            long long secs = 0, days = 0, months = 0, years = 0;
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+                long long v = a.pairVal->toInt();
+                if      (a.s == "second" || a.s == "seconds") secs   += v;
+                else if (a.s == "minute" || a.s == "minutes") secs   += 60 * v;
+                else if (a.s == "hour"   || a.s == "hours")   secs   += 3600 * v;
+                else if (a.s == "day"    || a.s == "days")    days   += v;
+                else if (a.s == "week"   || a.s == "weeks")   days   += 7 * v;
+                else if (a.s == "month"  || a.s == "months")  months += v;
+                else if (a.s == "year"   || a.s == "years")   years  += v;
+            }
+            long long y = fld("year"), mo = fld("month"), d = fld("day");
+            long long h = fld("hour"), mi = fld("minute"), tz = fld("timezone");
+            double secF = inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0;
+            long long sInt = (long long)std::floor(secF); double frac = secF - (double)sInt;
+            // calendar units first: shift year/month, clamp the day into the month
+            if (months || years) {
+                long long total = (y * 12 + (mo - 1)) + sign * (years * 12 + months);
+                y = total >= 0 ? total / 12 : -((-total + 11) / 12);
+                mo = total - y * 12 + 1;
+                static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                long long lim = mlen[mo - 1];
+                if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) lim = 29;
+                if (d > lim) d = lim;
+            }
+            // fixed duration: fold days + time into an absolute count, then re-split
+            long long dayNum = civilToDays(y, mo, d) + sign * days;
+            long long totSec = h * 3600 + mi * 60 + sInt + sign * secs;
+            long long carry = totSec >= 0 ? totSec / 86400 : -((-totSec + 86399) / 86400);
+            dayNum += carry; totSec -= carry * 86400;
+            daysToCivil(dayNum, y, mo, d);
+            long long nh = totSec / 3600, nmi = (totSec % 3600) / 60, nsec = totSec % 60;
+            Value v = Value::makeHash(); v.hashKind = "DateTime";
+            (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
+            (*v.hash)["hour"] = Value::integer(nh); (*v.hash)["minute"] = Value::integer(nmi);
+            (*v.hash)["second"] = frac != 0.0 ? Value::number((double)nsec + frac) : Value::integer(nsec);
+            (*v.hash)["timezone"] = Value::integer(tz);
+            (*v.hash)["posix"] = Value::integer(dayNum * 86400 + totSec - tz);
+            return v;
         }
         if (m == "is-leap-year" && (inv.hashKind == "Date" || inv.hashKind == "DateTime")) {
             long long y = fld("year");
