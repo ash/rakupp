@@ -2669,6 +2669,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (pos.size() >= 6) secV = pos[5];        // exact (frac OK)
             }
             long long sInt = secV.toInt(); // floor for epoch/leap math
+            if (secV.toNum() < 0) // a fractional negative second (-1/2) truncates to 0, so check the value
+                throw RakuError{Value::typeObj("X::OutOfRange"),
+                    "Second out of range. Is: " + secV.toStr() + ", should be in 0..^62"};
             if (inv.s == "DateTime") checkLeap(y, mo, d, h, mi, sInt, tz);
             long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + (sInt >= 60 ? 59 : sInt) - tz;
             return mk(y, mo, d, h, mi, secV, ep, tz);
