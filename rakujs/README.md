@@ -9,8 +9,11 @@ embedding runnable Raku examples directly in web pages (e.g. a Raku course).
 The name is branding, not mechanism: Raku.js is **not** a from-scratch
 reimplementation of Raku in JavaScript. It is the exact same C++ interpreter from
 `../src`, compiled with Emscripten, so semantics are identical to the native
-`rakupp` and to what it validates against the Roast suite. Nothing in `../src` is
-modified — everything here is additive:
+`rakupp` and to what it validates against the Roast suite. (That interpreter is
+documented in [../docs/RUNTIME.md](../docs/RUNTIME.md) — the `Value` model and
+execution — and [../docs/PARSING.md](../docs/PARSING.md) — source to AST; the
+overall pipeline in [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).) Nothing
+in `../src` is modified — everything here is additive:
 
 | File | Purpose |
 |------|---------|

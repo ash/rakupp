@@ -18,13 +18,18 @@ point; everything else lives here.
 - **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
 - **[DOGFOODING.md](DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
 
+## Native compile & the browser
+
+- **[NATIVE.md](NATIVE.md)** — the `--exe` native compiler: interpreter vs. compiled on the example programs (byte-identical output).
+- **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: the codegen passes and how fast they get.
+- **[../rakujs/README.md](../rakujs/README.md)** — **Raku.js**: the same runtime compiled to **WebAssembly** to run Raku in the browser (build, deploy, performance).
+- **[../rakujs/TUTORIAL.md](../rakujs/TUTORIAL.md)** — writing real browser Raku programs on the WebAssembly build (feeding input, reading output, workers).
+
 ## Measurements
 
 - **[ROAST.md](ROAST.md)** — Roast suite overview and per-section statistics.
 - **[COUNTING.md](COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
 - **[BENCHMARKS.md](BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
-- **[NATIVE.md](NATIVE.md)** — interpreter vs compiled (`--exe`) on the example programs.
-- **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[ROADMAP.md](ROADMAP.md)** — done / in-progress / next.
 
 ## dev/ — working notes & history

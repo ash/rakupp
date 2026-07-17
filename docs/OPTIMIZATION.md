@@ -10,6 +10,11 @@ speed picture):
   with no interpreter inside. This is the only mode whose runtime performance
   differs, and the only mode the optimizer touches.
 
+For how `--exe` codegen fits the pipeline see [ARCHITECTURE.md](ARCHITECTURE.md)
+(§4); it emits C++ that calls the *same* runtime the interpreter uses (`Value`,
+`applyArith`, …), documented in [RUNTIME.md](RUNTIME.md). [NATIVE.md](NATIVE.md)
+compares compiled vs. interpreted on the example programs.
+
 `--exe` (and its inspection twin `--cpp`, which prints the generated C++ instead
 of compiling it) accept **`-O`**. This document is about what `-O` does.
 

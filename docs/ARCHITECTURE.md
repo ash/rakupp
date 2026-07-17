@@ -33,6 +33,11 @@ programs produced by `--bundle`/`--aot`/`--exe` link against it — so the inter
 compiled programs share one implementation of `Value` semantics, built-ins,
 method dispatch, regexes and Unicode.
 
+There's effectively a fifth target: that same runtime compiled to **WebAssembly**
+is **[Raku.js](../rakujs/README.md)**, the interpreter running in the browser with
+no server. (The value/execution model the runtime implements is in
+[RUNTIME.md](RUNTIME.md); the source→AST front end in [PARSING.md](PARSING.md).)
+
 ---
 
 ## 2. The front end (shared by every mode)
@@ -267,7 +272,8 @@ per-call `ValueList`), inline `int64` fast paths for arithmetic/comparison
 native-bool conditions. Values stay boxed — the fast paths just avoid the slow
 machinery — and anything unrecognized falls back to `applyArith`, so results are
 identical. What each pass does and how much it buys (fib ~168 → 49 ms) is in
-[OPTIMIZATION.md](OPTIMIZATION.md). (The `-O…` suffix also selects the backend
+[OPTIMIZATION.md](OPTIMIZATION.md); [NATIVE.md](NATIVE.md) compares compiled vs.
+interpreted (byte-identical) across the example programs. (The `-O…` suffix also selects the backend
 C++ compiler's own optimization level.)
 
 #### How codegen reuses the runtime instead of reimplementing it

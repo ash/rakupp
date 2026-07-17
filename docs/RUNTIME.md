@@ -1080,8 +1080,14 @@ convention, `rtIndexRef`/`rtAttrRef`/`rtArrayVal` the shared container ops.
 
 That is why the two backends produce byte-identical output and why a feature
 implemented once in the runtime works in both. The codegen side is documented in
-[ARCHITECTURE.md](ARCHITECTURE.md) (§4) and [OPTIMIZATION.md](OPTIMIZATION.md);
-this document is the value model they share.
+[ARCHITECTURE.md](ARCHITECTURE.md) (§4), [OPTIMIZATION.md](OPTIMIZATION.md) (the
+`--exe -O` passes), and [NATIVE.md](NATIVE.md) (compiled vs. interpreted); this
+document is the value model they share.
+
+And there's a third client of this exact runtime: compiled to **WebAssembly**, it
+becomes **[Raku.js](../rakujs/README.md)** — the same interpreter running in the
+browser, same `Value` semantics, no server ([TUTORIAL.md](../rakujs/TUTORIAL.md)
+is the guide to writing browser Raku).
 
 ## Honest limitations
 

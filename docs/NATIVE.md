@@ -7,6 +7,10 @@ interpreter run (`life.raku` is seeded random, so its check uses an
 interpreting the source versus running the transpiled-to-C++ binary. It is not
 a comparison with any other Raku implementation.
 
+(How `--exe` transpiles and reuses the runtime is in
+[ARCHITECTURE.md](ARCHITECTURE.md) §4 and [RUNTIME.md](RUNTIME.md); the `-O`
+optimizer is in [OPTIMIZATION.md](OPTIMIZATION.md).)
+
 ```sh
 build/rakupp examples/mandel.raku            # interp: tree-walk the source
 build/rakupp --exe -o mandel examples/mandel.raku
