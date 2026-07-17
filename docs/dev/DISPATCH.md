@@ -126,10 +126,14 @@ delegates back to `methodCall`). Measured (3M/2M-iteration loops, min of 6):
 | `abs`, plain `--exe` | 1120.5 ms | 363.9 ms | **3.1×** — the map entry itself got fast, so this flows to the interpreter too |
 | `chr`+`ord`, `--exe -O` | 393.6 ms | 200.8 ms | **2.0×** |
 
-The recipe then swept the rest of the viable set — **32 names** in codegen's
+The recipe then swept the rest of the viable set — **36 names** in codegen's
 `fastB` table: the numeric family (`sign floor ceiling round truncate sqrt exp
 log log10 log2 is-prime`), the string family (`uc lc chars flip trim chomp
-chop`), and the twelve trig/hyperbolic functions. Each named function is the
+chop`), the twelve trig/hyperbolic functions — and the I/O quartet
+(`say print put note`, 1-arg forms), which disproved the "I/O dominates"
+assumption: a *buffered* 1-arg `say` costs ~125 ns, so the call plumbing was
+~45% of it — the say loop went 124.9 → 69.6 ms (1.8×) with byte-identical
+output. Each named function is the
 old registered lambda's 1-arg case *verbatim* (delegators keep their
 `methodCall`, so augment/objects/junctions are untouched; only `abs` and
 `sign` have bypassing fast paths, both `builtinExt_`-guarded). Additional
