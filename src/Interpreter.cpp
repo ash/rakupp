@@ -4232,7 +4232,12 @@ Value* Interpreter::lvalue(Expr* e) {
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
                     "Cannot modify an immutable List (" + base->gist() + ")"};
             if (base->t != VT::Array) *base = Value::array();
-            long long i = eval(idx->index.get()).toInt();
+            // `@a[*-1] = v` / `@a[*-1]++`: a WhateverCode index resolves against the
+            // current length (like the read path), not eagerly to 0.
+            Value keyV = eval(idx->index.get());
+            if (keyV.t == VT::Code && keyV.code && keyV.code->isWhateverCode)
+                keyV = callCallable(keyV, ValueList{Value::integer((long long)base->arr->size())});
+            long long i = keyV.toInt();
             if (i < 0) i += (long long)base->arr->size();
             if (i < 0) i = 0;
             while ((long long)base->arr->size() <= i)
@@ -5576,6 +5581,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     Value mv;
     std::shared_ptr<Value> inlineMade; // `{ make … }` inside a plain regex
     GrammarHooks rmHooks;
+    bool wantHooks = false;
     // engage ONLY for make-blocks: running arbitrary {…} side effects during
     // backtracking/LTM measurement broke subst.t and longest-alternative.t
     if (pat.find("make") != std::string::npos && pat.find('{') != std::string::npos) {
@@ -5587,8 +5593,27 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             tctx_.makeTargets.pop_back();
             if (tgt.pairVal) inlineMade = tgt.pairVal;
         };
-        re.runHooks = &rmHooks;
+        wantHooks = true;
     }
+    // `\w**{$n}` / `**{ 1..3 }` — a runtime-bounded quantifier in a plain `~~`
+    // regex needs the range hook too (without it the bounds default to 0..* and
+    // the quantifier matches greedily). Mirror the grammar range hook.
+    if (pat.find("**") != std::string::npos && pat.find('{') != std::string::npos) {
+        rmHooks.range = [this](const std::string& code, const GrammarHooks::NamedMap&,
+                               const GrammarHooks::ParamMap&) -> std::pair<long, long> {
+            bool unbounded = code.find("..*") != std::string::npos || code.find("..Inf") != std::string::npos ||
+                             code.find("..\xE2\x88\x9E") != std::string::npos;
+            Value v = evalString(code);
+            if (v.t == VT::Range) {
+                long lo = v.rFrom, hi = unbounded ? -1 : (v.rExTo ? v.rTo - 1 : v.rTo);
+                if (v.rTo >= (long long)1e15) hi = -1;
+                return {lo, hi};
+            }
+            long n = v.toInt(); return {n, n};
+        };
+        wantHooks = true;
+    }
+    if (wantHooks) re.runHooks = &rmHooks;
     if (re.ok() && re.search(subject, 0, m, resolver)) mv = build(m);
     else mv = Value::nil();
     if (mv.t == VT::Match && inlineMade) mv.pairVal = inlineMade; // $/.ast
@@ -5916,6 +5941,24 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         }
         realPat = ip;
     }
+    // `\w**{$n}` / `**{1..3}` runtime-bounded quantifier: wire the range hook so
+    // the bounds are evaluated at match time (without it they default to 0..*).
+    GrammarHooks ssHooks;
+    bool needRangeHook = !literal && realPat.find("**") != std::string::npos && realPat.find('{') != std::string::npos;
+    if (needRangeHook) {
+        ssHooks.range = [this](const std::string& code, const GrammarHooks::NamedMap&,
+                               const GrammarHooks::ParamMap&) -> std::pair<long, long> {
+            bool unbounded = code.find("..*") != std::string::npos || code.find("..Inf") != std::string::npos ||
+                             code.find("..\xE2\x88\x9E") != std::string::npos;
+            Value v = evalString(code);
+            if (v.t == VT::Range) {
+                long lo = v.rFrom, hi = unbounded ? -1 : (v.rExTo ? v.rTo - 1 : v.rTo);
+                if (v.rTo >= (long long)1e15) hi = -1;
+                return {lo, hi};
+            }
+            long n = v.toInt(); return {n, n};
+        };
+    }
     std::vector<RxMatch> matches;
     if (literal) {
         // plain string pattern: exact byte search (control chars, no regex metachars)
@@ -5956,6 +5999,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             for (size_t i = 0; i < pcps.size();) fpat += baseOf(nextGrapheme(pcps, i)); }
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "");
         Regex re(fpat, flags);
+        if (needRangeHook) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
         auto toOrig = [&](long fb) -> long {
             size_t idx = std::lower_bound(foldStart.begin(), foldStart.end(), fb) - foldStart.begin();
@@ -5970,6 +6014,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     } else {
         std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "");
         Regex re(realPat, flags);
+        if (needRangeHook) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
         long pos = haveStart ? startPos : 0; RxMatch mm;
         while (pos >= 0 && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
@@ -8074,7 +8119,11 @@ Value Interpreter::evalIndex(Index* idx) {
                         "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0"};
                 }
                 if (i < 0) i += n;
-                return (i >= 0 && i < n) ? src[i] : (base.ofType.empty() ? Value::any() : typedElemDefault(base));
+                if (i >= 0 && i < n) return src[i];
+                if (!base.ofType.empty()) return typedElemDefault(base);
+                // A List/Seq/Range indexed out of range yields Nil (List.AT-POS);
+                // only a mutable Array yields the element type default (Any).
+                return (base.t == VT::Range || base.isList) ? Value::nil() : Value::any();
             }
         }
         if (isSlice) {

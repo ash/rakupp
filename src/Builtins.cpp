@@ -4294,7 +4294,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         Value* replArg = nullptr;
         for (size_t i = 0; i < args.size(); i++)
             if ((int)i != rxIdx && args[i].t != VT::Pair) { replArg = &args[i]; break; }
-        if (m == "match") return regexMatch(subj, pat);
+        if (m == "match") {
+            // `.match(/re/, :g)` passes the adverb as a Pair arg; regexMatch only
+            // understands `:g`/`:global` baked into the pattern text, so splice it in.
+            for (auto& a : args)
+                if (a.t == VT::Pair && (a.s == "g" || a.s == "global") && (!a.pairVal || a.pairVal->truthy()))
+                    return regexMatch(subj, ":g " + pat);
+            return regexMatch(subj, pat);
+        }
         if (m == "contains") { Regex re(pat); RxMatch mm; return Value::boolean(re.ok() && re.search(subj, 0, mm)); }
         if (m == "subst") {
             long nsub = 0;

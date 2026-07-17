@@ -1217,7 +1217,11 @@ Token Lexer::lexOperator() {
             s += "=>"; advance(); s += advance(); s += advance();
             return make(Tok::Op, s);
         }
-        if (!inner.empty() && ((peek() == '>' && peek(1) == '>') || (peek() == '<' && peek(1) == '<'))) {
+        // An inner beginning with `.` is a hyper method call (`@a>>.foo>>.bar`),
+        // not a binary metaop — leave it for parsePostfix (else `>>.Str>>` would be
+        // read as one infix token and the method chain would break).
+        if (!inner.empty() && inner[0] != '.' &&
+            ((peek() == '>' && peek(1) == '>') || (peek() == '<' && peek(1) == '<'))) {
             s += inner; s += advance(); s += advance();
             return make(Tok::Op, s);
         }
