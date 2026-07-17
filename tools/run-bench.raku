@@ -32,7 +32,8 @@ my @benches =
     %( :name<sortnums>, :file("sortnums.raku"), :note('sort 50_000 integers') ),
     %( :name<regex>,    :file("regex.raku"),    :note('50_000 regex matches') ),
     %( :name<hash>,     :file("hash.raku"),     :note('100_000 hash increments') ),
-    %( :name<bigint>,   :file("bigint.raku"),   :note('factorial(5000) via BigInt multiply') );
+    %( :name<bigint>,   :file("bigint.raku"),   :note('factorial(5000) via BigInt multiply') ),
+    %( :name<streq>,    :file("streq.raku"),    :note('1M string eq/lt comparisons') );
 
 # Best (minimum) wall-clock over the measured runs, in milliseconds.
 sub measure(@cmd --> Numeric) {

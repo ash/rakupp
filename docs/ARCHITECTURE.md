@@ -233,14 +233,19 @@ directly** — native control flow, native calls — calling the runtime only fo
 using namespace rakupp;
 static Interpreter RT;                     // builtins, method dispatch, coercions
 static Value v_stotal = Value::any();      // top-level `my $total` → a static global ($ encoded as 's')
+static const BuiltinFn* __bf0 = nullptr;   // say — resolved once at startup, called directly
 
 static Value u_square(ValueList __a) {     // subs take a ValueList of args…
     Value v_sn = rtPos(__a, 0);            // …and pull positionals out by index
     return applyArith("*", v_sn, v_sn);    // Raku `$n * $n`
 }
+static void __rakupp_register() {
+    __bf0 = RT.builtinPtr("say");          // cache the builtin's function pointer
+}
 
 int main(int argc, char** argv) {
     /* … RT.setArgs(...) … */
+    __rakupp_register();
     try {
         v_stotal = Value::integer(0LL);
         {                                  // for 1..5 { … }  — a real C++ loop
@@ -252,7 +257,7 @@ int main(int argc, char** argv) {
                 catch (const NextEx&) { continue; } catch (const LastEx&) { break; }
             }
         }
-        RT.callBuiltin("say", ValueList{v_stotal});
+        rtCallB(RT, __bf0, "say", ValueList{v_stotal});  // direct call; by-name fallback if null
     } catch (const RakuError& e) { std::cerr << e.message << "\n"; return 1; }
     return 0;
 }
@@ -284,8 +289,9 @@ Raku constructs onto a handful of runtime hooks:
 
 | Raku | Generated C++ |
 |---|---|
-| `$a + $b`, `$a eqv $b`, … | `applyArith("op", a, b)` |
-| `say`, `.map`, `.sort`, any method | `RT.callBuiltin("say", …)` / `RT.methodCall(inv, "map", …)` |
+| `$a + $b`, `$a eqv $b`, … | `applyArith("op", a, b)` (string comparisons `eq`/`lt`/… inline via `rtEqS…` in conditions and under `-O`) |
+| `say`, any named builtin | `rtCallB(RT, __bfN, "say", …)` — a per-name pointer resolved once at startup (see [dev/DISPATCH.md](dev/DISPATCH.md)) |
+| `.map`, `.sort`, any method | `RT.methodCall(inv, "map", …)` |
 | a block / `-> $x {…}` / `* + 1` | `Value::closure([=](ValueList& a){ … })` |
 | `@a[i]` / `%h{k}` (read / write) | `rtIndexGet(...)` / `rtIndexRef(...)` (autoviv) |
 | `[+] …` | `rtReduce("+", …)` |

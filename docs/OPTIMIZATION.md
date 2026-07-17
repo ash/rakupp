@@ -80,6 +80,7 @@ For the common operators the codegen emits inline helpers (declared `inline` in
 | `<` `<=` `>` `>=` `==` `!=` | `rtLt`/… | `int64` compare |
 | `%` `%%` `div` | `rtMod`/`rtDivides`/`rtDiv` | `int64` mod / divisibility / floor division |
 | `~` | `rtConcat` | direct `std::string` concat when both are `Str` |
+| `eq` `ne` `lt` `gt` `le` `ge` | `rtEqS`/… | byte-wise compare when both are **plain** `Str`s (no Version/IO/Buf tag, no enum identity) — tagged values fall back to the full chain. These matter more than the int ops: string comparisons sit *late* in `applyArith`'s dispatch chain (~118 ns vs ~10 ns direct — see [dev/DISPATCH.md](dev/DISPATCH.md)) |
 
 Each inlines its fast case and falls back to `applyArith` for everything else:
 
@@ -225,24 +226,28 @@ not a codegen flag.
 ## Measured impact
 
 `--exe`, best of 6 runs after a discarded warm-up (startup-inclusive, as in
-[BENCHMARKS.md](BENCHMARKS.md)); measured 2026-07-16 on an idle machine.
+[BENCHMARKS.md](BENCHMARKS.md)); measured 2026-07-17 on a lightly loaded machine.
 
 | Benchmark | `--exe` | `--exe -O` | speed-up | what `-O` reached |
 |---|---:|---:|---:|---|
-| fib      | 167.8 ms | **48.5 ms** | 3.5× | direct-arity calls + int-lane condition |
-| loopsum  | 28.1 ms  | **10.0 ms** | 2.8× | `+=` lane over the native counter |
-| arrayops | 103.8 ms | **84.9 ms** | 1.2× | map/grep-body boxing |
-| regex    | 64.1 ms  | 60.3 ms | 1.1× | (regex engine dominates) |
-| hash     | 16.5 ms  | 15.9 ms | 1.0× | (hash slots, not scalars) |
-| sortnums | 51.2 ms  | 50.5 ms | 1.0× | (`.sort` dominates) |
-| bigint   | 30.2 ms  | 30.3 ms | 1.0× | (`BigInt` multiply) |
-| strcat   | 4.4 ms   | 4.9 ms  | 1.0× | (`~=` already O(n) by default) |
+| fib      | 166.5 ms | **47.0 ms** | 3.5× | direct-arity calls + int-lane condition |
+| loopsum  | 27.1 ms  | **8.6 ms**  | 3.2× | `+=` lane over the native counter |
+| streq    | 46.5 ms  | **17.5 ms** | 2.7× | int-lane counters atop the inline `eq`/`lt` |
+| arrayops | 102.0 ms | **77.8 ms** | 1.3× | map/grep-body boxing |
+| regex    | 61.9 ms  | 60.3 ms | 1.0× | (regex engine dominates) |
+| hash     | 15.3 ms  | 14.9 ms | 1.0× | (hash slots, not scalars) |
+| sortnums | 49.9 ms  | 48.6 ms | 1.0× | (`.sort` dominates) |
+| bigint   | 29.2 ms  | 29.2 ms | 1.0× | (`BigInt` multiply) |
+| strcat   | 3.9 ms   | 4.8 ms  | 0.8× | (`~=` already O(n) by default) |
 
 These `--exe` baselines are much lower than they once were: the runtime's
 `applyArith` now hot-paths `Int`/`Int` `+ - * < <= > >= == != %` with a char
 switch instead of a chain of `op == "…"` string compares, and `--exe` (which
-links that runtime) inherits it. So `-O`'s remaining edge is the boxing/allocation
-it removes *entirely* — the per-call `ValueList` (`fib` direct calls), and with
+links that runtime) inherits it; plain `--exe` also emits inline string
+comparisons in *conditions* and calls builtins through pointers cached at
+startup (see [dev/DISPATCH.md](dev/DISPATCH.md) — that is what makes the
+`streq` baseline low). So `-O`'s remaining edge is the boxing/allocation it
+removes *entirely* — the per-call `ValueList` (`fib` direct calls), and with
 pass 3 every `Value` temporary in laneable int statements and conditions
 (`loopsum`, and the showcase kernels below).
 
@@ -303,24 +308,24 @@ reference):
 ```
 
 Best of 5 runs each, on this machine (macOS/Darwin 24.6, Rakudo v2026.06,
-measured 2026-07-16 with all three passes):
+measured 2026-07-17 with all three passes):
 
 | benchmark | `--exe` | `--exe -O` | `-O` speed-up | rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| sieve       | 1042.2 ms | **24.6 ms**  | **42.3×** | 1018.3 ms | primes <200k — `* <= %%` |
-| powmod      | 555.8 ms  | **50.7 ms**  | **11.0×** | 739.6 ms  | 1M `** 3` then `% 1000` |
-| intsum      | 281.3 ms  | **36.6 ms**  | **7.7×**  | 664.8 ms  | 5M `+= $_ * 2 - 1` |
-| fibcalls    | 691.8 ms  | **194.7 ms** | **3.6×**  | 1407.9 ms | fib(32) — calls + `< + -` |
-| stringbuild | 23.8 ms   | 23.6 ms      | 1.0×      | 216.8 ms  | 400k `~=` — already O(n) by default |
+| sieve       | 1029.3 ms | **25.4 ms**  | **40.6×** | 994.5 ms  | primes <200k — `* <= %%` |
+| powmod      | 531.5 ms  | **50.6 ms**  | **10.5×** | 716.8 ms  | 1M `** 3` then `% 1000` |
+| intsum      | 283.1 ms  | **35.9 ms**  | **7.9×**  | 624.0 ms  | 5M `+= $_ * 2 - 1` |
+| fibcalls    | 701.3 ms  | **190.9 ms** | **3.7×**  | 1353.3 ms | fib(32) — calls + `< + -` |
+| stringbuild | 22.3 ms   | 21.9 ms      | 1.0×      | 204.7 ms  | 400k `~=` — already O(n) by default |
 
 The int lanes (pass 3) are what moved this table: `sieve`'s whole inner loop —
 `while $d * $d <= $n`, `if $n %% $d`, `$d++` — now runs as raw `int64`, taking
-it from a tie with Rakudo at plain `--exe` (1042 vs 1018 ms) to 41× ahead;
-`intsum` went from 1.2× (arithmetic already fast, boxing dominant) to 7.7×
-once the four per-iteration `Value` constructions disappeared. `stringbuild`
-is flat because in-place `~=` is default in both builds. As always this is
-only the subset of Raku both engines run identically — not a coverage claim
-(see [BENCHMARKS.md](BENCHMARKS.md)).
+it from a tie with Rakudo at plain `--exe` (1029 vs 995 ms) to 39× ahead;
+`intsum` went from a small edge (arithmetic already fast, boxing dominant) to
+7.9× once the four per-iteration `Value` constructions disappeared.
+`stringbuild` is flat because in-place `~=` is default in both builds. As
+always this is only the subset of Raku both engines run identically — not a
+coverage claim (see [BENCHMARKS.md](BENCHMARKS.md)).
 
 ## See also
 
