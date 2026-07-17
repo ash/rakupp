@@ -115,12 +115,22 @@ interp / `--exe` / `--exe -O`; tagged-value edge cases (Version `eq`, enum
 
 ## Reproducing
 
-The micro-benchmark is a standalone C++ file compiled against the runtime —
-rebuild it from this note's tables, or re-measure the end-to-end loops:
+Both benchmarks are in the repo. The micro-benchmark is
+[`tools/dispatch-bench.cpp`](../../tools/dispatch-bench.cpp), compiled against
+the built runtime:
 
 ```sh
-build/rakupp --exe -o /tmp/b bench.raku && for i in {1..7}; do time /tmp/b; done
+clang++ -std=c++17 -O2 -DNDEBUG -Isrc tools/dispatch-bench.cpp \
+        build/librakupp_rt.a -o /tmp/dispatch-bench && /tmp/dispatch-bench
 ```
 
-with `bench.raku` being the loops quoted above. The official cross-engine
-numbers live in [BENCHMARKS.md](../BENCHMARKS.md) / [OPTIMIZATION.md](../OPTIMIZATION.md).
+The end-to-end string-compare loop is the `streq` kernel of the official suite,
+[`tools/bench/streq.raku`](../../tools/bench/streq.raku):
+
+```sh
+build/rakupp --exe -o /tmp/b tools/bench/streq.raku && for i in {1..7}; do time /tmp/b; done
+build/rakupp tools/run-bench.raku      # or: the full three-engine table
+```
+
+The official cross-engine numbers live in [BENCHMARKS.md](../BENCHMARKS.md) /
+[OPTIMIZATION.md](../OPTIMIZATION.md).

@@ -4785,6 +4785,26 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             }
         }
     }
+    // Str/Str fast path: comparisons and concat on two PLAIN strings (no
+    // Version/IO/Buf hashKind tag, no enum identity) dispatch by char and
+    // compare/concat `s` directly — exactly what the op-chain tail does for
+    // them (a plain Str's toStr() is its `s`). Tagged values (Version
+    // part-compare, enum stringification), junctions (VT::Array), mixins
+    // (VT::Object) and Whatever-currying all miss this guard and keep their
+    // full-chain semantics.
+    if (l.t == VT::Str && r.t == VT::Str && !op.empty() && op.size() <= 2 &&
+        l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
+        char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
+        switch (c0) {
+            case '~': if (c1 == '\0') return Value::str(l.s + r.s); break;
+            case 'e': if (c1 == 'q') return Value::boolean(l.s == r.s); break;
+            case 'n': if (c1 == 'e') return Value::boolean(l.s != r.s); break;
+            case 'l': if (c1 == 't') return Value::boolean(l.s <  r.s);
+                      if (c1 == 'e') return Value::boolean(l.s <= r.s); break;
+            case 'g': if (c1 == 't') return Value::boolean(l.s >  r.s);
+                      if (c1 == 'e') return Value::boolean(l.s >= r.s); break;
+        }
+    }
     // A `but`/`does` mixin over a non-object base delegates value ops to the boxed
     // value — but identity/smartmatch/type ops must still see the object itself.
     if (op != "~~" && op != "!~~" && op != "===" && op != "!==" && op != "!===" && op != "=:=" &&
