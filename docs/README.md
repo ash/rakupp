@@ -43,6 +43,9 @@ point; everything else lives here.
 - **[dev/ROSETTACODE.md](dev/ROSETTACODE.md)** — Raku++ vs Rakudo on real
   [RosettaCode](https://rosettacode.org/wiki/Category:Raku) programs: the
   `tools/rc-compare.raku` harness, results, and the gaps it surfaces.
+- **[dev/DISPATCH.md](dev/DISPATCH.md)** — call dispatch in `--exe` code: what each
+  call shape costs (measured), the cached-builtin/inline-string-compare cuts, and
+  what's deliberately left on the table.
 - **[dev/PLAN-gil-removal.md](dev/PLAN-gil-removal.md)** — the design plan for removing the
   GIL and reaching true CPU parallelism (incremental steps, risks, status).
 - **[dev/100.md](dev/100.md)** — what stands between the current pass rate and 100% of Roast.

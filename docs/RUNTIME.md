@@ -811,7 +811,9 @@ if (m == "is-prime") { /* Miller–Rabin on inv.toInt() */ }               // 7.
 
 The C++ `if`-ladder *is* the built-in method set. This is the pragmatic
 counterpart to the fat `Value`: since every native value is the same struct, its
-methods are one big dispatch function rather than per-type classes.
+methods are one big dispatch function rather than per-type classes. (What this
+kind of by-name dispatch *costs*, measured, and where the `--exe` compiler
+bypasses it, is in [dev/DISPATCH.md](dev/DISPATCH.md).)
 
 Two things run *before* the built-in branches:
 
