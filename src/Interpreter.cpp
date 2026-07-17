@@ -3788,6 +3788,23 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         };
         return dispatch(args);
     }
+    // `&infix:<=>` / `&infix:<+=>` / `&infix:<~=>` … as a first-class Callable: an
+    // assignment operator needs an l-value first operand, which only the call-site
+    // AST (rwArgs) can supply — the builtin lambda only sees values.
+    if (c.builtin && rwArgs && !rwArgs->empty() && !args.empty() &&
+        c.name.rfind("infix:<", 0) == 0 && c.name.back() == '>') {
+        std::string op = c.name.substr(7, c.name.size() - 8);
+        bool isAssign = op == "=" ||
+            (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
+             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=");
+        if (isAssign) {
+            if (Value* lv = lvalue((*rwArgs)[0].get())) {
+                Value rhs = args.size() > 1 ? args[1] : Value::any();
+                *lv = (op == "=") ? rhs : applyBinOp(op.substr(0, op.size() - 1), *lv, rhs);
+                return *lv;
+            }
+        }
+    }
     if (c.builtin) return c.builtin(*this, args);
 
     auto env = std::make_shared<Env>();
@@ -7537,8 +7554,16 @@ Value Interpreter::evalCall(Call* c) {
         std::string op = c->name.substr(7, c->name.size() - 8);
         if (op.size() > 2 && op.front() == '<' && op.back() == '>')
             op = op.substr(1, op.size() - 2); // infix:<<∈>> — double-angle form
-        if (op == "=" && c->args.size() >= 2) { // infix:<=>($x, v) assigns through
-            if (Value* lv = lvalue(c->args[0].get())) { *lv = args[1]; return *lv; }
+        // `infix:<=>($x, v)` / `infix:<+=>($x, v)` / … — an assignment operator in
+        // call form assigns (or metaop-assigns) through its l-value first operand.
+        bool isAssign = op == "=" ||
+            (op.size() >= 2 && op.back() == '=' && op != "==" && op != "!=" &&
+             op != "<=" && op != ">=" && op != "=:=" && op != "!==" && op != ".=");
+        if (isAssign && c->args.size() >= 2) {
+            if (Value* lv = lvalue(c->args[0].get())) {
+                *lv = (op == "=") ? args[1] : applyBinOp(op.substr(0, op.size() - 1), *lv, args[1]);
+                return *lv;
+            }
         }
         return args.size() >= 2 ? applyBinOp(op, args[0], args[1])
              : args.size() == 1 ? args[0] : Value::any();
