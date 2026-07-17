@@ -224,43 +224,44 @@ demo.raku ─► Lexer ─► Parser ─► Program (AST)
 `compileNative` parses the program to an AST and then
 [`Codegen`](../src/Codegen.cpp) walks it, emitting **C++ that implements the program
 directly** — native control flow, native calls — calling the runtime only for
-`Value` operations. For `demo.raku` it produces (verbatim):
+`Value` operations. For `demo.raku` it produces (abridged — the real output adds
+`#include`s and a fuller exit/phaser `catch` chain in `main`):
 
 ```cpp
 #include "Interpreter.h"
 #include "Value.h"
 using namespace rakupp;
-static Interpreter RT;                 // supplies builtins, method dispatch, coercions
+static Interpreter RT;                     // builtins, method dispatch, coercions
+static Value v_stotal = Value::any();      // top-level `my $total` → a static global ($ encoded as 's')
 
-static Value u_square(Value v_n);
-static Value u_square(Value v_n) {
-    return applyArith("*", v_n, v_n);  // Raku `$n * $n`
-    return Value::any();
+static Value u_square(ValueList __a) {     // subs take a ValueList of args…
+    Value v_sn = rtPos(__a, 0);            // …and pull positionals out by index
+    return applyArith("*", v_sn, v_sn);    // Raku `$n * $n`
 }
-static void __rakupp_register() { }    // (classes/enums would be registered here)
 
 int main(int argc, char** argv) {
     /* … RT.setArgs(...) … */
-    __rakupp_register();
     try {
-        Value v_total = Value::integer(0LL);
-        {                                          // for 1..5 { … }  — a real C++ loop
-            long long __lo1 = (Value::integer(1LL)).toInt();
-            long long __hi2 = (Value::integer(5LL)).toInt();
-            for (long long __i3 = __lo1; __i3 <= __hi2; __i3++) {
-                Value v__t0 = Value::integer(__i3);        // $_
-                v_total = applyArith("+", v_total, u_square(v__t0));
+        v_stotal = Value::integer(0LL);
+        {                                  // for 1..5 { … }  — a real C++ loop
+            long long __lo = Value::integer(1LL).toInt();
+            long long __hi = Value::integer(5LL).toInt();
+            for (long long __i = __lo; __i <= __hi; __i++) {
+                Value v__t0 = Value::integer(__i);              // $_
+                try { v_stotal = applyArith("+", v_stotal, u_square(ValueList{v__t0})); }
+                catch (const NextEx&) { continue; } catch (const LastEx&) { break; }
             }
         }
-        RT.callBuiltin("say", {v_total});
+        RT.callBuiltin("say", ValueList{v_stotal});
     } catch (const RakuError& e) { std::cerr << e.message << "\n"; return 1; }
     return 0;
 }
 ```
 
 That's then compiled with the system C++ compiler and linked against the
-runtime. The loop is a native `for`, the sub call is a direct C++ call, and only
-`Value` semantics (`applyArith`, `callBuiltin`) dip into the runtime. This is why
+runtime. The loop is a native `for`, the sub call is a direct C++ call (its args
+passed as a `ValueList`), and only `Value` semantics (`applyArith`,
+`callBuiltin`) dip into the runtime. This is why
 loops and recursion run several times faster than interpreted — compiling `fib`
 turns the interpreter's one loss to Rakudo into a ~2.8× win (see
 [BENCHMARKS.md](BENCHMARKS.md)).
