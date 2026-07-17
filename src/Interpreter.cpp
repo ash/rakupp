@@ -6589,11 +6589,38 @@ Value Interpreter::evalBinary(Binary* b) {
             bool ldt = l.hashKind == "DateTime" || l.hashKind == "Date";
             bool rdt = r.hashKind == "DateTime" || r.hashKind == "Date";
             if (ldt || rdt) {
+                // leap-second boundaries in POSIX seconds (end of each historical leap day)
+                static const long long* leapPx = [] {
+                    static long long v[27]; static const long long ymd[] = {
+                        19720630, 19721231, 19731231, 19741231, 19751231, 19761231, 19771231,
+                        19781231, 19791231, 19810630, 19820630, 19830630, 19850630, 19871231,
+                        19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
+                        19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
+                    for (int i = 0; i < 27; i++)
+                        v[i] = (civilToDays(ymd[i] / 10000, ymd[i] / 100 % 100, ymd[i] % 100) + 1) * 86400;
+                    return v;
+                }();
+                // Rakudo does DateTime algebra in Instant/TAI, which counts leap seconds.
+                // dtSec = TAI seconds (posix + fractional + leap seconds elapsed).
                 auto dtSec = [](const Value& v) -> double {
                     if (v.hashKind != "DateTime" && v.hashKind != "Date") return v.toNum();
                     double p = v.hash && v.hash->count("posix") ? (*v.hash)["posix"].toNum() : 0.0;
                     if (v.hash && v.hash->count("second")) { double s = (*v.hash)["second"].toNum(); p += s - std::floor(s); }
+                    long long ip = (long long)std::floor(p);
+                    for (int i = 0; i < 27; i++) if (leapPx[i] <= ip) p += 1.0;
                     return p;
+                };
+                // TAI back to POSIX (the i-th leap's TAI boundary is leapPx[i] + i)
+                auto taiToPosix = [](double tai) -> double {
+                    long long it = (long long)std::floor(tai); double off = 0;
+                    for (int i = 0; i < 27; i++) if (leapPx[i] + i <= it) off += 1.0;
+                    return tai - off;
+                };
+                auto mkDT = [&](double taiVal, const Value& tzFrom) -> Value {
+                    long long tz = tzFrom.hash && tzFrom.hash->count("timezone") ? (*tzFrom.hash)["timezone"].toInt() : 0;
+                    Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(taiToPosix(taiVal))});
+                    if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
+                    return res;
                 };
                 if (ldt && rdt && (op == "<" || op == ">" || op == "<=" || op == ">=" ||
                                    op == "==" || op == "!=" || op == "<=>")) {
@@ -6607,21 +6634,11 @@ Value Interpreter::evalBinary(Binary* b) {
                     Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return d;
                 }
                 if ((op == "+" || op == "-") && l.hashKind == "DateTime" &&
-                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration")) {
-                    double np = dtSec(l) + (op == "-" ? -r.toNum() : r.toNum());
-                    long long tz = l.hash && l.hash->count("timezone") ? (*l.hash)["timezone"].toInt() : 0;
-                    Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(np)});
-                    if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
-                    return res;
-                }
+                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration"))
+                    return mkDT(dtSec(l) + (op == "-" ? -r.toNum() : r.toNum()), l);
                 if (op == "+" && r.hashKind == "DateTime" &&
-                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration")) {
-                    double np = dtSec(r) + l.toNum();
-                    long long tz = r.hash && r.hash->count("timezone") ? (*r.hash)["timezone"].toInt() : 0;
-                    Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(np)});
-                    if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
-                    return res;
-                }
+                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration"))
+                    return mkDT(dtSec(r) + l.toNum(), r);
             }
         }
         if ((op == "+" || op == "-") &&
