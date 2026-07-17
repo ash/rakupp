@@ -13,8 +13,12 @@ pipeline (lexer → parser → AST) and the four execution modes. Here we stay i
 the runtime library (`librakupp_rt`) and the tree-walking interpreter. Native
 `--exe` code reuses the exact same runtime — see the [last section](#one-runtime-two-front-ends).
 
-Line references (`src/Value.h:50`) point at the current source; they drift as the
-code moves, but the surrounding names are stable enough to grep.
+The load-bearing mechanisms are shown inline as short code excerpts, each tagged
+with the source **file** it comes from (`// src/Value.cpp`). The excerpts are
+lightly trimmed for the page — `…`, comments, and elided error text mark where —
+but are otherwise verbatim. File names, not line numbers, are the anchors: grep
+for the function or the quoted code to find the current source, which moves as the
+code changes.
 
 ## Contents
 
@@ -42,7 +46,7 @@ code moves, but the surrounding names are stable enough to grep.
 Two decisions carry most of the design:
 
 1. **Every Raku value is the same C++ type.** There is a single struct,
-   [`Value`](../src/Value.h) (`src/Value.h:50`), that can represent an `Int`, a
+   [`Value`](../src/Value.h), that can represent an `Int`, a
    `Str`, an `Array`, a `Hash`, a `Code`, a type object, an `Object`, a
    `Junction`, a lazy `Seq` — anything. A one-byte enum tag says which. This is
    what lets a statically-typed container (`std::unordered_map<std::string,
@@ -86,7 +90,7 @@ struct Value {
 };
 ```
 
-(Full definition: `src/Value.h:50-171`.) The `VT t` tag is the discriminator;
+(Full definition: `src/Value.h`.) The `VT t` tag is the discriminator;
 code reads the fields that tag makes live. Small scalars (`Bool`, `Int`, `Num`,
 `Range` bounds, `Complex`) live inline in the struct; anything with sharable or
 unbounded storage (`Array`, `Hash`, `Code`, `Object`, bignums) lives behind a
@@ -100,7 +104,7 @@ frequently **several fields at once**, not one active member:
 
 - A **`Match`** sets the subject `s`, the span `rFrom`/`rTo`, the positional
   captures in `arr`, *and* the named captures in `hash` — all live together
-  (`src/Value.h:141`). A **`Pair`** is the key `s` *plus* `pairVal`. An **enum**
+  (`src/Value.h`). A **`Pair`** is the key `s` *plus* `pairVal`. An **enum**
   value is the ordinal `i` *plus* `enumName`/`enumType`. A **`Rat`** is `ratN`
   *plus* `ratD` *plus* `fatRat`. And cross-cutting flags — `isList`, `itemized`,
   `readonly`, `namedArg`, `ofType`, `natBits` — are set *regardless* of the tag
@@ -123,17 +127,24 @@ So the fat struct is the natural fit, and it brings three concrete wins:
 - **No virtual dispatch, no heap allocation for scalars.** An `Int` is just a
   `Value` with `t == VT::Int` and `i` set — it fits in the struct, copies by
   memcpy-ish value semantics, and needs no allocation. Constructing one is
-  `Value::integer(42)` (`src/Value.h:87`), a stack value.
+  `Value::integer(42)` (`src/Value.h`), a stack value.
 - **Uniform copy/move.** Passing a `Value` by value, returning it from `eval`,
   storing it in a `vector` — all use the compiler-generated copy/move. The
   `shared_ptr` members make copies of `Array`/`Hash`/`Object` cheap (a refcount
   bump) and give them **shared identity**, which is exactly what Raku's container
   semantics need (below).
-- **Type coercion is a method, not a cast.** `.toInt()`, `.toStr()`, `.gist()`,
-  `.truthy()` (`src/Value.h:162-167`) each `switch` on `t` and do the Raku
-  coercion. `~$x` calls `toStr`, `+$x` calls `toNum`, boolean context calls
-  `truthy`. There is no C++ inheritance to make `Int` "be a" `Cool`; the coercion
-  functions encode the numeric/string tower directly.
+- **Type coercion is a method, not a cast.** Each coercion is a member function
+  that `switch`es on `t` and does the Raku conversion:
+
+  ```cpp
+  // src/Value.h — declared on the struct; each switches on `t` in Value.cpp
+  bool truthy() const;   long long toInt() const;   double toNum() const;
+  std::string toStr() const;   std::string gist() const;   std::string typeName() const;
+  ```
+
+  `~$x` calls `toStr`, `+$x` calls `toNum`, boolean context calls `truthy`. There
+  is no C++ inheritance making `Int` "be a" `Cool`; these functions encode the
+  numeric/string tower directly.
 
 The cost is memory: every `Value` carries all the fields even when only one is
 live (a `Str` still has an unused `arr` pointer, `i`, `n`, …). For a tree-walker
@@ -146,23 +157,54 @@ A few tag choices are worth noting because they reuse fields cleverly:
   (`ratN`, `ratD`). Exact rational arithmetic stays exact until the denominator
   would exceed 64 bits, where a plain `Rat` spills to `Num` (Raku's `Rat`→`Num`
   rule). A **`FatRat`** is the *same* storage with the `fatRat` flag set
-  (`src/Value.h:71`): it carries the `FatRat` type identity — contagious through
+  (`src/Value.h`): it carries the `FatRat` type identity — contagious through
   arithmetic, so any `FatRat` operand makes the result a `FatRat` — and is
   **exempt from the spill**, staying an arbitrary-precision rational forever
-  (`src/Interpreter.cpp:5007-5012`).
+  (`src/Interpreter.cpp`).
 - **An `Int`** is a `long long i` until it overflows, then it grows a
   `shared_ptr<BigInt> big`; `Value::bigint` picks inline vs. heap automatically
-  (`src/Value.h:88-93`).
+  (`src/Value.h`).
 - **An enum value** is a `VT::Int` carrying its integer plus `enumName`/`enumType`
-  strings (`src/Value.h:75-76`), so `Less`/`Same`/`More` compare as `-1/0/1` yet
+  strings (`src/Value.h`), so `Less`/`Same`/`More` compare as `-1/0/1` yet
   stringify as their name.
 - **A `Junction`** is a `VT::Array` tagged by `enumName ∈ {any,all,one,none}` —
   no dedicated `VT`. See [Junctions](#junctions).
 
+The constructors show the pattern — a `VT` tag plus whichever fields that kind
+needs, several at once:
+
+```cpp
+// src/Value.h — factory constructors (each sets a VT tag + the live fields)
+static Value bigint(const BigInt& b) {                          // inline i, or heap `big` on overflow
+    Value v; v.t = VT::Int;
+    if (b.fitsLL()) v.i = b.toLL(); else v.big = std::make_shared<BigInt>(b);
+    return v;
+}
+static Value enumVal(const std::string& name, long long val) {  // Int ordinal + the enum KEY
+    Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v;
+}
+static Value matchVal(std::string text, long from, long to) {   // subject + span + BOTH capture stores
+    Value v; v.t = VT::Match; v.s = text; v.rFrom = from; v.rTo = to;
+    v.arr = std::make_shared<ValueList>();                       // positional captures ($0, $1, …)
+    v.hash = std::make_shared<std::map<std::string, Value>>();   // named captures ($<name>)
+    return v;
+}
+```
+
+And the FatRat spill exemption, in `applyArith`:
+
+```cpp
+// src/Interpreter.cpp — a FatRat operand makes the result a FatRat, exempt from the Num spill
+bool fat = (l.t == VT::Rat && l.fatRat) || (r.t == VT::Rat && r.fatRat);
+Value v = Value::rat(std::move(n), std::move(d)); v.fatRat = fat;
+if (!fat && v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());  // plain Rat: spill
+return v;
+```
+
 ## `ValueList` — the universal currency
 
 ```cpp
-using ValueList = std::vector<Value>;              // src/Value.h:18
+using ValueList = std::vector<Value>;              // src/Value.h
 using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
 ```
 
@@ -178,7 +220,7 @@ A `ValueList` is just a vector of values, and it is the single currency for
 Because arguments and list elements are the same type, spreading (`|@a`),
 slurping (`*@rest`), and flattening are all just vector operations. The
 distinction between a *List* (parenthesized, flattening) and an *Array* is a flag
-(`isList`, `src/Value.h:58`), not a different container.
+(`isList`, `src/Value.h`), not a different container.
 
 ## Variables, `Env`, and scope
 
@@ -186,7 +228,7 @@ A lexical scope is an `Env`: a hash map from sigil'd name to `Value`, plus a
 pointer to the enclosing scope.
 
 ```cpp
-struct Env {                                        // src/Interpreter.h:37
+struct Env {                                        // src/Interpreter.h
     std::unordered_map<std::string, Value> vars;    // "$x", "@a", "%h", "&sub"
     std::shared_ptr<Env> parent;
     // ... temp-restores, per-scope container defaults (varDefault) ...
@@ -239,14 +281,40 @@ The three declarators differ only in *which* `Env` holds the slot:
 | Declarator | Storage | Notes |
 |---|---|---|
 | `my` | the current lexical `Env` (`tctx_.cur`) | ordinary lexical |
-| `our` | the package env (`curPkgEnv_`, ultimately `global_`) | on package-block exit, `our`-vars are also republished under a package-qualified name (`src/Interpreter.cpp:2305-2314`) |
-| `state` | a per-`Callable` `stateEnv`, created **once** | `std::once_flag stateInit` (`src/Value.h:28-29`); persists across calls, initialized on first call only (`src/Interpreter.cpp:4330`) |
+| `our` | the package env (`curPkgEnv_`, ultimately `global_`) | on package-block exit, `our`-vars are also republished under a package-qualified name (`src/Interpreter.cpp`) |
+| `state` | a per-`Callable` `stateEnv`, created **once** | `std::once_flag stateInit` (`src/Value.h`); persists across calls, initialized on first call only (`src/Interpreter.cpp`) |
+
+`our` additionally republishes its variables under a package-qualified global
+name when the package block closes (a `my` package var is skipped):
+
+```cpp
+// src/Interpreter.cpp — on package-block exit, publish `our` symbols globally
+if (sigilVar && !ourVars.count(sym)) continue;            // a `my` package var — not published
+qual = std::string(1, sym[0]) + tctx_.pkgPrefix + sym.substr(1);   // e.g. "$Foo::Bar::x"
+global_->define(qual, kv.second);
+```
 
 The "current scope" pointer, the dynamic-variable (`$*foo`) caller chain, the
-gather/supply collectors, and the call depth all live in a per-thread
-`ExecContext` (`src/Interpreter.h:84-113`) held in a `static thread_local` — so
-each real worker thread has its own execution registers. That is the foundation
-for the concurrency model described in [ASYNC.md](ASYNC.md).
+gather/supply collectors, and the call depth are the thread's **execution
+registers** — they live in a per-thread `ExecContext` held in a `static
+thread_local`, so each real worker thread has its own set:
+
+```cpp
+// src/Interpreter.h — the per-thread execution registers (excerpt)
+struct ExecContext {
+    std::shared_ptr<Env> cur;                             // current lexical scope
+    std::vector<Env*> dynStack;                           // dynamic ($*foo) caller chain
+    int callDepth = 0;
+    std::vector<std::shared_ptr<ValueList>> gatherStack;  // active gather collectors
+    bool returning = false;  Value returnV;               // cooperative return (below)
+    uint64_t frameTop = 0, curRoutineFrame = 0;           // call-frame counters
+    int loopCtl = 0;  uint64_t curLoopFrame = 0;          // cooperative next/last/redo
+    // …
+};
+```
+
+That is the foundation for the concurrency model described in
+[ASYNC.md](ASYNC.md).
 
 ## Containers vs. values: copy semantics
 
@@ -267,7 +335,7 @@ only for the `@`/`%` sigils. Array assignment routes through `coerceArray`, whic
 allocates a fresh buffer:
 
 ```cpp
-// coerceArray, src/Interpreter.cpp:860
+// coerceArray, src/Interpreter.cpp
 if (v.t == VT::Array) {
     if (v.itemized) { ... }          // an itemized array is ONE element
     if (v.ext) return v;             // a lazy seq stays lazy (see below)
@@ -278,7 +346,7 @@ if (v.t == VT::Array) {
 
 `*v.arr` dereferences the `shared_ptr` and copies the underlying `std::vector`,
 so `@b` gets its own `ValueList`. Hashes copy the same way (`coerceHash`,
-`src/Interpreter.cpp:889`, `*h.hash = *v.hash`). Scalar (`$`) assignment, by
+`src/Interpreter.cpp`, `*h.hash = *v.hash`). Scalar (`$`) assignment, by
 contrast, is a plain struct overwrite (`*lv = rhs`) — so `my $x = @a` stores an
 `Array` value that *does* still share `@a`'s buffer, because an item container is
 a reference to one thing.
@@ -288,13 +356,13 @@ Two consequences to keep straight:
 - **The copy is one level deep** (Rakudo's semantics). `my @b = @a` copies the
   top-level buffer, but a nested itemized array inside is copied as a `Value`
   struct — so its `arr` pointer is still shared. Inner containers are "shared by
-  value" (`src/Interpreter.cpp:868`).
+  value" (`src/Interpreter.cpp`).
 - **A lazy sequence is *not* copied** on assignment — `if (v.ext) return v`
   keeps it lazy so `my @a = 1, 2, 4 ... *` doesn't try to drain an infinite list.
   See [Lazy and infinite sequences](#lazy-and-infinite-sequences).
 
 The native `--exe` backend has its own mirror of this, `rtArrayVal`
-(`src/Interpreter.cpp:846`), with the same "fresh buffer" rule, so interpreted
+(`src/Interpreter.cpp`), with the same "fresh buffer" rule, so interpreted
 and compiled code agree byte-for-byte.
 
 ## Binding (`:=`) vs. assignment (`=`)
@@ -306,7 +374,7 @@ slots can't literally be the same storage. Raku++ fakes the alias with a
 **`Proxy`**:
 
 ```cpp
-// $y := $x  —  src/Interpreter.cpp:4420-4459  (scalar case)
+// $y := $x  —  src/Interpreter.cpp  (scalar case)
 Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
 // FETCH reads owner->vars["$x"];  STORE writes owner->vars["$x"]
 (*proxy.hash)["FETCH"] = fetch;    // a builtin Code closing over the owning Env
@@ -315,16 +383,29 @@ Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
 ```
 
 `$y`'s slot holds a `Proxy` (a `Hash` tagged `hashKind == "Proxy"`) whose `FETCH`
-and `STORE` closures read and write `$x`'s slot in the `Env` that owns it. Reads
-of `$y` detect the `Proxy` and call `FETCH` (`src/Interpreter.cpp:8259`); writes
-route through `STORE`. Binding chains deref one extra `Proxy` level so `$z := $y
-:= $x` works.
+and `STORE` closures read and write `$x`'s slot in the `Env` that owns it. A read
+of `$y` notices the `Proxy` tag and calls its `FETCH` instead of returning the
+hash; a write routes through `STORE`:
+
+```cpp
+// src/Interpreter.cpp — reading a variable: a Proxy fetches rather than returning itself
+Value* p = tctx_.cur->find(ve->name);
+if (p) {
+    if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash) {
+        auto it = p->hash->find("FETCH");
+        if (it != p->hash->end()) return callCallable(it->second, { *p });   // → $x's value
+    }
+    return *p;
+}
+```
+
+Binding chains deref one extra `Proxy` level so `$z := $y := $x` works.
 
 **Array binding is cheaper** — no proxy needed, because sharing an `Array`'s
 buffer is exactly what a `shared_ptr` copy already does:
 
 ```cpp
-// @a := @b  —  src/Interpreter.cpp:4481
+// @a := @b  —  src/Interpreter.cpp
 if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
 ```
 
@@ -340,30 +421,41 @@ that without a separate container object, using flags on the `Value` plus
 per-`Env` side tables:
 
 - **`.VAR`** builds a `Hash` of kind `"Scalar"` reporting the variable's name,
-  value, and default (`src/Interpreter.cpp:8582`).
+  value, and default (`src/Interpreter.cpp`).
 - **`is default(v)` / typed defaults** live in `Env::varDefault`
-  (`src/Interpreter.h:44`), a per-scope map. `my Int $x` stores `(Int)` as both
+  (`src/Interpreter.h`), a per-scope map. `my Int $x` stores `(Int)` as both
   the initial value and the reset default; `$x = Nil` walks `varDefault` and
-  restores it (`src/Interpreter.cpp:4492`).
+  restores it (`src/Interpreter.cpp`).
 - **Type constraints** on a scalar (`my Int $x = 3`) are enforced at assignment
   for the core nominal types, throwing `X::TypeCheck::Assignment` on a mismatch
-  (`src/Interpreter.cpp:4506`).
+  (`src/Interpreter.cpp`).
 - **Native integers** (`my int $x`, `my uint8 $b`) carry a bit-width in
-  `natBits` (`src/Value.h:79`) and **wrap on every assignment** — `wrapNative`
-  masks the value to the declared width (`src/Interpreter.cpp:266`).
-- **`readonly`** (`src/Value.h:60`) marks a value bound to a read-only parameter;
+  `natBits` (`src/Value.h`) and **wrap on every assignment** — `wrapNative`
+  masks the value to the declared width (`src/Interpreter.cpp`).
+- **`readonly`** (`src/Value.h`) marks a value bound to a read-only parameter;
   mutating ops like `s///` check it and die.
 
-The reset and native-wrap behaviors, concretely:
+These four behaviors, concretely:
 
 ```cpp
-// $x = Nil  — restore the container's default: walk varDefault up the Env chain
+// .VAR  — src/Interpreter.cpp: a Hash tagged "Scalar" describing the container
+Value sc = Value::makeHash(); sc.hashKind = "Scalar";
+(*sc.hash)["name"]    = Value::str(ivar->name);
+(*sc.hash)["default"] = dv;              // varDefault walked up the Env chain
+(*sc.hash)["value"]   = inv;
+
+// $x = Nil  — restore the container's default (walk varDefault up the chain)
 for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
     auto di = en->varDefault.find(nm);
     if (di != en->varDefault.end()) { dv = di->second; break; }
     if (en->vars.count(nm)) break;       // owner scope reached, no declared default
 }
 *lv = dv;                                // (else Any)
+
+// my Int $i = "x"  — typed scalar: assignment enforces the core nominal types
+if (di->second.t == VT::Type && kChecked.count(di->second.s) &&
+    !rtTypeMatch(rhs, di->second.s) && !(di->second.s == "Int" && rhs.t == VT::Bool))
+    throw RakuError{Value::typeObj("X::TypeCheck::Assignment"), ...};
 
 // my uint8 $b = 300  — wrapNative() masks to the declared width  →  44
 unsigned long long u = (unsigned long long)x & ((1ULL << bits) - 1);
@@ -375,7 +467,7 @@ only twice: to pick the empty container shape at declaration (`@`→empty Array,
 `%`→empty Hash, `$`→`Any`), and to choose the assignment coercion (`@`→
 `coerceArray`, `%`→`coerceHash`, else scalar overwrite). Once a value is stored,
 its behavior follows its `VT` and the `isList`/`itemized` flags. `itemized`
-(`src/Value.h:59`, set by `$(...)`/`$[...]`) marks an array that should count as
+(`src/Value.h`, set by `$(...)`/`$[...]`) marks an array that should count as
 *one* element in list context rather than flattening.
 
 ## Function and method calls
@@ -385,16 +477,25 @@ bind the parameters.
 
 ### Building the argument list
 
-`evalArgs` (`src/Interpreter.cpp:7206`) evaluates each argument expression into
-one flat `ValueList`, handling the spread and naming rules:
+`evalArgs` evaluates each argument expression into one flat `ValueList`, handling
+the spread and naming rules:
 
-- **`|@a` / `|%h`** (a `Slip`) flattens in place: `|@a` pushes the array's
-  elements as positionals; `|%h` pushes each pair as a `VT::Pair` tagged
-  `namedArg = true`.
-- **Named arguments** are recognized *syntactically*: only a literal `k => v` or
-  `:k(v)` with a bare-identifier key becomes a named arg (`Value::namedArg`
-  set). A `Pair` that arrives in a variable, or `3 => 4`, stays **positional** —
-  `src/Value.h:61`, `src/Interpreter.cpp:7223`.
+```cpp
+// src/Interpreter.cpp — evalArgs
+} else if (a->kind == NK::Unary && ((Unary*)a.get())->op == "|") {    // a Slip: |@a / |%h
+    Value v = eval(...);
+    if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
+    else if (v.t == VT::Hash && v.hash)                              // |%h → named args
+        for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(p); }
+} else {
+    Value v = eval(a.get());
+    // ONLY a syntactic k=>v / :k(v) with a bare-identifier key is a NAMED arg;
+    // a Pair from a variable, or `3 => 4`, stays positional.
+    if (v.t == VT::Pair && a->kind == NK::Pair && !((PairExpr*)a.get())->quotedKey && ident)
+        v.namedArg = true;
+    args.push_back(std::move(v));
+}
+```
 
 So an argument list is a single `ValueList` in which named args are simply
 `Pair` values flagged `namedArg`; the positional/named split is done later, at
@@ -402,10 +503,15 @@ bind time.
 
 ### Activating the callee
 
-`callCallable` (`src/Interpreter.cpp:3634`) is a thin **wrap layer**: if the
-routine has been `&r.wrap(...)`'d, it runs the wrapper stack (each able to
-`callsame` to the next inner layer); otherwise it passes straight through to
-`callCallableRaw` (`src/Interpreter.cpp:3735`), the real activation.
+`callCallable` is a thin **wrap layer**: if the routine has been `&r.wrap(...)`'d
+it runs the wrapper stack (each able to `callsame` to the next inner layer);
+otherwise it passes straight through to `callCallableRaw`, the real activation:
+
+```cpp
+// src/Interpreter.cpp — callCallable
+if (codeVal.code && !codeVal.code->wrappers.empty()) { /* run the wrapper stack, innermost last */ }
+return callCallableRaw(codeVal, std::move(args), rwArgs);   // the common no-wrapper path
+```
 
 `callCallableRaw` handles the special callables first — native FFI, `Format`
 sprintf, junction autothreading, multi-dispatch, builtins — then activates a
@@ -422,7 +528,7 @@ Two things matter here:
 
 1. **The callee's parent is its lexical closure, not its caller.** Free variables
    resolve *lexically* — through `Callable::closure`, the scope where the sub was
-   defined (`src/Value.h:27`). The caller's scope is pushed onto a **separate**
+   defined (`src/Value.h`). The caller's scope is pushed onto a **separate**
    `dynStack` used only for dynamic variables (`$*foo`). Lexical and dynamic
    scoping are two different chains.
 2. **Each activation bumps `frameTop`**, and a routine (not a bare block) records
@@ -431,14 +537,34 @@ Two things matter here:
 
 ### Binding parameters
 
-`bindParams` (`src/Interpreter.cpp:2789`) maps the argument `ValueList` onto the
-signature. It has a fast path for the common case (all mandatory positional
-scalars, no nameds) and a general path covering:
+`bindParams` maps the argument `ValueList` onto the signature. A fast path takes
+the common case (all mandatory positional `$` scalars, no named args); the
+general path first splits named from positional, then binds:
+
+```cpp
+// src/Interpreter.cpp — bindParams
+if (simple) {                                        // all plain positional $ params, no nameds
+    for (size_t i = 0; i < params.size(); i++) {
+        Value v = i < args.size() ? args[i] : typedDefault(params[i].type, '$');
+        v.readonly = true;                           // a plain scalar param is readonly
+        env->define(params[i].name, std::move(v));
+    }
+    return;
+}
+// general path: split named vs positional, then bind each
+for (auto& a : args)
+    if (isNamedArg(a)) named[a.s] = a.pairVal ? *a.pairVal : Value::any();
+    else positional.push_back(a);
+```
+
+The general path covers:
 
 - **positional**, with optionals and defaults — a default is evaluated in the
   param scope, so `sub f($g, $a = $g/2)` can see earlier params;
 - **readonly vs. `is rw` vs. `is copy`** — a plain `$` param is marked `readonly`
-  unless it's `rw`/`copy`/the invocant (`src/Interpreter.cpp:2934`);
+  unless it's `rw`/`copy`/the invocant:
+  `if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;`
+  (`src/Interpreter.cpp`);
 - **slurpy** `*@rest` (flattening), `**@rest` (non-flattening), `+@rest`
   (single-arg rule), and `*%named`;
 - **named** params, including `:a(:$b)` aliases and sub-signature destructuring
@@ -455,7 +581,7 @@ duck-typed at the bind boundary. Those checks live in `scoreCandidate`
 
 Because arguments are passed as `Value`s (copies), a mutated `is rw` parameter
 has to be copied *back* into the caller's variable after the call. That is
-`copyOutRw` (`src/Interpreter.cpp:3960`): the call site also passes the argument
+`copyOutRw` (`src/Interpreter.cpp`): the call site also passes the argument
 *expressions* (`rwArgs`), and on a normal return each `is rw` param's final value
 is written back by re-resolving its argument expression via `lvalue()`:
 
@@ -482,7 +608,7 @@ loops, `frameTop` hasn't advanced past `curRoutineFrame`, and unwinding is just 
 matter of *stopping* the statement loop:
 
 ```cpp
-// return  —  src/Interpreter.cpp:2425
+// return  —  src/Interpreter.cpp
 if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
     tctx_.returning = true; tctx_.returnV = std::move(v);   // set a flag, don't throw
     return Value::any();
@@ -492,20 +618,39 @@ throw ReturnEx{v};                                          // boundary crossed:
 
 Native statement loops and `runLoopBody` check `tctx_.returning` after each
 statement and bail out; `callCallableRaw` consumes the flag at the routine
-boundary, adopting `returnV` as the call's result
-(`src/Interpreter.cpp:3898`). `next`/`last`/`redo` use the identical trick with a
-`loopCtl` register and `curLoopFrame` (`src/Interpreter.cpp:2431-2451`). Labelled
-control, or control that crosses a closure boundary, still throws — so the
-semantics are exactly the exception version, just cheaper on the hot path. (This
-mechanism was the subject of a subtle frame-boundary bug fixed in the method
-path; the counters must be maintained consistently across every activation kind.)
+boundary, adopting `returnV` as the call's result:
+
+```cpp
+// src/Interpreter.cpp — callCallableRaw statement loop, after each statement
+if (tctx_.returning) {                       // cooperative return reached this frame
+    if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
+    break;                                   // a bare block just propagates it to its routine
+}
+```
+
+`next`/`last`/`redo` use the identical trick with a `loopCtl` register and
+`curLoopFrame` — set a flag when the loop is in the same frame, else throw:
+
+```cpp
+// src/Interpreter.cpp — LastStmt (Next/Redo mirror it)
+if (t.empty() && tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
+    tctx_.loopCtl = 2; return Value::any();  // cooperative last (runLoopBody consumes it)
+}
+throw LastEx{t};                             // labelled or cross-frame: unwind
+```
+
+Labelled control, or control that crosses a closure boundary, still throws — so
+the semantics are exactly the exception version, just cheaper on the hot path.
+(This mechanism was the subject of a subtle frame-boundary bug fixed in the
+method path; the counters must be maintained consistently across every
+activation kind.)
 
 ## Multiple dispatch
 
 A `multi sub`/`multi method` is one `Callable` with `isMultiDispatcher = true`
-and a `candidates` vector (`src/Value.h:32-33`); each `multi` declaration pushes
+and a `candidates` vector (`src/Value.h`); each `multi` declaration pushes
 its `Code` onto the dispatcher. At call time `scoreCandidate`
-(`src/Interpreter.cpp:3028`) scores every candidate against the actual arguments
+(`src/Interpreter.cpp`) scores every candidate against the actual arguments
 and returns `-1` for "doesn't apply" or a non-negative **specificity** score:
 
 - arity gates first (too few required, or too many for a non-slurpy → `-1`);
@@ -515,6 +660,21 @@ and returns `-1` for "doesn't apply" or a non-negative **specificity** score:
 - **literal** params (`multi fact(0)`) and sub-signature destructures are treated
   as very specific;
 - a required **named** that wasn't supplied → `-1`.
+
+The per-positional scoring core:
+
+```cpp
+// src/Interpreter.cpp — scoreCandidate, per positional param
+if (subsets_.count(p->type)) { if (!subsetMatches(p->type, pos[i])) return -1; score += 2; }
+else if (!typeMatchesArg(pos[i], p->type)) return -1;              // nominal type gate
+if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;        // :D wants a defined arg
+if (p->defConstraint == 2 &&  isDefined(pos[i])) return -1;        // :U wants an undefined one
+if (p->defConstraint) score++;                                     // a smiley is more specific
+if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
+    score++;                                    // constrained at all beats unconstrained
+    if (p->type == pos[i].typeName()) score++;  // exact type beats a supertype (Int beats Numeric)
+}
+```
 
 The best score wins:
 
@@ -534,18 +694,47 @@ a pushed redispatch frame implement `callsame`/`nextsame`/`callwith`/`nextwith`.
 
 ## The object model
 
-A user class is a `ClassInfo` (`src/Value.h:190`): its name, parent(s), a vector
-of attributes, a map of methods (`Code` values), and role bookkeeping. It is
-registered in `classes_` at declaration and also installed as a lexical type
-object. An **instance** is an `ObjectData` (`src/Value.h:247`): a pointer to its
-`ClassInfo` plus a `std::map<std::string, Value> attrs`. A `Value` of kind
-`VT::Object` wraps a `shared_ptr<ObjectData>`.
+A user class is a `ClassInfo`; an instance is an `ObjectData` it points to:
 
-**Construction.** The default `new`/`bless` (`src/Builtins.cpp:2995`) walks the
-class chain **parent-first**, giving each `ClassAttr` its default (an evaluated
-`is default`/initializer expression, or a sigil-typed empty), then folds named
-arguments into `attrs`, then calls `BUILD`/`TWEAK` if defined. A user-defined
-`new` is preferred when present. `new` and `bless` share this path.
+```cpp
+// src/Value.h (excerpts)
+struct ClassInfo {
+    std::string name;
+    std::shared_ptr<ClassInfo> parent;
+    std::vector<std::shared_ptr<ClassInfo>> extraParents;   // additional `is` parents
+    std::vector<ClassAttr> attrs;                           // with defaults
+    std::map<std::string, Value> methods;                   // Code values
+    bool isRole = false;  std::set<std::string> doneRoles, requiredMethods;
+};
+struct ObjectData {
+    std::shared_ptr<ClassInfo> cls;
+    std::map<std::string, Value> attrs;                     // per-instance attribute storage
+    Value boxed; bool hasBoxed = false;                     // for `5 but Role` (see mixins)
+};
+```
+
+A `Value` of kind `VT::Object` wraps a `shared_ptr<ObjectData>`. `ClassInfo` is
+registered in `classes_` at declaration and also installed as a lexical type
+object.
+
+**Construction.** The default `new`/`bless` walks the class chain **parent-first**,
+gives each attribute its default, folds named args into `attrs`, then runs
+`BUILD`/`TWEAK`:
+
+```cpp
+// src/Builtins.cpp — default construction
+for (auto it = chain.rbegin(); it != chain.rend(); ++it)   // parent-first
+    for (auto& at : (*it)->attrs) {
+        Value dv = at.hasDefVal ? at.defVal : at.def ? eval(at.def)
+                 : at.sigil == '@' ? Value::array() : at.sigil == '%' ? Value::makeHash() : Value::any();
+        od->attrs[at.name] = dv;
+    }
+for (auto& arg : args) if (arg.t == VT::Pair) od->attrs[arg.s] = *arg.pairVal;   // :attr(…) named args
+if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
+if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+```
+
+A user-defined `new` is preferred when present; `new` and `bless` share this path.
 
 **Attributes and accessors.** `$!x` is a direct read/write of the `attrs` map.
 `$.x` is a public accessor: `methodCall` looks the method up, and on miss checks
@@ -625,11 +814,20 @@ methods are one big dispatch function rather than per-type classes.
 Two things run *before* the built-in branches:
 
 1. **Junction autothreading** (below).
-2. **`augment` / `builtinExt_`** (`src/Builtins.cpp:1273`): methods a program
-   adds to a built-in type via `augment class Int {...}` are parked in a
-   `map<typeName, map<methodName, Code>>` and consulted first (walking the native
-   ancestry so augmenting `Cool`/`Any` reaches `Int`/`Str`), so they can override
-   built-ins.
+2. **`augment` / `builtinExt_`**: methods a program adds to a built-in type via
+   `augment class Int {...}` are parked in a `map<typeName, map<methodName, Code>>`
+   and consulted *first* — walking the native ancestry so augmenting `Cool`/`Any`
+   also reaches `Int`/`Str` — so they can override built-ins:
+
+   ```cpp
+   // src/Builtins.cpp — before the native branches
+   if (!builtinExt_.empty() && inv.t != VT::Object) {
+       std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
+       if (Value* f = lookup(tn)) return invokeMethod(*f, inv, std::move(args), rwArgs);
+       for (const std::string& anc : typeAncestry(tn))          // Cool/Any reach Int/Str
+           if (anc != tn) if (Value* f = lookup(anc)) return invokeMethod(*f, inv, ...);
+   }
+   ```
 
 User objects take the other branch: a `VT::Object` invocant dispatches through
 `ClassInfo::findMethod` + the MRO. So there are two dispatch worlds — the
@@ -638,7 +836,7 @@ type-switched ladder for native values, the `ClassInfo` table for objects — an
 
 ## Closures
 
-`makeClosure` (`src/Interpreter.cpp:2774`) turns a `{ ... }` block or `sub { }`
+`makeClosure` (`src/Interpreter.cpp`) turns a `{ ... }` block or `sub { }`
 into a `Code` value by capturing the **defining** environment:
 
 ```cpp
@@ -650,7 +848,7 @@ code.code->closure = tctx_.cur;     // captured: the scope where the block was w
 Only the environment is *owned* (a `shared_ptr<Env>` copy); the parameter list
 and body are borrowed pointers into the AST, which outlives execution. At call
 time the fresh per-call `Env`'s parent chain runs
-`env → stateEnv → closure → … → global` (`src/Interpreter.cpp:3793-3811`), so a
+`env → stateEnv → closure → … → global` (`src/Interpreter.cpp`), so a
 free variable in the body resolves through the captured `closure` scope. Because
 the capture is the live `Env` (not a copy of its values), a closure sees and
 mutates the *same* container as its defining scope — real closures, e.g. a
@@ -659,15 +857,22 @@ counter that keeps incrementing the same `my $n`.
 ## Junctions
 
 A junction has no dedicated `VT`. `any(1, 2, 3)` is a `VT::Array` whose elements
-are the eigenstates, tagged by `enumName ∈ {any, all, one, none}`;
-`Value::typeName` reports `"Junction"` for it (`src/Value.cpp:386`). They are
-built by the `any`/`all`/`one`/`none` builtins, the `.any`/`.all` methods, and the
-`|`/`&`/`^` infix operators.
+are the eigenstates, tagged by `enumName ∈ {any, all, one, none}`; `typeName`
+reports `"Junction"` for exactly that shape:
+
+```cpp
+// src/Value.cpp — typeName(), the VT::Array case
+if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none")
+    return "Junction";
+```
+
+They are built by the `any`/`all`/`one`/`none` builtins, the `.any`/`.all`
+methods, and the `|`/`&`/`^` infix operators.
 
 **Autothreading** — distributing an operation over the eigenstates and
 recombining — happens at each place a value is consumed:
 
-- **Operators** (`applyArith`, `src/Interpreter.cpp:4790`): a comparison
+- **Operators** (`applyArith`, `src/Interpreter.cpp`): a comparison
   *collapses* to a single `Bool` per the junction type (`any` → "any eigenstate
   true", `all` → "all true", etc.); any other operator produces a **new**
   junction of the per-eigenstate results:
@@ -678,7 +883,7 @@ recombining — happens at each place a value is consumed:
   return out;                       // any(1,2) + 10  ==>  any(11, 12)
   ```
 
-- **Method calls** (`methodCall`, `src/Builtins.cpp:1255`): a small allow-list of
+- **Method calls** (`methodCall`, `src/Builtins.cpp`): a small allow-list of
   methods act on the whole junction (`Bool`, `gist`, `new`, …); everything else
   autothreads, returning a junction of the results.
 - **Callable invocation** (`callCallableRaw`) and **smartmatch** (`~~`) autothread
@@ -699,7 +904,7 @@ A lazy list is a `VT::Array` `Value` whose already-computed **prefix** lives in
 `arr`, plus a `LazySeqState` stashed in the generic `Value::ext` handle:
 
 ```cpp
-struct LazySeqState {                               // src/Interpreter.h:121
+struct LazySeqState {                               // src/Interpreter.h
     std::function<bool(ValueList&)> appendNext;     // compute ONE more element; false = exhausted
     bool infinite = false;                          // truly unbounded: elems/pop/[*-1] must die
 };
@@ -711,7 +916,7 @@ seq just parks a different kind of state there.
 
 ### Building one — the `...` operator
 
-`seqOp` (`src/Interpreter.cpp:489`) splits the left side into a seed list (a
+`seqOp` (`src/Interpreter.cpp`) splits the left side into a seed list (a
 trailing `Code` seed becomes the *generator*) and classifies the right endpoint.
 A **bounded** endpoint (`1 ... 10`) is computed eagerly in a loop (capped at
 1,000,000). An **infinite** endpoint (`... *` or `... Inf`) builds a
@@ -731,8 +936,15 @@ if (infinite) {
 }
 ```
 
-A bare `1..Inf` assigned to `@a` builds a similar counting `LazySeqState`
-(`src/Interpreter.cpp:873`).
+A bare `1..Inf` assigned to `@a` builds a similar counting `LazySeqState`:
+
+```cpp
+// src/Interpreter.cpp — coerceArray, an infinite Range (rTo ≈ 2^63)
+auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+auto next = std::make_shared<long long>(start);
+st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
+a.ext = st;
+```
 
 ### Forcing elements
 
@@ -740,7 +952,7 @@ Consumers grow the prefix on demand with `materializeLazy(v, n)`, which calls
 `appendNext` until the prefix has `n` elements or a hard cap of 1,000,000 is hit:
 
 ```cpp
-void Interpreter::materializeLazy(const Value& v, size_t n) {   // src/Interpreter.cpp:3325
+void Interpreter::materializeLazy(const Value& v, size_t n) {   // src/Interpreter.cpp
     auto st = std::static_pointer_cast<LazySeqState>(v.ext);
     while (v.arr->size() < n && v.arr->size() < CAP)
         if (!st->appendNext(*v.arr)) break;
@@ -748,11 +960,19 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {   // src/Interpret
 ```
 
 So `@lazy[5]` materializes six elements then indexes; `.head(3)` materializes
-three; `.first(&pred)` pulls one at a time until the predicate matches. Operations
-that need the *end* of an infinite list — `.elems`, `pop`, `.tail`, `@inf[*-1]`,
-`sort`, `sum` — throw `X::Cannot::Lazy` (`src/Builtins.cpp:4743`). (A *finite*
-lazy value, like a `gather` that outgrew its probe, instead forces full
-materialization.)
+three; `.first(&pred)` pulls one at a time until the predicate matches.
+Operations that need the *end* of an infinite list throw `X::Cannot::Lazy`:
+
+```cpp
+// src/Builtins.cpp — whole-list ops on an INFINITE lazy source can't complete
+if (m == "elems" || m == "end" || m == "pop" || m == "tail" || m == "reverse" ||
+    m == "sort" || m == "sum" || m == "min" || m == "max" || m == "join" ||
+    m == "Str" || m == "gist")
+    throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " a lazy list onto an Array"};
+```
+
+(A *finite* lazy value, like a `gather` that outgrew its probe, instead forces
+full materialization.)
 
 ### Lazy `.map` / `.grep`
 
@@ -760,7 +980,7 @@ materialization.)
 from the source on demand, so `(1..Inf).grep(*.is-prime).head(5)` terminates:
 
 ```cpp
-// .map  —  src/Builtins.cpp:4761
+// .map  —  src/Builtins.cpp
 st->appendNext = [self, src, fn](ValueList& cache) -> bool {
     size_t si = cache.size();
     self->materializeLazy(src, si + 1);            // pull one more from the source
@@ -778,7 +998,7 @@ builds a shifted view.
 `gather { ... take ... }` is lazy without coroutines, using a
 **probe-and-double** strategy. The gather collector and a per-gather element cap
 live on the `ExecContext` (`gatherStack`, `gatherLimits`,
-`src/Interpreter.h:89-90`). The block is first run under a small cap (64); if it
+`src/Interpreter.h`). The block is first run under a small cap (64); if it
 finishes within the cap it was finite and is returned eagerly. If the cap was
 *hit*, the result becomes a `LazySeqState` that grows by **re-running the block**
 with a larger cap (doubling, so re-run cost stays amortized linear):
@@ -793,13 +1013,13 @@ st->appendNext = [this, runGather](ValueList& out) -> bool {
 ```
 
 A `take` that pushes past the current cap throws `StopGatherEx`
-(`src/Interpreter.h:64`), an empty marker the gather runner catches to unwind the
+(`src/Interpreter.h`), an empty marker the gather runner catches to unwind the
 (possibly infinite) block:
 
 ```cpp
 auto& coll = *tctx_.gatherStack.back();
 for (auto& x : a) coll.push_back(x);
-if (lim && coll.size() >= lim) throw StopGatherEx{};   // src/Builtins.cpp:6217
+if (lim && coll.size() >= lim) throw StopGatherEx{};   // src/Builtins.cpp
 ```
 
 So a `gather` producing an infinite stream runs the block only far enough to
@@ -810,7 +1030,7 @@ satisfy each demand, then stops via the exception, re-entering later for more.
 `5 but Role` and `%h does R` mix a role (or an attribute) into a value at run
 time. For a value that is already an object, the role is composed into a fresh
 anonymous subclass. For a **non-object base** — `5 but Role` — there is no
-`ObjectData` to extend, so `mixinValue` (`src/Interpreter.cpp:6809`) *boxes* it:
+`ObjectData` to extend, so `mixinValue` (`src/Interpreter.cpp`) *boxes* it:
 
 ```cpp
 obj = std::make_shared<ObjectData>();
@@ -821,19 +1041,39 @@ obj->hasBoxed = true;
 
 The result is a `VT::Object` whose `obj->boxed` holds the untouched original.
 Method dispatch on the mixed object checks the role's methods first; anything not
-found (and not an identity method like `.WHAT`) is **delegated back to the box**
-(`src/Builtins.cpp:1462`), so `(5 but Role).succ` still runs `Int.succ` on the
-`5`, while the role's methods and `.does` see the mixed object.
+found (and not an identity method like `.WHAT`) is **delegated back to the box**:
+
+```cpp
+// src/Builtins.cpp — methodCall: a mixed non-object base forwards to its box
+if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
+    !inv.obj->cls->findMethod(m) && !inv.obj->cls->findAttr(m)) {
+    static const std::set<std::string> keepOnObj = {"does","HOW","WHAT","WHICH","defined","DEFINITE"};
+    if (!keepOnObj.count(m)) return methodCall(inv.obj->boxed, m, args, rwArgs);   // (5 but R).succ → Int.succ
+}
+```
+
+So `(5 but Role).succ` runs `Int.succ` on the `5`, while the role's methods and
+`.does`/`.WHAT` see the mixed object.
 
 ## One runtime, two front ends
 
 Everything above is the *runtime library* (`librakupp_rt`). The tree-walking
 interpreter is one client of it. The native `--exe` compiler is the other: it
 emits C++ that calls the *same* runtime functions rather than re-implementing
-them. A compiled `$a + $b` becomes a call to `rtAdd(a, b)`
-(`src/Interpreter.h:524`), which inlines the small-int fast path and otherwise
-falls back to `applyArith` — the identical function the interpreter uses. `Value`
-is the shared currency, `callBuiltin`/`callCallable` the shared calling
+them. A compiled `$a + $b` becomes a call to `rtAdd(a, b)`, which inlines the
+small-int fast path and otherwise falls back to `applyArith` — the identical
+function the interpreter uses:
+
+```cpp
+// src/Interpreter.h — the fast path native codegen emits for `+`
+inline Value rtAdd(const Value& l, const Value& r) {
+    long long z;
+    if (rtBothInt(l, r) && !add_ovf(l.i, r.i, &z)) return Value::integer(z);   // inline int64
+    return applyArith("+", l, r);                                             // else the runtime
+}
+```
+
+`Value` is the shared currency, `callBuiltin`/`callCallable` the shared calling
 convention, `rtIndexRef`/`rtAttrRef`/`rtArrayVal` the shared container ops.
 
 That is why the two backends produce byte-identical output and why a feature
