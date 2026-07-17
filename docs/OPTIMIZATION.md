@@ -184,9 +184,11 @@ on top of it — `strcat` looks flat between `--exe` and `--exe -O`.
 **Native-bool conditions** are the same idea. An `if`/`while`/ternary condition
 that is a comparison (`$n < 2`) used to compile to `RT.boolify(rtLt(…))` — build a
 `Bool` `Value`, then read it back. The codegen now emits a `bool`-returning helper
-(`rtLtB`/`rtLeB`/…) straight into the condition, skipping the round-trip. It is
-default (not `-O`-gated); on `fib`, whose ternary runs 1.6M times, it took `--exe`
-from 186 → 165 ms and `--exe -O` from 84 → 66 ms.
+(`rtLtB`/`rtLeB`/…, joined by the string forms `rtEqSB`/`rtLtSB`/… — see
+[dev/DISPATCH.md](dev/DISPATCH.md)) straight into the condition, skipping the
+round-trip. It is default (not `-O`-gated); on `fib`, whose ternary runs 1.6M
+times, it took `--exe` from 186 → 165 ms and `--exe -O` from 84 → 66 ms; on
+`streq` the string form is most of a 15× cut in plain `--exe`.
 
 ## Forwarding the C++ optimization level
 
