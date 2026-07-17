@@ -4240,10 +4240,22 @@ Value* Interpreter::lvalue(Expr* e) {
     if (e->kind == NK::Index) {
         auto* idx = static_cast<Index*>(e);
         Value* base = lvalue(idx->base.get());
-        if (idx->multiDim && base) { // @a[0;1] = v — walk/autoviv nested containers
+        // assignment to an adverbed multidim subscript (`%h{a;b;c}:!exists = v`)
+        // has no postcircumfix candidate — it dies
+        if (idx->multiDim && !idx->adverb.empty())
+            throw RakuError{Value::typeObj("X::Adverb"),
+                "Cannot assign to an adverbed multidim subscript"};
+        if (idx->multiDim && base) { // @a[0;1] = v / %h{a;b;c} = v — walk/autoviv nested containers
             auto* dims = static_cast<ListExpr*>(idx->index.get());
             Value* node = base;
+            bool hashy = idx->isHash;
             for (auto& de : dims->items) {
+                if (hashy || node->t == VT::Hash) {
+                    if (node->t != VT::Hash) *node = Value::makeHash();
+                    std::string key = eval(de.get()).toStr();
+                    node = &(*node->hash)[key];
+                    continue;
+                }
                 if (node->t != VT::Array) *node = Value::array();
                 long long i = eval(de.get()).toInt();
                 if (i < 0) i += (long long)node->arr->size();
@@ -7983,37 +7995,53 @@ Value Interpreter::postfixI(Value v) {
 }
 
 Value Interpreter::evalIndex(Index* idx) {
-    // multidim slice @a[X;Y(;Z)]: walk level by level; Whatever selects all
-    // elements at its level; scalar/list/range dims select those; flattened List.
+    // multidim slice @a[X;Y(;Z)] / %h{X;Y;Z}: walk level by level; Whatever
+    // selects all elements at its level; scalar/list/range dims select those.
+    // (Shared with the adverb block below: `:$off` adverbs still read plainly.)
+    std::function<Value(const Value&)> multiDimRead;
     if (idx->multiDim) {
-        auto* dims = static_cast<ListExpr*>(idx->index.get());
-        Value out = Value::array(); out.isList = true;
-        bool anyMulti = false; // all-scalar dims yield the lone element, not a 1-list
-        std::function<void(const Value&, size_t)> walk = [&](const Value& node, size_t d) {
-            if (d == dims->items.size()) { out.arr->push_back(node); return; }
-            Expr* de = dims->items[d].get();
-            if (de->kind == NK::Whatever) {
-                anyMulti = true;
-                if (node.t == VT::Array && node.arr) for (auto& el : *node.arr) walk(el, d + 1);
-                else if (node.t == VT::Range) for (auto& el : node.flatten()) walk(el, d + 1);
-                return;
-            }
-            Value dv = eval(de);
-            ValueList keys;
-            if (dv.t == VT::Range || (dv.t == VT::Array && dv.arr)) { keys = dv.flatten(); anyMulti = true; }
-            else keys.push_back(dv);
-            for (auto& k : keys) {
-                if (node.t == VT::Array && node.arr) {
-                    long long i = k.toInt(), n = (long long)node.arr->size();
-                    if (i < 0) i += n;
-                    walk(i >= 0 && i < n ? (*node.arr)[i] : Value::any(), d + 1);
+        multiDimRead = [&](const Value& baseV) -> Value {
+            auto* dims = static_cast<ListExpr*>(idx->index.get());
+            Value out = Value::array(); out.isList = true;
+            bool anyMulti = false; // all-scalar dims yield the lone element, not a 1-list
+            std::function<void(const Value&, size_t)> walk = [&](const Value& node, size_t d) {
+                if (d == dims->items.size()) { out.arr->push_back(node); return; }
+                Expr* de = dims->items[d].get();
+                if (de->kind == NK::Whatever) {
+                    anyMulti = true;
+                    if (node.t == VT::Array && node.arr) for (auto& el : *node.arr) walk(el, d + 1);
+                    else if (node.t == VT::Range) for (auto& el : node.flatten()) walk(el, d + 1);
+                    else if (node.t == VT::Hash && node.hash) for (auto& kv : *node.hash) walk(kv.second, d + 1);
+                    return;
                 }
-                else walk(Value::any(), d + 1);
-            }
+                Value dv = eval(de);
+                // a Callable dim resolves against this level (arrays: called with elems)
+                if (dv.t == VT::Code && dv.code) {
+                    if (node.t == VT::Array && node.arr)
+                        dv = callCallable(dv, ValueList{Value::integer((long long)node.arr->size())});
+                    else dv = callCallable(dv, ValueList{node});
+                }
+                ValueList keys;
+                if (dv.t == VT::Range || (dv.t == VT::Array && dv.arr)) { keys = dv.flatten(); anyMulti = true; }
+                else keys.push_back(dv);
+                for (auto& k : keys) {
+                    if (node.t == VT::Array && node.arr) {
+                        long long i = k.toInt(), n = (long long)node.arr->size();
+                        if (i < 0) i += n;
+                        walk(i >= 0 && i < n ? (*node.arr)[i] : Value::any(), d + 1);
+                    }
+                    else if (node.t == VT::Hash && node.hash) {
+                        auto it = node.hash->find(k.toStr());
+                        walk(it != node.hash->end() ? it->second : Value::any(), d + 1);
+                    }
+                    else walk(Value::any(), d + 1);
+                }
+            };
+            walk(baseV, 0);
+            if (!anyMulti && out.arr->size() == 1) return (*out.arr)[0]; // @a[1;0] is a scalar
+            return out;
         };
-        walk(eval(idx->base.get()), 0);
-        if (!anyMulti && out.arr->size() == 1) return (*out.arr)[0]; // @a[1;0] is a scalar
-        return out;
+        if (idx->adverb.empty()) return multiDimRead(eval(idx->base.get()));
     }
     // A shaped DECLARATION `my int @a[5]` (or anonymous `my int @[5]`) used as an
     // expression evaluates to the typed array itself, not to an element of it.
@@ -8195,11 +8223,13 @@ Value Interpreter::evalIndex(Index* idx) {
                 else if (part == "v") vF = true;
             }
         }
+        if (idx->multiDim && !(wantExists || wantDelete || kvF || pF || kF || vF))
+            return multiDimRead(base); // all adverbs conditionally off → plain multidim read
         if (wantExists || wantDelete || kvF || pF || kF || vF) {
-        // On a `{; }` multidim subscript, `:!exists:delete` has no matching
-        // postcircumfix candidate in Rakudo and dies; a plain/chained subscript
-        // accepts it (the :exists half reports negated existence, :delete removes).
-        if (idx->semicolonSub && wantExists && negExists && wantDelete)
+        // On a multidim subscript, `:!exists:delete` has no matching postcircumfix
+        // candidate in Rakudo and dies; a plain/chained subscript accepts it
+        // (the :exists half reports negated existence, :delete removes).
+        if ((idx->semicolonSub || idx->multiDim) && wantExists && negExists && wantDelete)
             throw RakuError{Value::typeObj("X::Adverb"),
                 "Unexpected adverbs passed to subscript: combination of :!exists and :delete"};
         // the presentation adverbs (k/v/kv/p) are mutually exclusive; :exists
@@ -8207,6 +8237,77 @@ Value Interpreter::evalIndex(Index* idx) {
         if ((int)kF + (int)vF + (int)kvF + (int)pF > 1 || (wantExists && vF))
             throw RakuError{Value::typeObj("X::Adverb"),
                 "Unexpected adverbs passed to subscript"};
+        // ── adverbed multidim: navigate to the leaf's parent, apply the adverb set;
+        // :kv/:p/:k report the WHOLE key tuple (%h{a;b;c}:kv is ((a,b,c), v)).
+        if (idx->multiDim) {
+            auto* dims = static_cast<ListExpr*>(idx->index.get());
+            ValueList keys; bool anyMulti = false;
+            for (auto& de : dims->items) {
+                if (de->kind == NK::Whatever) { anyMulti = true; keys.push_back(Value::whatever()); continue; }
+                Value k = eval(de.get());
+                if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
+                keys.push_back(k);
+            }
+            if (!anyMulti && !keys.empty()) {
+                auto resolveKey = [&](Value k, const Value& node) {
+                    if (k.t == VT::Code && k.code) {
+                        if (node.t == VT::Array && node.arr)
+                            return callCallable(k, ValueList{Value::integer((long long)node.arr->size())});
+                        return callCallable(k, ValueList{node});
+                    }
+                    return k;
+                };
+                Value cur = base; bool navOk = true;
+                for (size_t d = 0; d + 1 < keys.size() && navOk; d++) {
+                    keys[d] = resolveKey(keys[d], cur);
+                    if (cur.t == VT::Hash && cur.hash) {
+                        auto it = cur.hash->find(keys[d].toStr());
+                        if (it == cur.hash->end()) { navOk = false; break; }
+                        cur = it->second;
+                    } else if (cur.t == VT::Array && cur.arr) {
+                        long long i = keys[d].toInt(), n = (long long)cur.arr->size();
+                        if (i < 0) i += n;
+                        if (i < 0 || i >= n) { navOk = false; break; }
+                        cur = (*cur.arr)[i];
+                    } else navOk = false;
+                }
+                keys.back() = resolveKey(keys.back(), cur);
+                bool exists = false; Value val;
+                if (navOk && cur.t == VT::Hash && cur.hash) {
+                    auto it = cur.hash->find(keys.back().toStr());
+                    if (it != cur.hash->end()) { exists = true; val = it->second; }
+                    if (wantDelete && exists) cur.hash->erase(keys.back().toStr());
+                } else if (navOk && cur.t == VT::Array && cur.arr) {
+                    long long i = keys.back().toInt(), n = (long long)cur.arr->size();
+                    if (i < 0) i += n;
+                    if (i >= 0 && i < n && isDefined((*cur.arr)[i])) { exists = true; val = (*cur.arr)[i]; }
+                    if (wantDelete && exists) {
+                        (*cur.arr)[i] = Value::any();
+                        while (!cur.arr->empty() && !isDefined(cur.arr->back())) cur.arr->pop_back(); // trailing holes shrink
+                    }
+                }
+                Value keyTuple = Value::array(keys); keyTuple.isList = true;
+                auto tuplePair = [&](const Value& v2) {
+                    Value p = Value::pair(keyTuple.toStr(), v2);
+                    p.pairKey = std::make_shared<Value>(keyTuple);
+                    return p;
+                };
+                auto emptyList = []() { Value e = Value::array(); e.isList = true; return e; };
+                if (wantExists) {
+                    Value ex = Value::boolean(negExists ? !exists : exists);
+                    if (kvF) { if (!exists) return emptyList();
+                               Value o = Value::array({keyTuple, ex}); o.isList = true; return o; }
+                    if (pF)  return exists ? tuplePair(ex) : Value::nil();
+                    return ex;
+                }
+                if (kF)  return exists ? keyTuple : Value::nil();
+                if (kvF) { if (!exists) return emptyList();
+                           Value o = Value::array({keyTuple, val}); o.isList = true; return o; }
+                if (pF)  return exists ? tuplePair(val) : Value::nil();
+                return exists ? val : Value::nil(); // plain :delete → the deleted value / Nil
+            }
+            // slice dims (Whatever/list per level) with adverbs: fall through
+        }
         Value iv = eval(idx->index.get());
         bool slice = iv.t == VT::Array || iv.t == VT::Range;
         ValueList sliceKeys;

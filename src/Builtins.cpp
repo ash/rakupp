@@ -967,6 +967,9 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 }
 
 static bool deepEq(const Value& a, const Value& b) {
+    // the undefined value (VT::Any) and the `Any` type object are the same thing
+    auto anyish = [](const Value& v) { return v.t == VT::Any || (v.t == VT::Type && v.s == "Any"); };
+    if (anyish(a) && anyish(b)) return true;
     // a Junction on either side autothreads (is-deeply $x, 'a'|'b';
     // is-deeply any(1,2,3), none(4,5,6) collapses to True)
     auto junct = [](const Value& v) {
