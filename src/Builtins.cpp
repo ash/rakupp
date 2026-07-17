@@ -2624,6 +2624,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::integer(fld(m.c_str()));
         if (m == "day-of-month") return Value::integer(fld("day")); // alias for .day
         if (m == "weekday-of-month") return Value::integer((fld("day") - 1) / 7 + 1);
+        if (m == "Instant") { // posix seconds tagged Instant (rakupp `now` is raw posix)
+            auto sit = inv.hash->find("second");
+            double sec = sit != inv.hash->end() ? sit->second.toNum() : 0.0;
+            long long ep = civilToDays(fld("year"), fld("month"), fld("day")) * 86400 +
+                           fld("hour") * 3600 + fld("minute") * 60 - fld("timezone");
+            Value v = Value::number((double)ep + sec); v.hashKind = "Instant"; return v;
+        }
         if ((m == "timezone" || m == "offset") && inv.hashKind == "DateTime") return Value::integer(fld("timezone"));
         if ((m == "in-timezone" || m == "utc" || m == "local") && inv.hashKind == "DateTime") {
             long long newTz = m == "utc" ? 0 : m == "local" ? tzOffsetDyn()
