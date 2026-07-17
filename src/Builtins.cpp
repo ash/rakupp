@@ -1462,7 +1462,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
         !inv.obj->cls->findMethod(m) && !inv.obj->cls->findAttr(m)) {
         static const std::set<std::string> keepOnObj = {
-            "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE"};
+            "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa", "WHERE"};
         if (!keepOnObj.count(m)) return methodCall(inv.obj->boxed, m, args, rwArgs);
     }
 
@@ -1737,6 +1737,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
         return Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
     }
+    // type-level coercions: `DateTime.Date` is Date:U, `Date.DateTime` is DateTime:U
+    if (inv.t == VT::Type && (inv.s == "DateTime" || inv.s == "Date") &&
+        (m == "Date" || m == "DateTime"))
+        return Value::typeObj(m);
     if (inv.t == VT::Type && inv.s == "StrDistance" && m == "new") {
         // StrDistance (the tr/// result value): numifies to .after.chars
         Value h = Value::makeHash(); h.hashKind = "StrDistance";
@@ -2657,6 +2661,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::integer(fld(m.c_str()));
         if (m == "day-of-month") return Value::integer(fld("day")); // alias for .day
         if (m == "weekday-of-month") return Value::integer((fld("day") - 1) / 7 + 1);
+        if (m == "DateTime") { // Date → DateTime (midnight); DateTime → self
+            if (inv.hashKind == "DateTime") return inv;
+            return methodCall(Value::typeObj("DateTime"), "new", ValueList{
+                Value::integer(fld("year")), Value::integer(fld("month")), Value::integer(fld("day"))});
+        }
         if (m == "Instant") { // posix seconds tagged Instant (rakupp `now` is raw posix)
             auto sit = inv.hash->find("second");
             double sec = sit != inv.hash->end() ? sit->second.toNum() : 0.0;
@@ -3100,6 +3109,31 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
                     return self;
                 }
+                // A class subclassing a scalar built-in with its own `.new` (DateTime,
+                // Date): box the built-in and keep the user object's identity/attrs.
+                if (nb == "DateTime" || nb == "Date") {
+                    auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true;
+                    std::vector<ClassInfo*> chain;
+                    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
+                    for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+                        for (auto& at : (*it)->attrs) {
+                            Value dv = at.hasDefVal ? at.defVal
+                                     : at.def ? eval(const_cast<Expr*>(at.def))
+                                              : (at.sigil == '@' ? Value::array()
+                                                 : at.sigil == '%' ? Value::makeHash() : Value::any());
+                            od->attrs[at.name] = dv;
+                        }
+                    ValueList builtinArgs;
+                    for (auto& a : args) {
+                        if (a.t == VT::Pair && ci->findAttr(a.s)) od->attrs[a.s] = a.pairVal ? *a.pairVal : Value::any();
+                        else builtinArgs.push_back(a);
+                    }
+                    od->boxed = methodCall(Value::typeObj(nb), "new", builtinArgs);
+                    Value self = Value::object(od);
+                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
+                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    return self;
+                }
                 auto od = std::make_shared<ObjectData>();
                 od->cls = ci;
                 std::vector<ClassInfo*> chain;
@@ -3131,6 +3165,29 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                 if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
                 return self;
+            }
+            // `SubDateTime.now` / `.today` — a type-level method not on the user class
+            // dispatches to its built-in parent; box the result to keep the subclass.
+            {
+                std::string nb;
+                for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
+                if ((nb == "DateTime" || nb == "Date") && !ci->findMethod(m) &&
+                    m != "raku" && m != "perl" && m != "gist" && m != "Str") {
+                    Value r = methodCall(Value::typeObj(nb), m, args, rwArgs);
+                    if (r.t == VT::Hash && (r.hashKind == "DateTime" || r.hashKind == "Date")) {
+                        auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed = r;
+                        std::vector<ClassInfo*> chain;
+                        for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
+                        for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+                            for (auto& at : (*it)->attrs) {
+                                Value dv = at.hasDefVal ? at.defVal : at.def ? eval(const_cast<Expr*>(at.def))
+                                         : (at.sigil == '@' ? Value::array() : at.sigil == '%' ? Value::makeHash() : Value::any());
+                                od->attrs[at.name] = dv;
+                            }
+                        return Value::object(od);
+                    }
+                    return r;
+                }
             }
             if (m == "raku" || m == "perl") return Value::str(inv.s); // type-object .raku is the bare name
             if (m == "gist") return Value::str("(" + inv.s + ")");
@@ -3839,8 +3896,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
         ClassInfo* c0 = inv.t == VT::Object && inv.obj ? inv.obj->cls.get() : nullptr;
         if (!c0) { auto cit = classes_.find(tn); if (cit != classes_.end()) c0 = cit->second.get(); }
-        for (ClassInfo* c = c0; c; c = c->parent.get())
-            if (c->name == want) return Value::boolean(true);
+        for (ClassInfo* c = c0; c; c = c->parent.get()) {
+            if (c->name == want || c->nativeParent == want) return Value::boolean(true);
+            if (!c->nativeParent.empty())
+                for (auto& anc : typeAncestry(c->nativeParent)) if (anc == want) return Value::boolean(true);
+        }
         for (auto& anc : typeAncestry(tn)) if (anc == want) return Value::boolean(true);
         return Value::boolean(false);
     }

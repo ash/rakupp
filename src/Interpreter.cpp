@@ -2989,8 +2989,12 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Match: return type == "Match";
         case VT::Range: return type == "Range" || type == "Iterable";
         case VT::Object:
-            for (ClassInfo* ci = arg.obj ? arg.obj->cls.get() : nullptr; ci; ci = ci->parent.get())
-                if (ci->name == type) return true;
+            for (ClassInfo* ci = arg.obj ? arg.obj->cls.get() : nullptr; ci; ci = ci->parent.get()) {
+                if (ci->name == type || ci->nativeParent == type) return true;
+                for (auto& p : ci->extraParents) if (p && p->name == type) return true;
+            }
+            // a subclass of a built-in (`class F is DateTime`) matches the built-in
+            if (arg.obj && arg.obj->hasBoxed) return typeMatchesArg(arg.obj->boxed, type);
             return false;
         default: return true; // Nil/Any/Type/unknown subset/enum: lenient
     }
@@ -5428,6 +5432,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));
+            // an object matches its class ancestry incl. a built-in parent (`is DateTime`)
+            if (!res && l.t == VT::Object) res = typeMatchesArg(l, r.s);
             // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
             // array[int] ~~ Positional[int], Mix ~~ Associative, …)
             if (!res && l.t == VT::Type) {
@@ -7608,6 +7614,9 @@ Value Interpreter::evalCall(Call* c) {
             }
             return methodCall(Value::list(flat), c->name, ValueList{});
         }
+        // `DateTime($instant)` / `Date($str)` coercion routines == .new
+        if ((c->name == "DateTime" || c->name == "Date") && !args.empty())
+            return methodCall(Value::typeObj(c->name), "new", args);
         static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
         if (coerce.count(c->name)) {
             if (args.empty())
