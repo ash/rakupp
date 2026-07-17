@@ -6,9 +6,11 @@ the language, and Roast tests them hard (S15 alone is ~91k assertions). This
 document describes how Raku++ implements that: what works, where the data
 comes from, and what is still missing.
 
-**Measured standing (S15, Unicode / strings / NFG):** 69 of 82 files fully
-pass, 91,201 / 91,242 reached assertions (99.96%). The UCA collation
-conformance suite (S32-str, 8,271 tests) passes with zero real failures.
+**Measured standing (S15, Unicode / strings / NFG):** 72 of 82 files fully
+pass; of the assertions that run, 91,380 / 91,519 pass (99.8%), with one file
+(`S15-nfg/concat-stable.t`) timing out. The UCA collation conformance suite
+(S32-str, 8,271 tests) passes 8,271 / 8,271 (verified). _(Measured with the
+current build against the pinned Unicode-17.0 Roast files.)_
 
 ## The five subsystems
 
@@ -160,18 +162,26 @@ names) are algorithmic and synthesized in C++ rather than stored.
 
 ## Known gaps
 
-Stated plainly, per the failing Roast tail (~41 assertions in S15 plus
-scattered S32-str cases):
+Stated plainly, per the failing Roast tail (~139 assertions in S15; the
+S32-str collation suite is clean):
 
+- **Property-name long tail** — the common forms all work (`<:Lu>`,
+  `<:Script<Greek>>`, `uniprop($c, "Script")`, `unimatch($c, "Lu")`), but the
+  full alias/property matrix does not. `unimatch` misses **long aliases**
+  (`unimatch("A", "Letter")` for `L`) and **script names**
+  (`unimatch("A", "Latin")`), and `uniprop($c, "<BooleanProp>")` returns the
+  general category instead of the property value
+  (`uniprop("A", "Alphabetic")` → `Lu`). This is the largest bucket —
+  `unimatch-general.t` (117/224) and `S15-nfg/regex.t` (3/13).
 - **Case folding tail** — `"ß".fc` does not fold to `ss`, and `.lc` does not
   produce final sigma (`"ΟΔΥΣΣΕΥΣ".lc` should end in `ς`); `:ignorecase` /
   `:ignoremark` on `contains`/`starts-with`/`index` handle ASCII but miss
   some non-ASCII foldings (`"FOÖ"`). `samemark` is not implemented.
 - **`.collate` / `.sort`** do not route through the UCA yet — only the
-  `unicmp`/`coll` infixes do.
-- **NFG synthetic-codepoint corners** — `case-change.t`, `concatenation.t`
-  and `crlf-encoding.t` still lose a few tests each (e.g. case-changing a
-  string does not re-segment every synthetic cluster).
+  `unicmp`/`coll` infixes do (`.collate` isn't a method at all).
+- **NFG synthetic-codepoint corners** — `case-change.t` (55/72),
+  `concatenation.t` and `crlf-encoding.t` still lose tests (e.g. case-changing
+  a string does not re-segment every synthetic cluster); `concat-stable.t`
+  currently times out.
 - **No locale tailorings** (CLDR) for collation, as noted above.
-- `long-uni`-style stress cases pass, but `Uni.t` has a small tail
-  (13/15) around `Uni` list semantics.
+- `Uni.t` has a small tail (13/15) around `Uni` list semantics.
