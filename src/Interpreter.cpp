@@ -4635,6 +4635,16 @@ static bool isSetOpStr(const std::string& o) {
     };
     return ops.count(o) > 0;
 }
+// Set ops that return a Bool (membership/subset/equality). Over a junction
+// operand these COLLAPSE per the junction kind (like `==`/`eq`); the Set-valued
+// producers ((|)/(&)/(-)/…) instead build a junction of Sets.
+static bool isSetPredicateStr(const std::string& o) {
+    static const std::set<std::string> ops = {
+        "(elem)", "∈", "(!elem)", "∉", "(cont)", "∋", "(!cont)", "∌",
+        "(<=)", "⊆", "(<)", "⊂", "(>=)", "⊇", "(>)", "⊃", "(==)", "(!=)", "(<>)",
+    };
+    return ops.count(o) > 0;
+}
 
 static std::map<std::string, long long> setCounts(const Value& v) {
     std::map<std::string, long long> m;
@@ -4834,7 +4844,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // (`.grep: * ∉ @seen`) instead of computing eagerly — fall through below.
     {
         auto wish = [](const Value& v) { return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode); };
-        if (isSetOpStr(op) && !wish(l) && !wish(r)) return setOp(op, l, r);
+        // A junction operand autothreads (below) BEFORE the set is computed:
+        // `all([1,2,3],[2,3,1]) (==) 1..3` tests each eigenstate, then collapses.
+        if (isSetOpStr(op) && !wish(l) && !wish(r) && !isJunction(l) && !isJunction(r))
+            return setOp(op, l, r);
     }
     // hyper binary metaop  >>OP>>  : element-wise apply OP over the two lists
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
@@ -4869,7 +4882,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         const Value& j = pickL ? l : r;
         bool jleft = pickL;
         static const std::set<std::string> cmp = {"==", "!=", "eq", "ne", "<", ">", "<=", ">=", "~~", "!~~", "<=>", "cmp", "lt", "gt", "le", "ge", "===", "eqv"};
-        if (cmp.count(op)) {
+        if (cmp.count(op) || isSetPredicateStr(op)) {
             int t = 0, total = 0;
             for (auto& e : *j.arr) { total++; if (applyArith(op, jleft ? e : l, jleft ? r : e).truthy()) t++; }
             bool res = j.enumName == "any" ? t > 0 : j.enumName == "all" ? t == total : j.enumName == "one" ? t == 1 : t == 0;

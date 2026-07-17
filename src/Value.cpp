@@ -632,8 +632,12 @@ int valueCmp(const Value& a, const Value& b) {
         return x < y ? -1 : x > y ? 1 : 0;
     }
     // Pairs compare by key first, then value (Rakudo's Pair cmp semantics).
+    // Compare the TYPED key (pairKey — an Int/Num/… preserved from `1 => 2`),
+    // not the stringified `s`: otherwise `12 => …` sorts before `8 => …`.
     if (a.t == VT::Pair && b.t == VT::Pair) {
-        int k = valueCmp(Value::str(a.s), Value::str(b.s));
+        Value ak = a.pairKey ? *a.pairKey : Value::str(a.s);
+        Value bk = b.pairKey ? *b.pairKey : Value::str(b.s);
+        int k = valueCmp(ak, bk);
         if (k != 0) return k;
         Value av = a.pairVal ? *a.pairVal : Value::any();
         Value bv = b.pairVal ? *b.pairVal : Value::any();
