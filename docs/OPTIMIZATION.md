@@ -30,24 +30,28 @@ rakupp --cpp -O prog.raku             # print the optimized C++ to stdout
 ## What the generated code looks like without `-O`
 
 By default the transpiler is faithful but generic: every value is a boxed
-`Value`, every operator goes through the runtime's string-keyed dispatcher
-(`applyArith`), and every user-sub call packs its arguments into a
-`ValueList` (a `std::vector<Value>` — a heap allocation per call).
+`Value`, operators in **value position** go through the runtime's string-keyed
+dispatcher (`applyArith`), and every user-sub call packs its arguments into a
+`ValueList` (a `std::vector<Value>` — a heap allocation per call). (Two dispatch
+cuts apply even without `-O`, because they are plumbing rather than speculation:
+comparisons in **conditions** use the inline `rtLtB`/`rtEqSB`-family helpers,
+and builtin calls go through pointers cached once at startup — see
+[dev/DISPATCH.md](dev/DISPATCH.md).)
 
 ```cpp
 // sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }
 static Value u_fib(ValueList __a) {
-    Value v_n = rtPos(__a, 0);
-    return RT.boolify(applyArith("<", v_n, Value::integer(2LL)))
-         ? v_n
-         : applyArith("+", u_fib(ValueList{applyArith("-", v_n, Value::integer(1LL))}),
-                           u_fib(ValueList{applyArith("-", v_n, Value::integer(2LL))}));
+    Value v_sn = rtPos(__a, 0);
+    return rtLtB(v_sn, Value::integer(2LL))     // condition: inline int compare (always on)
+         ? v_sn
+         : applyArith("+", u_fib(ValueList{applyArith("-", v_sn, Value::integer(1LL))}),
+                           u_fib(ValueList{applyArith("-", v_sn, Value::integer(2LL))}));
 }
 ```
 
 For a hot recursive function this is two costs on every one of ~1.6M calls: a
-`ValueList` `malloc`, and several `applyArith` calls that compare the op *string*
-before touching the operands.
+`ValueList` `malloc`, and the value-position `applyArith` calls that dispatch on
+the op *string* before touching the operands.
 
 ## The passes
 
@@ -59,7 +63,7 @@ overload — its parameters *are* the C++ arguments — plus a boxed adapter so 
 unusual call site still resolves. C++ overload resolution picks the right one.
 
 ```cpp
-static Value u_fib(Value v_n) { … }                                  // fast overload
+static Value u_fib(Value v_sn) { … }                                 // fast overload
 static Value u_fib(ValueList __a) { return u_fib(rtPos(__a, 0)); }   // adapter
 ```
 
@@ -97,14 +101,18 @@ overflow is detected with `__builtin_*_overflow` and promotes to bignum, exactly
 as `applyArith` does. This pass covers both binary operators and compound
 assignment (`$s += …`).
 
-With both passes, `fib` transpiles to:
+With both passes (plus pass 3's condition lane), `fib` transpiles to:
 
 ```cpp
-static Value u_fib(Value v_n) {
-    return RT.boolify(rtLt(v_n, Value::integer(2LL)))
-         ? v_n
-         : rtAdd(u_fib(rtSub(v_n, Value::integer(1LL))),
-                 u_fib(rtSub(v_n, Value::integer(2LL))));
+static Value u_fib(Value v_sn) {
+    return ([&]() -> bool {                        // pass-3 condition lane:
+        do { if (!(rtIntBox(v_sn))) break;         //  guard the box…
+             return (v_sn.i < 2LL); } while (0);   //  …compare as raw int64
+        return rtLtB(v_sn, Value::integer(2LL));   //  guard failed: boxed compare
+    }())
+         ? v_sn
+         : rtAdd(u_fib(rtSub(v_sn, Value::integer(1LL))),
+                 u_fib(rtSub(v_sn, Value::integer(2LL))));
 }
 ```
 
