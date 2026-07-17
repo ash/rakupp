@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
 }
 ```
 
-then compiles it against `librakupp_rt.a`. The result is a standalone native
+then compiles it and links against `librakupp_rt.a`. The result is a standalone native
 binary (no `rakupp` needed on the target), but at run time it still **lexes,
 parses, and tree-walks** the embedded source — it *is* the interpreter in a box.
 So its run time equals interpreting; the win is distribution and a ~10 ms start.
