@@ -184,6 +184,20 @@ static void markLoopAsExpr(Stmt* s) {
     else if (s->kind == NK::LoopStmt) static_cast<LoopStmt*>(s)->asExpr = true;
 }
 
+// A fused hyper op token (`«+»` lexes as `<<+>>`) written into an operator NAME
+// (&infix:<…>) would collide with the `<<∈>>` double-angle-quote strip — keep
+// hyper markers as Unicode «» inside names so the reader stays unambiguous.
+static std::string hyperMarkersToUni(std::string s) {
+    if (s.size() >= 5) {
+        bool ls = s.compare(0, 2, "<<") == 0, lr = s.compare(0, 2, ">>") == 0;
+        bool ts = s.compare(s.size() - 2, 2, "<<") == 0, tr = s.compare(s.size() - 2, 2, ">>") == 0;
+        if ((ls || lr) && (ts || tr))
+            s = std::string(ls ? "\xC2\xAB" : "\xC2\xBB") + s.substr(2, s.size() - 4) +
+                (ts ? "\xC2\xAB" : "\xC2\xBB");
+    }
+    return s;
+}
+
 bool Parser::startsTermToken(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
@@ -191,6 +205,9 @@ bool Parser::startsTermToken(const Token& t) const {
         case Tok::Var: case Tok::LParen: case Tok::LBracket: case Tok::LBrace:
             return true;
         case Tok::Op:
+            // `&[+]` — the infix-as-Callable term (say &[+], @ops = "+", &[+], …)
+            if (t.text == "&" && &t == &cur() && peek().kind == Tok::LBracket && !peek().spaceBefore)
+                return true;
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `f 0, ++$x`
@@ -256,6 +273,8 @@ bool Parser::startsListopArg(const Token& t) const {
                    t.text == "$" || // item contextualizer `ok $%*ENV` / `say $(1,2)` (bare `$` is never an infix)
                    ((t.text == "%" || t.text == "@") && &t == &cur() &&
                     peek().kind == Tok::LParen && !peek().spaceBefore) || // hash/list contextualizer `is-deeply %(...)…` / `push @(...)…`
+                   (t.text == "&" && &t == &cur() &&
+                    peek().kind == Tok::LBracket && !peek().spaceBefore) || // infix-as-value `say &[+](2,3)`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
@@ -387,17 +406,26 @@ ExprPtr Parser::parseExpr(int minbp) {
             (cur().text == ">>" || cur().text == "<<" ||
              cur().text == "\xC2\xBB" || cur().text == "\xC2\xAB") &&
             peek().kind == Tok::LBracket && BP_ZIP >= minbp) {
+            // the two markers carry the DWIM rules (»=strict left, «=dwimmy) —
+            // normalize to ASCII and encode them in the call name.
+            std::string m1 = (cur().text == "<<" || cur().text == "\xC2\xAB") ? "<<" : ">>";
             advance(); advance(); // marker [
             ExprPtr opv = parseExpression();
             expectKind(Tok::RBracket, "]");
+            std::string m2 = ">>";
             if (cur().kind == Tok::Op &&
                 (cur().text == ">>" || cur().text == "<<" ||
-                 cur().text == "\xC2\xBB" || cur().text == "\xC2\xAB")) advance();
-            ExprPtr rhs = parseExpr(BP_ZIP + 1);
+                 cur().text == "\xC2\xBB" || cur().text == "\xC2\xAB")) {
+                m2 = (cur().text == "<<" || cur().text == "\xC2\xAB") ? "<<" : ">>";
+                advance();
+            }
+            // rhs stops at a comma (BP_ZIP sits below BP_COMMA): in
+            // `is-deeply $a >>[&op]<< $b, $result, "…"` the operand is just $b.
+            ExprPtr rhs = parseExpr(BP_COMMA + 1);
             auto c = std::make_unique<Call>();
-            c->name = "zip";
-            c->args.push_back(std::move(lhs));
-            c->args.push_back(std::move(rhs));
+            c->name = "hyper-with:" + m1 + m2; // evalCall applies the callable element-wise;
+            c->args.push_back(std::move(lhs)); // keeping the lhs AST lets an assign
+            c->args.push_back(std::move(rhs)); // metaop (&[+=]) store back through it
             auto pw = std::make_unique<PairExpr>();
             pw->key = "with"; pw->value = std::move(opv);
             c->args.push_back(std::move(pw));
@@ -566,6 +594,20 @@ ExprPtr Parser::parseExpr(int minbp) {
 ExprPtr Parser::parsePrefix(bool tight) {
     if (cur().kind == Tok::Op) {
         const std::string& o = cur().text;
+        // hyper prefix: -«(1,2) / -<<@a / --<<%h — apply the prefix op to every
+        // element, descending into nested arrays (deep distribution); ++/--
+        // mutate the elements in place
+        if ((o == "!" || o == "-" || o == "+" || o == "~" || o == "?" ||
+             o == "++" || o == "--") &&
+            peek().kind == Tok::Op && !peek().spaceBefore &&
+            (peek().text == "\xC2\xAB" || peek().text == "<<" ||
+             peek().text == "\xC2\xBB" || peek().text == ">>")) {
+            advance(); advance(); // op marker
+            auto u = std::make_unique<Unary>();
+            u->op = "hyper:" + o;
+            u->operand = parsePrefix(true);
+            return parsePostfix(std::move(u), tight);
+        }
         if (o == "!" || o == "-" || o == "+" || o == "~" || o == "?" ||
             o == "++" || o == "--" || o == "^" || o == "|" ||
             o == "+^" || o == "?^" || o == "~^") { // prefix bitwise/boolean NOT
@@ -724,8 +766,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
              ((peek().kind == Tok::Op || peek().kind == Tok::Ident) &&
               (userPostfix_.count(peek().text) || peek().text == "i")) || // built-in postfix:<i>
              (peek().kind == Tok::Op && peek().text == "." &&
-              (peek(2).kind == Tok::Op || peek(2).kind == Tok::Ident) && userPostfix_.count(peek(2).text)))) {
+              peek(2).kind == Tok::Op && userPostfix_.count(peek(2).text)))) { // ».OP dotted form: symbolic only (».foo is a METHOD call)
             advance(); // the hyper marker
+            // »++ / »-- / »OP (user postfix, postfix:<i>): a runtime hyper —
+            // descends nested arrays, keeps hash keys, ++/-- mutate in place
+            if (cur().text == "++" || cur().text == "--" ||
+                (!isKind(Tok::LBracket) && cur().text != "**")) {
+                if (cur().kind == Tok::Op && cur().text == ".") advance(); // dotted form
+                std::string opname = advance().text;
+                auto call = std::make_unique<Call>();
+                call->name = "hyper-postfix:<" + opname + ">";
+                call->args.push_back(std::move(base));
+                base = std::move(call);
+                continue;
+            }
             auto mc = std::make_unique<MethodCall>();
             mc->inv = std::move(base);
             mc->method = "map";
@@ -740,28 +794,13 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 expectKind(Tok::RBracket, "]");
                 es->e = std::move(ix);
             }
-            else if (cur().text == "**") { // »**N (also »² via the superscript lexer)
+            else { // »**N (also »² via the superscript lexer)
                 advance();
                 auto bin = std::make_unique<Binary>();
                 bin->op = "**";
                 bin->lhs = std::make_unique<VarExpr>("$_");
                 bin->rhs = parsePrefix(true);
                 es->e = std::move(bin);
-            }
-            else if (cur().text == "++" || cur().text == "--") { // »++ — mutate each in place
-                std::string op = advance().text;
-                auto u = std::make_unique<Unary>();
-                u->op = op; u->postfix = true;
-                u->operand = std::make_unique<VarExpr>("$_");
-                es->e = std::move(u);
-            }
-            else { // »OP / ».OP with a user postfix — call it per element
-                if (cur().kind == Tok::Op && cur().text == ".") advance(); // dotted form
-                std::string opname = advance().text;
-                auto call = std::make_unique<Call>();
-                call->name = "postfix:<" + opname + ">";
-                call->args.push_back(std::make_unique<VarExpr>("$_"));
-                es->e = std::move(call);
             }
             blk->body.push_back(std::move(es));
             mc->args.push_back(std::move(blk));
@@ -781,9 +820,10 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             continue;
         }
         // dot-postfix operator: $x.++ / $x.??? (and hyper .».++ / ».??? forms).
+        // SYMBOLIC postfixes only — `.foo` (wordy) is always a method call.
         // The postfix must touch the dot: `$o. ++` is the obsolete P5 concat form
         // and must fail to parse (minimal-whitespace.t).
-        if (isOp(".") && (peek().kind == Tok::Op || peek().kind == Tok::Ident) &&
+        if (isOp(".") && peek().kind == Tok::Op &&
             peek().line == cur().line && peek().col == cur().col + (int)peek().text.size() &&
             (peek().text == "++" || peek().text == "--" || userPostfix_.count(peek().text))) {
             advance(); // .
@@ -963,11 +1003,27 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (isOp("<") && !cur().spaceBefore) {
                 advance();
                 std::vector<std::string> words = readAngleWords(">");
-                auto idx = std::make_unique<Index>();
-                idx->base = std::move(base); idx->isHash = true;
-                if (words.size() == 1) idx->index = std::make_unique<StrLit>(words[0]);
-                else { auto al = std::make_unique<ArrayLit>(); for (auto& w : words) al->items.push_back(std::make_unique<StrLit>(w)); idx->index = std::move(al); }
-                base = std::move(idx);
+                auto keyIndex = [&](ExprPtr b) {
+                    auto idx = std::make_unique<Index>();
+                    idx->base = std::move(b); idx->isHash = true;
+                    if (words.size() == 1) idx->index = std::make_unique<StrLit>(words[0]);
+                    else { auto al = std::make_unique<ArrayLit>(); for (auto& w : words) al->items.push_back(std::make_unique<StrLit>(w)); idx->index = std::move(al); }
+                    return idx;
+                };
+                if (hyperNext) { // @a».<key> — index each element
+                    hyperNext = false;
+                    auto mc2 = std::make_unique<MethodCall>();
+                    mc2->inv = std::move(base);
+                    mc2->method = "map";
+                    auto blk = std::make_unique<BlockExpr>();
+                    auto es = std::make_unique<ExprStmt>();
+                    es->e = keyIndex(std::make_unique<VarExpr>("$_"));
+                    blk->body.push_back(std::move(es));
+                    mc2->args.push_back(std::move(blk));
+                    base = std::move(mc2);
+                    continue;
+                }
+                base = keyIndex(std::move(base));
                 continue;
             }
             // postcircumfix method syntax: .{ } .[ ] .( )
@@ -1002,6 +1058,22 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             if (isKind(Tok::LParen)) {
                 advance();
+                if (hyperNext) { // @a».() — invoke each element as a callable
+                    hyperNext = false;
+                    auto mc2 = std::make_unique<MethodCall>();
+                    mc2->inv = std::move(base);
+                    mc2->method = "map";
+                    auto blk = std::make_unique<BlockExpr>();
+                    auto es = std::make_unique<ExprStmt>();
+                    auto ci = std::make_unique<Call>();
+                    ci->callee = std::make_unique<VarExpr>("$_");
+                    ci->args = parseCallArgs();
+                    es->e = std::move(ci);
+                    blk->body.push_back(std::move(es));
+                    mc2->args.push_back(std::move(blk));
+                    base = std::move(mc2);
+                    continue;
+                }
                 auto c = std::make_unique<Call>();
                 c->callee = std::move(base);
                 c->args = parseCallArgs();
@@ -1504,6 +1576,19 @@ static ExprPtr angleWordNumeric(const std::string& w) {
 }
 
 ExprPtr Parser::parsePrimary() {
+    // `&[+]` / `&[~=]` — the infix operator as a Callable term (same value as
+    // `&infix:<+>`); the op may span several tokens (`**`, `~^`, `max`)
+    if (isOp("&") && peek().kind == Tok::LBracket && !peek().spaceBefore) {
+        advance(); advance(); // & [
+        std::string op;
+        while (!isKind(Tok::End) && !isKind(Tok::RBracket)) {
+            // `&[«+»]`: the lexer made «+» a qw-list — restore its markers
+            if (isKind(Tok::QwList)) op += "\xC2\xAB" + advance().text + "\xC2\xBB";
+            else op += advance().text;
+        }
+        expectKind(Tok::RBracket, "]");
+        return std::make_unique<VarExpr>("&infix:<" + hyperMarkersToUni(op) + ">");
+    }
     // user circumfix operator: `⟦ … ⟧`  ==  circumfix:<⟦ ⟧>( … )
     if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && userCircumfix_.count(cur().text)) {
         std::string open = advance().text, close = userCircumfix_[open];
@@ -1961,9 +2046,13 @@ ExprPtr Parser::parsePrimary() {
             if (t.text == "&" && peek().kind == Tok::LBracket) {
                 advance(); advance(); // & [
                 std::string op;
-                while (!isKind(Tok::RBracket) && !isKind(Tok::End)) op += advance().text;
+                while (!isKind(Tok::RBracket) && !isKind(Tok::End)) {
+                    // `&[«+»]`: the lexer made «+» a qw-list — restore its markers
+                    if (isKind(Tok::QwList)) op += "\xC2\xAB" + advance().text + "\xC2\xBB";
+                    else op += advance().text;
+                }
                 matchKind(Tok::RBracket);
-                return std::make_unique<VarExpr>("&infix:<" + op + ">");
+                return std::make_unique<VarExpr>("&infix:<" + hyperMarkersToUni(op) + ">");
             }
             error("unexpected operator in term position");
         }
@@ -2186,9 +2275,11 @@ ExprPtr Parser::parsePrimary() {
                 peek(3).kind == Tok::Op && peek(3).text == ">") {
                 // `: < OPTOKEN >` where OPTOKEN is a fused multi-char op (e.g. the
                 // hyper `>>+<<` from `infix:<»+«>`) — take it whole (must run before
-                // the generic readAngleWords path, whose prefix-glue would split it)
+                // the generic readAngleWords path, whose prefix-glue would split it);
+                // hyper markers become «» in the name so `<<+>>` isn't taken for a
+                // double-angle-quoted `+`
                 advance(); advance(); // : <
-                name += ":<" + advance().text + ">";
+                name += ":<" + hyperMarkersToUni(advance().text) + ">";
                 advance(); // >
             }
             else if ((name == "infix" || name == "prefix" || name == "postfix") &&

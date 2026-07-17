@@ -1414,6 +1414,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
         // type (HOW), even when called on an instance.
         Value tobj = (inv.t == VT::Object && inv.obj && inv.obj->cls) ? Value::typeObj(inv.obj->cls->name) : inv;
+        if ((mm == "lookup" || mm == "find_method") &&
+            !(tobj.t == VT::Type && classes_.count(tobj.s))) {
+            // builtin-type invocant (`().^lookup('elems')`): a "method object" —
+            // a Callable that dispatches the named method on its first argument
+            std::string mn = args.empty() ? "" : args[0].toStr();
+            Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+            code.code->name = mn; code.code->isMethod = true;
+            code.code->builtin = [mn](Interpreter& I, ValueList& a) -> Value {
+                if (a.empty()) return Value::any();
+                Value in2 = a[0]; ValueList rest(a.begin() + 1, a.end());
+                return I.methodCall(in2, mn, rest);
+            };
+            return code;
+        }
         return methodCall(tobj, mm, args, rwArgs);
     }
 
@@ -3870,16 +3884,78 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         while (u) { s = std::string(1, D[u % b]) + s; u /= b; }
         return Value::str(neg ? "-" + s : s);
     }
+    if (m == "polymod" && (inv.t == VT::Num || inv.t == VT::Rat)) {
+        // non-integer polymod stays in Value arithmetic (Rat exactness, Num):
+        // v % d is pushed, v becomes (v - mod) / d; a lazy list stops at v == 0
+        Value out = Value::array(); out.isList = true;
+        bool lazy = false; ValueList fin;
+        for (auto& a : args) {
+            if (a.t == VT::Array && a.ext &&
+                std::static_pointer_cast<LazySeqState>(a.ext)->infinite) { lazy = true; break; }
+            if (a.t == VT::Array && a.b) lazy = true; // `lazy 2, 3`
+            for (auto& d : a.flatten()) fin.push_back(d);
+        }
+        Value v = inv;
+        for (size_t i = 0; ; i++) {
+            bool have = i < fin.size();
+            if (lazy) {
+                if (!v.truthy()) break;
+                if (!have || fin[i].toNum() == 1.0) { out.arr->push_back(v); break; }
+            }
+            else if (!have) { out.arr->push_back(v); break; }
+            Value mod = applyBinOp("%", v, fin[i]);
+            out.arr->push_back(mod);
+            v = applyBinOp("/", applyBinOp("-", v, mod), fin[i]);
+        }
+        return out;
+    }
     if (m == "polymod" && (inv.t == VT::Int || inv.t == VT::Bool)) { // successive divmod by each divisor
         Value out = Value::array(); out.isList = true;
         long long n = inv.toInt();
-        ValueList divisors; for (auto& a : args) for (auto& d : a.flatten()) divisors.push_back(d);
-        for (auto& d : divisors) {
-            long long dv = d.toInt(); if (dv == 0) break;
-            out.arr->push_back(Value::integer(n % dv));
-            n /= dv;
+        // a lazy divisor list (10 xx *, lazy 2,3) switches to pull-driven mode:
+        // stop as soon as n hits 0 (no trailing remainder); an exhausted list or
+        // a divisor of 1 pushes the remaining n and stops (Rakudo's rules)
+        bool lazy = false;
+        ValueList fin;          // finite divisor prefix
+        Value tail;             // an INFINITE tail (lazy array / endless Range)
+        for (auto& a : args) {
+            if (a.t == VT::Array && a.ext &&
+                std::static_pointer_cast<LazySeqState>(a.ext)->infinite) { lazy = true; tail = a; break; }
+            if (a.t == VT::Range && a.rTo >= 9000000000000000000LL) { lazy = true; tail = a; break; }
+            if (a.t == VT::Array && a.b) lazy = true; // `lazy 2, 3` — finite but lazy
+            for (auto& d : a.flatten()) fin.push_back(d);
         }
-        out.arr->push_back(Value::integer(n)); // trailing remainder
+        if (!lazy) {
+            for (auto& d : fin) {
+                long long dv = d.toInt(); if (dv == 0) break;
+                out.arr->push_back(Value::integer(n % dv));
+                n /= dv;
+            }
+            out.arr->push_back(Value::integer(n)); // trailing remainder
+            return out;
+        }
+        size_t fi = 0, ti = 0;
+        ValueList tcache;
+        std::shared_ptr<LazySeqState> st;
+        if (tail.t == VT::Array && tail.arr) { tcache = *tail.arr; st = std::static_pointer_cast<LazySeqState>(tail.ext); }
+        long long rnext = tail.t == VT::Range ? tail.rFrom + (tail.rExFrom ? 1 : 0) : 0;
+        auto next = [&](long long& d) -> bool {
+            if (fi < fin.size()) { d = fin[fi++].toInt(); return true; }
+            if (tail.t == VT::Range) { d = rnext++; return true; }
+            if (st) {
+                while (ti >= tcache.size()) if (!st->appendNext(tcache)) return false;
+                d = tcache[ti++].toInt();
+                return true;
+            }
+            return false;
+        };
+        while (n != 0) {
+            long long d;
+            if (!next(d) || d == 1) { out.arr->push_back(Value::integer(n)); break; }
+            if (d == 0) break;
+            out.arr->push_back(Value::integer(n % d));
+            n /= d;
+        }
         return out;
     }
     // trigonometry as methods (radians): $x.sin, $x.asin, ... (Str is Cool -> numeric)
@@ -5691,6 +5767,74 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return Value::list(items);
         }
+        if ((m == "deepmap" || m == "nodemap" || m == "duckmap") && !args.empty() &&
+            args[0].t == VT::Code) {
+            // deepmap descends nested arrays/hashes and applies the fn at the
+            // leaves — which it receives as ALIASES (`.deepmap(++*)` mutates the
+            // source); nodemap applies per top-level node without descending;
+            // duckmap applies where the fn "quacks", descending on failure.
+            const Value& fn = args[0];
+            auto leaf = [&](Value& slot) -> Value {
+                topicWriteback_ = &slot; // $_/placeholder mutations alias the node
+                Value r = callCallable(fn, ValueList{slot});
+                topicWriteback_ = nullptr;
+                return r;
+            };
+            std::function<Value(Value&)> deepEl = [&](Value& e) -> Value {
+                if (e.t == VT::Array && e.arr) {
+                    Value o = Value::array(); o.isList = e.isList;
+                    for (auto& x : *e.arr) o.arr->push_back(deepEl(x));
+                    return o;
+                }
+                if (e.t == VT::Hash && e.hash && e.hashKind.empty()) {
+                    Value o = Value::makeHash();
+                    for (auto& kv : *e.hash) (*o.hash)[kv.first] = deepEl(kv.second);
+                    return o;
+                }
+                return leaf(e);
+            };
+            std::function<Value(Value&)> duckEl = [&](Value& e) -> Value {
+                try { return leaf(e); }
+                catch (...) {
+                    if (e.t == VT::Array && e.arr) {
+                        Value o = Value::array(); o.isList = e.isList;
+                        for (auto& x : *e.arr) o.arr->push_back(duckEl(x));
+                        return o;
+                    }
+                    if (e.t == VT::Hash && e.hash && e.hashKind.empty()) {
+                        Value o = Value::makeHash();
+                        for (auto& kv : *e.hash) (*o.hash)[kv.first] = duckEl(kv.second);
+                        return o;
+                    }
+                    return e;
+                }
+            };
+            auto applyEl = [&](Value& e) -> Value {
+                return m == "deepmap" ? deepEl(e) : m == "duckmap" ? duckEl(e) : leaf(e);
+            };
+            if (inv.t == VT::Hash && inv.hash && inv.hashKind.empty()) {
+                Value o = Value::makeHash();
+                for (auto& kv : *inv.hash) (*o.hash)[kv.first] = applyEl(kv.second);
+                return o;
+            }
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            if (inv.t == VT::Array && inv.arr)
+                for (auto& e : *inv.arr) out.arr->push_back(applyEl(e));
+            else { Value tmp = inv; return applyEl(tmp); }
+            return out;
+        }
+        if (m == "tree") {
+            // .tree(&f, *@rest): f applied to the node's children, each child
+            // first transformed by .tree(|@rest); non-iterables return themselves
+            std::function<Value(const Value&, size_t)> tr = [&](const Value& v, size_t k) -> Value {
+                if (v.t != VT::Array || !v.arr) return v;
+                Value kids = Value::array(); kids.isList = true;
+                for (auto& e : *v.arr) kids.arr->push_back(tr(e, k + 1));
+                if (k < args.size() && args[k].t == VT::Code) return callCallable(args[k], ValueList{kids});
+                return kids;
+            };
+            return tr(inv, 0);
+        }
         if (m == "map" || m == "flatmap") { // flatmap == map that flattens list results one level
             Value out = Value::array();
             if (!args.empty() && args[0].t == VT::Code) {
@@ -6080,8 +6224,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
-    throw RakuError{Value::str("No method '" + m + "'"),
-                    "No such method '" + m + "' for type " + inv.typeName()};
+    throw RakuError{Value::typeObj("X::Method::NotFound"),
+                    "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'"};
 }
 
 // ---------------- named builtins ----------------

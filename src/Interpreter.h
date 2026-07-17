@@ -47,6 +47,11 @@ struct Env {
     // (a late copy-out would re-apply stale values after the callee's own edits).
     std::map<std::string, std::pair<Expr*, std::shared_ptr<Env>>> rwLinks;
     std::map<std::string, Value> rwSynced;
+    // hyper element write-through: paramName → the caller's container slot
+    // directly (no expr to re-evaluate); rwDead marks a raw/rw param bound to
+    // an immutable (literal) — assigning it dies like Rakudo's X::Assignment::RO.
+    std::map<std::string, Value*> rwDirect;
+    std::set<std::string> rwDead;
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
@@ -229,7 +234,17 @@ public:
                             ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs, bool methodCtx);
     void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs);
+    void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);
+    // shared hyper-operator core for every spelling (>>op<<, »op«, >>[&op]<<)
+    Value hyperCore(Value& l, Value& r, bool strictL, bool strictR,
+                    const std::function<Value(const Value&, const Value&, Value*, Value*)>& apply,
+                    Value* lroot = nullptr, Value* rroot = nullptr, bool wantSlots = false);
+    Value hyperUnary(const std::string& op, Value v);       // -«(…), --«%h — deep prefix
+    Value hyperPostfixApply(const std::string& op, Value v); // @a»++, %h»!, (2,3)»i — deep postfix
     void rwWriteThrough(Expr* target);
+    // one-shot direct rw slots for the NEXT callCallableRaw activation (hyper-with
+    // element calls — same consume-at-top pattern as topicWriteback_)
+    const std::vector<Value*>* pendingRwSlots_ = nullptr;
     Value evalAssignInner(Assign* a, bool sink);
     bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity

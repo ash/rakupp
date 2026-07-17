@@ -3751,6 +3751,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
+    const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
     bool implicitTopic_local = false;
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
     if (codeVal.t == VT::Code && codeVal.code && codeVal.code->isNative) return callNative(*codeVal.code, args);
@@ -3850,6 +3851,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, c.isMethod);
+        if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through
+        if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
     } else if (!c.placeholders.empty()) {
         implicitTopic_local = false;
         for (size_t k = 0; k < c.placeholders.size(); k++) {
@@ -3995,8 +3998,12 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
                             const std::vector<ExprPtr>* rwArgs, bool /*methodCtx*/) {
     if (!params || !rwArgs) return;
     // `is rw` params write back explicitly; a sigilless capture param (`\a`) binds
-    // the caller's container, so an assignment through it must write back too
-    // (copying back an unchanged value is a harmless no-op).
+    // the caller's container, so an assignment through it must write back too.
+    // Assignments already went through IMMEDIATELY via rwWriteThrough; this is the
+    // backstop for mutations that bypass it (s///, .=, ++ on odd paths). A param
+    // whose value matches rwSynced (the bound/last-pushed value) is SKIPPED —
+    // copying it back late would re-apply a stale value over the callee's own
+    // edits, and lvalue() on an untouched arg can autovivify a missing path.
     bool any = false;
     for (auto& p : *params) if (p.isRw || p.sigil == '\\') any = true;
     if (!any) return;
@@ -4007,11 +4014,88 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size()) {
             auto it = env->vars.find(p.name);
             if (it != env->vars.end()) {
-                try { if (Value* lv = lvalue((*rwArgs)[pi].get())) *lv = it->second; } catch (...) {}
+                auto sy = env->rwSynced.find(p.name);
+                bool unchanged = sy != env->rwSynced.end() && valueEqv(it->second, sy->second);
+                if (!unchanged)
+                    try { if (Value* lv = lvalue((*rwArgs)[pi].get())) *lv = it->second; } catch (...) {}
             }
         }
         pi++;
     }
+}
+
+// Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
+// positional indexing). Called while tctx_.cur is still the CALLER's scope.
+void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
+                               const std::vector<ExprPtr>* rwArgs) {
+    if (!params || !rwArgs) return;
+    size_t pi = 0;
+    for (auto& p : *params) {
+        if (p.named) continue;
+        if (p.slurpy) break;
+        if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size()) {
+            env->rwLinks[p.name] = { (*rwArgs)[pi].get(), tctx_.cur };
+            auto it = env->vars.find(p.name);
+            env->rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
+            anyRwLinks_ = true;
+        }
+        pi++;
+    }
+}
+
+// Bind hyper element slots: like setupRwLinks but the caller supplies container
+// slots DIRECTLY (positional, aligned with the params); a null slot means the
+// argument was immutable — assigning that param dies.
+void Interpreter::setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env,
+                               const std::vector<Value*>* slots) {
+    if (!params || !slots) return;
+    size_t pi = 0;
+    for (auto& p : *params) {
+        if (p.named) continue;
+        if (p.slurpy) break;
+        if ((p.isRw || p.sigil == '\\') && pi < slots->size()) {
+            if (Value* s = (*slots)[pi]) {
+                env->rwDirect[p.name] = s;
+                auto it = env->vars.find(p.name);
+                env->rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
+            }
+            else env->rwDead.insert(p.name);
+            anyRwLinks_ = true;
+        }
+        pi++;
+    }
+}
+
+// After a mutation through a variable target, push the new value through the
+// caller's argument expression if the variable is a linked rw/raw param.
+void Interpreter::rwWriteThrough(Expr* target) {
+    if (!target) return;
+    std::string name;
+    if (target->kind == NK::VarExpr) name = static_cast<VarExpr*>(target)->name;
+    else if (target->kind == NK::NameTerm) name = static_cast<NameTerm*>(target)->name;
+    else return;
+    Env* e = tctx_.cur.get();
+    while (e && !e->vars.count(name)) e = e->parent.get();
+    if (!e) return;
+    if (e->rwDead.count(name))
+        throw RakuError{Value::typeObj("X::Assignment::RO"),
+                        "Cannot modify an immutable value"};
+    auto dit = e->rwDirect.find(name);
+    if (dit != e->rwDirect.end()) {
+        Value v = e->vars[name];
+        *dit->second = v;
+        e->rwSynced[name] = v;
+        return;
+    }
+    if (e->rwLinks.empty()) return;
+    auto it = e->rwLinks.find(name);
+    if (it == e->rwLinks.end()) return;
+    Value v = e->vars[name];
+    auto savedCur = tctx_.cur;
+    tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
+    try { if (Value* lv = lvalue(it->second.first)) *lv = v; } catch (...) {}
+    tctx_.cur = savedCur;
+    e->rwSynced[name] = v;
 }
 
 Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
@@ -4104,7 +4188,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     auto env = std::make_shared<Env>();
     env->parent = c.closure ? c.closure : global_;
     env->define("self", self);
-    if (c.params && !c.params->empty()) bindParams(*c.params, args, env, /*methodCtx=*/true);
+    if (c.params && !c.params->empty()) {
+        bindParams(*c.params, args, env, /*methodCtx=*/true);
+        if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through
+    }
     else if (!c.placeholders.empty()) {
         for (size_t k = 0; k < c.placeholders.size(); k++) {
             Value v = k < args.size() ? args[k] : Value::any();
@@ -4365,6 +4452,14 @@ Value Interpreter::evalValueOf(Expr* e) {
 }
 
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+    Value r = evalAssignInner(a, sink);
+    // one hook covers every assignment form (=, op=, ||= …): if the target is a
+    // linked rw/raw param, push the new value through to the caller immediately
+    if (anyRwLinks_) rwWriteThrough(a->target.get());
+    return r;
+}
+
+Value Interpreter::evalAssignInner(Assign* a, bool sink) {
 
     if (a->op == "=" && a->target->kind == NK::ListExpr) {
         auto* lst = static_cast<ListExpr*>(a->target.get());
@@ -5691,8 +5786,11 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (!m.children.count(kv.first))
                 v.hashRef()[kv.first] = Value::matchVal(subject.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
         for (auto& kv : m.children) {
-            // a capture repeated under a quantifier collates into a list of Matches
-            if (kv.second.size() == 1) {
+            // a capture repeated under a quantifier collates into a list of Matches —
+            // and a quantified name is a list even with a single occurrence
+            bool asList = kv.second.size() > 1
+                       || (m.listNames && m.listNames->count(kv.first));
+            if (!asList) {
                 auto& c = kv.second[0];
                 v.hashRef()[kv.first] = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
             } else {
@@ -5701,6 +5799,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 v.hashRef()[kv.first] = arr;
             }
         }
+        // a quantified capture that matched zero times is an empty list, not absent
+        if (m.listNames) for (auto& nm : *m.listNames)
+            if (!m.children.count(nm) && !v.hashRef().count(nm)) {
+                Value arr = Value::array(); arr.isList = true;
+                v.hashRef()[nm] = arr;
+            }
         return v;
     };
     if (global) { // m:g// — a List of every match
@@ -5817,7 +5921,9 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
             if (!mm.children.count(kv.first))
                 v.hashRef()[kv.first] = Value::matchVal(subject.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
         for (auto& kv : mm.children) {
-            if (kv.second.size() == 1) {
+            bool asList = kv.second.size() > 1
+                       || (mm.listNames && mm.listNames->count(kv.first));
+            if (!asList) {
                 auto& c = kv.second[0];
                 v.hashRef()[kv.first] = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
             } else {
@@ -6508,14 +6614,23 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             return build(child);
         };
         if (pn.kids) for (auto& kv : *pn.kids) {
-            // a name captured more than once ($<num> ... $<num>, or <item>+) collates into a list
-            if (kv.second.size() == 1) mv.hashRef()[kv.first] = buildChild(kv.second[0]);
+            // a name captured more than once ($<num> ... $<num>) collates into a list —
+            // and a name under a quantifier (<item>+) is a list even with one occurrence
+            bool asList = kv.second.size() > 1
+                       || (pn.listNames && pn.listNames->count(kv.first));
+            if (!asList) mv.hashRef()[kv.first] = buildChild(kv.second[0]);
             else {
                 Value arr = Value::array(); arr.isList = true;
                 for (auto& child : kv.second) arr.arr->push_back(buildChild(child));
                 mv.hashRef()[kv.first] = arr;
             }
         }
+        // a quantified capture that matched zero times is an empty list, not absent
+        if (pn.listNames) for (auto& nm : *pn.listNames)
+            if ((!pn.kids || !pn.kids->count(nm)) && !mv.hashRef().count(nm)) {
+                Value arr = Value::array(); arr.isList = true;
+                mv.hashRef()[nm] = arr;
+            }
         // a deferred inline `{ make … }` runs now, with $/ = this fully-built match
         // (so it can read `$/.values[0].ast` etc.) and this node as the make target.
         // Pop the innermost queued make for this span — but only when THIS rule's
@@ -6577,6 +6692,155 @@ static void tagTemporal(const std::string& op, const Value& l, const Value& r, V
     else res.hashKind = (li || ri) ? "Instant" : "Duration";
 }
 
+// Shared hyper-operator core for every spelling (`>>op<<`, `»op«`, and the
+// bracketed `>>[&op]<<` form). A `>>` on the left / `<<` on the right marks
+// that side STRICT — it dictates the shape; a dwimmy side is CYCLED to the
+// strict length (truncating when longer), but a strict SCALAR facing a list
+// dies, as does a dwimmy side that is known-infinite in a position where no
+// finite side dictates the length. Hash keysets follow Rakudo: both strict →
+// union, one strict → that side's keys, both dwimmy → intersection.
+Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
+        const std::function<Value(const Value&, const Value&, Value*, Value*)>& apply,
+        Value* lroot, Value* rroot, bool wantSlots) {
+    // element-level distribution: a Pair keeps its key and ops its value; a
+    // nested array/hash element recurses with the same marker rules — so
+    // ([1,2],[3,[4,5]]) »+« ([6,7],[8,[9,10]]) distributes deeply, and a hash
+    // sitting in an array ops its VALUES against the other side's element.
+    std::function<Value(const Value&, const Value&, Value*, Value*)> deepApply =
+        [&](const Value& x, const Value& y, Value* xs, Value* ys) -> Value {
+        bool xP = x.t == VT::Pair, yP = y.t == VT::Pair;
+        if (xP || yP) {
+            const std::string& key = xP ? x.s : y.s;
+            const Value& xv = xP && x.pairVal ? *x.pairVal : x;
+            const Value& yv = yP && y.pairVal ? *y.pairVal : y;
+            return Value::pair(key, deepApply(xv, yv, nullptr, nullptr));
+        }
+        bool xC = (x.t == VT::Array && x.arr) || x.t == VT::Range || (x.t == VT::Hash && x.hash);
+        bool yC = (y.t == VT::Array && y.arr) || y.t == VT::Range || (y.t == VT::Hash && y.hash);
+        if (xC || yC) {
+            Value x2 = x, y2 = y;
+            Value res = hyperCore(x2, y2, strictL, strictR, apply);
+            // an itemized [..] operand yields an itemized (mutable) Array result
+            if (res.t == VT::Array && ((x.t == VT::Array && !x.isList) ||
+                                       (y.t == VT::Array && !y.isList)))
+                res.isList = false;
+            return res;
+        }
+        return apply(x, y, xs, ys);
+    };
+    auto dwimDie = [&]() -> RakuError {
+        return RakuError{Value::typeObj("X::HyperOp::NonDWIM"),
+            "Lists on either side of non-dwimmy hyperop are not of the same length"};
+    };
+    static const std::set<std::string> settyKinds = {
+        "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+    // rebuild a per-key result with the source hash's kind (SetHash/BagHash/…
+    // re-coerce their counts exactly like `%h is Kind = pairs` does)
+    auto hashOut = [&](const std::vector<std::pair<std::string, Value>>& pairs,
+                       const Value& src) -> Value {
+        if (src.t == VT::Hash && settyKinds.count(src.hashKind)) {
+            ValueList pl;
+            for (auto& kv : pairs) pl.push_back(Value::pair(kv.first, kv.second));
+            return makeBaggy(pl, src.hashKind);
+        }
+        Value out = Value::makeHash();
+        out.hashKind = src.t == VT::Hash ? src.hashKind : "";
+        for (auto& kv : pairs) (*out.hash)[kv.first] = kv.second;
+        return out;
+    };
+    bool lHash = l.t == VT::Hash && l.hash;
+    bool rHash = r.t == VT::Hash && r.hash;
+    if (lHash && rHash) {
+        std::vector<std::pair<std::string, Value>> pairs;
+        auto lval = [&](const std::string& k) { auto it = l.hash->find(k); return it != l.hash->end() ? it->second : Value::any(); };
+        auto rval = [&](const std::string& k) { auto it = r.hash->find(k); return it != r.hash->end() ? it->second : Value::any(); };
+        auto lslot = [&](const std::string& k) -> Value* { auto it = l.hash->find(k); return it != l.hash->end() ? &it->second : nullptr; };
+        auto rslot = [&](const std::string& k) -> Value* { auto it = r.hash->find(k); return it != r.hash->end() ? &it->second : nullptr; };
+        auto applyK = [&](const std::string& k) {
+            pairs.push_back({k, deepApply(lval(k), rval(k), lslot(k), rslot(k))});
+        };
+        if (strictL && strictR) { // union — a strict side may not be shrunk
+            for (auto& kv : *l.hash) applyK(kv.first);
+            for (auto& kv : *r.hash) if (!l.hash->count(kv.first)) applyK(kv.first);
+        }
+        else if (strictL) for (auto& kv : *l.hash) applyK(kv.first);
+        else if (strictR) for (auto& kv : *r.hash) applyK(kv.first);
+        else { // both dwimmy → intersection
+            for (auto& kv : *l.hash) if (r.hash->count(kv.first)) applyK(kv.first);
+        }
+        return hashOut(pairs, l);
+    }
+    if (lHash || rHash) {
+        // hash ⨯ scalar / scalar ⨯ hash: the scalar side must be dwimmy
+        // (it's "extended" over every key); a strict scalar side dies.
+        Value& h = lHash ? l : r;
+        if (lHash ? strictR : strictL) throw dwimDie();
+        std::vector<std::pair<std::string, Value>> pairs;
+        for (auto& kv : *h.hash)
+            pairs.push_back({kv.first, lHash ? deepApply(kv.second, r, &kv.second, rroot)
+                                             : deepApply(l, kv.second, lroot, &kv.second)});
+        return hashOut(pairs, h);
+    }
+    bool lIter = l.t == VT::Array || l.t == VT::Range;
+    bool rIter = r.t == VT::Array || r.t == VT::Range;
+    auto isInf = [](const Value& v) {
+        if (v.t == VT::Range && v.rTo >= 9000000000000000000LL) return true;
+        if (v.t == VT::Array && v.ext)
+            return std::static_pointer_cast<LazySeqState>(v.ext)->infinite;
+        return false;
+    };
+    bool lInf = isInf(l), rInf = isInf(r);
+    if (lInf || rInf) {
+        // an infinite side is fine only where a finite STRICT side dictates n
+        bool ok = (lInf && !rInf && !strictL && strictR && rIter) ||
+                  (rInf && !lInf && strictL && !strictR && lIter);
+        if (!ok) throw RakuError{Value::typeObj("X::HyperOp::Infinite"),
+            std::string("Lists on ") + (lInf && rInf ? "both sides" : lInf ? "left side" : "right side") +
+            " of hyperop are known to be infinite"};
+    }
+    // ONE level of elements — nested arrays stay whole so deepApply distributes
+    // into them (flatten() would destroy the shape)
+    ValueList la, ra;
+    if (!lInf) la = l.t == VT::Array && l.arr ? *l.arr : lIter ? l.flatten() : ValueList{l};
+    if (!rInf) ra = r.t == VT::Array && r.arr ? *r.arr : rIter ? r.flatten() : ValueList{r};
+    size_t n;
+    if (lInf) n = ra.size();
+    else if (rInf) n = la.size();
+    else if (strictL && strictR) {
+        if (la.size() != ra.size()) throw dwimDie();
+        n = la.size();
+    }
+    else if (strictL) { if (!lIter && rIter) throw dwimDie(); n = la.size(); }
+    else if (strictR) { if (!rIter && lIter) throw dwimDie(); n = ra.size(); }
+    else n = std::max(la.size(), ra.size());
+    // materialize the first n elements of an infinite side (cycle unit / count-up)
+    auto fill = [&](const Value& v, ValueList& out) {
+        if (v.t == VT::Range) {
+            long long lo = v.rFrom + (v.rExFrom ? 1 : 0);
+            for (size_t i = out.size(); i < n; i++) out.push_back(Value::integer(lo + (long long)i));
+        }
+        else if (v.arr) {
+            out = *v.arr;
+            auto st = std::static_pointer_cast<LazySeqState>(v.ext);
+            while (out.size() < n && st->appendNext(out)) {}
+        }
+    };
+    if (lInf) fill(l, la);
+    if (rInf) fill(r, ra);
+    // element slots line up only when flatten() mirrored the raw array
+    bool lSlot = wantSlots && l.t == VT::Array && l.arr && l.arr->size() == la.size();
+    bool rSlot = wantSlots && r.t == VT::Array && r.arr && r.arr->size() == ra.size();
+    Value out = Value::array(); out.isList = true;
+    for (size_t i = 0; i < n && !la.empty() && !ra.empty(); i++) {
+        const Value& x = la[i % la.size()];
+        const Value& y = ra[i % ra.size()];
+        Value* xs = lSlot ? &(*l.arr)[i % la.size()] : (!lIter ? lroot : nullptr);
+        Value* ys = rSlot ? &(*r.arr)[i % ra.size()] : (!rIter ? rroot : nullptr);
+        out.arr->push_back(deepApply(x, y, xs, ys));
+    }
+    return (!lIter && !rIter && out.arr->size() == 1) ? (*out.arr)[0] : out;
+}
+
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
@@ -6591,6 +6855,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (op == "orelse") return isDefined(l) ? l : r;
     if (op == "xor" || op == "^^")
         return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
+    if (op == "=>") return Value::pair(l.toStr(), r); // `.key <<=>>> .value` — hyper over the pair op
     // zip/cross with an inner op (Z&& / Zand / X~) — resolve the inner via applyBinOp
     if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
         std::string sub = op.substr(1);
@@ -6631,12 +6896,11 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
         (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
         std::string inner = op.substr(2, op.size() - 4);
-        ValueList a = l.flatten(), bb = r.flatten();
-        Value out = Value::array(); out.isList = true;
-        size_t n = a.size() > bb.size() ? a.size() : bb.size();
-        if (!a.empty() && !bb.empty())
-            for (size_t i = 0; i < n; i++) out.arr->push_back(applyBinOp(inner, a[i % a.size()], bb[i % bb.size()]));
-        return out;
+        bool strictL = op.compare(0, 2, ">>") == 0;
+        bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
+        Value ll = l, rr = r;
+        return hyperCore(ll, rr, strictL, strictR,
+            [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
     }
     try { return applyArith(op, l, r); }
     catch (RakuError&) {
@@ -6787,12 +7051,11 @@ Value Interpreter::evalBinary(Binary* b) {
                 return code;
             }
             std::string inner = op.substr(2, op.size() - 4);
-            ValueList a = l.flatten(), bb = r.flatten();
-            Value out = Value::array(); out.isList = true;
-            size_t n = a.size() > bb.size() ? a.size() : bb.size();
-            if (!a.empty() && !bb.empty())
-                for (size_t i = 0; i < n; i++) out.arr->push_back(applyBinOp(inner, a[i % a.size()], bb[i % bb.size()]));
-            return out;
+            bool strictL = op.compare(0, 2, ">>") == 0;
+            bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
+            Value ll = l, rr = r;
+            return hyperCore(ll, rr, strictL, strictR,
+                [&](const Value& x, const Value& y, Value*, Value*) { return applyBinOp(inner, x, y); });
         }
         // zip/cross metaop `Zop`/`Xop` — resolve a user inner operator via applyBinOp
         if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
@@ -6864,7 +7127,18 @@ Value Interpreter::evalBinary(Binary* b) {
     if (op == "xx") {
         // list repetition THUNKS its left side: `EXPR xx N` re-evaluates EXPR once
         // per copy (so `rand xx 3` / `(…roll…) xx $N` yield independent results).
-        long long n = eval(b->rhs.get()).toInt();
+        Value rv = eval(b->rhs.get());
+        if (rv.t == VT::Whatever || (rv.t == VT::Num && std::isinf(rv.n))) {
+            // `EXPR xx *` — an endlessly repeating lazy list (one eval as the unit)
+            Value a = Value::array(); a.isList = true;
+            a.arr->push_back(eval(b->lhs.get()));
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            Value unit = (*a.arr)[0];
+            st->appendNext = [unit](ValueList& cache) -> bool { cache.push_back(unit); return true; };
+            a.ext = st;
+            return a;
+        }
+        long long n = rv.toInt();
         Value a = Value::array(); a.isList = true;
         for (long long k = 0; k < n; k++) a.arr->push_back(eval(b->lhs.get()));
         return a;
@@ -7191,7 +7465,79 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
     return out;
 }
 
+// hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
+// nested arrays and hash values (keys kept); ++/-- mutate the elements in
+// place through the shared containers and yield the new values (prefix).
+Value Interpreter::hyperUnary(const std::string& op, Value v) {
+    std::function<Value(Value&)> deep = [&](Value& x) -> Value {
+        if (x.t == VT::Array && x.arr) {
+            Value out = Value::array(); out.isList = x.isList;
+            for (auto& e : *x.arr) out.arr->push_back(deep(e));
+            return out;
+        }
+        if (x.t == VT::Range) {
+            Value out = Value::array(); out.isList = true;
+            for (auto& e : x.flatten()) out.arr->push_back(deep(e));
+            return out;
+        }
+        if (x.t == VT::Hash && x.hash) {
+            Value out = Value::makeHash(); out.hashKind = x.hashKind;
+            for (auto& kv : *x.hash) (*out.hash)[kv.first] = deep(kv.second);
+            return out;
+        }
+        if (op == "++" || op == "--") {
+            Value nv = applyBinOp(op == "++" ? "+" : "-", x, Value::integer(1));
+            x = nv;
+            return nv;
+        }
+        if (op == "-") return applyBinOp("-", Value::integer(0), x);
+        if (op == "+") return applyBinOp("+", Value::integer(0), x);
+        if (op == "!") return Value::boolean(!boolify(x));
+        if (op == "?") return Value::boolean(boolify(x));
+        return Value::str(x.toStr()); // ~
+    };
+    return deep(v);
+}
+
+// hyper postfix `@a»++` / `%h»!` / `(2,3)»i`: descends nested arrays, keeps
+// hash keys; ++/-- mutate in place and yield the OLD values (postfix).
+Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
+    Value* userPost = tctx_.cur->find("&postfix:<" + op + ">");
+    std::function<Value(Value&)> deep = [&](Value& x) -> Value {
+        if (x.t == VT::Array && x.arr) {
+            Value out = Value::array(); out.isList = x.isList;
+            for (auto& e : *x.arr) out.arr->push_back(deep(e));
+            return out;
+        }
+        if (x.t == VT::Range) {
+            Value out = Value::array(); out.isList = true;
+            for (auto& e : x.flatten()) out.arr->push_back(deep(e));
+            return out;
+        }
+        if (x.t == VT::Hash && x.hash) {
+            Value out = Value::makeHash(); out.hashKind = x.hashKind;
+            for (auto& kv : *x.hash) (*out.hash)[kv.first] = deep(kv.second);
+            return out;
+        }
+        if (op == "++" || op == "--") {
+            Value old = x;
+            x = applyBinOp(op == "++" ? "+" : "-", x, Value::integer(1));
+            return old;
+        }
+        if (userPost) return callCallable(*userPost, ValueList{x});
+        if (op == "i") return postfixI(x);
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        "No postfix:<" + op + "> operator for hyper"};
+    };
+    return deep(v);
+}
+
 Value Interpreter::evalUnary(Unary* u) {
+    // hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
+    // nested arrays and hash values (keys kept); ++/-- mutate the elements in
+    // place through the shared containers and yield the new values (prefix).
+    if (u->op.rfind("hyper:", 0) == 0)
+        return hyperUnary(u->op.substr(6), eval(u->operand.get()));
     // control-flow in expression position: return/last/next/redo
     if (u->op == "return" || u->op == "return-rw") {
         Value v = u->operand ? eval(u->operand.get()) : Value::any();
@@ -7414,6 +7760,7 @@ Value Interpreter::evalUnary(Unary* u) {
             if (lv->natBits) wrapNative(newv, lv->natBits, lv->natSigned); // native int wraparound
         }
         *lv = newv;
+        if (anyRwLinks_) rwWriteThrough(u->operand.get()); // ++/-- on a linked rw param
         return u->postfix ? oldv : newv;
     }
     Value v = eval(u->operand.get());
@@ -7630,6 +7977,14 @@ std::string Interpreter::strOf(const Value& v) {
     return v.toStr();
 }
 
+// hyper markers in operator NAMES (&infix:<»+«>, prefix:<-«>) arrive as raw
+// UTF-8 — the lexer only normalizes op tokens — so map them to ASCII >>/<<.
+static std::string normHyperMarkers(std::string s) {
+    for (size_t p; (p = s.find("\xC2\xBB")) != std::string::npos; ) s.replace(p, 2, ">>");
+    for (size_t p; (p = s.find("\xC2\xAB")) != std::string::npos; ) s.replace(p, 2, "<<");
+    return s;
+}
+
 Value Interpreter::evalCall(Call* c) {
     ValueList args = evalArgs(c->args);
     if (c->callee) {
@@ -7737,11 +8092,72 @@ Value Interpreter::evalCall(Call* c) {
             return Value::typeObj(v->enumType); // out of range -> the type object
         }
     }
+    // `@a»++` / `%h»--` / `@a»!` (user postfix) / `(2,3)»i` — hyper postfix:
+    // descends nested arrays, keeps hash keys; ++/-- mutate the elements in
+    // place (through the shared containers) and yield the OLD values (postfix).
+    if (c->name.rfind("hyper-postfix:<", 0) == 0 && c->name.back() == '>' && !args.empty())
+        return hyperPostfixApply(c->name.substr(15, c->name.size() - 16), args[0]);
+    // `$a >>[&op]<< $b` (parser-desugared, markers in the name): apply a callable
+    // element-wise. A `>>` on the left / `<<` on the right marks that side STRICT
+    // — it dictates the shape; a dwimmy side may only be EXTENDED (cycled), never
+    // truncated, so a longer dwimmy side dies like Rakudo's non-DWIM mismatch.
+    // An assign-metaop callable (&[+=]) applies the base op and stores the result
+    // back through the lhs expression. Two scalars yield a scalar.
+    if (c->name.rfind("hyper-with", 0) == 0 && args.size() >= 2) {
+        bool strictL = c->name.size() < 13 || c->name.compare(11, 2, ">>") == 0;
+        bool strictR = c->name.size() < 15 || c->name.compare(13, 2, "<<") == 0;
+        Value with; ValueList pos;
+        for (auto& a : args) {
+            if (a.t == VT::Pair && a.s == "with" && a.pairVal) with = *a.pairVal;
+            else pos.push_back(a);
+        }
+        Value l = pos.size() > 0 ? pos[0] : Value::any();
+        Value r = pos.size() > 1 ? pos[1] : Value::any();
+        std::string base; // non-empty: &[OP=] — apply OP, then assign through the lhs
+        if (with.t == VT::Code && with.code && with.code->name.rfind("infix:<", 0) == 0 &&
+            with.code->name.size() > 9) {
+            std::string op = with.code->name.substr(7, with.code->name.size() - 8);
+            if (op.size() >= 2 && op.back() == '=' && op != "==" && op != "<=" &&
+                op != ">=" && op != "!=" && op != "<=>")
+                base = op.substr(0, op.size() - 1);
+        }
+        // a USER callable may mutate its raw/rw params (sub csta(\a,\b) { a = "foo" })
+        // — pass the caller's container slots so the write goes through (a null
+        // slot = immutable operand, so the assignment inside dies like Rakudo)
+        bool userCode = base.empty() && with.t == VT::Code && with.code && !with.code->builtin;
+        auto apply = [&](const Value& x, const Value& y, Value* xs = nullptr, Value* ys = nullptr) {
+            if (!base.empty()) return applyBinOp(base, x, y);
+            if (userCode) {
+                std::vector<Value*> slots{xs, ys};
+                pendingRwSlots_ = &slots;
+                Value r = callCallable(with, ValueList{x, y});
+                pendingRwSlots_ = nullptr; // in case no frame consumed it
+                return r;
+            }
+            return callCallable(with, ValueList{x, y});
+        };
+        // scalar operands write through the lhs/rhs EXPRESSION's slot (if any)
+        Value* lroot = nullptr; Value* rroot = nullptr;
+        if (userCode && !c->args.empty()) { try { lroot = lvalue(c->args[0].get()); } catch (...) {} }
+        if (userCode && c->args.size() > 1) { try { rroot = lvalue(c->args[1].get()); } catch (...) {} }
+        Value result = hyperCore(l, r, strictL, strictR, apply, lroot, rroot, userCode);
+        if (!base.empty()) {
+            // metaop assign stores through the lhs EXPRESSION; a non-lvalue
+            // (`3 <<+=<< %a`) dies like Rakudo's immutable-value assignment
+            Value* lv = nullptr;
+            if (!c->args.empty()) { try { lv = lvalue(c->args[0].get()); } catch (...) {} }
+            if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"),
+                                     "Cannot modify an immutable value"};
+            *lv = result;
+        }
+        return result;
+    }
     // operator-call form: infix:<+>(1,2) / postfix:<i>($x) / prefix:<[**]>(2,3,4)
     if (c->name.rfind("infix:<", 0) == 0 && c->name.back() == '>') {
         std::string op = c->name.substr(7, c->name.size() - 8);
         if (op.size() > 2 && op.front() == '<' && op.back() == '>')
             op = op.substr(1, op.size() - 2); // infix:<<∈>> — double-angle form
+        op = normHyperMarkers(op); // infix:<»+«>(…) — the hyper spelling as ASCII
         // `infix:<=>($x, v)` / `infix:<+=>($x, v)` / … — an assignment operator in
         // call form assigns (or metaop-assigns) through its l-value first operand.
         bool isAssign = op == "=" ||
@@ -7757,6 +8173,17 @@ Value Interpreter::evalCall(Call* c) {
              : args.size() == 1 ? args[0] : Value::any();
     }
     if (c->name == "postfix:<i>" && !args.empty()) return postfixI(args[0]);
+    // hyper spellings in call form: prefix:<-«>(…) / postfix:<»i>(…)
+    if (c->name.rfind("prefix:<", 0) == 0 && c->name.back() == '>' && !args.empty()) {
+        std::string op = normHyperMarkers(c->name.substr(8, c->name.size() - 9));
+        if (op.size() > 2 && op.compare(op.size() - 2, 2, "<<") == 0)
+            return hyperUnary(op.substr(0, op.size() - 2), args[0]);
+    }
+    if (c->name.rfind("postfix:<", 0) == 0 && c->name.back() == '>' && !args.empty()) {
+        std::string op = normHyperMarkers(c->name.substr(9, c->name.size() - 10));
+        if (op.size() > 2 && op.compare(0, 2, ">>") == 0)
+            return hyperPostfixApply(op.substr(2), args[0]);
+    }
     if (c->name.rfind("prefix:<[", 0) == 0 && c->name.size() > 11 &&
         c->name.compare(c->name.size() - 2, 2, "]>") == 0) {
         std::string op = c->name.substr(9, c->name.size() - 11); // the reduce base op
@@ -8689,6 +9116,7 @@ Value Interpreter::eval(Expr* e) {
                     std::string op = bare.substr(7, bare.size() - 8);
                     if (op.size() > 2 && op.front() == '<' && op.back() == '>')
                         op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
+                    op = normHyperMarkers(op); // &infix:<»+«> — hyper spelling
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
                     code.code->whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
                     code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {
@@ -8702,6 +9130,29 @@ Value Interpreter::eval(Expr* e) {
                         return Value::any();
                     };
                     return code;
+                }
+                // &prefix:<-«> / &postfix:<»i> — hyper op spellings as Callables
+                if (bare.rfind("prefix:<", 0) == 0 && bare.back() == '>') {
+                    std::string op = normHyperMarkers(bare.substr(8, bare.size() - 9));
+                    if (op.size() > 2 && op.compare(op.size() - 2, 2, "<<") == 0) {
+                        std::string hop = op.substr(0, op.size() - 2);
+                        Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
+                        code.code->builtin = [hop](Interpreter& I, ValueList& a) -> Value {
+                            return a.empty() ? Value::any() : I.hyperUnary(hop, a[0]);
+                        };
+                        return code;
+                    }
+                }
+                if (bare.rfind("postfix:<", 0) == 0 && bare.back() == '>') {
+                    std::string op = normHyperMarkers(bare.substr(9, bare.size() - 10));
+                    if (op.size() > 2 && op.compare(0, 2, ">>") == 0) {
+                        std::string hop = op.substr(2);
+                        Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
+                        code.code->builtin = [hop](Interpreter& I, ValueList& a) -> Value {
+                            return a.empty() ? Value::any() : I.hyperPostfixApply(hop, a[0]);
+                        };
+                        return code;
+                    }
                 }
                 if (bare.rfind("prefix:<[", 0) == 0 && bare.size() > 11 &&
                     bare.compare(bare.size() - 2, 2, "]>") == 0) {
@@ -9083,6 +9534,13 @@ Value Interpreter::eval(Expr* e) {
                 return code;
             }
             if (mc->hyper) { // >>.method : apply to each top-level element (structure-preserving, no deep flatten)
+                // a hash invocant keeps its keys: %h».abs maps the VALUES
+                if (inv.t == VT::Hash && inv.hash && inv.hashKind.empty()) {
+                    Value hout = Value::makeHash();
+                    for (auto& kv : *inv.hash)
+                        (*hout.hash)[kv.first] = methodCall(kv.second, mc->method, args);
+                    return hout;
+                }
                 Value out = Value::array();
                 if (inv.t == VT::Array && inv.arr)
                     for (auto& el : *inv.arr) out.arr->push_back(methodCall(el, mc->method, args));
