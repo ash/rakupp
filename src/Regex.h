@@ -2,6 +2,7 @@
 #include <functional>
 #include <type_traits>
 #include <map>
+#include <set>
 #include <cstdint>
 #include <unordered_map>
 #include <memory>
@@ -57,6 +58,8 @@ struct RxMatch {
     bool matched = false;
     long from = 0, to = 0;
     std::vector<std::pair<long, long>> caps;            // positional captures ($0,$1,..); {-1,-1} = unset
+    std::map<int, std::vector<std::pair<long, long>>> capReps; // occurrences per list-valued positional capture
+    std::set<int> listCaps;                             // which positional indices are list-valued ($n under */+/**)
     std::map<std::string, std::pair<long, long>> named; // named captures ($<name>) byte ranges
     std::map<std::string, std::pair<long, long>> subs;  // subrule names matched (for $<name> tree access)
     std::map<std::string, std::vector<ParseNode>> children; // per-name occurrence list; repeated captures collate here
@@ -132,6 +135,7 @@ private:
         // Group
         int capIndex = -1;               // -1 => non-capturing
         std::string capName;
+        bool listCap = false;            // capture is under a repetition quantifier (*/+/**) → $n is a list
         // Subrule
         std::string ruleName;
         std::string ruleArgs;            // raw args of a parameterised call <name($x, '')>
@@ -151,6 +155,7 @@ private:
     std::string pat_;
     size_t pos_ = 0;
     int ncaps_ = 0;
+    std::set<int> listCaps_;             // positional capture indices under a repetition quantifier
     bool ok_ = true;
     bool icase_ = false;
     bool curIcase_ = false; // parse-time adverb state: :i/:!i scoped to the enclosing group
@@ -179,6 +184,7 @@ public:
         std::map<std::string, std::vector<ParseNode>> children; // named subrule sub-trees (grammar path)
         const SubResolver* resolver = nullptr;             // plain-regex subrule path (atomic)
         class GrammarMatcher* grammar = nullptr;           // grammar path (backtrackable)
+        std::map<int, std::vector<std::pair<long, long>>> capReps; // list-valued positional capture occurrences
         long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
         long capFrom = -1;                                 // `<(` capture-start position (overall match .from), -1 = none
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)

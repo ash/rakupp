@@ -5545,7 +5545,16 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     auto build = [&](const RxMatch& m) {
         Value v = Value::matchVal(subject.substr(m.from, m.to - m.from), m.from, m.to);
         v.ext = std::make_shared<std::string>(subject); // the original, for .prematch/.postmatch/.orig
-        for (auto& c : m.caps) {
+        for (size_t ci = 0; ci < m.caps.size(); ci++) {
+            if (m.listCaps.count((int)ci)) { // `(…)+`/`(…)*`/`(…)**n` → $ci is an Array of every occurrence
+                Value lst = Value::array();
+                auto it = m.capReps.find((int)ci);
+                if (it != m.capReps.end())
+                    for (auto& o : it->second) lst.arrRef().push_back(Value::matchVal(subject.substr(o.first, o.second - o.first), o.first, o.second));
+                v.arrRef().push_back(lst);
+                continue;
+            }
+            auto& c = m.caps[ci];
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(Value::matchVal(subject.substr(c.first, c.second - c.first), c.first, c.second));
         }
@@ -6051,7 +6060,16 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     // Match value (positional + named captures) for one raw match.
     auto build = [&](const RxMatch& mm) {
         Value v = Value::matchVal(subj.substr(mm.from, mm.to - mm.from), mm.from, mm.to);
-        for (auto& c : mm.caps) {
+        for (size_t ci = 0; ci < mm.caps.size(); ci++) {
+            if (mm.listCaps.count((int)ci)) { // repeated capture → $ci is an Array
+                Value lst = Value::array();
+                auto it = mm.capReps.find((int)ci);
+                if (it != mm.capReps.end())
+                    for (auto& o : it->second) lst.arrRef().push_back(Value::matchVal(subj.substr(o.first, o.second - o.first), o.first, o.second));
+                v.arrRef().push_back(lst);
+                continue;
+            }
+            auto& c = mm.caps[ci];
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
         }

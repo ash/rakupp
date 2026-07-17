@@ -104,10 +104,19 @@ Regex::NodePtr Regex::parseQuant() {
     if (!sigspace_) skipWs(); // in sigspace, keep inter-atom whitespace so parseSeq can insert <.ws>
     char c = peek();
     long mn = -2, mx = -2;
-    if (c == '*' && peek(1) != '*') { pos_++; mn = 0; mx = -1; }
-    else if (c == '+') { pos_++; mn = 1; mx = -1; }
+    // A repetition quantifier (*/+/**) makes a wrapped capture list-valued ($n is
+    // an Array of every occurrence); `?` (optional) does not.
+    auto markListCap = [&]() {
+        if (atom && atom->k == K::Group && atom->capIndex >= 0) {
+            atom->listCap = true;
+            listCaps_.insert(atom->capIndex);
+        }
+    };
+    if (c == '*' && peek(1) != '*') { pos_++; mn = 0; mx = -1; markListCap(); }
+    else if (c == '+') { pos_++; mn = 1; mx = -1; markListCap(); }
     else if (c == '?') { pos_++; mn = 0; mx = 1; }
     if (mn == -2 && peek() == '*' && peek(1) == '*') {
+        markListCap();
         pos_ += 2; skipWs();
         if (peek() == '{') { // `** { … }` — runtime bounds evaluated at match time
             int depth = 1; pos_++;
@@ -1073,6 +1082,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // into the commit (which would duplicate them into Arrays).
             auto savedCaps = st.caps; auto savedNamed = st.named;
             auto savedSubs = st.subs; auto savedChildren = st.children;
+            auto savedReps = st.capReps;
             long savedCapFrom = st.capFrom, savedFirstCode = st.firstCode;
             std::vector<std::pair<long, size_t>> order; // (greedy end, branch index)
             for (size_t i = 0; i < n->kids.size(); i++) {
@@ -1082,6 +1092,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             }
             st.caps = std::move(savedCaps); st.named = std::move(savedNamed);
             st.subs = std::move(savedSubs); st.children = std::move(savedChildren);
+            st.capReps = std::move(savedReps);
             st.capFrom = savedCapFrom; st.firstCode = savedFirstCode;
             if (snap && st.hooks->restoreState) st.hooks->restoreState(snap);
             std::stable_sort(order.begin(), order.end(),
@@ -1157,6 +1168,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             return matchNode(child, st, pos, [&](long np) -> bool {
                 std::pair<long,long> savedC{-1,-1}, savedN{-1,-1}; bool hadN = false;
                 if (ci >= 0 && ci < (long)st.caps.size()) { savedC = st.caps[ci]; st.caps[ci] = {pos, np}; }
+                // a capture under a repetition quantifier collates every occurrence
+                // into a list (`(\d)+` → $0 is an Array), matching Rakudo
+                if (n->listCap && ci >= 0) st.capReps[ci].push_back({pos, np});
                 if (!cn.empty()) {
                     hadN = st.named.count(cn); if (hadN) savedN = st.named[cn]; st.named[cn] = {pos, np};
                     // also collate the occurrence (empty name = plain capture, not a rule),
@@ -1166,6 +1180,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 }
                 if (k(np)) return true;
                 if (ci >= 0 && ci < (long)st.caps.size()) st.caps[ci] = savedC;
+                if (n->listCap && ci >= 0) {
+                    auto it = st.capReps.find(ci);
+                    if (it != st.capReps.end()) { it->second.pop_back(); if (it->second.empty()) st.capReps.erase(it); }
+                }
                 if (!cn.empty()) {
                     if (hadN) st.named[cn] = savedN; else st.named.erase(cn);
                     st.children[cn].pop_back();
@@ -1194,7 +1212,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
             if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
                 out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = endPos;
                 out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-                out.children = st.children;
+                out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_;
                 return true;
             }
         } catch (const StepLimitExceeded&) { return false; } // pathological pattern: give up (no match)
@@ -1211,7 +1229,7 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
         if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
             out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = endPos;
             out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-            out.children = st.children;
+            out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_;
             return true;
         }
     } catch (const StepLimitExceeded&) { return false; }
