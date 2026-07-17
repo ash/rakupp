@@ -1977,7 +1977,9 @@ ExprPtr Parser::parsePrimary() {
                 && !(peek().kind == Tok::LParen && !peek().spaceBefore))
                 { advance(); return std::make_unique<NameTerm>(name); }
             // control-flow in expression position: `... or return X`, `... or last`
-            if (name == "return" || name == "return-rw" || name == "last" || name == "next" || name == "redo") {
+            // — but `next => 42` / `last => 1` is a fat-arrow Pair, the key autoquotes
+            if ((name == "return" || name == "return-rw" || name == "last" || name == "next" || name == "redo") &&
+                peek().kind != Tok::FatArrow) {
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = name;
