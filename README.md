@@ -81,7 +81,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
 | `--ast SRC` | Print the parsed AST |
-| `--cpp SRC` | Print the C++ that `--exe` transpiles to |
+| `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to (add `-O` to see the optimized codegen) |
 | `--help`, `--version` | Show help / version |
 
 `RAKUPP_PARALLEL=1` opts into true CPU parallelism for `start`/worker threads

@@ -167,7 +167,7 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 | `--aot SRC -o OUT` | Compile: parse ahead of time, embed the AST |
 | `--exe SRC -o OUT` | Native-compile to C++ (fastest; falls back to bundling) |
 | `--ast SRC` | Print the parsed AST as an indented tree |
-| `--cpp SRC` | Print the C++ that `--exe` transpiles to |
+| `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to; with `-O`, the *optimized* codegen |
 | `--highlight [SRC]` | Syntax-highlight Raku — `--html` (default) or `--ansi`; a `pygmentize` drop-in |
 | `--help`, `-h` | Show help |
 | `--version`, `-V` | Show the version |
@@ -193,6 +193,24 @@ build/rakupp --ast -e 'say 2 + 2 * 3'
 ```
 
 (`RAKUPP_DUMPTOKENS=1` similarly dumps the lexer's token stream.)
+
+To inspect the C++ that `--exe` would compile, print it with `--cpp` instead of
+building a binary. `--cpp` accepts the same `-O` flag as `--exe`, so running it
+both ways shows exactly what the optimizer rewrites — diff the two to watch it
+work:
+
+```sh
+build/rakupp --cpp    program.raku    # generic codegen (every value boxed)
+build/rakupp --cpp -O program.raku    # optimized codegen
+```
+
+For `sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }`, the default emits a
+single `u_fib(ValueList)` whose body routes every operator through the runtime's
+string-keyed dispatcher (`applyArith("+", …)`, `applyArith("-", …)`). With `-O`
+the same sub gains a scalar `u_fib(Value)` specialization with an inlined
+integer fast-path and direct `rtAdd`/`rtSub` calls, plus a thin `ValueList`
+trampoline for generic call sites. See [OPTIMIZATION.md](OPTIMIZATION.md) for the
+full catalogue of what `-O` does.
 
 By default rakupp runs concurrency under a GIL (correct semantics, no CPU
 parallelism for pure-Raku work). Set `RAKUPP_PARALLEL=1` to let `start`/worker
