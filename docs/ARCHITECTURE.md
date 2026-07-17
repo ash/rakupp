@@ -37,6 +37,11 @@ method dispatch, regexes and Unicode.
 
 ## 2. The front end (shared by every mode)
 
+> This section is the overview. For the full front-end model — the lexer's
+> context-sensitivity (regex vs. division, `spaceBefore`), the Pratt expression
+> parser, and how user-defined operators are parsed in a single pass — see
+> **[PARSING.md](PARSING.md)**.
+
 ### Lexer — `src/Lexer.{h,cpp}`, `src/Token.h`
 
 A hand-written tokenizer (Raku's grammar is too irregular for a generated one).

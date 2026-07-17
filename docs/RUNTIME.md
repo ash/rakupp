@@ -9,9 +9,11 @@ containers relate, how calls and dispatch work, and how lazy/infinite sequences
 are represented.
 
 It is the companion to [ARCHITECTURE.md](ARCHITECTURE.md), which covers the
-pipeline (lexer → parser → AST) and the four execution modes. Here we stay inside
-the runtime library (`librakupp_rt`) and the tree-walking interpreter. Native
-`--exe` code reuses the exact same runtime — see the [last section](#one-runtime-two-front-ends).
+pipeline (lexer → parser → AST) and the four execution modes, and to
+[PARSING.md](PARSING.md), which covers the front end (source text → AST). Here we
+stay inside the runtime library (`librakupp_rt`) and the tree-walking
+interpreter. Native `--exe` code reuses the exact same runtime — see the
+[last section](#one-runtime-two-front-ends).
 
 The load-bearing mechanisms are shown inline as short code excerpts, each tagged
 with the source **file** it comes from (`// src/Value.cpp`). The excerpts are
