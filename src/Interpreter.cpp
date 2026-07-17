@@ -7484,6 +7484,10 @@ std::string Interpreter::gistOf(const Value& v) {
     return v.gist();
 }
 std::string Interpreter::strOf(const Value& v) {
+    // a DateTime/Date carrying a :formatter stringifies through .Str (which runs it)
+    if (v.t == VT::Hash && (v.hashKind == "DateTime" || v.hashKind == "Date") &&
+        v.hash && v.hash->count("formatter"))
+        return methodCall(v, "Str", {}).toStr();
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         for (const char* nm : {"Str", "gist", "Stringy"}) // ~$o uses .Stringy, print uses .Str
             if (Value* m = v.obj->cls->findMethod(nm)) { ValueList none; return invokeMethod(*m, v, none).toStr(); }

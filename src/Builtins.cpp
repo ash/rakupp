@@ -2534,6 +2534,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // user-defined class: type-object methods (.new and custom constructors)
     // DateTime / Date constructors
     if (inv.t == VT::Type && (inv.s == "DateTime" || inv.s == "Date")) {
+        // a `:formatter(&code)` is stored and applied by .Str (Rakudo's stringifier hook)
+        Value formatter; bool haveFmt = false;
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "formatter" && a.pairVal && a.pairVal->t == VT::Code)
+            { formatter = *a.pairVal; haveFmt = true; }
         auto mk = [&](long long y, long long mo, long long d, long long h, long long mi, Value sec, long long posix, long long tz) {
             // reject out-of-range fields (Rakudo dies): month 1..12, day 1..days-in-month,
             // and for DateTime hour 0..23, minute 0..59 (seconds are leap-checked separately).
@@ -2561,6 +2565,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             (*v.hash)["hour"] = Value::integer(h); (*v.hash)["minute"] = Value::integer(mi);
             (*v.hash)["second"] = sec; // exact: Int, or Rat/Num for fractional seconds
             (*v.hash)["posix"] = Value::integer(posix);
+            if (haveFmt) (*v.hash)["formatter"] = formatter;
             if (inv.s == "DateTime") (*v.hash)["timezone"] = Value::integer(tz);
             return v;
         };
@@ -2592,6 +2597,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, Value::integer(lt->tm_sec), (long long)t, tzOffsetDyn());
         }
         if (m == "new") {
+            if (args.empty()) // `DateTime.new()` / `Date.new()` — must provide arguments
+                throw RakuError{Value::typeObj("X::Temporal"),
+                    "Cannot call " + inv.s + ".new with no arguments"};
             long long y = 0, mo = 1, d = 1, h = 0, mi = 0, tz = 0;
             Value secV = Value::integer(0);
             std::vector<Value> pos;
@@ -2609,11 +2617,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     const std::string& is = a.s;
                     double fs = 0;
                     (void)sscanf(is.c_str(), "%lld-%lld-%lld", &y, &mo, &d);
-                    size_t tp = is.find('T');
+                    size_t tp = is.find_first_of("Tt"); // ISO 8601 allows a lowercase 't'
                     if (tp != std::string::npos) {
-                        (void)sscanf(is.c_str() + tp + 1, "%lld:%lld:%lf", &h, &mi, &fs);
+                        std::string tstr = is.substr(tp + 1);
+                        for (auto& c : tstr) if (c == ',') c = '.'; // comma decimal separator for seconds
+                        (void)sscanf(tstr.c_str(), "%lld:%lld:%lf", &h, &mi, &fs);
                         secV = (fs == (long long)fs) ? Value::integer((long long)fs) : Value::number(fs);
-                        size_t zp = is.find_first_of("Zz+-", tp);
+                        size_t zp = is.find_first_of("Zz+-", tp + 1);
                         if (zp != std::string::npos) {
                             if (is[zp] == 'Z' || is[zp] == 'z') tz = 0;
                             else {
@@ -2636,17 +2646,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 } else pos.push_back(a);
             }
             if (!isoStr && inv.s == "DateTime" && pos.size() == 1 && pos[0].isNumeric()) {
-                // DateTime.new($posix) — seconds since the POSIX epoch (frac OK), UTC
+                // DateTime.new($posix) — seconds since the epoch (frac OK); a :timezone
+                // shifts the displayed civil time (posix itself stays the same instant)
                 double pep = pos[0].toNum();
                 long long ip = (long long)std::floor(pep);
                 double frac = pep - (double)ip;
-                long long days = ip >= 0 ? ip / 86400 : -((-ip + 86399) / 86400);
-                long long rem = ip - days * 86400;
+                long long lt = ip + tz;
+                long long days = lt >= 0 ? lt / 86400 : -((-lt + 86399) / 86400);
+                long long rem = lt - days * 86400;
                 daysToCivil(days, y, mo, d);
                 h = rem / 3600; mi = (rem % 3600) / 60;
                 long long si = rem % 60;
                 secV = frac != 0.0 ? Value::number(si + frac) : Value::integer(si);
-                return mk(y, mo, d, h, mi, secV, ip, 0);
+                return mk(y, mo, d, h, mi, secV, ip, tz);
             }
             if (!isoStr) {
                 if (pos.size() >= 1) y = pos[0].toInt();
@@ -2664,6 +2676,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Hash && (inv.hashKind == "DateTime" || inv.hashKind == "Date")) {
         auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second.toInt() : 0; };
+        // a stored `:formatter(&code)` drives .Str (called with the DateTime as topic)
+        if (m == "Str" && inv.hash->count("formatter") && (*inv.hash)["formatter"].t == VT::Code) {
+            ValueList fa{inv};
+            return Value::str(callCallable((*inv.hash)["formatter"], fa).toStr());
+        }
+        if (m == "formatter") return inv.hash->count("formatter") ? (*inv.hash)["formatter"] : Value::any();
         if (m == "second" || m == "whole-second") {
             auto it = inv.hash->find("second");
             Value sv = it != inv.hash->end() ? it->second : Value::integer(0);
