@@ -5997,6 +5997,24 @@ static double numArg(Interpreter& I, ValueList& a) {
     return v.toNum();
 }
 
+// True named builtins (see Interpreter.h): real functions behind the hot
+// builtins, shared by the interpreter's map entries and -O's direct calls.
+Value rtBAbsSlow(Interpreter& I, const Value& v) {
+    ValueList none;
+    return I.methodCall(v, "abs", none);   // full semantics: augment, objects, junctions, Rat/big/Num
+}
+Value rtBChr(Interpreter&, const Value& v) {
+    long long cp = v.big ? LLONG_MAX : v.toInt();
+    if (cp < 0 || cp > 0x10FFFF)
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "chr codepoint " + (v.big ? v.big->toString() : std::to_string(cp)) + " is out of bounds"};
+    return Value::str(cpToUtf8((uint32_t)cp));
+}
+Value rtBOrd(Interpreter&, const Value& v) {
+    auto c = utf8cp(v.toStr());
+    return c.empty() ? Value::nil() : Value::integer(c[0]);
+}
+
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
@@ -6717,7 +6735,7 @@ void Interpreter::registerBuiltins() {
     B["bail_out"] = B["bail-out"];
 
     // --- utility functions ---
-    B["abs"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "abs", none); };
+    B["abs"] = [](Interpreter& I, ValueList& a) -> Value { return rtBAbs(I, a.empty() ? Value::any() : a[0]); };
     // Comparison operators usable as subs: `cmp($a,$b)`, `$a leg $b`, etc.
     for (auto op : {"cmp", "leg", "before", "after"})
         B[op] = [op](Interpreter&, ValueList& a) -> Value { return a.size() >= 2 ? applyArith(op, a[0], a[1]) : Value::any(); };
@@ -7060,20 +7078,14 @@ void Interpreter::registerBuiltins() {
             for (auto& v : flattenArgs(a)) j.arr->push_back(v);
             return j;
         };
-    B["ord"] = [](Interpreter&, ValueList& a) -> Value {
+    B["ord"] = [](Interpreter& I, ValueList& a) -> Value {
         // bare `ord` (no argument) is the Perl-5-ism Rakudo rejects with X::Obsolete
         if (a.empty()) throw RakuError{Value::typeObj("X::Obsolete"),
             "Unsupported use of bare \"ord\". In Raku please use: .ord if you meant to call it as a method on $_, or use an explicit invocant or argument"};
-        auto c = utf8cp(a[0].toStr());
-        return c.empty() ? Value::nil() : Value::integer(c[0]);
+        return rtBOrd(I, a[0]);
     };
-    B["chr"] = [](Interpreter&, ValueList& a) -> Value {
-        Value v = a.empty() ? Value::integer(0) : a[0];
-        long long cp = v.big ? LLONG_MAX : v.toInt();
-        if (cp < 0 || cp > 0x10FFFF)
-            throw RakuError{Value::typeObj("X::AdHoc"),
-                "chr codepoint " + (v.big ? v.big->toString() : std::to_string(cp)) + " is out of bounds"};
-        return Value::str(cpToUtf8((uint32_t)cp));
+    B["chr"] = [](Interpreter& I, ValueList& a) -> Value {
+        return rtBChr(I, a.empty() ? Value::integer(0) : a[0]);
     };
     B["ords"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "ords", none); };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };

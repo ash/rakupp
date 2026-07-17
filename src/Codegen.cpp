@@ -936,6 +936,17 @@ struct Codegen {
                         return mangleSub(c->name) + "(" + argList(c->args) + ")";
                     return mangleSub(c->name) + "(" + vl + ")"; // boxed adapter
                 }
+                // -O: true named builtins — a direct C++ call (no ValueList, no
+                // lambda; the hot path of rtBAbs inlines at the call site).
+                // Only for a plain single positional arg; anything else takes
+                // the generic cached-pointer path below.
+                if (optimize_ && c->args.size() == 1 && simpleArgs(c->args)) {
+                    static const std::map<std::string, const char*> fastB = {
+                        {"abs", "rtBAbs"}, {"chr", "rtBChr"}, {"ord", "rtBOrd"}};
+                    auto fb = fastB.find(c->name);
+                    if (fb != fastB.end())
+                        return std::string(fb->second) + "(RT, " + ex(c->args[0].get()) + ")";
+                }
                 return builtinCall(c->name, vl);
             }
             case NK::MethodCall: {

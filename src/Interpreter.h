@@ -562,6 +562,20 @@ inline Value rtCallB(Interpreter& I, const BuiltinFn* f, const char* name, Value
     if (f) return (*f)(I, args);
     return I.callBuiltin(name, std::move(args));
 }
+// True named builtins (-O direct calls): a small set of hot, pure, fixed-arity
+// builtins get a real C++ function — no ValueList, no lambda, and for the
+// inline ones no call at all on the hot path. The slow paths preserve the
+// exact original semantics (abs delegates back to methodCall so augment /
+// user objects / junctions keep working; the inline abs is additionally
+// disabled while any `augment` is live).
+Value rtBAbsSlow(Interpreter& I, const Value& v);  // full abs (Builtins.cpp)
+Value rtBChr(Interpreter& I, const Value& v);      // chr: codepoint → Str (Builtins.cpp)
+Value rtBOrd(Interpreter& I, const Value& v);      // ord: Str → first codepoint (Builtins.cpp)
+inline Value rtBAbs(Interpreter& I, const Value& v) {
+    if (v.t == VT::Int && !v.big && I.builtinExt_.empty())
+        return Value::integer(v.i < 0 ? -v.i : v.i);   // plain-Int hot path, inlined at the call site
+    return rtBAbsSlow(I, v);
+}
 // Fast-path STRING comparisons: two PLAIN Strs (no Version/IO/Buf hashKind tag,
 // no enum identity) compare byte-wise — exactly what applyArith's tail does for
 // them (a plain Str's toStr() is its `s`). Anything else falls back to the full
