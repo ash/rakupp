@@ -120,6 +120,11 @@ long long Value::toInt() const {
                 auto it = hash->find("exitcode");
                 return it != hash->end() ? it->second.toInt() : 0;
             }
+            // A Bag/Mix numifies to its .total (sum of counts), not its .elems.
+            if (hash && (hashKind.rfind("Bag", 0) == 0 || hashKind.rfind("Mix", 0) == 0)) {
+                double t = 0; for (auto& kv : *hash) t += kv.second.toNum();
+                return (long long)t;
+            }
             return hash ? (long long)hash->size() : 0;
         default: return 0;
     }

@@ -4255,6 +4255,11 @@ Value* Interpreter::lvalue(Expr* e) {
             return node;
         }
         if (idx->isHash) {
+            // Set/Bag/Mix are immutable — element assignment dies (the *Hash variants mutate)
+            if (base->t == VT::Hash &&
+                (base->hashKind == "Set" || base->hashKind == "Bag" || base->hashKind == "Mix"))
+                throw RakuError{Value::typeObj("X::Assignment::RO"),
+                    "Cannot modify an immutable " + base->hashKind + " (" + base->gist() + ")"};
             if (base->t != VT::Hash) *base = Value::makeHash();
             std::string key = eval(idx->index.get()).toStr();
             return &(*base->hash)[key];
@@ -5545,6 +5550,30 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 res = true;
         } else if (r.t == VT::Bool) {
             res = r.b; // $x ~~ True/False
+        } else if (r.t == VT::Hash &&
+                   (r.hashKind.rfind("Set", 0) == 0 || r.hashKind.rfind("Bag", 0) == 0 ||
+                    r.hashKind.rfind("Mix", 0) == 0)) {
+            // Setty/Baggy ACCEPTS: coerce the topic to the invocant's kind and compare
+            // contents — keys for Set (counts collapse), keys+counts for Bag/Mix.
+            // (`1 ~~ set(1,2)` is False — membership is (elem), not smartmatch.)
+            std::string root = r.hashKind.substr(0, 3);
+            std::map<std::string, double> want, got;
+            auto feed = [&](const Value& v, std::map<std::string, double>& m) {
+                if (v.t == VT::Hash && v.hash &&
+                    (v.hashKind.rfind("Set", 0) == 0 || v.hashKind.rfind("Bag", 0) == 0 ||
+                     v.hashKind.rfind("Mix", 0) == 0)) {
+                    bool vSet = v.hashKind.rfind("Set", 0) == 0;
+                    for (auto& kv : *v.hash) m[kv.first] += vSet ? 1.0 : kv.second.toNum();
+                }
+                else if (v.t == VT::Array || v.t == VT::Range) { for (auto& e : v.flatten()) m[e.toStr()] += 1.0; }
+                else m[v.toStr()] += 1.0;
+            };
+            feed(r, want); feed(l, got);
+            res = want.size() == got.size();
+            if (res) for (auto& kv : want) {
+                auto it = got.find(kv.first);
+                if (it == got.end() || (root != "Set" && it->second != kv.second)) { res = false; break; }
+            }
         } else if (r.t == VT::Hash) {
             if (l.t == VT::Array) { // @a ~~ %h : any element is a key
                 res = false;
@@ -7385,6 +7414,14 @@ Value Interpreter::evalUnary(Unary* u) {
         (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) &&
         !(v.t == VT::Hash && (v.hashKind == "Proc" || v.hashKind == "Proc::Async" ||
                               v.hashKind == "StrDistance"))) {
+        // a Bag/Mix numifies to its .total (sum of counts/weights), possibly fractional
+        if (v.t == VT::Hash && v.hash &&
+            (v.hashKind.rfind("Bag", 0) == 0 || v.hashKind.rfind("Mix", 0) == 0)) {
+            double t = 0; bool allInt = true;
+            for (auto& kv : *v.hash) { t += kv.second.toNum(); if (kv.second.t != VT::Int && kv.second.t != VT::Bool) allInt = false; }
+            if (u->op == "-") t = -t;
+            return allInt ? Value::integer((long long)t) : Value::number(t);
+        }
         long long n;
         if (v.t == VT::Array) n = (long long)v.arr->size();
         else if (v.t == VT::Hash) n = (long long)v.hash->size();
@@ -8195,6 +8232,11 @@ Value Interpreter::evalIndex(Index* idx) {
             }
             hits.push_back({keyV, val, exists});
         }
+        // Set/Bag/Mix are immutable — :delete dies (SetHash/BagHash/MixHash mutate)
+        if (wantDelete && base.t == VT::Hash &&
+            (base.hashKind == "Set" || base.hashKind == "Bag" || base.hashKind == "Mix"))
+            throw RakuError{Value::typeObj("X::Immutable"),
+                "Cannot modify an immutable " + base.hashKind + " (" + base.gist() + ")"};
         if (wantDelete) for (auto& h : hits) if (h.exists) {
             if (idx->isHash) base.hash->erase(h.keyV.toStr());
             else { long long ai = h.keyV.toInt();

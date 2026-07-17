@@ -1166,7 +1166,10 @@ static std::shared_ptr<Value> baggyKey(const Value& v) {
     if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return nullptr;
     return std::make_shared<Value>(v);
 }
-Value makeBaggy(const ValueList& items, const std::string& kind) {
+// pairsAsElements: constructors (set()/Set.new) treat a Pair item as ONE element
+// (`set [foo=>1, bar=>2]` has two Pair elements); coercions (.Set/.Bag on a
+// Hash, new-from-pairs) keep the pair→count reading.
+Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsElements) {
     Value h = Value::makeHash();
     h.hashKind = kind;
     bool isSet = kind.find("Set") == 0;
@@ -1185,6 +1188,10 @@ Value makeBaggy(const ValueList& items, const std::string& kind) {
         else h.hash->erase(k);
     };
     for (auto& v : items) {
+        if (v.t == VT::Pair && pairsAsElements) {
+            add(v.toStr(), 1, std::make_shared<Value>(v)); // the Pair itself is the element
+            continue;
+        }
         if (v.t == VT::Pair) {
             Value w = v.pairVal ? *v.pairVal : Value::integer(0);
             if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
@@ -1561,8 +1568,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Type &&
         (inv.s == "Set" || inv.s == "SetHash" || inv.s == "Bag" || inv.s == "BagHash" ||
          inv.s == "Mix" || inv.s == "MixHash") && m == "new") {
-        ValueList items; for (auto& a : args) for (auto& x : toList(a)) items.push_back(x);
-        return makeBaggy(items, inv.s);
+        // single-arg rule: one iterable arg contributes its elements (an itemized
+        // `$[...]` resists and stays whole); with several args each arg is ONE
+        // element (`Set.new(@a, [3,4])` has two elements)
+        ValueList items;
+        if (args.size() == 1 && !args[0].itemized) { for (auto& x : toList(args[0])) items.push_back(x); }
+        else for (auto& a : args) items.push_back(a);
+        return makeBaggy(items, inv.s, /*pairsAsElements=*/true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "StrDistance") {
         auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second : Value::str(""); };
@@ -3964,7 +3976,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::vector<std::pair<Value, Value>> kvs; // key, value
         if (inv.t == VT::Array && inv.arr) {
             for (size_t k = 0; k < inv.arr->size(); k++) kvs.push_back({Value::integer((long long)k), (*inv.arr)[k]});
-        } else if (inv.t == VT::Hash && inv.hash && inv.hashKind.empty()) {
+        } else if (inv.t == VT::Hash && inv.hash &&
+                   (inv.hashKind.empty() || inv.hashKind.rfind("Set", 0) == 0 ||
+                    inv.hashKind.rfind("Bag", 0) == 0 || inv.hashKind.rfind("Mix", 0) == 0)) {
+            // a Setty/Baggy competes on its counts (elem => count pairs)
             for (auto& kv : *inv.hash) kvs.push_back({Value::str(kv.first), kv.second});
         } else {
             out.arr->push_back(Value::pair("0", inv));
@@ -5249,6 +5264,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             std::string fmt = args.empty() ? "%s" : a0().toStr();
             std::string sep = args.size() > 1 ? args[1].toStr() : " ";
             std::string out;
+            // a Setty/Baggy formats each (key, count) pair — `%s` consumes just the key
+            if (inv.t == VT::Hash && inv.hash &&
+                (inv.hashKind.rfind("Set", 0) == 0 || inv.hashKind.rfind("Bag", 0) == 0 ||
+                 inv.hashKind.rfind("Mix", 0) == 0)) {
+                bool first = true;
+                for (auto& kv : *inv.hash) {
+                    if (!first) out += sep;
+                    first = false;
+                    Value key = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+                    out += doSprintf(fmt, {key, kv.second});
+                }
+                return Value::str(out);
+            }
             for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += doSprintf(fmt, {items[k]}); }
             return Value::str(out);
         }
@@ -5464,6 +5492,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             static const std::set<std::string> setty = {"Set", "SetHash"};
             static const std::set<std::string> baggy = {"Bag", "BagHash", "Mix", "MixHash"};
             if (inv.t == VT::Hash && inv.hash && (setty.count(inv.hashKind) || baggy.count(inv.hashKind))) {
+                if (m == "pick" && inv.hashKind.rfind("Mix", 0) == 0) // Mix has no .pick — weights aren't multiplicities
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Cannot .pick from a " + inv.hashKind + "; use .roll instead"};
+                if (!args.empty() && args[0].t == VT::Num && std::isnan(args[0].n))
+                    throw RakuError{Value::typeObj("X::AdHoc"), "Cannot coerce NaN to an Int"};
                 std::vector<std::pair<std::string, double>> pool; // key, weight
                 double total = 0;
                 for (auto& kv : *inv.hash) {
@@ -5697,6 +5730,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (match) emit(gi, v);
             }
             return out;
+        }
+        // a Setty/Baggy .hash is a PLAIN Hash copy (values: Bool for Set, counts for Bag/Mix)
+        if ((m == "hash" || m == "Hash") && inv.t == VT::Hash &&
+            (inv.hashKind.rfind("Set", 0) == 0 || inv.hashKind.rfind("Bag", 0) == 0 ||
+             inv.hashKind.rfind("Mix", 0) == 0)) {
+            Value h = Value::makeHash();
+            if (inv.hash) *h.hash = *inv.hash;
+            return h;
         }
         if (m == "hash" && inv.t == VT::Hash) return inv;   // %h.hash is the hash itself
         if ((m == "hash" || m == "Hash" || m == "Map") && inv.t == VT::Array) { // list -> Hash/Map
@@ -7552,9 +7593,21 @@ void Interpreter::registerBuiltins() {
         for (auto& x : a) out.arr->push_back(resolve(x));
         return out;
     };
-    B["set"] = [](Interpreter&, ValueList& a) -> Value { return makeBaggy(flattenArgs(a), "Set"); };
-    B["bag"] = [](Interpreter&, ValueList& a) -> Value { return makeBaggy(flattenArgs(a), "Bag"); };
-    B["mix"] = [](Interpreter&, ValueList& a) -> Value { return makeBaggy(flattenArgs(a), "Mix"); };
+    // set()/bag()/mix() flatten iterable args, but an itemized `$[...]` stays one
+    // element, and a Pair arg is an ELEMENT (pair→count is only for coercions)
+    auto settyArgs = [](ValueList& args) {
+        ValueList out;
+        for (auto& a : args) {
+            if ((a.t == VT::Array || a.t == VT::Range) && !a.itemized) {
+                ValueList sub = a.flatten();
+                out.insert(out.end(), sub.begin(), sub.end());
+            } else out.push_back(a);
+        }
+        return out;
+    };
+    B["set"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Set", true); };
+    B["bag"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Bag", true); };
+    B["mix"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Mix", true); };
     B["list"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array(); for (auto& v : a) { for (auto& x : toList(v)) out.arr->push_back(x); } return out;
     };

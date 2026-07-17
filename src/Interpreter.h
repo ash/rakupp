@@ -33,7 +33,8 @@ void           bigStackJoin(std::uintptr_t h);
 void           bigStackClose(std::uintptr_t h);
 #endif
 
-Value makeBaggy(const ValueList& items, const std::string& kind); // Set/Bag/Mix builder (Builtins.cpp)
+Value makeBaggy(const ValueList& items, const std::string& kind,
+                bool pairsAsElements = false); // Set/Bag/Mix builder (Builtins.cpp)
 
 struct Env {
     std::unordered_map<std::string, Value> vars;
