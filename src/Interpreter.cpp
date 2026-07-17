@@ -4248,6 +4248,25 @@ Value* Interpreter::lvalue(Expr* e) {
     // method-call lvalue: $obj.accessor = value  (rw accessors)
     if (e->kind == NK::MethodCall) {
         auto* mc = static_cast<MethodCall*>(e);
+        // container-access methods as l-values: `%h.AT-KEY("k") = v`,
+        // `@a.AT-POS(i) = v`, and multidim `@a.AT-POS(i, j) = v`
+        if ((mc->method == "AT-KEY" || mc->method == "AT-POS") && !mc->args.empty() && !mc->meta) {
+            Value* base = lvalue(mc->inv.get());
+            if (mc->method == "AT-KEY") {
+                if (base->t != VT::Hash) *base = Value::makeHash();
+                return &(*base->hash)[eval(mc->args[0].get()).toStr()];
+            }
+            Value* cur = base;
+            for (auto& a : mc->args) {
+                if (cur->t != VT::Array) *cur = Value::array();
+                long long i = eval(a.get()).toInt();
+                if (i < 0) i += (long long)cur->arr->size();
+                if (i < 0) i = 0;
+                while ((long long)cur->arr->size() <= i) cur->arr->push_back(Value::any());
+                cur = &(*cur->arr)[i];
+            }
+            return cur;
+        }
         // dynamic handle attribute: `$*OUT.out-buffer = 0` — the dynamic var has no
         // container (lvalue would throw); hold the evaluated handle so the slot
         // pointer stays valid across the assignment
