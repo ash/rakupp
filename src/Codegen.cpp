@@ -99,6 +99,17 @@ struct Codegen {
     int wcDepth = 0;               // nesting level of WhateverCode closures (0 = not in one)
     std::vector<int> wcArity;      // per-level count of `*` slots consumed
 
+    // Builtin calls go through a per-name pointer resolved ONCE at startup
+    // (skipping callBuiltin's per-call name hash + map lookup). Names are
+    // collected here as call sites are emitted; transpileToCpp emits the
+    // `__bfN` declarations and the one-time resolution after all code has
+    // been generated. rtCallB falls back to the by-name path on null.
+    std::map<std::string, int> usedBuiltins_; // name -> __bfN id
+    std::string builtinCall(const std::string& name, const std::string& vl) {
+        auto it = usedBuiltins_.emplace(name, (int)usedBuiltins_.size()).first;
+        return "rtCallB(RT, __bf" + std::to_string(it->second) + ", " + cesc(name) + ", " + vl + ")";
+    }
+
     // Emit statements produced by `emit` into a fresh buffer and return them.
     std::string capture(const std::function<void()>& emit) {
         std::ostringstream tmp;
@@ -220,7 +231,8 @@ struct Codegen {
         if (e->kind == NK::Binary && !hasWhatever(e)) {
             auto* b = static_cast<Binary*>(e);
             static const std::map<std::string, std::string> cmp = {
-                {"<", "rtLtB"}, {"<=", "rtLeB"}, {">", "rtGtB"}, {">=", "rtGeB"}, {"==", "rtEqB"}, {"!=", "rtNeB"}};
+                {"<", "rtLtB"}, {"<=", "rtLeB"}, {">", "rtGtB"}, {">=", "rtGeB"}, {"==", "rtEqB"}, {"!=", "rtNeB"},
+                {"eq", "rtEqSB"}, {"ne", "rtNeSB"}, {"lt", "rtLtSB"}, {"gt", "rtGtSB"}, {"le", "rtLeSB"}, {"ge", "rtGeSB"}};
             auto it = cmp.find(b->op);
             if (it != cmp.end())
                 return it->second + "(" + ex(b->lhs.get()) + ", " + ex(b->rhs.get()) + ")";
@@ -635,7 +647,7 @@ struct Codegen {
                                ", (__a.size()>0?__a[0]:Value::any()), (__a.size()>1?__a[1]:Value::any())); })";
                     }
                     // a builtin (say, is_even, …) — dispatch by name at runtime
-                    return "Value::closure([=](ValueList& __a)->Value{ return RT.callBuiltin(" + cesc(nm) + ", __a); })";
+                    return "Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; })";
                 }
                 if (v->name == "$?LINE") return "Value::integer(" + std::to_string(v->line) + ")";
                 {
@@ -924,7 +936,7 @@ struct Codegen {
                         return mangleSub(c->name) + "(" + argList(c->args) + ")";
                     return mangleSub(c->name) + "(" + vl + ")"; // boxed adapter
                 }
-                return "RT.callBuiltin(" + cesc(c->name) + ", " + vl + ")";
+                return builtinCall(c->name, vl);
             }
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
@@ -1710,7 +1722,10 @@ struct Codegen {
         static const std::map<std::string, std::string> m = {
             {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"}, {"~", "rtConcat"}, {"%", "rtMod"}, {"%%", "rtDivides"},
             {"**", "rtPow"}, {"div", "rtDiv"},
-            {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"}};
+            {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"},
+            // string comparisons: plain Str/Str compares byte-wise inline; tagged
+            // values (Version/enum/junction/…) fall back to the full chain
+            {"eq", "rtEqS"}, {"ne", "rtNeS"}, {"lt", "rtLtS"}, {"gt", "rtGtS"}, {"le", "rtLeS"}, {"ge", "rtGeS"}};
         auto it = m.find(op);
         return it == m.end() ? "" : it->second;
     }
@@ -2209,21 +2224,17 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             g.out << "static Value " << g.methodFn(cd->name, mp->name) << "(ValueList&);\n";
     g.out << "\n";
 
-    // definitions
-    for (SubDecl* d : subs) { g.subDef(d); g.out << "\n"; }
-    for (auto& mc : multiCands) { g.multiDef(mc.first, mc.second); g.out << "\n"; }
-    for (ClassDecl* cd : classes) { g.classMethodDefs(cd); g.out << "\n"; }
-
-    // class registration (runs before the program body)
-    g.out << "static void __rakupp_register() {\n";
-    for (ClassDecl* cd : classes) g.classRegister(cd);
-    g.out << "}\n\n";
-
-    // main()
-    g.out << "int main(int argc, char** argv) {\n"
-             "    { std::vector<std::string> a; for (int i = 1; i < argc; i++) a.push_back(argv[i]); RT.setArgs(a); }\n"
-             "    RT.srcFile_ = " + cesc(srcPath) + ";\n    __rakupp_register();\n"
-             "    try {\n";
+    // Generate all code into buffers FIRST (definitions, class registration,
+    // program body), so the full set of builtin call sites is known before we
+    // emit the cached `__bfN` pointer declarations they reference.
+    std::string defs = g.capture([&]() {
+        for (SubDecl* d : subs) { g.subDef(d); g.out << "\n"; }
+        for (auto& mc : multiCands) { g.multiDef(mc.first, mc.second); g.out << "\n"; }
+        for (ClassDecl* cd : classes) { g.classMethodDefs(cd); g.out << "\n"; }
+    });
+    std::string reg = g.capture([&]() {
+        for (ClassDecl* cd : classes) g.classRegister(cd);
+    });
     std::string body = g.capture([&]() {
         g.atTopLevel_ = true;
         g.analyzeCells(prog.stmts, {});
@@ -2240,6 +2251,29 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                       mangleSub("MAIN") + "(__margs); }");
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });
+
+    // cached builtin pointers: declared before the code that uses them,
+    // resolved once at startup in __rakupp_register (see rtCallB)
+    std::vector<const std::string*> bfNames(g.usedBuiltins_.size());
+    for (auto& kv : g.usedBuiltins_) bfNames[kv.second] = &kv.first;
+    for (size_t i = 0; i < bfNames.size(); i++)
+        g.out << "static const BuiltinFn* __bf" << i << " = nullptr; // " << *bfNames[i] << "\n";
+    if (!bfNames.empty()) g.out << "\n";
+
+    g.out << defs;
+
+    // startup registration: resolve builtin pointers first (class registration
+    // may call builtins), then register classes/enums
+    g.out << "static void __rakupp_register() {\n";
+    for (size_t i = 0; i < bfNames.size(); i++)
+        g.out << "    __bf" << i << " = RT.builtinPtr(" << cesc(*bfNames[i]) << ");\n";
+    g.out << reg << "}\n\n";
+
+    // main()
+    g.out << "int main(int argc, char** argv) {\n"
+             "    { std::vector<std::string> a; for (int i = 1; i < argc; i++) a.push_back(argv[i]); RT.setArgs(a); }\n"
+             "    RT.srcFile_ = " + cesc(srcPath) + ";\n    __rakupp_register();\n"
+             "    try {\n";
     g.out << body;
     g.out << "    } catch (const ExitEx& e) { std::cout.flush(); return e.code; }\n"
              "    catch (const LastEx&) { std::cerr << \"last without loop construct\\n\"; return 1; }\n"

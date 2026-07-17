@@ -181,6 +181,16 @@ public:
     // chain has finished (head/first reached its limit) so `done` should fire.
     ValueList applyTapChain(Value& tap, const Value& in, bool& complete);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
+    // Resolve a builtin's function once (at compiled-program startup) so call
+    // sites can go through the pointer directly, skipping callBuiltin's
+    // per-call name hash + map lookup. Null when the name is not a registered
+    // builtin (e.g. a module-loaded routine) — the call site then falls back
+    // to the full callBuiltin path. Pointers into builtins_ stay valid: the
+    // map is populated once in the constructor and never erased.
+    const BuiltinFn* builtinPtr(const std::string& name) const {
+        auto it = builtins_.find(name);
+        return it == builtins_.end() ? nullptr : &it->second;
+    }
     Value seqOp(Value l, Value r, bool exclusive); // the `...` sequence operator (also used by codegen)
     Value rtGather(Value blockClosure); // gather with probe-and-double laziness (native codegen)
     // Emit text for say/print/put/note: route through a user-overridden $*OUT/$*ERR
@@ -544,6 +554,33 @@ inline Value rtDiv(const Value& l, const Value& r) {
     return applyArith("div", l, r);
 }
 inline Value rtConcat(const Value& l, const Value& r) { if (l.t == VT::Str && r.t == VT::Str) return Value::str(l.s + r.s); return applyArith("~", l, r); }
+// Cached-builtin call for native codegen: the per-name pointer is resolved once
+// at program start (__rakupp_register → Interpreter::builtinPtr); a null (not a
+// registered builtin — e.g. a module-loaded routine) falls back to the full
+// by-name callBuiltin path, so semantics are identical.
+inline Value rtCallB(Interpreter& I, const BuiltinFn* f, const char* name, ValueList args) {
+    if (f) return (*f)(I, args);
+    return I.callBuiltin(name, std::move(args));
+}
+// Fast-path STRING comparisons: two PLAIN Strs (no Version/IO/Buf hashKind tag,
+// no enum identity) compare byte-wise — exactly what applyArith's tail does for
+// them (a plain Str's toStr() is its `s`). Anything else falls back to the full
+// operator chain (Version part-compare, enum stringification, junction
+// autothreading, Whatever-currying, numeric coercions).
+inline bool rtPlainStr(const Value& v) { return v.t == VT::Str && v.hashKind.empty() && v.enumName.empty(); }
+inline Value rtEqS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s == r.s); return applyArith("eq", l, r); }
+inline Value rtNeS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s != r.s); return applyArith("ne", l, r); }
+inline Value rtLtS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s <  r.s); return applyArith("lt", l, r); }
+inline Value rtGtS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s >  r.s); return applyArith("gt", l, r); }
+inline Value rtLeS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s <= r.s); return applyArith("le", l, r); }
+inline Value rtGeS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s >= r.s); return applyArith("ge", l, r); }
+// Bool-context variants (if/while conditions): skip building the Bool Value.
+inline bool rtEqSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return l.s == r.s; return applyArith("eq", l, r).truthy(); }
+inline bool rtNeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return l.s != r.s; return applyArith("ne", l, r).truthy(); }
+inline bool rtLtSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return l.s <  r.s; return applyArith("lt", l, r).truthy(); }
+inline bool rtGtSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return l.s >  r.s; return applyArith("gt", l, r).truthy(); }
+inline bool rtLeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return l.s <= r.s; return applyArith("le", l, r).truthy(); }
+inline bool rtGeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return l.s >= r.s; return applyArith("ge", l, r).truthy(); }
 // In-place `~=` append: mutate the accumulator's buffer instead of building a new
 // string each step, turning repeated `$s ~= …` from O(n²) copying into O(n).
 inline void rtCatAssign(Value& l, const Value& r) {
