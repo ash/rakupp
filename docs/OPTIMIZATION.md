@@ -72,11 +72,14 @@ A call site takes the fast overload when it passes exactly the right number of
 calls through the adapter unchanged. Multi subs, indirect calls (`&fib`), and
 method calls are untouched.
 
-The same idea covers a growing set of **named builtins**: `abs`, `chr`, `ord`
-have real C++ functions (`rtBAbs`/`rtBChr`/`rtBOrd`), and a single-plain-arg
-call site emits the direct call — no `ValueList`, no `std::function`, and for
-`abs` an inline plain-Int hot path at the call site. An `abs`-heavy loop went
-1112.9 → 198.3 ms (5.6×); details and the general recipe in
+The same idea covers **32 named builtins** — `abs chr ord`, the numeric family
+(`sign floor ceiling round truncate sqrt exp log log10 log2 is-prime`), the
+string family (`uc lc chars flip trim chomp chop`), and the trig/hyperbolic
+functions: each has a real C++ function (`rtBAbs`, `rtBUc`, `rtBSin`, …), and a
+single-plain-arg call site emits the direct call — no `ValueList`, no
+`std::function`, and for `abs`/`sign` an inline plain-Int hot path at the call
+site. An `abs`-heavy loop went 1112.9 → 198.3 ms (5.6×), a `sqrt`+`sin`+`floor`
+loop 731.5 → 363.6 ms (2.0×); details and the general recipe in
 [dev/DISPATCH.md](dev/DISPATCH.md).
 
 ### 2. Inline int64 arithmetic (skip the string dispatch and boxing)

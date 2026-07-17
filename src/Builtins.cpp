@@ -6014,6 +6014,44 @@ Value rtBOrd(Interpreter&, const Value& v) {
     auto c = utf8cp(v.toStr());
     return c.empty() ? Value::nil() : Value::integer(c[0]);
 }
+Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), true, 0)); }
+Value rtBLc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), false, 0)); }
+Value rtBChars(Interpreter&, const Value& v) { return Value::integer(graphemeCount(v.toStr())); }
+Value rtBSqrt(Interpreter& I, const Value& v) {
+    if (v.t == VT::Complex) { auto r = std::sqrt(std::complex<double>(v.n, v.im)); return Value::complex(r.real(), r.imag()); }
+    ValueList one{v};
+    double x = numArg(I, one);   // same coercion the sub form uses (Object → .Bridge/.Numeric)
+    if (x < 0 && I.langRev_ >= 2) return Value::complex(0, std::sqrt(-x));
+    return Value::number(std::sqrt(x));
+}
+// Delegators — one methodCall, exactly the sub form (augment/objects/junctions intact).
+static Value rtBMeth(Interpreter& I, const Value& v, const char* m) { ValueList none; return I.methodCall(v, m, none); }
+Value rtBSignSlow(Interpreter& I, const Value& v) { return rtBMeth(I, v, "sign"); }
+Value rtBTruncate(Interpreter& I, const Value& v) { return rtBMeth(I, v, "truncate"); }
+Value rtBIsPrime(Interpreter& I, const Value& v)  { return rtBMeth(I, v, "is-prime"); }
+Value rtBFlip(Interpreter& I, const Value& v)     { return rtBMeth(I, v, "flip"); }
+Value rtBTrim(Interpreter& I, const Value& v)     { return rtBMeth(I, v, "trim"); }
+Value rtBChomp(Interpreter& I, const Value& v)    { return rtBMeth(I, v, "chomp"); }
+Value rtBChop(Interpreter& I, const Value& v)     { return rtBMeth(I, v, "chop"); }
+// Trig family: Complex — or an Object whose .Numeric/.Bridge may yield one —
+// via the method path; everything else through numArg, like the sub forms.
+static Value rtBMath1(Interpreter& I, const Value& v, const char* name, double (*f)(double)) {
+    if (v.t == VT::Complex || v.t == VT::Object) { ValueList none; return I.methodCall(v, name, none); }
+    ValueList one{v};
+    return Value::number(f(numArg(I, one)));
+}
+Value rtBSin(Interpreter& I, const Value& v)   { return rtBMath1(I, v, "sin",   (double(*)(double))std::sin); }
+Value rtBCos(Interpreter& I, const Value& v)   { return rtBMath1(I, v, "cos",   (double(*)(double))std::cos); }
+Value rtBTan(Interpreter& I, const Value& v)   { return rtBMath1(I, v, "tan",   (double(*)(double))std::tan); }
+Value rtBAsin(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "asin",  (double(*)(double))std::asin); }
+Value rtBAcos(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "acos",  (double(*)(double))std::acos); }
+Value rtBAtan(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "atan",  (double(*)(double))std::atan); }
+Value rtBSinh(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "sinh",  (double(*)(double))std::sinh); }
+Value rtBCosh(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "cosh",  (double(*)(double))std::cosh); }
+Value rtBTanh(Interpreter& I, const Value& v)  { return rtBMath1(I, v, "tanh",  (double(*)(double))std::tanh); }
+Value rtBAsinh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "asinh", (double(*)(double))std::asinh); }
+Value rtBAcosh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "acosh", (double(*)(double))std::acosh); }
+Value rtBAtanh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "atanh", (double(*)(double))std::atanh); }
 
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
@@ -6806,20 +6844,15 @@ void Interpreter::registerBuiltins() {
         double x = a.empty() ? 0.0 : a[0].toNum();
         return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
     };
-    B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (!a.empty() && a[0].t == VT::Complex) { auto r = std::sqrt(std::complex<double>(a[0].n, a[0].im)); return Value::complex(r.real(), r.imag()); }
-        double x = numArg(I, a);
-        // 6.e: sqrt of a negative real is imaginary (0+√|x|i); 6.c/6.d yield NaN
-        if (x < 0 && I.langRev_ >= 2) return Value::complex(0, std::sqrt(-x));
-        return Value::number(std::sqrt(x)); };
-    B["floor"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::floor(a.empty() ? 0 : a[0].toNum())); };
-    B["ceiling"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::ceil(a.empty() ? 0 : a[0].toNum())); };
-    B["round"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer((long long)std::llround(a.empty() ? 0 : a[0].toNum())); };
-    B["truncate"] = [](Interpreter& I, ValueList& a) -> Value { return I.methodCall(a.empty() ? Value::integer(0) : a[0], "truncate", {}); };
+    B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSqrt(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["floor"] = [](Interpreter& I, ValueList& a) -> Value { return rtBFloor(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["ceiling"] = [](Interpreter& I, ValueList& a) -> Value { return rtBCeiling(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["round"] = [](Interpreter& I, ValueList& a) -> Value { return rtBRound(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["truncate"] = [](Interpreter& I, ValueList& a) -> Value { return rtBTruncate(I, a.empty() ? Value::integer(0) : a[0]); };
     B["exp"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "exp", none); }
         if (a.size() >= 2) return Value::number(std::pow(a[1].toNum(), a[0].toNum())); // exp($x,$base)
-        return Value::number(std::exp(a.empty() ? 0 : a[0].toNum())); };
+        return rtBExp(I, a.empty() ? Value::integer(0) : a[0]); };
     // Trigonometry (radians). Also available as methods below.
     {
         struct TF { const char* name; double (*fn)(double); };
@@ -6832,11 +6865,7 @@ void Interpreter::registerBuiltins() {
         for (auto& tf : tfs) {
             auto f = tf.fn; std::string name = tf.name;
             B[tf.name] = [f, name](Interpreter& I, ValueList& a) -> Value {
-                // Complex — or an object whose .Numeric/.Bridge may yield one — via the method path
-                if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) {
-                    ValueList none; return I.methodCall(a[0], name, none);
-                }
-                return Value::number(f(numArg(I, a)));
+                return rtBMath1(I, a.empty() ? Value::integer(0) : a[0], name.c_str(), f);
             };
         }
         B["sec"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -6893,9 +6922,9 @@ void Interpreter::registerBuiltins() {
         if (!a.empty() && a[0].t == VT::Complex) { ValueList rest(a.begin() + 1, a.end()); return I.methodCall(a[0], "log", rest); }
         double x = a.empty() ? 0 : a[0].toNum();
         if (a.size() >= 2) return Value::number(std::log(x) / std::log(a[1].toNum())); // log($x, $base)
-        return Value::number(std::log(x)); };
-    B["log10"] = [](Interpreter&, ValueList& a) -> Value { return Value::number(std::log10(a.empty() ? 0 : a[0].toNum())); };
-    B["log2"] = [](Interpreter&, ValueList& a) -> Value { return Value::number(std::log2(a.empty() ? 0 : a[0].toNum())); };
+        return rtBLog(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["log10"] = [](Interpreter& I, ValueList& a) -> Value { return rtBLog10(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["log2"] = [](Interpreter& I, ValueList& a) -> Value { return rtBLog2(I, a.empty() ? Value::integer(0) : a[0]); };
     B["index"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::nil();
         std::string s = a[0].toStr(), needle = a[1].toStr();
@@ -6989,7 +7018,7 @@ void Interpreter::registerBuiltins() {
     // Prefix forms of the metamethods: WHAT($x) === $x.WHAT, etc.
     for (const char* mm : {"WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY"})
         B[mm] = [mm](Interpreter& I, ValueList& a) -> Value { ValueList none; return I.methodCall(a.empty() ? Value::any() : a[0], mm, none); };
-    B["chars"] = [](Interpreter&, ValueList& a) -> Value { return Value::integer(a.empty() ? 0 : graphemeCount(a[0].toStr())); };
+    B["chars"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::integer(0) : rtBChars(I, a[0]); };
     auto univalOf = [](uint32_t cp) -> Value {
         long long num, den; if (!uniNumValue(cp, num, den)) return Value::nil();
         return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den));
@@ -7044,8 +7073,8 @@ void Interpreter::registerBuiltins() {
         if (want.size() == 1 && !got.empty() && got[0] == want[0]) return Value::boolean(true);
         return Value::boolean(false);
     };
-    B["uc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), true, 0)); };
-    B["lc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 0)); };
+    B["uc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBUc(I, a[0]); };
+    B["lc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBLc(I, a[0]); };
     B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 1)); };
     // `so *` / `not *` curry like operators do (Rakudo: (so *).^name is WhateverCode)
     auto boolCurry = [](bool negate, const Value& w) -> Value {
@@ -7089,8 +7118,8 @@ void Interpreter::registerBuiltins() {
     };
     B["ords"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "ords", none); };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
-    B["sign"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "sign", none); };
-    B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "is-prime", none); };
+    B["sign"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSign(I, a.empty() ? Value::any() : a[0]); };
+    B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { return rtBIsPrime(I, a.empty() ? Value::any() : a[0]); };
     B["end"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling end() requires an argument"}; ValueList none; return I.methodCall(a[0], "end", none); };
     B["kv"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) throw RakuError{Value::typeObj("X::Comp"), "Calling kv() requires an argument"}; ValueList none; return I.methodCall(a[0], "kv", none); };
     B["prepend"] = [](Interpreter& I, ValueList& a) -> Value { if (a.empty()) return Value::any(); Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "prepend", rest); };

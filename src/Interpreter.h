@@ -4,6 +4,7 @@
 #include "IntOps.h"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -575,6 +576,54 @@ inline Value rtBAbs(Interpreter& I, const Value& v) {
     if (v.t == VT::Int && !v.big && I.builtinExt_.empty())
         return Value::integer(v.i < 0 ? -v.i : v.i);   // plain-Int hot path, inlined at the call site
     return rtBAbsSlow(I, v);
+}
+// The sweep: every named builtin mirrors its sub form EXACTLY (each body is the
+// old registered lambda's 1-arg case, verbatim). Delegators keep full
+// methodCall semantics (augment, objects, junctions); the two with bypassing
+// fast paths (abs above, sign below) are augment-guarded via builtinExt_.
+Value rtBUc(Interpreter& I, const Value& v);       // Str case-mapping (Builtins.cpp statics)
+Value rtBLc(Interpreter& I, const Value& v);
+Value rtBChars(Interpreter& I, const Value& v);    // grapheme count
+Value rtBSqrt(Interpreter& I, const Value& v);     // Complex/Object escapes + langRev negatives
+Value rtBSignSlow(Interpreter& I, const Value& v); // full sign via methodCall
+Value rtBTruncate(Interpreter& I, const Value& v); // delegators: exact sub behavior
+Value rtBIsPrime(Interpreter& I, const Value& v);
+Value rtBFlip(Interpreter& I, const Value& v);
+Value rtBTrim(Interpreter& I, const Value& v);
+Value rtBChomp(Interpreter& I, const Value& v);
+Value rtBChop(Interpreter& I, const Value& v);
+Value rtBSin(Interpreter& I, const Value& v);      // trig family: Complex/Object → method,
+Value rtBCos(Interpreter& I, const Value& v);      // else std:: math on toNum (== numArg)
+Value rtBTan(Interpreter& I, const Value& v);
+Value rtBAsin(Interpreter& I, const Value& v);
+Value rtBAcos(Interpreter& I, const Value& v);
+Value rtBAtan(Interpreter& I, const Value& v);
+Value rtBSinh(Interpreter& I, const Value& v);
+Value rtBCosh(Interpreter& I, const Value& v);
+Value rtBTanh(Interpreter& I, const Value& v);
+Value rtBAsinh(Interpreter& I, const Value& v);
+Value rtBAcosh(Interpreter& I, const Value& v);
+Value rtBAtanh(Interpreter& I, const Value& v);
+inline Value rtBSign(Interpreter& I, const Value& v) {
+    if (v.t == VT::Int && !v.big && I.builtinExt_.empty())
+        return Value::integer(v.i < 0 ? -1 : v.i > 0 ? 1 : 0);
+    return rtBSignSlow(I, v);
+}
+// Pure mirrors of the sub forms (deliberately including their double-precision
+// behavior — the SUB form is what call sites hit today, not the exact
+// bignum/Rat method forms).
+inline Value rtBFloor(Interpreter&, const Value& v)   { return Value::integer((long long)std::floor(v.toNum())); }
+inline Value rtBCeiling(Interpreter&, const Value& v) { return Value::integer((long long)std::ceil(v.toNum())); }
+inline Value rtBRound(Interpreter&, const Value& v)   { return Value::integer((long long)std::llround(v.toNum())); }
+inline Value rtBLog10(Interpreter&, const Value& v)   { return Value::number(std::log10(v.toNum())); }
+inline Value rtBLog2(Interpreter&, const Value& v)    { return Value::number(std::log2(v.toNum())); }
+inline Value rtBExp(Interpreter& I, const Value& v) {
+    if (v.t == VT::Complex || v.t == VT::Object) { ValueList none; return I.methodCall(v, "exp", none); }
+    return Value::number(std::exp(v.toNum()));
+}
+inline Value rtBLog(Interpreter& I, const Value& v) {
+    if (v.t == VT::Complex) { ValueList none; return I.methodCall(v, "log", none); }
+    return Value::number(std::log(v.toNum()));
 }
 // Fast-path STRING comparisons: two PLAIN Strs (no Version/IO/Buf hashKind tag,
 // no enum identity) compare byte-wise — exactly what applyArith's tail does for

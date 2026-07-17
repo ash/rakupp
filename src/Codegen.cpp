@@ -107,7 +107,7 @@ struct Codegen {
     std::map<std::string, int> usedBuiltins_; // name -> __bfN id
     std::string builtinCall(const std::string& name, const std::string& vl) {
         auto it = usedBuiltins_.emplace(name, (int)usedBuiltins_.size()).first;
-        return "rtCallB(RT, __bf" + std::to_string(it->second) + ", " + cesc(name) + ", " + vl + ")";
+        return "rtCallB(RT, __bfp" + std::to_string(it->second) + ", " + cesc(name) + ", " + vl + ")";
     }
 
     // Emit statements produced by `emit` into a fresh buffer and return them.
@@ -942,7 +942,17 @@ struct Codegen {
                 // the generic cached-pointer path below.
                 if (optimize_ && c->args.size() == 1 && simpleArgs(c->args)) {
                     static const std::map<std::string, const char*> fastB = {
-                        {"abs", "rtBAbs"}, {"chr", "rtBChr"}, {"ord", "rtBOrd"}};
+                        {"abs", "rtBAbs"}, {"chr", "rtBChr"}, {"ord", "rtBOrd"},
+                        {"sign", "rtBSign"}, {"floor", "rtBFloor"}, {"ceiling", "rtBCeiling"},
+                        {"round", "rtBRound"}, {"truncate", "rtBTruncate"}, {"sqrt", "rtBSqrt"},
+                        {"exp", "rtBExp"}, {"log", "rtBLog"}, {"log10", "rtBLog10"}, {"log2", "rtBLog2"},
+                        {"is-prime", "rtBIsPrime"},
+                        {"uc", "rtBUc"}, {"lc", "rtBLc"}, {"chars", "rtBChars"}, {"flip", "rtBFlip"},
+                        {"trim", "rtBTrim"}, {"chomp", "rtBChomp"}, {"chop", "rtBChop"},
+                        {"sin", "rtBSin"}, {"cos", "rtBCos"}, {"tan", "rtBTan"},
+                        {"asin", "rtBAsin"}, {"acos", "rtBAcos"}, {"atan", "rtBAtan"},
+                        {"sinh", "rtBSinh"}, {"cosh", "rtBCosh"}, {"tanh", "rtBTanh"},
+                        {"asinh", "rtBAsinh"}, {"acosh", "rtBAcosh"}, {"atanh", "rtBAtanh"}};
                     auto fb = fastB.find(c->name);
                     if (fb != fastB.end())
                         return std::string(fb->second) + "(RT, " + ex(c->args[0].get()) + ")";
@@ -2268,7 +2278,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     std::vector<const std::string*> bfNames(g.usedBuiltins_.size());
     for (auto& kv : g.usedBuiltins_) bfNames[kv.second] = &kv.first;
     for (size_t i = 0; i < bfNames.size(); i++)
-        g.out << "static const BuiltinFn* __bf" << i << " = nullptr; // " << *bfNames[i] << "\n";
+        g.out << "static const BuiltinFn* __bfp" << i << " = nullptr; // " << *bfNames[i] << "\n";
     if (!bfNames.empty()) g.out << "\n";
 
     g.out << defs;
@@ -2277,7 +2287,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     // may call builtins), then register classes/enums
     g.out << "static void __rakupp_register() {\n";
     for (size_t i = 0; i < bfNames.size(); i++)
-        g.out << "    __bf" << i << " = RT.builtinPtr(" << cesc(*bfNames[i]) << ");\n";
+        g.out << "    __bfp" << i << " = RT.builtinPtr(" << cesc(*bfNames[i]) << ");\n";
     g.out << reg << "}\n\n";
 
     // main()

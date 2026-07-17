@@ -19,7 +19,7 @@ all four:
 | Raku | Generated C++ | Dispatch |
 |---|---|---|
 | `square(5)` (user sub) | `u_square(ValueList{…})` | **direct C++ call** — the compiler can inline it |
-| `say …` (named builtin) | was `RT.callBuiltin("say", …)`, now `rtCallB(RT, __bf0, "say", …)` | **cached pointer** (was: by-name map lookup per call) |
+| `say …` (named builtin) | was `RT.callBuiltin("say", …)`, now `rtCallB(RT, __bfp0, "say", …)` | **cached pointer** (was: by-name map lookup per call) |
 | `$n * $n` (operator) | `applyArith("*", …)`, or `rtMul(…)` under `-O` | **string-dispatch chain**, or inline fast path |
 | `$x.method` | `RT.methodCall(inv, "m", …)` | **name-keyed `if`-ladder** in Builtins.cpp |
 
@@ -62,13 +62,13 @@ and friends did not.
 ## The three cuts (38ed193, bf88539, 1c407bf)
 
 **1. Cached builtin pointers.** Every `RT.callBuiltin("name", …)` site now
-routes through a per-name `static const BuiltinFn* __bfN`, resolved once at
+routes through a per-name `static const BuiltinFn* __bfpN`, resolved once at
 program startup (`__rakupp_register` → `Interpreter::builtinPtr`) and called
 directly. `rtCallB` keeps the by-name fallback for names that aren't
 registered builtins (module-loaded routines), so semantics are byte-identical.
 Not `-O`-gated: it's plumbing, not speculation — plain `--exe` gets it too.
 
-*Reading the emitted call:* `rtCallB(RT, __bf0, "say", ValueList{…})` **is**
+*Reading the emitted call:* `rtCallB(RT, __bfp0, "say", ValueList{…})` **is**
 the cached call, not a lookup — `rtCallB` is a three-line `inline` shim whose
 hot path is `(*f)(I, args)`, so at `-O2` the call site compiles to a
 predicted-not-null test plus an indirect call through the already-resolved
@@ -77,6 +77,29 @@ branch (nothing is hashed or searched). The shim also does a required
 mechanical job: `BuiltinFn` takes `ValueList&`, which a temporary
 `ValueList{…}` can't bind to — `rtCallB`'s by-value parameter materializes it
 into an lvalue.
+
+**2. Inline string comparisons.** `eq ne lt gt le ge` get the `rtEqS…` family:
+two *plain* Strs (no `hashKind` tag — Version/IO/Buf — and no enum identity)
+compare byte-wise inline, which is exactly what `applyArith`'s tail does for
+them (a plain Str's `toStr()` is its `s`). Anything tagged falls back to the
+full chain, preserving Version part-comparison, enum stringification, junction
+autothreading, and Whatever-currying. Value-context forms sit in the `-O`
+`fastBin` table; bool-context forms (`rtEqSB…`) join the always-on condition
+table beside the existing int `rtLtB` family.
+
+End-to-end (2–3M-iteration loops, min of 6):
+
+| Loop | Before | After | |
+|---|---:|---:|---|
+| builtin-heavy (`ord(chr(…))` ×2/iter), `--exe` | 407.8 ms | 383.5 ms | 1.06× |
+| `$c++ if $a eq $b`, `--exe` | 712.0 ms | 129.2 ms | **5.5×** |
+| `$c++ if $a eq $b`, `--exe -O` | 621.7 ms | 29.0 ms | **21×** |
+
+The string-compare cut is the headline: `eq` in a condition went from
+`RT.boolify(applyArith("eq", …))` — Bool `Value` built, chain walked, truthy
+re-read — to an inline `l.s == r.s`. The builtin cut is the modest, broad one:
+every compiled program calling `say`/`push`/`chr`/… saves the lookup on every
+call.
 
 **3. True named builtins (the follow-up that proved the first analysis
 wrong).** An earlier revision of this note claimed a *symbol* call like
@@ -103,34 +126,22 @@ delegates back to `methodCall`). Measured (3M/2M-iteration loops, min of 6):
 | `abs`, plain `--exe` | 1120.5 ms | 363.9 ms | **3.1×** — the map entry itself got fast, so this flows to the interpreter too |
 | `chr`+`ord`, `--exe -O` | 393.6 ms | 200.8 ms | **2.0×** |
 
-The recipe generalizes: any hot, fixed-arity builtin whose lambda either does
-real work per call or delegates to `methodCall` is a candidate — extract a
-named function, wrap it in the map entry, add it to codegen's `fastB` table.
-The remaining per-call cost in the `chr`/`ord` loop is the `Value`
-construction/moves themselves.
+The recipe then swept the rest of the viable set — **32 names** in codegen's
+`fastB` table: the numeric family (`sign floor ceiling round truncate sqrt exp
+log log10 log2 is-prime`), the string family (`uc lc chars flip trim chomp
+chop`), and the twelve trig/hyperbolic functions. Each named function is the
+old registered lambda's 1-arg case *verbatim* (delegators keep their
+`methodCall`, so augment/objects/junctions are untouched; only `abs` and
+`sign` have bypassing fast paths, both `builtinExt_`-guarded). Additional
+measurements: a `sqrt`+`sin`+`floor` loop 731.5 → 363.6 ms under `-O` (2.0×);
+`uc`+`chars` 672.5 → 574.3 ms (1.2× — `mapCase`/`graphemeCount` real work
+dominates, as it should). The remaining per-call cost everywhere is the
+`Value` construction/moves themselves.
 
-**2. Inline string comparisons.** `eq ne lt gt le ge` get the `rtEqS…` family:
-two *plain* Strs (no `hashKind` tag — Version/IO/Buf — and no enum identity)
-compare byte-wise inline, which is exactly what `applyArith`'s tail does for
-them (a plain Str's `toStr()` is its `s`). Anything tagged falls back to the
-full chain, preserving Version part-comparison, enum stringification, junction
-autothreading, and Whatever-currying. Value-context forms sit in the `-O`
-`fastBin` table; bool-context forms (`rtEqSB…`) join the always-on condition
-table beside the existing int `rtLtB` family.
-
-End-to-end (2–3M-iteration loops, min of 6):
-
-| Loop | Before | After | |
-|---|---:|---:|---|
-| builtin-heavy (`ord(chr(…))` ×2/iter), `--exe` | 407.8 ms | 383.5 ms | 1.06× |
-| `$c++ if $a eq $b`, `--exe` | 712.0 ms | 129.2 ms | **5.5×** |
-| `$c++ if $a eq $b`, `--exe -O` | 621.7 ms | 29.0 ms | **21×** |
-
-The string-compare cut is the headline: `eq` in a condition went from
-`RT.boolify(applyArith("eq", …))` — Bool `Value` built, chain walked, truthy
-re-read — to an inline `l.s == r.s`. The builtin cut is the modest, broad one:
-every compiled program calling `say`/`push`/`chr`/… saves the lookup on every
-call.
+One portability landmine for the record: the cached-pointer names were
+originally `__bfN`, and the 17th builtin in a program emitted `__bf16` —
+which is a **reserved built-in type** (bfloat16) on arm64 clang. Hence the
+`__bfpN` spelling.
 
 Verified: `t/run.raku` 55/55; 20 deterministic examples byte-identical across
 interp / `--exe` / `--exe -O`; tagged-value edge cases (Version `eq`, enum
