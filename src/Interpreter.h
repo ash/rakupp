@@ -40,6 +40,13 @@ struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+    // rw-param write-through: paramName → (caller's argument expr, caller env).
+    // An assignment to the param writes through the caller's lvalue IMMEDIATELY
+    // (so the caller sees it mid-call); rwSynced records the last value pushed
+    // through, letting the copy-out backstop skip unchanged/already-synced params
+    // (a late copy-out would re-apply stale values after the callee's own edits).
+    std::map<std::string, std::pair<Expr*, std::shared_ptr<Env>>> rwLinks;
+    std::map<std::string, Value> rwSynced;
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
@@ -221,6 +228,10 @@ public:
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
                             ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
     void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs, bool methodCtx);
+    void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs);
+    void rwWriteThrough(Expr* target);
+    Value evalAssignInner(Assign* a, bool sink);
+    bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
