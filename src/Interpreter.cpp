@@ -8000,8 +8000,10 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         if (wantExists || wantDelete || kvF || pF || kF || vF) {
-        // `:!exists:delete` is a contradictory adverb combination — Rakudo dies
-        if (wantExists && negExists && wantDelete)
+        // On a `{; }` multidim subscript, `:!exists:delete` has no matching
+        // postcircumfix candidate in Rakudo and dies; a plain/chained subscript
+        // accepts it (the :exists half reports negated existence, :delete removes).
+        if (idx->semicolonSub && wantExists && negExists && wantDelete)
             throw RakuError{Value::typeObj("X::Adverb"),
                 "Unexpected adverbs passed to subscript: combination of :!exists and :delete"};
         // the presentation adverbs (k/v/kv/p) are mutually exclusive; :exists

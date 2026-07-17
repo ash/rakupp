@@ -2622,6 +2622,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "year" || m == "month" || m == "day" || m == "hour" || m == "minute" || m == "posix")
             return Value::integer(fld(m.c_str()));
+        if (m == "day-of-month") return Value::integer(fld("day")); // alias for .day
+        if (m == "weekday-of-month") return Value::integer((fld("day") - 1) / 7 + 1);
         if ((m == "timezone" || m == "offset") && inv.hashKind == "DateTime") return Value::integer(fld("timezone"));
         if ((m == "in-timezone" || m == "utc" || m == "local") && inv.hashKind == "DateTime") {
             long long newTz = m == "utc" ? 0 : m == "local" ? tzOffsetDyn()
@@ -4152,6 +4154,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return bufBitOp(tmp, m, args);
         }
     }
+    if (m == "subbuf" && inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+        long long n = (long long)inv.s.size(), from, len;
+        Value a0v = args.empty() ? Value::integer(0) : args[0];
+        if (a0v.t == VT::Range) { from = a0v.rFrom + (a0v.rExFrom ? 1 : 0);
+                                  len = (a0v.rTo - (a0v.rExTo ? 1 : 0)) - from + 1; }
+        else { from = a0v.toInt(); len = args.size() > 1 ? args[1].toInt() : n - from; }
+        if (from < 0) from += n;
+        if (from < 0) from = 0; if (from > n) from = n;
+        if (len < 0) len = 0; if (from + len > n) len = n - from;
+        Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind; return b;
+    }
     if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
     if (m == "encode" && inv.t == VT::Str) { Value b = Value::str(inv.s); b.hashKind = "Blob"; return b; }
     if (m == "decode" && inv.t == VT::Str) return Value::str(inv.s);
@@ -4855,8 +4868,38 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // list / array / range
+    if (inv.t == VT::Range && m == "ACCEPTS")
+        return Value::boolean(applyArith("~~", args.empty() ? Value::any() : args[0], inv).truthy());
+    // `@a.ACCEPTS($x)` — a list matches iff $x is a same-length list, element-wise
+    if ((inv.t == VT::Array) && m == "ACCEPTS") {
+        Value x = args.empty() ? Value::any() : args[0];
+        if (x.t != VT::Array && x.t != VT::Range) return Value::boolean(false);
+        ValueList self = toList(inv), other = toList(x);
+        if (self.size() != other.size()) return Value::boolean(false);
+        for (size_t i = 0; i < self.size(); i++)
+            if (!applyArith("~~", other[i], self[i]).truthy()) return Value::boolean(false);
+        return Value::boolean(true);
+    }
     if (inv.t == VT::Range && m == "is-lazy")
         return Value::boolean(inv.b || inv.rTo >= 9000000000000000000LL); // `lazy 1..3` marks .b
+    // finite-Range scalar accessors: endpoints (min/max ignore exclusivity), the
+    // exclusion flags, and the integer-inclusive int-bounds.
+    if (inv.t == VT::Range && inv.rTo < 9000000000000000000LL &&
+        inv.rFrom > -9000000000000000000LL) {
+        if (m == "excludes-min") return Value::boolean(inv.rExFrom);
+        if (m == "excludes-max") return Value::boolean(inv.rExTo);
+        if (m == "infinite")     return Value::boolean(false);
+        if (m == "is-int")       return Value::boolean(true); // rakupp Ranges are integer-bounded
+        if (m == "min")          return Value::integer(inv.rFrom);
+        if (m == "max")          return Value::integer(inv.rTo);
+        if (m == "bounds") {
+            Value o = Value::array({Value::integer(inv.rFrom), Value::integer(inv.rTo)}); o.isList = true; return o;
+        }
+        if (m == "int-bounds") {
+            Value o = Value::array({Value::integer(inv.rFrom + (inv.rExFrom ? 1 : 0)),
+                                    Value::integer(inv.rTo - (inv.rExTo ? 1 : 0))}); o.isList = true; return o;
+        }
+    }
     // an infinite range (…..Inf) must not materialise: only lazy views are defined
     if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL) {
         long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0);
@@ -4866,12 +4909,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value o = Value::array(); o.isList = true; for (long long i = 0; i < n; i++) o.arr->push_back(Value::integer(lo + i)); return o; }
         if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo, false, inv.rExTo); }
         if (m == "elems" || m == "Numeric" || m == "Int") return Value::number(INFINITY);
-        if (m == "min") return Value::integer(lo);
+        if (m == "min") return Value::integer(inv.rFrom);
+        if (m == "max") return Value::number(INFINITY);                 // `1..*` .max is Inf, not an error
+        if (m == "excludes-min") return Value::boolean(inv.rExFrom);
+        if (m == "excludes-max") return Value::boolean(inv.rExTo);
+        if (m == "bounds") { Value o = Value::array({Value::integer(inv.rFrom), Value::number(INFINITY)}); o.isList = true; return o; }
         if (m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy" || m == "flat" ||
             m == "map" || m == "grep" || m == "first" || m == "iterator" || m == "rotor" || m == "batch")
             return (m == "map" || m == "grep" || m == "first") ? methodCall(makeInfArray(lo), m, args, rwArgs) : makeInfArray(lo);
         if (m == "AT-POS" && !args.empty()) return Value::integer(lo + args[0].toInt()); // infRange[i]
-        if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" || m == "max" || m == "sum" ||
+        if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" || m == "sum" ||
             m == "Array" || m == "eager" || m == "join" || m == "Str" || m == "gist")
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + m + " an infinite range"};
     }
@@ -5541,6 +5588,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "antipairs" && inv.t == VT::Hash) { // (value => key) pairs, like invert
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             for (auto& kv : *inv.hash) out.arr->push_back(Value::pair(kv.second.toStr(), Value::str(kv.first)));
+            return out;
+        }
+        if (m == "pairup") { // (1,2,3,4).pairup → (1=>2, 3=>4); odd tail pairs with Any
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            for (size_t i = 0; i < items.size(); i += 2) {
+                Value key = items[i];
+                Value val = (i + 1 < items.size()) ? items[i + 1] : Value::any();
+                if (key.t == VT::Pair) out.arr->push_back(key); // an already-Pair element passes through
+                else out.arr->push_back(Value::pair(key.toStr(), val));
+            }
             return out;
         }
         if (m == "pairs" || m == "kv" || m == "antipairs") {

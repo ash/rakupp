@@ -151,6 +151,7 @@ struct Index : Expr { // base[idx] or base{key}
     ExprPtr index;
     bool isHash = false;
     bool multiDim = false; // @a[X;Y]: index is a ListExpr of dims, sliced level-by-level
+    bool semicolonSub = false; // %h{a;b;c}: a `{; }` multidim brace subscript (parsed as nested Index)
     std::string adverb; // :exists / :delete / :k / :v / :kv / :p  (may start with '!')
     Index(): Expr(NK::Index) {}
 };

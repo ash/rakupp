@@ -898,14 +898,17 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             idx->base = std::move(base);
             idx->index = parseExpression();
             idx->isHash = true;
+            bool hadSemi = false;
             while (matchKind(Tok::Semicolon)) {
                 if (isKind(Tok::RBrace)) break;
+                hadSemi = true;
                 auto outer = std::make_unique<Index>();
                 outer->base = std::move(idx);
                 outer->isHash = true;
                 outer->index = parseExpression();
                 idx = std::move(outer);
             }
+            if (hadSemi) idx->semicolonSub = true; // `%h{a;b;c}` — the `{; }` multidim form
             expectKind(Tok::RBrace, "}");
             base = std::move(idx);
         } else if (isOp("<") && !cur().spaceBefore) {
