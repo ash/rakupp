@@ -203,12 +203,36 @@ live in the same map under a `&`-prefixed key, `"&foo"`, so they occupy a
 separate namespace from `$foo`. Lexical scoping *is* the `parent`-pointer walk in
 `find`; there is no separate symbol table.
 
-Reading `$x` looks up the slot and **returns a copy of the `Value`**
-(`src/Interpreter.cpp:8257`). Writing `$x = 5` goes through `lvalue(Expr*)`, which
-returns a `Value*` pointing straight into the owning `Env`'s map, and the
-assignment writes through it (`*lv = rhs`, `src/Interpreter.cpp:4526`). A `my $x`
-declaration just `define`s a new slot in the current `Env` and hands back a
-pointer to it (`src/Interpreter.cpp:4155`).
+Reading and writing a variable are two sides of the same slot. A read looks the
+name up and **returns a copy of the `Value`**; a write goes through
+`lvalue(Expr*)`, which hands back a `Value*` pointing straight into the owning
+`Env`'s map, and assigns through it:
+
+```cpp
+// read  $x   — eval(VarExpr), the plain-lexical fast path
+if (Value* p = tctx_.cur->find(ve->name))
+    if (!(p->t == VT::Hash && p->hashKind == "Proxy")) return *p;   // a COPY of the slot
+
+// my $x      — lvalue(): make the slot in the current scope, return a pointer to it
+tctx_.cur->define(ve->name, std::move(init));
+return &tctx_.cur->vars[ve->name];
+
+// $x = 5     — evalAssign(): write through the lvalue pointer
+*lv = rhs;
+```
+
+So `my` is a `define` in the current scope, a read is a `find` + copy, and a
+write is a `find` + overwrite — lexical scoping is entirely the `parent`-chain
+walk in `Env::find`. `state` is the one exception: its slot lives in the
+`Callable`'s persistent `stateEnv` rather than the per-call frame, so it survives
+across calls:
+
+```cpp
+// state $n — lvalue(): the slot lives in the once-created stateEnv
+if (!tctx_.curStateEnv->vars.count(ve->name))
+    tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
+return &tctx_.curStateEnv->vars[ve->name];
+```
 
 The three declarators differ only in *which* `Env` holds the slot:
 
@@ -329,6 +353,21 @@ per-`Env` side tables:
   masks the value to the declared width (`src/Interpreter.cpp:266`).
 - **`readonly`** (`src/Value.h:60`) marks a value bound to a read-only parameter;
   mutating ops like `s///` check it and die.
+
+The reset and native-wrap behaviors, concretely:
+
+```cpp
+// $x = Nil  — restore the container's default: walk varDefault up the Env chain
+for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+    auto di = en->varDefault.find(nm);
+    if (di != en->varDefault.end()) { dv = di->second; break; }
+    if (en->vars.count(nm)) break;       // owner scope reached, no declared default
+}
+*lv = dv;                                // (else Any)
+
+// my uint8 $b = 300  — wrapNative() masks to the declared width  →  44
+unsigned long long u = (unsigned long long)x & ((1ULL << bits) - 1);
+```
 
 **Sigils are mostly a parse-time fact.** The runtime dispatches on the `VT` tag,
 not the sigil. The sigil (the first character of the variable name) is consulted
@@ -510,36 +549,78 @@ arguments into `attrs`, then calls `BUILD`/`TWEAK` if defined. A user-defined
 
 **Attributes and accessors.** `$!x` is a direct read/write of the `attrs` map.
 `$.x` is a public accessor: `methodCall` looks the method up, and on miss checks
-`findAttr` for a public attribute and returns it (`src/Builtins.cpp:3070`). The
-native backend uses `rtAttrGet`/`rtAttrRef` (`src/Interpreter.cpp:3531`) for the
-same access.
+`findAttr` for a public attribute and returns it. The native backend reads and
+writes attributes with the same map directly:
 
-**Method resolution.** `ClassInfo::findMethod` (`src/Value.h:219`) is the MRO:
-check the class's own methods, then `parent`, then each extra parent, recursively
-— a depth-first, parent-before-extra-parents walk (a simple DFS, not full C3
-linearization). `invokeMethodChain` locates the *defining* class so
-`callsame`/`nextsame` can resume from that class's parent.
+```cpp
+Value rtAttrGet(const Value& self, const std::string& name) {   // $.x / $!x read
+    if (self.t == VT::Object && self.obj) {
+        auto it = self.obj->attrs.find(name);
+        if (it != self.obj->attrs.end()) return it->second;
+    }
+    return Value::any();                                          // absent attribute → (Any)
+}
+Value& rtAttrRef(Value& self, const std::string& name) {         // $!x write slot (autovivifies)
+    return self.obj->attrs[name];
+}
+```
+
+**Method resolution.** `ClassInfo::findMethod` *is* the MRO — check the class's
+own methods, then the parent, then each extra parent, recursively. It's a
+depth-first, parent-before-extra-parents walk (a simple DFS, not full C3
+linearization):
+
+```cpp
+Value* findMethod(const std::string& m, ClassInfo** owner) {
+    auto it = methods.find(m);
+    if (it != methods.end()) { if (owner) *owner = this; return &it->second; }   // own methods
+    if (parent) { if (Value* r = parent->findMethod(m, owner)) return r; }        // then the parent
+    for (auto& p : extraParents) if (p)                                           // then extra parents
+        { if (Value* r = p->findMethod(m, owner)) return r; }
+    if (owner) *owner = nullptr;
+    return nullptr;
+}
+```
+
+The `owner` out-param reports which class the method was found in, so
+`invokeMethodChain` can resume `callsame`/`nextsame` from that class's parent.
 
 **Roles.** A role is a `ClassInfo` with `isRole = true`, a set of
 `requiredMethods`, and `doneRoles`. Composition copies the role's methods and
 attributes into the class and records membership; **required methods are checked
-at class declaration**, throwing `X::Role::Unimplemented` if unmet
-(`src/Interpreter.cpp:2404`). `.does` / `~~` consult `doesRole`, which returns
-true for the class itself, directly or transitively composed roles, and roles
-done by parents. (Role method composition is a copy-into-table — last writer
-wins, with no conflict diagnostic.)
+at class declaration** (using the very `findMethod` above), throwing
+`X::Role::Unimplemented` if unmet:
+
+```cpp
+for (ClassInfo* role : composed)
+    for (const std::string& req : role->requiredMethods)
+        if (!ci->findMethod(req))
+            throw RakuError{Value::typeObj("X::Role::Unimplemented"), ...};
+```
+
+`.does` / `~~` consult `doesRole`, which returns true for the class itself,
+directly or transitively composed roles, and roles done by parents. (Role method
+composition is a copy-into-table — last writer wins, with no conflict
+diagnostic.)
 
 ## How built-in types get methods
 
 An `Int`, `Str`, or `Array` is a native `Value` (`VT::Int`/`VT::Str`/`VT::Array`),
 **not** an `ObjectData` — so it has no `ClassInfo` and no method table. `5.is-prime`
-and `"x".uc` dispatch through one enormous type-switched function,
-`Interpreter::methodCall` (`src/Builtins.cpp:1233`), which is essentially a
-cascade of `if (inv.t == VT::Str && m == "uc") ...` branches keyed on the
-invocant's tag and the method name. The C++ `if`-ladder *is* the built-in method
-set. This is the pragmatic counterpart to the fat `Value`: since every native
-value is the same struct, its methods are one big dispatch function rather than
-per-type classes.
+and `"x".uc` dispatch through one enormous function, `Interpreter::methodCall`,
+which is a long cascade of branches keyed on the method name (and the invocant's
+tag, consulted inside each branch):
+
+```cpp
+if (m == "uc")       return Value::str(mapCase(inv.toStr(), true, 0));    // "abc".uc
+if (m == "chars")    return Value::integer(graphemeCount(inv.toStr()));   // .chars (graphemes)
+if (m == "is-prime") { /* Miller–Rabin on inv.toInt() */ }               // 7.is-prime
+// … hundreds more …
+```
+
+The C++ `if`-ladder *is* the built-in method set. This is the pragmatic
+counterpart to the fat `Value`: since every native value is the same struct, its
+methods are one big dispatch function rather than per-type classes.
 
 Two things run *before* the built-in branches:
 
