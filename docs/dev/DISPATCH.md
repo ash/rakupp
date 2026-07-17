@@ -67,6 +67,19 @@ directly. `rtCallB` keeps the by-name fallback for names that aren't
 registered builtins (module-loaded routines), so semantics are byte-identical.
 Not `-O`-gated: it's plumbing, not speculation — plain `--exe` gets it too.
 
+*Reading the emitted call:* `rtCallB(RT, __bf0, "say", ValueList{…})` **is**
+the cached call, not a lookup — `rtCallB` is a three-line `inline` shim whose
+hot path is `(*f)(I, args)`, so at `-O2` the call site compiles to a
+predicted-not-null test plus an indirect call through the already-resolved
+pointer. The `"say"` literal is a `const char*` touched only on the fallback
+branch (nothing is hashed or searched). A *symbol* call like `b_say(…)` isn't
+on the table without a much bigger change: builtins are lambdas registered
+into the map at `Interpreter` construction — there is no per-builtin C++
+function to name at codegen time, and the measured ceiling for exposing one
+is ~1 ns/call (47.4 → 46.3). The shim also does a required mechanical job:
+`BuiltinFn` takes `ValueList&`, which a temporary `ValueList{…}` can't bind
+to — `rtCallB`'s by-value parameter materializes it into an lvalue.
+
 **2. Inline string comparisons.** `eq ne lt gt le ge` get the `rtEqS…` family:
 two *plain* Strs (no `hashKind` tag — Version/IO/Buf — and no enum identity)
 compare byte-wise inline, which is exactly what `applyArith`'s tail does for
