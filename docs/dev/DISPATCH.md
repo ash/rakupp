@@ -2,8 +2,9 @@
 
 A compiled Raku++ program reaches code four different ways, and they are not
 equally fast. This note documents the shapes, the measured cost of each, and
-the two dispatch cuts made on 2026-07-17 (cached builtin pointers, inline
-string comparisons) — plus what's deliberately left on the table.
+the three dispatch cuts made on 2026-07-17 (cached builtin pointers, inline
+string comparisons, true named builtins) — plus what's deliberately left on
+the table.
 
 Method: micro-benchmarks against `librakupp_rt.a` (clang -O2, arm64 macOS),
 2M iterations per shape, 7 reps, first discarded, min reported — the
@@ -58,7 +59,7 @@ the Version branch — ~110 ns of "is this something special?" before the actual
 string work. `"+"` skips all of it via the early fast path; `"~"`, `eq`, `lt`
 and friends did not.
 
-## The two cuts (committed 38ed193)
+## The three cuts (38ed193, bf88539, 1c407bf)
 
 **1. Cached builtin pointers.** Every `RT.callBuiltin("name", …)` site now
 routes through a per-name `static const BuiltinFn* __bfN`, resolved once at
@@ -72,13 +73,41 @@ the cached call, not a lookup — `rtCallB` is a three-line `inline` shim whose
 hot path is `(*f)(I, args)`, so at `-O2` the call site compiles to a
 predicted-not-null test plus an indirect call through the already-resolved
 pointer. The `"say"` literal is a `const char*` touched only on the fallback
-branch (nothing is hashed or searched). A *symbol* call like `b_say(…)` isn't
-on the table without a much bigger change: builtins are lambdas registered
-into the map at `Interpreter` construction — there is no per-builtin C++
-function to name at codegen time, and the measured ceiling for exposing one
-is ~1 ns/call (47.4 → 46.3). The shim also does a required mechanical job:
-`BuiltinFn` takes `ValueList&`, which a temporary `ValueList{…}` can't bind
-to — `rtCallB`'s by-value parameter materializes it into an lvalue.
+branch (nothing is hashed or searched). The shim also does a required
+mechanical job: `BuiltinFn` takes `ValueList&`, which a temporary
+`ValueList{…}` can't bind to — `rtCallB`'s by-value parameter materializes it
+into an lvalue.
+
+**3. True named builtins (the follow-up that proved the first analysis
+wrong).** An earlier revision of this note claimed a *symbol* call like
+`b_say(…)` had a measured ceiling of ~1 ns/call. That figure was correct only
+for *renaming the same call shape* — an out-of-line call still taking a
+`ValueList`. What a real named function unlocks is different in kind:
+**direct `Value` arguments** (no per-call `ValueList` heap allocation — the
+actual floor) and an **inlinable hot path** (a `std::function` is an opaque
+wall to the optimizer; an `inline` function is not). Worse, some builtin
+lambdas hid extra cost: `abs`'s delegated to `methodCall` — the full
+method-name ladder on every call, ~370 ns/iteration in an `abs` loop.
+
+`abs`, `chr`, `ord` are now real functions (`rtBAbs`/`rtBChr`/`rtBOrd`,
+declared in `Interpreter.h`, defined in `Builtins.cpp`). The interpreter's map
+entries wrap them — so the interpreter and the generic compiled path get the
+win too — and `-O` emits direct calls when a single plain positional argument
+lines up. `rtBAbs`'s plain-Int case is header-inline (guarded off while any
+`augment` is live, so an augmented `.abs` still wins; everything non-trivial
+delegates back to `methodCall`). Measured (3M/2M-iteration loops, min of 6):
+
+| Loop | cached-pointer | named fn | |
+|---|---:|---:|---|
+| `abs`, `--exe -O` | 1112.9 ms | 198.3 ms | **5.6×** |
+| `abs`, plain `--exe` | 1120.5 ms | 363.9 ms | **3.1×** — the map entry itself got fast, so this flows to the interpreter too |
+| `chr`+`ord`, `--exe -O` | 393.6 ms | 200.8 ms | **2.0×** |
+
+The recipe generalizes: any hot, fixed-arity builtin whose lambda either does
+real work per call or delegates to `methodCall` is a candidate — extract a
+named function, wrap it in the map entry, add it to codegen's `fastB` table.
+The remaining per-call cost in the `chr`/`ord` loop is the `Value`
+construction/moves themselves.
 
 **2. Inline string comparisons.** `eq ne lt gt le ge` get the `rtEqS…` family:
 two *plain* Strs (no `hashKind` tag — Version/IO/Buf — and no enum identity)
@@ -110,11 +139,11 @@ interp / `--exe` / `--exe -O`; tagged-value edge cases (Version `eq`, enum
 ## What's deliberately not done (and what it would buy)
 
 - **The `ValueList` per call** — the actual dominant cost of the calling
-  convention (~40 of the 46 ns floor). `-O`'s direct-arity pass already
-  removes it for fixed-arity user subs; builtins still take `ValueList&` by
-  contract. Changing the builtin ABI (e.g. small-buffer or span args) is a
-  runtime-wide refactor with interpreter implications — the next big lever,
-  not a codegen patch.
+  convention (~40 of the 46 ns floor). `-O`'s direct-arity pass removes it for
+  fixed-arity user subs, and cut 3 removes it for the *named* builtins — but
+  the other ~165 builtins still take `ValueList&` by contract. The named-fn
+  recipe extends one builtin at a time; a wholesale ABI change (small-buffer /
+  span args) remains a runtime-wide refactor with interpreter implications.
 - **`methodCall`'s `if`-ladder** — `$x.method` dispatches through a chain of
   name comparisons in Builtins.cpp (see [RUNTIME.md](../RUNTIME.md)). A
   perfect-hash or interned-name switch would help every method call in both
