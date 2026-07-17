@@ -34,17 +34,17 @@ there.)
 - **Startup:** ~2 ms cold on this machine (best of a 200-spawn loop: 1.8 ms) —
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
   small programs it is instant.
-- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.7× on
-  `arrayops` to 9.3× on `loopsum`, 14.2× on `hash`, and 46× on `strcat`.
+- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.6× on
+  `arrayops` to 9.7× on `loopsum`, 13.9× on `hash`, and 39× on `strcat`.
   Compiling removes interpreter overhead.
 - **Rakudo's JIT keeps two interpreter wins**: `fib` (1.7×) — deep recursion of
-  a tiny body — and the new `streq` kernel (3.3×) — string comparisons, which
-  sit late in the interpreter's operator-dispatch chain. Compiling flips both:
-  `--exe` puts `fib` 2.7× ahead and `streq` 6.0× ahead (string `eq`/`lt`
-  compile to inline byte-compares — see
+  a tiny body — and the new `streq` kernel (1.9×; was 3.3× before plain-`Str`
+  comparisons got a char-dispatched fast path at the top of `applyArith`'s
+  chain). Compiling flips both: `--exe` puts `fib` 2.8× ahead and `streq` 6.0×
+  ahead (string `eq`/`lt` compile to inline byte-compares — see
   [dev/DISPATCH.md](dev/DISPATCH.md) for the dispatch story).
 - Even the **interpreter** beats Rakudo on 7 of 9 — everything except `fib` and
-  `streq`, including the heavy `loopsum` loop kernel (1.4×) that Rakudo's JIT
+  `streq`, including the heavy `loopsum` loop kernel (1.5×) that Rakudo's JIT
   used to lead.
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
   O(n) rather than O(n²) — 16× ahead of Rakudo even interpreted.
@@ -85,15 +85,15 @@ Rakudo's VM leads on `fib` (tiny-body recursion, a JIT's best case) and on
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| strcat   | 11.2 ms  | 178.1 ms | **Raku++ 15.9×** |
-| bigint   | 30.5 ms  | 245.3 ms | **Raku++ 8.0×** |
-| hash     | 35.5 ms  | 218.0 ms | **Raku++ 6.1×** |
-| sortnums | 61.9 ms  | 246.0 ms | **Raku++ 4.0×** |
-| regex    | 79.0 ms  | 272.6 ms | **Raku++ 3.5×** |
-| arrayops | 100.7 ms | 272.8 ms | **Raku++ 2.7×** |
-| loopsum  | 178.5 ms | 251.4 ms | **Raku++ 1.4×** |
-| fib      | 761.9 ms | 453.0 ms | Rakudo 1.7× |
-| streq    | 909.7 ms | 276.8 ms | Rakudo 3.3× |
+| strcat   | 11.5 ms  | 189.4 ms | **Raku++ 16.5×** |
+| bigint   | 32.1 ms  | 261.7 ms | **Raku++ 8.2×** |
+| hash     | 36.6 ms  | 227.4 ms | **Raku++ 6.2×** |
+| sortnums | 63.4 ms  | 257.3 ms | **Raku++ 4.1×** |
+| regex    | 81.7 ms  | 285.8 ms | **Raku++ 3.5×** |
+| arrayops | 107.8 ms | 286.8 ms | **Raku++ 2.7×** |
+| loopsum  | 181.9 ms | 269.4 ms | **Raku++ 1.5×** |
+| streq    | 547.9 ms | 289.0 ms | Rakudo 1.9× |
+| fib      | 776.8 ms | 468.9 ms | Rakudo 1.7× |
 
 ### Native (`--exe`) vs Rakudo
 
@@ -103,33 +103,35 @@ speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| strcat   | 3.9 ms   | 178.1 ms | **Raku++ 46×**   | 2.9× |
-| hash     | 15.3 ms  | 218.0 ms | **Raku++ 14.2×** | 2.3× |
-| loopsum  | 27.1 ms  | 251.4 ms | **Raku++ 9.3×**  | 6.6× |
-| bigint   | 29.2 ms  | 245.3 ms | **Raku++ 8.4×**  | 1.0× |
-| streq    | 46.5 ms  | 276.8 ms | **Raku++ 6.0×**  | 19.6× |
-| sortnums | 49.9 ms  | 246.0 ms | **Raku++ 4.9×**  | 1.2× |
-| regex    | 61.9 ms  | 272.6 ms | **Raku++ 4.4×**  | 1.3× |
-| fib      | 166.5 ms | 453.0 ms | **Raku++ 2.7×**  | 4.6× |
-| arrayops | 102.0 ms | 272.8 ms | **Raku++ 2.7×**  | 1.0× |
+| strcat   | 4.8 ms   | 189.4 ms | **Raku++ 39×**   | 2.4× |
+| hash     | 16.4 ms  | 227.4 ms | **Raku++ 13.9×** | 2.2× |
+| loopsum  | 27.7 ms  | 269.4 ms | **Raku++ 9.7×**  | 6.6× |
+| bigint   | 30.9 ms  | 261.7 ms | **Raku++ 8.5×**  | 1.0× |
+| streq    | 47.8 ms  | 289.0 ms | **Raku++ 6.0×**  | 11.5× |
+| sortnums | 53.0 ms  | 257.3 ms | **Raku++ 4.9×**  | 1.2× |
+| regex    | 63.6 ms  | 285.8 ms | **Raku++ 4.5×**  | 1.3× |
+| fib      | 168.8 ms | 468.9 ms | **Raku++ 2.8×**  | 4.6× |
+| arrayops | 110.1 ms | 286.8 ms | **Raku++ 2.6×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
-hurts — `streq` 19.6× (string `eq`/`lt` become inline byte-compares instead of
-walking `applyArith`'s dispatch chain — see [dev/DISPATCH.md](dev/DISPATCH.md)),
-`loopsum` 6.6×, `fib` 4.6× (both re-dispatch a tiny body a huge number of
-times). It's a near no-op (1.0–1.3×) for the workloads whose time is spent
-*inside* runtime methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and
-especially `bigint`, which lives almost entirely in `BigInt` multiply. There
-the driving loop is trivial, so removing interpreter overhead changes little.
+hurts — `streq` 11.5× (per-node walking around what is, after the fast path, a
+trivial byte-compare — see [dev/DISPATCH.md](dev/DISPATCH.md)), `loopsum` 6.6×,
+`fib` 4.6× (both re-dispatch a tiny body a huge number of times). It's a near
+no-op (1.0–1.3×) for the workloads whose time is spent *inside* runtime
+methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and especially
+`bigint`, which lives almost entirely in `BigInt` multiply. There the driving
+loop is trivial, so removing interpreter overhead changes little.
 
 `fib` — a tiny function called 1.6M times, the case a JIT specializes best — used
 to be the one place Rakudo led even the default `--exe`; hot-pathing integer
 arithmetic in the runtime (`applyArith`) closed that gap and put native ~2.7×
 ahead. `streq` got the same treatment on 2026-07-17: string comparisons used to
-walk `applyArith`'s full dispatch chain (~118 ns per `eq`); compiled code now
-emits inline plain-`Str` byte-compares, and every builtin call goes through a
-pointer resolved once at startup instead of a per-call name lookup
-([dev/DISPATCH.md](dev/DISPATCH.md) has the measurements).
+walk `applyArith`'s full dispatch chain (~118 ns per `eq`). Compiled code now
+emits inline plain-`Str` byte-compares and calls builtins through pointers
+resolved once at startup; the interpreter gained a matching char-dispatched
+Str/Str fast path at the top of `applyArith` (909.7 → 547.9 ms — the remaining
+gap to Rakudo is per-node tree-walk cost, not operator dispatch).
+[dev/DISPATCH.md](dev/DISPATCH.md) has the measurements.
 
 ### `-O` (the optimizer flag)
 

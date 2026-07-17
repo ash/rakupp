@@ -109,9 +109,14 @@ interp / `--exe` / `--exe -O`; tagged-value edge cases (Version `eq`, enum
 - **Remaining `applyArith` late-chain ops** — `x`, `xx`, `gcd`/`lcm`,
   bitwise, `min`/`max`, `leg`/`cmp` still walk the chain. Same recipe as
   `rtEqS` if any shows up hot; none of the current benchmarks exercise them.
-- **The interpreter** pays the same string dispatches per AST node, but its
-  costs are dominated by tree-walking itself (`Binary::simpleOp` already
-  caches the dispatch decision per node). These cuts are `--exe`-side.
+- ~~**The interpreter** pays the same string dispatches per AST node~~ —
+  follow-up, same day: `applyArith` gained a char-dispatched Str/Str fast path
+  at the top of its chain (beside the existing Int/Int and Num ones), so the
+  interpreter now skips the late-chain walk for plain-string `eq ne lt gt le
+  ge ~` too. `streq` interpreted: 909.7 → 547.9 ms (1.7×). The remaining gap
+  to Rakudo there (1.9×) is per-node tree-walk cost, which no operator fast
+  path can remove (`Binary::simpleOp` already caches the dispatch decision
+  per node).
 
 ## Reproducing
 
