@@ -2604,12 +2604,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value secV = Value::integer(0);
             std::vector<Value> pos;
             bool isoStr = false;
+            bool haveNamedField = false;
             for (auto& a : args) {
                 if (a.t == VT::Pair) {
                     long long val = a.pairVal ? a.pairVal->toInt() : 0;
-                    if (a.s == "year") y = val; else if (a.s == "month") mo = val; else if (a.s == "day") d = val;
-                    else if (a.s == "hour") h = val; else if (a.s == "minute") mi = val;
-                    else if (a.s == "second") secV = a.pairVal ? *a.pairVal : Value::integer(0); // exact (frac OK)
+                    if (a.s == "year") { y = val; haveNamedField = true; } else if (a.s == "month") { mo = val; haveNamedField = true; } else if (a.s == "day") { d = val; haveNamedField = true; }
+                    else if (a.s == "hour") { h = val; haveNamedField = true; } else if (a.s == "minute") { mi = val; haveNamedField = true; }
+                    else if (a.s == "second") { secV = a.pairVal ? *a.pairVal : Value::integer(0); haveNamedField = true; } // exact (frac OK)
                     else if (a.s == "timezone") tz = val;
                 } else if (a.t == VT::Str && a.s.find('-', 1) != std::string::npos) {
                     // ISO 8601: YYYY-MM-DD[THH:MM:SS[.frac]][Z|±HH:MM|±HHMM]
@@ -2639,12 +2640,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                                 long long oh = (off[0] - '0') * 10 + (off[1] - '0');
                                 long long om = off.size() == 4 ? (off[2] - '0') * 10 + (off[3] - '0')
                                              : off.size() == 5 ? (off[3] - '0') * 10 + (off[4] - '0') : 0;
+                                if (om >= 60)
+                                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                                        "Minute out of range. Is: " + std::to_string(om) + ", should be in 0..59"};
                                 tz = (is[zp] == '-' ? -1 : 1) * (oh * 3600 + om * 60);
                             }
                         }
                     }
                 } else pos.push_back(a);
             }
+            if (haveNamedField && !pos.empty()) // `DateTime.new(:2016year, 42)` — no mixing
+                throw RakuError{Value::typeObj("X::Temporal"),
+                    "Cannot mix a named date component with a positional argument to " + inv.s + ".new"};
             if (!isoStr && inv.s == "DateTime" && pos.size() == 1 && pos[0].isNumeric()) {
                 // DateTime.new($posix) — seconds since the epoch (frac OK); a :timezone
                 // shifts the displayed civil time (posix itself stays the same instant)
@@ -2692,6 +2699,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "year" || m == "month" || m == "day" || m == "hour" || m == "minute" || m == "posix")
             return Value::integer(fld(m.c_str()));
+        if (m == "hh-mm-ss") { char b[16]; snprintf(b, sizeof b, "%02lld:%02lld:%02lld", fld("hour"), fld("minute"), fld("second")); return Value::str(b); }
         if (m == "day-of-month") return Value::integer(fld("day")); // alias for .day
         if (m == "weekday-of-month") return Value::integer((fld("day") - 1) / 7 + 1);
         if (m == "DateTime") { // Date → DateTime (midnight); DateTime → self
@@ -2772,7 +2780,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if ((m == "later" || m == "earlier") && inv.hashKind == "Date") {
             long long sign = (m == "later") ? 1 : -1;
             long long days = 0, months = 0, years = 0;
-            for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+            ValueList units;
+            for (auto& a : args) { if (a.t == VT::Array && a.arr) for (auto& x : *a.arr) units.push_back(x); else units.push_back(a); }
+            for (auto& a : units) if (a.t == VT::Pair && a.pairVal) {
                 long long v = a.pairVal->toInt();
                 if (a.s == "day" || a.s == "days") days += v;
                 else if (a.s == "week" || a.s == "weeks") days += 7 * v;
@@ -2795,7 +2805,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if ((m == "later" || m == "earlier") && inv.hashKind == "DateTime") {
             long long sign = (m == "later") ? 1 : -1;
             long long secs = 0, days = 0, months = 0, years = 0;
-            for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+            ValueList units; // `.later((:2hours, :30minutes))` passes the units in a list
+            for (auto& a : args) { if (a.t == VT::Array && a.arr) for (auto& x : *a.arr) units.push_back(x); else units.push_back(a); }
+            for (auto& a : units) if (a.t == VT::Pair && a.pairVal) {
                 long long v = a.pairVal->toInt();
                 if      (a.s == "second" || a.s == "seconds") secs   += v;
                 else if (a.s == "minute" || a.s == "minutes") secs   += 60 * v;
