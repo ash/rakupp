@@ -220,7 +220,8 @@ static bool findRuntime(const std::string& selfExe, std::string& lib, std::strin
     if (const char* home = std::getenv("RAKUPP_HOME"))
         dirs.push_back({std::string(home) + "/lib", std::string(home) + "/include/rakupp"});
     dirs.push_back({d, d + "/../src"});                    // build tree (MSVC: Release/ beside the exe)
-    dirs.push_back({d + "/../lib", d + "/../include/rakupp"}); // installed prefix
+    dirs.push_back({d + "/../lib", d + "/../include/rakupp"}); // installed prefix (bin/ + lib/)
+    dirs.push_back({d + "/lib", d + "/include/rakupp"});   // exe at the package ROOT, lib/ beside it
     // the archive is librakupp_rt.a (Unix toolchains) or rakupp_rt.lib (MSVC) —
     // accept whichever is present (github issue #1)
     for (auto& c : dirs)
