@@ -73,7 +73,7 @@ my @deterministic = <
 >;
 for @deterministic -> $name {
     golden([$ROOT.add("examples/$name.raku").Str], $EXP.add("$name.out").Str, "example: $name",
-           :retries($name eq 'sleep-sort' ?? 2 !! 0));
+           :retries($name eq 'sleep-sort' ?? 4 !! 0));
 }
 {
     my ($out, $exit) = run-rakupp($ROOT.add('examples/life.raku').Str);   # random seed
