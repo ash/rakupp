@@ -3314,8 +3314,13 @@ struct DepthGuard {
         if (!t_stackTop) { t_stackTop = &probe; t_stackLimit = currentThreadStackSize(); }
         // used stack grows downward from the recorded top
         size_t used = (size_t)(t_stackTop - &probe);
-        const size_t RESERVE = size_t(2) << 20; // stop with ~2 MiB to spare
-        if (used + RESERVE >= t_stackLimit || d > 100000) { // hard frame backstop too
+        // Stop with ~2 MiB to spare — but on a SMALL stack (a foreign thread,
+        // or a native-compiled main before the linker flag existed) a fixed
+        // reserve would fire immediately; scale it down to a quarter of the
+        // stack so tiny threads still get useful depth before the throw.
+        size_t reserve = size_t(2) << 20;
+        if (t_stackLimit < reserve * 4) reserve = t_stackLimit / 4;
+        if (used + reserve >= t_stackLimit || d > 100000) { // hard frame backstop too
             --d; throw RakuError{Value::str("X::Recursion"), "Too many levels of recursion"};
         }
     }

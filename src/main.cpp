@@ -130,13 +130,18 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
         std::string c = cxx + " /nologo /std:c++17 /EHsc /MT /w " + o;
         if (!inc.empty()) c += " /I " + shq(inc);
         c += " " + shq(in) + " " + shq(lib) + " /Fe:" + shq(out) + " ws2_32.lib";
+        // 256 MiB main-thread stack: Windows defaults to 1 MB, which is under
+        // the recursion guard's 2 MiB headroom reserve — the first guarded
+        // call in a natively-compiled program threw X::Recursion immediately
+        c += " /link /STACK:268435456";
         return c;
     }
     std::string c = cxx + " -std=c++17 " + (opt.empty() ? "-O2" : opt) + " -w -pthread -Wl,-w";
     if (!inc.empty()) c += " -I " + shq(inc);
     c += " " + shq(in) + " " + shq(lib) + " -o " + shq(out);
 #ifdef _WIN32
-    c += " -lws2_32"; // MinGW: the runtime's sockets need Winsock
+    c += " -lws2_32";                 // MinGW: the runtime's sockets need Winsock
+    c += " -Wl,--stack,268435456";    // and the same 256 MiB main stack as MSVC
 #endif
     return c;
 }
