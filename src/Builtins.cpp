@@ -1286,6 +1286,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         static const std::set<std::string> junctionOwn = {
             "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
             "WHICH", "WHY", "item", "new", "defined-or", "THREAD"};
+        if (m == "THREAD" && !args.empty()) {
+            // shallow map: the block sees each eigenstate whole (junctions included)
+            Value out = Value::array(); out.enumName = inv.enumName;
+            out.arr = std::make_shared<ValueList>();
+            for (auto& el : *inv.arr) {
+                ValueList one{el};
+                noAutothread_ = true;
+                out.arr->push_back(callCallable(args[0], one));
+            }
+            return out;
+        }
         if (!junctionOwn.count(m)) {
             Value out = Value::array(); out.enumName = inv.enumName;
             out.arr = std::make_shared<ValueList>();
@@ -5242,6 +5253,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return out;
     }
 
+    // the KEY/POS protocol on an undefined scalar: vacuously empty (xxKEY.t)
+    if ((inv.t == VT::Any || inv.t == VT::Nil) && inv.enumName.empty()) {
+        if (m == "EXISTS-KEY" || m == "EXISTS-POS") return Value::boolean(false);
+        if ((m == "AT-KEY" || m == "AT-POS") && !args.empty()) return Value::any();
+        if ((m == "DELETE-KEY" || m == "DELETE-POS") && !args.empty()) return Value::nil();
+    }
     // Pair
     // low-level access protocol as ordinary methods (xxKEY.t etc.)
     if (inv.t == VT::Hash && inv.hash) {
@@ -5256,7 +5273,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (it == inv.hash->end()) return Value::any();
             Value v = it->second; inv.hash->erase(it); return v;
         }
-        if (m == "ASSIGN-KEY" && args.size() >= 2) {
+        if ((m == "ASSIGN-KEY" || m == "BIND-KEY") && args.size() >= 2) {
             (*inv.hash)[args[0].toStr()] = args[1]; return args[1];
         }
     }

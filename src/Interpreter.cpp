@@ -3781,6 +3781,7 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
     const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
+    bool noAT = noAutothread_; noAutothread_ = false; // one-shot too (Junction.THREAD)
     bool implicitTopic_local = false;
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
     if (codeVal.t == VT::Code && codeVal.code && codeVal.code->isNative) return callNative(*codeVal.code, args);
@@ -3798,7 +3799,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // junctions thread down to their leaves — unless the parameter's type
     // accepts a Junction (Mu / Junction). `(-> Any $x { @e.push: $x }).($j)`
     // visits every leaf eigenstate (S03-junctions/associative.t).
-    if (codeVal.t == VT::Code && codeVal.code && !codeVal.code->builtin &&
+    if (!noAT && codeVal.t == VT::Code && codeVal.code && !codeVal.code->builtin &&
         codeVal.code->params && !codeVal.code->isMultiDispatcher) {
         const auto& ps = *codeVal.code->params;
         for (size_t ai = 0; ai < args.size(); ai++) {
@@ -3855,6 +3856,17 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // outer dispatcher (the parent class's method pushed by
                 // invokeMethodChain); otherwise → Nil.
                 if (!visited->empty()) return Value::nil();
+                // no candidate takes the Junction itself — autothread over it
+                // (recursively, so `mstest(1&2 | 3)` threads down to the leaves)
+                for (size_t ai = 0; ai < as.size(); ai++) {
+                    if (!isJunction(as[ai])) continue;
+                    Value out = Value::array(); out.enumName = as[ai].enumName;
+                    for (auto& e : *as[ai].arr) {
+                        ValueList a2 = as; a2[ai] = e;
+                        out.arr->push_back(callCallable(codeVal, a2, rwArgs));
+                    }
+                    return out;
+                }
                 throw RakuError{Value::str("X::Multi::NoMatch"),
                                 "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
             }
@@ -4228,6 +4240,16 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     if (parentNext) return parentNext(as);   // defer up the inheritance tree
                     return Value::nil();
                 }
+                // no candidate takes the Junction itself — autothread over it
+                for (size_t ai = 0; ai < as.size(); ai++) {
+                    if (!isJunction(as[ai])) continue;
+                    Value out = Value::array(); out.enumName = as[ai].enumName;
+                    for (auto& e : *as[ai].arr) {
+                        ValueList a2 = as; a2[ai] = e;
+                        out.arr->push_back(invokeMethod(dispatcherVal, selfCopy, a2, rwArgs));
+                    }
+                    return out;
+                }
                 throw RakuError{Value::str("X::Multi::NoMatch"),
                                 "No matching multi candidate for method " + c.name};
             }
@@ -4396,7 +4418,15 @@ Value* Interpreter::lvalue(Expr* e) {
     }
     if (e->kind == NK::Index) {
         auto* idx = static_cast<Index*>(e);
-        Value* base = lvalue(idx->base.get());
+        Value* base;
+        if (idx->base->kind == NK::Call) {
+            // `foo()[$i] = v` — index into a call's result; the returned Value
+            // shares its arr/hash with the real container, so writes stick
+            static thread_local Value callBaseHold;
+            callBaseHold = eval(idx->base.get());
+            base = &callBaseHold;
+        }
+        else base = lvalue(idx->base.get());
         // assignment to an adverbed multidim subscript (`%h{a;b;c}:!exists = v`)
         // has no postcircumfix candidate — it dies
         if (idx->multiDim && !idx->adverb.empty())
@@ -4500,6 +4530,10 @@ Value* Interpreter::lvalue(Expr* e) {
             return &base->obj->attrs[mc->method];
         }
     }
+    // `$(expr)` as an assignment target: the itemization wrapper is transparent
+    // for the container — assign into the inner slot
+    if (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "ctx$")
+        return lvalue(static_cast<Unary*>(e)->operand.get());
     // sigilless variable used as an lvalue (`my \a := $a; a = 10`): a bareword that
     // resolves to a bound lexical is assignable through its slot.
     if (e->kind == NK::NameTerm) {
@@ -4550,10 +4584,27 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // destructures the corresponding element.
         std::function<void(ListExpr*, const Value&)> bind = [&](ListExpr* L, const Value& r) {
             ValueList vals = spread(r);
+            size_t vi = 0; // value cursor (a slurpy @/% target consumes the rest)
             for (size_t i = 0; i < L->items.size(); i++) {
-                Value v = (i < vals.size()) ? vals[i] : Value::any();
-                if (L->items[i]->kind == NK::ListExpr) bind(static_cast<ListExpr*>(L->items[i].get()), v);
-                else { Value* lv = lvalue(L->items[i].get()); *lv = v; }
+                Expr* tgt = L->items[i].get();
+                if (tgt->kind == NK::Whatever) { vi++; continue; } // `(*, $a) = …` skips a value
+                if (tgt->kind == NK::VarExpr) {
+                    const std::string& nm = static_cast<VarExpr*>(tgt)->name;
+                    if (nm.size() >= 1 && (nm[0] == '@' || nm[0] == '%')) {
+                        // an @/% target slurps every remaining value; later targets get Any
+                        Value rest = Value::array();
+                        for (size_t j = vi; j < vals.size(); j++) rest.arr->push_back(vals[j]);
+                        vi = vals.size();
+                        Value* lv = lvalue(tgt);
+                        if (nm[0] == '%') { rest.isList = true; *lv = coerceHash(rest); }
+                        else *lv = rest;
+                        continue;
+                    }
+                }
+                Value v = (vi < vals.size()) ? vals[vi] : Value::any();
+                vi++;
+                if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
+                else { Value* lv = lvalue(tgt); *lv = v; }
             }
         };
         bind(lst, rhs);
@@ -4606,7 +4657,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     ValueList vs;
                     if (rv.t == VT::Array || rv.t == VT::Range) vs = rv.flatten();
                     else vs.push_back(rv);
-                    Value* bp = lvalue(ix->base.get());
+                    Value* bp;
+                    Value callHold; // `foo()[$b,] = …` — the result shares arr/hash with the container
+                    if (ix->base->kind == NK::Call) { callHold = eval(ix->base.get()); bp = &callHold; }
+                    else bp = lvalue(ix->base.get());
                     if (bp) {
                         if (bp->t == VT::Any || bp->t == VT::Nil)
                             *bp = ix->isHash ? Value::makeHash() : Value::array();
@@ -4768,13 +4822,42 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
 
     // compound assignment
+    if (a->op.size() > 2 && a->op[0] == 'R' && a->op.back() == '=' &&
+        !std::isalnum((unsigned char)a->op[1])) {
+        // `A Rop= B` is `B op= A` — the R meta reverses roles including the target
+        std::string base = a->op.substr(1, a->op.size() - 2);
+        Value l = eval(a->target.get());
+        Value* rv = lvalue(a->value.get());
+        *rv = applyArith(base, *rv, l);
+        return sink ? Value::any() : *rv;
+    }
+    {   // short-circuit family: the RHS is thunked, and the target only needs to
+        // be assignable when the assignment happens (`1 or= $x++` neither dies
+        // nor runs $x++ — the truthy literal short-circuits first)
+        std::string b = a->op.substr(0, a->op.size() - 1);
+        bool scOr  = b == "||" || b == "or";
+        bool scAnd = b == "&&" || b == "and";
+        bool scDef = b == "//" || b == "orelse";                 // keep when defined
+        bool scAt  = b == "andthen", scNat = b == "notandthen";  // definedness-based
+        if (scOr || scAnd || scDef || scAt || scNat) {
+            Value* lv = nullptr;
+            try { lv = lvalue(a->target.get()); } catch (RakuError&) {}
+            Value cur = lv ? *lv : eval(a->target.get());
+            bool keep = scOr ? cur.truthy() : scAnd ? !cur.truthy()
+                      : scAt ? !isDefined(cur) : isDefined(cur);
+            if (keep) return sink ? Value::any() : cur;
+            if (!lv) throw RakuError{Value::str("Cannot assign"), "Target is not assignable"};
+            Value rhs = eval(a->value.get());
+            int nb = lv->natBits; bool ns = lv->natSigned;
+            *lv = rhs;
+            if (nb) wrapNative(*lv, nb, ns);
+            return sink ? Value::any() : *lv;
+        }
+    }
     Value* lv = lvalue(a->target.get());
     Value rhs = eval(a->value.get());
     int nb = lv->natBits; bool ns = lv->natSigned;
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
-    if (binop == "||") { if (!lv->truthy()) *lv = rhs; return sink ? Value::any() : *lv; }
-    if (binop == "&&") { if (lv->truthy()) *lv = rhs; return sink ? Value::any() : *lv; }
-    if (binop == "//") { if (!isDefined(*lv)) *lv = rhs; return sink ? Value::any() : *lv; }
     if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
         *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
         return sink ? Value::any() : *lv;
@@ -9776,14 +9859,16 @@ Value Interpreter::eval(Expr* e) {
             // Autovivification: `%h{k}.push(...)` on an undefined element creates an
             // Array in place (Raku semantics), so the mutation persists in the container.
             if ((inv.t == VT::Any || inv.t == VT::Nil || inv.t == VT::Type) &&
-                mc->inv->kind == NK::Index &&
+                (mc->inv->kind == NK::Index || mc->inv->kind == NK::VarExpr) &&
                 (mc->method == "push" || mc->method == "append" ||
-                 mc->method == "unshift" || mc->method == "prepend")) {
+                 mc->method == "unshift" || mc->method == "prepend" ||
+                 mc->method == "ASSIGN-KEY" || mc->method == "BIND-KEY")) {
+                bool hashy = mc->method == "ASSIGN-KEY" || mc->method == "BIND-KEY";
                 try {
                     if (Value* slot = lvalue(mc->inv.get())) {
                         if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type)
-                            *slot = Value::array();
-                        inv = *slot; // shares the arr shared_ptr; the push writes through
+                            *slot = hashy ? Value::makeHash() : Value::array();
+                        inv = *slot; // shares the arr/hash shared_ptr; the write goes through
                     }
                 } catch (...) {}
             }

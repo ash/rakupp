@@ -84,6 +84,10 @@ static InfixInfo classifyInfix(const Token& t) {
         const std::string& o = t.text;
         in.op = o;
         if (kAssignOps.count(o)) { in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in; }
+        // reversed-metaop assignment `$x R~= $y` (= `$y ~= $x`, target on the right)
+        if (o.size() > 2 && o[0] == 'R' && o.back() == '=' && kAssignOps.count(o.substr(1))) {
+            in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in;
+        }
         {   // bitwise/shift compound assigns: +|= ?^= +<= …
             static const std::set<std::string> bitwiseBase = {
                 "+&", "+|", "+^", "~&", "~|", "~^", "?&", "?|", "?^", "+<", "+>", "~<", "~>"};
@@ -153,7 +157,7 @@ static InfixInfo classifyInfix(const Token& t) {
             if (allZX) { in.valid = true; in.lbp = BP_ZIP; return in; }
         }
         if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
-        if (o == "and" || o == "andthen") { in.valid = true; in.lbp = BP_AND; return in; }
+        if (o == "and" || o == "andthen" || o == "notandthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
         if (o == "ff" || o == "fff") { in.valid = true; in.lbp = BP_TERNARY; return in; } // flip-flop
         return in;
@@ -334,6 +338,17 @@ ExprPtr Parser::parseExpr(int minbp) {
         // reverse metaoperator `a R/ b` == `b / a` (R immediately before an infix op)
         if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && !peek().spaceBefore) {
             InfixInfo base = classifyInfix(peek());
+            if (base.valid && base.isAssign && BP_ASSIGN >= minbp) {
+                // `$x R~= $y` — reversed-role assignment (assigns to the RIGHT operand)
+                advance(); // R
+                std::string baseOp = advance().text;
+                auto as = std::make_unique<Assign>();
+                as->op = "R" + baseOp;
+                as->target = std::move(lhs);
+                as->value = parseExpr(BP_ASSIGN);
+                lhs = std::move(as);
+                continue;
+            }
             if (base.valid && base.lbp >= minbp) {
                 advance(); // R
                 std::string baseOp = advance().text;
@@ -432,7 +447,12 @@ ExprPtr Parser::parseExpr(int minbp) {
             lhs = std::move(c);
             continue;
         }
-        if (!in.valid || in.lbp < minbp) break;
+        // a word infix tight against `=` (`$a or= 3`, `$n gcd= 12`) binds as an
+        // ASSIGNMENT op, not at the word's own (possibly looser) precedence —
+        // `@p = $a or= 3, 4` nests as `@p = ($a or= (3, 4))`
+        bool wordAssign = in.valid && cur().kind == Tok::Ident &&
+                          peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore;
+        if (!in.valid || (wordAssign ? BP_ASSIGN : in.lbp) < minbp) break;
 
         if (in.isTernary) {
             advance(); // ??
@@ -526,14 +546,16 @@ ExprPtr Parser::parseExpr(int minbp) {
 
         // word-operator compound assignment: `$p x= 3`, `$n gcd= 12` — a textual
         // infix tight against `=` (symbolic forms like `+=` are already one token).
-        if (in.valid && cur().kind == Tok::Ident &&
-            peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore) {
-            if (BP_ASSIGN < minbp) break;
+        if (wordAssign) {
             std::string opname = advance().text; advance(); // the word op, then '='
             auto a = std::make_unique<Assign>();
             a->target = std::move(lhs);
             a->op = opname + "=";
-            a->value = parseExpr(BP_ASSIGN);
+            // the loose boolean words take the whole comma list (`$a or= 3, 4`
+            // assigns the List); tight words (`$n gcd= 12`) stay item assignment
+            static const std::set<std::string> looseWord = {
+                "or", "and", "xor", "orelse", "andthen", "notandthen"};
+            a->value = parseExpr(looseWord.count(opname) ? BP_ZIP : BP_ASSIGN);
             lhs = std::move(a);
             continue;
         }
