@@ -362,6 +362,7 @@ struct GivenStmt : Stmt {
     int defGuard = 0; // 0=given (always), 1=with (run if defined), 2=without (run if undefined)
     bool hasElse = false;
     std::unique_ptr<Block> elseBody; // for `with X {} else {}`
+    std::string elseVar; // `else -> $pos { }` binds the (undefined) topic
     GivenStmt(): Stmt(NK::GivenStmt) {}
 };
 

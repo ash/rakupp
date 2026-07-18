@@ -1990,11 +1990,20 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         }
     } catch (RakuError& e) {
         runLeavePhasers(b->stmts);
+        // `let`-saved containers restore only on this UNSUCCESSFUL exit
+        if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
+            for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
+            tctx_.cur->letRestores.clear();
+        }
         if (hasNestedSub) breakSelfClosures(blockEnv);
         tctx_.cur = saved;
         throw;
     } catch (...) {
         runLeavePhasers(b->stmts);
+        if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
+            for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
+            tctx_.cur->letRestores.clear();
+        }
         if (hasNestedSub) breakSelfClosures(blockEnv);
         tctx_.cur = saved;
         throw;
@@ -2702,7 +2711,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // `when`/`default` block (delivered via BreakGivenEx), or, if nothing matches,
             // the value of the block's last statement.
             if (skip) {
-                if (g->hasElse) { try { return execBlock(g->elseBody.get(), scope); } catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); } }
+                if (g->hasElse) {
+                    if (!g->elseVar.empty()) scope->define(g->elseVar, topic); // else -> $pos { }
+                    try { return execBlock(g->elseBody.get(), scope); }
+                    catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); }
+                }
                 Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; // Empty
             }
             try { return execBlock(g->body.get(), scope); }
@@ -3749,6 +3762,13 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
 }
 #undef NC_DISPATCH
 
+// run `let` restorations for the current env — only on UNSUCCESSFUL exits
+static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
+    if (!e || e->letRestores.empty()) return;
+    for (auto it = e->letRestores.rbegin(); it != e->letRestores.rend(); ++it) (*it)();
+    e->letRestores.clear();
+}
+
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
     const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
@@ -3983,6 +4003,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             return Value::nil();
         }
         if (c.body) runLeavePhasers(*c.body);
+        runLetRestoresOf(tctx_.cur); // unsuccessful exit
         tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
         throw;
     } catch (LeaveEx& le) {
@@ -3991,6 +4012,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return le.hasVal ? le.v : Value::nil(); // `leave` exits this block with its value
     } catch (...) {
         if (c.body) runLeavePhasers(*c.body);
+        runLetRestoresOf(tctx_.cur); // unsuccessful exit
         tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
         throw;
     }
@@ -8007,7 +8029,92 @@ static std::string normHyperMarkers(std::string s) {
     return s;
 }
 
+// `temp $x` / `let $x` — snapshot the container now; temp restores when the
+// scope leaves, let only when it leaves UNSUCCESSFULLY. Called BEFORE the
+// generic argument pre-evaluation: `temp $a = 23` must snapshot $a first.
+Value Interpreter::evalTempLet(Call* c) {
+    // let = temp that only restores when the scope exits UNSUCCESSFULLY
+    auto& restores = c->name == "let" ? tctx_.cur->letRestores
+                                      : tctx_.cur->tempRestores;
+    auto snap = [](Value v) { // detach container storage so later mutation misses the snapshot
+        if (v.t == VT::Array && v.arr) v.arr = std::make_shared<ValueList>(*v.arr);
+        else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<std::map<std::string, Value>>(*v.hash);
+        return v;
+    };
+    // A VarExpr target restores THROUGH its owning Env by name — a raw
+    // Value* into Env.vars (an unordered_map) dangles if the map rehashes
+    // before the scope leaves (same reason the Index cases go by key).
+    auto pushVarRestore = [&](Expr* tg) -> bool {
+        if (tg->kind != NK::VarExpr) return false;
+        std::string nm = static_cast<VarExpr*>(tg)->name;
+        std::shared_ptr<Env> se = tctx_.cur;
+        while (se && !se->vars.count(nm)) se = se->parent;
+        if (!se) return false;
+        Value snapshot = snap(se->vars[nm]);
+        restores.push_back([se, nm, snapshot]() {
+            se->vars[nm] = snapshot;
+        });
+        return true;
+    };
+    // `temp $a = 23`: the arg is an ASSIGN — snapshot the target BEFORE
+    // the assignment stores the new value (else we "restore" the new one)
+    if (c->args[0]->kind == NK::Assign) {
+        auto* as = static_cast<Assign*>(c->args[0].get());
+        if (!pushVarRestore(as->target.get())) {
+            if (Value* lv = lvalue(as->target.get())) {
+                Value snapshot = snap(*lv);
+                restores.push_back([lv, snapshot]() { *lv = snapshot; });
+            }
+        }
+        return eval(c->args[0].get());
+    }
+    // `temp @a[$i]` / `temp %h<k>`: restore THROUGH the container by key, not
+    // through a raw element pointer — the element storage can reallocate (a
+    // later push) before the scope leaves, dangling a captured Value*.
+    Expr* tgt = c->args[0].get();
+    if (tgt->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(tgt);
+        Value base = eval(ix->base.get());
+        Value key = eval(ix->index.get());
+        if (base.t == VT::Array && base.arr && !ix->isHash) {
+            auto arr = base.arr; long long i = key.toInt();
+            if (i < 0) i += (long long)arr->size();
+            if (i >= 0 && i < (long long)arr->size()) {
+                Value snapshot = snap((*arr)[i]);
+                restores.push_back([arr, i, snapshot]() {
+                    if (i < (long long)arr->size()) (*arr)[i] = snapshot;
+                });
+                return (*arr)[i];
+            }
+        }
+        else if (base.t == VT::Hash && base.hash) {
+            auto h = base.hash; std::string k = key.toStr();
+            Value snapshot = h->count(k) ? snap((*h)[k]) : Value::any();
+            bool existed = h->count(k) > 0;
+            restores.push_back([h, k, snapshot, existed]() {
+                if (existed) (*h)[k] = snapshot; else h->erase(k);
+            });
+            return h->count(k) ? (*h)[k] : Value::any();
+        }
+    }
+    if (pushVarRestore(tgt)) { // plain `temp $x` / `temp @a`: restore by env+name
+        if (Value* lv = lvalue(tgt)) return *lv;
+        return Value::any();
+    }
+    if (Value* lv = lvalue(tgt)) { // non-var lvalue (attribute etc.)
+        Value snapshot = snap(*lv);
+        restores.push_back([lv, snapshot]() { *lv = snapshot; });
+        return *lv;
+    }
+    return Value::any();
+}
+
 Value Interpreter::evalCall(Call* c) {
+    // temp/let take their argument by EXPRESSION — the generic args pre-eval
+    // would run a `temp $a = 23` assignment before the snapshot is taken
+    if ((c->name == "temp" || c->name == "let") && c->args.size() == 1 &&
+        !tctx_.cur->find("&" + c->name))
+        return evalTempLet(c);
     ValueList args = evalArgs(c->args);
     if (c->callee) {
         Value f = eval(c->callee.get());
@@ -8030,49 +8137,6 @@ Value Interpreter::evalCall(Call* c) {
                 }
                 if (args[1].t == VT::Code) *lv = callCallable(args[1], ValueList{seen});
                 return *lv; // the code form returns the value it stored (Rakudo behavior)
-            }
-        }
-        // `temp $x` / `temp @a` — snapshot the container now, restore it when the current
-        // scope leaves (dynamic-scope save, like Perl's local). Modifications persist until then.
-        if (c->name == "temp" && c->args.size() == 1 && !tctx_.cur->find("&temp")) {
-            auto snap = [](Value v) { // detach container storage so later mutation misses the snapshot
-                if (v.t == VT::Array && v.arr) v.arr = std::make_shared<ValueList>(*v.arr);
-                else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<std::map<std::string, Value>>(*v.hash);
-                return v;
-            };
-            // `temp @a[$i]` / `temp %h<k>`: restore THROUGH the container by key, not
-            // through a raw element pointer — the element storage can reallocate (a
-            // later push) before the scope leaves, dangling a captured Value*.
-            Expr* tgt = c->args[0].get();
-            if (tgt->kind == NK::Index) {
-                auto* ix = static_cast<Index*>(tgt);
-                Value base = eval(ix->base.get());
-                Value key = eval(ix->index.get());
-                if (base.t == VT::Array && base.arr && !ix->isHash) {
-                    auto arr = base.arr; long long i = key.toInt();
-                    if (i < 0) i += (long long)arr->size();
-                    if (i >= 0 && i < (long long)arr->size()) {
-                        Value snapshot = snap((*arr)[i]);
-                        tctx_.cur->tempRestores.push_back([arr, i, snapshot]() {
-                            if (i < (long long)arr->size()) (*arr)[i] = snapshot;
-                        });
-                        return (*arr)[i];
-                    }
-                }
-                else if (base.t == VT::Hash && base.hash) {
-                    auto h = base.hash; std::string k = key.toStr();
-                    Value snapshot = h->count(k) ? snap((*h)[k]) : Value::any();
-                    bool existed = h->count(k) > 0;
-                    tctx_.cur->tempRestores.push_back([h, k, snapshot, existed]() {
-                        if (existed) (*h)[k] = snapshot; else h->erase(k);
-                    });
-                    return h->count(k) ? (*h)[k] : Value::any();
-                }
-            }
-            if (Value* lv = lvalue(tgt)) { // plain `temp $x` / `temp @a`: the Env slot is stable
-                Value snapshot = snap(*lv);
-                tctx_.cur->tempRestores.push_back([lv, snapshot]() { *lv = snapshot; });
-                return *lv;
             }
         }
         // undefine($x) resets its argument container to the type's undefined value

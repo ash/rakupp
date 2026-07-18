@@ -7711,6 +7711,16 @@ void Interpreter::registerBuiltins() {
         Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
         ValueList ma{mapper}; return I.methodCall(list, "classify", ma);
     };
+    // sub forms of the mapper family: routine(&code, list) == list.routine(&code)
+    for (const char* mf : {"categorize", "deepmap", "duckmap", "nodemap"}) {
+        std::string mname = mf;
+        B[mname] = [mname](Interpreter& I, ValueList& a) -> Value {
+            if (a.size() < 2) return Value::array();
+            Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
+            ValueList ma{a[0]};
+            return I.methodCall(list, mname, ma);
+        };
+    }
     B["quietly"] = [](Interpreter& I, ValueList& a) -> Value { // suppress warn() output; run block/return arg
         if (!a.empty() && a[0].t == VT::Code) {
             I.quietDepth_++;

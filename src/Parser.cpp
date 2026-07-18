@@ -2873,7 +2873,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 sigRetLiteral_ = parsePrimary(); // `(… --> 1)`: literal return value
             int depth = 0;
             while (!isKind(Tok::End)) {
-                if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
+                if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon) ||
+                                   isKind(closeTok))) break; // pointy sigs close at `{`
                 if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
                 else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
                 advance();
@@ -3145,7 +3146,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 sigRetLiteral_ = parsePrimary(); // `($n --> 99)`: literal return value
             int depth = 0;
             while (!isKind(Tok::End)) {
-                if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon))) break;
+                if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon) ||
+                                   isKind(closeTok))) break; // pointy sigs close at `{`
                 if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
                 else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
                 advance();
@@ -3154,6 +3156,22 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         }
         // `,` or `;` (multi-frame separator, e.g. `$;$ = Str`) both separate params
         if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
+    }
+    // some param branches break out before the in-loop handler sees a trailing
+    // `--> Type` (e.g. `-> \x --> Int { }`) — catch it here
+    if (matchOp("-->")) {
+        if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+        else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
+                 isKind(Tok::StrLit) || isKind(Tok::StrInterp))
+            sigRetLiteral_ = parsePrimary();
+        int depth = 0;
+        while (!isKind(Tok::End)) {
+            if (depth == 0 && (isKind(Tok::RParen) || isKind(Tok::Semicolon) ||
+                               isKind(closeTok))) break;
+            if (isKind(Tok::LParen) || isKind(Tok::LBracket)) depth++;
+            else if (isKind(Tok::RParen) || isKind(Tok::RBracket)) depth--;
+            advance();
+        }
     }
     return params;
 }
@@ -3908,7 +3926,15 @@ StmtPtr Parser::parseStatementImpl() {
                 return g;
             }
             g->hasElse = (g->defGuard && isIdent("else"));
-            if (g->hasElse) { advance(); g->elseBody = parseBlock(); }
+            if (g->hasElse) {
+                advance();
+                if (isOp("->") || isOp("<->")) { // `else -> $pos { }` binds the topic
+                    advance();
+                    auto ps = parsePointyParams();
+                    if (!ps.empty() && !ps[0].name.empty()) g->elseVar = ps[0].name;
+                }
+                g->elseBody = parseBlock();
+            }
             return g;
         }
         if (kw == "when") {

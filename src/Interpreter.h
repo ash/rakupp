@@ -53,6 +53,7 @@ struct Env {
     std::map<std::string, Value*> rwDirect;
     std::set<std::string> rwDead;
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
+    std::vector<std::function<void()>> letRestores;  // `let $x` restorations, run ONLY on unsuccessful (exception) exit
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
     std::map<std::string, Value> varDefault;
@@ -535,6 +536,7 @@ public:
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash, so attr writes persist)
 private:
     Value evalCall(Call* c);
+    Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation
     Value evalIndex(Index* idx);
     Value evalInterp(InterpStr* s);
 
