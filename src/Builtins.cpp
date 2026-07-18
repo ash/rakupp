@@ -1654,6 +1654,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         rejectNulPath(path);
         Value p = Value::str(path); p.hashKind = "IO"; return p;
     }
+    // IO::Path flavors: the path value keeps its OS flavor in enumName and
+    // routes volume/dirname/basename/cleanup through that IO::Spec
+    if (inv.t == VT::Type && inv.s.rfind("IO::Path::", 0) == 0 && m == "new") {
+        static const std::set<std::string> kPathFlavors = {"Unix", "Win32", "Cygwin", "QNX"};
+        std::string fl = inv.s.substr(10);
+        if (kPathFlavors.count(fl)) {
+            if (args.empty() || args[0].t == VT::Pair || args[0].toStr().empty())
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                                "Must specify a non-empty string as a path"};
+            std::string path = args[0].toStr();
+            rejectNulPath(path);
+            Value p = Value::str(path); p.hashKind = "IO"; p.enumName = fl;
+            return p;
+        }
+    }
     if (inv.t == VT::Type && inv.s == "CurrentThreadScheduler" && m == "new") {
         Value v = Value::makeHash(); v.hashKind = "Scheduler";
         (*v.hash)["name"] = Value::str("CurrentThreadScheduler");
@@ -3031,6 +3046,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return v;
     }
+    if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "Map")
+        return Value::typeObj("Map"); // Hash.Map on the type object is the Map type
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "new") {
         Value v = Value::makeHash(); v.ofType = inv.ofType;
         ValueList items; // a parenned list arg — Hash.new((a => 1, b => 2)) — spreads
@@ -4306,6 +4323,40 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (p == std::string::npos) return ".";
             return p == 0 ? "/" : t.substr(0, p);
         };
+        // a flavored path (IO::Path::Win32 etc., flavor in enumName) answers
+        // through ITS IO::Spec instead of the platform default
+        if (!inv.enumName.empty()) {
+            std::string spec = "IO::Spec::" + inv.enumName;
+            if (m == "volume" || m == "dirname" || m == "basename") {
+                ValueList sa{Value::str(inv.s)};
+                Value r;
+                if (ioSpecMethod(*this, spec, "split", sa, r) && r.t == VT::Hash && r.hash) {
+                    auto it = r.hash->find(m);
+                    if (it != r.hash->end()) return it->second;
+                }
+            }
+            if (m == "cleanup") {
+                ValueList sa{Value::str(inv.s)};
+                Value r;
+                if (ioSpecMethod(*this, spec, "canonpath", sa, r)) {
+                    Value p = Value::str(r.toStr()); p.hashKind = "IO"; p.enumName = inv.enumName;
+                    return p;
+                }
+            }
+            if (m == "is-absolute" || m == "is-relative") {
+                ValueList sa{Value::str(inv.s)};
+                Value r;
+                if (ioSpecMethod(*this, spec, "is-absolute", sa, r))
+                    return m == "is-absolute" ? r : Value::boolean(!r.truthy());
+            }
+            if (m == "path") return Value::str(inv.s);
+            if (m == "raku" || m == "perl") {
+                std::string q = inv.s; // escape for a double-quoted literal
+                std::string esc; for (char ch : q) { if (ch == '"' || ch == '\\') esc += '\\'; esc += ch; }
+                return Value::str("IO::Path::" + inv.enumName + ".new(\"" + esc + "\")");
+            }
+            if (m == "SPEC") return Value::typeObj(spec);
+        }
         if (m == "parent") {
             long long up = args.empty() ? 1 : a0().toInt();
             std::string s = inv.toStr();
@@ -5401,6 +5452,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (auto& v : items) if (v.t == VT::Pair) (*h.hash)[v.s] = v.pairVal ? *v.pairVal : Value::any();
             return h;
         }
+        if (m == "shape") { // unshaped arrays answer (*,) — declared shapes aren't retained yet
+            Value o = Value::array(); o.isList = true;
+            o.arr->push_back(Value::whatever());
+            return o;
+        }
         if (m == "hyper" || m == "race") { Value o = Value::array(items); o.isList = true; return o; } // parallel -> sequential
         if (m == "is-lazy") return Value::boolean(inv.t == VT::Array && inv.b); // materialised list is not lazy (unless `lazy`-marked)
         if (m == "reduce" && !args.empty() && args[0].t == VT::Code) { // fold with a 2-arg op: (1,2,3).reduce(* + *)
@@ -5922,6 +5978,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return h;
         }
         if (m == "hash" && inv.t == VT::Hash) return inv;   // %h.hash is the hash itself
+        if (m == "Map" && inv.t == VT::Hash) { // %h.Map — an immutable view (detached copy)
+            Value h = Value::makeHash();
+            if (inv.hash) *h.hash = *inv.hash;
+            h.hashKind = "Map";
+            return h;
+        }
         if ((m == "hash" || m == "Hash" || m == "Map") && inv.t == VT::Array) { // list -> Hash/Map
             // Pairs map directly; non-Pair elements pair up CONSECUTIVELY as
             // key, value — `(0,"a",1,"b").hash` is {0 => "a", 1 => "b"}, so
@@ -6619,6 +6681,10 @@ void Interpreter::registerBuiltins() {
             {"array", {"array", "Array", "List", "Any", "Mu", "Positional", "Iterable"}},
             {"Seq", {"Seq", "List", "Any", "Mu", "Positional", "Iterable"}},
             {"IO::Path", {"IO::Path", "IO", "Cool", "Any", "Mu"}},
+            {"IO::Path::Unix", {"IO::Path::Unix", "IO::Path", "IO", "Cool", "Any", "Mu"}},
+            {"IO::Path::Win32", {"IO::Path::Win32", "IO::Path", "IO", "Cool", "Any", "Mu"}},
+            {"IO::Path::Cygwin", {"IO::Path::Cygwin", "IO::Path", "IO", "Cool", "Any", "Mu"}},
+            {"IO::Path::QNX", {"IO::Path::QNX", "IO::Path", "IO", "Cool", "Any", "Mu"}},
             {"Version", {"Version", "Any", "Mu"}},
             {"Blob", {"Blob", "Buf", "Positional", "Any", "Mu"}},
             {"Compiler", {"Compiler", "Any", "Mu"}},
