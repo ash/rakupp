@@ -7715,15 +7715,37 @@ void Interpreter::registerBuiltins() {
     // tests the general category (major class prefix allowed: L matches Lu)
     B["unimatch"] = [cpOfArg](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::boolean(false);
+        if (a[0].t == VT::Type)
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                            "Cannot call unimatch with a type object"};
         bool ok; uint32_t cp = cpOfArg(a[0], ok); if (!ok) return Value::nil(); // "" → Nil
         std::string want = a[1].toStr();
-        std::string prop = a.size() > 2 ? a[2].toStr() : "General_Category";
-        std::string got = (prop == "Script" || prop == "sc") ? uniScript(cp)
-                                                             : uniGeneralCategory(cp);
+        auto loose = [](const std::string& s) {
+            std::string o;
+            for (char ch : s) if (std::isalnum((unsigned char)ch)) o += (char)std::tolower((unsigned char)ch);
+            return o;
+        };
+        if (a.size() > 2) { // explicit property: unimatch($c, 'Hebrew', 'Block') etc.
+            std::string prop = a[2].toStr();
+            std::string got = (prop == "Script" || prop == "sc") ? uniScript(cp)
+                            : (prop == "Block" || prop == "blk") ? uniBlockOf(cp)
+                                                                 : uniGeneralCategory(cp);
+            if (got == want) return Value::boolean(true);
+            if (prop == "Block" || prop == "blk") return Value::boolean(loose(got) == loose(want));
+            if (want.size() == 1 && !got.empty() && got[0] == want[0]) return Value::boolean(true);
+            return Value::boolean(false);
+        }
+        // 2-arg: the name may be a general category, script, binary property, or block
+        std::string got = uniGeneralCategory(cp);
         if (got == want) return Value::boolean(true);
         // major-class prefix: unimatch("A", "L") is true for Lu
         if (want.size() == 1 && !got.empty() && got[0] == want[0]) return Value::boolean(true);
-        return Value::boolean(false);
+        if ((want == "L&" || want == "LC") && got.size() == 2 && got[0] == 'L' &&
+            (got[1] == 'u' || got[1] == 'l' || got[1] == 't')) return Value::boolean(true);
+        if (uniMatchesProp(cp, want)) return Value::boolean(true); // script / binary / <:Prop> forms
+        // a block name without the In prefix, loosely normalized
+        std::string qn = loose(want);
+        return Value::boolean(!qn.empty() && qn == loose(uniBlockOf(cp)));
     };
     B["uc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBUc(I, a[0]); };
     B["lc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBLc(I, a[0]); };
