@@ -5441,7 +5441,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             else out.arr = std::make_shared<ValueList>(items);
             out.isList = true; return out;
         }
-        if (m == "list" || m == "flat" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy")
+        if (m == "flat") {
+            // deep-flatten NON-itemized sublists ((((0,1),2),3).flat is 0,1,2,3);
+            // itemized Arrays ([..] / .item) stay whole elements
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            std::function<void(const Value&)> go = [&](const Value& x) {
+                if (x.t == VT::Array && x.arr && x.isList && !x.itemized)
+                    for (auto& e : *x.arr) go(e);
+                else if (x.t == VT::Range)
+                    for (auto& e : x.flatten()) out.arr->push_back(e);
+                else out.arr->push_back(x);
+            };
+            for (auto& x : items) go(x);
+            return out;
+        }
+        if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy")
             return Value::list(items);
         if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }
         if (m == "rotate") { long n = args.empty() ? 1 : args[0].toInt(); long sz = (long)items.size();

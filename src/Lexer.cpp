@@ -592,7 +592,11 @@ Token Lexer::lexNumber() {
         num += advance(); // .
         while (takeDigit(num) || peek() == '_') { if (peek() == '_') advance(); }
     }
-    if (peek() == 'e' || peek() == 'E') {
+    if ((peek() == 'e' || peek() == 'E') &&
+        (std::isdigit((unsigned char)peek(1)) ||
+         ((peek(1) == '+' || peek(1) == '-') && std::isdigit((unsigned char)peek(2))))) {
+        // an exponent needs DIGITS after the e — `:1e` is the colonpair `e => 1`,
+        // not a malformed float
         isFloat = true; hasExp = true;
         num += advance();
         if (peek() == '+' || peek() == '-') num += advance();

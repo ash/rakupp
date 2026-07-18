@@ -1424,6 +1424,17 @@ static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& 
 ExprPtr Parser::parseColonPair() {
     // ':' already current
     advance();
+    // object-hash literal `:{ :42a, ... }` — parse the brace content as a hash
+    // composer (keys typed Any; representation-wise a plain Hash for now)
+    if (isKind(Tok::LBrace) && !cur().spaceBefore) {
+        advance();
+        auto u = std::make_unique<Unary>();
+        u->op = "ctx%";
+        u->operand = isKind(Tok::RBrace) ? ExprPtr(std::make_unique<ListExpr>())
+                                         : parseExpression();
+        expectKind(Tok::RBrace, "}");
+        return u;
+    }
     bool negate = false;
     if (isOp("!")) { advance(); negate = true; }
     auto pair = std::make_unique<PairExpr>();

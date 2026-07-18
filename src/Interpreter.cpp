@@ -4831,41 +4831,108 @@ static bool isSetPredicateStr(const std::string& o) {
     return ops.count(o) > 0;
 }
 
-static std::map<std::string, long long> setCounts(const Value& v) {
-    std::map<std::string, long long> m;
+// how "heavy" a set-op operand is: 0 = Setty (or coercible), 1 = Baggy, 2 = Mixy
+static int settyTier(const Value& v) {
+    if (v.t == VT::Hash) {
+        if (v.hashKind.find("Mix") == 0) return 2;
+        if (v.hashKind.find("Bag") == 0) return 1;
+    }
+    return 0;
+}
+static bool lazySetOperand(const Value& v) {
+    if (v.t == VT::Range && v.rTo >= 9000000000000000000LL) return true;
+    if (v.t == VT::Array && v.ext)
+        return std::static_pointer_cast<LazySeqState>(v.ext)->infinite;
+    return false;
+}
+// Coerce one operand to key => weight at the JOINT tier. A plain Hash coerces
+// per tier: truthy-filtered membership at Set tier, numeric counts at Bag/Mix
+// tier ({a => 42, b => 0} is set <a>, but bag (a => 42)). Mix tier keeps
+// negative and fractional weights; Set/Bag drop non-positive ones.
+static std::map<std::string, double> setWeights(const Value& v, int tier) {
+    std::map<std::string, double> m;
     if (v.t == VT::Hash && v.hash) {
-        bool isSet = v.hashKind.find("Set") == 0;
-        bool baggy = v.hashKind.find("Bag") == 0 || v.hashKind.find("Mix") == 0;
-        for (auto& kv : *v.hash) m[kv.first] = (baggy && !isSet) ? kv.second.toInt() : 1;
+        bool isSetK = v.hashKind.find("Set") == 0;
+        bool countK = settyTier(v) >= 1;
+        for (auto& kv : *v.hash) {
+            double w;
+            if (isSetK) w = 1;
+            else if (countK) w = kv.second.toNum();
+            else if (tier == 0) { if (!kv.second.truthy()) continue; w = 1; }
+            else w = kv.second.toNum();
+            if (tier == 2 ? w == 0 : w <= 0) continue;
+            m[kv.first] += w;
+        }
     } else if (v.t == VT::Array || v.t == VT::Range) {
         for (auto& x : v.flatten()) {
-            if (x.t == VT::Pair) m[x.s] += x.pairVal ? x.pairVal->toInt() : 0;
+            if (x.t == VT::Pair) m[x.s] += x.pairVal ? x.pairVal->toNum() : 0;
+            else if (x.t == VT::Type || x.t == VT::Any) m[x.gist()] += 1; // type objects ARE elements, keyed by gist
             else m[x.toStr()] += 1;
         }
     } else if (v.t == VT::Pair) {
-        m[v.s] = v.pairVal ? v.pairVal->toInt() : 0;
-    } else if (v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type) {
+        m[v.s] = v.pairVal ? v.pairVal->toNum() : 0;
+    } else if (v.t == VT::Type || v.t == VT::Any) {
+        m[v.gist()] = 1; // (Set) (&) (Set) — the type object is a one-element set
+    } else if (v.t != VT::Nil) {
         m[v.toStr()] = 1;
     }
     return m;
 }
+// wrap a weight map as the tier's IMMUTABLE type (Set / Bag / Mix)
+static Value setWrap(const std::map<std::string, double>& res, int tier) {
+    Value h = Value::makeHash();
+    h.hashKind = tier == 2 ? "Mix" : tier == 1 ? "Bag" : "Set";
+    for (auto& kv : res) {
+        if (tier == 2 ? kv.second == 0 : kv.second <= 0) continue;
+        if (tier == 0) (*h.hash)[kv.first] = Value::boolean(true);
+        else if (kv.second == (double)(long long)kv.second)
+            (*h.hash)[kv.first] = Value::integer((long long)kv.second);
+        else (*h.hash)[kv.first] = Value::number(kv.second);
+    }
+    return h;
+}
+static int setOpMinTier(const std::string& op) {
+    return (op == "(+)" || op == "\xE2\x8A\x8E" || op == "(.)" || op == "\xE2\x8A\x8D") ? 1 : 0;
+}
+// single-operand form: `(|) $x` coerces (union with nothing IS the coercion)
+static Value setCoerceOne(const std::string& op, const Value& v) {
+    int tier = std::max(settyTier(v), setOpMinTier(op));
+    return setWrap(setWeights(v, tier), tier);
+}
 
 static Value setOp(const std::string& op, const Value& l, const Value& r) {
-    auto isBaggy = [](const Value& v) {
-        return v.t == VT::Hash && (v.hashKind.find("Bag") == 0 || v.hashKind.find("Mix") == 0);
+    // membership against a RANGE is an arithmetic bounds check — no
+    // materialization, so 0..10**42 (and open-ended ranges) work
+    auto rangeHas = [](const Value& rng, const Value& x) -> bool {
+        double v = x.toNum();
+        double lo = (double)rng.rFrom + (rng.rExFrom ? 1 : 0);
+        if (rng.rTo >= 9000000000000000000LL) return v >= lo; // huge/unbounded top
+        double hi = (double)rng.rTo - (rng.rExTo ? 1 : 0);
+        return v >= lo && v <= hi;
     };
     if (op == "(elem)" || op == "∈" || op == "(!elem)" || op == "∉") {
-        auto b = setCounts(r); std::string k = l.toStr();
-        bool in = b.count(k) && b[k] > 0;
-        return Value::boolean((op == "(!elem)" || op == "∉") ? !in : in);
+        bool neg = (op == "(!elem)" || op == "∉");
+        if (r.t == VT::Range) return Value::boolean(neg ? !rangeHas(r, l) : rangeHas(r, l));
+        if (lazySetOperand(r)) throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + op + " a lazy list"};
+        auto b = setWeights(r, settyTier(r)); std::string k = l.toStr();
+        bool in = b.count(k) && b[k] != 0;
+        return Value::boolean(neg ? !in : in);
     }
     if (op == "(cont)" || op == "∋" || op == "(!cont)" || op == "∌") {
-        auto a = setCounts(l); std::string k = r.toStr();
-        bool in = a.count(k) && a[k] > 0;
-        return Value::boolean((op == "(!cont)" || op == "∌") ? !in : in);
+        bool neg = (op == "(!cont)" || op == "∌");
+        if (l.t == VT::Range) return Value::boolean(neg ? !rangeHas(l, r) : rangeHas(l, r));
+        if (lazySetOperand(l)) throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + op + " a lazy list"};
+        auto a = setWeights(l, settyTier(l)); std::string k = r.toStr();
+        bool in = a.count(k) && a[k] != 0;
+        return Value::boolean(neg ? !in : in);
     }
-    auto a = setCounts(l), b = setCounts(r);
-    auto at = [](std::map<std::string, long long>& m, const std::string& k) { return m.count(k) ? m[k] : 0; };
+    if (lazySetOperand(l) || lazySetOperand(r))
+        throw RakuError{Value::typeObj("X::Cannot::Lazy"),
+                        "Cannot " + op + " a lazy list"};
+    // joint tier: Mixy > Baggy > Setty; (+) and (.) are Baggy at minimum
+    int tier = std::max({settyTier(l), settyTier(r), setOpMinTier(op)});
+    auto a = setWeights(l, tier), b = setWeights(r, tier);
+    auto at = [](std::map<std::string, double>& m, const std::string& k) { return m.count(k) ? m[k] : 0.0; };
     if (op == "(<=)" || op == "⊆" || op == "(<)" || op == "⊂" || op == "(>=)" || op == "⊇" ||
         op == "(>)" || op == "⊃" || op == "(==)" || op == "(!=)" || op == "(<>)") {
         bool aSubB = true, bSubA = true;
@@ -4879,17 +4946,23 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
         if (op == "(<)" || op == "⊂") return Value::boolean(aSubB && !eq);
         return Value::boolean(bSubA && !eq); // (>) ⊃
     }
-    bool wantBag = isBaggy(l) || isBaggy(r) || op == "(+)" || op == "⊎" || op == "(.)" || op == "⊍";
-    std::map<std::string, long long> res;
+    std::map<std::string, double> res;
     if (op == "(|)" || op == "∪") { res = a; for (auto& kv : b) res[kv.first] = std::max(at(res, kv.first), kv.second); }
     else if (op == "(&)" || op == "∩") { for (auto& kv : a) if (b.count(kv.first)) res[kv.first] = std::min(kv.second, b[kv.first]); }
-    else if (op == "(-)" || op == "∖") { for (auto& kv : a) { long long d = kv.second - at(b, kv.first); if (d > 0) res[kv.first] = d; } }
-    else if (op == "(^)" || op == "⊖") { for (auto& kv : a) if (!b.count(kv.first)) res[kv.first] = kv.second; for (auto& kv : b) if (!a.count(kv.first)) res[kv.first] = kv.second; }
+    else if (op == "(-)" || op == "∖") {
+        if (tier == 2) { res = a; for (auto& kv : b) res[kv.first] = at(res, kv.first) - kv.second; } // Mix keeps negatives
+        else for (auto& kv : a) { double d = kv.second - at(b, kv.first); if (d > 0) res[kv.first] = d; }
+    }
+    else if (op == "(^)" || op == "⊖") {
+        // symmetric difference is the WEIGHT difference at every tier:
+        // Bag(a b(2)) (^) Bag(a b) is bag(b) — for Sets it degenerates to
+        // keys-in-exactly-one (|1-1| = 0 drops shared keys)
+        for (auto& kv : a) { double d = kv.second - at(b, kv.first); res[kv.first] = d < 0 ? -d : d; }
+        for (auto& kv : b) if (!a.count(kv.first)) res[kv.first] = kv.second;
+    }
     else if (op == "(+)" || op == "⊎") { res = a; for (auto& kv : b) res[kv.first] += kv.second; }
     else if (op == "(.)" || op == "⊍") { for (auto& kv : a) if (b.count(kv.first)) res[kv.first] = kv.second * b[kv.first]; }
-    Value h = Value::makeHash(); h.hashKind = wantBag ? "Bag" : "Set";
-    for (auto& kv : res) if (kv.second > 0) (*h.hash)[kv.first] = wantBag ? Value::integer(kv.second) : Value::boolean(true);
-    return h;
+    return setWrap(res, tier);
 }
 
 static bool isJunction(const Value& v) {
@@ -5513,7 +5586,21 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return Value::integer((long long)llround(res));
         return Value::number(res);
     }
-    if (op == "~") return Value::str(l.toStr() + r.toStr());
+    if (op == "~") {
+        // Uni ~ Uni concatenates the CODEPOINT buffers (no normalization —
+        // that's what .NFC on the result is for); nfc-concat.t's whole plan
+        auto uniish = [](const Value& v) {
+            return v.t == VT::Array && v.arr &&
+                   (v.s == "Uni" || v.s == "NFC" || v.s == "NFD" || v.s == "NFKC" || v.s == "NFKD");
+        };
+        if (uniish(l) && uniish(r)) {
+            Value out = Value::array(); out.s = "Uni";
+            for (auto& c : *l.arr) out.arr->push_back(c);
+            for (auto& c : *r.arr) out.arr->push_back(c);
+            return out;
+        }
+        return Value::str(l.toStr() + r.toStr());
+    }
     if (op == "x") {
         std::string base = l.toStr(), out;
         long long n = r.toInt();
@@ -7958,8 +8045,11 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             args.push_back(Value::regex(static_cast<RegexLit*>(a.get())->pattern));
         } else if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") {
             Value v = eval(static_cast<Unary*>(a.get())->operand.get());
-            // |@list slips positionally (Pair elements stay positional); |%hash slips as named args.
-            if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
+            // |@list slips positionally ONE level (post-GLR: nested lists stay
+            // whole elements — |(<a b>, <c d>) is two List arguments, not four
+            // strings); |%hash slips as named args.
+            if (v.t == VT::Array && v.arr) { for (auto& x : *v.arr) args.push_back(x); }
+            else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
             else if (v.t == VT::Hash && v.hash) { for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); } }
             else args.push_back(v);
         } else {
@@ -8307,6 +8397,11 @@ Value Interpreter::evalCall(Call* c) {
                 *lv = (op == "=") ? args[1] : applyBinOp(op.substr(0, op.size() - 1), *lv, args[1]);
                 return *lv;
             }
+        }
+        if (isSetOpStr(op) && args.size() < 2 && !isSetPredicateStr(op)) {
+            // set-op identities: `(|)()` is the empty Set/Bag, one arg COERCES
+            if (args.empty()) return setWrap({}, setOpMinTier(op));
+            return setCoerceOne(op, args[0]);
         }
         if (args.size() >= 2) { // n-ary: left-fold — (|)(a,b,c) is ((a (|) b) (|) c)
             Value acc = args[0];
@@ -9278,6 +9373,10 @@ Value Interpreter::eval(Expr* e) {
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
                     code.code->whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
                     code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {
+                        if (isSetOpStr(op) && a.size() < 2 && !isSetPredicateStr(op)) {
+                            if (a.empty()) return setWrap({}, setOpMinTier(op));
+                            return setCoerceOne(op, a[0]); // one arg coerces
+                        }
                         if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
                             Value acc = a[0];
                             for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
