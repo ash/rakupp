@@ -689,7 +689,11 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
         }
         return arr;
     }
-    return Value::range(from.toInt(), to.toInt(), exFrom, exTo);
+    {
+        Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
+        if (to.t == VT::Int && to.big) r.big = to.big; // keep the big bound (pick/roll sample it)
+        return r;
+    }
 }
 
 // `@a[$i .. *]` for native codegen: the tail slice from index `from` to the end.
@@ -1532,8 +1536,15 @@ int Interpreter::run(Program& prog) {
                         auto* ve0 = static_cast<VarExpr*>(e0);
                         if (ve0->declDefault) {
                             Value dv = eval(ve0->declDefault.get());
-                            global_->varDefault[ve0->name] = dv;
-                            global_->vars[ve0->name] = dv;
+                            if (ve0->name[0] == '@' || ve0->name[0] == '%') {
+                                // container stays empty; v is the ELEMENT default
+                                Value c = ve0->name[0] == '@' ? Value::array() : Value::makeHash();
+                                c.pairVal = std::make_shared<Value>(dv);
+                                global_->vars[ve0->name] = c;
+                            } else {
+                                global_->varDefault[ve0->name] = dv;
+                                global_->vars[ve0->name] = dv;
+                            }
                         }
                         else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
                                  std::isupper((unsigned char)ve0->declType[0]))
@@ -3399,6 +3410,9 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
         if (!st->appendNext(*v.arr)) break;
 }
 
+// what a MISSING (or deleted) element reads as: `is default(v)` beats the type default
+static Value arrayMissingDefault(const Value& base);
+
 Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
     // a `but`/`does` mixin over a Hash/Array delegates subscripting to the box
     if (base.t == VT::Object && base.obj && base.obj->hasBoxed)
@@ -3496,7 +3510,15 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
     Value keyV = isHash ? Value::str(key) : Value::integer(ai);
     if (wantDelete && exists) {
         if (isHash) base.hash->erase(key);
-        else (*base.arr)[ai] = Value::any();
+        else {
+            (*base.arr)[ai] = Value::any();
+            if (ai == (long long)base.arr->size() - 1) { // a trailing delete SHORTENS the array
+                base.arr->pop_back();
+                while (!base.arr->empty() &&
+                       (base.arr->back().t == VT::Nil || base.arr->back().t == VT::Any))
+                    base.arr->pop_back();
+            }
+        }
     }
     if (wantExists) {
         Value ex = Value::boolean(negExists ? !exists : exists);
@@ -3508,7 +3530,10 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
     if (vF) return exists ? val : Value::array();
     if (kvF) { Value o = exists ? Value::array({keyV, val}) : Value::array(); o.isList = true; return o; }
     if (pF) return exists ? Value::pair(keyV.toStr(), val) : Value::array();
-    return exists ? val : Value::any();
+    if (exists) return val;
+    // missing (or just-deleted) element: the container's default, when it has one
+    Value dv = arrayMissingDefault(base);
+    return dv.t == VT::Nil ? Value::any() : dv;
 }
 
 // $obj.accessor as an assignable slot (native codegen) — same semantics as the
@@ -3553,6 +3578,10 @@ static Value typedElemDefault(const Value& base) {
         return Value::integer(0);
     return Value::nil();
 }
+static Value arrayMissingDefault(const Value& base) {
+    if (base.pairVal) return *base.pairVal; // `is default(v)`
+    return typedElemDefault(base);
+}
 
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
@@ -3590,9 +3619,16 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     if ((base.t == VT::Array || base.t == VT::Match) && base.arr) { // Match: positional captures
         long long i = key.toInt(), n = (long long)base.arr->size();
         if (i < 0) i += n;
-        if (i >= 0 && i < n) return (*base.arr)[i];
+        if (i >= 0 && i < n) {
+            const Value& v = (*base.arr)[i];
+            // a deleted slot (undefined hole) in a typed/defaulted array reads as the default
+            if (base.t == VT::Array && (v.t == VT::Nil || v.t == VT::Any) &&
+                (base.pairVal || !base.ofType.empty()))
+                return arrayMissingDefault(base);
+            return v;
+        }
     }
-    return typedElemDefault(base);
+    return arrayMissingDefault(base);
 }
 
 // Attribute access on `self` for native codegen ($!x / $.x inside a method).
@@ -4387,8 +4423,10 @@ Value* Interpreter::lvalue(Expr* e) {
             if (!ve->containerIs.empty() && sigil == '%') // my %h is Set — an empty Setty
                 init = makeBaggy({}, ve->containerIs);
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
-                init = eval(ve->declDefault.get());
-                tctx_.cur->varDefault[ve->name] = init;
+                Value dv = eval(ve->declDefault.get());
+                if (sigil == '@' || sigil == '%') // container stays empty; v is the ELEMENT default
+                    init.pairVal = std::make_shared<Value>(dv);
+                else { init = dv; tctx_.cur->varDefault[ve->name] = dv; }
             }
             else if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
                 tctx_.cur->varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
@@ -8135,7 +8173,11 @@ Value Interpreter::evalUnary(Unary* u) {
         for (auto& ch : r) ch = (char)~(unsigned char)ch;
         return Value::str(r);
     }
-    if (u->op == "^") return Value::range(0, v.toInt(), false, true);
+    if (u->op == "^") {
+        Value r = Value::range(0, v.toInt(), false, true);
+        if (v.t == VT::Int && v.big) r.big = v.big; // keep the big bound (pick/roll sample it)
+        return r;
+    }
     if (u->op == "|") { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
         if (v.t == VT::Array && v.arr) {
@@ -8869,7 +8911,7 @@ Value Interpreter::evalIndex(Index* idx) {
             (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
             if (Value* bp = tctx_.cur->find(ve->name)) {
                 if (bp->t == VT::Array && bp->arr && !bp->ext && bp->ofType.empty() &&
-                    bp->hashKind.empty()) {
+                    !bp->pairVal && bp->hashKind.empty()) { // `is default` arrays take the slow path
                     auto arr = bp->arr; // keeps elements alive if the index expr mutates the var
                     Value iv = eval(idx->index.get());
                     if (iv.t == VT::Int && !iv.big) {
@@ -9150,6 +9192,11 @@ Value Interpreter::evalIndex(Index* idx) {
             else { long long ai = h.keyV.toInt();
                    if (base.arr && ai >= 0 && ai < (long long)base.arr->size()) (*base.arr)[ai] = Value::any(); }
         }
+        // trailing holes shrink the array after deletes (plain subscripts only —
+        // a multidim form that fell through indexes NESTED arrays, not this one)
+        if (wantDelete && !idx->isHash && !idx->multiDim && !idx->semicolonSub &&
+            base.t == VT::Array && base.arr)
+            while (!base.arr->empty() && !isDefined(base.arr->back())) base.arr->pop_back();
         if (!slice) {
             auto& h = hits[0];
             if (wantExists) {
@@ -9162,7 +9209,9 @@ Value Interpreter::evalIndex(Index* idx) {
             if (vF) return h.exists ? h.val : Value::array();
             if (kvF) { Value o = h.exists ? Value::array({h.keyV, h.val}) : Value::array(); o.isList = true; return o; }
             if (pF) return h.exists ? Value::pair(h.keyV.toStr(), h.val) : Value::array();
-            return h.exists ? h.val : Value::any(); // plain :delete (or all conditionals off after delete)
+            if (h.exists) return h.val; // plain :delete (or all conditionals off after delete)
+            Value dv = arrayMissingDefault(base); // `is default(v)` / typed element default
+            return dv.t == VT::Nil ? Value::any() : dv;
         }
         // slice + adverb: :exists is per-key; the others filter to existing keys
         Value out = Value::array(); out.isList = true;
@@ -9279,7 +9328,14 @@ Value Interpreter::evalIndex(Index* idx) {
                     return Value::nil();
                 }
                 if (i < 0) i += n;
-                if (i >= 0 && i < n) return src[i];
+                if (i >= 0 && i < n) {
+                    // a hole (deleted slot) in a defaulted/typed array reads as the default
+                    if (base.t == VT::Array && (src[i].t == VT::Nil || src[i].t == VT::Any) &&
+                        (base.pairVal || !base.ofType.empty()))
+                        return arrayMissingDefault(base);
+                    return src[i];
+                }
+                if (base.pairVal) return *base.pairVal; // `is default(v)`
                 if (!base.ofType.empty()) return typedElemDefault(base);
                 // A List/Seq/Range indexed out of range yields Nil (List.AT-POS);
                 // only a mutable Array yields the element type default (Any).
@@ -9452,6 +9508,12 @@ Value Interpreter::eval(Expr* e) {
                 // `my Tc $c`.
                 if (ve->declDefault) { // `is default(v)`: initial AND reset value
                     Value dv = eval(ve->declDefault.get());
+                    if (sigil == '@' || sigil == '%') { // container stays empty; v is the ELEMENT default
+                        Value c = sigil == '@' ? Value::array() : Value::makeHash();
+                        c.pairVal = std::make_shared<Value>(dv);
+                        tctx_.cur->define(ve->name, c);
+                        return tctx_.cur->vars[ve->name];
+                    }
                     tctx_.cur->varDefault[ve->name] = dv;
                     tctx_.cur->define(ve->name, dv);
                     return tctx_.cur->vars[ve->name];
@@ -10036,7 +10098,11 @@ Value Interpreter::eval(Expr* e) {
                 return Value::range(from.toInt(), 9223372036854775807LL, r->exFrom, false);
             if (from.t == VT::Whatever)
                 return Value::range(-9223372036854775807LL - 1, to.toInt(), false, r->exTo);
-            return Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
+            {
+                Value rr = Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
+                if (to.t == VT::Int && to.big) rr.big = to.big; // keep the big bound (pick/roll sample it)
+                return rr;
+            }
         }
         case NK::Pair: {
             auto* p = static_cast<PairExpr*>(e);

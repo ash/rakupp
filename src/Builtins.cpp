@@ -3531,6 +3531,40 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "close") { if (fd >= 0) ::close(fd); (*inv.hash)["fd"] = Value::integer(-1); return Value::boolean(true); }
     }
 
+    if (inv.t == VT::Range && (m == "pick" || m == "roll") && inv.big) {
+        // a Range with a BIG upper endpoint (`^(2**100)`): uniform BigInt draws
+        // in [rFrom, bound) by limb-wise rejection sampling
+        BigInt bound = *inv.big;
+        if (!inv.rExTo) bound = bound + BigInt(1);
+        BigInt span = bound - BigInt(inv.rFrom);
+        if (span.sign > 0) {
+            auto draw = [&]() -> Value {
+                const auto& sm = span.mag;
+                BigInt c;
+                for (;;) {
+                    c.mag.assign(sm.size(), 0);
+                    for (size_t k = 0; k + 1 < sm.size(); k++) c.mag[k] = (uint32_t)(randDouble() * 1e9);
+                    c.mag.back() = (uint32_t)(randDouble() * ((double)sm.back() + 1)); // top limb ≤ span's top
+                    c.sign = 1; c.trim();
+                    if (BigInt::cmpMag(c, span) < 0) break;
+                }
+                return Value::bigint(c + BigInt(inv.rFrom));
+            };
+            if (args.empty()) return draw();
+            bool all = args[0].t == VT::Whatever || (args[0].isNumeric() && std::isinf(args[0].toNum()));
+            long long n = all ? 0 : args[0].toInt(); // pick(*) over an astronomic range is degenerate
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            if (m == "pick") {
+                std::set<std::string> seen; // distinct draws, keyed by decimal form
+                while ((long long)out.arr->size() < n) {
+                    Value v = draw();
+                    if (seen.insert(v.toStr()).second) out.arr->push_back(v);
+                }
+            }
+            else for (long long i = 0; i < n; i++) out.arr->push_back(draw());
+            return out;
+        }
+    }
     if (inv.t == VT::Range && (m == "pick" || m == "roll")) {
         long long lo = inv.rFrom, hi = inv.rTo;
         // integer spans sample directly — flattening ^2**40 (or ^2**20, 200 times) hangs
