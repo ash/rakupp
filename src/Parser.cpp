@@ -3421,6 +3421,14 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
     else if (isOp("::")) advance(); // anonymous type: `class :: does R { … }`
+    if (isRole && isKind(Tok::LBracket)) {
+        // parameterized role: role R[Any $desc] { } — the signature parses (so
+        // the body's braces stay balanced); argument BINDING is not wired yet,
+        // a body referencing the param sees an undeclared variable at runtime
+        advance();
+        parseSignature(Tok::RBracket);
+        matchKind(Tok::RBracket);
+    }
     if (isPackage) {
         // package/module: the BRACED form `module Foo { ... }` runs its body in a
         // namespace (qualified symbols). The file-scoped `unit module Foo;` form
