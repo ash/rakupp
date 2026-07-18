@@ -226,7 +226,18 @@ static bool findRuntime(const std::string& selfExe, std::string& lib, std::strin
     // accept whichever is present (github issue #1)
     for (auto& c : dirs)
         for (const char* nm : {"/librakupp_rt.a", "/rakupp_rt.lib"})
-            if (fileExists(c.first + nm)) { lib = c.first + nm; inc = c.second; return true; }
+            if (fileExists(c.first + nm)) {
+                lib = c.first + nm;
+                // validate the header guess — multi-config generators (MSVC)
+                // put the exe in build\Release\, one level deeper than the
+                // single-config layouts the pairs above assume
+                inc = c.second;
+                if (!fileExists(inc + "/Interpreter.h"))
+                    for (const std::string cand : {d + "/../../src", d + "/../include/rakupp",
+                                                   d + "/include/rakupp", d + "/../src"})
+                        if (fileExists(cand + "/Interpreter.h")) { inc = cand; break; }
+                return true;
+            }
     // not found: report EVERY probed path, so a failure diagnoses itself
     lib.clear();
     for (auto& c : dirs)
