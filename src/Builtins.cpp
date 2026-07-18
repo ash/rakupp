@@ -1377,8 +1377,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (ci->nativeParent == m) return inv;
     }
     // `.resume` inside a CATCH: unwind to the enclosing block, which continues
-    // execution at the statement after the one that threw.
-    if (m == "resume") throw ResumeEx{};
+    // execution at the statement after the one that threw. With NO handler on
+    // the stack a ResumeEx would escape to std::terminate — die catchably.
+    if (m == "resume") {
+        if (catchDepth_ == 0)
+            throw RakuError{Value::typeObj("X::Parameter::InvalidConcreteness"),
+                            "Cannot resume without an active exception handler"};
+        throw ResumeEx{};
+    }
     // 6.e `.snitch`: run a tap (default: note the value) and return self — for
     // sticking a peek into a method chain. Universal, so handle it up front.
     if (m == "snitch") {
@@ -7132,7 +7138,11 @@ void Interpreter::registerBuiltins() {
                                     "Cannot EVAL code in language '" + lang + "'"};
             } else if (v.t != VT::Pair && !haveCode) { code = v; haveCode = true; }
         }
-        return haveCode ? I.evalString(code.toStr()) : Value::any();
+        if (!haveCode) return Value::any();
+        // control flow may not escape an EVAL: a top-level `return`/`next`/… in
+        // the string is X::ControlFlow, not a silent unwind of the whole program
+        // evalString itself converts escaping control flow (routine-aware)
+        return I.evalString(code.toStr());
     };
     B["exit"] = [](Interpreter&, ValueList& a) -> Value {
         throw ExitEx{(int)(a.empty() ? 0 : a[0].toInt())};

@@ -192,6 +192,9 @@ public:
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
     bool noAutothread_ = false;
+    // depth of live CATCH handlers: .resume outside any handler dies catchably
+    // (a bare ResumeEx with nothing to absorb it would reach std::terminate)
+    int catchDepth_ = 0;
     // Supply.on-close callbacks registered while a supply/react block runs;
     // fired when that block finishes (our model's "tap closed" moment)
     std::vector<std::vector<Value>> supplyCloseStack_;

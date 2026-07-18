@@ -1822,6 +1822,25 @@ Value Interpreter::evalString(const std::string& src) {
         catch (RedoEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "redo without a supporting loop construct"}; }
         catch (NextEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "next without a supporting loop construct"}; }
         catch (LastEx&) { throw RakuError{Value::typeObj("X::ControlFlow"), "last without a supporting loop construct"}; }
+        catch (ReturnEx&) {
+            // with an enclosing routine, `return` in the EVAL returns from IT;
+            // top-level it is the spec'd control-flow error
+            if (tctx_.curRoutineFrame != 0) throw;
+            throw RakuError{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
+        }
+        // the cooperative flags must not leak out of a TOP-LEVEL EVAL — a phaser's
+        // `return` inside an EVAL'd loop would silently unwind the whole program
+        if (tctx_.returning && tctx_.curRoutineFrame == 0) {
+            tctx_.returning = false;
+            throw RakuError{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
+        }
+        if (tctx_.returning) return last; // enclosing routine consumes the flag
+        if (tctx_.loopCtl) {
+            int c = tctx_.loopCtl; tctx_.loopCtl = 0;
+            throw RakuError{Value::typeObj("X::ControlFlow"),
+                            std::string(c == 1 ? "next" : c == 2 ? "last" : "redo") +
+                            " without a supporting loop construct"};
+        }
     }
     return last;
 }
@@ -1974,7 +1993,10 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     auto runCatch = [&](RakuError& e) -> bool {
         tctx_.cur->define("$_", exceptionFor(e));
         tctx_.cur->define("$!", exceptionFor(e));
-        try { for (auto& s : catchBlk->stmts) exec(s.get()); }
+        try {
+            struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
+            for (auto& s : catchBlk->stmts) exec(s.get());
+        }
         catch (BreakGivenEx&) { /* when/default matched */ }
         catch (ResumeEx&) { return true; }
         return false;
@@ -2039,7 +2061,25 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
         catch (LastEx& e) { if (!e.label.empty() && e.label != label) throw; return false; }
     }
     bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
-    auto runLast = [&]() { if (isLast) inScope(&Interpreter::runLastPhasers); }; // LAST {…}: once, after the last
+    // `return` inside a NEXT/LAST phaser WITH an enclosing routine returns from
+    // it (`sub f { for 1,2 { LAST return $_ } }`); with NO routine it is
+    // X::ControlFlow::Return (like Rakudo) — never the raw unwind that used to
+    // reach std::terminate at the top level
+    auto noReturn = [&](const std::function<void()>& fn) {
+        try { fn(); }
+        catch (ReturnEx&) {
+            if (tctx_.curRoutineFrame != 0) throw; // the enclosing routine consumes it
+            throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+                            "Attempt to return outside of any Routine"};
+        }
+        if (tctx_.returning && tctx_.curRoutineFrame == 0) {
+            tctx_.returning = false;
+            throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+                            "Attempt to return outside of any Routine"};
+        }
+    };
+    auto runNextP = [&]() { noReturn([&]{ runNextPhasers(body->stmts, scope); }); };
+    auto runLast = [&]() { if (isLast) noReturn([&]{ inScope(&Interpreter::runLastPhasers); }); }; // LAST {…}: once, after the last
     // this loop is now the innermost native loop for cooperative next/last/redo
     uint64_t savedLoopFrame = tctx_.curLoopFrame;
     tctx_.curLoopFrame = tctx_.frameTop;
@@ -2053,13 +2093,13 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
                   int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
                   if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params)
-                  if (ctl == 1) { try { runNextPhasers(body->stmts, scope); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
+                  if (ctl == 1) { try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
                   runLast(); suppressLoopFirst_ = savedSF; return false; // last
               }
-              if (collect) collect->push_back(v); try { runNextPhasers(body->stmts, scope); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
+              if (collect) collect->push_back(v); try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (LeaveEx&) { runLast(); suppressLoopFirst_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } if (rebind) rebind(); continue; }
-        catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } try { runNextPhasers(body->stmts, scope); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
+        catch (NextEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (BreakGivenEx&) { suppressLoopFirst_ = savedSF; return true; }
         catch (LastEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } runLast(); suppressLoopFirst_ = savedSF; return false; }
         catch (...) { suppressLoopFirst_ = savedSF; throw; }
@@ -4106,8 +4146,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             tctx_.cur->define("$_", exceptionFor(e));
             tctx_.cur->define("$!", exceptionFor(e));
             try {
+                struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
                 for (auto& s : catchBlk->stmts) exec(s.get());
             } catch (BreakGivenEx&) { /* a when/default matched */ }
+            catch (ResumeEx&) { /* .resume: the exception is absorbed; the body can't re-enter, so fall through as handled */ }
             catch (...) { if (c.body) runLeavePhasers(*c.body); restore(); throw; } // die/rethrow from CATCH
             if (c.body) runLeavePhasers(*c.body);
             restore();
