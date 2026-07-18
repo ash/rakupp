@@ -46,3 +46,4 @@
 # Claude Code local config / memory notes (kept on disk, not tracked)
 .claude/
 .claude-memory/
+build-mingw/

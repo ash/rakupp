@@ -32,6 +32,7 @@ jobs:
           - { os: macos-latest,   name: macos-universal }
           - { os: ubuntu-latest,  name: linux-x86_64 }
           - { os: windows-latest, name: windows-x64 }
+          - { os: windows-latest, name: windows-x64-mingw, mingw: true }
     steps:
       - uses: actions/checkout@v7
 
@@ -60,19 +61,47 @@ jobs:
       # so users don't need the VC++ Redistributable (msvcp140.dll) installed —
       # same self-contained philosophy as the static libstdc++ on Linux.
       - name: Configure (Windows, MSVC x64)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.mingw != true
         run: cmake -S . -B build -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
+      # MinGW-w64 (GCC) Windows build — the GNU toolchain MSYS2 users have,
+      # and what `--exe` invokes there (g++ on PATH). -static bundles
+      # libstdc++/libgcc/winpthread so the exe is as self-contained as the
+      # /MT MSVC build. The runtime archive is librakupp_rt.a here (the
+      # --exe lookup accepts both namings).
+      - name: Set up MSYS2 (MinGW-w64)
+        if: matrix.mingw == true
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake make
+
+      - name: Configure (Windows, MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        run: cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_EXE_LINKER_FLAGS=-static"
+
       - name: Build
+        if: matrix.mingw != true
         run: cmake --build build --config Release -j 4
+
+      - name: Build (MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        run: cmake --build build -j 4
 
       - name: Smoke test (POSIX)
         if: runner.os != 'Windows'
         run: build/rakupp tools/smoke.raku
 
       - name: Smoke test (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.mingw != true
         run: build\Release\rakupp.exe tools/smoke.raku
+
+      - name: Smoke test (Windows, MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        run: build/rakupp.exe tools/smoke.raku
 
       # Byte-for-byte checks of every example + showcase against t/expected/,
       # plus live pastebin/chat servers. POSIX only: the server tests background
@@ -85,7 +114,13 @@ jobs:
       # Package the --exe-capable install layout: bin/rakupp, lib/librakupp_rt.a,
       # include/rakupp/*.h (main.cpp's findRuntime() expects exactly this).
       - name: Install layout
+        if: matrix.mingw != true
         run: cmake --install build --config Release --prefix dist/rakupp
+
+      - name: Install layout (MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        run: cmake --install build --prefix dist/rakupp
 
       - name: Package (POSIX)
         if: runner.os != 'Windows'

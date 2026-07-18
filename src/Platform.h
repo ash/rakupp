@@ -23,7 +23,15 @@
 #include <cstdlib>
 #include <cstring>
 
+// MinGW-w64 ships real POSIX-ish headers for much of this — use them and shim
+// only what msvcrt genuinely lacks. The full shims below are MSVC-only.
+#if defined(__MINGW32__)
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/types.h>
+#else
 using ssize_t = long long;
+#endif
 
 // --- dynamic loading: <dlfcn.h> -> LoadLibrary/GetProcAddress ---
 #define RTLD_LAZY   0
@@ -54,10 +62,11 @@ inline int platform_access(const char* p, int m) { return ::_access(p, m == X_OK
 // --- poll(): Winsock's WSAPoll matches the POSIX signature (Vista+) ---
 inline int poll(struct pollfd* fds, unsigned long n, int timeout) { return ::WSAPoll(fds, n, timeout); }
 
-// --- mkdir: POSIX 2-arg -> Windows 1-arg ---
+// --- mkdir: POSIX 2-arg -> Windows 1-arg (an overload beside MinGW's 1-arg) ---
 inline int mkdir(const char* path, int) { return ::_mkdir(path); }
 
-// --- <dirent.h>: opendir/readdir/closedir over FindFirstFile ---
+#if !defined(__MINGW32__)
+// --- <dirent.h>: opendir/readdir/closedir over FindFirstFile (MSVC has none) ---
 struct dirent { char d_name[260]; };
 struct DIR {
     HANDLE h = INVALID_HANDLE_VALUE;
@@ -86,6 +95,7 @@ inline int closedir(DIR* d) {
     delete d;
     return 0;
 }
+#endif // !__MINGW32__
 
 // --- <sys/stat.h> gaps: MSVC has struct stat but not the S_IS* macros / mode_t ---
 #include <sys/stat.h>
@@ -95,7 +105,9 @@ inline int closedir(DIR* d) {
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
 #endif
-using mode_t = int;
+#if !defined(__MINGW32__)
+using mode_t = int; // MinGW's sys/types.h already has it
+#endif
 
 // --- erand48: POSIX 48-bit LCG (drand48 family), reimplemented for parity ---
 inline double erand48(unsigned short xsubi[3]) {
