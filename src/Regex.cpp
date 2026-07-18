@@ -22,6 +22,8 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
     try {
         root_ = parseAlt();
         if (!eof()) ok_ = false; // trailing garbage (e.g. unbalanced)
+    } catch (ObsoleteEscape& oe) {
+        ok_ = false; obsolete_ = oe.seq;
     } catch (...) {
         ok_ = false;
     }
@@ -31,17 +33,30 @@ void Regex::skipWs() {
     for (;;) {
         while (!eof() && std::isspace((unsigned char)peek())) pos_++;
         if (peek() == '#') { while (!eof() && peek() != '\n') pos_++; continue; }
-        // inline adverb :i :s :ignorecase ...
-        if (peek() == ':' && (std::isalpha((unsigned char)peek(1)) || (peek(1) == '!' && std::isalpha((unsigned char)peek(2))))) {
+        // inline adverb :i :s :ignorecase — with an optional value: :!i, :0i/:1i, :i(0)/:i(1)
+        if (peek() == ':' && (std::isalpha((unsigned char)peek(1)) || std::isdigit((unsigned char)peek(1)) ||
+                              (peek(1) == '!' && std::isalpha((unsigned char)peek(2))))) {
             size_t save = pos_;
             pos_++;
+            long num = -1; // -1 = no value given (plain :i means on)
+            while (std::isdigit((unsigned char)peek())) { num = (num < 0 ? 0 : num) * 10 + (peek() - '0'); pos_++; }
             bool neg = peek() == '!';
             if (neg) pos_++;
             std::string adv;
             while (std::isalnum((unsigned char)peek())) adv += pat_[pos_++];
+            if (peek() == '(') { // :i(0) / :i(1) argument form
+                size_t p = pos_ + 1; std::string arg;
+                while (p < pat_.size() && pat_[p] != ')') arg += pat_[p++];
+                if (p < pat_.size()) {
+                    size_t q = arg.find_first_not_of(" \t");
+                    num = (q != std::string::npos && arg.find_first_not_of(" \t0") == std::string::npos) ? 0 : 1;
+                    pos_ = p + 1;
+                }
+            }
+            bool on = !neg && num != 0;
             // scoped: applies from here to the end of the enclosing group
-            if (adv == "i" || adv == "ignorecase") curIcase_ = !neg;
-            else if (adv == "s" || adv == "sigspace") sigspace_ = !neg;
+            if (adv == "i" || adv == "ignorecase") curIcase_ = on;
+            else if (adv == "s" || adv == "sigspace") sigspace_ = on;
             else if (adv == "g" || adv == "ratchet" || adv == "m") {}
             else { pos_ = save; break; } // not an adverb we consume; leave it
             continue;
@@ -137,15 +152,24 @@ Regex::NodePtr Regex::parseQuant() {
     if (c == '*' && peek(1) != '*') { pos_++; mn = 0; mx = -1; markListCap(); }
     else if (c == '+') { pos_++; mn = 1; mx = -1; markListCap(); }
     else if (c == '?') { pos_++; mn = 0; mx = 1; }
+    bool ngMod = false; // `**?` / `**:?` — non-greedy bounds ( `!` / `:!` = explicit greed, the default)
     if (mn == -2 && peek() == '*' && peek(1) == '*') {
         markListCap();
         pos_ += 2; skipWs();
+        {   // optional greed/ratchet modifier between `**` and the bounds
+            size_t msave = pos_;
+            if (peek() == ':') pos_++;
+            if (peek() == '?') { ngMod = true; pos_++; }
+            else if (peek() == '!') pos_++;
+            else if (pos_ != msave && peek() != '{' && !std::isdigit((unsigned char)peek())) pos_ = msave; // lone ':' before something else
+            skipWs();
+        }
         if (peek() == '{') { // `** { … }` — runtime bounds evaluated at match time
             int depth = 1; pos_++;
             std::string code;
             while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '{') depth++; else if (d == '}') { depth--; if (!depth) break; } code += d; }
             auto rep = std::make_unique<Node>();
-            rep->k = K::Rep; rep->min = 0; rep->max = -1; rep->greedy = true; rep->repCode = code;
+            rep->k = K::Rep; rep->min = 0; rep->max = -1; rep->greedy = !ngMod; rep->repCode = code;
             rep->kids.push_back(std::move(atom));
             return rep;
         }
@@ -162,7 +186,7 @@ Regex::NodePtr Regex::parseQuant() {
     }
     if (mn == -2) return atom; // no quantifier
     auto rep = std::make_unique<Node>();
-    rep->k = K::Rep; rep->min = mn; rep->max = mx; rep->greedy = true;
+    rep->k = K::Rep; rep->min = mn; rep->max = mx; rep->greedy = !ngMod;
     if (peek() == '?') { rep->greedy = false; pos_++; }
     else if (peek() == '+' || peek() == '!') { pos_++; } // ratchet/possessive: treat greedy
     rep->kids.push_back(std::move(atom));
@@ -479,19 +503,38 @@ Regex::NodePtr Regex::parseAtom() {
     if (c == '\'' || c == '"') {
         char q = c;
         pos_++;
+        auto seq = std::make_unique<Node>(); seq->k = K::Seq;
         std::string lit;
+        // a quoted multi-char literal: build a Seq of single-char Lits so quantifiers stay sane
+        auto flush = [&]() {
+            for (char ch : lit) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
+            lit.clear();
+        };
         while (!eof() && peek() != q) {
             if (peek() == '\\' && pos_ + 1 < pat_.size()) {
                 pos_++; char e = pat_[pos_++];
                 switch (e) { case 'n': lit += '\n'; break; case 't': lit += '\t'; break;
                              case 'r': lit += '\r'; break; case '0': lit += '\0'; break; default: lit += e; }
+            } else if (q == '"' && peek() == '$' &&
+                       (std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) {
+                // "$0" / "$var" inside a double-quoted regex literal matches the
+                // value at match time (in-flight capture or scope variable)
+                pos_++;
+                std::string var = "$";
+                while (!eof()) {
+                    char p = peek();
+                    if (std::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }
+                    else if (p == '-' && (std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
+                    else break;
+                }
+                flush();
+                auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = var; seq->kids.push_back(std::move(vm));
             } else lit += pat_[pos_++];
         }
         if (peek() == q) pos_++;
-        // a quoted multi-char literal: build a Seq of single-char Lits so quantifiers stay sane
-        if (lit.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = lit; return n; }
-        auto seq = std::make_unique<Node>(); seq->k = K::Seq;
-        for (char ch : lit) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
+        if (seq->kids.empty() && lit.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = lit; return n; }
+        flush();
+        if (seq->kids.size() == 1) return std::move(seq->kids[0]);
         return seq;
     }
     if (c == '.') { pos_++; auto n = std::make_unique<Node>(); n->k = K::Any; return n; }
@@ -527,6 +570,16 @@ Regex::NodePtr Regex::parseAtom() {
         // whitespace (and \H/\V their negations).
         if (e == 'N') { n->k = K::Class; n->icase = curIcase_; n->negate = true; n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); return n; }
         if (e == 'h' || e == 'H') { n->k = K::Class; n->icase = curIcase_; n->negate = (e=='H'); n->ranges.push_back({' ',' '}); n->ranges.push_back({'\t','\t'}); return n; }
+        // \T \R \F \E — one char that is NOT a tab / return / formfeed / escape char
+        if (e == 'T' || e == 'R' || e == 'F' || e == 'E') {
+            char lc = e == 'T' ? '\t' : e == 'R' ? '\r' : e == 'F' ? '\f' : '\x1b';
+            n->k = K::Class; n->icase = curIcase_; n->negate = true;
+            n->ranges.push_back({(unsigned char)lc, (unsigned char)lc}); return n;
+        }
+        // retired Perl 5 metachars die at compile time (Rakudo: X::Obsolete)
+        if (e == 'A' || e == 'Z' || e == 'z' || e == 'G' || e == 'p' || e == 'P' ||
+            e == 'L' || e == 'U' || e == 'Q' || (e >= '1' && e <= '9'))
+            throw ObsoleteEscape{std::string("\\") + e};
         if (e == 'v' || e == 'V') { n->k = K::Class; n->icase = curIcase_; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'}); return n; }
         // \X[HH] / \O[OO] / \C[NAME] — match ONE codepoint that is NOT the given one(s).
         if ((e == 'X' || e == 'O' || e == 'C') && (peek() == '[' || (e != 'C' && std::isalnum((unsigned char)peek())))) {

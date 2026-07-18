@@ -100,6 +100,7 @@ class Regex {
 public:
     explicit Regex(const std::string& pattern, const std::string& flags = "");
     bool ok() const { return ok_; }
+    const std::string& obsolete() const { return obsolete_; } // non-empty: retired P5 metachar
     int nCaps() const { return ncaps_; }
     // Find the first match whose start is >= startPos (unanchored search).
     bool search(const std::string& subject, long startPos, RxMatch& out) const;
@@ -164,6 +165,7 @@ private:
     std::shared_ptr<std::set<std::string>> listNames_; // subrule capture keys under a repetition quantifier
     void collectListNames(const Node* n); // walk a quantified atom, gathering capturing subrule keys
     bool ok_ = true;
+    std::string obsolete_;               // retired metachar seen (e.g. "\\A"), for X::Obsolete
     bool icase_ = false;
     bool curIcase_ = false; // parse-time adverb state: :i/:!i scoped to the enclosing group
     bool sigspace_ = false;
@@ -203,6 +205,9 @@ public:
     // (nested-quantifier backtracking) would otherwise hang or overflow the C++
     // stack. Caught at the match entry points and reported as a no-match/error.
     struct StepLimitExceeded {};
+    // Thrown by the parser on a retired Perl 5 metachar (\A \z \G \p \Q \1 …);
+    // the ctor records it so callers can raise X::Obsolete instead of no-match.
+    struct ObsoleteEscape { std::string seq; };
     bool matchNode(const Node* n, MState& st, long pos, const FnRef& k) const;
     // {min,max} byte width the pattern can match; max = -1 means unbounded/unknown.
     std::pair<long, long> nodeWidth(const Node* n, MState& st) const;

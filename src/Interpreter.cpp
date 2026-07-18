@@ -5911,6 +5911,9 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         pat = out;
     }
     Regex re(pat);
+    if (!re.obsolete().empty())
+        throw RakuError{Value::typeObj("X::Obsolete"),
+            "Unsupported use of " + re.obsolete() + "; this Perl 5 metacharacter is gone in Raku"};
     // resolve <NAME> subrules against lexical `my regex/token NAME {…}`; unknown names stay
     // lenient (zero-width) so existing patterns with unhandled assertions don't start failing.
     SubResolver resolver;
@@ -9674,7 +9677,11 @@ Value Interpreter::eval(Expr* e) {
             if (mc->bang && !tctx_.cur->find("self")) // private call outside any method body
                 throw RakuError{Value::typeObj("X::Method::NotFound"),
                     "Private method call to '" + mc->method + "' outside the defining class"};
-            Value inv = eval(mc->inv.get());
+            // `/re/.method` operates on the Regex object; only bare /…/ in term
+            // position matches $_ (so the invocant must not auto-match here)
+            Value inv = (mc->inv && mc->inv->kind == NK::RegexLit)
+                ? Value::regex(static_cast<RegexLit*>(mc->inv.get())->pattern)
+                : eval(mc->inv.get());
             if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
                 Value mv = eval(mc->methodExpr.get());
                 if (mv.t == VT::Code) { // a method object / callable: invoke with the invocant

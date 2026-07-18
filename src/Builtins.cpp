@@ -5414,6 +5414,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
 
+    if (inv.t == VT::Regex && m == "ACCEPTS") // returns the Match (or Nil), sets $/
+        return regexMatch(args.empty() ? std::string() : args[0].toStr(), inv.s);
+
     // list / array / range
     if (inv.t == VT::Range && m == "ACCEPTS")
         return Value::boolean(applyArith("~~", args.empty() ? Value::any() : args[0], inv).truthy());

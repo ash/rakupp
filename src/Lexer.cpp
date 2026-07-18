@@ -1138,7 +1138,7 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
                 "if", "unless", "while", "until", "when", "given", "return", "and", "or",
                 "not", "so", "say", "print", "put", "note", "grep", "map", "first",
                 "gather", "take", "ok", "nok", "is", "isnt", "like", "unlike", "split",
-                "comb", "join", "for", "elsif", "where", "die", "warn",
+                "comb", "join", "for", "elsif", "where", "die", "warn", "dd",
             };
             return kw.count(pv.text) > 0;
         }
@@ -1456,8 +1456,9 @@ std::vector<Token> Lexer::tokenize() {
                 // `<(` and `)>` are the match-capture markers, not balanced <…> groups
                 if (ch == '<' && peek(1) == '(') { raw += advance(); raw += advance(); continue; }
                 if (ch == ')' && peek(1) == '>') { raw += advance(); raw += advance(); continue; }
-                // `<<` / `>>` are word-boundary assertions, not angle groups
-                if ((ch == '<' && peek(1) == '<') || (ch == '>' && peek(1) == '>'))
+                // `<<` / `>>` are word-boundary assertions, not angle groups — but
+                // only at depth 0: in `<!after <[cd]>>` the two `>` close nested angles
+                if (angle == 0 && ((ch == '<' && peek(1) == '<') || (ch == '>' && peek(1) == '>')))
                     { raw += advance(); raw += advance(); continue; }
                 if (ch == '<') angle++;
                 else if (ch == '>' && angle > 0) angle--;
