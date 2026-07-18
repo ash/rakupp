@@ -7,6 +7,7 @@
 #include "Highlight.h"
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -22,12 +23,73 @@ using namespace rakupp;
 
 // ---- helpers for the compile modes (--bundle / --aot / --exe) ----------
 
-// Wrap a string in single quotes for the shell (escaping embedded quotes).
+// Wrap a string for the shell — single quotes for POSIX shells, double quotes
+// for cmd.exe (which has no single-quote syntax).
 static std::string shq(const std::string& s) {
+#ifdef _WIN32
+    std::string out = "\"";
+    for (char c : s) { if (c == '"') out += "\"\""; else out += c; }
+    out += "\"";
+    return out;
+#else
     std::string out = "'";
     for (char c : s) { if (c == '\'') out += "'\\''"; else out += c; }
     out += "'";
     return out;
+#endif
+}
+
+// Does this compiler use MSVC-style options? (cl or clang-cl, by basename)
+static bool msvcStyle(const std::string& cxx) {
+    std::string b = cxx;
+    size_t sl = b.find_last_of("/\\");
+    if (sl != std::string::npos) b = b.substr(sl + 1);
+    for (auto& ch : b) ch = (char)std::tolower((unsigned char)ch);
+    if (b.size() > 4 && b.compare(b.size() - 4, 4, ".exe") == 0) b.resize(b.size() - 4);
+    return b == "cl" || b == "clang-cl";
+}
+
+// The native compiler for --exe/--bundle: $CXX, else `cl` on Windows, `c++` elsewhere.
+static std::string nativeCxx() {
+    const char* e = std::getenv("CXX");
+    if (e && *e) return e;
+#ifdef _WIN32
+    return "cl";
+#else
+    return "c++";
+#endif
+}
+
+// Build the compile-and-link command for a generated source + the runtime
+// archive, in the dialect of the chosen compiler. `opt` is the Unix-style
+// optimization flag ("-O2", "-O0", …); it is translated for cl.
+static std::string compileCmd(const std::string& cxx, const std::string& opt,
+                              const std::string& inc, const std::string& in,
+                              const std::string& lib, const std::string& out) {
+    if (msvcStyle(cxx)) {
+        std::string o = opt == "-O0" ? "/Od" : opt == "-O1" ? "/O1" : "/O2";
+        std::string c = cxx + " /nologo /std:c++17 /EHsc /w " + o;
+        if (!inc.empty()) c += " /I " + shq(inc);
+        c += " " + shq(in) + " " + shq(lib) + " /Fe:" + shq(out) + " ws2_32.lib";
+        return c;
+    }
+    std::string c = cxx + " -std=c++17 " + (opt.empty() ? "-O2" : opt) + " -w -pthread -Wl,-w";
+    if (!inc.empty()) c += " -I " + shq(inc);
+    c += " " + shq(in) + " " + shq(lib) + " -o " + shq(out);
+#ifdef _WIN32
+    c += " -lws2_32"; // MinGW: the runtime's sockets need Winsock
+#endif
+    return c;
+}
+
+// On Windows the produced binary must carry .exe (cl's /Fe would add it anyway,
+// leaving our messages and default-output logic out of sync).
+static void ensureExeSuffix(std::string& outPath) {
+#ifdef _WIN32
+    if (outPath.size() < 4 || outPath.compare(outPath.size() - 4, 4, ".exe") != 0)
+        outPath += ".exe";
+#endif
+    (void)outPath;
 }
 
 // Emit a C++ string literal for `s` (used for the embedded program name).
@@ -44,11 +106,11 @@ static std::string cppstr(const std::string& s) {
 }
 
 static std::string dirOf(const std::string& path) {
-    auto p = path.find_last_of('/');
+    auto p = path.find_last_of("/\\"); // Windows binaries report backslashed paths
     return p == std::string::npos ? "." : path.substr(0, p);
 }
 static std::string baseOf(const std::string& path) {
-    auto p = path.find_last_of('/');
+    auto p = path.find_last_of("/\\");
     return p == std::string::npos ? path : path.substr(p + 1);
 }
 
@@ -93,13 +155,17 @@ static std::string selfExePath(const char* argv0) {
 // first that has the library; `lib` is set to the best guess for error messages.
 static bool findRuntime(const std::string& selfExe, std::string& lib, std::string& inc) {
     std::string d = dirOf(selfExe);
-    std::vector<std::pair<std::string, std::string>> cands;
+    std::vector<std::pair<std::string, std::string>> dirs;
     if (const char* home = std::getenv("RAKUPP_HOME"))
-        cands.push_back({std::string(home) + "/lib/librakupp_rt.a", std::string(home) + "/include/rakupp"});
-    cands.push_back({d + "/librakupp_rt.a", d + "/../src"});                     // build tree
-    cands.push_back({d + "/../lib/librakupp_rt.a", d + "/../include/rakupp"});   // installed prefix
-    for (auto& c : cands) if (std::ifstream(c.first).good()) { lib = c.first; inc = c.second; return true; }
-    lib = cands.front().first;
+        dirs.push_back({std::string(home) + "/lib", std::string(home) + "/include/rakupp"});
+    dirs.push_back({d, d + "/../src"});                    // build tree (MSVC: Release/ beside the exe)
+    dirs.push_back({d + "/../lib", d + "/../include/rakupp"}); // installed prefix
+    // the archive is librakupp_rt.a (Unix toolchains) or rakupp_rt.lib (MSVC) —
+    // accept whichever is present (github issue #1)
+    for (auto& c : dirs)
+        for (const char* nm : {"/librakupp_rt.a", "/rakupp_rt.lib"})
+            if (std::ifstream(c.first + nm).good()) { lib = c.first + nm; inc = c.second; return true; }
+    lib = dirs.front().first + (msvcStyle(nativeCxx()) ? "/rakupp_rt.lib" : "/librakupp_rt.a");
     return false;
 }
 
@@ -120,6 +186,7 @@ static std::string defaultOut(const std::string& srcName) {
 // link it against librakupp_rt.a (statically, so the result needs no rakupp).
 static int compileToExe(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe) {
     if (outPath.empty()) outPath = defaultOut(srcName);
+    ensureExeSuffix(outPath);
 
     // The runtime static library sits next to this rakupp binary.
     std::string lib, inc;
@@ -138,6 +205,11 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
         stub << "// Generated by `rakupp --bundle`. Embeds a Raku program and runs it\n"
                 "// via the linked-in Raku++ runtime.\n"
                 "#include <string>\n#include <vector>\n#include <cstdlib>\n"
+                "#ifdef _WIN32\n"
+                "#define RAKUPP_REALPATH(p, r) _fullpath((r), (p), 4096)\n"
+                "#else\n"
+                "#define RAKUPP_REALPATH(p, r) realpath((p), (r))\n"
+                "#endif\n"
                 "namespace rakupp { int rakuppRunBigStack(const std::string&, std::vector<std::string>,"
                 " const std::string&, const std::string&, const std::vector<std::string>&); }\n";
         stub << "static const unsigned char SRC[] = {";
@@ -149,15 +221,12 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
-                "  char rp[4096]; if (realpath(exe.c_str(), rp)) exe = rp;\n"
+                "  char rp[4096]; if (RAKUPP_REALPATH(exe.c_str(), rp)) exe = rp;\n"
                 "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
                 "}\n";
     }
 
-    const char* cxxEnv = std::getenv("CXX");
-    std::string cxx = cxxEnv && *cxxEnv ? cxxEnv : "c++";
-    std::string cmd = cxx + " -std=c++17 -O2 -pthread -Wl,-w " + shq(stubPath) + " " + shq(lib)
-                    + " -o " + shq(outPath);
+    std::string cmd = compileCmd(nativeCxx(), "-O2", "", stubPath, lib, outPath);
     int rc = std::system(cmd.c_str());
     std::remove(stubPath.c_str());
     if (rc != 0) { std::cerr << "Compilation failed (compiler exit " << rc << ")\n"; return 5; }
@@ -176,6 +245,7 @@ static std::string absPath(const std::string& p) {
 // back with a clear message if the program uses an unsupported construct.
 static int compileNative(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe, bool optimize = false, const std::string& ccOpt = "-O2") {
     if (outPath.empty()) outPath = defaultOut(srcName);
+    ensureExeSuffix(outPath);
 
     std::string cpp;
     try {
@@ -204,10 +274,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     std::string genPath = outPath + ".rakupp.gen.cpp";
     { std::ofstream g(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
 
-    const char* cxxEnv = std::getenv("CXX");
-    std::string cxx = cxxEnv && *cxxEnv ? cxxEnv : "c++";
-    std::string cmd = cxx + " -std=c++17 " + shq(ccOpt) + " -w -pthread -Wl,-w -I " + shq(inc) + " "
-                    + shq(genPath) + " " + shq(lib) + " -o " + shq(outPath);
+    std::string cmd = compileCmd(nativeCxx(), ccOpt, inc, genPath, lib, outPath);
     int rc = std::system(cmd.c_str());
     if (!std::getenv("RAKUPP_KEEPGEN")) std::remove(genPath.c_str());
     if (rc != 0) { std::cerr << "Compilation failed (compiler exit " << rc << ")\n"; return 5; }
@@ -220,6 +287,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
 // source bundling for any construct the AST emitter can't reconstruct.
 static int compileAotAst(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe) {
     if (outPath.empty()) outPath = defaultOut(srcName);
+    ensureExeSuffix(outPath);
     std::string cpp, finish;
     try {
         Lexer lexer(src);
@@ -245,9 +313,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
     }
     std::string genPath = outPath + ".rakupp.ast.cpp";
     { std::ofstream g(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
-    const char* cxxEnv = std::getenv("CXX");
-    std::string cxx = cxxEnv && *cxxEnv ? cxxEnv : "c++";
-    std::string cmd = cxx + " -std=c++17 -O2 -w -pthread -Wl,-w -I " + shq(inc) + " " + shq(genPath) + " " + shq(lib) + " -o " + shq(outPath);
+    std::string cmd = compileCmd(nativeCxx(), "-O2", inc, genPath, lib, outPath);
     int rc = std::system(cmd.c_str());
     if (!std::getenv("RAKUPP_KEEPGEN")) std::remove(genPath.c_str());
     if (rc != 0) { std::cerr << "Compilation failed (compiler exit " << rc << ")\n"; return 5; }
