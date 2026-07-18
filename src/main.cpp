@@ -329,6 +329,7 @@ int main(int argc, char** argv) {
             if (a == "--html") fmt = "html";
             else if (a == "--ansi" || a == "--terminal") fmt = "ansi";
             else if (a == "-e" && k + 1 < argc) { src = argv[++k]; haveSrc = true; }
+            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; } // attached form: -e"say 123"
             else if (a == "-") { /* explicit stdin */ }
             else if (!haveSrc && a[0] != '-') { srcFile = a; }
         }
@@ -351,6 +352,8 @@ int main(int argc, char** argv) {
     if (argc >= 2 && (std::string(argv[1]) == "--ast" || std::string(argv[1]) == "--dump-ast")) {
         std::string src, fname = "-e";
         if (argc >= 4 && std::string(argv[2]) == "-e") src = argv[3];
+        else if (argc >= 3 && std::string(argv[2]).rfind("-e", 0) == 0 &&
+                 std::string(argv[2]).size() > 2) src = std::string(argv[2]).substr(2); // -e"say 123"
         else if (argc >= 3) {
             std::ifstream in(argv[2]);
             if (!in) { std::cerr << "Cannot open file: " << argv[2] << "\n"; return 4; }
@@ -374,6 +377,7 @@ int main(int argc, char** argv) {
         for (int i = 2; i < argc; i++) {
             std::string a = argv[i];
             if (a == "-e" && i + 1 < argc) { src = argv[++i]; haveSrc = true; }
+            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; } // attached form: -e"say 123"
             else if (!haveSrc) {
                 std::ifstream in(a);
                 if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
@@ -399,6 +403,7 @@ int main(int argc, char** argv) {
             std::string a = argv[i];
             if (a == "-O" || a == "-O1") optimize = true;
             else if (a == "-e" && i + 1 < argc) { src = argv[++i]; haveSrc = true; }
+            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; } // attached form: -e"say 123"
             else if (!haveSrc) {
                 std::ifstream in(a);
                 if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
