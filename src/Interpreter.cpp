@@ -2112,6 +2112,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             noteSymbolMutation("named-regex declaration");
             namedRegex_[nr->name] = nr->pattern;    // <NAME> resolvable from a plain /…/ regex
             namedRegexKind_[nr->name] = nr->kind;
+            // the `&name` form: a Callable running the regex against its argument
+            // (unanchored), so `'port = 443' ~~ &pair` and &pair($str) work
+            std::string pat = nr->pattern;
+            Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+            code.code->name = nr->name;
+            code.code->builtin = [pat](Interpreter& I, ValueList& a) -> Value {
+                return a.empty() ? Value::nil() : I.regexMatch(a[0].toStr(), pat);
+            };
+            tctx_.cur->define("&" + nr->name, code);
             return Value::any();
         }
         case NK::SubsetDecl: {
@@ -7298,6 +7307,8 @@ Value Interpreter::evalBinary(Binary* b) {
         if (r.t == VT::Code) {
             // `$x ~~ *.method` / `$x ~~ { … }` / `$x ~~ &c` — call it with $x, match on truthiness
             Value m = callCallable(r, ValueList{lTopic});
+            // a regex Callable (my regex pair {…}) yields its MATCH, like Rakudo
+            if (op == "~~" && m.t == VT::Match) return m;
             bool ok = boolify(m);
             return Value::boolean(op == "~~" ? ok : !ok);
         }
@@ -8959,6 +8970,10 @@ Value Interpreter::evalIndex(Index* idx) {
     if (!idx->isHash && (base.t == VT::Array || base.t == VT::Range || base.t == VT::Str)) {
         ValueList src = (base.t == VT::Array && base.arr) ? *base.arr : base.flatten();
         long long n = (long long)src.size();
+        // a Blob/Buf subscript works on bytes: `$b[*-1]` / `$b[0..*-2]` need the
+        // BYTE count as the resolved length (the slice branch reads the bytes)
+        if (base.t == VT::Str && (base.hashKind == "Blob" || base.hashKind == "Buf"))
+            n = (long long)base.s.size();
         std::vector<long long> indices;
         bool isSlice = false;
         if (idx->index->kind == NK::Range) {
@@ -9009,6 +9024,17 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         if (isSlice) {
+            // Blob/Buf slices index the BYTES ($b[1..2] / $b[0,2] / $b[^2]),
+            // not the one-item-list view a plain Str gets
+            if (base.t == VT::Str && (base.hashKind == "Blob" || base.hashKind == "Buf")) {
+                Value out = Value::array(); out.isList = true;
+                long long bn = (long long)base.s.size();
+                for (long long k : indices) {
+                    if (k < 0) k += bn;
+                    if (k >= 0 && k < bn) out.arr->push_back(Value::integer((unsigned char)base.s[k]));
+                }
+                return out;
+            }
             Value out = Value::array(); out.isList = true;
             for (long long k : indices) { if (k < 0) k += n; if (k >= 0 && k < n) out.arr->push_back(src[k]); }
             return out;

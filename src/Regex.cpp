@@ -81,8 +81,17 @@ Regex::NodePtr Regex::parseSeq() {
         skipWs();
         bool hadSpace = pos_ > before;
         char c = peek();
-        if (eof() || c == '|' || c == ')' || c == ']') break;
-        if (assertDepth_ > 0 && c == '>') break; // end of an assertion inner
+        if (eof() || c == '|' || c == ')' || c == ']' ||
+            (assertDepth_ > 0 && c == '>')) {
+            // sigspace: TRAILING whitespace in a rule also matches <.ws> —
+            // `rule TOP { \w+ '=' \N* }` accepts the line's trailing newline
+            if (sigspace_ && hadSpace && !seq->kids.empty()) {
+                auto ws = std::make_unique<Node>();
+                ws->k = K::Subrule; ws->ruleName = "ws"; ws->ruleCapture = false;
+                seq->kids.push_back(std::move(ws));
+            }
+            break;
+        }
         // goal operator: `A ~ B  C D` matches `A C D B` (nice bracket-matching sugar)
         if (c == '~' && !seq->kids.empty()) { pos_++; skipWs(); goalClose = parseQuant(); continue; }
         // sigspace (a `rule`): whitespace between atoms matches <.ws> — \s* that

@@ -4078,9 +4078,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "cos") return Value::number(std::cos(inv.toNum()));
     if (m == "numerator") return inv.t == VT::Rat ? Value::bigint(*inv.ratN) : Value::integer(inv.toInt());
     if (m == "denominator") return inv.t == VT::Rat ? Value::bigint(*inv.ratD) : Value::integer(1);
-    if (m == "nude") {
-        if (inv.t == VT::Rat) return Value::array({Value::bigint(*inv.ratN), Value::bigint(*inv.ratD)});
-        return Value::array({Value::integer(inv.toInt()), Value::integer(1)});
+    if (m == "nude") { // a List (prints "(3 10)"), not an Array, like Rakudo
+        Value o = inv.t == VT::Rat
+            ? Value::array({Value::bigint(*inv.ratN), Value::bigint(*inv.ratD)})
+            : Value::array({Value::integer(inv.toInt()), Value::integer(1)});
+        o.isList = true;
+        return o;
     }
     if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
     if (inv.t == VT::Array && inv.arr &&
@@ -4219,9 +4222,72 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::integer(inv.toInt() - 1);
     }
     if (m == "is-prime") {
-        long long n = inv.toInt(); bool p = n > 1;
-        for (long long d = 2; d * d <= n && p; d++) if (n % d == 0) p = false;
-        return Value::boolean(p);
+        // Miller-Rabin with the standard small-prime witness set: deterministic
+        // for anything below 3.3e24, and matches Rakudo's probabilistic answer
+        // beyond (found via (2**127-1).is-prime — trial division on a truncated
+        // int64 said False for M127)
+        static const long long kWit[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+        if (inv.big) {
+            const BigInt& n = *inv.big;
+            BigInt one(1), two(2);
+            if (n.sign <= 0 || BigInt::cmp(n, two) < 0) return Value::boolean(false);
+            auto mod = [](const BigInt& a, const BigInt& b) { BigInt q, r; BigInt::divmod(a, b, q, r); return r; };
+            auto modpow = [&](BigInt b, BigInt e, const BigInt& mo) {
+                BigInt r(1);
+                b = mod(b, mo);
+                while (!e.isZero()) {
+                    BigInt q, rm; BigInt::divmod(e, BigInt(2), q, rm);
+                    if (!rm.isZero()) r = mod(r * b, mo);
+                    b = mod(b * b, mo);
+                    e = q;
+                }
+                return r;
+            };
+            for (long long w : kWit) { // small-prime divisibility screen
+                if (BigInt::cmp(n, BigInt(w)) == 0) return Value::boolean(true);
+                if (mod(n, BigInt(w)).isZero()) return Value::boolean(false);
+            }
+            BigInt d = n - one; long long s = 0;
+            for (;;) { BigInt q, r; BigInt::divmod(d, BigInt(2), q, r); if (!r.isZero()) break; d = q; s++; }
+            BigInt nm1 = n - one;
+            for (long long w : kWit) {
+                BigInt x = modpow(BigInt(w), d, n);
+                if (BigInt::cmp(x, one) == 0 || BigInt::cmp(x, nm1) == 0) continue;
+                bool composite = true;
+                for (long long r = 1; r < s; r++) {
+                    x = mod(x * x, n);
+                    if (BigInt::cmp(x, nm1) == 0) { composite = false; break; }
+                }
+                if (composite) return Value::boolean(false);
+            }
+            return Value::boolean(true);
+        }
+        long long n = inv.toInt();
+        if (n < 2) return Value::boolean(false);
+        for (long long w : kWit) { if (n == w) return Value::boolean(true); if (n % w == 0) return Value::boolean(false); }
+        auto mulmod = [](long long a, long long b, long long mo) -> long long {
+#if RAKUPP_HAS_INT128
+            return (long long)((__int128)a * b % mo);
+#else
+            BigInt q, r; BigInt::divmod(BigInt(a) * BigInt(b), BigInt(mo), q, r);
+            return r.fitsLL() ? r.toLL() : 0; // MSVC: no __int128 — go through BigInt
+#endif
+        };
+        auto modpow = [&](long long b, long long e, long long mo) {
+            long long r = 1; b %= mo;
+            for (; e; e >>= 1) { if (e & 1) r = mulmod(r, b, mo); b = mulmod(b, b, mo); }
+            return r;
+        };
+        long long d = n - 1; int s = 0;
+        while ((d & 1) == 0) { d >>= 1; s++; }
+        for (long long w : kWit) {
+            long long x = modpow(w, d, n);
+            if (x == 1 || x == n - 1) continue;
+            bool composite = true;
+            for (int r = 1; r < s; r++) { x = mulmod(x, x, n); if (x == n - 1) { composite = false; break; } }
+            if (composite) return Value::boolean(false);
+        }
+        return Value::boolean(true);
     }
 
     // ---- IO::Path (string-as-path) ----

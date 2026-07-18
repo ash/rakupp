@@ -34,17 +34,10 @@ grammar JSON {
 class JsonNull { method gist { 'null' } }
 my \NULL = JsonNull.new;
 
-# A quantified capture (`<x>* % ','`) comes back as a List for many matches but a
-# bare Match for exactly one; normalise both (and the empty case) to a list.
-sub as-list($x) {
-    return () unless $x.defined;
-    $x ~~ Positional ?? $x.list !! ($x,);
-}
-
 class Actions {
     method TOP($/)               { make $<value>.made }
-    method value:sym<object>($/) { make as-list($<pairs><pair>).map({ .made }).hash }
-    method value:sym<array>($/)  { make as-list($<items><value>).map({ .made }).Array }
+    method value:sym<object>($/) { make $<pairs><pair>.map({ .made }).hash }
+    method value:sym<array>($/)  { make $<items><value>.map({ .made }).Array }
     method value:sym<string>($/) { make $<string>.made }
     method value:sym<number>($/) {
         my $s = ~$/;
