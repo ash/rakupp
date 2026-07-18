@@ -43,6 +43,10 @@ target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
 
 if(WIN32)
   target_link_libraries(rakupp_rt PUBLIC ws2_32)   # Winsock (sockets, WSAPoll)
+  # Target Windows 8+ APIs (GetCurrentThreadStackLimits; WSAPoll needs Vista+).
+  # MSVC's SDK headers default new enough, but MinGW's default _WIN32_WINNT can
+  # be Windows 7 — which hides the declaration and breaks the build.
+  target_compile_definitions(rakupp_rt PUBLIC _WIN32_WINNT=0x0602)
 endif()
 
 add_executable(rakupp "${RAKUPP_MAIN}")
