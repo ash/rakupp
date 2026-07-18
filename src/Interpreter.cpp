@@ -8308,8 +8308,12 @@ Value Interpreter::evalCall(Call* c) {
                 return *lv;
             }
         }
-        return args.size() >= 2 ? applyBinOp(op, args[0], args[1])
-             : args.size() == 1 ? args[0] : Value::any();
+        if (args.size() >= 2) { // n-ary: left-fold — (|)(a,b,c) is ((a (|) b) (|) c)
+            Value acc = args[0];
+            for (size_t k = 1; k < args.size(); k++) acc = applyBinOp(op, acc, args[k]);
+            return acc;
+        }
+        return args.size() == 1 ? args[0] : Value::any();
     }
     if (c->name == "postfix:<i>" && !args.empty()) return postfixI(args[0]);
     // hyper spellings in call form: prefix:<-«>(…) / postfix:<»i>(…)
@@ -9274,7 +9278,11 @@ Value Interpreter::eval(Expr* e) {
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
                     code.code->whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
                     code.code->builtin = [op](Interpreter& I, ValueList& a) -> Value {
-                        if (a.size() >= 2) return I.applyBinOp(op, a[0], a[1]);
+                        if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
+                            Value acc = a[0];
+                            for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
+                            return acc;
+                        }
                         if (a.size() == 1) { // single arg combines with the op's identity
                             if (op == "+" || op == "-") return I.applyBinOp(op, Value::integer(0), a[0]);
                             if (op == "*" || op == "/") return I.applyBinOp(op, Value::integer(1), a[0]);
