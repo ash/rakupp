@@ -2355,6 +2355,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Pod") {
         auto& h = *inv.hash;
         if (m == "name")     return h.count("name") ? h["name"] : Value::str("");
+        if (m == "type")     return h.count("type") ? h["type"] : Value::str("");
         if (m == "contents") return h.count("contents") ? h["contents"] : Value::array();
         if (m == "level")    return h.count("level") ? h["level"] : Value::integer(1);
         if (m == "config")   return h.count("config") ? h["config"] : Value::makeHash();

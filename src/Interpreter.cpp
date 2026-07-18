@@ -2900,8 +2900,16 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     }
                 }
                 env->define(p.name, a);
-                // capture sub-signature `|c($x, $y)` — unpack the slurped positionals
-                if (p.subSig) bindParams(*p.subSig, *a.arr, env);
+                // capture sub-signature `|c($x, :$y!)` — unpack the slurped
+                // positionals AND the call's named args into the inner params
+                if (p.subSig) {
+                    ValueList inner = *a.arr;
+                    for (auto& kv : named) {
+                        Value na = Value::pair(kv.first, kv.second); na.namedArg = true;
+                        inner.push_back(na);
+                    }
+                    bindParams(*p.subSig, inner, env);
+                }
             }
             continue;
         }
@@ -3098,6 +3106,20 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         if (!ok) return -1;
     }
     int score = 0;
+    // a capture with a sub-signature (`|c (Int $x)`) dispatches on the INNER
+    // signature: score the remaining args (positionals it would slurp + all
+    // nameds) against it recursively
+    if (slurpyParam && slurpyParam->sigil == '\\' && slurpyParam->subSig) {
+        auto tmp = std::make_shared<Callable>();
+        tmp->params = slurpyParam->subSig.get();
+        Value tv; tv.t = VT::Code; tv.code = tmp;
+        ValueList rest;
+        for (size_t i = total; i < pos.size(); i++) rest.push_back(pos[i]);
+        for (auto& a : args) if (isNamedArg(a)) rest.push_back(a);
+        int s = scoreCandidate(tv, rest);
+        if (s < 0) return -1;
+        score += 1 + s;
+    }
     for (size_t i = 0; i < positional.size() && i < pos.size(); i++) {
         const Param* p = positional[i];
         if (p->litVal) { // literal parameter: arg must equal the literal
