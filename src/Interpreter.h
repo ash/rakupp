@@ -192,6 +192,9 @@ public:
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
     bool noAutothread_ = false;
+    // Supply.on-close callbacks registered while a supply/react block runs;
+    // fired when that block finishes (our model's "tap closed" moment)
+    std::vector<std::vector<Value>> supplyCloseStack_;
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs); // no wrap layer
     Value callNative(Callable& c, ValueList& args); // `is native` C FFI
     // Live-Supply transform chain: run one emitted value through a tap's chain of

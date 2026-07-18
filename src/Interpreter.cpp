@@ -964,6 +964,7 @@ Interpreter::Interpreter() {
         };
         reg("X::AdHoc", {"message"});
         reg("X::Syntax::Reserved", {"reserved", "instead", "pos", "message"});
+        reg("Exception", {"message"}); // base class: Exception.new is instantiable
     }
     // CompUnit::Repository — a role a repository class must fully implement, and the
     // $*REPO instance that does it.
@@ -3084,6 +3085,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         positional.push_back(&p);
         total++;
         if (!p.optional && !p.defaultVal) required++;
+    }
+    // a multi whose only params are placeholders (`multi sub f { $^a² }`):
+    // its arity is the placeholder count
+    if (positional.empty() && !slurpy && !cand.code->placeholders.empty()) {
+        if (pos.size() != cand.code->placeholders.size()) return -1;
+        return 1;
     }
     if (pos.size() < required) return -1;
     if (!slurpy && pos.size() > total) return -1;

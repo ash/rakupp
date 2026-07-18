@@ -2053,7 +2053,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 bool complete = false;
                 ValueList outs = applyTapChain(t, v, complete);
                 if (t.hash->count("emit") && (*t.hash)["emit"].t == VT::Code)
-                    for (auto& o : outs) { ValueList one{o}; callCallable((*t.hash)["emit"], one); }
+                    for (auto& o : outs) {
+                        ValueList one{o};
+                        // `next` in a whenever skips this value; `last` closes the tap
+                        try { callCallable((*t.hash)["emit"], one); }
+                        catch (NextEx&) {}
+                        catch (LastEx&) { (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
+                    }
                 if (complete) { // head(n)/first done → fire the tap's done and release a react source
                     (*t.hash)["closed"] = Value::boolean(true);
                     if (t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
@@ -2176,6 +2182,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         auto mkSupply = [&](ValueList v) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value a = Value::array(); *a.arr = std::move(v); (*s.hash)["values"] = a; return s; };
         if (m == "live") return Value::boolean(inv.hash->count("supplier") > 0);
         if (m == "Supply") return inv;
+        if (m == "on-close") { // callback fires when the tapping supply/react block ends
+            if (!args.empty() && !supplyCloseStack_.empty()) supplyCloseStack_.back().push_back(args[0]);
+            return inv;
+        }
         if (m == "list" || m == "List" || m == "Seq" || m == "eager") { Value o = Value::array(); *o.arr = vals(); o.isList = true; return o; }
         if (m == "Channel") { // drain a (from-list) Supply into a closed Channel
             Value c = Value::makeHash(); c.hashKind = "Channel";
@@ -2209,14 +2219,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
-            // eager: push every value to the emit callback, then run the done phaser.
+            // eager: push every value to the emit callback, then run the done phaser
+            // (or, if the supply block died, the quit callback with the reason).
             if (listy) {
                 if (emit.t == VT::Code) for (auto& v : vals()) {
-                    ValueList one{v}; callCallable(emit, one);
+                    ValueList one{v};
+                    // `next` in a whenever skips this value; `last` stops the stream
+                    try { callCallable(emit, one); }
+                    catch (NextEx&) {}
+                    catch (LastEx&) { break; }
                     // `done` inside the block closes the enclosing react: stop emitting
                     if (!reactStack_.empty() && reactStack_.back()->closed) break;
                 }
-                if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
+                if (inv.hash->count("quit-reason")) {
+                    if (quit.t == VT::Code) { ValueList one{(*inv.hash)["quit-reason"]}; callCallable(quit, one); }
+                    else // unhandled: the supply's death propagates to the tapper (react dies)
+                        throw RakuError{(*inv.hash)["quit-reason"],
+                                        inv.hash->count("quit-message") ? (*inv.hash)["quit-message"].toStr() : "Supply quit"};
+                }
+                else if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
             } else if (!args.empty() && args[0].t == VT::Code && (*inv.hash)["stream"].toStr() == "stdout") {
                 Value proc = (*inv.hash)["proc"]; (*proc.hash)["taps"].arr->push_back(args[0]);
             }
@@ -7764,10 +7785,16 @@ void Interpreter::registerBuiltins() {
         if (a.empty() || a.back().t != VT::Code) return Value::nil();
         auto ctx = std::make_shared<ReactCtx>();
         I.reactStack_.push_back(ctx);
+        I.supplyCloseStack_.emplace_back();
         try { I.callCallable(a.back(), {}); }
-        catch (...) { I.reactStack_.pop_back(); throw; }
+        catch (...) { I.reactStack_.pop_back(); I.supplyCloseStack_.pop_back(); throw; }
         I.reactStack_.pop_back();
         I.runReactLoop(ctx); // block until every live whenever source is done
+        {   // react is over: its whenever taps close — run on-close callbacks
+            auto closers = std::move(I.supplyCloseStack_.back());
+            I.supplyCloseStack_.pop_back();
+            for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
+        }
         return Value::nil();
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -7818,13 +7845,25 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(true);
     };
     B["supply"] = [](Interpreter& I, ValueList& a) -> Value {
-        // supply { emit ...; done } : run the block now, collecting emitted values
-        ValueList vals; I.tctx_.supplyStack.push_back(&vals);
+        // supply { emit ...; done } : run the block now, collecting emitted values.
+        // A die inside the block becomes the supply's QUIT reason (delivered to a
+        // tap's quit callback), not an escaping exception.
+        ValueList vals; bool quit = false; Value quitReason; std::string quitMsg;
+        I.tctx_.supplyStack.push_back(&vals);
+        I.supplyCloseStack_.emplace_back();
         try {
             if (!a.empty() && a.back().t == VT::Code) I.callCallable(a.back(), {});
-        } catch (...) { I.tctx_.supplyStack.pop_back(); throw; } // a throw (die/last/…) must still pop our &vals
+        }
+        catch (RakuError& e) { quit = true; quitReason = I.exceptionFor(e); quitMsg = e.message; }
+        catch (...) { I.tctx_.supplyStack.pop_back(); I.supplyCloseStack_.pop_back(); throw; } // loop-control still pops our &vals
         I.tctx_.supplyStack.pop_back();
+        {   // the block is finished: its whenever taps close — run on-close callbacks
+            auto closers = std::move(I.supplyCloseStack_.back());
+            I.supplyCloseStack_.pop_back();
+            for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
+        }
         Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v;
+        if (quit) { (*s.hash)["quit-reason"] = quitReason; (*s.hash)["quit-message"] = Value::str(quitMsg); }
         return s;
     };
     B["emit"] = [](Interpreter& I, ValueList& a) -> Value {
