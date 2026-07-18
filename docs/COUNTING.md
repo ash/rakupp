@@ -8,10 +8,10 @@ on every run.
 
 ## The one-line summary
 
-> **Per-test: ~80% of all declared tests pass. Coverage: ~34% of files fully pass.**
+> **Per-test: ~85% of all declared tests pass. Coverage: ~36% of files fully pass.**
 
-Quote both, per-test first. The ~80% is the primary correctness number (the fair
-per-test bar); the ~34% is the stricter all-or-nothing file bar.
+Quote both, per-test first. The ~85% is the primary correctness number (the fair
+per-test bar); the ~36% is the stricter all-or-nothing file bar.
 
 ## The measures
 
@@ -22,12 +22,12 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 501 / 1,462 (**~34%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 171,817 / 178,056 (~97%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 171,817 / 204,251 (~84%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 171,817 / 213,617 (**~80%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 523 / 1,462 (**~36%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 181,070 / 189,017 (~96%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 181,070 / 204,977 (~88%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 181,070 / 213,203 (**~85%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
-**Measure 1 (files, ~34%)** and **measure 4 (all declared tests, ~80%)** are the
+**Measure 1 (files, ~36%)** and **measure 4 (all declared tests, ~85%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
 
 ## Why measure 4 is the honest per-test number
@@ -37,12 +37,12 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (213,617) is ~9.4k larger
-than 3's (204,251) — those ~9,400 tests live in 199 no-TAP files (parse errors
+source and counts all N as failing. That is why 4's denominator (213,203) is ~8.2k larger
+than 3's (204,977) — those ~8,200 tests live in 162 no-TAP files (parse errors
 and runtime aborts), recovered from source. A parse error can no longer hide
 its tests.
 
-## The declared denominator grows with coverage — ~80% here is really ~79% of the whole suite
+## The declared denominator grows with coverage
 
 Measure 4's denominator is **not a fixed property of the suite**; it depends on
 how much of the suite a run can actually execute, and it's worth remembering why
@@ -57,23 +57,23 @@ file (no-TAP), there is no static integer to read from source, so the file
 contributes **0** — its tests are genuinely uncountable for that run.
 
 The consequence: **a run that executes more of the suite gets a larger
-denominator.** Our current run recovers **213,617** declared tests. (This number
+denominator.** Our current run recovers **213,203** declared tests. (This number
 GROWS as parse fixes land: a file that used to die before announcing its plan now
 declares its real — often larger, dynamically computed — plan, so the percentage
 can dip while absolute passes rise.) Only **5 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 171,817 passes read two ways:
+So our same 181,070 passes read two ways:
 
-- **~80%** against *our* denominator (171,817 / 213,617) — *"of the tests we can
+- **~85%** against *our* denominator (181,070 / 213,203) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
-- Essentially the **same ~80%** against the suite's *full* declared total —
+- Essentially the **same ~85%** against the suite's *full* declared total —
   our runner now recovers almost every file's plan, so the two denominators
   have converged; *"of every test the whole suite could declare, how many pass."*
 
 Both are honest; they answer different questions. The convergence means our
-headline **~80% is no longer materially flattered** by uncountable files —
+headline **~85% is no longer materially flattered** by uncountable files —
 almost every declared test is charged for or against us. It also means **raw per-test
 percentages from two different runs aren't directly comparable** until they're
 put over a common denominator: a run that unlocks more files *raises* its own
@@ -150,10 +150,10 @@ build/rakupp tools/run-roast.raku S05      # filter by path substring
 The tail of the output is the summary block:
 
 ```
-Files fully passing:  501 / 1462  (34.3%)
-Assertions passed:    171817 / 178056  (96.5%)  of tests that ran
-Assertions passed:    171817 / 204251  (84.1%)  of tests planned by files that emitted a plan
-Assertions passed:    171817 / 213617  (80.4%)  of ALL declared tests (+9366 from 199 no-TAP files read from source; 5 more have no static plan)
+Files fully passing:  523 / 1462  (35.8%)
+Assertions passed:    181070 / 189017  (95.8%)  of tests that ran
+Assertions passed:    181070 / 204977  (88.3%)  of tests planned by files that emitted a plan
+Assertions passed:    181070 / 213203  (84.9%)  of ALL declared tests (+8226 from 162 no-TAP files read from source; 5 more have no static plan)
 ```
 
 (No `ROAST` env var is required — the tests' own `use lib` resolves the

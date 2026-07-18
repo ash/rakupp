@@ -32,7 +32,7 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../rakujs/)**) |
 | **Startup** | ~2 ms cold |
-| **Correctness target** | the Roast suite — ~80% of all individual tests pass; ~34% of files fully pass |
+| **Correctness target** | the Roast suite — ~85% of all individual tests pass; ~36% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
 ## Goals & philosophy
@@ -124,7 +124,7 @@ They make different trade-offs:
 |---|---|---|
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, zero dependencies | VM-based (MoarVM/JVM), NQP/Raku |
-| Coverage | a growing subset (~34% of Roast) | complete |
+| Coverage | a growing subset (~36% of Roast) | complete |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar-mutation (macros/slangs) | not yet | full |
 
@@ -139,14 +139,14 @@ same language.
 
 The same progress measured at three granularities:
 
-- **All declared tests: ~80%** (171,817 / ~213,617) — the headline per-test figure.
+- **All declared tests: ~85%** (181,070 / ~213,203) — the headline per-test figure.
   It counts every test the suite declares, including those in files that abort
   before running (their `plan N` is read from source, all failing), so parse-error
   files can't hide.
-- **Files fully passing: ~34%** (501 / 1,462) — the stricter bar; a file counts
+- **Files fully passing: ~36%** (523 / 1,462) — the stricter bar; a file counts
   only if *every* assertion in it passes.
-- **Tests that ran: ~97%** (171,817 / 178,056) — of just the assertions files
-  actually emitted; useful for tracking regressions, but it ignores the ~36k tests
+- **Tests that ran: ~96%** (181,070 / 189,017) — of just the assertions files
+  actually emitted; useful for tracking regressions, but it ignores the ~24k tests
   in aborting files, so it flatters.
 
 All three are explained in [ROAST.md](ROAST.md), which also has the per-synopsis

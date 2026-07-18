@@ -31,24 +31,24 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~80% of all declared Roast tests pass** (171,817 / 213,617); on the
-stricter file bar, ~34% of files fully pass (501 / 1,462). The per-file breakdown
+**Headline: ~85% of all declared Roast tests pass** (181,070 / 213,203); on the
+stricter file bar, ~36% of files fully pass (523 / 1,462). The per-file breakdown
 comes first below, then the per-test figures.
 
 Full suite — **1,464 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **501** | **34%** |
-| Partially passing | 692 | 47% |
-| No TAP output | 316 | 22% |
-| Timeouts | 6 | 0.4% |
+| **Fully passing** | **523** | **36%** |
+| Partially passing | 680 | 47% |
+| No TAP output | 247 | 17% |
+| Timeouts | 12 | 0.8% |
 
 (Two files — `S04-statements/try.t`, `S12-construction/destruction.t` — hang the
 harness with unkillable children and are measured separately; they count above as
 one partial and one timeout. See [docs/ROAST-GAPS.md](dev/ROAST-GAPS.md).)
 
-**Coverage ≈ 31% of files.** That is the number to quote. Just under a third of the suite
+**Coverage ≈ 36% of files.** That is the number to quote. About a sixth of the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
 construct and abort before any assertion runs — so they are entirely unmeasured
 territory, not "passing" and not "failing."
@@ -56,7 +56,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**171,817 of ~213,617 declared tests — ~80%**. "Declared" means every test the
+**181,070 of ~213,203 declared tests — ~85%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -65,13 +65,13 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 171,817 / 178,056 (~96%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 171,817 / 204,251 (~84%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 171,817 / 213,617 (~80%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 181,070 / 189,017 (~96%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 181,070 / 204,977 (~88%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 181,070 / 213,203 (~85%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
-The ~80% is the per-test analog of the ~34% file coverage. Two caveats on scope:
+The ~85% is the per-test analog of the ~36% file coverage. Two caveats on scope:
 
-1. **~9.4k of the denominator comes from no-TAP files** (199 of them, read from
+1. **~8.2k of the denominator comes from no-TAP files** (162 of them, read from
    source); 5 more no-TAP files use a dynamic `plan *` / `done-testing` and are
    genuinely uncountable, so they sit outside even this figure.
 2. **S15 (Unicode) is ~91k of the reached total**, passing at ~100%, so it lifts
@@ -82,8 +82,8 @@ The ~80% is the per-test analog of the ~34% file coverage. Two caveats on scope:
    the pre-existing bugs it exposes (see [dev/REVIEW-1.0.md](dev/REVIEW-1.0.md)),
    at which point these numbers are re-measured honestly.
 
-Coverage is the ~34% of files; per-test correctness across the whole suite is the
-~80%. They are different measurements, quoted for different purposes.
+Coverage is the ~36% of files; per-test correctness across the whole suite is the
+~85%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
 
@@ -95,37 +95,37 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 34 | 59 | 0 | 54 | 1868/2380 | 78% |
-| S03 | Operators | 27 | 43 | 1 | 54 | 2090/3291 | 64% |
-| S04 | Blocks, statements, phasers | 22 | 32 | 0 | 22 | 525/653 | 80% |
-| S05 | Regexes & grammars | 25 | 62 | 0 | 11 | 4477/5212 | 86% |
-| S06 | Subroutines & signatures | 10 | 50 | 0 | 34 | 559/895 | 62% |
-| S07 | Iterators | 1 | 3 | 0 | 2 | 46/54 | 85% |
-| S09 | Data structures | 0 | 13 | 0 | 9 | 145/304 | 48% |
-| S10 | Packages | 2 | 5 | 0 | 2 | 23/50 | 46% |
-| S11 | Modules | 8 | 9 | 0 | 5 | 54/86 | 63% |
-| S12 | Objects & classes | 20 | 57 | 0 | 23 | 602/812 | 74% |
-| S13 | Overloading | 4 | 0 | 0 | 3 | 25/25 | 100% |
-| S14 | Roles | 5 | 12 | 0 | 8 | 126/172 | 73% |
-| S15 | Unicode / strings / NFG | 69 | 8 | 0 | 4 | 91206/91248 | 100% |
-| S16 | I/O | 14 | 14 | 0 | 9 | 257/373 | 69% |
-| S17 | Concurrency (supply/promise/async) | 23 | 49 | 4 | 23 | 493/790 | 62% |
+| S02 | Literals, types, magicals | 42 | 69 | 1 | 35 | 2742/3295 | 83% |
+| S03 | Operators | 38 | 57 | 2 | 28 | 18162/20588 | 88% |
+| S04 | Blocks, statements, phasers | 28 | 34 | 0 | 14 | 750/903 | 83% |
+| S05 | Regexes & grammars | 31 | 56 | 2 | 9 | 3966/4728 | 84% |
+| S06 | Subroutines & signatures | 15 | 47 | 0 | 32 | 693/1034 | 67% |
+| S07 | Iterators | 2 | 4 | 0 | 0 | 145/196 | 74% |
+| S09 | Data structures | 0 | 21 | 0 | 1 | 663/1046 | 63% |
+| S10 | Packages | 2 | 5 | 0 | 2 | 32/72 | 44% |
+| S11 | Modules | 8 | 9 | 0 | 5 | 55/86 | 64% |
+| S12 | Objects & classes | 26 | 59 | 0 | 15 | 798/1028 | 78% |
+| S13 | Overloading | 4 | 2 | 0 | 1 | 50/52 | 96% |
+| S14 | Roles | 5 | 16 | 0 | 4 | 129/190 | 68% |
+| S15 | Unicode / strings / NFG | 71 | 7 | 1 | 2 | 91378/91517 | 100% |
+| S16 | I/O | 17 | 14 | 0 | 6 | 296/420 | 70% |
+| S17 | Concurrency (supply/promise/async) | 35 | 48 | 5 | 11 | 675/946 | 71% |
 | S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 3/3 | 100% |
-| S24 | Testing | 10 | 6 | 0 | 1 | 67/111 | 60% |
-| S26 | Documentation (POD) | 6 | 9 | 0 | 12 | 164/192 | 85% |
-| S28 | Special variables | 2 | 0 | 0 | 1 | 6/6 | 100% |
-| S29 | Builtins & context | 4 | 7 | 1 | 2 | 337/359 | 94% |
-| S32 | Standard types (str/list/num/…) | 60 | 136 | 1 | 66 | 33125/34825 | 95% |
-| integration | Cross-feature programs | 33 | 56 | 1 | 29 | 625/779 | 80% |
-| 6.c | v6.c language snapshot | 2 | 6 | 0 | 10 | 56/88 | 64% |
-| 6.d | v6.d language snapshot | 14 | 4 | 0 | 0 | 20259/20310 | 100% |
-| APPENDICES | — | 1 | 3 | 1 | 1 | 32/42 | 76% |
+| S24 | Testing | 10 | 6 | 0 | 1 | 82/127 | 65% |
+| S26 | Documentation (POD) | 6 | 14 | 0 | 7 | 222/250 | 89% |
+| S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
+| S29 | Builtins & context | 6 | 7 | 0 | 1 | 397/411 | 97% |
+| S32 | Standard types (str/list/num/…) | 94 | 132 | 0 | 37 | 38531/40596 | 95% |
+| integration | Cross-feature programs | 40 | 57 | 0 | 22 | 799/923 | 87% |
+| 6.c | v6.c language snapshot | 2 | 7 | 0 | 9 | 78/114 | 68% |
+| 6.d | v6.d language snapshot | 14 | 4 | 0 | 0 | 20260/20310 | 100% |
+| APPENDICES | — | 1 | 3 | 1 | 1 | 32/48 | 67% |
 | MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
 
 ### Reading the table
 
-- **S15 (Unicode)** dominates the assertion count — ~91k of ~163k reached
+- **S15 (Unicode)** dominates the assertion count — ~91k of ~189k reached
   assertions live here (grapheme-break and normalization tables are enormous). Raku++'s
   generated UCD 17.0 tables clear **~100%** of it, which is why the overall
   assertion rate is high.
@@ -160,8 +160,7 @@ the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
 
-_Snapshot: 501 / 1,462 files fully passing (~34% coverage); 647 partial,
-296 no-TAP, 18 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 171,817 / 178,056 (see
+_Snapshot: 523 / 1,462 files fully passing (~36% coverage); 680 partial,
+247 no-TAP, 12 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 181,070 / 189,017 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
-subchapter (67222.t, match.t, subst.t). The +19-file jump came from honoring
-roast's `#?rakudo skip` fudge directives (see [docs/ROAST-GAPS.md](dev/ROAST-GAPS.md))._
+subchapter (67222.t, match.t, subst.t)._

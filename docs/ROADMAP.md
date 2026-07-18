@@ -54,8 +54,8 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing: **501 / 1,462 Roast
-files fully pass (~34%)**, **171,817 / 213,617 declared assertions (~80%)** —
+synopses rather than isolated features. Current standing: **523 / 1,462 Roast
+files fully pass (~36%)**, **181,070 / 213,203 declared assertions (~85%)** —
 run the harness for live numbers; definitions in [COUNTING.md](COUNTING.md).
 Major subsystems now in:
 
