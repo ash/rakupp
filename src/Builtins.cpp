@@ -6569,7 +6569,14 @@ void Interpreter::registerBuiltins() {
         std::string name = jn;
         B[name] = [name](Interpreter&, ValueList& a) -> Value {
             Value j = Value::array(); j.enumName = name;
-            for (auto& v : a) { if (v.t == VT::Array) { for (auto& x : *v.arr) j.arr->push_back(x); } else j.arr->push_back(v); }
+            // one-arg rule: any(@a) spreads the single iterable one level;
+            // any(x, y, …) keeps each argument as ONE eigenstate (lists whole)
+            if (a.size() == 1 && a[0].t == VT::Array && a[0].arr)
+                for (auto& x : *a[0].arr) j.arr->push_back(x);
+            else if (a.size() == 1 && a[0].t == VT::Range)
+                for (auto& x : a[0].flatten()) j.arr->push_back(x);
+            else
+                for (auto& v : a) j.arr->push_back(v);
             return j;
         };
     }
@@ -7502,12 +7509,8 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(a.empty() || !I.boolify(a[0]));
     };
     // Junction constructors: all()/any()/one()/none() (also written via & | ^).
-    for (const char* jt : {"all", "any", "one", "none"})
-        B[jt] = [jt](Interpreter&, ValueList& a) -> Value {
-            Value j = Value::array(); j.enumName = jt;
-            for (auto& v : flattenArgs(a)) j.arr->push_back(v);
-            return j;
-        };
+    // (all/any/one/none are registered ONCE, earlier, with the one-arg rule —
+    // a flattening duplicate here used to shadow it)
     B["ord"] = [](Interpreter& I, ValueList& a) -> Value {
         // bare `ord` (no argument) is the Perl-5-ism Rakudo rejects with X::Obsolete
         if (a.empty()) throw RakuError{Value::typeObj("X::Obsolete"),

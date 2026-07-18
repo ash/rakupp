@@ -54,7 +54,17 @@ bool Value::truthy() const {
         case VT::Complex: return n != 0.0 || im != 0.0;
         case VT::Rat:  return ratN && !ratN->isZero();
         case VT::Str:  return !s.empty(); // Raku: any non-empty string is true (incl. "0")
-        case VT::Array: return arr && !arr->empty();
+        case VT::Array:
+            // a Junction collapses by its kind — since comparisons autothread
+            // into PRESERVED junctions, every truthiness site must collapse
+            if (arr && (enumName == "any" || enumName == "all" ||
+                        enumName == "one" || enumName == "none")) {
+                int t2 = 0, total = 0;
+                for (auto& e : *arr) { total++; if (e.truthy()) t2++; }
+                return enumName == "any" ? t2 > 0 : enumName == "all" ? t2 == total
+                     : enumName == "one" ? t2 == 1 : t2 == 0;
+            }
+            return arr && !arr->empty();
         case VT::Hash:
             // A Proc / Proc::Async is true iff it exited successfully (exit code 0).
             if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash) {

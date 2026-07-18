@@ -3794,6 +3794,31 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         for (auto& e : *codeVal.arr) { ValueList a2 = args; out.arr->push_back(callCallable(e, a2)); }
         return out;
     }
+    // A Junction ARGUMENT autothreads the call — recursively, so nested
+    // junctions thread down to their leaves — unless the parameter's type
+    // accepts a Junction (Mu / Junction). `(-> Any $x { @e.push: $x }).($j)`
+    // visits every leaf eigenstate (S03-junctions/associative.t).
+    if (codeVal.t == VT::Code && codeVal.code && !codeVal.code->builtin &&
+        codeVal.code->params && !codeVal.code->isMultiDispatcher) {
+        const auto& ps = *codeVal.code->params;
+        for (size_t ai = 0; ai < args.size(); ai++) {
+            if (!isJunction(args[ai])) continue;
+            const Param* p = nullptr; size_t seen = 0;
+            for (auto& pp : ps) {
+                if (pp.named) continue;
+                if (pp.slurpy) { p = &pp; break; }
+                if (seen == ai) { p = &pp; break; }
+                seen++;
+            }
+            if (p && (p->type == "Mu" || p->type == "Junction" || p->slurpy)) continue;
+            Value out = Value::array(); out.enumName = args[ai].enumName;
+            for (auto& e : *args[ai].arr) {
+                ValueList a2 = args; a2[ai] = e;
+                out.arr->push_back(callCallable(codeVal, a2, rwArgs));
+            }
+            return out;
+        }
+    }
     if (codeVal.t != VT::Code || !codeVal.code) {
         // an object (or type object) with a CALL-ME method is invokable: $obj(…)
         if (codeVal.t == VT::Object && codeVal.obj && codeVal.obj->cls) {
@@ -5041,10 +5066,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         bool pickL = !bothJ ? isJunction(l) : (rank(l) >= rank(r));
         const Value& j = pickL ? l : r;
         bool jleft = pickL;
-        static const std::set<std::string> cmp = {"==", "!=", "eq", "ne", "<", ">", "<=", ">=", "~~", "!~~", "<=>", "cmp", "lt", "gt", "le", "ge", "===", "eqv"};
-        if (cmp.count(op) || isSetPredicateStr(op)) {
+        // smartmatch AGAINST a junction (RHS) keeps ACCEPTS' collapsing Bool
+        // semantics (`5 ~~ 3|5|7` is True); every other op — comparisons
+        // included — autothreads into a PRESERVED junction of results, which
+        // only boolean context collapses: (5 == 3|5|7).gist is
+        // 'any(False, True, False)' (S03-junctions/misc.t)
+        if ((op == "~~" || op == "!~~") && !jleft) {
             int t = 0, total = 0;
-            for (auto& e : *j.arr) { total++; if (applyArith(op, jleft ? e : l, jleft ? r : e).truthy()) t++; }
+            for (auto& e : *j.arr) { total++; if (applyArith(op, l, e).truthy()) t++; }
             bool res = j.enumName == "any" ? t > 0 : j.enumName == "all" ? t == total : j.enumName == "one" ? t == 1 : t == 0;
             return Value::boolean(res);
         }
@@ -7230,6 +7259,19 @@ Value Interpreter::evalBinary(Binary* b) {
                     return m.truthy() ? m : Value::nil();
                 };
                 return code;
+            }
+            // a junction LHS autothreads: (any("4","5") ~~ /4/) is a junction of
+            // per-eigenstate results — 'any(｢4｣, Nil)' (S03-junctions/misc.t)
+            if (l.t == VT::Array && l.arr &&
+                (l.enumName == "any" || l.enumName == "all" ||
+                 l.enumName == "one" || l.enumName == "none")) {
+                Value out = Value::array(); out.enumName = l.enumName;
+                for (auto& e : *l.arr) {
+                    Value m = regexMatch(e.toStr(), pat);
+                    if (op == "~~") out.arr->push_back(m.truthy() ? m : Value::nil());
+                    else out.arr->push_back(Value::boolean(!m.truthy()));
+                }
+                return out;
             }
             Value m = regexMatch(l.toStr(), pat);
             // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool
