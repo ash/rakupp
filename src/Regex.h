@@ -51,6 +51,10 @@ struct ParseNode {
     std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
     std::map<std::string, std::pair<long, long>> named;   // named-capture spans ($<x>)
     std::shared_ptr<const ChildMap> kids;                 // frozen sub-trees (null = leaf); a vector collates repeated captures
+    // capture keys under a repetition quantifier in THIS rule's pattern (<pair>* etc.):
+    // list-valued regardless of occurrence count (Rakudo: even 0 or 1 gives an Array).
+    // Shared from the rule's compiled Regex; null = none.
+    std::shared_ptr<const std::set<std::string>> listNames;
 };
 
 // Result of a regex match against a subject string (byte offsets).
@@ -63,6 +67,7 @@ struct RxMatch {
     std::map<std::string, std::pair<long, long>> named; // named captures ($<name>) byte ranges
     std::map<std::string, std::pair<long, long>> subs;  // subrule names matched (for $<name> tree access)
     std::map<std::string, std::vector<ParseNode>> children; // per-name occurrence list; repeated captures collate here
+    std::shared_ptr<const std::set<std::string>> listNames; // subrule keys under a quantifier → always list-valued
 };
 
 // Resolver for grammar subrule calls <name>: match rule `name` against `subj`
@@ -156,6 +161,8 @@ private:
     size_t pos_ = 0;
     int ncaps_ = 0;
     std::set<int> listCaps_;             // positional capture indices under a repetition quantifier
+    std::shared_ptr<std::set<std::string>> listNames_; // subrule capture keys under a repetition quantifier
+    void collectListNames(const Node* n); // walk a quantified atom, gathering capturing subrule keys
     bool ok_ = true;
     bool icase_ = false;
     bool curIcase_ = false; // parse-time adverb state: :i/:!i scoped to the enclosing group
@@ -201,6 +208,9 @@ public:
     std::pair<long, long> nodeWidth(const Node* n, MState& st) const;
     const Node* root() const { return root_.get(); }
     int ncaps() const { return ncaps_; }
+    // Subrule capture keys under a repetition quantifier (null = none) — shared
+    // into ParseNode/RxMatch so Match building can honour Rakudo's list arity.
+    std::shared_ptr<const std::set<std::string>> listNamesPtr() const { return listNames_; }
     // Fast path for a rule whose whole body is a single character matcher (e.g.
     // `token space { <[\ \t]> }`): returns true if this regex is exactly that.
     bool rootIsSingleChar() const;
@@ -246,6 +256,7 @@ public:
         std::vector<std::pair<long, long>> caps;
         std::map<std::string, std::pair<long, long>> named;
         std::shared_ptr<const ChildMap> kids; // frozen once; replays share, never copy
+        std::shared_ptr<const std::set<std::string>> listNames; // the rule's quantified capture keys
     };
     long candDeclEnd_ = -1; // set by matchSubMeta after a candidate match: its declarative-prefix end (for proto LTM)
     void clearMemo() { memo_.clear(); }

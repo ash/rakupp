@@ -99,6 +99,18 @@ Regex::NodePtr Regex::parseSeq() {
     return seq;
 }
 
+// Gather every capturing <subrule> key inside a quantified atom: those captures
+// are list-valued in Rakudo even with 0 or 1 occurrences (`<pair>*` gives an
+// Array). Zero-width assertions (<?before …>) don't record captures — skip them.
+void Regex::collectListNames(const Node* n) {
+    if (!n || n->k == K::Look) return;
+    if (n->k == K::Subrule && n->ruleCapture && !n->ruleName.empty()) {
+        if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
+        listNames_->insert(n->ruleAlias.empty() ? n->ruleName : n->ruleAlias);
+    }
+    for (auto& kd : n->kids) collectListNames(kd.get());
+}
+
 Regex::NodePtr Regex::parseQuant() {
     auto atom = parseAtom();
     if (!sigspace_) skipWs(); // in sigspace, keep inter-atom whitespace so parseSeq can insert <.ws>
@@ -111,6 +123,7 @@ Regex::NodePtr Regex::parseQuant() {
             atom->listCap = true;
             listCaps_.insert(atom->capIndex);
         }
+        collectListNames(atom.get());
     };
     if (c == '*' && peek(1) != '*') { pos_++; mn = 0; mx = -1; markListCap(); }
     else if (c == '+') { pos_++; mn = 1; mx = -1; markListCap(); }
@@ -1212,7 +1225,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
             if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
                 out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = endPos;
                 out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-                out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_;
+                out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_;
                 return true;
             }
         } catch (const StepLimitExceeded&) { return false; } // pathological pattern: give up (no match)
@@ -1229,7 +1242,7 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
         if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
             out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = endPos;
             out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-            out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_;
+            out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_;
             return true;
         }
     } catch (const StepLimitExceeded&) { return false; }
@@ -1490,10 +1503,12 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     // `kids` is a frozen subtree — sharing it is O(1), which is what makes memo replays cheap.
     auto record = [&](long end, const std::vector<std::pair<long,long>>& caps,
                       const std::map<std::string, std::pair<long,long>>& named,
-                      std::shared_ptr<const ChildMap> kids) -> bool {
+                      std::shared_ptr<const ChildMap> kids,
+                      std::shared_ptr<const std::set<std::string>> listNames) -> bool {
         if (capKey.empty()) return k(end);
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = end;
         pn.caps = caps; pn.named = named; pn.kids = std::move(kids);
+        pn.listNames = std::move(listNames);
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
         st.named[capKey] = {pos, end};
         st.children[capKey].push_back(std::move(pn)); // collate repeated captures into a list
@@ -1519,7 +1534,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             if (!mit->second.matched) return false;
             const MemoEntry& me = mit->second;
             candDeclEnd_ = me.declEnd;
-            return record(me.end, me.caps, me.named, me.kids);
+            return record(me.end, me.caps, me.named, me.kids, me.listNames);
         }
         std::map<std::string, std::string> bound;
         Regex* re = (args.empty() && meta.noArg) ? meta.noArg
@@ -1529,6 +1544,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr;
         scope_.push_back(std::move(bound));
         MemoEntry me;
+        me.listNames = re->listNamesPtr();
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
             me.matched = true; me.end = end;
             me.declEnd = (sub.firstCode >= 0 ? sub.firstCode : end);
@@ -1542,7 +1558,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         auto& slot = (memo_[mkey] = std::move(me));
         if (!slot.matched) return false;
         candDeclEnd_ = slot.declEnd;
-        return record(slot.end, slot.caps, slot.named, slot.kids);
+        return record(slot.end, slot.caps, slot.named, slot.kids, slot.listNames);
     }
 
     // non-ratchet `regex`: thread `k` through so the caller can backtrack into the callee
@@ -1563,7 +1579,8 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // non-ratchet: the callee may complete again after backtracking, so its frame
         // stays live — freeze a COPY of the subtree for this completion
         return finish(record(end, sub.caps, sub.named,
-                             sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children)));
+                             sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children),
+                             re->listNamesPtr()));
     });
     scope_.pop_back();
     return ok;
@@ -1607,6 +1624,7 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     out.name = top; out.from = 0; out.to = endPos;
     out.caps = st.caps; out.named = st.named;
     out.kids = st.children.empty() ? nullptr : std::make_shared<const ChildMap>(std::move(st.children));
+    out.listNames = re->listNamesPtr();
     endOut = endPos;
     return true;
 }
