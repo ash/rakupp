@@ -149,10 +149,8 @@ static bool isSpecialVar(const std::string& n) {
 }
 
 static bool valueEqv(const Value& a, const Value& b) {
-    if (a.t != b.t) {
-        if (a.isNumeric() && b.isNumeric()) return a.toNum() == b.toNum();
-        return false;
-    }
+    // eqv is type-aware: 42 eqv 42.0 is False (Int vs Num/Rat), unlike ==
+    if (a.t != b.t) return false;
     switch (a.t) {
         case VT::Array:
             if (!a.arr || !b.arr || a.arr->size() != b.arr->size()) return false;
@@ -281,7 +279,7 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out);
 static void collectPHStmt(const Stmt* s, std::set<std::string>& out);
 
 static void addIfPlaceholder(const std::string& name, std::set<std::string>& out) {
-    if (name.size() > 2 && (name[1] == '^')) out.insert(name);
+    if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) out.insert(name); // $^a positional, $:n named
 }
 
 static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
@@ -2633,10 +2631,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             bool scalarItem = listv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
                  && static_cast<VarExpr*>(fs->list.get())->name[0] == '$');
+            // A body using $^a/$^b placeholders is an arity-N block, exactly like
+            // `-> $a, $b`: bind them (sorted, per placeholder rules) and batch.
+            std::vector<std::string> phVars;
+            if (fs->vars.empty() && !fs->destructure && fs->body && fs->body->kind == NK::Block) {
+                for (auto& pn : computePlaceholders(static_cast<Block*>(fs->body.get())->stmts))
+                    if (pn.size() > 2 && pn[1] == '^') phVars.push_back(pn);
+            }
+            const std::vector<std::string>& loopVars = phVars.empty() ? fs->vars : phVars;
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).
-            if (!scalarItem && !fs->destructure && fs->vars.size() <= 1) {
-                const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+            if (!scalarItem && !fs->destructure && loopVars.size() <= 1) {
+                const std::string var = loopVars.empty() ? "$_" : loopVars[0];
                 // Reuse one Env across iterations for speed. This is only safe when
                 // nothing captured the previous iteration's scope (a closure would
                 // hold a reference, bumping use_count); in that case we allocate a
@@ -2715,14 +2721,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 return forResult();
             }
-            size_t nvars = fs->vars.empty() ? 1 : fs->vars.size();
+            size_t nvars = loopVars.empty() ? 1 : loopVars.size();
             for (size_t i = 0; i < items.size(); i += nvars) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
-                if (fs->vars.empty()) {
+                if (loopVars.empty()) {
                     scope->define("$_", items[i]);
                 } else {
-                    for (size_t k = 0; k < fs->vars.size(); k++) {
-                        scope->define(fs->vars[k], (i + k < items.size()) ? items[i + k] : Value::any());
+                    for (size_t k = 0; k < loopVars.size(); k++) {
+                        scope->define(loopVars[k], (i + k < items.size()) ? items[i + k] : Value::any());
                     }
                 }
                 if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + nvars >= items.size(), col)) break;
@@ -3714,6 +3720,11 @@ Value rtReduce(const std::string& op, const Value& list) {
         if (op == "+" || op == "-") return Value::integer(0);
         if (op == "*" || op == "/") return Value::integer(1);
         if (op == "~") return Value::str("");
+        // list-building ops over nothing build nothing: [Z] () / [Z~] () / [X] () are ()
+        if (op == "Z" || op == "X" || op == "," ||
+            (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
+            Value o = Value::array(); o.isList = true; return o;
+        }
         return Value::any();
     }
     Value acc = items[0];
@@ -4008,6 +4019,18 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     if (c.builtin) return c.builtin(*this, args);
 
+    // Implicit @_ is a flattening slurpy (*@_): list-flavored args (Seq/List
+    // tuples, e.g. from X/Z) spread one level; itemized [..] arrays stay nested.
+    auto slurpyArgs = [](const ValueList& as) {
+        ValueList out;
+        for (auto& a : as) {
+            if (a.t == VT::Array && a.isList && a.arr)
+                out.insert(out.end(), a.arr->begin(), a.arr->end());
+            else out.push_back(a);
+        }
+        return out;
+    };
+
     auto env = std::make_shared<Env>();
     // Break the leak cycle a nested named sub would form (see breakSelfClosures).
     // The guard fires only when hoistSubs (below) reported a nested sub, and
@@ -4038,14 +4061,29 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
     } else if (!c.placeholders.empty()) {
         implicitTopic_local = false;
+        // $:name placeholders bind from :name(…) pair args; only when they are
+        // present do Pair args stop binding positionally (a block mapping over
+        // %h.pairs still receives each Pair as $^p)
+        bool namedPh = false;
+        for (auto& pn : c.placeholders) if (pn.size() > 2 && pn[1] == ':') { namedPh = true; break; }
+        size_t pos = 0;
         for (size_t k = 0; k < c.placeholders.size(); k++) {
-            Value v = k < args.size() ? args[k] : Value::any();
-            env->define(c.placeholders[k], v);
-            // $^foo is also visible as $foo within the block
             const std::string& pn = c.placeholders[k];
-            if (pn.size() > 2 && pn[1] == '^') env->define(std::string(1, pn[0]) + pn.substr(2), v);
+            Value v = Value::any();
+            if (namedPh && pn.size() > 2 && pn[1] == ':') {
+                std::string key = pn.substr(2);
+                for (auto& a : args) if (a.t == VT::Pair && a.s == key && a.pairVal) { v = *a.pairVal; break; }
+            } else if (namedPh) {
+                while (pos < args.size() && args[pos].t == VT::Pair) pos++;
+                if (pos < args.size()) v = args[pos++];
+            } else {
+                if (k < args.size()) v = args[k];
+            }
+            env->define(pn, v);
+            // $^foo / $:foo is also visible as $foo within the block
+            if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':')) env->define(std::string(1, pn[0]) + pn.substr(2), v);
         }
-        env->define("@_", Value::array(args));
+        env->define("@_", Value::array(slurpyArgs(args)));
         implicitTopic_local = false; // placeholders bound: no implicit topic
     } else {
         implicitTopic_local = true;
@@ -4053,7 +4091,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // invalid Raku; defining them here shadowed legitimate outer $a/$b in
         // every paramless block: `map {$_+$a}, @k` doubled elements)
         env->define("$_", args.empty() ? Value::any() : args[0]);
-        env->define("@_", Value::array(args));
+        // a bare block invoked with no args (a gather/do wrapper) leaves @_
+        // unbound, so an inner for-body's @_ can synthesize from its own topic
+        if (!(c.isBlock && args.empty()))
+            env->define("@_", Value::array(slurpyArgs(args)));
     }
     auto saved = tctx_.cur;
     Env* savedState = tctx_.curStateEnv;
@@ -4391,10 +4432,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     else if (!c.placeholders.empty()) {
         for (size_t k = 0; k < c.placeholders.size(); k++) {
-            Value v = k < args.size() ? args[k] : Value::any();
-            env->define(c.placeholders[k], v);
             const std::string& pn = c.placeholders[k];
-            if (pn.size() > 2 && pn[1] == '^') env->define(std::string(1, pn[0]) + pn.substr(2), v);
+            Value v = Value::any();
+            if (pn.size() > 2 && pn[1] == ':') { // $:name — from :name(…) pair args
+                std::string key = pn.substr(2);
+                for (auto& a : args) if (a.t == VT::Pair && a.s == key && a.pairVal) { v = *a.pairVal; break; }
+            } else if (k < args.size()) v = args[k];
+            env->define(pn, v);
+            if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':')) env->define(std::string(1, pn[0]) + pn.substr(2), v);
         }
         env->define("@_", Value::array(args));
     } else env->define("@_", Value::array(args));
@@ -8344,6 +8389,11 @@ Value Interpreter::exceptionFor(const RakuError& e) {
 }
 
 std::string Interpreter::gistOf(const Value& v) {
+    // a DateTime/Date carrying a :formatter gists through .Str (which runs it) —
+    // `say DateTime.now(formatter => …)` shows the formatted form
+    if (v.t == VT::Hash && (v.hashKind == "DateTime" || v.hashKind == "Date") &&
+        v.hash && v.hash->count("formatter"))
+        return methodCall(v, "Str", {}).toStr();
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         if (Value* m = v.obj->cls->findMethod("gist")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
         // exceptions gist to their message (`say $!` prints "boom", not X::AdHoc<obj>)
@@ -8811,6 +8861,12 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (op == "+" || op == "-") return Value::integer(0);
         if (op == "*" || op == "/") return Value::integer(1);
         if (op == "~") return Value::str("");
+        // list-building ops over nothing build nothing: [Z] () / [Z~] () / [X] () are ()
+        if (op == "Z" || op == "X" || op == "," ||
+            (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
+            Value o = Value::array(); o.isList = true; return o;
+        }
+        if (chainOps.count(base)) return Value::boolean(true); // [<] () is vacuously True
         return Value::any();
     }
     if (chainOps.count(base)) {
@@ -9722,6 +9778,18 @@ Value Interpreter::eval(Expr* e) {
                 if (alldig) if (Value* sl = tctx_.cur->find("$/"))
                     if (sl->arr) { long idx = std::stol(ve->name.substr(1)); if (idx < (long)sl->arr->size()) return (*sl->arr)[idx]; }
             }
+            // @_ in a block that was never CALLED (a for-loop body, a given block):
+            // it is the implicit *@_ slurpy of the block, so synthesize it from the
+            // topic — the one "argument" the loop passed. List-flavored topics
+            // (e.g. X/Z tuples) spread: `for @a X @b { f(|@_) }` sees (a, b).
+            if (ve->name == "@_") {
+                Value out = Value::array();
+                if (Value* topic = tctx_.cur->find("$_")) {
+                    if (topic->t == VT::Array && topic->isList && topic->arr) *out.arr = *topic->arr;
+                    else if (topic->t != VT::Any && topic->t != VT::Nil) out.arr->push_back(*topic);
+                }
+                return out;
+            }
             if (!isSpecialVar(ve->name) && !noStrict_)
                 throw RakuError{Value::typeObj("X::Undeclared"),
                                 "Variable '" + ve->name + "' is not declared"};
@@ -9968,7 +10036,17 @@ Value Interpreter::eval(Expr* e) {
             if (inv.t == VT::Match && !mc->meta && mc->method == "make") {
                 ValueList margs = evalArgs(mc->args);
                 Value v = margs.empty() ? Value::any() : margs[0];
-                if (Value* lv = lvalue(mc->inv.get())) { lv->pairVal = std::make_shared<Value>(v); return v; }
+                if (Value* lv = lvalue(mc->inv.get())) lv->pairVal = std::make_shared<Value>(v);
+                // inside an action method $/ is a COPY of the tree node being
+                // built — write through to the real node (the active make
+                // target) so the parent action's $<child>.made sees it; the
+                // span guard keeps $<child>.make(x) off the parent's slot
+                if (!tctx_.makeTargets.empty()) {
+                    Value* t = tctx_.makeTargets.back();
+                    if (t && t->t == VT::Match && t->rFrom == inv.rFrom &&
+                        t->rTo == inv.rTo && t->s == inv.s)
+                        t->pairVal = std::make_shared<Value>(v);
+                }
                 return v;
             }
             // Buf.append/.push/.prepend/.unshift/.pop/.shift mutate the byte string
@@ -10179,6 +10257,19 @@ Value Interpreter::eval(Expr* e) {
             auto* r = static_cast<RangeExpr*>(e);
             Value from = eval(r->from.get());
             Value to = eval(r->to.get());
+            // a Date..Date range enumerates days eagerly (numeric Range can't
+            // hold Date endpoints; a century is only ~36k elements)
+            if (from.t == VT::Hash && from.hashKind == "Date" && from.hash &&
+                to.t == VT::Hash && to.hashKind == "Date" && to.hash) {
+                auto fld = [](const Value& v, const char* k) -> long long {
+                    auto it = v.hash->find(k); return it != v.hash->end() ? it->second.toInt() : 1;
+                };
+                long long lo = civilToDays(fld(from, "year"), fld(from, "month"), fld(from, "day")) + (r->exFrom ? 1 : 0);
+                long long hi = civilToDays(fld(to, "year"), fld(to, "month"), fld(to, "day")) - (r->exTo ? 1 : 0);
+                Value arr = Value::array(); arr.isList = true;
+                for (long long d = lo; d <= hi; d++) arr.arr->push_back(makeDate(d));
+                return arr;
+            }
             if (from.t == VT::Str && to.t == VT::Str) {
                 // single-CHARACTER endpoints walk CODEPOINTS: chr(0)..chr(0x7F)
                 // is the 128 ASCII chars ('<'..'F' includes the symbols between)

@@ -61,8 +61,8 @@ cp rakujs/playground/{index.html,worker.js,rakujs.js,rakujs.wasm,examples.js} \
    /path/to/your-site/playground/
 ```
 
-The live playground at
-[course.raku.org/playground](https://course.raku.org/playground/) is served this
+The live playgrounds at [raku.online](https://raku.online/) and
+[course.raku.org/playground](https://course.raku.org/playground/) are served this
 way (the built files are git-ignored here; they live in the site that serves them).
 Serve `.wasm` as `application/wasm` (most static hosts already do). All links are
 relative, so any `/playground/` path works.
@@ -73,6 +73,41 @@ streams as it's produced, so ANSI redraw programs animate live — try `life`
 (Conway's Game of Life). Pressing **Run** while a program is already running
 **restarts** it with the current source (so edit-then-Run just works); **■ Stop**
 (or Escape) halts a long or runaway program by terminating the worker.
+
+## Shareable links
+
+The playground opens pre-filled from three kinds of URL — none of them store
+anything on the server, so there is no code database to spam:
+
+| URL form | Where the code lives |
+|---|---|
+| `#code=<data>` | in the URL itself (deflate-compressed, base64url) |
+| `?gist=<id>[&file=<name>]` | a GitHub gist, fetched client-side |
+| `?gh=<owner>/<repo>/<branch>/<path>` | a file in a GitHub repo (raw) |
+| `?url=<encoded-url>` | any https URL whose host allows CORS fetches |
+
+The **🔗 Share** button makes the `#code=` form from the current editor
+content, copies it to the clipboard, and shows it in a popover (a
+"Hello, world" link is ~80 characters; the fragment never reaches the server
+at all). The **📂 Open…** button is the reverse: paste a GitHub file URL, a
+gist URL, a raw URL — or a bare gist id / `owner/repo/branch/path` — and it
+loads the code and rewrites the address bar to the matching `?gist=`/`?gh=`
+form, so the address bar is then the persistent link. The GitHub forms are for
+persistent demo links: keep the program in a gist or a repo, and edits there
+show up at the same URL. `?gist=` picks the first `.raku`/`.rakumod` file
+unless `&file=` names one.
+
+Append `&run=1` (`&run` works too in the hash form) to run the code as soon as
+the interpreter loads:
+
+```
+https://raku.online/?gh=ash/rakupp/main/examples/anagrams.raku&run=1
+```
+
+GitHub fetches happen in the visitor's browser (both `api.github.com` and
+`raw.githubusercontent.com` send CORS headers), so the playground server stays
+fully static. Shared programs are capped at 200 KB. Compression uses the native
+`CompressionStream` API — available in all evergreen browsers since 2023.
 
 ## Examples
 

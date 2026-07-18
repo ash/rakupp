@@ -2805,11 +2805,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Hash && (inv.hashKind == "DateTime" || inv.hashKind == "Date")) {
         auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second.toInt() : 0; };
-        // a stored `:formatter(&code)` drives .Str (called with the DateTime as topic)
-        if (m == "Str" && inv.hash->count("formatter") && (*inv.hash)["formatter"].t == VT::Code) {
+        // a stored `:formatter(&code)` drives .Str and .gist — `say` shows the
+        // formatted form too (Dateish gist delegates to Str)
+        if ((m == "Str" || m == "gist") && inv.hash->count("formatter") && (*inv.hash)["formatter"].t == VT::Code) {
             ValueList fa{inv};
             return Value::str(callCallable((*inv.hash)["formatter"], fa).toStr());
         }
+        // Dates enumerate day by day: .succ/.pred step a whole day (Range
+        // iteration and `for $d1..$d2` rely on this)
+        if ((m == "succ" || m == "pred") && inv.hashKind == "Date")
+            return makeDate(civilToDays(fld("year"), fld("month"), fld("day")) + (m == "succ" ? 1 : -1));
         if (m == "formatter") return inv.hash->count("formatter") ? (*inv.hash)["formatter"] : Value::any();
         if (m == "second" || m == "whole-second") {
             auto it = inv.hash->find("second");
@@ -3149,13 +3154,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                         if (arg.t == VT::Pair && arg.s == "rule") startRule = arg.pairVal ? arg.pairVal->toStr() : "TOP";
                         if (arg.t == VT::Pair && arg.s == "actions" && arg.pairVal) actions = *arg.pairVal;
                     }
+                    // an undefined parse target dies (Rakudo: warns on Any-to-Str
+                    // coercion, then dies calling .chars on it) instead of
+                    // silently parsing "" and returning Nil
+                    if (!a.empty() && (a[0].t == VT::Any || a[0].t == VT::Nil))
+                        throw RakuError{Value::typeObj("X::Method::NotFound"),
+                            "No such method 'chars' for invocant of type '" +
+                            a[0].typeName() + "'"};
                     std::string input = a.empty() ? "" : a[0].toStr();
                     return grammarParse(ci.get(), input, sub, startRule, actions);
                 };
                 if (m == "parsefile") { // slurp the file, then parse its contents
                     std::string input = args.empty() ? "" : args[0].toStr();
                     std::ifstream in(input); std::ostringstream ss; ss << in.rdbuf(); input = ss.str();
-                    if (!input.empty() && input.back() == '\n') input.pop_back();
+                    // Rakudo's parsefile matches the file contents verbatim,
+                    // trailing newline included (rule sigspace absorbs it)
                     ValueList a2 = args; if (!a2.empty()) a2[0] = Value::str(input); else a2.push_back(Value::str(input));
                     return builtinParse(a2);
                 }
@@ -4393,7 +4406,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // ---- IO::Path (string-as-path) ----
-    if (m == "IO") { rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p; }
+    if (m == "IO") {
+        // Any has no .IO (Cool does): an undefined invocant dies rather than
+        // silently becoming the "" path; Nil keeps its absorb-everything rule.
+        if (inv.t == VT::Any)
+            throw RakuError{Value::typeObj("X::Method::NotFound"),
+                            "No such method 'IO' for invocant of type 'Any'"};
+        if (inv.t == VT::Nil) return Value::nil();
+        rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p;
+    }
     if (m == "slurp" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) { // FileHandle has its own slurp
         std::ifstream in(inv.toStr(), std::ios::binary);
         if (!in) throwFailedOpen(inv.toStr());
@@ -5171,11 +5192,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         out.isList = true; out.s = "Seq";
         // .comb($needle): every non-overlapping occurrence of the literal substring
         // (a regex needle is handled earlier); .comb() with no arg: one entry per codepoint.
-        if (!args.empty() && args[0].t != VT::Int) {
+        if (!args.empty() && args[0].t != VT::Int && !args[0].toStr().empty()) {
+            // an EMPTY needle falls through to the no-arg form (Rakudo:
+            // "abc".comb("") is ("a","b","c"))
             std::string subj = inv.toStr(), needle = args[0].toStr();
-            if (!needle.empty())
-                for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size()))
-                    out.arr->push_back(Value::str(needle));
+            for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size()))
+                out.arr->push_back(Value::str(needle));
             return out;
         }
         { // one entry per GRAPHEME (UAX #29 cluster), not per codepoint —
@@ -5468,14 +5490,29 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "first" && !args.empty()) { // first match, scanning lazily (bounded)
-            Value pred = args[0];
+            bool wantK = false, wantKv = false, wantP = false; // :k index / :kv / :p forms
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal && a.pairVal->truthy()) {
+                if (a.s == "k") wantK = true;
+                else if (a.s == "kv") wantKv = true;
+                else if (a.s == "p") wantP = true;
+            }
+            Value pred; bool havePred = false;
+            for (auto& a : args) if (a.t != VT::Pair) { pred = a; havePred = true; break; }
             for (size_t si = 0; si < 1000000; si++) {
                 materializeLazy(inv, si + 1);
                 if (si >= inv.arr->size()) break;
                 Value v = (*inv.arr)[si];
-                bool match = pred.t == VT::Code ? callCallable(pred, {v}).truthy()
+                bool match = !havePred ? true
+                           : pred.t == VT::Code ? callCallable(pred, {v}).truthy()
                                                 : applyArith("~~", v, pred).truthy();
-                if (match) return v;
+                if (match) {
+                    if (wantK) return Value::integer((long long)si);
+                    if (wantP) return Value::pair(std::to_string(si), v);
+                    if (wantKv) { Value o = Value::array(); o.isList = true;
+                                  o.arr->push_back(Value::integer((long long)si));
+                                  o.arr->push_back(v); return o; }
+                    return v;
+                }
             }
             return Value::nil();
         }

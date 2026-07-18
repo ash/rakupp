@@ -132,6 +132,7 @@ private:
         long min = 0, max = -1;          // max = -1 => unbounded
         bool greedy = true;
         std::unique_ptr<Node> sep;       // `X+ % Y` / `X+ %% Y` separator (null if none)
+        bool sepTrail = false;           // `%%`: an optional TRAILING separator may follow the last item
         std::string repCode;             // `** { … }` — evaluate this at match time for (min,max)
         // Code / VarMatch: `lit` holds the code / variable expression; `runOnly` = `:my`/`{…}` (execute, always pass)
         bool runOnly = false;

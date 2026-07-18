@@ -50,6 +50,11 @@ say '';
 say 'quicksort matches .sort?  ', @quick eqv @builtin;
 say 'merge-sort matches .sort? ', @mergey eqv @builtin;
 
+# Comparisons chain in Raku — `1 ≤ 2 ≤ 3` is a single True expression. So the
+# same reduce metaop that turns `*` into a product ([*] 1..5) turns `≤` into
+# a sortedness test: [≤] chains it across every neighbouring pair.
+say 'sorted, per [≤]?          ', [≤] @quick;
+
 # The whole algorithm also fits on one line as a recursive closure.
 my &qs = -> @x {
     @x <= 1 ?? @x !! (|qs(@x.grep(* < @x[0])), @x[0], |qs(@x[1..*].grep(* >= @x[0])))

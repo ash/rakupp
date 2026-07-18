@@ -17,15 +17,18 @@ importScripts('rakujs.js' + V); // defines the MODULARIZE factory RakuJS on the 
 const post = (type, extra = {}) => self.postMessage({ type, ...extra });
 
 let Module = null;
+let inRun = false;   // only forward output while rakupp_run is executing
 
 // Build a fresh module instance. Its print/printErr stream straight back to the
-// main thread as they fire during a run.
+// main thread as they fire during a run. Outside a run they are Emscripten's own
+// load-time diagnostics (e.g. the wasm-MIME streaming-compile fallback note) —
+// keep those in the devtools console, not the user's output pane.
 function makeModule() {
   return RakuJS({
     // Version the .wasm request with the same tag as the .js files (see V above).
     locateFile: p => p + V,
-    print:    t => post('out', { text: t + '\n', cls: ''    }),
-    printErr: t => post('out', { text: t + '\n', cls: 'err' }),
+    print:    t => { if (inRun) post('out', { text: t + '\n', cls: ''    }); else console.log(t);  },
+    printErr: t => { if (inRun) post('out', { text: t + '\n', cls: 'err' }); else console.warn(t); },
   }).then(m => { Module = m; return m; });
 }
 
@@ -41,6 +44,7 @@ self.onmessage = async (e) => {
   post('start');
   const t0 = performance.now();
   let rc;
+  inRun = true;
   try {
     rc = Module.ccall('rakupp_run', 'number', ['string'], [e.data.src]);
   } catch (err) {
@@ -53,6 +57,8 @@ self.onmessage = async (e) => {
       deep: err instanceof RangeError || /call stack/i.test(String(err)),
     });
     return;
+  } finally {
+    inRun = false;
   }
   post('done', { rc, ms: Math.round(performance.now() - t0) });
 };

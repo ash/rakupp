@@ -254,7 +254,9 @@ det of [[2,0,1],[3,5,4],[1,1,0]] = -10
 The textbook recursive quicksort in idiomatic Raku: pick a pivot, `.grep` the
 rest into the elements below and above it, recurse on each half, and glue the
 pieces back. For contrast it also runs a merge sort and a one-line closure
-version, and confirms all three agree with the built-in `.sort`.
+version, and confirms all three agree with the built-in `.sort` — including a
+sortedness check via the reduce metaop, `[≤] @list` (comparisons chain, so
+folding `≤` over the list is True exactly when it is non-decreasing).
 
 ```
 Input:      [5 3 8 1 9 2 7 4 6 0]
@@ -263,6 +265,7 @@ merge-sort: [0 1 2 3 4 5 6 7 8 9]
 
 quicksort matches .sort?  True
 merge-sort matches .sort? True
+sorted, per [≤]?          True
 ```
 
 ### `hanoi.raku`

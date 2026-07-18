@@ -198,7 +198,7 @@ Regex::NodePtr Regex::parseQuant() {
     if (sigspace_ && peek() != '%') pos_ = sepSave;
     if (peek() == '%') {
         pos_++;
-        if (peek() == '%') pos_++; // %% (trailing separator) — approximated as %
+        if (peek() == '%') { pos_++; rep->sepTrail = true; } // %%: trailing separator allowed
         skipWs();
         NodePtr sep = parseAtom();
         if (sigspace_) {
@@ -1195,6 +1195,15 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     }
                     return matchNode(child, st, q, kk);
                 };
+                // `%%`: after the last item, an optional trailing separator may be
+                // consumed — try the continuation with it first (greedy), then without
+                auto finish = [&](long q, long itemCount) -> bool {
+                    if (sep && n->sepTrail && itemCount > 0) {
+                        auto viaK = [&](long sp) { return k(sp); };
+                        if (matchNode(sep, st, q, viaK)) return true;
+                    }
+                    return k(q);
+                };
                 if (greedy && ratchet_) {
                     // possessive: grab as many children as possible (each at its greedy
                     // longest), then commit — never give any back. This is `:ratchet`
@@ -1215,7 +1224,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         if (np < 0 || np == q) break;
                         q = np; cnt++;
                     }
-                    if (cnt >= mn) return k(q);
+                    if (cnt >= mn) return finish(q, cnt);
                     return false;
                 }
                 if (greedy) {
@@ -1223,10 +1232,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         auto more = [&](long np) { return np != p && self(self, count + 1, np); };
                         if (matchOne(p, more)) return true;
                     }
-                    if (count >= mn) return k(p);
+                    if (count >= mn) return finish(p, count);
                     return false;
                 } else {
-                    if (count >= mn && k(p)) return true;
+                    if (count >= mn && finish(p, count)) return true;
                     if (mx < 0 || count < mx) {
                         auto more = [&](long np) { return np != p && self(self, count + 1, np); };
                         return matchOne(p, more);

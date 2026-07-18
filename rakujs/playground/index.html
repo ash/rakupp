@@ -86,6 +86,21 @@
   .theme-menu button[aria-checked="true"]::after { content: '✓'; margin-left: auto; }
   select, button { font: inherit; color: var(--ink); background: var(--panel2);
                    border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; }
+  #shareBtn, #openBtn, #openGo { cursor: pointer; }
+  #shareBtn:hover, #openBtn:hover { color: var(--accent2); }
+  /* Popover panels under the Open/Share buttons (same idiom as the theme menu). */
+  .dropdown { position: relative; display: inline-flex; }
+  .popover { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+             width: min(360px, calc(100vw - 28px)); padding: 12px;
+             background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+             box-shadow: 0 8px 30px rgba(0,0,0,.28); }
+  .popover .pop-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+  .popover input { width: 100%; font: 12px/1.4 var(--font-mono); padding: 6px 8px;
+                   color: var(--ink); background: var(--panel2);
+                   border: 1px solid var(--border); border-radius: 6px; }
+  .popover .pop-row { display: flex; gap: 8px; }
+  .popover .pop-note { color: var(--muted); font-size: 11.5px; margin-top: 8px; }
+  .popover .pop-err { color: var(--accent); font-size: 12px; margin-top: 8px; }
   /* One button for both Run and Stop. Fixed min-width fits "▶ Run", "■ Stop" and
      "⟳ Stop", so it never changes size and nothing to its left shifts. */
   button.run { background: var(--accent); color: #fff; border-color: transparent;
@@ -156,6 +171,29 @@
   </span>
   <label class="tag" for="examples">example:</label>
   <select id="examples"></select>
+  <span class="dropdown">
+    <button id="openBtn" title="Load code from GitHub or another URL">📂 Open…</button>
+    <div class="popover" id="openPop" hidden>
+      <div class="pop-title">Open code from a URL</div>
+      <div class="pop-row">
+        <input type="text" id="openUrl" spellcheck="false" autocomplete="off"
+               placeholder="https://github.com/… · gist · raw URL">
+        <button id="openGo">Load</button>
+      </div>
+      <div class="pop-err" id="openErr" hidden></div>
+      <div class="pop-note">A file in a GitHub repo, a gist, or any https URL whose host
+        allows cross-site (CORS) fetches. The address bar becomes a shareable link.</div>
+    </div>
+  </span>
+  <span class="dropdown">
+    <button id="shareBtn" title="Copy a link that opens the playground with this code">🔗 Share</button>
+    <div class="popover" id="sharePop" hidden>
+      <div class="pop-title" id="shareTitle">Link copied to clipboard ✓</div>
+      <input type="text" id="shareUrl" readonly>
+      <div class="pop-note">The program travels inside the link itself —
+        nothing is stored on this server.</div>
+    </div>
+  </span>
   <button class="run" id="runBtn" disabled>▶ Run</button>
 </header>
 <main>
@@ -247,6 +285,203 @@ function currentExample() { return EXAMPLES[+sel.value] || EXAMPLES[0]; }
 sel.onchange = () => { codeEl.value = currentExample().code; paintHL(); };
 codeEl.value = EXAMPLES[0].code;
 paintHL();
+
+// ---- shareable links (no server storage) ----
+// Three URL forms open the playground pre-filled:
+//   #code=<base64url(deflate-raw(source))>   self-contained link, made by Share
+//   ?gist=<id>[&file=<name>]                 a GitHub gist, fetched client-side
+//   ?gh=<owner>/<repo>/<branch>/<path>       a file in a GitHub repo (raw)
+// Append &run=1 (or #…&run for the hash form) to run the code on load.
+// The code always travels in the URL or comes from GitHub — this site stores
+// nothing, so there is nothing to spam.
+const SHARE_CAP = 200000;   // refuse to load shared programs beyond ~200 KB
+
+const b64u = {
+  enc(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000)
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  },
+  dec(str) {
+    const s = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+    const b = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+    return b;
+  },
+};
+async function deflate(bytes, Ctor) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new Ctor('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+const encodeShare = async code =>
+  b64u.enc(await deflate(new TextEncoder().encode(code), CompressionStream));
+const decodeShare = async s =>
+  new TextDecoder().decode(await deflate(b64u.dec(s), DecompressionStream));
+
+let autoRun = false;   // consumed by the worker's first 'ready' (see below)
+
+// Fetch the program named by ?gist= / ?gh= / ?url= query params. Returns
+// { code, from } when one matched, null when none did; throws on any failure.
+async function fetchShared(q) {
+  if (q.has('gist')) {
+    const id = q.get('gist');
+    if (!/^[0-9a-f]+$/i.test(id)) throw new Error('not a gist id: ' + id);
+    const r = await fetch('https://api.github.com/gists/' + id);
+    if (!r.ok) throw new Error('gist fetch failed: HTTP ' + r.status);
+    const files = Object.values((await r.json()).files || {});
+    const want = q.get('file');
+    const f = want ? files.find(f => f.filename === want)
+                   : files.find(f => /\.(raku|rakumod|p6|pl6)$/i.test(f.filename)) || files[0];
+    if (!f) throw new Error(want ? 'no file "' + want + '" in that gist' : 'empty gist');
+    const code = f.truncated ? await (await fetch(f.raw_url)).text() : f.content;
+    return { code, from: 'gist ' + id + ' · ' + f.filename };
+  }
+  if (q.has('gh')) {
+    const spec = q.get('gh');
+    if (!/^[\w.-]+\/[\w.-]+\/[^\/]+\/.+/.test(spec) || spec.includes('..'))
+      throw new Error('expected gh=owner/repo/branch/path/to/file');
+    const r = await fetch('https://raw.githubusercontent.com/'
+      + spec.split('/').map(encodeURIComponent).join('/'));
+    if (!r.ok) throw new Error('GitHub fetch failed: HTTP ' + r.status);
+    return { code: await r.text(), from: 'github ' + spec };
+  }
+  if (q.has('url')) {
+    const u = q.get('url');
+    if (!/^https?:\/\//i.test(u)) throw new Error('only http(s) URLs can be opened');
+    const r = await fetch(u);
+    if (!r.ok) throw new Error('fetch failed: HTTP ' + r.status);
+    return { code: await r.text(), from: new URL(u).hostname };
+  }
+  return null;
+}
+
+// Put fetched/decoded code into the editor (both URL loading and the Open panel).
+function applyShared(code, from) {
+  if (code.length > SHARE_CAP)
+    throw new Error('shared program is too large ('
+      + (code.length / 1000 | 0) + ' KB > ' + (SHARE_CAP / 1000 | 0) + ' KB cap)');
+  codeEl.value = code.replace(/\r\n?/g, '\n');
+  paintHL();
+  statusEl.textContent = 'loaded from ' + from;
+}
+
+async function loadSharedCode() {
+  const q = new URLSearchParams(location.search);
+  // The hash form keeps everything client-side: fragments never reach the server.
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  try {
+    let r = await fetchShared(q);
+    if (!r && h.has('code')) r = { code: await decodeShare(h.get('code')), from: 'shared link' };
+    if (!r) return;
+    applyShared(r.code, r.from);
+  } catch (err) {
+    clearScreen();
+    pushText('Could not load the shared code — ' + (err && err.message || err) + '\n', 'err');
+    statusEl.textContent = 'shared code failed to load';
+    return;
+  }
+  if (q.has('run') || h.has('run')) {
+    autoRun = true;
+    if (ready && !running) { autoRun = false; startRun(); }
+  }
+}
+loadSharedCode();
+
+// A button with a .popover panel: click toggles, outside click / Escape closes,
+// opening one closes the others. Returns the open/close function.
+const allPops = [];
+function popover(btn, pop, onOpen) {
+  function open(o) {
+    if (o) allPops.forEach(p => { if (p !== pop) p.hidden = true; });
+    pop.hidden = !o;
+    if (o && onOpen) onOpen();
+  }
+  allPops.push(pop);
+  btn.addEventListener('click', e => { e.stopPropagation(); open(pop.hidden); });
+  pop.addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('click', () => open(false));
+  pop.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.stopPropagation(); open(false); btn.focus(); }
+  });
+  return open;
+}
+
+// Share: compress the current source into a #code= link, copy it, and show it
+// in a popover so it's clear what just happened.
+const shareUrlEl = document.getElementById('shareUrl');
+const shareTitle = document.getElementById('shareTitle');
+popover(document.getElementById('shareBtn'), document.getElementById('sharePop'), async () => {
+  shareTitle.textContent = 'Making the link…';
+  shareUrlEl.value = '';
+  const tag = await encodeShare(codeEl.value);
+  const url = location.origin + location.pathname + '#code=' + tag;
+  // Keep the address bar in sync so plain copy-from-URL-bar also works.
+  history.replaceState(null, '', location.pathname + '#code=' + tag);
+  shareUrlEl.value = url;
+  try {
+    await navigator.clipboard.writeText(url);
+    shareTitle.textContent = 'Link copied to clipboard ✓';
+  } catch (e) {
+    shareTitle.textContent = 'Copy this link:';   // clipboard denied — select it instead
+  }
+  shareUrlEl.focus();
+  shareUrlEl.select();
+});
+shareUrlEl.addEventListener('click', () => shareUrlEl.select());
+
+// Open: paste a GitHub / gist / raw / plain https URL, load it into the editor.
+function parseExternalURL(s) {
+  s = s.trim();
+  if (/^[0-9a-f]{16,}$/i.test(s)) return { q: 'gist=' + s };           // bare gist id
+  if (/^[\w.-]+\/[\w.-]+\/[^\/]+\/.+/.test(s) && !/^https?:/i.test(s))
+    return { q: 'gh=' + s };                                           // bare owner/repo/branch/path
+  let u;
+  try { u = new URL(s); } catch (e) { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  const parts = u.pathname.split('/').filter(Boolean);
+  if (u.hostname === 'gist.github.com' && parts.length) {
+    const id = parts[parts.length - 1];
+    if (/^[0-9a-f]+$/i.test(id)) return { q: 'gist=' + id };
+  }
+  if (u.hostname === 'github.com' && parts.length >= 5 && (parts[2] === 'blob' || parts[2] === 'raw'))
+    return { q: 'gh=' + [parts[0], parts[1]].concat(parts.slice(3)).join('/') };
+  if (u.hostname === 'raw.githubusercontent.com' && parts.length >= 4)
+    return { q: 'gh=' + parts.join('/') };
+  return { q: 'url=' + encodeURIComponent(s) };
+}
+const openUrlEl = document.getElementById('openUrl');
+const openGo = document.getElementById('openGo');
+const openErr = document.getElementById('openErr');
+const setOpenPop = popover(document.getElementById('openBtn'), document.getElementById('openPop'),
+  () => { openErr.hidden = true; openUrlEl.focus(); openUrlEl.select(); });
+async function doOpen() {
+  const spec = parseExternalURL(openUrlEl.value);
+  if (!spec) {
+    openErr.textContent = 'That doesn’t look like an https URL.';
+    openErr.hidden = false;
+    return;
+  }
+  openGo.disabled = true; openGo.textContent = '…';
+  try {
+    const r = await fetchShared(new URLSearchParams(spec.q));
+    applyShared(r.code, r.from);
+    // The address bar now IS the persistent link to this code.
+    history.replaceState(null, '', location.pathname + '?' + spec.q);
+    setOpenPop(false);
+  } catch (err) {
+    const msg = String(err && err.message || err);
+    openErr.textContent = msg + (/failed to fetch/i.test(msg)
+      ? ' — that host probably doesn’t allow cross-site (CORS) fetches.' : '');
+    openErr.hidden = false;
+  } finally {
+    openGo.disabled = false; openGo.textContent = 'Load';
+  }
+}
+openGo.addEventListener('click', doOpen);
+openUrlEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); doOpen(); }
+});
 
 // ---- output screen, with minimal ANSI handling for in-place redraws ----
 const OUT_CAP = 400000; // render at most ~400 KB of output
@@ -340,6 +575,7 @@ function createWorker() {
         ready = true; runBtn.disabled = false; loadTries = 0;
         verEl.textContent = "Raku++ " + m.version + " · compiled to WebAssembly · no server";
         if (pendingRun) { pendingRun = false; startRun(); }   // a restart was queued
+        else if (autoRun) { autoRun = false; startRun(); }    // a shared link asked to run
         else if (!running) statusEl.textContent = "ready";
         break;
       case 'out':

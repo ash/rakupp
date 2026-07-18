@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <cstdlib>
 #include <limits>
 #include <sstream>
@@ -366,21 +367,28 @@ std::string Value::gist() const {
             return toStr();
         }
         case VT::Match: {
-            // ｢matched｣ followed by one indented line per capture (positional then named)
-            std::string r = "\xEF\xBD\xA2" + s + "\xEF\xBD\xA3";
-            auto indentChild = [](const std::string& g) {
-                std::string out; for (char ch : g) { out += ch; if (ch == '\n') out += ' '; } return out;
+            // Rakudo's Match.gist: ｢matched｣, then one `key => value` line per
+            // capture — a LIST capture (quantified subrule) contributes one line
+            // per element under the same key — all ordered by match position,
+            // children indented by depth. Multiline matched text stays raw.
+            std::function<std::string(const Value&, int)> mg = [&mg](const Value& m, int d) -> std::string {
+                std::string r = "\xEF\xBD\xA2" + m.s + "\xEF\xBD\xA3";
+                std::vector<std::pair<std::string, const Value*>> caps;
+                auto add = [&caps](const std::string& key, const Value& v) {
+                    if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) caps.push_back({key, &e}); }
+                    else caps.push_back({key, &v});
+                };
+                if (m.arr) for (size_t k = 0; k < m.arr->size(); k++) add(std::to_string(k), (*m.arr)[k]);
+                if (m.hash) for (auto& kv : *m.hash) add(kv.first, kv.second);
+                std::stable_sort(caps.begin(), caps.end(),
+                                 [](auto& a, auto& b) { return a.second->rFrom < b.second->rFrom; });
+                std::string pad(d + 1, ' ');
+                for (auto& c : caps)
+                    r += "\n" + pad + c.first + " => " +
+                         (c.second->t == VT::Match ? mg(*c.second, d + 1) : c.second->gist());
+                return r;
             };
-            if (arr) for (size_t k = 0; k < arr->size(); k++)
-                r += "\n " + std::to_string(k) + " => " + indentChild((*arr)[k].gist());
-            if (hash) {
-                std::vector<const std::pair<const std::string, Value>*> items;
-                for (auto& kv : *hash) items.push_back(&kv);
-                std::sort(items.begin(), items.end(), [](auto* a, auto* b) { return a->second.rFrom < b->second.rFrom; });
-                for (auto* kv : items)
-                    r += "\n " + kv->first + " => " + indentChild(kv->second.gist());
-            }
-            return r;
+            return mg(*this, 0);
         }
         default: return toStr();
     }
