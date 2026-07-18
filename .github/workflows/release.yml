@@ -159,7 +159,11 @@ jobs:
           build\Release\rakupp.exe --exe tools/smoke.raku -o smoke-native.exe
           if ($LASTEXITCODE -ne 0) { exit 1 }
           .\smoke-native.exe
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $code = $LASTEXITCODE
+          # surface the REAL exit code: 0xC0000005 access violation,
+          # 0xC00000FD stack overflow, 3 abort — the number names the bug
+          Write-Host ("native exit code: {0} (0x{0:X8})" -f $code)
+          if ($code -ne 0) { exit 1 }
 
       - name: Smoke test --exe (Windows, MinGW-w64)
         if: matrix.mingw == true
@@ -168,7 +172,12 @@ jobs:
           CXX: g++
         run: |
           build/rakupp.exe --exe tools/smoke.raku -o smoke-native.exe
+          set +e
           ./smoke-native.exe
+          code=$?
+          set -e
+          echo "native exit code: $code"
+          exit $code
 
       # Byte-for-byte checks of every example + showcase against t/expected/,
       # plus live pastebin/chat servers. POSIX only: the server tests background
