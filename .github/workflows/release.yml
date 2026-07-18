@@ -103,6 +103,40 @@ jobs:
         shell: msys2 {0}
         run: build/rakupp.exe tools/smoke.raku
 
+      # --exe end-to-end: compile the (self-checking) smoke test to a native
+      # binary with the platform's own C++ toolchain, then run it. Exercises
+      # the runtime-library lookup, the compile-driver dialect, and the
+      # linked product on every platform (github issue #1).
+      - name: Smoke test --exe (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          build/rakupp --exe tools/smoke.raku -o smoke-native
+          ./smoke-native
+
+      - name: MSVC compiler environment (for --exe)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Smoke test --exe (Windows, MSVC)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          build\Release\rakupp.exe --exe tools/smoke.raku -o smoke-native.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\smoke-native.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke test --exe (Windows, MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        env:
+          CXX: g++
+        run: |
+          build/rakupp.exe --exe tools/smoke.raku -o smoke-native.exe
+          ./smoke-native.exe
+
       # Byte-for-byte checks of every example + showcase against t/expected/,
       # plus live pastebin/chat servers. POSIX only: the server tests background
       # a process through the shell and stop it with pkill. The goldens are

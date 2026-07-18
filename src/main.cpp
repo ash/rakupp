@@ -68,7 +68,9 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
                               const std::string& lib, const std::string& out) {
     if (msvcStyle(cxx)) {
         std::string o = opt == "-O0" ? "/Od" : opt == "-O1" ? "/O1" : "/O2";
-        std::string c = cxx + " /nologo /std:c++17 /EHsc /w " + o;
+        // /MT: static CRT, matching the /MT-built runtime archive (mixing
+        // /MD stub objects with an /MT library is a link error)
+        std::string c = cxx + " /nologo /std:c++17 /EHsc /MT /w " + o;
         if (!inc.empty()) c += " /I " + shq(inc);
         c += " " + shq(in) + " " + shq(lib) + " /Fe:" + shq(out) + " ws2_32.lib";
         return c;
