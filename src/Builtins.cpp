@@ -1581,7 +1581,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Buf/Blob.new(byte, byte, …) — a byte buffer, stored as a Str of those bytes.
     if (inv.t == VT::Type && (inv.s == "buf8" || inv.s == "blob8" || inv.s == "utf8" ||
                               inv.s == "buf16" || inv.s == "blob16" || inv.s == "utf16" ||
-                              inv.s == "buf32" || inv.s == "blob32" || inv.s == "utf32") &&
+                              inv.s == "buf32" || inv.s == "blob32" || inv.s == "utf32" ||
+                              inv.s == "buf64" || inv.s == "blob64") &&
         (m == "new" || m == "allocate")) {
         // byte-buffer views share the Blob representation (8-bit semantics)
         std::string bytes;
@@ -4729,7 +4730,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return bufBitOp(tmp, m, args);
         }
     }
-    if (m == "subbuf" && inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+    if ((m == "subbuf" || m == "subbuf-rw") && inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+        // rvalue subbuf-rw reads like subbuf (the writable form is an assignment target)
         long long n = (long long)inv.s.size(), from, len;
         Value a0v = args.empty() ? Value::integer(0) : args[0];
         if (a0v.t == VT::Range) { from = a0v.rFrom + (a0v.rExFrom ? 1 : 0);

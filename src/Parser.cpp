@@ -2144,6 +2144,14 @@ ExprPtr Parser::parsePrimary() {
                  || name == "Inf" || name == "NaN")
                 && !(peek().kind == Tok::LParen && !peek().spaceBefore))
                 { advance(); return std::make_unique<NameTerm>(name); }
+            // the bare type objects Any/Mu/Cool are TERMS too (`Any ~ $x` concats;
+            // `~` must not be misread as a listop argument's prefix) — a tight
+            // `Any(...)` stays a coercion call, and a tight `:` (the `Any:U`
+            // smiley) keeps the general type-name path
+            if ((name == "Any" || name == "Mu" || name == "Cool")
+                && !(peek().kind == Tok::LParen && !peek().spaceBefore)
+                && !(peek().kind == Tok::Op && !peek().text.empty() && peek().text[0] == ':' && !peek().spaceBefore))
+                { advance(); return std::make_unique<NameTerm>(name); }
             // control-flow in expression position: `... or return X`, `... or last`
             // — but `next => 42` / `last => 1` is a fat-arrow Pair, the key autoquotes
             if ((name == "return" || name == "return-rw" || name == "last" || name == "next" || name == "redo") &&

@@ -4687,6 +4687,51 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return tctx_.curStateEnv->vars[ve->name];
     }
 
+    // `$buf.subbuf-rw(from, len) = $repl` / `subbuf-rw($buf, from, len) = $repl`
+    // — splice the replacement bytes over [from, from+len) in place
+    if (a->op == "=") {
+        Expr* invE = nullptr; std::vector<ExprPtr>* sbArgs = nullptr; size_t argOfs = 0;
+        if (a->target->kind == NK::MethodCall &&
+            static_cast<MethodCall*>(a->target.get())->method == "subbuf-rw") {
+            auto* mc = static_cast<MethodCall*>(a->target.get());
+            invE = mc->inv.get(); sbArgs = &mc->args;
+        }
+        else if (a->target->kind == NK::Call &&
+                 static_cast<Call*>(a->target.get())->name == "subbuf-rw" &&
+                 !static_cast<Call*>(a->target.get())->args.empty()) {
+            auto* c = static_cast<Call*>(a->target.get());
+            invE = c->args[0].get(); sbArgs = &c->args; argOfs = 1;
+        }
+        if (invE) {
+            Value* bp = lvalue(invE);
+            if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
+                long long n = (long long)bp->s.size();
+                long long from = sbArgs->size() > argOfs ? eval((*sbArgs)[argOfs].get()).toInt() : 0;
+                long long len  = sbArgs->size() > argOfs + 1 ? eval((*sbArgs)[argOfs + 1].get()).toInt() : n - from;
+                if (from < 0) from += n;
+                if (from < 0) from = 0; if (from > n) from = n;
+                if (len < 0) len = 0; if (from + len > n) len = n - from;
+                Value rhs = eval(a->value.get());
+                std::string repl = rhs.t == VT::Str ? rhs.s : std::string();
+                if (rhs.t != VT::Str) for (auto& b : rhs.flatten()) repl += (char)(unsigned char)b.toInt();
+                bp->s = bp->s.substr(0, (size_t)from) + repl + bp->s.substr((size_t)(from + len));
+                return sink ? Value::any() : rhs;
+            }
+            if (bp && bp->t == VT::Array && bp->arr) {
+                long long n = (long long)bp->arr->size();
+                long long from = sbArgs->size() > argOfs ? eval((*sbArgs)[argOfs].get()).toInt() : 0;
+                long long len  = sbArgs->size() > argOfs + 1 ? eval((*sbArgs)[argOfs + 1].get()).toInt() : n - from;
+                if (from < 0) from += n;
+                if (from < 0) from = 0; if (from > n) from = n;
+                if (len < 0) len = 0; if (from + len > n) len = n - from;
+                Value rhs = eval(a->value.get());
+                ValueList repl = (rhs.t == VT::Array && rhs.arr) ? *rhs.arr : rhs.flatten();
+                bp->arr->erase(bp->arr->begin() + from, bp->arr->begin() + from + len);
+                bp->arr->insert(bp->arr->begin() + from, repl.begin(), repl.end());
+                return sink ? Value::any() : rhs;
+            }
+        }
+    }
     if (a->op == "=" || a->op == ":=") {
         // quanthash element assignment: $sh<k> = False deletes from a SetHash,
         // $bh<k> = 0 deletes from a BagHash/MixHash; true/nonzero (re)sets
@@ -5749,7 +5794,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             for (auto& c : *r.arr) out.arr->push_back(c);
             return out;
         }
-        return Value::str(l.toStr() + r.toStr());
+        // an undefined operand stringifies to "" (Rakudo warns; `Any ~ $x` is $x)
+        auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil || v.t == VT::Type; };
+        return Value::str((undef(l) ? std::string() : l.toStr()) +
+                          (undef(r) ? std::string() : r.toStr()));
     }
     if (op == "x") {
         std::string base = l.toStr(), out;
@@ -8643,6 +8691,9 @@ Value Interpreter::evalCall(Call* c) {
             return a0.isNumeric() ? a0 : Value::number(a0.toNum()); // Numeric
         }
     }
+    // type-object coercion call: Any(x) / Mu(x) / Cool(x) is the value itself
+    if ((c->name == "Any" || c->name == "Mu" || c->name == "Cool") && c->args.size() == 1)
+        return eval(c->args[0].get());
     throw RakuError{Value::str("Undefined routine &" + c->name),
                     "Undefined routine '" + c->name + "'"};
 }
@@ -9877,6 +9928,48 @@ Value Interpreter::eval(Expr* e) {
                 Value v = margs.empty() ? Value::any() : margs[0];
                 if (Value* lv = lvalue(mc->inv.get())) { lv->pairVal = std::make_shared<Value>(v); return v; }
                 return v;
+            }
+            // Buf.append/.push/.prepend/.unshift/.pop/.shift mutate the byte string
+            // through the invocant's container
+            if (inv.t == VT::Str && inv.hashKind == "Buf" && !mc->meta &&
+                (mc->method == "append" || mc->method == "push" ||
+                 mc->method == "prepend" || mc->method == "unshift" ||
+                 mc->method == "pop" || mc->method == "shift" ||
+                 mc->method == "reallocate")) {
+                if (mc->method == "reallocate") { // grow (zero-fill) or truncate in place
+                    ValueList wargs = evalArgs(mc->args);
+                    size_t n = wargs.empty() ? 0 : (size_t)wargs[0].toInt();
+                    if (Value* lv = lvalue(mc->inv.get())) { lv->s.resize(n, '\0'); return *lv; }
+                    Value out = inv; out.s.resize(n, '\0'); return out;
+                }
+                if (mc->method == "pop" || mc->method == "shift") {
+                    Value* lv = nullptr; try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
+                    Value* tgt = lv ? lv : nullptr;
+                    std::string& s = tgt ? tgt->s : inv.s;
+                    if (s.empty())
+                        throw RakuError{Value::typeObj("X::Cannot::Empty"),
+                            "Cannot " + mc->method + " from an empty " + inv.hashKind};
+                    unsigned char byte;
+                    if (mc->method == "pop") { byte = (unsigned char)s.back(); s.pop_back(); }
+                    else { byte = (unsigned char)s.front(); s.erase(0, 1); }
+                    return Value::integer(byte);
+                }
+                ValueList wargs = evalArgs(mc->args);
+                std::string add;
+                std::function<void(const Value&)> collect = [&](const Value& v) {
+                    if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) collect(e); }
+                    else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) add += v.s;
+                    else add += (char)(unsigned char)(v.toInt() & 0xFF);
+                };
+                for (auto& a : wargs) collect(a);
+                bool front = mc->method == "prepend" || mc->method == "unshift";
+                if (Value* lv = lvalue(mc->inv.get())) {
+                    if (front) lv->s = add + lv->s; else lv->s += add;
+                    return *lv;
+                }
+                Value out = inv;
+                if (front) out.s = add + out.s; else out.s += add;
+                return out;
             }
             // Buf writes mutate the invocant's container in place
             if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
