@@ -595,4 +595,7 @@ std::vector<uint32_t> uniNormalize(const std::vector<uint32_t>& cps, int mode) {
     }
     return out;
 }
+
+std::string uniBidiClassOf(uint32_t cp) { return uniBidiClass(cp); }
+std::string uniBlockOf(uint32_t cp) { return uniBlockName(cp); }
 }

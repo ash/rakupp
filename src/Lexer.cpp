@@ -644,7 +644,14 @@ Token Lexer::lexQuoted(char quote) {
         return o;
     };
     auto litAppend = [&](char ch) { if (sqInterp) raw += escInterp(std::string(1, ch)); else raw += ch; };
-    while (!eof() && peek() != quote) {
+    // Rakudo lexes source by GRAPHEMES: a quote immediately followed by a
+    // combining mark (U+0300–U+036F) is part of a grapheme cluster — content,
+    // not a closer ('&#x27;&#x334;' is a one-grapheme string in uniprop.t)
+    auto quoteIsCombined = [&]() {
+        unsigned char b0 = (unsigned char)peek(1), b1 = (unsigned char)peek(2);
+        return (b0 == 0xCC && b1 >= 0x80) || (b0 == 0xCD && b1 <= 0xAF && b1 >= 0x80);
+    };
+    while (!eof() && (peek() != quote || quoteIsCombined())) {
         char c = advance();
         if (c == '\\') {
             char n = peek();

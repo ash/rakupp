@@ -4726,14 +4726,53 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return have ? univ(cp) : Value::nil();
     }
-    if (m == "uniprop") {
-        uint32_t cp; bool have = true;
-        if (inv.t == VT::Int || inv.t == VT::Bool) cp = (uint32_t)inv.toInt();
-        else { auto cps = utf8cp(inv.toStr()); if (cps.empty()) have = false; else cp = cps[0]; }
-        if (!have) return Value::str("");
+    if (m == "uniprop" || m == "uniprops") {
+        // one property of one codepoint; .uniprops maps every codepoint.
+        // String-valued properties answer strings, numeric ones numbers, and
+        // any other name is treated as a BINARY property via the same matcher
+        // the regex <:Prop> engine uses.
         std::string prop = args.empty() ? "General_Category" : args[0].toStr();
-        if (prop == "Script" || prop == "sc") return Value::str(uniScript(cp));
-        return Value::str(uniGeneralCategory(cp)); // General_Category default
+        auto one = [&](uint32_t cp) -> Value {
+            if (prop == "General_Category" || prop == "gc") return Value::str(uniGeneralCategory(cp));
+            if (prop == "Script" || prop == "sc") return Value::str(uniScript(cp));
+            if (prop == "Name" || prop == "na") return Value::str(uniNameOf(cp));
+            if (prop == "Block" || prop == "blk") return Value::str(uniBlockOf(cp));
+            if (prop == "Bidi_Class" || prop == "bc") return Value::str(uniBidiClassOf(cp));
+            if (prop == "Canonical_Combining_Class" || prop == "ccc")
+                return Value::integer(uniCombiningClass(cp));
+            if (prop == "Numeric_Value" || prop == "nv") {
+                long long nu, de;
+                if (!uniNumValue(cp, nu, de)) return Value::number(std::nan(""));
+                return de == 1 ? Value::integer(nu) : Value::ratZ(BigInt(nu), BigInt(de));
+            }
+            if (prop == "Numeric_Type" || prop == "nt") {
+                long long nu, de;
+                if (!uniNumValue(cp, nu, de)) return Value::str("None");
+                return Value::str(uniGeneralCategory(cp) == "Nd" ? "Decimal" : "Numeric");
+            }
+            return Value::boolean(uniMatchesProp(cp, prop));
+        };
+        std::vector<uint32_t> cps;
+        if (inv.t == VT::Int || inv.t == VT::Bool) cps.push_back((uint32_t)inv.toInt());
+        else cps = utf8cp(inv.toStr());
+        if (m == "uniprop") return cps.empty() ? Value::str("") : one(cps[0]);
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        for (uint32_t cp : cps) out.arr->push_back(one(cp));
+        return out;
+    }
+    if (m == "unival" || m == "univals") {
+        auto uv = [&](uint32_t cp) -> Value {
+            long long nu, de;
+            if (!uniNumValue(cp, nu, de)) return Value::number(std::nan(""));
+            return de == 1 ? Value::integer(nu) : Value::ratZ(BigInt(nu), BigInt(de));
+        };
+        std::vector<uint32_t> cps;
+        if (inv.t == VT::Int || inv.t == VT::Bool) cps.push_back((uint32_t)inv.toInt());
+        else cps = utf8cp(inv.toStr());
+        if (m == "unival") return cps.empty() ? Value::number(std::nan("")) : uv(cps[0]);
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        for (uint32_t cp : cps) out.arr->push_back(uv(cp));
+        return out;
     }
     if (m == "uc") return Value::str(mapCase(inv.toStr(), true, 0));
     if (m == "lc") return Value::str(mapCase(inv.toStr(), false, 0));
@@ -7560,13 +7599,19 @@ void Interpreter::registerBuiltins() {
             throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call uniname with a type object"};
         ValueList none; return I.methodCall(a[0], "uniname", none);
     };
-    B["uniprop"] = [cpOfArg](Interpreter&, ValueList& a) -> Value {
+    B["uniprop"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::str("");
-        bool ok; uint32_t cp = cpOfArg(a[0], ok); if (!ok) return Value::str("");
-        std::string prop = a.size() > 1 ? a[1].toStr() : "General_Category";
-        if (prop == "Script" || prop == "sc") return Value::str(uniScript(cp));
-        return Value::str(uniGeneralCategory(cp));
+        Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(inv, "uniprop", rest); // full property dispatch
     };
+    for (const char* un : {"uniprops", "unival", "univals"}) {
+        std::string mn = un;
+        B[mn] = [mn](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return Value::str("");
+            Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
+            return I.methodCall(inv, mn, rest);
+        };
+    }
     // (the Str/Int method form delegates here through the sub-as-method fallback)
     // unimatch($char, $propval [, $propname]) — property match; a bare value
     // tests the general category (major class prefix allowed: L matches Lu)

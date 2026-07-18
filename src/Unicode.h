@@ -17,4 +17,6 @@ bool uniNumValue(uint32_t cp, long long& num, long long& den); // numeric value 
 std::string uniGeneralCategory(uint32_t cp);                   // 2-letter general category ("Nd", "Lu", "Cn"…)
 std::string uniScript(uint32_t cp);                            // approximate script ("Latin", "Greek"…)
 bool uniMatchesProp(uint32_t cp, const std::string& prop);     // regex <:Prop> / char-property test
+std::string uniBidiClassOf(uint32_t cp);                       // Bidi_Class short name ("L", "AL", …)
+std::string uniBlockOf(uint32_t cp);                           // block name ("Basic Latin", …)
 }
