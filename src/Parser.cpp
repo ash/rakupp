@@ -236,7 +236,10 @@ bool Parser::startsTermToken(const Token& t) const {
             if (&t == &cur() && peek().kind == Tok::FatArrow) return true;
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
-                   t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant";
+                   t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant" ||
+                   // an ANONYMOUS class/role/grammar is an expression: `is class :: {…}.new.x, …`
+                   ((t.text == "class" || t.text == "role" || t.text == "grammar") && &t == &cur() &&
+                    (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")));
         default:
             return false;
     }
@@ -296,7 +299,10 @@ bool Parser::startsListopArg(const Token& t) const {
             // constant begin a declaration expression that is a valid list-op argument (`ok my $x = 5, "d"`)
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
-                   t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant";
+                   t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant" ||
+                   // an ANONYMOUS class/role/grammar is an expression: `is class :: {…}.new.x, …`
+                   ((t.text == "class" || t.text == "role" || t.text == "grammar") && &t == &cur() &&
+                    (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")));
         }
         default:
             return false;
