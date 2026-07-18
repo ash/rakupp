@@ -3547,6 +3547,26 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 if (isOp(":") && (peek().kind == Tok::Ident)) { advance(); advance(); } // :D / :U / :_ smiley
                 if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
             }
+            if (attrType.empty() && isKind(Tok::LParen)) {
+                // parenthesized attribute list: `has ( $.this, $.that, );`
+                advance();
+                while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
+                    if (isKind(Tok::Var)) {
+                        std::string vn = advance().text;
+                        AttrDecl a;
+                        a.sigil = vn[0];
+                        size_t idx = 1;
+                        if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }
+                        a.name = vn.substr(idx);
+                        if (matchOp("=")) a.def = parseExpr(BP_ASSIGN);
+                        cd->attrs.push_back(std::move(a));
+                    } else advance();
+                    matchKind(Tok::Comma);
+                }
+                matchKind(Tok::RParen);
+                matchKind(Tok::Semicolon);
+                continue;
+            }
             if (isKind(Tok::Var)) {
                 std::string vn = advance().text;
                 AttrDecl a;
@@ -3569,7 +3589,17 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
                 }
                 if (matchOp("=") || matchOp(".=")) a.def = parseExpr(BP_ASSIGN);
-                skipToStatementEnd();
+                // a newline may end the declaration (`has $.cl = { … }` with no
+                // ';'): don't skip INTO the next class-body statement hunting one
+                if (!(cur().kind == Tok::Ident &&
+                      (cur().text == "method" || cur().text == "submethod" ||
+                       cur().text == "multi" || cur().text == "proto" ||
+                       cur().text == "has" || cur().text == "sub" ||
+                       cur().text == "my" || cur().text == "our" ||
+                       cur().text == "constant" || cur().text == "class" ||
+                       cur().text == "role" || cur().text == "grammar" ||
+                       cur().text == "token" || cur().text == "rule" || cur().text == "regex")))
+                    skipToStatementEnd();
                 cd->attrs.push_back(std::move(a));
             } else {
                 skipToStatementEnd();

@@ -3322,6 +3322,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 }
                 auto od = std::make_shared<ObjectData>();
                 od->cls = ci;
+                // attr defaults evaluate with `self` in scope, so a default
+                // CLOSURE (`has $.cl = { self.foo }`) captures the new object
+                Value selfEarly = Value::object(od);
+                auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
+                denv->define("self", selfEarly);
+                auto savedDenv = tctx_.cur; tctx_.cur = denv;
+                struct EnvRestore {
+                    Interpreter& I; std::shared_ptr<Env> e;
+                    ~EnvRestore() { I.tctx_.cur = e; }
+                } envRestore{*this, savedDenv};
                 std::vector<ClassInfo*> chain;
                 for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
                 for (auto it = chain.rbegin(); it != chain.rend(); ++it)
