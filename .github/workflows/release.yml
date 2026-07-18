@@ -189,6 +189,38 @@ jobs:
         shell: msys2 {0}
         run: cmake --install build --prefix dist/rakupp
 
+      # --exe FROM THE INSTALLED LAYOUT (bin/ + lib/ + include/) — the shape
+      # users actually download; the build-tree smoke above has the library
+      # beside the binary and cannot catch dist-layout lookup bugs.
+      - name: Smoke test --exe from install layout (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          dist/rakupp/bin/rakupp --exe -e 'say 6 * 7' -o dist-native
+          out=$(./dist-native)
+          echo "got: [$out]"
+          test "$out" = "42"
+
+      - name: Smoke test --exe from install layout (Windows, MSVC)
+        if: runner.os == 'Windows' && matrix.mingw != true
+        shell: pwsh
+        run: |
+          dist\rakupp\bin\rakupp.exe --exe -e "say 6 * 7" -o dist-native.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $out = .\dist-native.exe | Out-String
+          Write-Host "got: [$out]"
+          if ($out.Trim() -ne "42") { exit 1 }
+
+      - name: Smoke test --exe from install layout (Windows, MinGW-w64)
+        if: matrix.mingw == true
+        shell: msys2 {0}
+        env:
+          CXX: g++
+        run: |
+          dist/rakupp/bin/rakupp.exe --exe -e 'say 6 * 7' -o dist-native.exe
+          out=$(./dist-native.exe)
+          echo "got: [$out]"
+          test "$out" = "42"
+
       - name: Package (POSIX)
         if: runner.os != 'Windows'
         run: |
