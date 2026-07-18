@@ -1584,6 +1584,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Type &&
         (inv.s == "Set" || inv.s == "SetHash" || inv.s == "Bag" || inv.s == "BagHash" ||
+         inv.s == "Mix" || inv.s == "MixHash") && m == "new-from-pairs") {
+        // pairs contribute key => WEIGHT (unlike .new, where a Pair is an element)
+        ValueList items;
+        for (auto& a : args) {
+            if (a.t == VT::Range && a.rTo >= 9000000000000000000LL)
+                throw RakuError{Value::typeObj("X::Cannot::Lazy"),
+                                "Cannot create a " + inv.s + " from a lazy list"};
+            if (a.t == VT::Array || a.t == VT::Range) for (auto& x : a.flatten()) items.push_back(x);
+            else items.push_back(a);
+        }
+        for (auto& x : items)
+            if (x.t != VT::Pair && x.t != VT::Str && !x.isNumeric())
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                                "Found invalid value " + x.gist() + " in " + inv.s + ".new-from-pairs"};
+        return makeBaggy(items, inv.s, /*pairsAsElements=*/false);
+    }
+    if (inv.t == VT::Type &&
+        (inv.s == "Set" || inv.s == "SetHash" || inv.s == "Bag" || inv.s == "BagHash" ||
          inv.s == "Mix" || inv.s == "MixHash") && m == "new") {
         // single-arg rule: one iterable arg contributes its elements (an itemized
         // `$[...]` resists and stays whole); with several args each arg is ONE
@@ -5729,6 +5747,75 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     if (match(items[i])) return wantK ? Value::integer((long long)i) : items[i];
             }
             return Value::nil(); // no match: Nil (like Rakudo)
+        }
+        if ((m == "pickpairs" || m == "grabpairs") && inv.t == VT::Hash && inv.hash &&
+            (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||
+             inv.hashKind == "Bag" || inv.hashKind == "BagHash" ||
+             inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
+            // random DISTINCT keys as key => weight Pairs (unweighted among
+            // keys); grabpairs also REMOVES them from the (mutable) hash
+            if (m == "grabpairs" &&
+                (inv.hashKind == "Set" || inv.hashKind == "Bag" || inv.hashKind == "Mix"))
+                throw RakuError{Value::typeObj("X::Immutable"),
+                    "Cannot call 'grabpairs' on an immutable '" + inv.hashKind + "'"};
+            std::vector<std::string> keys;
+            for (auto& kv : *inv.hash) keys.push_back(kv.first);
+            long long n = 1;
+            if (!args.empty())
+                n = (args[0].t == VT::Whatever || (args[0].t == VT::Num && std::isinf(args[0].n)))
+                  ? (long long)keys.size() : args[0].toInt();
+            if (n > (long long)keys.size()) n = (long long)keys.size();
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            for (long long k = 0; k < n && !keys.empty(); k++) {
+                size_t i = (size_t)(randDouble() * keys.size());
+                if (i >= keys.size()) i = keys.size() - 1;
+                std::string key = keys[i]; keys.erase(keys.begin() + i);
+                out.arr->push_back(Value::pair(key, (*inv.hash)[key]));
+                if (m == "grabpairs") inv.hash->erase(key);
+            }
+            if (args.empty()) return out.arr->empty() ? Value::nil() : (*out.arr)[0];
+            return out;
+        }
+        if (m == "grab" && inv.t == VT::Hash && inv.hash &&
+            (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||
+             inv.hashKind == "Bag" || inv.hashKind == "BagHash" ||
+             inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
+            // .grab = .pick that CONSUMES: each draw removes one unit of weight
+            if (inv.hashKind == "Set" || inv.hashKind == "Bag" || inv.hashKind == "Mix")
+                throw RakuError{Value::typeObj("X::Immutable"),
+                    "Cannot call 'grab' on an immutable '" + inv.hashKind + "'"};
+            if (inv.hashKind == "MixHash")
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Cannot .grab from a MixHash; weights aren't multiplicities"};
+            bool one = args.empty();
+            bool all = !args.empty() && (args[0].t == VT::Whatever ||
+                                         (args[0].t == VT::Num && std::isinf(args[0].n)));
+            long long want = one ? 1 : all ? -1 : args[0].toInt();
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            for (long long k = 0; want < 0 || k < want; k++) {
+                double total = 0;
+                for (auto& kv : *inv.hash)
+                    total += inv.hashKind == "SetHash" ? 1.0 : kv.second.toNum();
+                if (total <= 0) break;
+                double r = randDouble() * total;
+                std::string key;
+                for (auto& kv : *inv.hash) {
+                    double w = inv.hashKind == "SetHash" ? 1.0 : kv.second.toNum();
+                    if (w <= 0) continue;
+                    if (r < w) { key = kv.first; break; }
+                    r -= w;
+                }
+                if (key.empty() && !inv.hash->empty()) key = inv.hash->begin()->first;
+                if (key.empty()) break;
+                out.arr->push_back(Value::str(key));
+                if (inv.hashKind == "SetHash") inv.hash->erase(key);
+                else {
+                    long long c = (*inv.hash)[key].toInt() - 1;
+                    if (c <= 0) inv.hash->erase(key); else (*inv.hash)[key] = Value::integer(c);
+                }
+            }
+            if (one) return out.arr->empty() ? Value::nil() : (*out.arr)[0];
+            return out;
         }
         if (m == "pick" || m == "roll") { // random element(s); pick = without replacement
             // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs

@@ -1121,6 +1121,7 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
             return pv.text != "++" && pv.text != "--" &&
                    pv.text != ">" && pv.text != "<" && pv.text != ">>" && pv.text != "<<" &&
                    pv.text != ">=" && pv.text != "<=" &&
+                   pv.text != "*" && // Whatever term: `* / 2` is a WhateverCode DIVISION
                    pv.text != "\xC2\xAB" && pv.text != "\xC2\xBB"; // « »
         case Tok::LParen: case Tok::LBrace: case Tok::LBracket:
         case Tok::Comma: case Tok::Semicolon: case Tok::FatArrow:

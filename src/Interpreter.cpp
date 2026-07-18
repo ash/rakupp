@@ -9156,6 +9156,13 @@ Value Interpreter::evalIndex(Index* idx) {
                     throw RakuError{Value::typeObj("X::OutOfRange"),
                         "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0"};
                 }
+                // any other SCALAR (Pair, Int, …) is a one-item list too:
+                // $b.grabpairs[0] indexes the single returned Pair
+                if (base.t == VT::Pair || base.t == VT::Int || base.t == VT::Num ||
+                    base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex) {
+                    if (i == 0 || i == -1) return base;
+                    return Value::nil();
+                }
                 if (i < 0) i += n;
                 if (i >= 0 && i < n) return src[i];
                 if (!base.ofType.empty()) return typedElemDefault(base);
@@ -9190,6 +9197,11 @@ Value Interpreter::evalIndex(Index* idx) {
     } else if (base.t == VT::Range) {
         ValueList f = base.flatten();
         if (i >= 0 && i < (long long)f.size()) return f[i];
+    } else if (base.t == VT::Pair || base.t == VT::Int || base.t == VT::Num ||
+               base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex) {
+        // a scalar is a one-item list: $b.grabpairs[0] indexes the single Pair
+        if (i == 0 || i == -1) return base;
+        return Value::nil();
     }
     return Value::any();
 }
