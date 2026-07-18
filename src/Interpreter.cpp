@@ -9862,6 +9862,40 @@ Value Interpreter::eval(Expr* e) {
             Value from = eval(r->from.get());
             Value to = eval(r->to.get());
             if (from.t == VT::Str && to.t == VT::Str) {
+                // single-CHARACTER endpoints walk CODEPOINTS: chr(0)..chr(0x7F)
+                // is the 128 ASCII chars ('<'..'F' includes the symbols between)
+                {
+                    auto cpLen = [](const std::string& s) -> long long {
+                        long long n = 0;
+                        for (unsigned char ch : s) if ((ch & 0xC0) != 0x80) n++;
+                        return n;
+                    };
+                    if (cpLen(from.s) == 1 && cpLen(to.s) == 1) {
+                        auto firstCp = [](const std::string& s) -> uint32_t {
+                            unsigned char c0 = s[0];
+                            if (c0 < 0x80) return c0;
+                            int len = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xE ? 3 : 4;
+                            uint32_t cp = c0 & (0xFF >> (len + 1));
+                            for (int k = 1; k < len && k < (int)s.size(); k++) cp = (cp << 6) | (s[k] & 0x3F);
+                            return cp;
+                        };
+                        auto toU8 = [](uint32_t cp) -> std::string {
+                            std::string o;
+                            if (cp < 0x80) o += (char)cp;
+                            else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+                            else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+                            else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+                            return o;
+                        };
+                        Value arr = Value::array(); arr.isList = true;
+                        uint32_t a = firstCp(from.s) + (r->exFrom ? 1 : 0), b = firstCp(to.s);
+                        for (uint32_t c = a; c <= b; c++) {
+                            if (r->exTo && c == b) break;
+                            arr.arr->push_back(Value::str(toU8(c)));
+                        }
+                        return arr;
+                    }
+                }
                 Value arr = Value::array(); arr.isList = true; // a string range is list-like (flattens)
                 std::string cur = from.s, end = to.s;
                 for (int g = 0; g < 1000000; g++) {

@@ -194,7 +194,11 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         if (q.size() > 2 && q[0] == 'i' && q[1] == 'n') q = q.substr(2); // drop the In prefix
         // legacy block-name aliases renamed in later Unicode versions
         if (q == "cyrillicsupplementary") q = "cyrillicsupplement";
-        return q == uniBlockName(cp);
+        if (q == "ascii") return cp <= 0x7F; // ASCII is a Blocks.txt alias for Basic Latin
+        std::string b; // compare NORMALIZED (uniBlockName has spaces and caps)
+        for (char ch : std::string(uniBlockName(cp)))
+            if (std::isalnum((unsigned char)ch)) b += (char)std::tolower((unsigned char)ch);
+        return q == b;
     }
     return true; // unknown property (e.g. an unmodelled script): lenient match
 }
