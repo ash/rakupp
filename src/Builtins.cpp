@@ -8250,15 +8250,19 @@ void Interpreter::registerBuiltins() {
         if (a.empty()) return out;
         Value mt = a[0];
         Value list = Value::array(); list.isList = true;
-        ValueList margs{mt};
+        ValueList margs{mt}, pos;
         for (size_t i = 1; i < a.size(); i++) {
             if (a[i].t == VT::Pair && (a[i].s == "k" || a[i].s == "v" || a[i].s == "kv" || a[i].s == "p"))
                 margs.push_back(a[i]); // adverb, pass through
-            else if (a[i].t == VT::Array && a[i].arr && !a[i].itemized)
-                for (auto& x : *a[i].arr) list.arr->push_back(x);
-            else if (a[i].t == VT::Range) for (auto& x : a[i].flatten()) list.arr->push_back(x);
-            else list.arr->push_back(a[i]);
+            else pos.push_back(a[i]);
         }
+        // `grep`'s list is a +@values slurpy (single-arg rule): ONE Positional arg
+        // is iterated; with several args each is one element, so a bare `[]` stays
+        // an element instead of flattening away and renumbering :kv/:p indices.
+        if (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Range) && !pos[0].itemized) {
+            if (pos[0].t == VT::Range) for (auto& x : pos[0].flatten()) list.arr->push_back(x);
+            else for (auto& x : *pos[0].arr) list.arr->push_back(x);
+        } else for (auto& x : pos) list.arr->push_back(x);
         return I.methodCall(list, "grep", margs); // one implementation
     };
     B["first"] = [](Interpreter& I, ValueList& a) -> Value {
