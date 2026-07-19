@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <iostream>
 #include <sstream>
+#include <unistd.h>
 
 extern "C" {
 
@@ -55,6 +56,12 @@ int rakupp_run(const char* src, const char* stdin_text) {
     std::cerr.flush();
     std::fflush(stdout);
     std::fflush(stderr);
+    // Emscripten's TTY only emits a line to Module.print on a newline, so a
+    // program ending in `print` (no trailing newline) leaves its last line
+    // buffered — and it then leaks onto the FIRST line of the next run.
+    // fsync triggers the TTY's flush op (fflush does not), clearing it.
+    fsync(STDOUT_FILENO);
+    fsync(STDERR_FILENO);
     return rc;
 }
 
