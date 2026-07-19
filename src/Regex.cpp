@@ -1239,19 +1239,29 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 // per position, so iterating is behaviourally identical.
                 if (greedy && !sep &&
                     (child->k == K::Lit || child->k == K::Any || child->k == K::Class)) {
-                    std::vector<long> stops;   // stops[i] = position after count+i atoms
-                    stops.push_back(p);
+                    // Positions after 0,1,2,… atoms. A stack buffer holds the common
+                    // short match with ZERO heap allocation (the regex hot path is
+                    // many tiny matches); only a genuinely long run spills to the
+                    // heap — and that run was previously a stack-overflow crash, so
+                    // the one allocation is well spent.
+                    constexpr int INLINE = 512;
+                    long inlineStops[INLINE];
+                    int ni = 0;
+                    std::vector<long> spill;
+                    inlineStops[ni++] = p;
                     long q = p, c = count;
                     while (mx < 0 || c < mx) {
                         long np = -1;
                         matchOne(q, [&](long r) { np = r; return true; });
                         if (np < 0 || np == q) break; // no more / zero-width
                         q = np; c++;
-                        stops.push_back(q);
+                        if (ni < INLINE) inlineStops[ni++] = q; else spill.push_back(q);
                     }
-                    for (long i = (long)stops.size() - 1; i >= 0; i--) {
+                    long nStops = ni + (long)spill.size();
+                    for (long i = nStops - 1; i >= 0; i--) { // greedy: longest first
                         long cnt = count + i;
-                        if (cnt >= mn && finish(stops[i], cnt)) return true;
+                        long posAt = i < ni ? inlineStops[i] : spill[i - ni];
+                        if (cnt >= mn && finish(posAt, cnt)) return true;
                     }
                     return false;
                 }
