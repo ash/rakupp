@@ -6142,7 +6142,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             long long n = 1;
             if (!args.empty())
                 n = (args[0].t == VT::Whatever || (args[0].t == VT::Num && std::isinf(args[0].n)))
-                  ? (long long)keys.size() : args[0].toInt();
+                  ? (long long)keys.size()
+                  : args[0].t == VT::Code ? std::max(0LL, callCallable(args[0], ValueList{Value::integer((long long)keys.size())}).toInt())
+                  : args[0].toInt();
             if (n > (long long)keys.size()) n = (long long)keys.size();
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             for (long long k = 0; k < n && !keys.empty(); k++) {
@@ -6252,7 +6254,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     return out;
                 }
                 double totalUnits = 0; for (auto& pw : pool) totalUnits += setty.count(inv.hashKind) ? 1 : std::ceil(pw.second);
-                long long n = all ? (long long)totalUnits : args[0].toInt();
+                // .pick(&calc) applies the Callable to the total weight (`$b.total`)
+                long long n = all ? (long long)totalUnits
+                    : args[0].t == VT::Code ? std::max(0LL, callCallable(args[0], ValueList{Value::number(total)}).toInt())
+                    : args[0].toInt();
                 Value out = Value::array(); out.isList = true; out.s = "Seq";
                 if (m == "pick") { // without replacement: consume one unit of weight per draw
                     for (long long i = 0; i < n; i++) {
@@ -6276,7 +6281,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                        (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
                        (args[0].isNumeric() && std::isinf(args[0].toNum())));
             if (args.empty()) return pool0[(size_t)(randDouble() * pool0.size())]; // single element
-            long long n = all ? (long long)pool0.size() : args[0].toInt();
+            long long n = all ? (long long)pool0.size()
+                : args[0].t == VT::Code ? std::max(0LL, callCallable(args[0], ValueList{Value::integer((long long)pool0.size())}).toInt())
+                : args[0].toInt();
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // .pick(n)/.roll(n) return a Seq
             if (m == "pick") { // without replacement
                 ValueList pool = pool0;
