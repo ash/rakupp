@@ -147,6 +147,7 @@ course. Build it with `rakujs/build.sh`; details in
 - **[COUNTING.md](docs/COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
 - **[BENCHMARKS.md](docs/BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
 - **[NATIVE.md](docs/NATIVE.md)** — interpreter vs compiled (`--exe`) on the example programs; every example compiles natively with identical output.
+- **[COMPILERS.md](docs/COMPILERS.md)** — which compiler and architecture to use (arm64 vs x86_64 on macOS, GCC vs Clang, MSVC vs MinGW on Windows), for building Raku++ and for `--exe`.
 - **[ROADMAP.md](docs/ROADMAP.md)** — done / in-progress / next.
 - **[CHANGELOG.md](CHANGELOG.md)** — release notes for tagged releases.
 

@@ -22,6 +22,7 @@ point; everything else lives here.
 ## Native compile & the browser
 
 - **[NATIVE.md](NATIVE.md)** — the `--exe` native compiler: interpreter vs. compiled on the example programs (byte-identical output).
+- **[COMPILERS.md](COMPILERS.md)** — which compiler and architecture to use: arm64 vs. x86_64 on macOS, GCC vs. Clang, MSVC vs. MinGW on Windows — both for building Raku++ and for the compiler `--exe` invokes.
 - **[OPTIMIZATION.md](OPTIMIZATION.md)** — the `--exe -O` optimizer: the codegen passes and how fast they get.
 - **[../rakujs/README.md](../rakujs/README.md)** — **Raku.js**: the same runtime compiled to **WebAssembly** to run Raku in the browser (build, deploy, performance).
 - **[../rakujs/TUTORIAL.md](../rakujs/TUTORIAL.md)** — writing real browser Raku programs on the WebAssembly build (feeding input, reading output, workers).
