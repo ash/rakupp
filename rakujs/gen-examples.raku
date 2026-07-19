@@ -95,6 +95,10 @@ sub showcase-code(Str $relpath, Str $entry --> Str) {
         ~ $entry ~ "\n";
 }
 
+# Read one of the showcase's own example programs (showcase/<lang>/examples/…)
+# to offer as a sample. Only programs that fit the WASM recursion cap are used.
+sub sample-file(Str $relpath --> Str) { $showcased.add($relpath).slurp.chomp }
+
 # Sample programs offered per interpreter (a dropdown in the playground picks
 # one into the stdin box). Kept small on purpose: the WASM build caps recursion
 # at ~200 C++ frames, so deep recursion (lisp fact > ~18, recursive Forth fib)
@@ -141,54 +145,29 @@ my $forth-stack = q:to/S/.chomp;
     7 dup * .  cr           \ 49
     S
 
-my $js-arrays = q:to/S/.chomp;
-    // Arrays and higher-order methods.
-    const nums = [5, 2, 8, 1, 9, 3];
-    console.log("sorted:", nums.slice().sort((a, b) => a - b).join(", "));
-    console.log("evens: ", nums.filter(n => n % 2 === 0));
-    console.log("sum:   ", nums.reduce((a, b) => a + b, 0));
-    S
-my $js-classes = q:to/S/.chomp;
-    // Classes, inheritance, super, template literals.
-    class Animal {
-      constructor(name) { this.name = name; }
-      speak() { return `${this.name} makes a sound`; }
-    }
-    class Dog extends Animal {
-      speak() { return `${this.name} barks`; }
-    }
-    console.log(new Animal("cat").speak());
-    console.log(new Dog("Rex").speak());
-    S
-my $js-closures = q:to/S/.chomp;
-    // Closures and currying.
-    const adder = a => b => a + b;
-    const add10 = adder(10);
-    console.log(add10(5), add10(20));
-    let n = 0;
-    const next = () => { n += 1; return n; };
-    console.log(next(), next(), next());
-    S
-my $js-bitwise = q:to/S/.chomp;
-    // Bitwise operators, optional chaining, nullish coalescing.
-    console.log(5 & 3, 5 | 2, ~5, 1 << 4, -8 >> 1);
-    const cfg = { db: { host: "localhost" } };
-    console.log(cfg?.db?.host, cfg?.cache?.ttl ?? "(default)");
-    S
-
 my @showcases =
     %( name => 'Lisp interpreter',  file => 'lisp/lisp.raku',
        entry => 'run-source($*IN.slurp, global-env());',
        desc => 'A small Scheme — a Raku grammar reads it, a tree-walker runs it',
+       # lisp/examples/ (fact 100, deep closures) overflow the WASM cap — use shallow demos
        samples => ('Higher-order fns' => $lisp-hof, 'Closures' => $lisp-closures, 'Fibonacci' => $lisp-fib) ),
     %( name => 'Forth interpreter', file => 'forth/forth.raku',
        entry => 'run-source($*IN.slurp);',
        desc => 'A stack machine + word dictionary — the other language model',
-       samples => ('Words & arithmetic' => $forth-arith, 'Loops' => $forth-loops, 'Stack juggling' => $forth-stack) ),
+       samples => ('Full demo' => sample-file('forth/examples/demo.fth'),
+                   'Words & arithmetic' => $forth-arith, 'Loops' => $forth-loops, 'Stack juggling' => $forth-stack) ),
     %( name => 'JavaScript / TypeScript', file => 'js/js.raku',
        entry => 'run-program($*IN.slurp);',
        desc => 'A practical JS/TS interpreter — grammar, evaluator, ASI',
-       samples => ('Arrays & HOFs' => $js-arrays, 'Classes' => $js-classes, 'Closures' => $js-closures, 'Bitwise & ?.' => $js-bitwise) );
+       # the real showcase/js/examples/ programs, minus the recursion-heavy ones
+       # (fib, quicksort, gameoflife, calculator) that overflow the WASM cap
+       samples => ('FizzBuzz'            => sample-file('js/examples/fizzbuzz.js'),
+                   'Closures'            => sample-file('js/examples/closures.js'),
+                   'Word count'          => sample-file('js/examples/wordcount.js'),
+                   'Bitwise, switch, ?.' => sample-file('js/examples/bits.js'),
+                   'Bank (TypeScript)'   => sample-file('js/examples/bank.ts'),
+                   'Shapes (TypeScript)' => sample-file('js/examples/shapes.ts'),
+                   'Roman numerals (TS)' => sample-file('js/examples/roman.ts')) );
 
 # Serialize a showcase's samples as a JSON array of {name, code} objects.
 sub samples-json(@samples --> Str) {
