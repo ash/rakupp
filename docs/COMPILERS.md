@@ -18,7 +18,7 @@ This page is the practical "what should I use" for both, per platform.
 |---|---|---|---|
 | **macOS (Apple Silicon)** | Apple Clang, **arm64** | `c++` (Apple Clang) | Pass `-DCMAKE_OSX_ARCHITECTURES=arm64` — the default can be x86_64/Rosetta, ~2× slower. |
 | **macOS (Intel)** | Apple Clang | `c++` | Native x86_64; nothing special. |
-| **Linux** | GCC or Clang (either) | `c++` (system default) | Clang is marginally faster; GCC is the `cmake` default and fully supported. |
+| **Linux** | GCC or Clang (either) | `c++` (system default) | Clang is ~1.3–2× faster on this codebase; GCC is the `cmake` default and fully supported. |
 | **Windows** | MSVC (`cl`) or MinGW-w64 (`g++`) | `cl`, else `g++` | MSVC: static CRT + `--config Release`. MinGW: MSYS2. |
 
 Release binaries are built with **Clang everywhere** (Apple Clang on macOS,
@@ -47,7 +47,7 @@ no reason, it's almost always an accidental x86_64/Rosetta build.
 
 **Compiler:** Apple Clang (the default `clang++`/`c++`, no separate install) is
 the recommendation and what `--exe` uses automatically. Homebrew GCC works and
-builds cleanly, but it is ~1.2–2× slower on this codebase and is only used here
+builds cleanly, but it is ~1.3–2× slower on this codebase and is only used here
 as a portability check — there is no reason to prefer it for day-to-day use.
 Note that Apple Clang **rejects `-mcpu=native`** (it already tunes for the host
 M-chip), and LTO buys nothing measurable; `-O3` (the CMake Release default) is
@@ -135,12 +135,52 @@ The compiler that builds the transpiled program is independent of the one that
 built `rakupp`; you can build `rakupp` with Clang and still compile `--exe`
 output with GCC, or vice versa.
 
-## Compiler comparison, in one line
+## Clang vs GCC — why we ship Clang
 
-On this codebase **Clang is ~1.2–2× faster than GCC** for the produced binary,
-`-O3` is the shipping optimization level, and neither LTO nor `-mcpu`/`-march`
-tuning has shown a measurable win. So: Clang if you have a choice, GCC if it's
-what's there — both are correct, and both are tested in CI on every release.
+On two of the three platforms there's no decision to make: macOS uses **Apple
+Clang** and Windows uses **MSVC** as their native toolchains — GCC there is a
+foreign add-on (Homebrew GCC, MinGW) that a release has no reason to depend on.
+The only place a real GCC-vs-Clang choice exists is **Linux**, and there the
+answer is speed: Clang produces a meaningfully faster `rakupp`.
+
+Measured on this tree — same machine (Apple Silicon, arm64), same `-O3`, Apple
+Clang 17.0 vs Homebrew GCC 16.1, interpreter kernels, lower is better:
+
+| Kernel | Clang | GCC | GCC / Clang |
+|---|---:|---:|---:|
+| strcat   | 10 ms  | 20 ms   | **2.00×** |
+| hash     | 36 ms  | 64 ms   | **1.75×** |
+| sortnums | 60 ms  | 100 ms  | **1.66×** |
+| asg      | 449 ms | 721 ms  | **1.61×** |
+| loopsum  | 187 ms | 292 ms  | **1.56×** |
+| streq    | 590 ms | 920 ms  | **1.55×** |
+| fib      | 785 ms | 1192 ms | **1.52×** |
+| regex    | 80 ms  | 110 ms  | **1.37×** |
+| bigint   | 30 ms  | 40 ms   | **1.33×** |
+| arrayops | 100 ms | 130 ms  | **1.30×** |
+
+GCC never wins a kernel; the gap ranges ~1.3–2.0× (median ~1.55×). This is not
+a universal "Clang beats GCC" — it's specific to what `rakupp` *is*. A
+tree-walking interpreter is a huge `eval`/`exec` dispatch built from thousands
+of small functions and deep `switch`es; Clang's inlining and branch layout
+happen to optimize that shape better. It is also **version- and
+machine-dependent** — a measured decision, worth re-checking (rebuild with
+`-DCMAKE_CXX_COMPILER=g++` and re-run `tools/perf-guard.raku`) if a future GCC
+closes the gap.
+
+**So why keep GCC at all?** Because a plain `cmake --build` on Linux *defaults
+to GCC* — that's what a user who clones and builds gets. If the code only
+compiled under Clang, those users would be broken. GCC and Clang differ in ways
+that bite a large C++ codebase (`__int128`/builtin availability, ISO-conformance
+strictness, template lookup, warning sets), so CI keeps a **build-only GCC job**
+purely to catch "compiles under Clang, breaks under GCC" — without that artifact
+ever being what's published. GCC has to *work*; it just isn't the one shipped.
+
+`-O3` (the CMake Release default) is the whole optimization story: neither LTO
+nor `-mcpu`/`-march=native` showed a measurable win (Apple Clang even rejects
+`-mcpu=native`, since it already tunes for the host chip). So: Clang if you have
+a choice, GCC if it's what's there — both are correct, and both are tested in CI
+on every release.
 
 See [BENCHMARKS.md](BENCHMARKS.md) for the interp-vs-`--exe`-vs-Rakudo numbers
 (all measured with the Clang build), and the [README build section](../README.md#build-from-source)
