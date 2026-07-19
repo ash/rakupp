@@ -74,6 +74,7 @@ sub item-json(%it --> Str) {
     @parts.push: '"category": ' ~ json-str(%it<category>);
     @parts.push: '"desc": '     ~ json-str(%it<desc>) if %it<desc>;
     @parts.push: '"stdin": '    ~ json-str(%it<stdin>) if %it<stdin>;   # preset standard input
+    @parts.push: '"samples": ' ~ %it<samples> if %it<samples>;         # already-JSON array of {name, code}
     @parts.push: '"code": '     ~ json-str(%it<code>);
     '{' ~ @parts.join(', ') ~ '}';
 }
@@ -94,50 +95,107 @@ sub showcase-code(Str $relpath, Str $entry --> Str) {
         ~ $entry ~ "\n";
 }
 
-my $lisp-demo = q:to/LISP/.chomp;
-    ; A tiny Scheme in Raku: lambdas, higher-order fns, an exact numeric tower.
+# Sample programs offered per interpreter (a dropdown in the playground picks
+# one into the stdin box). Kept small on purpose: the WASM build caps recursion
+# at ~200 C++ frames, so deep recursion (lisp fact > ~18, recursive Forth fib)
+# overflows — these all run comfortably under it.
+my $lisp-hof = q:to/S/.chomp;
+    ; Higher-order functions and an exact numeric tower.
     (define square (lambda (x) (* x x)))
     (display (map square '(1 2 3 4 5))) (newline)
-
     (define (fact n) (if (< n 2) 1 (* n (fact (- n 1)))))
     (display (fact 12)) (newline)
-    LISP
+    S
+my $lisp-closures = q:to/S/.chomp;
+    ; Closures capture private state.
+    (define (make-adder n) (lambda (x) (+ x n)))
+    (define add10 (make-adder 10))
+    (display (add10 5)) (newline)
+    (display (map (make-adder 100) '(1 2 3))) (newline)
+    S
+my $lisp-fib = q:to/S/.chomp;
+    ; Recursion: the first Fibonacci numbers.
+    ; (kept shallow — the WASM build caps recursion depth at a few hundred frames)
+    (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+    (display (map fib '(0 1 2 3 4 5 6))) (newline)
+    S
 
-my $forth-demo = q:to/FORTH/.chomp;
-    \ Forth in Raku: a stack machine with a word dictionary.
-    : square ( n -- n*n )   dup * ;
-    : sumsq  ( n -- Σi² )   0 swap 1+ 1 do i square + loop ;
-    : stars  ( n -- )       0 do 42 emit loop ;
-    5 square .        \ 25
-    cr
-    10 sumsq .        \ 385  (1²+2²+…+10²)
-    cr
-    5 stars cr
-    FORTH
+my $forth-arith = q:to/S/.chomp;
+    \ New words built from old, run against a shared stack.
+    : square ( n -- n² )  dup * ;
+    : cube   ( n -- n³ )  dup dup * * ;
+    5 square .  cr
+    3 cube .    cr
+    S
+my $forth-loops = q:to/S/.chomp;
+    \ Structured loops: sum of squares, then a row of stars.
+    : sumsq ( n -- Σi² )  0 swap 1+ 1 do i dup * + loop ;
+    : stars ( n -- )      0 do 42 emit loop ;
+    10 sumsq .  cr
+    8 stars     cr
+    S
+my $forth-stack = q:to/S/.chomp;
+    \ Stack juggling: dup, swap, over, rot.
+    1 2 3 + * .   cr        \ 1 * (2 + 3) = 5
+    10 20 swap - .  cr      \ 20 - 10 = 10
+    7 dup * .  cr           \ 49
+    S
 
-my $js-demo = q:to/JS/.chomp;
-    // JavaScript in Raku: a grammar + tree-walking evaluator.
+my $js-arrays = q:to/S/.chomp;
+    // Arrays and higher-order methods.
     const nums = [5, 2, 8, 1, 9, 3];
     console.log("sorted:", nums.slice().sort((a, b) => a - b).join(", "));
-    console.log("sum:", nums.reduce((a, b) => a + b, 0));
-
-    class Greeter {
+    console.log("evens: ", nums.filter(n => n % 2 === 0));
+    console.log("sum:   ", nums.reduce((a, b) => a + b, 0));
+    S
+my $js-classes = q:to/S/.chomp;
+    // Classes, inheritance, super, template literals.
+    class Animal {
       constructor(name) { this.name = name; }
-      hi() { return `Hello, ${this.name}!`; }
+      speak() { return `${this.name} makes a sound`; }
     }
-    console.log(new Greeter("Raku").hi());
-    JS
+    class Dog extends Animal {
+      speak() { return `${this.name} barks`; }
+    }
+    console.log(new Animal("cat").speak());
+    console.log(new Dog("Rex").speak());
+    S
+my $js-closures = q:to/S/.chomp;
+    // Closures and currying.
+    const adder = a => b => a + b;
+    const add10 = adder(10);
+    console.log(add10(5), add10(20));
+    let n = 0;
+    const next = () => { n += 1; return n; };
+    console.log(next(), next(), next());
+    S
+my $js-bitwise = q:to/S/.chomp;
+    // Bitwise operators, optional chaining, nullish coalescing.
+    console.log(5 & 3, 5 | 2, ~5, 1 << 4, -8 >> 1);
+    const cfg = { db: { host: "localhost" } };
+    console.log(cfg?.db?.host, cfg?.cache?.ttl ?? "(default)");
+    S
 
 my @showcases =
     %( name => 'Lisp interpreter',  file => 'lisp/lisp.raku',
-       entry => 'run-source($*IN.slurp, global-env());', demo => $lisp-demo,
-       desc => 'A small Scheme — a Raku grammar reads it, a tree-walker runs it' ),
+       entry => 'run-source($*IN.slurp, global-env());',
+       desc => 'A small Scheme — a Raku grammar reads it, a tree-walker runs it',
+       samples => ('Higher-order fns' => $lisp-hof, 'Closures' => $lisp-closures, 'Fibonacci' => $lisp-fib) ),
     %( name => 'Forth interpreter', file => 'forth/forth.raku',
-       entry => 'run-source($*IN.slurp);', demo => $forth-demo,
-       desc => 'A stack machine + word dictionary — the other language model' ),
+       entry => 'run-source($*IN.slurp);',
+       desc => 'A stack machine + word dictionary — the other language model',
+       samples => ('Words & arithmetic' => $forth-arith, 'Loops' => $forth-loops, 'Stack juggling' => $forth-stack) ),
     %( name => 'JavaScript / TypeScript', file => 'js/js.raku',
-       entry => 'run-program($*IN.slurp);', demo => $js-demo,
-       desc => 'A practical JS/TS interpreter — grammar, evaluator, ASI' );
+       entry => 'run-program($*IN.slurp);',
+       desc => 'A practical JS/TS interpreter — grammar, evaluator, ASI',
+       samples => ('Arrays & HOFs' => $js-arrays, 'Classes' => $js-classes, 'Closures' => $js-closures, 'Bitwise & ?.' => $js-bitwise) );
+
+# Serialize a showcase's samples as a JSON array of {name, code} objects.
+sub samples-json(@samples --> Str) {
+    '[' ~ @samples.map(-> $p {
+        '{"name": ' ~ json-str($p.key) ~ ', "code": ' ~ json-str($p.value) ~ '}'
+    }).join(', ') ~ ']';
+}
 
 my @items;
 for @basics -> $p {
@@ -146,11 +204,13 @@ for @basics -> $p {
 for @showcases -> %sc {
     my $path = $showcased.add(%sc<file>);
     unless $path.e { note "WARNING: showcase not found: %sc<file>"; next }
+    my @samples = %sc<samples>.list;
     @items.push: {
         name     => %sc<name>,
         category => 'Language showcases',
         desc     => %sc<desc>,
-        stdin    => %sc<demo>,   # the sample program, preset in the stdin box
+        stdin    => @samples[0].value,          # first sample preset in the stdin box
+        samples  => samples-json(@samples),     # the rest offered in a picker
         code     => showcase-code(%sc<file>, %sc<entry>),
     };
 }
