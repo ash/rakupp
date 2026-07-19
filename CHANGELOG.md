@@ -3,6 +3,92 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## v0.9.0 — 2026-07-19
+
+Everything since v0.7.1 (2026-07-16), 147 commits. Every change is gated on the
+full Roast suite with no fully-passing file regressions.
+
+### Headline
+
+- **Roast: 533 / 1,462 files fully pass** (was 501). Passing assertions grew from
+  171,817 to **187,749** — **87.5%** of the 214,569 declared tests, and 96.9% of
+  the tests that actually ran.
+- **`--exe` native binaries now have interpreter-parity recursion depth on every
+  platform**: the generated `main()` runs the whole program on the same 1 GiB
+  big-stack thread the interpreter uses (macOS/Windows also carry link-time stack
+  flags). Deep recursion that the interpreter handles no longer crashes a native
+  build.
+- **Windows `--exe` works out of the box** (GitHub issue #1 closed): the generated
+  `main()` no longer collides with the CRT `__argv` macro, MSVC builds default to
+  the static CRT so native links don't fail `LNK2038`, a compiler is found on
+  `PATH`, and `vcvars` is bootstrapped when `cl` isn't in the shell.
+
+### Language & runtime
+
+- Reduction metaops thunk their operands: `[&&]`/`[||]`/`[//]`/`[andthen]`/… and
+  their `[\op]` scans short-circuit without evaluating later operands.
+- 6.e array/hash multislices with star/list adverbs (`@a[*;0;*]:delete`,
+  `%h{*;"b";"c"}`), and `@a[*-1, *-2]` list-slices now resolve `*`/`*-1` against
+  the length.
+- Set/Bag/Mix family: `for`-loops over `.values`/`.kv`/`.pairs` of a
+  `SetHash`/`BagHash`/`MixHash` alias the weights (a weight of 0, or negative for
+  MixHash, removes the element); `.ACCEPTS`/`.STORE`/`.Capture`, the coercer
+  calls, and `class MySet is Set` subclassing.
+- `Pair.value` is a writable container; typed-container multi dispatch
+  (`multi f(Int @a)`); a slurpy multi candidate is now correctly the least-narrow
+  tiebreaker.
+- Regex `m:nth(N)`/ordinal/`:nth(*)`/list-and-`:global` counted adverbs; `Buf`
+  `subbuf` Callable/`*` forms, `Buf.new(Range)`, `.allocate` fills; compile-time
+  "Useless use … in sink context" warnings on the mainline.
+- Containers: `@a = …` / `%h = …` refill the existing container in place, so
+  bindings, captures, and closures track the reassignment.
+- Correctness fixes from the pre-release review: `.Int` on a string/match wider
+  than int64 is now exact (was 0); a brace character in a string inside an
+  embedded regex code block parses correctly.
+
+### Native compile (`--exe`) & the browser
+
+- Caught builtin errors answer `.message` inside a native `CATCH` (was a bare type
+  payload); `exceptionFor` synthesizes real exception objects for `X::`-named
+  payloads. Block-final `if`/`given` is a pointy block's value; `Less`/`Same`/
+  `More` and `PromiseStatus` resolve to real enum values under native name-term
+  lookup.
+- New [docs/MEMORY.md](docs/MEMORY.md): reserved-vs-resident memory and the
+  measured recursion depths per mode (interpreter / `--exe` / WebAssembly).
+- New showcases on the WebAssembly playground: a JavaScript/TypeScript
+  interpreter, a Scheme, and a Forth, each written in Raku.
+
+### Concurrency
+
+- `react`/`whenever` no longer hangs when an eager `start { $s.emit(…); $s.done }`
+  runs before the react taps the supply — the Supplier records its done state so a
+  late tap closes immediately.
+- A `.then` registered on a `start`/Promise before its worker settles now fires
+  (was silently dropped).
+- `CurrentThreadScheduler.cue` rejects `:every`, as in Rakudo.
+
+### Robustness (pre-release review)
+
+An independent multi-reviewer pass over the sources fixed eight default-build
+defects: the regex greedy quantifier no longer overflows the stack on long runs
+(`/\d+/` over millions of chars), `substr-eq` with only an adverb no longer reads
+out of bounds, plus the correctness and concurrency items listed above.
+
+### Known limitations
+
+- **`RAKUPP_PARALLEL=1` (the opt-in GIL-free mode) is experimental and not
+  production-safe.** Under it, `Channel`, the shared Rat-literal cache, and
+  worker-side `class`/`EVAL` are not fully synchronized and can race. The default
+  cooperative-GIL build (what ships and what every example uses) is unaffected.
+- **Native (`--exe`) recursion is uncatchable if it overflows**: a compiled
+  program that recurses past its stack dies with a signal rather than a catchable
+  `X::Recursion` (the interpreter throws). See docs/MEMORY.md.
+- A native `given`/`when`/`CATCH` with a bare `my` declaration *between* clauses
+  fails to compile (a `goto` past an initializer) instead of falling back to
+  bundling; wrap the declaration in its own block.
+- The parse-only entry points (`--cpp`/`--ast`) can overflow the stack on
+  pathologically deep bracket nesting; ordinary execution is shielded.
+
 ## v0.7.1 — 2026-07-16
 
 Everything since v0.5.1 (2026-07-13), ~100 commits. (A 0.7.0 tag was cut but
