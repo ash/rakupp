@@ -7964,7 +7964,7 @@ Value Interpreter::evalBinary(Binary* b) {
     if (b->simpleOp < 0) {
         static const std::set<std::string> special = {
             "~", "does", "but", "xx", "==>", "<==", "...", "...^", "~~", "!~~",
-            "&&", "and", "||", "or", "andthen", "orelse", "//", "^^", "xor", "&", "|", "^",
+            "&&", "and", "||", "or", "andthen", "orelse", "notandthen", "//", "^^", "xor", "&", "|", "^",
             "=:=", "!=:=", "ff", "fff",
             "Z", "X"}; // plain Z/X: chained forms are ONE n-ary list-infix
         bool rmeta = op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]);
@@ -8348,10 +8348,14 @@ Value Interpreter::evalBinary(Binary* b) {
         if (boolify(l)) return l;
         return eval(b->rhs.get());
     }
-    if (op == "andthen" || op == "orelse") {
+    if (op == "andthen" || op == "orelse" || op == "notandthen") {
         Value l = eval(b->lhs.get());
         bool def = isDefined(l);
-        if ((op == "andthen") != def) return l; // andthen: skip if undefined; orelse: skip if defined
+        bool run = op == "andthen" ? def : !def; // orelse/notandthen fire on undefined
+        if (!run) { // skip the RHS: orelse/andthen yield the LHS, notandthen yields Empty
+            if (op == "notandthen") { Value e = Value::array(); e.isList = true; return e; }
+            return l;
+        }
         auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
         scope->define("$_", l);
         auto saved = tctx_.cur; tctx_.cur = scope;

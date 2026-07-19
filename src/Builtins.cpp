@@ -5533,6 +5533,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
     if (inv.t == VT::Pair) {
+        if (m == "Pair") return inv;   // .Pair on a Pair is itself
         if (m == "key") return inv.pairKey ? *inv.pairKey : Value::str(inv.s); // object/array keys preserved
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
         if (m == "kv") return Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()});
