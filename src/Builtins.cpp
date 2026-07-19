@@ -6281,6 +6281,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                        (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||
                        (args[0].isNumeric() && std::isinf(args[0].toNum())));
             if (args.empty()) return pool0[(size_t)(randDouble() * pool0.size())]; // single element
+            if (m == "roll" && all) { // roll(*): an INFINITE lazy stream of random draws
+                Value out = Value::array(); out.isList = true; out.s = "Seq";
+                auto st = std::make_shared<LazySeqState>();
+                st->infinite = true;
+                ValueList poolC = pool0;
+                st->appendNext = [poolC](ValueList& cache) -> bool {
+                    cache.push_back(poolC[(size_t)(randDouble() * poolC.size())]);
+                    return true;
+                };
+                out.ext = st;
+                return out;
+            }
             long long n = all ? (long long)pool0.size()
                 : args[0].t == VT::Code ? std::max(0LL, callCallable(args[0], ValueList{Value::integer((long long)pool0.size())}).toInt())
                 : args[0].toInt();
