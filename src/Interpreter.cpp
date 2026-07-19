@@ -5614,6 +5614,14 @@ static bool lazySetOperand(const Value& v) {
         return std::static_pointer_cast<LazySeqState>(v.ext)->infinite;
     return false;
 }
+// An unhandled Failure operand detonates when a set operator uses it.
+static void setOpCheckFailure(const Value& v) {
+    if (v.t == VT::Hash && v.hashKind == "Failure") {
+        std::string msg = "Failure";
+        if (v.hash) { auto it = v.hash->find("message"); if (it != v.hash->end()) msg = it->second.toStr(); }
+        throw RakuError{Value::typeObj("X::AdHoc"), msg};
+    }
+}
 // Coerce one operand to key => weight at the JOINT tier. A plain Hash coerces
 // per tier: truthy-filtered membership at Set tier, numeric counts at Bag/Mix
 // tier ({a => 42, b => 0} is set <a>, but bag (a => 42)). Mix tier keeps
@@ -5634,12 +5642,22 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
         }
     } else if (v.t == VT::Array || v.t == VT::Range) {
         for (auto& x : v.flatten()) {
-            if (x.t == VT::Pair) m[x.s] += x.pairVal ? x.pairVal->toNum() : 0;
+            if (x.t == VT::Pair) {
+                // a pair in an uncoerced list carries its value as a weight; at
+                // Set tier it collapses to presence (falsy pairs drop out), so
+                // (:42a,:0b) is {a}, not a weighted map that would skew (^)
+                double w = x.pairVal ? x.pairVal->toNum() : 0;
+                if (tier == 0) { if (!(x.pairVal && x.pairVal->truthy())) continue; w = 1; }
+                if (tier == 2 ? w == 0 : w <= 0) continue;
+                m[x.s] += w;
+            }
             else if (x.t == VT::Type || x.t == VT::Any) m[x.gist()] += 1; // type objects ARE elements, keyed by gist
             else m[x.toStr()] += 1;
         }
     } else if (v.t == VT::Pair) {
-        m[v.s] = v.pairVal ? v.pairVal->toNum() : 0;
+        double w = v.pairVal ? v.pairVal->toNum() : 0;
+        if (tier == 0) { if (v.pairVal && v.pairVal->truthy()) m[v.s] = 1; }
+        else if (!(tier == 2 ? w == 0 : w <= 0)) m[v.s] = w;
     } else if (v.t == VT::Type || v.t == VT::Any) {
         m[v.gist()] = 1; // (Set) (&) (Set) — the type object is a one-element set
     } else if (v.t != VT::Nil) {
@@ -5670,6 +5688,7 @@ static Value setCoerceOne(const std::string& op, const Value& v) {
 }
 
 static Value setOp(const std::string& op, const Value& l, const Value& r) {
+    setOpCheckFailure(l); setOpCheckFailure(r);
     // membership against a RANGE is an arithmetic bounds check — no
     // materialization, so 0..10**42 (and open-ended ranges) work
     auto rangeHas = [](const Value& rng, const Value& x) -> bool {
@@ -5731,6 +5750,39 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
     }
     else if (op == "(+)" || op == "⊎") { res = a; for (auto& kv : b) res[kv.first] += kv.second; }
     else if (op == "(.)" || op == "⊍") { for (auto& kv : a) if (b.count(kv.first)) res[kv.first] = kv.second * b[kv.first]; }
+    return setWrap(res, tier);
+}
+
+// Multi-arg symmetric difference. Rakudo's (^)/⊖ is a genuine list operator, not
+// a left fold: for each key the result weight is (largest − second-largest) over
+// the operands' weights, where an operand lacking the key contributes 0. This
+// reduces to |a−b| for two operands but diverges from a pairwise fold for three
+// or more (e.g. Bag(a×42) ⊖ Bag(a×7) ⊖ Bag(a×43) is a×1, not a×8).
+static Value setSymDiffN(const ValueList& operands) {
+    for (auto& o : operands) {
+        setOpCheckFailure(o);
+        if (lazySetOperand(o))
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot (^) a lazy list"};
+    }
+    int tier = setOpMinTier("(^)");
+    for (auto& o : operands) tier = std::max(tier, settyTier(o));
+    std::vector<std::map<std::string, double>> ws;
+    ws.reserve(operands.size());
+    std::set<std::string> keys;
+    for (auto& o : operands) { ws.push_back(setWeights(o, tier)); for (auto& kv : ws.back()) keys.insert(kv.first); }
+    std::map<std::string, double> res;
+    const double NINF = -std::numeric_limits<double>::infinity();
+    for (auto& k : keys) {
+        // exactly one slot per operand: its weight for k, or 0 if it lacks k
+        double t1 = NINF, t2 = NINF;
+        for (auto& m : ws) {
+            auto it = m.find(k);
+            double w = it != m.end() ? it->second : 0.0;
+            if (w > t1) { t2 = t1; t1 = w; }
+            else if (w > t2) { t2 = w; }
+        }
+        res[k] = t1 - t2;
+    }
     return setWrap(res, tier);
 }
 
@@ -9362,6 +9414,7 @@ Value Interpreter::evalCall(Call* c) {
             return setCoerceOne(op, args[0]);
         }
         if (args.size() >= 2) { // n-ary: left-fold — (|)(a,b,c) is ((a (|) b) (|) c)
+            if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(args); // ⊖ is variadic, not a fold
             Value acc = args[0];
             for (size_t k = 1; k < args.size(); k++) acc = applyBinOp(op, acc, args[k]);
             return acc;
@@ -9523,6 +9576,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (op == "+" || op == "-") return Value::integer(0);
         if (op == "*" || op == "/") return Value::integer(1);
         if (op == "~") return Value::str("");
+        if (op == "(^)" || op == "\xE2\x8A\x96") return setWrap({}, setOpMinTier(op)); // [⊖] () is set()
         // list-building ops over nothing build nothing: [Z] () / [Z~] () / [X] () are ()
         if (op == "Z" || op == "X" || op == "," ||
             (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X'))) {
@@ -9603,6 +9657,9 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         }
         return out;
     }
+    // [(^)] / [⊖] : symmetric difference is a genuine list op (max − 2nd-max per
+    // key), not the left fold the general reducer below would compute
+    if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(items);
     Value acc = items[0];
     for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
     return acc;
@@ -10093,6 +10150,7 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         else if (slice) for (auto& k : iv.flatten()) sliceKeys.push_back(k);
         else sliceKeys.push_back(iv);
+        bool lazySlice = slice && iv.b && (iv.t == VT::Range || iv.t == VT::Array); // @a[lazy …]:adv
         struct Hit { Value keyV; Value val; bool exists; };
         std::vector<Hit> hits;
         for (auto& kv : sliceKeys) {
@@ -10110,10 +10168,12 @@ Value Interpreter::evalIndex(Index* idx) {
                 if (kres.t == VT::Code && kres.code && kres.code->isWhateverCode)
                     kres = callCallable(kres, ValueList{Value::integer(asz)});
                 long long ai = (kres.t == VT::Whatever || std::isinf(kres.toNum())) ? asz - 1 : kres.toInt();
+                bool inBounds = false;
                 if (base.t == VT::Array && base.arr) {
                     if (ai < 0) ai += (long long)base.arr->size();
-                    if (ai >= 0 && ai < (long long)base.arr->size()) { exists = isDefined((*base.arr)[ai]); val = (*base.arr)[ai]; }
+                    if (ai >= 0 && ai < (long long)base.arr->size()) { inBounds = true; exists = isDefined((*base.arr)[ai]); val = (*base.arr)[ai]; }
                 }
+                if (lazySlice && !inBounds) break; // lazy slice stops at the first hole
                 keyV = Value::integer(ai);
             }
             hits.push_back({keyV, val, exists});
@@ -10140,6 +10200,16 @@ Value Interpreter::evalIndex(Index* idx) {
             if (kk.t != VT::Str) p.pairKey = std::make_shared<Value>(kk);
             return p;
         };
+        // a missing element's reported value is the container's typed default
+        // (`Str` for `my Str @s`, `Any` untyped), not a bare Any
+        auto missLeaf = [&]() -> Value {
+            if (idx->isHash) {
+                if (base.t == VT::Hash && !base.ofType.empty()) return typedElemDefault(base);
+                return Value::any();
+            }
+            Value dv = arrayMissingDefault(base);
+            return dv.t == VT::Nil ? Value::any() : dv;
+        };
         if (!slice) {
             auto& h = hits[0];
             if (wantExists) {
@@ -10149,7 +10219,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 return ex;
             }
             auto emptyL = []() { Value e = Value::array(); e.isList = true; return e; }; // () not []
-            Value mval = Value::any(); // a missing element's (undefined) value
+            Value mval = missLeaf(); // a missing element's (undefined, typed) value
             if (kF)  return (h.exists || presenceNeg) ? h.keyV : emptyL();
             if (vF)  return h.exists ? h.val : (presenceNeg ? mval : emptyL());
             if (kvF) { if (!(h.exists || presenceNeg)) return emptyL();
@@ -10165,7 +10235,7 @@ Value Interpreter::evalIndex(Index* idx) {
         for (auto& h : hits) {
             if (wantExists) { out.arr->push_back(Value::boolean(negExists ? !h.exists : h.exists)); continue; }
             if (!h.exists && !presenceNeg) continue; // missing kept only under :!k / :k(False)
-            Value v = h.exists ? h.val : Value::any();
+            Value v = h.exists ? h.val : missLeaf();
             if (kvF) { out.arr->push_back(h.keyV); out.arr->push_back(v); }
             else if (pF) out.arr->push_back(mkPair(h.keyV, v));
             else if (kF) out.arr->push_back(h.keyV);
@@ -10229,6 +10299,8 @@ Value Interpreter::evalIndex(Index* idx) {
             n = (long long)base.s.size();
         std::vector<long long> indices;
         bool isSlice = false;
+        bool lazyIdx = false; // `@a[lazy 3..5]` truncates at the array end (no defaulting)
+        bool junctionIdx = false; // `@a[any(1,2,3)]` threads: missing indices drop, not default
         // `*` / `*-1` resolve against the list length — for Range endpoints AND for
         // every element of a list subscript (`@a[*-1, *-2]`, `@a[@whatever-list]`).
         auto resolveWhat = [&](Value v) -> long long {
@@ -10256,6 +10328,8 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (long long k = 0; k < n; k++) indices.push_back(k);
             } else if (iv.t == VT::Range || iv.t == VT::Array) {
                 isSlice = true;
+                lazyIdx = iv.b; // `lazy` marker set by the lazy() builtin
+                junctionIdx = isJunction(iv); // a junction index autothreads (no defaulting)
                 for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
             } else {
                 long long i = iv.toInt();
@@ -10305,7 +10379,20 @@ Value Interpreter::evalIndex(Index* idx) {
                 return out;
             }
             Value out = Value::array(); out.isList = true;
-            for (long long k : indices) { if (k < 0) k += n; if (k >= 0 && k < n) out.arr->push_back(src[k]); }
+            // a missing slice index reports the element default: a mutable Array
+            // yields its typed default (Any / Str / `is default`), a List/Range Nil
+            auto missElem = [&]() -> Value {
+                if (base.pairVal) return *base.pairVal;
+                if (!base.ofType.empty()) return typedElemDefault(base);
+                return (base.t == VT::Range || base.isList) ? Value::nil() : Value::any();
+            };
+            for (long long k : indices) {
+                if (k < 0) k += n;
+                if (k >= 0 && k < n) out.arr->push_back(src[k]);
+                else if (lazyIdx) break; // lazy slice: stop at the first hole, don't default
+                else if (junctionIdx) continue; // junction index: a missing element threads to nothing
+                else out.arr->push_back(missElem());
+            }
             return out;
         }
     }
@@ -10517,6 +10604,7 @@ Value Interpreter::eval(Expr* e) {
                             return setCoerceOne(op, a[0]); // one arg coerces
                         }
                         if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
+                            if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(a); // ⊖ is variadic
                             Value acc = a[0];
                             for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
                             return acc;
