@@ -150,6 +150,20 @@
   #out .meta { color: var(--muted); }
   .status { padding: 4px 14px; font-size: 12px; color: var(--muted);
             border-top: 1px solid var(--border); }
+  /* Standard input: a collapsible strip under the editor, fed to the program. */
+  .stdin { flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--panel);
+           display: flex; flex-direction: column; min-height: 0; }
+  .stdin[open] { max-height: 40%; }
+  .stdin > summary { padding: 6px 14px; font-size: 11px; letter-spacing: .08em;
+                     text-transform: uppercase; color: var(--muted); cursor: pointer;
+                     user-select: none; }
+  .stdin > summary::marker { color: var(--muted); }
+  .stdin > summary .hint { text-transform: none; letter-spacing: normal; color: var(--muted); }
+  .stdin > summary code { font-family: var(--font-mono); }
+  .stdin[open] > summary { border-bottom: 1px solid var(--border); }
+  #stdin { flex: 1; min-height: 64px; resize: none; outline: 0; border: 0;
+           background: transparent; color: var(--ink); white-space: pre; overflow: auto;
+           font-family: var(--font-mono); font-size: 13px; padding: 8px 14px 12px; }
   footer { display: flex; flex-wrap: wrap; gap: 18px; padding: 9px 18px;
            border-top: 1px solid var(--border); background: var(--panel); font-size: 12px; }
   footer a { color: var(--accent2); text-decoration: none; }
@@ -203,6 +217,10 @@
       <pre id="hl" aria-hidden="true"></pre>
       <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
     </div>
+    <details id="stdinBox" class="stdin">
+      <summary>Standard input <span class="hint">— fed to <code>$*IN</code> / <code>get</code> / <code>lines</code> / <code>prompt</code></span></summary>
+      <textarea id="stdin" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="(empty — the program sees EOF immediately)"></textarea>
+    </details>
   </section>
   <section class="pane">
     <div class="label">Output</div>
@@ -228,6 +246,8 @@ const EXAMPLES = (window.RAKU_EXAMPLES && window.RAKU_EXAMPLES.length)
   : [{ name: "Hello, world", category: "Basics", code: 'say "Hello, Raku from the browser!";' }];
 
 const codeEl = document.getElementById('code');
+const stdinEl = document.getElementById('stdin');
+const stdinBox = document.getElementById('stdinBox');
 const hlEl   = document.getElementById('hl');
 const outEl  = document.getElementById('out');
 const statusEl = document.getElementById('status');
@@ -291,7 +311,10 @@ paintHL();
 //   #code=<base64url(deflate-raw(source))>   self-contained link, made by Share
 //   ?gist=<id>[&file=<name>]                 a GitHub gist, fetched client-side
 //   ?gh=<owner>/<repo>/<branch>/<path>       a file in a GitHub repo (raw)
-// Append &run=1 (or #…&run for the hash form) to run the code on load.
+// Standard input rides along on any of them:
+//   #input=<base64url(deflate-raw(text))>    self-contained (bundled by Share)
+//   ?input=<url-encoded text>                short, human-readable in the bar
+// Append &run=1 (or #…&run for the hash form) to run on load.
 // The code always travels in the URL or comes from GitHub — this site stores
 // nothing, so there is nothing to spam.
 const SHARE_CAP = 200000;   // refuse to load shared programs beyond ~200 KB
@@ -366,15 +389,27 @@ function applyShared(code, from) {
   statusEl.textContent = 'loaded from ' + from;
 }
 
+// Preset the standard-input box (from a shared link, or the Open panel).
+function applyStdin(text) {
+  stdinEl.value = (text || '').replace(/\r\n?/g, '\n');
+  if (stdinEl.value) stdinBox.open = true;   // reveal it when there's preset input
+}
+
 async function loadSharedCode() {
   const q = new URLSearchParams(location.search);
   // The hash form keeps everything client-side: fragments never reach the server.
   const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  // Standard input travels alongside the code: #input= is deflate-compressed
+  // (self-contained, like #code=); ?input= is plain text (short, readable in
+  // the address bar). Parsed independently so it also presets a plain example.
+  try {
+    if (h.has('input'))      applyStdin(await decodeShare(h.get('input')));
+    else if (q.has('input')) applyStdin(q.get('input'));
+  } catch (_) { /* bad input encoding — leave stdin empty */ }
   try {
     let r = await fetchShared(q);
     if (!r && h.has('code')) r = { code: await decodeShare(h.get('code')), from: 'shared link' };
-    if (!r) return;
-    applyShared(r.code, r.from);
+    if (r) applyShared(r.code, r.from);
   } catch (err) {
     clearScreen();
     pushText('Could not load the shared code — ' + (err && err.message || err) + '\n', 'err');
@@ -414,10 +449,13 @@ const shareTitle = document.getElementById('shareTitle');
 popover(document.getElementById('shareBtn'), document.getElementById('sharePop'), async () => {
   shareTitle.textContent = 'Making the link…';
   shareUrlEl.value = '';
-  const tag = await encodeShare(codeEl.value);
-  const url = location.origin + location.pathname + '#code=' + tag;
+  let frag = '#code=' + await encodeShare(codeEl.value);
+  // Bundle the standard-input box into the link too (compressed), so an article
+  // link can preset both the program and its input in one self-contained URL.
+  if (stdinEl.value) frag += '&input=' + await encodeShare(stdinEl.value);
+  const url = location.origin + location.pathname + frag;
   // Keep the address bar in sync so plain copy-from-URL-bar also works.
-  history.replaceState(null, '', location.pathname + '#code=' + tag);
+  history.replaceState(null, '', location.pathname + frag);
   shareUrlEl.value = url;
   try {
     await navigator.clipboard.writeText(url);
@@ -626,7 +664,7 @@ function startRun() {
   clearScreen();
   statusEl.textContent = "running…";
   setRunning(true);
-  worker.postMessage({ type: 'run', src: codeEl.value });
+  worker.postMessage({ type: 'run', src: codeEl.value, stdin: stdinEl.value });
 }
 
 function run() {

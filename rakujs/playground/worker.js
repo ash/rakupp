@@ -46,7 +46,7 @@ self.onmessage = async (e) => {
   let rc;
   inRun = true;
   try {
-    rc = Module.ccall('rakupp_run', 'number', ['string'], [e.data.src]);
+    rc = Module.ccall('rakupp_run', 'number', ['string', 'string'], [e.data.src, e.data.stdin || '']);
   } catch (err) {
     // A deep-recursion overflow (RangeError) or abort leaves the instance in an
     // unknown state — drop it and rebuild a clean one for the next run.
