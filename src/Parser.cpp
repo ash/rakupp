@@ -597,6 +597,12 @@ ExprPtr Parser::parseExpr(int minbp) {
                 const std::string& nm = static_cast<VarExpr*>(lhs.get())->name;
                 if (!nm.empty() && (nm[0] == '@' || nm[0] == '%')) listAssign = true;
             }
+            else if (lhs->kind == NK::SymbolicRef) {
+                // `@::($n) = 1,2,3` / `%::($n) = …` — a sigilled symbolic deref
+                // is a list container, so it takes the whole comma list
+                const std::string& sg = static_cast<SymbolicRef*>(lhs.get())->sigil;
+                if (sg == "@" || sg == "%") listAssign = true;
+            }
             else if (lhs->kind == NK::Index) {
                 // a slice target (`@a[1,2] = …`, `%h{^3} = …`, `%h{@ks} = …`)
                 // takes the whole comma list too
