@@ -3998,6 +3998,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return Value::complex(r.real(), r.imag());
         }
+        if (m == "log10" || m == "log2") { // log to a fixed base stays Complex
+            auto r = std::log(z) / std::log(std::complex<double>(m == "log10" ? 10.0 : 2.0, 0.0));
+            return Value::complex(r.real(), r.imag());
+        }
         for (const char* tm : {"sin","cos","tan","asin","acos","atan",
                                "sinh","cosh","tanh","asinh","acosh","atanh"})
             if (m == tm) { // complex trigonometry
@@ -5852,6 +5856,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (auto& x : items) go(x);
             return out;
         }
+        // `.eager` on a concrete Array is the identity — it keeps the same
+        // container (and its element type: `my int @a` stays array[int]); only a
+        // lazy Seq needs forcing (its elements are already materialised in `items`)
+        if (m == "eager" && inv.t == VT::Array && !inv.ext)
+            return inv;
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy")
             return Value::list(items);
         if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }
@@ -6457,6 +6466,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return tr(inv, 0);
         }
         if (m == "map" || m == "flatmap") { // flatmap == map that flattens list results one level
+            // the mapper must be a Callable — `%h.map(Hash)` (a type object) dies
+            if (!args.empty() && args[0].t == VT::Type)
+                throw RakuError{Value::typeObj("X::Cannot::Map"),
+                    "Cannot map a " + inv.typeName() + " with a " + args[0].s};
             Value out = Value::array();
             if (!args.empty() && args[0].t == VT::Code) {
                 // A block of arity N consumes N elements per iteration
@@ -7852,8 +7865,12 @@ void Interpreter::registerBuiltins() {
         double x = a.empty() ? 0 : a[0].toNum();
         if (a.size() >= 2) return Value::number(std::log(x) / std::log(a[1].toNum())); // log($x, $base)
         return rtBLog(I, a.empty() ? Value::integer(0) : a[0]); };
-    B["log10"] = [](Interpreter& I, ValueList& a) -> Value { return rtBLog10(I, a.empty() ? Value::integer(0) : a[0]); };
-    B["log2"] = [](Interpreter& I, ValueList& a) -> Value { return rtBLog2(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["log10"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (!a.empty() && a[0].t == VT::Complex) return I.methodCall(a[0], "log10", {});
+        return rtBLog10(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["log2"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (!a.empty() && a[0].t == VT::Complex) return I.methodCall(a[0], "log2", {});
+        return rtBLog2(I, a.empty() ? Value::integer(0) : a[0]); };
     B["index"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::nil();
         std::string s = a[0].toStr(), needle = a[1].toStr();
