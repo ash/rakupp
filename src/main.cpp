@@ -4,6 +4,7 @@
 #include "Codegen.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "Lint.h"
 #include "Highlight.h"
 #include <cstdlib>
 #include <cstring>
@@ -536,6 +537,9 @@ int main(int argc, char** argv) {
 "                               -Os buys nothing — `strip OUT` (~15%) is the size tool\n"
 "\n"
 "Inspection:\n"
+"  rakupp --lint SRC [-q]       Static-analyze without running: warn about unused\n"
+"                               variables, unreachable code, redeclarations, etc.\n"
+"                               (exit 1 if any warning; -q suppresses the summary)\n"
 "  rakupp --ast SRC             Print the parsed AST as an indented tree\n"
 "  rakupp --cpp SRC [-O]        Print the C++ that --exe would transpile to\n"
 "                               (add -O to print the optimized codegen instead)\n"
@@ -644,6 +648,50 @@ int main(int argc, char** argv) {
         std::cout << "Syntax OK\n";
         return 0;
     }
+
+    // --lint : static analysis only — parse, run the linter, report; never execute.
+    // Prints `FILE:LINE: warning|note: message [rule]`. Exits 1 if any warning
+    // was found (0 if only notes or nothing), 2 on a parse error.
+    if (argc >= 2 && std::string(argv[1]) == "--lint") {
+        std::string src, fname = "-e"; bool haveSrc = false, quiet = false;
+        for (int i = 2; i < argc; i++) {
+            std::string a = argv[i];
+            if (a == "--quiet" || a == "-q") { quiet = true; }
+            else if (a == "-e" && i + 1 < argc) { src = argv[++i]; haveSrc = true; }
+            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; }
+            else if (!haveSrc) {
+                std::ifstream in(a);
+                if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
+                std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = a; haveSrc = true;
+            }
+        }
+        if (!haveSrc) { std::cerr << "Usage: rakupp --lint (FILE | -e CODE) [-q]\n"; return 4; }
+        Program prog;
+        try {
+            Lexer lexer(src);
+            Parser parser(lexer.tokenize());
+            prog = parser.parseProgram();
+        } catch (const ParseError& e) {
+            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            return 2;
+        }
+        auto findings = lintProgram(prog);
+        int warns = 0, notes = 0;
+        for (auto& f : findings) {
+            (f.severity == 'W' ? warns : notes)++;
+            std::cout << fname << ":" << f.line << ": "
+                      << (f.severity == 'W' ? "warning" : "note") << ": "
+                      << f.message << " [" << f.rule << "]\n";
+        }
+        if (!quiet) {
+            if (findings.empty()) std::cerr << "rakupp --lint: no issues found in " << fname << "\n";
+            else std::cerr << "rakupp --lint: " << warns << " warning"
+                           << (warns == 1 ? "" : "s") << ", " << notes << " note"
+                           << (notes == 1 ? "" : "s") << " in " << fname << "\n";
+        }
+        return warns ? 1 : 0;
+    }
+
     // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)
     if (argc >= 2 && (std::string(argv[1]) == "--cpp" || std::string(argv[1]) == "--emit-cpp")) {
         std::string src, fname = "-e"; bool haveSrc = false, optimize = false;

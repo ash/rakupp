@@ -8,6 +8,7 @@ together they answer "what can it actually build?"
 | [**lisp/**](lisp/) | Language power — a grammar + a tree-walking evaluator | interpreter that runs Scheme files or a REPL |
 | [**js/**](js/) | Language power — a full precedence ladder, closures, classes | interpreter that runs JavaScript/TypeScript files or a REPL |
 | [**forth/**](forth/) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
+| [**perl/**](perl/) | Language power — sigil variables, context, regex | interpreter that runs Perl 5 files or a REPL |
 | [**markdown/**](markdown/) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
 | [**json/**](json/) | Parsing — a grammar that round-trips data | parse, pretty-print / minify, and query JSON |
 | [**pastebin/**](pastebin/) | Deployable — a hand-written HTTP server on raw sockets | native binary you point a browser at |
@@ -79,6 +80,34 @@ build/rakupp showcase/forth/forth.raku               # no file → a REPL
 5 square .      \ prints 25
 10 fact .       \ prints 3628800
 ```
+
+## perl — parsing the ancestor
+
+Raku grew out of Perl, so the sharpest language-power demo is Raku++ parsing its
+own predecessor. A grammar reads a practical slice of Perl 5 — sigil variables
+(`$`/`@`/`%`), scalar-vs-list context, statement modifiers, string interpolation
+— and a tree-walking evaluator runs it. Regex, Perl's signature feature, is a
+small backtracking engine written inside the interpreter, since rakupp can't
+compile a regex from a runtime string.
+
+```sh
+build/rakupp showcase/perl/perl.raku showcase/perl/examples/wordfreq.pl
+build/rakupp showcase/perl/perl.raku showcase/perl/examples/regex.pl
+build/rakupp showcase/perl/perl.raku               # no file → a REPL
+```
+
+```perl
+my %freq;
+$freq{$_}++ for split /\s+/, $text;
+for my $w (sort { $freq{$b} <=> $freq{$a} or $a cmp $b } keys %freq) {
+    printf "%-6s %d\n", $w, $freq{$w};
+}
+```
+
+All six example programs produce byte-identical output under the system `perl`
+and under `perl.raku`. References and nested data structures, `tr///`, packages
+and file I/O are out of scope — see [perl/README.md](perl/) for the exact
+boundary.
 
 ## markdown — the parsing story
 

@@ -89,6 +89,7 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 | `-I <path>` | Add a directory to the module search path (repeatable) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
+| `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. ([LINT.md](docs/LINT.md)) |
 | `--ast SRC` | Print the parsed AST |
 | `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to (add `-O` to see the optimized codegen) |
 | `--help`, `--version` | Show help / version |
@@ -128,7 +129,7 @@ course. Build it with `rakujs/build.sh`; details in
 
 ### Code to read and run
 
-- **[examples/](examples/)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md).
+- **[examples/](examples/)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md). [examples/lint/](examples/lint/) demos the `--lint` analyzer, one rule per file.
 - **[showcase/](showcase/)** — mid-size showcase programs: a Scheme interpreter built on a Raku grammar, and a pastebin HTTP server on raw sockets; see [showcase/README.md](showcase/README.md).
 - **[rakujs/](rakujs/)** — **Raku.js**: the interpreter compiled to **WebAssembly** to run Raku in the browser with no server; includes a playground page with all the examples. Same interpreter as native, compiled with Emscripten; see [rakujs/README.md](rakujs/README.md).
 
@@ -138,6 +139,7 @@ course. Build it with `rakujs/build.sh`; details in
 - **[PARSING.md](docs/PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (factorial `postfix:<!>`, custom precedence) are parsed in a single pass.
 - **[RUNTIME.md](docs/RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — the `Value` type, variables and containers, calls and dispatch, and lazy/infinite sequences.
 - **[MEMORY.md](docs/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
+- **[LINT.md](docs/LINT.md)** — the `--lint` static analyzer: the rules it applies, warnings vs. notes, exit codes, and why it stays conservative on Raku's dynamic constructs.
 - **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[DOGFOODING.md](docs/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
 

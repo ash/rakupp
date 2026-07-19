@@ -3,6 +3,20 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## Unreleased
+
+- **New `--lint` mode**: a static analyzer that parses a program and reports
+  likely mistakes without running it — unused variables, unused lexical
+  routines, redeclarations, unreachable code, self-assignment, constant
+  `if`/`unless` conditions, and numeric comparison of a string literal (all
+  warnings), plus unused parameters and redundant trailing `return` (notes).
+  Exits 1 on any warning, so it drops into CI or a pre-commit hook. The rules
+  are deliberately conservative — interpolation and regex pattern text count as
+  uses, and `EVAL`/symbolic references stand the "unused" rules down — to keep
+  false positives near zero on Raku's dynamic constructs. Rule reference in
+  [docs/LINT.md](docs/LINT.md); one-rule-per-file demos in
+  [examples/lint/](examples/lint/).
+
 ## v0.9.0 — 2026-07-19
 
 Everything since v0.7.1 (2026-07-16), 147 commits. Every change is gated on the
