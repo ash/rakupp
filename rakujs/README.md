@@ -245,7 +245,8 @@ and a fresh worker + module instance is ready in tens of ms after the one-time
   level, so recursion caps around ~200 levels — beyond that the browser raises a
   `RangeError`, which the playground catches, reports as a recursion-limit message,
   and recovers from. This is a browser constraint, not a Raku one: the same program
-  runs natively. Raising it would require rewriting the interpreter onto an explicit
+  runs natively ([docs/MEMORY.md](../docs/MEMORY.md) compares the measured
+  recursion budgets of all three modes). Raising it would require rewriting the interpreter onto an explicit
   heap stack (a `src/` change, out of scope here). `-sSTACK_SIZE` does **not**
   help — verified. Iterative/loop-based examples are unaffected.
 - **`start` / `Promise` concurrency** relies on real threads; it isn't available

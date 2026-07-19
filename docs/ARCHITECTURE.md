@@ -144,7 +144,8 @@ demo.raku ─► Lexer ─► Parser ─► Program (AST)
 ```
 
 `main` reads the source and calls `rakuppRunBigStack` (in `Runtime.cpp`, on a
-large-stack thread so deep recursion is safe). That lexes, parses, and hands the
+large-stack thread so deep recursion is safe — [MEMORY.md](MEMORY.md) has the
+sizes and measured depths per mode). That lexes, parses, and hands the
 `Program` to `Interpreter::run`, which `exec`s each statement. Evaluation is a
 recursive `eval(Expr*)` / `exec(Stmt*)` over the AST: a `for` loop iterates and
 re-`exec`s its body block; `square($_)` looks the sub up in the `Env` chain and

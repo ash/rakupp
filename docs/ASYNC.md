@@ -13,6 +13,8 @@ A focused companion to [COOKBOOK.md](COOKBOOK.md) for the concurrency features.
 Raku++ runs concurrency on **real `std::thread`s coordinated by a global
 interpreter lock (GIL)**, CPython-style. By default only one thread executes Raku
 at a time, so semantics are correct and single-threaded code needs no locks.
+Each worker gets a 256 MiB stack (a quarter of the mainline's recursion budget —
+[MEMORY.md](MEMORY.md) has the measured depths).
 Blocking operations *release* the GIL, so tasks genuinely interleave in time:
 `sleep`/`await` let workers overlap (enough for [sleep-sort](#concurrent-timing-sleep-sort)
 to actually sort), and external-process waits (`run`/`shell`) run in real parallel

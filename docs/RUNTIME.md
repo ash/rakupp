@@ -58,7 +58,8 @@ Two decisions carry most of the design:
    nodes; `Interpreter::eval(Expr*)` returns a `Value`, `Interpreter::exec(Stmt*)`
    runs a statement. There is no bytecode and no separate value stack — the C++
    call stack *is* the Raku call stack, and a `Value` returned from `eval` *is*
-   the Raku expression's result.
+   the Raku expression's result. (Which makes stack size the recursion budget:
+   see [MEMORY.md](MEMORY.md) for the reservations and measured depths.)
 
 Everything else is a consequence of those two, plus a handful of optimizations to
 keep the tree-walker from being slow (the `-fexceptions`-free
