@@ -276,6 +276,27 @@ for <examples tools/bench tools/optbench> -> $dir {
     ok($got eq $EXP.add('fibonacci.out').IO.slurp, "the native fibonacci binary matches the golden");
     try unlink $bin;
 }
+# Native parity: deep recursion (real main-thread stack), CATCH .message on
+# builtin errors, block-final if/else value, Order-comparator sort — each of
+# these once behaved differently under --exe than under the interpreter.
+{
+    my $bin = $*TMPDIR.add("rakupp-suite-parity-$*PID").Str;
+    my $p = run($*EXECUTABLE, '--exe', $ROOT.add('t/fixtures/native-parity.raku').Str, '-o', $bin, :out, :err);
+    $p.out.slurp(:close);
+    my $msg = $p.err.slurp(:close);
+    ok($p.exitcode == 0 && $msg.contains('(native)'), "--exe builds the native-parity fixture natively");
+    my $p = run($bin, :out);
+    my $got = $p.out.slurp(:close);
+    my $want = q:to/END/;
+        deep: 30000
+        caught: No such method 'nosuchmethod' for invocant of type 'Int'
+        pick: one two many
+        sort: 1,2,5,9
+        END
+    ok($got eq $want, "the native binary matches the interpreter on the parity probes");
+    diag("got: $got") if $got ne $want;
+    try unlink $bin;
+}
 
 # ---- summary ----------------------------------------------------------
 note "";

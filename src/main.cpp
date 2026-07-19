@@ -143,6 +143,13 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     c += " -lws2_32";                 // MinGW: the runtime's sockets need Winsock
     c += " -Wl,--stack,268435456";    // and the same 256 MiB main stack as MSVC
 #endif
+#ifdef __APPLE__
+    // The generated main() runs on the process main thread, whose default 8 MiB
+    // stack gives natively-compiled recursion a far smaller budget than the
+    // interpreter's 1 GiB big-stack thread. 512 MiB is the arm64 ld cap; the
+    // recursion guard reads it via pthread_get_stacksize_np automatically.
+    c += " -Wl,-stack_size,0x20000000";
+#endif
     return c;
 }
 

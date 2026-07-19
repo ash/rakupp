@@ -748,6 +748,14 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     }
     auto it = builtins_.find(n);
     if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
+    // builtin enum members (mirror the NameTerm eval): without the numeric
+    // payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
+    if (n == "Order::Same" || n == "Same") return Value::enumVal("Same", 0);
+    if (n == "Order::Less" || n == "Less") return Value::enumVal("Less", -1);
+    if (n == "Order::More" || n == "More") return Value::enumVal("More", 1);
+    if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);
+    if (n == "PromiseStatus::Broken"  || n == "Broken")  return Value::enumVal("Broken", 1);
+    if (n == "PromiseStatus::Kept"    || n == "Kept")    return Value::enumVal("Kept", 2);
     return Value::typeObj(n);
 }
 
@@ -8947,7 +8955,11 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
 // UNDEFINED type object — `$!.defined` must be True and `.message` must answer,
 // so wrap it into a defined instance of that class (registered on the fly).
 Value Interpreter::exceptionFor(const RakuError& e) {
-    if (e.payload.t != VT::Type) return e.payload; // already a value/object (die $obj / die "msg")
+    // A Str payload NAMING an exception type ("X::Recursion", "X::Multi::NoMatch")
+    // builds a real exception object like a type payload would — otherwise the
+    // caught value is a bare Str and `.message` in CATCH dies, masking the error.
+    bool strTypeName = e.payload.t == VT::Str && e.payload.s.rfind("X::", 0) == 0;
+    if (e.payload.t != VT::Type && !strTypeName) return e.payload; // die $obj / die "msg"
     std::string tn = e.payload.s.empty() ? "X::AdHoc" : e.payload.s;
     std::shared_ptr<ClassInfo> ci;
     auto it = classes_.find(tn);

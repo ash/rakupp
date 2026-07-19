@@ -541,6 +541,14 @@ struct Codegen {
                 Stmt* s = be->body[i].get();
                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
                     line(0, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                else if (i + 1 == be->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
+                    // a block-final if/elsif/else (or given) is the block's value,
+                    // exactly as in sub bodies
+                    std::string rv = gensym("__rv");
+                    line(0, "Value " + rv + " = Value::any();");
+                    stmtValue(s, 0, rv);
+                    line(0, "return " + rv + ";");
+                }
                 else stmt(s, 0);
             }
             line(0, "return Value::any();");
@@ -1060,7 +1068,11 @@ struct Codegen {
     // (first match wins); unmatched exceptions are swallowed, matching rakupp.
     void emitCatchHandler(Block* cb, int ind) {
         std::string exv = gensym("v__ex"), done = gensym("__cdone");
-        line(ind, "Value " + exv + " = __e.payload;");
+        // exceptionFor builds a real exception object (message attr and all) from a
+        // builtin RakuError; a bare __e.payload is just the TYPE OBJECT, so
+        // `.message` inside CATCH would die and mask the original error
+        line(ind, "Value " + exv + " = RT.exceptionFor(__e);");
+        line(ind, "RT.dynVarRef(\"$!\") = " + exv + ";");
         topics.push_back(exv);
         for (auto& s : cb->stmts) {
             if (s->kind == NK::WhenStmt) {

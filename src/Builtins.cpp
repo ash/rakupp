@@ -1746,6 +1746,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (every > 0 && sawTimes && stopF.t == VT::Code)
                 throw RakuError{Value::typeObj("X::Scheduler::Cue"), "Cannot specify :every, :times and :stop together"};
             if (inv.hash->count("sync")) { // CurrentThreadScheduler: run inline, now
+                bool sawEvery = false;
+                for (auto& a : args) if (a.t == VT::Pair && a.s == "every") sawEvery = true;
+                if (sawEvery) // no repetition on the inline scheduler, as in Rakudo
+                    throw RakuError{Value::typeObj("X::Scheduler::Cue"),
+                        "Cannot specify :every in cue on the CurrentThreadScheduler"};
                 if (std::isinf(delay) && delay > 0) { // :in(Inf)/:at(Inf): never runs (-Inf runs NOW)
                     Value c = Value::makeHash(); c.hashKind = "Cancellation";
                     c.ext = std::make_shared<CueState>();
