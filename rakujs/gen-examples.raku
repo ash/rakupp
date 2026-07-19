@@ -167,7 +167,16 @@ my @showcases =
                    'Bitwise, switch, ?.' => sample-file('js/examples/bits.js'),
                    'Bank (TypeScript)'   => sample-file('js/examples/bank.ts'),
                    'Shapes (TypeScript)' => sample-file('js/examples/shapes.ts'),
-                   'Roman numerals (TS)' => sample-file('js/examples/roman.ts')) );
+                   'Roman numerals (TS)' => sample-file('js/examples/roman.ts')) ),
+    %( name => 'Perl interpreter', file => 'perl/perl.raku',
+       entry => 'run-perl($*IN.slurp);',
+       desc => 'A Perl 5 interpreter — grammar, its own regex engine, hashes',
+       samples => ('FizzBuzz'       => sample-file('perl/examples/fizzbuzz.pl'),
+                   'Histogram'      => sample-file('perl/examples/histogram.pl'),
+                   'Quicksort'      => sample-file('perl/examples/quicksort.pl'),
+                   'Regex'          => sample-file('perl/examples/regex.pl'),
+                   'Sieve'          => sample-file('perl/examples/sieve.pl'),
+                   'Word frequency' => sample-file('perl/examples/wordfreq.pl')) );
 
 # Serialize a showcase's samples as a JSON array of {name, code} objects.
 sub samples-json(@samples --> Str) {
