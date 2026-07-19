@@ -55,6 +55,10 @@ full Roast suite with no fully-passing file regressions.
   lookup.
 - New [docs/MEMORY.md](docs/MEMORY.md): reserved-vs-resident memory and the
   measured recursion depths per mode (interpreter / `--exe` / WebAssembly).
+- New [docs/COMPILERS.md](docs/COMPILERS.md): which compiler and architecture to
+  use — arm64 vs. x86_64/Rosetta on macOS, Clang vs. GCC (with a measured
+  ~1.3–2× gap on this codebase), MSVC vs. MinGW on Windows — both for building
+  Raku++ and for the compiler `--exe` invokes.
 - New showcases on the WebAssembly playground: a JavaScript/TypeScript
   interpreter, a Scheme, and a Forth, each written in Raku.
 
