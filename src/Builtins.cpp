@@ -3939,6 +3939,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (!res && inv.t == VT::Code &&
             (rn == "Callable" || rn == "Code" || rn == "Routine" || rn == "Block" || rn == "Sub"))
             res = true;
+        // native numeric type objects do Real/Numeric; native `str` does Stringy
+        if (!res && inv.t == VT::Type) {
+            static const std::set<std::string> natNum = {
+                "int","int8","int16","int32","int64","uint","uint8","uint16","uint32","uint64",
+                "byte","num","num32","num64"};
+            if (natNum.count(inv.s) && (rn == "Real" || rn == "Numeric")) res = true;
+            else if (inv.s == "str" && rn == "Stringy") res = true;
+        }
         return Value::boolean(res);
     }
     if (m == "name" || m == "^name") {
