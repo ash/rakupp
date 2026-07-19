@@ -1,6 +1,6 @@
 # Raku.js — Raku in the browser (WebAssembly)
 
-▶ **Try it live: [course.raku.org/playground](https://course.raku.org/playground/)**
+▶ **Try it live: [raku.online](https://raku.online/)**
 
 **Raku.js** builds the Raku++ interpreter to **WebAssembly** so Raku programs run
 entirely in the browser — no server, no round-trips. The intended use is
@@ -61,9 +61,8 @@ cp rakujs/playground/{index.html,worker.js,rakujs.js,rakujs.wasm,examples.js} \
    /path/to/your-site/playground/
 ```
 
-The live playgrounds at [raku.online](https://raku.online/) and
-[course.raku.org/playground](https://course.raku.org/playground/) are served this
-way (the built files are git-ignored here; they live in the site that serves them).
+The live playground at [raku.online](https://raku.online/) is served this way
+(the built files are git-ignored here; they live in the site that serves them).
 Serve `.wasm` as `application/wasm` (most static hosts already do). All links are
 relative, so any `/playground/` path works.
 

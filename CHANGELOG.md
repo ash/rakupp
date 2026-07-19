@@ -186,7 +186,7 @@ release.)
 - The unmodified C++ interpreter compiled to WebAssembly, with a browser
   playground: worker-based execution with live streaming output and a Stop
   button, syntax-highlighting editor, theme switcher, 24 bundled examples.
-  Live at [course.raku.org/playground](https://course.raku.org/playground/).
+  Live at [raku.online](https://raku.online/).
 - First performance measurements (experimental; [rakujs/README.md](rakujs/README.md)):
   1.3–6.8× slower than the native interpreter on a clean host, dominated by
   the `-fexceptions` call trampolines; Node vs Bun comparison included.

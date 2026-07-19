@@ -365,7 +365,7 @@ a live spinner, streaming output, a working Stop button — and the whole thing 
 built at `-Oz` for size.
 
 The result is the playground, live at
-**[course.raku.org/playground](https://course.raku.org/playground/)**: an editor
+**[raku.online](https://raku.online/)**: an editor
 with the example programs, syntax highlighting, a theme switcher shared with the
 course, and Raku running in the tab. A from-scratch Raku, written in C++ in under
 three weeks, executing in a browser with no server behind it.
