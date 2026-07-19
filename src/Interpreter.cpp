@@ -5542,6 +5542,20 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
     Value* lv = lvalue(a->target.get());
     Value rhs = eval(a->value.get());
+    // a Proxy-bound target (`$a := $x`) routes OP= through FETCH/STORE so the
+    // update reaches the underlying container instead of clobbering the Proxy
+    if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
+        auto fit = lv->hash->find("FETCH"), sit = lv->hash->find("STORE");
+        if (fit != lv->hash->end() && sit != lv->hash->end()) {
+            std::string bop = a->op.substr(0, a->op.size() - 1);
+            Value cur = callCallable(fit->second, {});
+            Value nv = (bop == "^^" || bop == "xor")
+                ? (cur.truthy() ? (rhs.truthy() ? Value::nil() : cur) : rhs)
+                : applyBinOp(bop, cur, rhs);
+            callCallable(sit->second, { nv });
+            return sink ? Value::any() : nv;
+        }
+    }
     int nb = lv->natBits; bool ns = lv->natSigned;
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
     if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
@@ -8906,6 +8920,23 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (u->op == "++" || u->op == "--") {
         Value* lv = lvalue(u->operand.get());
+        // a Proxy-bound alias (`$a := $x`) reads via FETCH and writes via STORE,
+        // so ++/-- reach the underlying container instead of clobbering the Proxy
+        if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
+            auto fit = lv->hash->find("FETCH"), sit = lv->hash->find("STORE");
+            if (fit != lv->hash->end() && sit != lv->hash->end()) {
+                Value oldp = callCallable(fit->second, {});
+                Value newp;
+                if (oldp.t == VT::Str) {
+                    if (u->op == "++") newp = Value::str(strSucc(oldp.s));
+                    else { bool ok; std::string r = strPred(oldp.s, ok); newp = ok ? Value::str(r) : Value::typeObj("Failure"); }
+                }
+                else if (oldp.t == VT::Bool) newp = Value::boolean(u->op == "++");
+                else newp = applyArith(u->op == "++" ? "+" : "-", oldp, Value::integer(1));
+                callCallable(sit->second, { newp });
+                return u->postfix ? oldp : newp;
+            }
+        }
         Value oldv = *lv;
         Value newv;
         // A Str always increments/decrements as a string in Rakudo — even
