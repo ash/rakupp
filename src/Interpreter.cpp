@@ -2338,7 +2338,10 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     // it (`sub f { for 1,2 { LAST return $_ } }`); with NO routine it is
     // X::ControlFlow::Return (like Rakudo) — never the raw unwind that used to
     // reach std::terminate at the top level
-    auto noReturn = [&](const std::function<void()>& fn) {
+    // Generic (not std::function) so wrapping a phaser runner is a plain inlined
+    // call — a std::function here constructed + heap-allocated a closure over
+    // (body, scope) on EVERY iteration, which cost ~25% on tight loops.
+    auto noReturn = [&](auto&& fn) {
         try { fn(); }
         catch (ReturnEx&) {
             if (tctx_.curRoutineFrame != 0) throw; // the enclosing routine consumes it
