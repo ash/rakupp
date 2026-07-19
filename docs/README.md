@@ -15,6 +15,7 @@ point; everything else lives here.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[PARSING.md](PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (and other in-program grammar tweaks) are handled in a single pass.
 - **[RUNTIME.md](RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — what a `Value` is, how variables and containers relate, calls and dispatch, and lazy/infinite sequences.
+- **[MEMORY.md](MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
 - **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
 - **[DOGFOODING.md](DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
 
