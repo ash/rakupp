@@ -32,8 +32,9 @@ Ten example programs live in [`examples/`](examples/):
 | `roman.ts`       | tuple types, `Record`, `[v, s]` destructuring, both-way conversion |
 | `shapes.ts`      | an interface + a class hierarchy with polymorphic dispatch |
 | `calculator.ts`  | a tokenizer + recursive-descent parser, in the language being parsed |
+| `bits.js`        | bitwise ops, `switch` with fall-through, optional chaining `?.` |
 
-The six `.js` examples produce byte-identical output under `node` and under
+The seven `.js` examples produce byte-identical output under `node` and under
 `js.raku` — including `0.1 + 0.2` printing `0.30000000000000004`, `-7 % 3`
 being `-1`, and default `sort()` ordering numbers as strings. (`console.log`
 of a long array is the one place they differ: node wraps arrays past six
@@ -45,11 +46,14 @@ elements into a grid, so the sort demo joins its arrays for display.)
 functions, closures, arrow functions (expression and block bodies, default
 parameters), `if`/`else`, `while`, `do`/`while`, classic `for`, `for…of`
 (arrays, strings, and `[k, v]` destructuring for `Object.entries`),
-`break`/`continue`, `return`, ternary, `&&`/`||`/`??` with short-circuit,
-`==`/`===` with JS coercion rules, `+` as concat-or-add, `**`, `typeof`,
-`x++`/`x--`, compound assignment, template literals with `${…}`, array and
-object literals (shorthand and method properties), `this`, classes with
-fields, `extends`, `super(...)`/`super.m(...)`, static members, `new`,
+`switch`/`case`/`default` with fall-through, `break`/`continue`, `return`,
+ternary, `&&`/`||`/`??` with short-circuit, `==`/`===` with JS coercion rules,
+`+` as concat-or-add, `**`, bitwise `& | ^ ~ << >> >>>`, `typeof`/`void`/`delete`,
+`instanceof`, `in`, `x++`/`x--`, compound assignment (arithmetic, bitwise, and
+logical `&&=`/`||=`/`??=`), optional chaining `?.` (`a?.b`, `a?.[i]`, `a?.()`)
+with short-circuit, template literals with `${…}`, array and object literals
+(shorthand and method properties), `this`, classes with fields, `extends`,
+`super(...)`/`super.m(...)`, static members, `new`,
 `throw`/`try`/`catch`/`finally`, IIFEs, and `//` and `/* */` comments.
 
 **TypeScript.** Type annotations on variables, parameters, returns and fields;
@@ -63,20 +67,22 @@ which really assign); `as` casts and `x!` non-null assertions (erased);
 abs, sign, sqrt, pow, min, max, random, log, exp, hypot, PI, E);
 `JSON.stringify` (with indent); `Object.keys/values/entries`;
 `Array.isArray/from`; `Number(...)`, `String(...)`, `Boolean(...)`,
-`parseInt` (with radix), `parseFloat`, `isNaN`, `toFixed`; array methods
-(push, pop, shift, unshift, slice, indexOf, includes, join, map, filter,
-forEach, reduce, find, findIndex, some, every, concat, reverse, sort, flat);
-string methods (toUpperCase, toLowerCase, trim, charAt, charCodeAt, indexOf,
-includes, startsWith, endsWith, slice, substring, split, repeat, replace,
-replaceAll, padStart, padEnd, concat); `new Error(msg)` with `.message`.
+`parseInt` (with radix), `parseFloat`, `isNaN`, `toFixed`, `toString(radix)`;
+array methods (push, pop, shift, unshift, slice, indexOf, includes, join, map,
+filter, forEach, reduce, find, findIndex, some, every, concat, reverse, sort,
+flat); string methods (toUpperCase, toLowerCase, trim, charAt, charCodeAt,
+indexOf, includes, startsWith, endsWith, slice, substring, split, repeat,
+replace, replaceAll, padStart, padEnd, concat); `new Error(msg)` with
+`.message`.
 
 ## What doesn't
 
-Not implemented: regex literals, `switch`, labels, getters/setters, object/array
+Not implemented: regex literals, labels, getters/setters, object/array
 destructuring outside `for…of`, spread/rest, `async`/`await`, promises,
 generators, modules (`import`/`export`), `Symbol`, `Map`/`Set`, prototypes
-(`Object.create`, `.prototype`), `JSON.parse`, `?.` optional chaining, and
-bitwise operators. Keywords are not valid identifiers.
+(`Object.create`, `.prototype`), `JSON.parse`. `instanceof` covers user classes
+plus `Object`/`Array` (there's no global prototype chain otherwise). Keywords
+are not valid identifiers.
 
 ## Semicolons (ASI)
 

@@ -21,8 +21,12 @@
 # JS null and undefined are distinct singletons, separate from Raku's Nil.
 class JSNull  { }
 class JSUndef { }
+# Sentinel for a short-circuited optional chain (`a?.b.c` when a is nullish):
+# it propagates up the member/index/call chain and becomes undefined at the root.
+class ShortCircuit { }
 my \NULL  = JSNull.new;
 my \UNDEF = JSUndef.new;
+my \SHORT = ShortCircuit.new;
 
 # JS objects preserve insertion order; a Raku Hash doesn't, so keep a key list.
 class JSObject {
@@ -464,6 +468,10 @@ grammar JSGrammar {
     rule statement:sym<break>    { <.kw('break')> ';' }
     rule statement:sym<continue> { <.kw('continue')> ';' }
     rule statement:sym<throw>    { <.kw('throw')> <expr> ';' }
+    rule statement:sym<switch>   { <.kw('switch')> '(' <expr> ')' '{' <swcase>* '}' }
+    proto rule swcase {*}
+    rule swcase:sym<case>    { <.kw('case')> <expr> ':' <statement>* }
+    rule swcase:sym<default> { <.kw('default')> ':' <statement>* }
     rule statement:sym<try>      { <.kw('try')> <block> <catchc>? <finallyc>? }
     rule extendsc  { <.kw('extends')> <ident> }
     rule elsec     { <.kw('else')> <statement> }
@@ -505,27 +513,34 @@ grammar JSGrammar {
 
     # ----- expressions: precedence ladder -----
     rule expr    { <assign> }
-    rule assign  { <ternary> [ $<aop>=[ '=' <!before <[=>]>> | '+=' | '-=' | '*=' | '/=' | '%=' ] <assign> ]? }
-    rule ternary { <nullish> [ '?' <assign> ':' <assign> ]? }
+    rule assign  { <ternary> [ $<aop>=[ '=' <!before <[=>]>> | '+=' | '-=' | '**=' | '*=' | '/=' | '%=' | '&&=' | '||=' | '??=' | '&=' | '|=' | '^=' | '<<=' | '>>>=' | '>>=' ] <assign> ]? }
+    rule ternary { <nullish> [ '?' <!before '.'> <assign> ':' <assign> ]? }
     rule nullish { <orx>  [ '??' <orx> ]* }
     rule orx     { <andx> [ '||' <andx> ]* }
-    rule andx    { <eqx>  [ '&&' <eqx> ]* }
+    rule andx    { <bitor>  [ '&&' <bitor> ]* }
+    rule bitor   { <bitxor> [ $<op>=[ '|' <!before <[|=]>> ] <bitxor> ]* }
+    rule bitxor  { <bitand> [ $<op>=[ '^' <!before '='> ] <bitand> ]* }
+    rule bitand  { <eqx>    [ $<op>=[ '&' <!before <[&=]>> ] <eqx> ]* }
     rule eqx     { <rel>  [ $<op>=[ '===' | '!==' | '==' | '!=' ] <rel> ]* }
-    rule rel     { <add>  [ $<op>=[ '<=' | '>=' | '<' | '>' ] <add> ]* }
+    rule rel     { <shift> [ $<op>=[ '<=' | '>=' | '<' <!before '<'> | '>' <!before '>'> | 'instanceof'<!before <[A..Za..z0..9_$]>> | 'in'<!before <[A..Za..z0..9_$]>> ] <shift> ]* }
+    rule shift   { <add>  [ $<op>=[ '<<' <!before '='> | '>>>' <!before '='> | '>>' <!before '='> ] <add> ]* }
     rule add     { <mul>  [ $<op>=[ '+' <!before <[+=]>> | '-' <!before <[-=]>> ] <mul> ]* }
     rule mul     { <unary> [ $<op>=[ '*' <!before <[*=]>> | '/' <!before '='> | '%' <!before '='> ] <unary> ]* }
-    rule unary   { $<op>=[ [ '!' <!before '='> | '-' <!before <[-=]>> | '+' <!before <[+=]>> | 'typeof'<!before <[A..Za..z0..9_$]>> ] <.ws> ]* <pow> }
+    rule unary   { $<op>=[ [ '!' <!before '='> | '~' | '-' <!before <[-=]>> | '+' <!before <[+=]>> | 'typeof'<!before <[A..Za..z0..9_$]>> | 'void'<!before <[A..Za..z0..9_$]>> | 'delete'<!before <[A..Za..z0..9_$]>> ] <.ws> ]* <pow> }
     rule pow     { <postfix> [ '**' <pow> ]? }
 
     rule postfix { <primary> <ptail>* }
     proto rule ptail {*}
-    rule ptail:sym<dot>    { '.' <ident> }
-    rule ptail:sym<call>   { '(' [ <assign>* % ',' ] ','? ')' }
-    rule ptail:sym<index>  { '[' <expr> ']' }
-    rule ptail:sym<as>     { <.kw('as')> <type> }
-    rule ptail:sym<targs>  { '<' <type>+ % ',' '>' <?before '('> }   # f<T>(...) — erased
-    rule ptail:sym<incdec> { $<op>=[ '++' | '--' ] }
-    rule ptail:sym<bang>   { '!' <!before '='> }
+    rule ptail:sym<optcall>  { '?.(' [ <assign>* % ',' ] ','? ')' }
+    rule ptail:sym<optindex> { '?.[' <expr> ']' }
+    rule ptail:sym<optdot>   { '?.' <ident> }
+    rule ptail:sym<dot>      { '.' <ident> }
+    rule ptail:sym<call>     { '(' [ <assign>* % ',' ] ','? ')' }
+    rule ptail:sym<index>    { '[' <expr> ']' }
+    rule ptail:sym<as>       { <.kw('as')> <type> }
+    rule ptail:sym<targs>    { '<' <type>+ % ',' '>' <?before '('> }   # f<T>(...) — erased
+    rule ptail:sym<incdec>   { $<op>=[ '++' | '--' ] }
+    rule ptail:sym<bang>     { '!' <!before '='> }
 
     proto rule primary {*}
     rule primary:sym<arrow>    { [ '(' [ <param>* % ',' ] ')' | <param> ] <rtann>? '=>' [ <block> | <assign> ] }
@@ -555,7 +570,7 @@ grammar JSGrammar {
     token tpart:sym<expr>   { '${' <.ws> <expr> <.ws> '}' }
     token tpart:sym<esc>    { '\\' . }
     token tpart:sym<text>   { <-[`$\\]>+ }
-    token tpart:sym<dollar> { '$' <!before \x7B> }
+    token tpart:sym<dollar> { '$' <!before '{'> }
 }
 
 # ---------- AST construction --------------------------------------------
@@ -662,6 +677,11 @@ class JSActions {
     method statement:sym<break>($/)    { make %( t => 'break' ) }
     method statement:sym<continue>($/) { make %( t => 'continue' ) }
     method statement:sym<throw>($/)    { make %( t => 'throw', expr => $<expr>.made ) }
+    method statement:sym<switch>($/) {
+        make %( t => 'switch', disc => $<expr>.made, cases => made-list($<swcase>) )
+    }
+    method swcase:sym<case>($/)    { make %( kind => 'case', test => $<expr>.made, body => made-list($<statement>) ) }
+    method swcase:sym<default>($/) { make %( kind => 'default', body => made-list($<statement>) ) }
     method statement:sym<try>($/) {
         my $c = $<catchc> ?? $<catchc>.made !! Nil;
         make %( t => 'try', body => $<block>.made,
@@ -695,10 +715,14 @@ class JSActions {
     }
     method nullish($/) { make fold-logic($<orx>[0],  $<orx>[1..*],  '??') }
     method orx($/)     { make fold-logic($<andx>[0], $<andx>[1..*], '||') }
-    method andx($/)    { make fold-logic($<eqx>[0],  $<eqx>[1..*],  '&&') }
-    method eqx($/)     { make fold-bin($<rel>[0],  $<op>, $<rel>[1..*]) }
-    method rel($/)     { make fold-bin($<add>[0],  $<op>, $<add>[1..*]) }
-    method add($/)     { make fold-bin($<mul>[0],  $<op>, $<mul>[1..*]) }
+    method andx($/)    { make fold-logic($<bitor>[0], $<bitor>[1..*], '&&') }
+    method bitor($/)   { make fold-bin($<bitxor>[0], $<op>, $<bitxor>[1..*]) }
+    method bitxor($/)  { make fold-bin($<bitand>[0], $<op>, $<bitand>[1..*]) }
+    method bitand($/)  { make fold-bin($<eqx>[0],   $<op>, $<eqx>[1..*]) }
+    method eqx($/)     { make fold-bin($<rel>[0],   $<op>, $<rel>[1..*]) }
+    method rel($/)     { make fold-bin($<shift>[0], $<op>, $<shift>[1..*]) }
+    method shift($/)   { make fold-bin($<add>[0],   $<op>, $<add>[1..*]) }
+    method add($/)     { make fold-bin($<mul>[0],   $<op>, $<mul>[1..*]) }
     method mul($/)     { make fold-bin($<unary>[0], $<op>, $<unary>[1..*]) }
     method unary($/) {
         # a zero-match $<op>=[...]* leaves one phantom empty capture: drop it
@@ -719,16 +743,26 @@ class JSActions {
     method postfix($/) {
         my @tails = mklist($<ptail>);
         my $acc = $<primary>.made;
-        for @tails -> $tl { $acc = apply-tail($acc, $tl.made) }
+        my $hasOpt = False;
+        for @tails -> $tl {
+            my $t = $tl.made;
+            $hasOpt = True if $t<opt>;
+            $acc = apply-tail($acc, $t);
+        }
+        # wrap a chain containing `?.` so a nullish short-circuit resolves to undefined
+        $acc = %( t => 'optchain', e => $acc ) if $hasOpt;
         make $acc;
     }
-    method ptail:sym<dot>($/)    { make %( t => 'dot', name => ~$<ident> ) }
-    method ptail:sym<call>($/)   { make %( t => 'callargs', args => made-list($<assign>) ) }
-    method ptail:sym<index>($/)  { make %( t => 'idx', e => $<expr>.made ) }
-    method ptail:sym<as>($/)     { make %( t => 'as' ) }
-    method ptail:sym<targs>($/)  { make %( t => 'as' ) }
-    method ptail:sym<incdec>($/) { make %( t => 'incdec', op => (~$<op>).trim ) }
-    method ptail:sym<bang>($/)   { make %( t => 'as' ) }   # non-null assertion: erased
+    method ptail:sym<dot>($/)      { make %( t => 'dot', name => ~$<ident> ) }
+    method ptail:sym<call>($/)     { make %( t => 'callargs', args => made-list($<assign>) ) }
+    method ptail:sym<index>($/)    { make %( t => 'idx', e => $<expr>.made ) }
+    method ptail:sym<optdot>($/)   { make %( t => 'dot', name => ~$<ident>, opt => True ) }
+    method ptail:sym<optcall>($/)  { make %( t => 'callargs', args => made-list($<assign>), opt => True ) }
+    method ptail:sym<optindex>($/) { make %( t => 'idx', e => $<expr>.made, opt => True ) }
+    method ptail:sym<as>($/)       { make %( t => 'as' ) }
+    method ptail:sym<targs>($/)    { make %( t => 'as' ) }
+    method ptail:sym<incdec>($/)   { make %( t => 'incdec', op => (~$<op>).trim ) }
+    method ptail:sym<bang>($/)     { make %( t => 'as' ) }   # non-null assertion: erased
 
     method primary:sym<arrow>($/) {
         my $body = $<block> ?? $<block>.made<stmts> !! $<assign>.made;
@@ -796,9 +830,9 @@ class JSActions {
 # Fold one postfix tail onto an expression node.
 sub apply-tail($base, $tail) {
     given $tail<t> {
-        when 'dot'      { %( t => 'member', obj => $base, name => $tail<name> ) }
-        when 'callargs' { %( t => 'call', callee => $base, args => $tail<args> ) }
-        when 'idx'      { %( t => 'index', obj => $base, e => $tail<e> ) }
+        when 'dot'      { %( t => 'member', obj => $base, name => $tail<name>, opt => ?$tail<opt> ) }
+        when 'callargs' { %( t => 'call', callee => $base, args => $tail<args>, opt => ?$tail<opt> ) }
+        when 'idx'      { %( t => 'index', obj => $base, e => $tail<e>, opt => ?$tail<opt> ) }
         when 'incdec'   { %( t => 'postop', op => $tail<op>, target => $base ) }
         default         { $base }   # 'as' casts and non-null assertions: erased
     }
@@ -1026,6 +1060,21 @@ sub js-mod(Num $a, Num $b --> Num) {
     $a - $b * ($a / $b).truncate
 }
 
+# JS ToInt32 / ToUint32: a number truncated into the 32-bit ring, signed or not.
+# accept a JS value or a raw Raku number (bitwise results feed back in as Int)
+sub js-num-of($v --> Num) { $v ~~ Numeric ?? $v.Num !! to-num($v) }
+sub to-int32($v --> Int) {
+    my $n = js-num-of($v);
+    return 0 if $n.isNaN || $n == Inf || $n == -Inf;
+    my $i = $n.truncate % 4294967296;                 # Raku % yields 0 .. 2³²-1
+    $i >= 2147483648 ?? $i - 4294967296 !! $i
+}
+sub to-uint32($v --> Int) {
+    my $n = js-num-of($v);
+    return 0 if $n.isNaN || $n == Inf || $n == -Inf;
+    $n.truncate % 4294967296
+}
+
 sub js-binop(Str $op, $a, $b) {
     given $op {
         when '+'   { js-add($a, $b) }
@@ -1045,7 +1094,40 @@ sub js-binop(Str $op, $a, $b) {
         when '!='  { !js-loose-eq($a, $b) }
         when '<='  { js-compare($a, $b, '<=') }
         when '>='  { js-compare($a, $b, '>=') }
+        # bitwise: operands coerce to 32-bit integers; results are JS numbers
+        when '&'   { (to-int32($a) +& to-int32($b)).Num }
+        when '|'   { (to-int32($a) +| to-int32($b)).Num }
+        when '^'   { (to-int32($a) +^ to-int32($b)).Num }
+        when '<<'  { to-int32(to-int32($a) +< (to-uint32($b) % 32)).Num }
+        when '>>'  { (to-int32($a) +> (to-uint32($b) % 32)).Num }
+        when '>>>' { (to-uint32($a) +> (to-uint32($b) % 32)).Num }
+        when 'instanceof' { js-instanceof($a, $b) }
+        when 'in'         { js-in($a, $b) }
         default    { die-js "unsupported operator $op" }
+    }
+}
+
+sub js-instanceof($obj, $ctor) {
+    # tagged built-in constructors (Object, Array) — no real prototype chain
+    if $ctor ~~ JSObject && $ctor.has-key('%instanceof%') {
+        given $ctor.get('%instanceof%') {
+            when 'Array'  { return $obj ~~ Positional }
+            when 'Object' { return $obj ~~ JSObject || $obj ~~ Positional || $obj ~~ JSFunc || $obj ~~ NativeFn }
+        }
+    }
+    return False unless $obj ~~ JSObject && $obj.cls.defined;
+    my $target = $ctor ~~ JSClass ?? $ctor !! Nil;
+    return False unless $target.defined;
+    my $c = $obj.cls;
+    while $c.defined { return True if $c === $target; $c = $c.parent }
+    False
+}
+
+sub js-in($key, $obj) {
+    given $obj {
+        when JSObject   { $obj.has-key(to-str($key)) || ($obj.cls.defined && $obj.cls.lookup(to-str($key)).defined) }
+        when Positional { my $i = to-num($key).Int; 0 <= $i < $obj.elems }
+        default { die-js "TypeError: cannot use 'in' operator on " ~ js-typeof($obj) }
     }
 }
 
@@ -1160,7 +1242,7 @@ sub get-prop($obj, Str $name) {
             my $s = $obj.find-static($name);
             $s.defined ?? $s !! ($name eq 'name' ?? $obj.name !! UNDEF)
         }
-        when Num      { $name eq 'toFixed' ?? num-method($obj, $name) !! UNDEF }
+        when Num      { ($name eq 'toFixed' || $name eq 'toString') ?? num-method($obj, $name) !! UNDEF }
         when JSUndef  { die-js "TypeError: cannot read properties of undefined (reading '$name')" }
         when JSNull   { die-js "TypeError: cannot read properties of null (reading '$name')" }
         default       { UNDEF }
@@ -1187,10 +1269,32 @@ sub set-prop($obj, Str $name, $v) {
 sub native(Str $name, $fn) { NativeFn.new(name => $name, fn => $fn) }
 
 sub num-method(Num $n, Str $name) {
-    native('toFixed', -> @a, $ {
-        my $d = @a.elems ?? to-num(@a[0]).Int !! 0;
-        sprintf('%.' ~ $d ~ 'f', $n)
-    })
+    given $name {
+        when 'toFixed' {
+            native('toFixed', -> @a, $ {
+                my $d = @a.elems ?? to-num(@a[0]).Int !! 0;
+                sprintf('%.' ~ $d ~ 'f', $n)
+            })
+        }
+        when 'toString' {
+            native('toString', -> @a, $ {
+                my $radix = @a.elems && !is-undef(@a[0]) ?? to-num(@a[0]).Int !! 10;
+                $radix == 10 ?? js-num-str($n) !! int-to-base($n, $radix)
+            })
+        }
+    }
+}
+
+# Integer part of a number rendered in an arbitrary base 2..36 (like JS toString(radix)).
+sub int-to-base(Num $n, Int $radix --> Str) {
+    return js-num-str($n) if $n.isNaN || $n == Inf || $n == -Inf;
+    my $neg = $n < 0e0;
+    my $i = $n.abs.truncate;
+    return '0' if $i == 0;
+    my $digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+    my $out = '';
+    while $i > 0 { $out = $digits.substr($i % $radix, 1) ~ $out; $i = ($i / $radix).Int; }
+    ($neg ?? '-' !! '') ~ $out
 }
 
 # One callback-arg helper: JS callbacks receive (elem, index) etc.
@@ -1463,6 +1567,31 @@ sub eval-stmt($n, Env $env) {
                 last if $brk;
             }
         }
+        when 'switch' {
+            my $disc = eval-expr($n<disc>, $env);
+            my $senv = Env.new(parent => $env);
+            my @cases = $n<cases>.list;
+            # find the matching case (===) or default, then run from there with fall-through
+            my $start = -1;
+            for ^@cases.elems -> $i {
+                my $c = @cases[$i];
+                if $c<kind> eq 'case' && js-strict-eq($disc, eval-expr($c<test>, $senv)) { $start = $i; last }
+            }
+            if $start < 0 {
+                for ^@cases.elems -> $i { if @cases[$i]<kind> eq 'default' { $start = $i; last } }
+            }
+            if $start >= 0 {
+                {
+                    for $start ..^ @cases.elems -> $i {
+                        for @cases[$i]<body>.list -> $s { eval-stmt($s, $senv) }
+                    }
+                    CATCH {
+                        when BrkX { }          # break leaves the switch
+                        default   { .rethrow } # continue/return/throw propagate outward
+                    }
+                }
+            }
+        }
         when 'dowhile' {
             my $go = True;
             while $go {
@@ -1572,14 +1701,20 @@ sub eval-call($n, Env $env) {
     # obj.m(...) and obj[k](...) pass the receiver as `this`
     if $callee<t> eq 'member' {
         my $obj = eval-expr($callee<obj>, $env);
+        return SHORT if $obj ~~ ShortCircuit;
+        return SHORT if $callee<opt> && (is-null($obj) || is-undef($obj));
         my $f = get-prop($obj, $callee<name>);
+        return SHORT if $n<opt> && (is-null($f) || is-undef($f));   # obj.m?.()
         die-js "TypeError: " ~ display($obj, :nested) ~ "." ~ $callee<name> ~ " is not a function"
             if is-undef($f);
         return call-value($f, @args, $obj);
     }
     if $callee<t> eq 'index' {
         my $obj = eval-expr($callee<obj>, $env);
+        return SHORT if $obj ~~ ShortCircuit;
+        return SHORT if $callee<opt> && (is-null($obj) || is-undef($obj));
         my $f = get-prop($obj, to-str(eval-expr($callee<e>, $env)));
+        return SHORT if $n<opt> && (is-null($f) || is-undef($f));
         return call-value($f, @args, $obj);
     }
     if $callee<t> eq 'supermethod' {
@@ -1589,7 +1724,10 @@ sub eval-call($n, Env $env) {
         die-js "TypeError: super." ~ $callee<name> ~ " is not a function" unless $r.defined;
         return call-value(with-class($r[0], $r[1]), @args, $this);
     }
-    call-value(eval-expr($callee, $env), @args, UNDEF)
+    my $fn = eval-expr($callee, $env);
+    return SHORT if $fn ~~ ShortCircuit;
+    return SHORT if $n<opt> && (is-null($fn) || is-undef($fn));   # f?.()
+    call-value($fn, @args, UNDEF)
 }
 
 sub eval-expr($n, Env $env) {
@@ -1598,7 +1736,12 @@ sub eval-expr($n, Env $env) {
         when 'num'   { $n<v> }
         when 'bin'   { js-binop($n<op>, eval-expr($n<l>, $env), eval-expr($n<r>, $env)) }
         when 'call'  { eval-call($n, $env) }
-        when 'member' { get-prop(eval-expr($n<obj>, $env), $n<name>) }
+        when 'member' {
+            my $obj = eval-expr($n<obj>, $env);
+            return SHORT if $obj ~~ ShortCircuit;
+            return SHORT if $n<opt> && (is-null($obj) || is-undef($obj));
+            get-prop($obj, $n<name>)
+        }
         when 'cond' {
             truthy(eval-expr($n<cond>, $env)) ?? eval-expr($n<then>, $env) !! eval-expr($n<else>, $env)
         }
@@ -1662,13 +1805,35 @@ sub eval-expr($n, Env $env) {
                     if $n<e><t> eq 'ident' && !$env.has-name($n<e><name>) { return 'undefined' }
                     js-typeof(eval-expr($n<e>, $env))
                 }
-                when '!' { !truthy(eval-expr($n<e>, $env)) }
-                when '-' { -to-num(eval-expr($n<e>, $env)) }
+                when '!'    { !truthy(eval-expr($n<e>, $env)) }
+                when '-'    { -to-num(eval-expr($n<e>, $env)) }
+                when '~'    { to-int32(+^ to-int32(eval-expr($n<e>, $env))).Num }
+                when 'void' { eval-expr($n<e>, $env); UNDEF }
+                when 'delete' {
+                    my $t = $n<e>;
+                    if $t<t> eq 'member' {
+                        my $obj = eval-expr($t<obj>, $env);
+                        $obj.del($t<name>) if $obj ~~ JSObject;
+                        True
+                    }
+                    elsif $t<t> eq 'index' {
+                        my $obj = eval-expr($t<obj>, $env);
+                        $obj.del(to-str(eval-expr($t<e>, $env))) if $obj ~~ JSObject;
+                        True
+                    }
+                    else { True }
+                }
                 default  { to-num(eval-expr($n<e>, $env)) }   # unary +
             }
         }
+        when 'optchain' {
+            my $v = eval-expr($n<e>, $env);
+            $v ~~ ShortCircuit ?? UNDEF !! $v
+        }
         when 'index' {
             my $obj = eval-expr($n<obj>, $env);
+            return SHORT if $obj ~~ ShortCircuit;
+            return SHORT if $n<opt> && (is-null($obj) || is-undef($obj));
             my $key = eval-expr($n<e>, $env);
             given $obj {
                 when Positional {
@@ -1709,10 +1874,22 @@ sub eval-expr($n, Env $env) {
         }
         when 'assign' {
             my $t = $n<target>;
-            my $v = eval-expr($n<value>, $env);
-            if $n<op> ne '=' {
+            my $op = $n<op>;
+            # logical assignment short-circuits: `a &&= b` assigns only when a is truthy
+            if $op eq '&&=' || $op eq '||=' || $op eq '??=' {
                 my $cur = eval-expr($t, $env);
-                $v = js-binop($n<op>.substr(0, 1), $cur, $v);
+                my $do = $op eq '&&=' ?? truthy($cur)
+                      !! $op eq '||=' ?? !truthy($cur)
+                      !!                 (is-null($cur) || is-undef($cur));
+                return $cur unless $do;
+                my $v = eval-expr($n<value>, $env);
+                assign-to($t, $v, $env);
+                return $v;
+            }
+            my $v = eval-expr($n<value>, $env);
+            if $op ne '=' {
+                my $cur = eval-expr($t, $env);
+                $v = js-binop($op.chop, $cur, $v);   # `<<=` → `<<`, `+=` → `+`
             }
             assign-to($t, $v, $env);
             $v
@@ -1786,6 +1963,7 @@ sub make-global-env(--> Env) {
     $g.declare('JSON', $json, :const);
 
     my $object = JSObject.new;
+    $object.set('%instanceof%', 'Object');
     $object.set('keys', native('keys', -> @a, $ {
         my $o = @a[0] // UNDEF;
         my @out;
@@ -1811,6 +1989,7 @@ sub make-global-env(--> Env) {
     $g.declare('Object', $object, :const);
 
     my $arraycls = JSObject.new;
+    $arraycls.set('%instanceof%', 'Array');
     $arraycls.set('isArray', native('isArray', -> @a, $ { (@a[0] // UNDEF) ~~ Positional }));
     $arraycls.set('from', native('from', -> @a, $ {
         my $src = @a[0] // UNDEF;
