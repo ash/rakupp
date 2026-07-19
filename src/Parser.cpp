@@ -1932,7 +1932,7 @@ ExprPtr Parser::parsePrimary() {
                 advance(); advance(); // op ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[" + innerOp + "]"; // [=>] pair-consing (right-assoc) / [,] list
-                u->operand = parseExpr(BP_COMMA);
+                u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
                 return u;
             }
             if (((peek(1).kind == Tok::Op && peek(1).text != "\\") || identReduce) &&
@@ -1966,7 +1966,7 @@ ExprPtr Parser::parsePrimary() {
                             expectKind(Tok::RParen, ")");
                         }
                     }
-                    else u->operand = parseExpr(BP_COMMA);
+                    else u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
                     return u;
                 }
             }
@@ -1977,7 +1977,7 @@ ExprPtr Parser::parsePrimary() {
                 advance(); advance(); advance(); advance(); // [ \ , ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[\\,]";
-                u->operand = parseExpr(BP_COMMA);
+                u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
                 return u;
             }
             if (peek(1).kind == Tok::Op && peek(1).text == "\\" &&
@@ -1997,7 +1997,7 @@ ExprPtr Parser::parsePrimary() {
                     advance(); // ]
                     auto u = std::make_unique<Unary>();
                     u->op = "[\\" + innerOp + "]";
-                    u->operand = parseExpr(BP_COMMA);
+                    u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
                     return u;
                 }
             }
@@ -2010,7 +2010,7 @@ ExprPtr Parser::parsePrimary() {
                 advance(); // ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[" + innerOp + "]";
-                u->operand = parseExpr(BP_COMMA);
+                u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
                 return u;
             }
             advance();
