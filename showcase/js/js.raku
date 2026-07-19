@@ -174,10 +174,277 @@ sub strip-comments(Str $src --> Str) {
     $out;
 }
 
+# ---------- automatic semicolon insertion -------------------------------
+# Newlines are invisible to the grammar (the builtin `ws` eats them), so ASI
+# is done here: a token-boundary scan inserts a real `;` at each newline where
+# a JavaScript statement ends, plus before a block-closing `}` and at EOF.
+# This is JS's own heuristic — end a statement at a line break unless the break
+# is "obviously" a continuation: inside `(`/`[`, inside an object literal, after
+# a trailing operator, or before a leading continuation token (`.`, a binary
+# operator, `)`…). It is a heuristic, not the full spec (see README), but it
+# covers idiomatic semicolon-free code. Runs after strip-comments.
+
+# Keywords that cannot end a statement (a newline right after them continues it).
+# return/break/continue are NOT here: a bare one ends the statement (JS's
+# "restricted productions"), so a line break after them inserts a `;`.
+my $ASI-NONEND = ' new typeof void delete instanceof in of throw case extends default'
+               ~ ' if else for while do switch function class try catch finally var let const ';
+sub asi-word-ending(Str $w --> Bool) { !$ASI-NONEND.contains(" $w ") }
+
+# Keywords that continue the previous statement, so a break before them never
+# inserts (`else`/`catch`/`finally` bind back; `in`/`of`/`instanceof` are infix).
+my $ASI-CONT-KW = ' else catch finally instanceof in of ';
+sub asi-cont-kw(Str $w --> Bool) { $ASI-CONT-KW.contains(" $w ") }
+
+# First char of the next token that means "continue the previous statement":
+# member `.`, closers/openers that bind, and binary operators (incl. + and -,
+# which JS treats as continuation). `!`, `~`, `{`, `}` are deliberately absent.
+sub asi-cont-char(Str $c --> Bool) { ".,?:)]([*/%<>=&|^+-".contains($c) }
+
+# Is a `{` (or a `function` keyword) in expression position, given the token
+# before it? Drives object-literal and function-expression classification.
+sub asi-exprpos(Str $t --> Bool) {
+    $t eq '(' || $t eq '[' || $t eq ',' || $t eq '#op' || $t eq 'return' || $t eq '=>'
+}
+
+# Can $lastTok end a statement? Sentinels (#num/#str/#op) start with '#' and
+# ')ctrl' with ')', so neither collides with a real identifier.
+sub asi-ending(Str $lastTok --> Bool) {
+    return False if $lastTok eq '' || $lastTok eq ';' || $lastTok eq '#op' || $lastTok eq ')ctrl';
+    return True  if $lastTok eq '#num' || $lastTok eq '#str'
+                 || $lastTok eq ')' || $lastTok eq ']' || $lastTok eq '}'
+                 || $lastTok eq '++' || $lastTok eq '--';
+    return asi-word-ending($lastTok) if $lastTok ~~ /^ <[A..Za..z_$]> /;
+    return False;
+}
+
+sub asi-should-insert($lastTok, $nk, $nt, $round, $square, $braceTop --> Bool) {
+    return False unless asi-ending($lastTok);
+    return False if $round > 0 || $square > 0;      # inside (...) or [...]
+    return False if $braceTop eq 'object';          # inside an object literal
+    if $nk eq 'word' {
+        # infix keyword operators always continue the expression
+        return False if $nt eq 'in' || $nt eq 'of' || $nt eq 'instanceof';
+        # else/catch/finally bind to a preceding *block*; after an unbraced
+        # statement (`if (x) foo()\nelse …`) the statement still needs its `;`
+        if $nt eq 'else' || $nt eq 'catch' || $nt eq 'finally' {
+            return $lastTok ne '}block';
+        }
+        return False if $nt eq 'while' && ($lastTok eq '}' || $lastTok eq '}block');   # } while (...)
+        return True;
+    }
+    elsif $nk eq 'eof' {
+        return True;
+    }
+    else {
+        return False if $nt eq '{' && $lastTok eq ')';       # Allman-style `f()\n{`
+        return False if asi-cont-char($nt);
+        return True;
+    }
+}
+
+# Look at the first significant token at or after index $start: ('word', text),
+# ('char', c), or ('eof', '').
+sub asi-peek(@c, $start, $n) {
+    my $j = $start;
+    while $j < $n && (@c[$j] eq ' ' || @c[$j] eq "\t" || @c[$j] eq "\n" || @c[$j] eq "\r") { $j++ }
+    return ('eof', '') if $j >= $n;
+    my $ch = @c[$j];
+    if $ch ~~ /^ <[A..Za..z_$]> / {
+        my $w = '';
+        while $j < $n && @c[$j] ~~ /^ <[A..Za..z0..9_$]> / { $w ~= @c[$j]; $j++ }
+        return ('word', $w);
+    }
+    ('char', $ch)
+}
+
+sub insert-asi(Str $src --> Str) {
+    my @c = $src.comb;
+    my $n = @c.elems;
+    my $out = '';
+    my $i = 0;
+
+    my $lastTok = '';       # symbolic previous token; see asi-ending for the alphabet
+    my @braces;             # 'block' | 'exprfn' | 'object', innermost last
+    my @parens;             # 'ctrl'  | 'expr'   | 'func',   innermost last
+    my $round  = 0;
+    my $square = 0;
+    my @depths;             # saved (round, square) per `{` — bracket depth is brace-local
+    my $pendingBrace = '';  # category to give the next `{` (a function body)
+    my $funcHeader   = False;   # just saw the `function` keyword
+    my $funcExpr     = False;   # …and it was in expression position
+    my @doDepths;           # brace-nesting of each pending `do` (to find its `while`)
+    my $whileIsDo    = False;   # the `while` just read closes a do-while
+
+    my $OP = "+-*/%=<>!&|^~?:";
+
+    while $i < $n {
+        my $ch = @c[$i];
+
+        # --- whitespace: the one place a `;` may be inserted ---
+        if $ch eq ' ' || $ch eq "\t" || $ch eq "\n" || $ch eq "\r" {
+            my $j = $i;
+            my $hasNL = False;
+            while $j < $n && (@c[$j] eq ' ' || @c[$j] eq "\t" || @c[$j] eq "\n" || @c[$j] eq "\r") {
+                $hasNL = True if @c[$j] eq "\n";
+                $j++;
+            }
+            if $hasNL {
+                my ($nk, $nt) = asi-peek(@c, $j, $n);
+                my $braceTop = @braces ?? @braces[*-1] !! '';
+                if asi-should-insert($lastTok, $nk, $nt, $round, $square, $braceTop) {
+                    $out ~= ';';
+                    $lastTok = ';';
+                }
+            }
+            $out ~= @c[$i ..^ $j].join;
+            $i = $j;
+            next;
+        }
+
+        # --- string literal ---
+        if $ch eq '"' || $ch eq "'" {
+            my $q = $ch;
+            $out ~= $ch; $i++;
+            while $i < $n {
+                if @c[$i] eq '\\' && $i + 1 < $n { $out ~= @c[$i] ~ @c[$i + 1]; $i += 2; }
+                elsif @c[$i] eq $q { $out ~= $q; $i++; last; }
+                else { $out ~= @c[$i]; $i++; }
+            }
+            $lastTok = '#str';
+            next;
+        }
+
+        # --- template literal (may span lines; track ${ } depth) ---
+        if $ch eq '`' {
+            $out ~= $ch; $i++;
+            my $depth = 0;
+            while $i < $n {
+                my $t = @c[$i];
+                if $t eq '\\' && $i + 1 < $n { $out ~= $t ~ @c[$i + 1]; $i += 2; }
+                elsif $depth == 0 && $t eq '`' { $out ~= $t; $i++; last; }
+                elsif $t eq '$' && $i + 1 < $n && @c[$i + 1] eq '{' { $depth++; $out ~= '${'; $i += 2; }
+                elsif $depth > 0 && $t eq '{' { $depth++; $out ~= $t; $i++; }
+                elsif $depth > 0 && $t eq '}' { $depth--; $out ~= $t; $i++; }
+                else { $out ~= $t; $i++; }
+            }
+            $lastTok = '#str';
+            next;
+        }
+
+        # --- identifier / keyword / number ---
+        if $ch ~~ /^ <[A..Za..z0..9_$]> / {
+            my $isNum = ?($ch ~~ /^ \d /);
+            my $w = '';
+            while $i < $n && @c[$i] ~~ /^ <[A..Za..z0..9_$]> / { $w ~= @c[$i]; $i++; }
+            $out ~= $w;
+            if !$isNum && $w eq 'function' {
+                $funcHeader = True;
+                $funcExpr   = asi-exprpos($lastTok);   # expr vs. declaration
+            }
+            # an `enum` body has comma-separated members, like an object literal —
+            # never terminate its members with `;`
+            $pendingBrace = 'object' if !$isNum && $w eq 'enum';
+            # match `while` to its `do`: a do-while `while (cond)` ends a statement,
+            # a loop-starting `while (cond)` does not (a body follows)
+            if !$isNum && $w eq 'do' { @doDepths.push(@braces.elems); }
+            if !$isNum && $w eq 'while' {
+                $whileIsDo = @doDepths && @doDepths[*-1] == @braces.elems
+                          && ($lastTok eq '}block' || $lastTok eq '}' || $lastTok eq ';');
+                @doDepths.pop if $whileIsDo;
+            }
+            $lastTok = $isNum ?? '#num' !! $w;
+            next;
+        }
+
+        # --- brackets and structural punctuation ---
+        if $ch eq '(' {
+            # a do-while's `while (cond)` takes an ordinary (statement-ending) paren
+            my $ctrl = ($lastTok eq 'if' || $lastTok eq 'for'
+                        || ($lastTok eq 'while' && !$whileIsDo));
+            my $kind = $funcHeader ?? 'func' !! $ctrl ?? 'ctrl' !! 'expr';
+            $funcHeader = False;
+            $whileIsDo  = False;
+            @parens.push($kind);
+            $round++;
+            $out ~= '('; $i++;
+            $lastTok = '(';
+            next;
+        }
+        if $ch eq ')' {
+            my $kind = @parens ?? @parens.pop !! 'expr';
+            $round-- if $round > 0;
+            $out ~= ')'; $i++;
+            # a function header's `)` fixes what its body `{` will be
+            $pendingBrace = ($funcExpr ?? 'exprfn' !! 'block') if $kind eq 'func';
+            $lastTok = $kind eq 'ctrl' ?? ')ctrl' !! ')';
+            next;
+        }
+        if $ch eq '[' { $square++;               $out ~= '['; $i++; $lastTok = '['; next; }
+        if $ch eq ']' { $square-- if $square > 0; $out ~= ']'; $i++; $lastTok = ']'; next; }
+
+        if $ch eq '{' {
+            my $cat = $pendingBrace ne ''    ?? $pendingBrace     # a function/arrow body
+                   !! $lastTok eq '=>'        ?? 'exprfn'          # arrow body
+                   !! asi-exprpos($lastTok)   ?? 'object'          # object literal
+                   !!                             'block';         # statement block
+            $pendingBrace = '';
+            @braces.push($cat);
+            # inside a `{…}`, the enclosing (…)/[…] depth is irrelevant to where
+            # statements end (e.g. an IIFE body lives inside a `(`), so reset it
+            @depths.push([$round, $square]);
+            $round = 0; $square = 0;
+            $out ~= '{'; $i++;
+            $lastTok = '{';
+            next;
+        }
+        if $ch eq '}' {
+            my $cat = @braces ?? @braces.pop !! 'block';
+            if @depths { my $d = @depths.pop; $round = $d[0]; $square = $d[1]; }
+            else       { $round = 0; $square = 0; }
+            # a block / function body needs its final statement terminated even
+            # on one line (`{ return 1 }`); an object literal does not.
+            if $cat ne 'object' && asi-ending($lastTok) && $lastTok ne '{' {
+                $out ~= ';';
+            }
+            $out ~= '}'; $i++;
+            # object/function-expression `}` can end a statement; a plain block can't
+            $lastTok = $cat eq 'block' ?? '}block' !! '}';
+            next;
+        }
+
+        if $ch eq ';' { $out ~= ';'; $i++; $lastTok = ';'; next; }
+        if $ch eq ',' { $out ~= ','; $i++; $lastTok = ','; next; }
+        if $ch eq '.' { $out ~= '.'; $i++; $lastTok = '.'; next; }
+
+        # --- operator run (=>, ++, --, ===, &&, …) ---
+        if $OP.contains($ch) {
+            my $run = '';
+            while $i < $n && $OP.contains(@c[$i]) { $run ~= @c[$i]; $i++; }
+            $out ~= $run;
+            $lastTok = ($run eq '++' || $run eq '--') ?? $run
+                    !! $run eq '=>'                   ?? '=>'
+                    !!                                   '#op';
+            next;
+        }
+
+        # --- anything else: copy verbatim ---
+        $out ~= $ch; $i++;
+        $lastTok = $ch;
+    }
+
+    # trailing statement with no closing newline
+    $out ~= ';' if asi-ending($lastTok);
+    $out;
+}
+
 # ---------- grammar -----------------------------------------------------
 grammar JSGrammar {
     token kw($k) { $k <!before <[A..Za..z0..9_$]>> }
-    token ident  { <[A..Za..z_$]> <[A..Za..z0..9_$]>* }
+    token ident  { <!rword> <[A..Za..z_$]> <[A..Za..z0..9_$]>* }
+    # a bare `return`/`break`/`continue` must not parse as an identifier
+    # expression, or it ties with its own statement rule (ASI emits them bare)
+    token rword  { [ 'return' | 'break' | 'continue' ] <!before <[A..Za..z0..9_$]>> }
 
     rule TOP { <.ws> <statement>* }
 
@@ -1647,7 +1914,7 @@ sub dump-ast($n, Int $level = 0) {
 
 # ---------- driver ------------------------------------------------------
 sub parse-js(Str $src0) {
-    my $src = strip-comments($src0);
+    my $src = insert-asi(strip-comments($src0));
     my $m = JSGrammar.parse($src, actions => JSActions.new);
     unless $m {
         my $p = JSGrammar.subparse($src, actions => JSActions.new);
@@ -1711,8 +1978,11 @@ sub repl {
     say '';
 }
 
-sub MAIN($file?, Str :$ast) {
-    if $ast.defined {
+sub MAIN($file?, Str :$ast, Str :$asi) {
+    if $asi.defined {
+        print insert-asi(strip-comments($asi.IO.slurp));
+    }
+    elsif $ast.defined {
         dump-ast(parse-js($ast.IO.slurp));
     }
     elsif $file.defined {

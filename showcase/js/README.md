@@ -11,8 +11,12 @@ runtime output) become real objects.
 build/rakupp showcase/js/js.raku showcase/js/examples/fizzbuzz.js
 build/rakupp showcase/js/js.raku showcase/js/examples/bank.ts
 build/rakupp showcase/js/js.raku --ast=file.js     # dump the parsed AST
+build/rakupp showcase/js/js.raku --asi=file.js     # show semicolons ASI inserts
 build/rakupp showcase/js/js.raku                   # no file → a REPL
 ```
+
+Semicolons are optional — a newline ends a statement wherever JavaScript's
+automatic semicolon insertion (ASI) would; see [Semicolons (ASI)](#semicolons-asi).
 
 Ten example programs live in [`examples/`](examples/):
 
@@ -68,12 +72,36 @@ replaceAll, padStart, padEnd, concat); `new Error(msg)` with `.message`.
 
 ## What doesn't
 
-Semicolons are required (there is no automatic semicolon insertion). Not
-implemented: regex literals, `switch`, labels, getters/setters, object/array
+Not implemented: regex literals, `switch`, labels, getters/setters, object/array
 destructuring outside `for…of`, spread/rest, `async`/`await`, promises,
 generators, modules (`import`/`export`), `Symbol`, `Map`/`Set`, prototypes
-(`Object.create`, `.prototype`), `JSON.parse`, getters like `?.` optional
-chaining, and bitwise operators. Keywords are not valid identifiers.
+(`Object.create`, `.prototype`), `JSON.parse`, `?.` optional chaining, and
+bitwise operators. Keywords are not valid identifiers.
+
+## Semicolons (ASI)
+
+Semicolons are optional — a newline ends a statement wherever JavaScript's
+[automatic semicolon insertion](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Lexical_grammar#automatic_semicolon_insertion)
+would end one. This is a preprocessing pass (`insert-asi`, alongside comment
+stripping) that inserts a real `;` at each statement-ending line break, since
+the grammar can't see newlines directly. It follows JS's own heuristic: end the
+statement at a line break *unless* the break is a continuation — inside `(`/`[`,
+inside an object literal, after a trailing operator, or before a leading
+continuation token (`.`, a binary operator, `)`, `else`…). It handles the
+subtle cases — method chains split across lines, `return`↵`expr` (which becomes
+`return; expr;`, per the "restricted production" rule), do-while, Allman braces,
+and object-vs-block `{` — but it is a heuristic, not the full ECMAScript
+algorithm, so pathological code (`a = b`↵`(c).d()`, which JS keeps as one call)
+follows JS by *not* inserting there. All six `.js` examples run identically with
+or without semicolons. See the transform with:
+
+```sh
+build/rakupp showcase/js/js.raku --asi=file.js     # print the semicolon-inserted source
+```
+
+[`ASI.md`](ASI.md) is a full writeup: why the grammar can't see newlines, the
+decision rule and token alphabet, and the tricky cases (object-vs-block braces,
+IIFEs, `enum`, do-while, `else`) that each took a correction.
 
 ## Semantics worth knowing
 
@@ -108,9 +136,11 @@ interpreter.
 The pipeline is the same as the lisp and json showcases, scaled up: a
 `grammar` (~120 lines) with a precedence ladder of nine levels feeds an
 actions class that builds hash-based AST nodes, and `eval-stmt`/`eval-expr`
-walk them. Comments are blanked out (newlines preserved) in a pre-pass before
-parsing. A few rakupp-specific workarounds are marked with comments in the
-source: quantified captures are read through a list assignment before
-indexing, every `CATCH` carries a `default { .rethrow }`, and value keywords
-like `null` are classified in the ident action because proto-rule dispatch is
-longest-match.
+walk them. Two pre-passes run before parsing, both working around the fact that
+the grammar can't see newlines (rakupp ignores a user-defined `ws`): comments
+are blanked out with newlines preserved, then `insert-asi` inserts real
+semicolons at statement-ending line breaks. A few rakupp-specific workarounds
+are marked with comments in the source: quantified captures are read through a
+list assignment before indexing, every `CATCH` carries a `default { .rethrow }`,
+and value keywords like `null` are classified in the ident action because
+proto-rule dispatch is longest-match.
