@@ -9914,6 +9914,7 @@ Value Interpreter::evalIndex(Index* idx) {
         bool wantExists = false, negExists = false, wantDelete = false;
         bool kvF = false, pF = false, kF = false, vF = false;
         bool presenceNeg = false; // :k/:v/:kv/:p negative polarity (:!k / :k(False))
+        std::vector<std::string> unknownAdv; // `:zorp` / `:zip:zop` — not a subscript adverb
         {
             std::string rest = idx->adverb;
             while (!rest.empty()) {
@@ -9949,7 +9950,16 @@ Value Interpreter::evalIndex(Index* idx) {
                 else if (part == "p")  { pF = true;  presenceNeg = !posPol; }
                 else if (part == "k")  { kF = true;  presenceNeg = !posPol; }
                 else if (part == "v")  { vF = true;  presenceNeg = !posPol; }
+                else if (!part.empty()) unknownAdv.push_back(part); // :zorp / :zip / :zop
             }
+        }
+        // an unrecognised subscript adverb is an error (Rakudo: no postcircumfix
+        // candidate → X::Adverb / dispatch failure): `@a[1]:zorp`, `%h<a>:kv:p:zip:zop`
+        if (!unknownAdv.empty()) {
+            std::string list;
+            for (auto& u : unknownAdv) { if (!list.empty()) list += " "; list += u; }
+            throw RakuError{Value::typeObj("X::Adverb"),
+                "Unexpected adverbs passed to subscript: " + list};
         }
         if (idx->multiDim && !(wantExists || wantDelete || kvF || pF || kF || vF))
             return multiDimRead(base); // all adverbs conditionally off → plain multidim read
