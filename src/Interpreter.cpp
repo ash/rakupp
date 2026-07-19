@@ -40,6 +40,14 @@ namespace rakupp {
 
 // Thread-local RNG state: drand48's process-global state is not thread-safe, so
 // under parallel execution each thread keeps its own erand48 seed.
+// Does a CATCH block contain `when`/`default` clauses? If so, an exception that
+// matches none of them is NOT handled and must rethrow; a CATCH with only plain
+// statements is an unconditional handler.
+static bool catchHasWhen(const Block* catchBlk) {
+    for (auto& s : catchBlk->stmts) if (s->kind == NK::WhenStmt) return true;
+    return false;
+}
+
 static thread_local bool g_rand_seeded = false;
 static thread_local unsigned short g_rand_xs[3];
 // `srand($seed)` reseeds the generator (Raku returns the seed used). NB rakupp's PRNG
@@ -2235,16 +2243,19 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     runEnterPhasers(b->stmts);
     // Run the block's CATCH handler; returns true if `.resume` was called (so the
     // block should carry on after the throwing statement).
-    auto runCatch = [&](RakuError& e) -> bool {
+    // 0 = handled, 1 = .resume (carry on at the next statement), 2 = unmatched → rethrow
+    auto runCatch = [&](RakuError& e) -> int {
         tctx_.cur->define("$_", exceptionFor(e));
         tctx_.cur->define("$!", exceptionFor(e));
+        bool matched = false;
         try {
             struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
             for (auto& s : catchBlk->stmts) exec(s.get());
         }
-        catch (BreakGivenEx&) { /* when/default matched */ }
-        catch (ResumeEx&) { return true; }
-        return false;
+        catch (BreakGivenEx&) { matched = true; /* when/default matched */ }
+        catch (ResumeEx&) { return 1; }
+        // when/default clauses that matched none don't handle it (R1) → rethrow
+        return (!matched && catchHasWhen(catchBlk)) ? 2 : 0;
     };
     try {
         for (size_t i = 0; i < b->stmts.size(); i++) {
@@ -2259,8 +2270,17 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                 // per-statement, so `.resume` can continue at the next statement
                 try { last = exec(s.get(), sink || i != lastIdx); }
                 catch (RakuError& e) {
-                    if (runCatch(e)) continue;           // .resume → next statement
-                    runLeavePhasers(b->stmts); if (hasNestedSub) breakSelfClosures(blockEnv); tctx_.cur = saved; return Value::nil(); // handled
+                    int r = runCatch(e);
+                    if (r == 1) continue;                // .resume → next statement
+                    runLeavePhasers(b->stmts);
+                    if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
+                        for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
+                        tctx_.cur->letRestores.clear();
+                    }
+                    if (hasNestedSub) breakSelfClosures(blockEnv);
+                    tctx_.cur = saved;
+                    if (r == 2) throw;                   // R1: unmatched → rethrow
+                    return Value::nil();                 // handled
                 }
             } else {
                 last = exec(s.get(), sink || i != lastIdx);
@@ -4515,14 +4535,26 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (catchBlk) {
             tctx_.cur->define("$_", exceptionFor(e));
             tctx_.cur->define("$!", exceptionFor(e));
+            bool matched = false;
             try {
                 struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
                 for (auto& s : catchBlk->stmts) exec(s.get());
-            } catch (BreakGivenEx&) { /* a when/default matched */ }
-            catch (ResumeEx&) { /* .resume: the exception is absorbed; the body can't re-enter, so fall through as handled */ }
+            } catch (BreakGivenEx&) { matched = true; /* a when/default matched */ }
+            catch (ResumeEx&) { matched = true; /* .resume: absorbed; body can't re-enter, treat as handled */ }
             catch (...) { if (c.body) runLeavePhasers(*c.body); restore(); throw; } // die/rethrow from CATCH
+            // A CATCH built from when/default clauses that matched none does NOT
+            // handle the exception (R1): rethrow it to the caller.
+            if (!matched && catchHasWhen(catchBlk)) {
+                if (c.body) runLeavePhasers(*c.body);
+                runLetRestoresOf(tctx_.cur);
+                tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
+                throw;
+            }
             if (c.body) runLeavePhasers(*c.body);
             restore();
+            copyOutRw(c.params, env, rwArgs, false);
+            // A `return` inside the CATCH returns from this routine (R2).
+            if (isRoutine && tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
             return Value::nil();
         }
         if (c.body) runLeavePhasers(*c.body);

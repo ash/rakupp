@@ -130,7 +130,7 @@ embedded code block, or a char class was miscounted as nesting.
 
 ## Runtime
 
-### R1. An unmatched `CATCH` swallows the exception instead of rethrowing — HIGH
+### R1. An unmatched `CATCH` swallows the exception instead of rethrowing — FIXED
 
 ```raku
 class AX is Exception {}
@@ -138,34 +138,39 @@ class BX is Exception {}
 sub inner { BX.new.throw }
 sub mid   { inner(); CATCH { when AX { } } }      # no branch matches BX
 { mid(); CATCH { when BX { say "outer sees it" } } }
-# rakupp: nothing (BX vanished) — Rakudo: "outer sees it"
+# was: nothing (BX vanished) — now: "outer sees it" (as Rakudo)
 ```
 
-A `CATCH` whose `when`s don't match the thrown exception must rethrow it to the
-enclosing handler. rakupp drops it.
+A `CATCH` whose `when`s don't match must rethrow to the enclosing handler.
 
-- **Where to look:** the `CATCH` fall-through path in `src/Interpreter.cpp` —
-  after no `when`/`default` matches, the exception should propagate, not be
-  consumed.
-- **Workaround:** every `CATCH` in js.raku carries an explicit
-  `default { .rethrow }`. This is verbose but load-bearing; fixing R1 lets all
-  of them go.
+- **Fix:** both `CATCH` handlers (`execBlock` for bare blocks, and the routine
+  body in `src/Interpreter.cpp`) now track whether a `when`/`default` matched
+  (a match throws `BreakGivenEx`). If none did *and* the block has `when`/`default`
+  clauses (`catchHasWhen`), the exception is rethrown; a `CATCH` of only plain
+  statements is still an unconditional handler.
+- **Workaround removed:** the six `default { .rethrow }` lines in js.raku are
+  gone — the `when` clauses auto-rethrow now.
 
-### R2. `return` / `last` inside a `CATCH` block is lost — HIGH
+### R2. `return` inside a `CATCH` block is lost — FIXED
 
 ```raku
 class RX is Exception { has $.v }
 sub f { RX.new(v => 7).throw; CATCH { when RX { return .v } }; -1 }
-say f();     # rakupp: Nil — Rakudo: 7
+say f();     # was: Nil — now: 7 (as Rakudo)
 ```
 
-Control-flow verbs executed from within a `CATCH` handler don't take effect.
-
-- **Where to look:** how `CATCH` handler bodies run relative to the routine
-  frame in `src/Interpreter.cpp` — a `return` there should unwind the routine.
-- **Workaround:** js.raku's function-call path catches `RetX` and assigns the
-  value to a variable *after* the guarded block rather than `return`-ing from
-  inside the handler (see `call-jsfunc`).
+- **Fix:** the routine-body `CATCH` handler set `return Value::nil()`
+  unconditionally, ignoring a `return` executed inside the handler (which sets
+  `tctx_.returning`/`returnV`). It now honours a pending cooperative return
+  (`if (isRoutine && tctx_.returning) return tctx_.returnV;`). In a *bare*-block
+  `CATCH` the return flag already propagates to the enclosing routine.
+- **Adjacent, still open (found while fixing R1/R2, not js-specific):**
+  (a) a `CATCH` inside a **method** body isn't handled at all — a method's
+  invocation path never reaches this handler, so `die` propagates and
+  `return`-from-`CATCH` is lost; only `sub`/block bodies work. (b) A `sub`/method
+  named after a quote operator (`sub m { … }`; the call `m()` lexes as the
+  `m//` match op) mis-parses — the same class of collision as G1, but in
+  call/name position rather than after `grammar`. Neither is fixed here.
 
 ### R3. `with` / `without` statement modifiers aren't recognised — MEDIUM
 
@@ -309,11 +314,12 @@ js.raku's `arr-prop` `sort` returns `<=> 0e0` for exactly this reason.
 | G3 | proto LTM tie → identifier branch | **FIXED** | decl-order candidates + litPrefix specificity |
 | G4 | brace in `token`/`rule` body breaks lexer | **FIXED** | quote/block/class-aware body reader (Lexer.cpp) |
 
-The R\* (runtime) and N\* (`--exe`) rows below are **not yet fixed** — this pass
-covered the grammar/parser pitfalls only. Roast: +2 assertions, 0 regressions
-(full suite 187696 → 187698).
-| R1 | unmatched `CATCH` swallows | high | clean | `default { .rethrow }` |
-| R2 | `return`/`last` in `CATCH` lost | high | clean | set flag after block |
+G1–G4 (grammar) and R1–R2 (runtime `CATCH`) are fixed; the remaining R\* and the
+N\* (`--exe`) rows are not. Roast across all of these: no test regressions (S04
++2 from the CATCH fix, S02/S05 +2 from the grammar fixes).
+
+| R1 | unmatched `CATCH` swallows | **FIXED** | `catchHasWhen` rethrow in both CATCH paths (Interpreter.cpp) |
+| R2 | `return` in `CATCH` lost (sub/block) | **FIXED** | honour pending cooperative return in the routine CATCH handler |
 | R3 | `with`/`without` modifiers unparsed | medium | clean | `if …defined` guard |
 | R4 | `@`-param copies not aliases | medium | clean | pass array via `$` param |
 | R5 | assign via public accessor is RO | medium | clean | private mutator method |

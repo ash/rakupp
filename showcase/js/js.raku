@@ -1178,7 +1178,6 @@ sub call-jsfunc(JSFunc $f, @args, $this) {
             eval-stmts($f.body, $env);
             CATCH {
                 when RetX { $ret = .value }
-                default   { .rethrow }
             }
         }
     }
@@ -1561,7 +1560,6 @@ sub eval-stmt($n, Env $env) {
                     CATCH {
                         when BrkX { $brk = True }
                         when CntX { }
-                        default   { .rethrow }
                     }
                 }
                 last if $brk;
@@ -1587,7 +1585,6 @@ sub eval-stmt($n, Env $env) {
                     }
                     CATCH {
                         when BrkX { }          # break leaves the switch
-                        default   { .rethrow } # continue/return/throw propagate outward
                     }
                 }
             }
@@ -1601,7 +1598,6 @@ sub eval-stmt($n, Env $env) {
                     CATCH {
                         when BrkX { $brk = True }
                         when CntX { }
-                        default   { .rethrow }
                     }
                 }
                 last if $brk;
@@ -1618,7 +1614,6 @@ sub eval-stmt($n, Env $env) {
                     CATCH {
                         when BrkX { $brk = True }
                         when CntX { }
-                        default   { .rethrow }
                     }
                 }
                 last if $brk;
@@ -1652,7 +1647,6 @@ sub eval-stmt($n, Env $env) {
                     CATCH {
                         when BrkX { $brk = True }
                         when CntX { }
-                        default   { .rethrow }
                     }
                 }
                 last if $brk;
