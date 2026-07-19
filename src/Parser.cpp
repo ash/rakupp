@@ -156,6 +156,19 @@ static InfixInfo classifyInfix(const Token& t) {
             for (char c : o) if (c != 'Z' && c != 'X') { allZX = false; break; }
             if (allZX) { in.valid = true; in.lbp = BP_ZIP; return in; }
         }
+        {   // zip/cross metaop over a WORD-op base that lexed as one ident:
+            // `Zcmp` `Xeq` `Zminmax` `XZcmp` — a Z/X run followed by a word infix.
+            size_t i = 0;
+            while (i < o.size() && (o[i] == 'Z' || o[i] == 'X')) i++;
+            static const std::set<std::string> wordBase = {
+                "cmp", "leg", "eqv", "eq", "ne", "lt", "gt", "le", "ge", "before",
+                "after", "unicmp", "coll", "min", "max", "minmax", "gcd", "lcm",
+                "div", "mod", "x", "xx", "and", "or", "andthen", "orelse", "but", "does"};
+            if (i > 0 && i < o.size() && wordBase.count(o.substr(i))) {
+                in.valid = true; in.lbp = BP_ZIP; return in;
+            }
+        }
+        if (o == "minmax") { in.valid = true; in.lbp = BP_ZIP; return in; } // list infix
         if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
         if (o == "and" || o == "andthen" || o == "notandthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }

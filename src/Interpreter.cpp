@@ -5953,6 +5953,18 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         return out;
     }
+    if (op == "minmax") { // list infix: a Range spanning both operands' extremes
+        ValueList a = l.flatten(), bb = r.flatten();
+        bool first = true; long long mn = 0, mx = 0;
+        auto see = [&](const Value& v) {
+            long long x = v.toInt();
+            if (first) { mn = mx = x; first = false; }
+            else { if (x < mn) mn = x; if (x > mx) mx = x; }
+        };
+        for (auto& v : a) see(v);
+        for (auto& v : bb) see(v);
+        return Value::range(mn, mx, false, false);
+    }
     // Whatever-currying: `* + 1`, `*.elems == 2`, `2 * *`, etc. yield a WhateverCode.
     // Smartmatch curries on the LEFT — `* ~~ /rx/` and `* !~~ @x` are the matcher
     // idioms `.grep`/`.first` rely on — but a bare Whatever on the RIGHT stays a
