@@ -6610,6 +6610,57 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     bool global = false;
     for (const char* adv : {":g ", ":global "}) // :g / :global adverb
         { size_t gp = pat.find(adv); if (gp != std::string::npos) { global = true; pat.erase(gp, strlen(adv)); } }
+    // counted adverbs — m:nth(N)/, m:nth(*)/, m:nth(2,3):global/, ordinals m:3rd/
+    // (sloppy suffixes like :7st accepted, as in Rakudo)
+    bool haveNth = false, nthStar = false; long long nthOfs = 0;
+    std::vector<long long> nthList;
+    {
+        auto nthArg = [&](std::string a) {
+            size_t b = a.find_first_not_of(" \t"), e2 = a.find_last_not_of(" \t");
+            a = (b == std::string::npos) ? "" : a.substr(b, e2 - b + 1);
+            if (a == "*") { nthStar = true; return; }
+            if (a.rfind("*-", 0) == 0) { nthStar = true; nthOfs = std::strtoll(a.c_str() + 2, nullptr, 10); return; }
+            Value v; try { v = evalString(a); } catch (...) {}
+            double d = v.toNum();
+            if (!(d >= 1) || std::isnan(d) || std::isinf(d))
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Attempt to retrieve match with :nth(" + a + "), but :nth must be a positive whole number"};
+            nthList.push_back((long long)d);
+        };
+        size_t np;
+        while ((np = pat.find(":nth(")) != std::string::npos) {
+            size_t j = np + 5; int depth = 1; std::string arg;
+            while (j < pat.size() && depth > 0) {
+                char c = pat[j];
+                if (c == '(') depth++;
+                else if (c == ')') { if (--depth == 0) break; }
+                arg += c; j++;
+            }
+            haveNth = true;
+            size_t start = 0, comma;
+            while ((comma = arg.find(',', start)) != std::string::npos) { nthArg(arg.substr(start, comma - start)); start = comma + 1; }
+            nthArg(arg.substr(start));
+            pat.erase(np, j + 1 - np);
+        }
+        // ordinal form: `:` digits + two-letter suffix
+        for (size_t i = 0; i + 3 < pat.size(); i++) {
+            if (pat[i] != ':' || !std::isdigit((unsigned char)pat[i + 1])) continue;
+            if (i > 0 && (std::isalnum((unsigned char)pat[i - 1]) || pat[i - 1] == ':')) continue;
+            size_t d = i + 1;
+            while (d < pat.size() && std::isdigit((unsigned char)pat[d])) d++;
+            if (d + 2 > pat.size()) break;
+            std::string suf = pat.substr(d, 2);
+            if (suf != "st" && suf != "nd" && suf != "rd" && suf != "th") continue;
+            if (d + 2 < pat.size() && std::isalnum((unsigned char)pat[d + 2])) continue;
+            long long n = std::strtoll(pat.c_str() + i + 1, nullptr, 10);
+            if (n < 1)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Attempt to retrieve match with :nth(" + std::to_string(n) + "), but :nth must be a positive whole number"};
+            haveNth = true; nthList.push_back(n);
+            pat.erase(i, d + 2 - i);
+            i--; // rescan from the same spot
+        }
+    }
     // Interpolate $scalar variables into the pattern as their literal (quotemeta'd)
     // value — `/$x/` matches the contents of $x. Leaves $0.. backrefs, $<name>,
     // special vars, escaped \$, and the end-anchor $ untouched.
@@ -6689,6 +6740,28 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             }
         return v;
     };
+    if (haveNth) { // m:nth(...)/ — enumerate all matches, keep the selected ones
+        std::vector<RxMatch> all;
+        long pos = 0;
+        while (re.ok() && pos <= (long)subject.size()) {
+            RxMatch m;
+            if (!re.search(subject, pos, m, resolver)) break;
+            all.push_back(m);
+            pos = (m.to > m.from) ? m.to : m.to + 1;
+        }
+        long long total = (long long)all.size();
+        if (nthStar) nthList.push_back(total - nthOfs);
+        std::sort(nthList.begin(), nthList.end());
+        std::vector<Value> picked;
+        for (long long n : nthList)
+            if (n >= 1 && n <= total) picked.push_back(build(all[n - 1]));
+        if (picked.empty()) { setMatchVar(Value::nil()); return Value::nil(); }
+        if (nthList.size() == 1 && !global) { setMatchVar(picked[0]); return picked[0]; }
+        Value list = Value::array(); list.isList = true;
+        for (auto& p : picked) list.arr->push_back(p);
+        setMatchVar(list);
+        return list;
+    }
     if (global) { // m:g// — a List of every match
         Value list = Value::array(); list.isList = true;
         long pos = 0;
