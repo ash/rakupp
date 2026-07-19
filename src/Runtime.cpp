@@ -16,6 +16,16 @@
 
 namespace rakupp {
 
+void setConsoleUtf8() {
+#if defined(_WIN32)
+    // Console defaults to a legacy OEM codepage; rakupp emits UTF-8 everywhere.
+    // Redirected output bypasses the console codepage, so files/pipes are
+    // unaffected — this only changes what an interactive console renders.
+    ::SetConsoleOutputCP(CP_UTF8);
+    ::SetConsoleCP(CP_UTF8);
+#endif
+}
+
 #if defined(_WIN32)
 // Big-stack worker threads on Windows: _beginthreadex with the stack size treated
 // as a reservation (STACK_SIZE_PARAM_IS_A_RESERVATION), matching pthread's virtual

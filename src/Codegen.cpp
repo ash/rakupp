@@ -2312,7 +2312,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     g.out << reg << "}\n\n";
 
     // main()
-    g.out << "namespace rakupp { int rakuppMainOnBigStack(int (*)(void*), void*); }\n"
+    g.out << "namespace rakupp { int rakuppMainOnBigStack(int (*)(void*), void*); void setConsoleUtf8(); }\n"
              "static int __rakupp_main_body(void* __ctxp) {\n"
              "    int argc = static_cast<std::pair<int, char**>*>(__ctxp)->first;\n"
              "    char** argv = static_cast<std::pair<int, char**>*>(__ctxp)->second;\n"
@@ -2331,6 +2331,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "// the OS default main stack (8 MiB, 1 MB on Windows) would give native\n"
              "// recursion a far smaller budget than the interpreter, on every platform.\n"
              "int main(int argc, char** argv) {\n"
+             "    rakupp::setConsoleUtf8();  // Windows: UTF-8 console output (no-op elsewhere)\n"
              "    std::pair<int, char**> __ctx{argc, argv};\n"
              "    return rakupp::rakuppMainOnBigStack(&__rakupp_main_body, &__ctx);\n}\n";
     return g.out.str();

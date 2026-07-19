@@ -111,22 +111,48 @@ static bool onPathW(const wchar_t* name) {
     wchar_t buf[4096];
     return ::SearchPathW(nullptr, name, L".exe", 4096, buf, nullptr) != 0;
 }
+// A compile failed on Windows: point at the likely toolchain mismatch. The
+// runtime archive is toolchain-specific, so the MinGW build needs g++ and the
+// MSVC build needs cl — using the wrong build in the wrong shell is the usual
+// cause (a MinGW .a handed to cl, or vice versa).
+static void winCompilerHint(const std::string& lib) {
+    bool gnuArchive = lib.size() >= 2 && lib.compare(lib.size() - 2, 2, ".a") == 0;
+    if (gnuArchive)
+        std::cerr << "(this is the MinGW build: its --exe needs g++ (MSYS2/MinGW-w64) on PATH. "
+                     "In a Visual Studio / cl prompt, use the MSVC build instead — or set CXX.)\n";
+    else
+        std::cerr << "(no working MSVC compiler: open a Developer Command Prompt or install the "
+                     "VS Build Tools; or use the MinGW build with g++ on PATH — or set CXX.)\n";
+}
 #endif
 
-// The native compiler for --exe/--bundle: $CXX, else the first of cl / g++ /
-// clang-cl / clang++ found on PATH on Windows (cl if none — the vcvars
-// bootstrap below may still make it work), `c++` elsewhere.
-static std::string nativeCxx() {
+// The native compiler for --exe/--bundle: $CXX wins; otherwise the compiler must
+// match the runtime archive we ship, since a static archive is toolchain-specific:
+//   rakupp_rt.lib  (MSVC build)  -> cl / clang-cl
+//   librakupp_rt.a (MinGW build) -> g++ / clang++   (cl CANNOT link a GNU .a —
+//                                   that was the "unrecognized source file type
+//                                   …librakupp_rt.a" + LNK2019 failure when --exe
+//                                   ran from a VS prompt with cl on PATH.)
+// `lib` is the archive path found by findRuntime; its extension picks the family.
+// Elsewhere it's always `c++`.
+static std::string nativeCxx(const std::string& lib = "") {
     const char* e = std::getenv("CXX");
-    if (e && *e) return e;
+    if (e && *e) return e;                        // explicit user choice always wins
 #ifdef _WIN32
+    bool gnuArchive = lib.size() >= 2 && lib.compare(lib.size() - 2, 2, ".a") == 0;
+    if (gnuArchive) {                             // MinGW runtime: only a GNU compiler links it
+        if (onPathW(L"g++")) return "g++";
+        if (onPathW(L"clang++")) return "clang++";
+        return "g++";                             // best guess; a clear error if absent
+    }
+    // MSVC runtime (rakupp_rt.lib), or no archive info yet: prefer cl / clang-cl.
     if (onPathW(L"cl")) return "cl";
-    if (onPathW(L"g++")) return "g++";           // MSYS2 / MinGW-w64 in PATH
     if (onPathW(L"clang-cl")) return "clang-cl";
+    if (onPathW(L"g++")) return "g++";            // last resort if no MSVC compiler present
     if (onPathW(L"clang++")) return "clang++";
-    return "cl";
+    return "cl";                                  // vcvars bootstrap below may still find it
 #else
-    return "c++";
+    (void)lib; return "c++";
 #endif
 }
 
@@ -345,13 +371,14 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "#define RAKUPP_REALPATH(p, r) realpath((p), (r))\n"
                 "#endif\n"
                 "namespace rakupp { int rakuppRunBigStack(const std::string&, std::vector<std::string>,"
-                " const std::string&, const std::string&, const std::vector<std::string>&); }\n";
+                " const std::string&, const std::string&, const std::vector<std::string>&); void setConsoleUtf8(); }\n";
         stub << "static const unsigned char SRC[] = {";
         for (size_t i = 0; i < src.size(); i++) { if (i) stub << ","; stub << (int)(unsigned char)src[i]; }
         if (src.empty()) stub << "0"; // avoid zero-size array; length tracked separately
         stub << "};\n";
         stub << "static const unsigned long SRC_LEN = " << src.size() << "UL;\n";
         stub << "int main(int argc, char** argv) {\n"
+                "  rakupp::setConsoleUtf8();\n"
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
@@ -360,13 +387,13 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "}\n";
     }
 
-    std::string cmd = compileCmd(nativeCxx(), "-O2", "", stubPath, lib, outPath);
+    std::string cmd = compileCmd(nativeCxx(lib), "-O2", "", stubPath, lib, outPath);
     int rc = runCommand(cmd);
     removeFile(stubPath);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
-        std::cerr << "(no C++ compiler? install Visual Studio Build Tools, or MSYS2 g++, or set CXX)\n";
+        winCompilerHint(lib);
 #endif
         return 5;
     }
@@ -414,13 +441,13 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     std::string genPath = outPath + ".rakupp.gen.cpp";
     { std::ofstream g = openOut(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
 
-    std::string cmd = compileCmd(nativeCxx(), ccOpt, inc, genPath, lib, outPath);
+    std::string cmd = compileCmd(nativeCxx(lib), ccOpt, inc, genPath, lib, outPath);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
-        std::cerr << "(no C++ compiler? install Visual Studio Build Tools, or MSYS2 g++, or set CXX)\n";
+        winCompilerHint(lib);
 #endif
         return 5;
     }
@@ -459,13 +486,13 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
     }
     std::string genPath = outPath + ".rakupp.ast.cpp";
     { std::ofstream g = openOut(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
-    std::string cmd = compileCmd(nativeCxx(), "-O2", inc, genPath, lib, outPath);
+    std::string cmd = compileCmd(nativeCxx(lib), "-O2", inc, genPath, lib, outPath);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (rc != 0) {
         std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
 #ifdef _WIN32
-        std::cerr << "(no C++ compiler? install Visual Studio Build Tools, or MSYS2 g++, or set CXX)\n";
+        winCompilerHint(lib);
 #endif
         return 5;
     }
@@ -476,6 +503,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
 // ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
+    rakupp::setConsoleUtf8();  // Windows: render UTF-8 output instead of mojibake (no-op elsewhere)
     std::string exePath = selfExePath(argv[0]); // resolve the real binary (argv[0] may be a bare PATH name)
 #ifndef _WIN32
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }

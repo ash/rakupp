@@ -35,4 +35,10 @@ int rakuppRunProgram(Program& prog, std::vector<std::string> args,
 int rakuppRunProgramBigStack(Program& prog, std::vector<std::string> args,
                              const std::string& fileName, const std::string& exePath, const std::string& finish);
 
+// Put the Windows console into UTF-8 mode so rakupp's UTF-8 output (the version
+// banner's em-dash, and any Unicode a program prints) renders correctly instead
+// of mojibake. No-op on non-Windows. Call once at the top of an entry point's
+// main(); the <windows.h> call is kept in Runtime.cpp.
+void setConsoleUtf8();
+
 }
