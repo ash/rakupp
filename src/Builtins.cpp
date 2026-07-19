@@ -2097,6 +2097,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return Value::boolean(true); }
         if (m == "done") {
+            // Remember the done state so a tap that registers LATER (an eager
+            // `start { $s.emit(…); $s.done }` that ran before the react tapped it)
+            // is closed immediately instead of leaving its react source live forever.
+            (*inv.hash)["done_state"] = Value::boolean(true);
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
                 if (t.t == VT::Hash && t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
                 if (t.ext) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
@@ -3712,6 +3716,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     if (gc == "Nl" || gc == "No")
                         throw RakuError{Value::typeObj("X::Str::Numeric"), "Cannot convert string to number: a numeral in category '" + gc + "' is not a digit"}; }
             }
+        // A string / match text wider than int64 must stay EXACT — route through
+        // the BigInt-aware parse, not the lossy long-long toInt() (which returns 0
+        // on overflow). Int stays Int; Rat/Num truncate toward zero.
+        if (inv.t == VT::Str || inv.t == VT::Match) {
+            Value nv = numifyStr(inv.s);
+            if (nv.t == VT::Int) return nv;
+            if (nv.t == VT::Rat || nv.t == VT::Num) return methodCall(nv, "Int", ValueList{});
+        }
         return Value::integer(inv.toInt());
     }
     if (m == "isNaN") {
@@ -5190,6 +5202,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 icase = a2.pairVal && a2.pairVal->truthy();
             else if (a2.t != VT::Pair) pargs.push_back(a2);
         }
+        if (pargs.empty()) // only adverbs given, no needle — a clean error, not an OOB read
+            throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
         std::string s = inv.toStr(), n = pargs[0].toStr();
         long long len = (long long)methodCall(inv, "chars", ValueList{}).toInt();
         long long pos = 0;
@@ -8123,6 +8137,16 @@ void Interpreter::registerBuiltins() {
                     }
                     Value sup = (*s.hash)["supplier"];
                     if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
+                    // The supplier already signalled done before this tap registered
+                    // (eager worker ran first): close the tap now, so runReactLoop
+                    // doesn't wait on a source that will never complete.
+                    if (sup.t == VT::Hash && sup.hash->count("done_state") &&
+                        (*sup.hash)["done_state"].truthy() && tapRec.ext) {
+                        auto ctx = std::static_pointer_cast<ReactCtx>(tapRec.ext);
+                        std::lock_guard<std::mutex> lk(ctx->m);
+                        if (ctx->liveSources > 0) ctx->liveSources--;
+                        ctx->cv.notify_all();
+                    }
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
                 ValueList ta{blk}; return I.methodCall(s, "tap", ta); // from-list: eager

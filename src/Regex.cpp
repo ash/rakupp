@@ -1230,6 +1230,31 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (cnt >= mn) return finish(q, cnt);
                     return false;
                 }
+                // Iterative greedy for a deterministic single-atom child
+                // (Lit/Any/Class, no separator): grab as far as possible collecting
+                // stop positions, then try the continuation longest-first. The
+                // recursive form below spends one C++ stack frame per repetition,
+                // which overflowed the stack on long runs — `/\d+/` over a few
+                // million chars crashed with SIGBUS. An atom matches exactly one way
+                // per position, so iterating is behaviourally identical.
+                if (greedy && !sep &&
+                    (child->k == K::Lit || child->k == K::Any || child->k == K::Class)) {
+                    std::vector<long> stops;   // stops[i] = position after count+i atoms
+                    stops.push_back(p);
+                    long q = p, c = count;
+                    while (mx < 0 || c < mx) {
+                        long np = -1;
+                        matchOne(q, [&](long r) { np = r; return true; });
+                        if (np < 0 || np == q) break; // no more / zero-width
+                        q = np; c++;
+                        stops.push_back(q);
+                    }
+                    for (long i = (long)stops.size() - 1; i >= 0; i--) {
+                        long cnt = count + i;
+                        if (cnt >= mn && finish(stops[i], cnt)) return true;
+                    }
+                    return false;
+                }
                 if (greedy) {
                     if (mx < 0 || count < mx) {
                         auto more = [&](long np) { return np != p && self(self, count + 1, np); };

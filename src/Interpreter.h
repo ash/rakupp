@@ -36,6 +36,10 @@ void           bigStackClose(std::uintptr_t h);
 Value makeBaggy(const ValueList& items, const std::string& kind,
                 bool pairsAsElements = false); // Set/Bag/Mix builder (Builtins.cpp)
 
+// Numify a string with Raku-correct result type (Int/Rat/Num), BigInt-aware
+// (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
+Value numifyStr(const std::string& in);
+
 struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;

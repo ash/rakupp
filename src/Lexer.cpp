@@ -816,8 +816,12 @@ bool Lexer::tryQuoteForm(Token& out) {
         while (!eof()) {
             char ch = peek();
             if (ch == '\\') { advance(); raw += '\\'; if (!eof()) raw += advance(); continue; }
-            // inside a { ... } code block (regex pattern OR subst replacement): opaque, balance braces only
+            // inside a { ... } code block (regex pattern OR subst replacement): it is
+            // Raku, so track string quotes — a brace in a string ('}' / "}") is not a
+            // block delimiter and must not miscount the nesting
             if (blocks && bd > 0) {
+                if (q) { if (ch == q) q = 0; raw += advance(); continue; }
+                if (ch == '\'' || ch == '"') { q = ch; raw += advance(); continue; }
                 if (ch == '{') bd++;
                 else if (ch == '}') bd--;
                 raw += advance();
@@ -1095,7 +1099,13 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     while (!eof()) {
         char ch = peek();
         if (ch == '\\') { body += advance(); if (!eof()) body += advance(); continue; }
-        if (bd > 0) { if (ch == '{') bd++; else if (ch == '}') bd--; body += advance(); continue; }
+        if (bd > 0) { // inside an embedded { } code block — it is Raku, so a brace
+            // in a string ('}' / "}") is NOT a block delimiter; track quotes too
+            if (q) { if (ch == q) q = 0; body += advance(); continue; }
+            if (ch == '\'' || ch == '"') { q = ch; body += advance(); continue; }
+            if (ch == '{') bd++; else if (ch == '}') bd--;
+            body += advance(); continue;
+        }
         if (q) { if (ch == q) q = 0; body += advance(); continue; }
         // quotes open only OUTSIDE [ ] — inside a char class a quote character is
         // a MEMBER (<-["]> = "anything but a double quote"), not a string opener;

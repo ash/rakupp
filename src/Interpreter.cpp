@@ -180,7 +180,9 @@ static bool valueEqv(const Value& a, const Value& b) {
 }
 
 // Numify a string with Raku-correct result type (Int vs Num); undefined if non-numeric.
-static Value numifyStr(const std::string& in) {
+// External linkage (declared in Interpreter.h) so Builtins.cpp's .Int/.Numeric can
+// reuse the BigInt-aware parse instead of the lossy long-long toInt().
+Value numifyStr(const std::string& in) {
     size_t a = in.find_first_not_of(" \t\n\r\f\v");
     if (a == std::string::npos) return Value::integer(0); // empty/whitespace -> 0
     size_t b = in.find_last_not_of(" \t\n\r\f\v");
@@ -1236,11 +1238,14 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             }
             catch (const RakuError& e) { broke = true; cause = e.payload; ps->causeMsg = e.message; }
             catch (...) { broke = true; }
+            std::vector<std::function<void()>> fire;
             {
                 std::lock_guard<std::mutex> lk(ps->m);
                 ps->result = r; ps->cause = cause; ps->broken = broke; ps->done = true;
+                fire.swap(ps->thens);      // `.then`s registered before the worker settled
             }
             ps->cv.notify_all();
+            for (auto& f : fire) f();
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
         }), fin});
@@ -1266,10 +1271,13 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         catch (const RakuError& e) { broke = true; cause = e.payload; ps->causeMsg = e.message; }
         catch (...) { broke = true; }
         self->saveCtx(wctx);               // pull worker registers back out
+        std::vector<std::function<void()>> fire;
         {
             std::lock_guard<std::mutex> lk(ps->m);
             ps->result = r; ps->cause = cause; ps->broken = broke; ps->done = true;
+            fire.swap(ps->thens);          // `.then`s registered before the worker settled
         }
+        for (auto& f : fire) f();          // run them now, still on the GIL — like keep/break
         self->liveWorkers_--;
         self->gilYieldNotify();            // release the GIL (waking any cooperative yielder)
         ps->cv.notify_all();
@@ -3619,7 +3627,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (!ok) return -1;
         }
     }
-    return score;
+    // A slurpy candidate is the LEAST-specific tiebreaker: at equal specificity a
+    // fixed-arity candidate wins (`multi f(){}` beats `multi f(*@a){}` on `f()`),
+    // but a more-constrained slurpy still beats a plainer fixed one. Encode that as
+    // the low bit so it only decides otherwise-equal scores; matches stay >= 0.
+    return score * 2 + (slurpy ? 0 : 1);
 }
 
 // Per-thread stack accounting for the recursion guard. `t_stackTop` is a byte
@@ -10059,7 +10071,12 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (it != base.hash->end()) { exists = true; val = it->second; }
                 }
             } else {
-                long long ai = kv.toInt();
+                // `*-1` / `*` in an adverbed slice (`@a[*-1, *-2]:v`) resolve against length
+                long long asz = (base.t == VT::Array && base.arr) ? (long long)base.arr->size() : 0;
+                Value kres = kv;
+                if (kres.t == VT::Code && kres.code && kres.code->isWhateverCode)
+                    kres = callCallable(kres, ValueList{Value::integer(asz)});
+                long long ai = (kres.t == VT::Whatever || std::isinf(kres.toNum())) ? asz - 1 : kres.toInt();
                 if (base.t == VT::Array && base.arr) {
                     if (ai < 0) ai += (long long)base.arr->size();
                     if (ai >= 0 && ai < (long long)base.arr->size()) { exists = isDefined((*base.arr)[ai]); val = (*base.arr)[ai]; }
@@ -10167,14 +10184,16 @@ Value Interpreter::evalIndex(Index* idx) {
             n = (long long)base.s.size();
         std::vector<long long> indices;
         bool isSlice = false;
+        // `*` / `*-1` resolve against the list length — for Range endpoints AND for
+        // every element of a list subscript (`@a[*-1, *-2]`, `@a[@whatever-list]`).
+        auto resolveWhat = [&](Value v) -> long long {
+            if (v.t == VT::Code && v.code && v.code->isWhateverCode) return callCallable(v, ValueList{Value::integer(n)}).toInt();
+            if (v.t == VT::Whatever || std::isinf(v.toNum())) return n - 1;
+            return v.toInt();
+        };
         if (idx->index->kind == NK::Range) {
             auto* re = static_cast<RangeExpr*>(idx->index.get());
             // `*` in an endpoint resolves to the list length: `@a[0 .. *-2]`, `@a[*-3 .. *-1]`.
-            auto resolveWhat = [&](Value v) -> long long {
-                if (v.t == VT::Code && v.code && v.code->isWhateverCode) return callCallable(v, ValueList{Value::integer(n)}).toInt();
-                if (v.t == VT::Whatever || std::isinf(v.toNum())) return n - 1;
-                return v.toInt();
-            };
             long long from = resolveWhat(eval(re->from.get()));
             long long to = resolveWhat(eval(re->to.get()));
             if (re->exTo) to--;
@@ -10192,7 +10211,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (long long k = 0; k < n; k++) indices.push_back(k);
             } else if (iv.t == VT::Range || iv.t == VT::Array) {
                 isSlice = true;
-                for (auto& e : iv.flatten()) indices.push_back(e.toInt());
+                for (auto& e : iv.flatten()) indices.push_back(resolveWhat(e)); // @a[*-1, *-2]
             } else {
                 long long i = iv.toInt();
                 if (base.t == VT::Str) {
