@@ -2280,8 +2280,10 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             if (s->kind == NK::SubDecl && static_cast<SubDecl*>(s.get())->name == "MAIN")
                 hasMain = true;
         if (hasMain)
-            g.line(2, "{ std::vector<std::string> __argv(argv + 1, argv + argc); "
-                      "ValueList __margs = rtMainArgs(__argv); " +
+            // NOT `__argv`: that's a CRT macro on Windows (expands to (*__p___argv()),
+            // making the declaration a C2556/C2059 soup) — issue #1
+            g.line(2, "{ std::vector<std::string> __rakupp_argv(argv + 1, argv + argc); "
+                      "ValueList __margs = rtMainArgs(__rakupp_argv); " +
                       mangleSub("MAIN") + "(__margs); }");
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });

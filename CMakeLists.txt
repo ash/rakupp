@@ -10,6 +10,14 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(MSVC)
+  # Static CRT (/MT) by default: `--exe` compiles user programs with /MT and
+  # links them against rakupp_rt.lib, so the library must match or every link
+  # fails with LNK2038 RuntimeLibrary mismatch (issue #1). The CI release build
+  # passes the same value explicitly; -DCMAKE_MSVC_RUNTIME_LIBRARY on the
+  # command line still overrides this.
+  if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
   # /utf-8 is essential — the sources contain UTF-8 string literals (Raku's ｢｣
   # match quotes, Unicode tables); without it MSVC decodes them as the system
   # codepage and corrupts them. /EHsc = standard C++ exceptions; /Zc:__cplusplus

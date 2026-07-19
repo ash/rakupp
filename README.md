@@ -54,6 +54,15 @@ cmake --build build
 cmake --install build --prefix ~/.local   # → ~/.local/{bin,lib,include/rakupp}
 ```
 
+On Windows (MSVC), build from a *Developer Command Prompt* and pass the
+configuration to the build step — the Visual Studio generator is
+multi-config, so `-DCMAKE_BUILD_TYPE` alone is not enough:
+
+```sh
+cmake -S . -B build
+cmake --build build --config Release      # → build/Release/rakupp.exe
+```
+
 ## Quick start
 
 ```sh
