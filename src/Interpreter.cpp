@@ -1431,9 +1431,248 @@ void Interpreter::flushOpenWriteHandles() {
     openWriteHandles_.clear();
 }
 
+// ---- mainline sink-context "Useless use" warnings ------------------------
+// A conservative compile-time pass over the mainline (and blocks/loop bodies
+// reached from it): only provably value-only statements warn. Anything with a
+// call, assignment, or unknown node stays silent — over-warning would pollute
+// stderr that tests compare exactly.
+static bool sinkPure(Expr* e, std::string& spell, std::string& kindw) {
+    switch (e->kind) {
+        case NK::IntLit: {
+            auto* n = static_cast<IntLit*>(e);
+            spell = !n->raw.empty() ? n->raw : (!n->big.empty() ? n->big : std::to_string(n->v));
+            kindw = "constant integer ";
+            return true;
+        }
+        case NK::NumLit: {
+            auto* n = static_cast<NumLit*>(e);
+            spell = n->raw;
+            if (spell.empty()) { std::ostringstream o; o << n->v; spell = o.str(); }
+            kindw = "constant number ";
+            return true;
+        }
+        case NK::StrLit:
+            spell = "\"" + static_cast<StrLit*>(e)->v + "\"";
+            kindw = "constant string ";
+            return true;
+        case NK::InterpStr: { // "foo" with nothing to interpolate is still constant
+            std::string flat;
+            for (auto& p : static_cast<InterpStr*>(e)->parts) {
+                if (p->kind != NK::StrLit) return false;
+                flat += static_cast<StrLit*>(p.get())->v;
+            }
+            spell = "\"" + flat + "\"";
+            kindw = "constant string ";
+            return true;
+        }
+        case NK::VarExpr: {
+            auto* ve = static_cast<VarExpr*>(e);
+            if (ve->declare) return false; // `my $b;` declares, no useless use
+            const std::string& n = ve->name;
+            if (n.empty() || (n[0] != '$' && n[0] != '@' && n[0] != '%')) return false;
+            if (n.size() == 1) { spell = "unnamed " + n + " variable"; kindw = ""; return true; }
+            char tw = n[1]; // no twigilled/special vars: $*DYN may throw, $_ / $/ / $! are set by context
+            if (!(std::isalpha((unsigned char)tw) && (unsigned char)tw < 0x80) && tw != '-') return false;
+            spell = n; kindw = "";
+            return true;
+        }
+        case NK::NameTerm: {
+            const std::string& n = static_cast<NameTerm*>(e)->name;
+            static const std::set<std::string> known = {
+                "Inf", "NaN", "pi", "tau", "e", "\xCF\x80", "\xCF\x84",
+                "Any", "Mu", "Cool", "Int", "Str", "Num", "Rat", "Complex"};
+            if (!known.count(n) || !static_cast<NameTerm*>(e)->ofType.empty()) return false;
+            spell = n; kindw = "";
+            return true;
+        }
+        case NK::BoolLit:
+            spell = static_cast<BoolLit*>(e)->v ? "True" : "False";
+            kindw = "constant Bool ";
+            return true;
+        case NK::Unary: {
+            auto* u = static_cast<Unary*>(e);
+            if (u->postfix || !u->operand) return false;
+            if (u->op != "-" && u->op != "+" && u->op != "?" && u->op != "~" && u->op != "!")
+                return false;
+            std::string in;
+            if (!sinkPure(u->operand.get(), in, kindw)) return false;
+            spell = u->op + in;
+            return true;
+        }
+        case NK::Binary: {
+            auto* b = static_cast<Binary*>(e);
+            static const std::set<std::string> pureOps = {
+                "+", "-", "*", "/", "%", "**", "~", "x", "div", "mod", "gcd", "lcm",
+                "==", "!=", "<", "<=", ">", ">=", "eq", "ne", "lt", "le", "gt", "ge"};
+            if (!pureOps.count(b->op)) return false;
+            std::string l, r, kw2;
+            if (!b->lhs || !b->rhs) return false;
+            if (!sinkPure(b->lhs.get(), l, kindw) || !sinkPure(b->rhs.get(), r, kw2)) return false;
+            spell = l + b->op + r; kindw = "";
+            return true;
+        }
+        case NK::Pair: {
+            auto* p = static_cast<PairExpr*>(e);
+            if (!p->value) return false;
+            if (p->keyExpr) { // "foo" => 42 — a constant quoted key is still pure
+                std::string k, v, kw2, kw3;
+                if (!sinkPure(p->keyExpr.get(), k, kw2) || kw2 != "constant string " ||
+                    !sinkPure(p->value.get(), v, kw3)) return false;
+                spell = k + " => " + v; kindw = "";
+                return true;
+            }
+            if (p->key.empty()) return false;
+            std::string v, kw2;
+            if (!sinkPure(p->value.get(), v, kw2)) return false;
+            spell = p->colonForm ? ":" + p->key + "(" + v + ")"
+                                 : (p->quotedKey ? "\"" + p->key + "\"" : p->key) + " => " + v;
+            kindw = "";
+            return true;
+        }
+        case NK::ListExpr: { // only the EMPTY list as a unit; others warn per element
+            auto* le = static_cast<ListExpr*>(e);
+            if (!le->items.empty()) return false;
+            spell = "()"; kindw = "";
+            return true;
+        }
+        default: return false;
+    }
+}
+
+static void sinkWarnStmt(Stmt* s, bool nilHint, std::vector<std::string>& out);
+
+static void sinkWarnOne(Expr* e, int line, bool nilHint, std::vector<std::string>& out) {
+    std::string sp, kw;
+    if (!sinkPure(e, sp, kw)) return;
+    out.push_back("Useless use of " + kw + sp + " in sink context" +
+                  (nilHint ? " (use Nil instead to suppress this warning)" : "") +
+                  " (line " + std::to_string(line) + ")");
+}
+
+static void sinkWarnExprTop(Expr* e, int line, bool nilHint, std::vector<std::string>& out) {
+    if (e->kind == NK::BlockExpr) { // a bare block runs sunk: its statements sink too
+        auto* be = static_cast<BlockExpr*>(e);
+        if (!be->isSub && be->params.empty())
+            for (auto& st : be->body) sinkWarnStmt(st.get(), nilHint, out);
+        return;
+    }
+    if (e->kind == NK::ListExpr && !static_cast<ListExpr*>(e)->items.empty()) {
+        for (auto& it : static_cast<ListExpr*>(e)->items) // sink distributes over commas
+            sinkWarnExprTop(it.get(), line, nilHint, out);
+        return;
+    }
+    if (e->kind == NK::ArrayLit && static_cast<ArrayLit*>(e)->isList) { // word list <a b c>
+        for (auto& it : static_cast<ArrayLit*>(e)->items)
+            sinkWarnOne(it.get(), line, nilHint, out);
+        return;
+    }
+    sinkWarnOne(e, line, nilHint, out);
+}
+
+// find `gather` inside a mainline statement's expression (its body is sunk:
+// `my @x = gather 43` must warn about the 43)
+static void sinkScanGather(Expr* e, std::vector<std::string>& out) {
+    if (!e) return;
+    switch (e->kind) {
+        case NK::Unary: {
+            auto* u = static_cast<Unary*>(e);
+            if (u->op == "gather" && u->operand) {
+                if (u->operand->kind == NK::BlockExpr) {
+                    for (auto& st : static_cast<BlockExpr*>(u->operand.get())->body)
+                        sinkWarnStmt(st.get(), false, out);
+                }
+                else sinkWarnOne(u->operand.get(), u->line, false, out);
+                return;
+            }
+            sinkScanGather(u->operand.get(), out);
+            return;
+        }
+        case NK::Binary: {
+            auto* b = static_cast<Binary*>(e);
+            sinkScanGather(b->lhs.get(), out); sinkScanGather(b->rhs.get(), out);
+            return;
+        }
+        case NK::Assign:
+            sinkScanGather(static_cast<Assign*>(e)->value.get(), out);
+            return;
+        case NK::ListExpr:
+            for (auto& it : static_cast<ListExpr*>(e)->items) sinkScanGather(it.get(), out);
+            return;
+        default: return;
+    }
+}
+
+static void sinkWarnStmt(Stmt* s, bool nilHint, std::vector<std::string>& out) {
+    if (!s) return;
+    switch (s->kind) {
+        case NK::ExprStmt: {
+            auto* es = static_cast<ExprStmt*>(s);
+            if (!es->e) return;
+            int ln = s->line ? s->line : es->e->line;
+            sinkWarnExprTop(es->e.get(), ln, nilHint, out);
+            sinkScanGather(es->e.get(), out);
+            return;
+        }
+        case NK::Block: {
+            auto* b = static_cast<Block*>(s);
+            if (b->isCatch || !b->phaser.empty()) return;
+            for (auto& st : b->stmts) sinkWarnStmt(st.get(), nilHint, out);
+            return;
+        }
+        case NK::WhileStmt: {
+            auto* w = static_cast<WhileStmt*>(s);
+            if (!w->asExpr && w->body)
+                for (auto& st : w->body->stmts) sinkWarnStmt(st.get(), true, out);
+            return;
+        }
+        case NK::ForStmt: {
+            auto* f = static_cast<ForStmt*>(s);
+            if (!f->asExpr && f->body)
+                for (auto& st : f->body->stmts) sinkWarnStmt(st.get(), true, out);
+            return;
+        }
+        case NK::RepeatStmt: {
+            auto* r = static_cast<RepeatStmt*>(s);
+            if (r->body) for (auto& st : r->body->stmts) sinkWarnStmt(st.get(), true, out);
+            return;
+        }
+        case NK::LoopStmt: {
+            auto* l = static_cast<LoopStmt*>(s);
+            if (!l->asExpr && l->body)
+                for (auto& st : l->body->stmts) sinkWarnStmt(st.get(), true, out);
+            return;
+        }
+        case NK::GivenStmt: { // only the modifier form (`1.0 given 1,2`) is surely sunk
+            auto* g = static_cast<GivenStmt*>(s);
+            if (g->modifier && g->body)
+                for (auto& st : g->body->stmts) sinkWarnStmt(st.get(), true, out);
+            return;
+        }
+        case NK::VarDecl: {
+            auto* d = static_cast<VarDecl*>(s);
+            if (d->init) sinkScanGather(d->init.get(), out);
+            return;
+        }
+        default: return;
+    }
+}
+
 int Interpreter::run(Program& prog) {
     int code = 0;
     bool crashed = false;
+    { // mainline sink warnings, printed before execution (Rakudo compile-time style)
+        bool noWorries = false;
+        for (auto& s : prog.stmts)
+            if (s->kind == NK::UseStmt) {
+                auto* us = static_cast<UseStmt*>(s.get());
+                if (us->isNo && (us->module == "worries" || us->module == "warnings")) noWorries = true;
+            }
+        if (!noWorries) {
+            std::vector<std::string> ws;
+            for (auto& s : prog.stmts) sinkWarnStmt(s.get(), false, ws);
+            for (auto& w : ws) std::cerr << w << "\n";
+        }
+    }
     tctx_.curStateEnv = global_.get(); // mainline `state` vars persist here (e.g. across a top-level loop)
     {
         Value args = Value::array();
@@ -4603,7 +4842,10 @@ Value* Interpreter::lvalue(Expr* e) {
                     continue;
                 }
                 if (node->t != VT::Array) *node = Value::array();
-                long long i = eval(de.get()).toInt();
+                Value kv = eval(de.get());
+                if (kv.t == VT::Code && kv.code && kv.code->isWhateverCode) // @a[*-1;…] = v
+                    kv = callCallable(kv, ValueList{Value::integer((long long)node->arr->size())});
+                long long i = kv.toInt();
                 if (i < 0) i += (long long)node->arr->size();
                 if (i < 0) i = 0;
                 while ((long long)node->arr->size() <= i)
@@ -4843,6 +5085,85 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 return sink ? Value::any() : rhs;
             }
         }
+        // multidim slice assignment: @a[*;0;*] = v1,v2,… / %h{*;"b";"c"} = v —
+        // expand the star/list dims into concrete per-branch tuples, then
+        // distribute the flattened RHS across them in order
+        if (a->op == "=" && a->target->kind == NK::Index &&
+            static_cast<Index*>(a->target.get())->multiDim &&
+            static_cast<Index*>(a->target.get())->adverb.empty()) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            auto* dims = static_cast<ListExpr*>(ix->index.get());
+            ValueList keys; bool anyMulti = false;
+            for (auto& de : dims->items) {
+                if (de->kind == NK::Whatever) { anyMulti = true; keys.push_back(Value::whatever()); continue; }
+                Value k = eval(de.get());
+                if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
+                keys.push_back(k);
+            }
+            if (anyMulti) {
+                Value* root = lvalue(ix->base.get());
+                std::vector<ValueList> tuples;
+                std::function<void(const Value&, size_t, ValueList&)> expand =
+                    [&](const Value& node, size_t d, ValueList& pref) {
+                    if (d == keys.size()) { tuples.push_back(pref); return; }
+                    auto emit1 = [&](Value kk) {
+                        if (kk.t == VT::Code && kk.code)
+                            kk = (node.t == VT::Array && node.arr)
+                               ? callCallable(kk, ValueList{Value::integer((long long)node.arr->size())})
+                               : callCallable(kk, ValueList{node});
+                        Value child = Value::any();
+                        if (node.t == VT::Array && node.arr) {
+                            long long i = kk.toInt(), n = (long long)node.arr->size();
+                            if (i < 0) { i += n; kk = Value::integer(i); }
+                            if (i >= 0 && i < n) child = (*node.arr)[i];
+                        } else if (node.t == VT::Hash && node.hash) {
+                            auto it = node.hash->find(kk.toStr());
+                            if (it != node.hash->end()) child = it->second;
+                        }
+                        pref.push_back(kk);
+                        expand(child, d + 1, pref);
+                        pref.pop_back();
+                    };
+                    const Value& k = keys[d];
+                    if (k.t == VT::Whatever) {
+                        if (node.t == VT::Array && node.arr)
+                            for (long long i = 0; i < (long long)node.arr->size(); i++) emit1(Value::integer(i));
+                        else if (node.t == VT::Hash && node.hash)
+                            for (auto& kv2 : *node.hash) emit1(Value::str(kv2.first));
+                        return;
+                    }
+                    if (k.t == VT::Array || k.t == VT::Range) {
+                        for (auto& e2 : k.flatten()) emit1(e2);
+                        return;
+                    }
+                    emit1(k);
+                };
+                ValueList pref;
+                expand(*root, 0, pref);
+                Value rhs = eval(a->value.get());
+                ValueList vs = (rhs.t == VT::Array || rhs.t == VT::Range) ? rhs.flatten() : ValueList{rhs};
+                size_t vi = 0;
+                for (auto& tup : tuples) {
+                    Value* node = root;
+                    for (size_t d2 = 0; d2 < tup.size(); d2++) {
+                        if (node->t == VT::Hash || (ix->isHash && d2 + 1 == tup.size() && node->t != VT::Array)) {
+                            if (node->t != VT::Hash) *node = Value::makeHash();
+                            node = &(*node->hash)[tup[d2].toStr()];
+                        } else {
+                            if (node->t != VT::Array) *node = Value::array();
+                            long long i = tup[d2].toInt();
+                            if (i < 0) i += (long long)node->arr->size();
+                            if (i < 0) i = 0;
+                            while ((long long)node->arr->size() <= i) node->arr->push_back(Value::any());
+                            node = &(*node->arr)[i];
+                        }
+                    }
+                    *node = vi < vs.size() ? vs[vi] : Value::any();
+                    vi++;
+                }
+                return sink ? Value::any() : rhs;
+            }
+        }
         // slice assignment: %h{K1,K2,…} = v1,v2,… / @a[I1,I2,…] = … distributes the
         // (flattened) RHS across the keys. A slice subscript is a syntactic list, a
         // Range (^$n), or an @-var — a scalar subscript keeps the ordinary path.
@@ -4975,7 +5296,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
             // elements: a Range, a List, an Array — not their union).
             if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
-            else *lv = coerceArray(rhs);
+            else {
+                Value nv = coerceArray(rhs);
+                // `=` REFILLS the same container (Raku identity): anything bound
+                // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change
+                if (lv->t == VT::Array && lv->arr && nv.arr && lv->arr != nv.arr) {
+                    *lv->arr = *nv.arr;
+                    nv.arr = lv->arr;
+                }
+                *lv = nv;
+            }
             if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
         }
         else if (sigil == '%') {
@@ -4983,7 +5313,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             if (lv->t == VT::Hash && setty.count(lv->hashKind)) // my %h is Set = 1,2,3
                 *lv = makeBaggy(rhs.flatten(), lv->hashKind);
-            else *lv = coerceHash(rhs);
+            else {
+                Value nv = coerceHash(rhs);
+                if (lv->t == VT::Hash && lv->hash && nv.hash && lv->hash != nv.hash) {
+                    *lv->hash = *nv.hash; // refill in place, keep container identity
+                    nv.hash = lv->hash;
+                }
+                *lv = nv;
+            }
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
@@ -6188,8 +6525,11 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // special vars, escaped \$, and the end-anchor $ untouched.
     if (pat.find('$') != std::string::npos && tctx_.cur) {
         std::string out;
+        bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
         for (size_t i = 0; i < pat.size(); i++) {
             if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
+            if (pat[i] == '\'') { inSq = !inSq; out += pat[i]; continue; }
+            if (inSq) { out += pat[i]; continue; }
             if (pat[i] == '$' && i + 1 < pat.size() && (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
                 size_t j = i + 1;
                 while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
@@ -8055,6 +8395,75 @@ Value Interpreter::evalUnary(Unary* u) {
                 return Value::boolean(true);
             }
         }
+        // short-circuit reduces THUNK their operands: `[&&] 0, ++$x` decides at
+        // the 0 and must never run the increment; scan forms freeze the partials
+        // once decided ([\&&] 1,0,++$x is (1 0 0) with $x untouched)
+        {
+            bool scScan = !op.empty() && op[0] == '\\';
+            std::string scBase = scScan ? op.substr(1) : op;
+            bool scAnd = scBase == "&&" || scBase == "and";
+            bool scOr  = scBase == "||" || scBase == "or";
+            bool scDef = scBase == "//" || scBase == "orelse";
+            bool scAt  = scBase == "andthen", scNat = scBase == "notandthen";
+            bool scXor = scBase == "^^" || scBase == "xor";
+            if ((scAnd || scOr || scDef || scAt || scNat || scXor) &&
+                u->operand->kind == NK::ListExpr &&
+                !static_cast<ListExpr*>(u->operand.get())->items.empty()) {
+                auto* le = static_cast<ListExpr*>(u->operand.get());
+                auto emptySlip = [] { Value es = Value::array(); es.isList = true; es.s = "Slip"; return es; };
+                Value out = Value::array(); out.isList = true;   // scan partials
+                Value acc;
+                bool stopped = false;    // decided: later operands never run
+                bool emptyTail = false;  // andthen/notandthen: whatever follows is Empty
+                bool sawTail = false;    // an operand position exists past the decision
+                size_t truthies = 0; Value oneTruthy;            // xor bookkeeping
+                auto step = [&](const Value& elem) { // returns false once decided
+                    if (scXor) {
+                        if (elem.truthy()) { truthies++; oneTruthy = elem; }
+                        if (truthies >= 2) { acc = Value::nil(); return false; }
+                        acc = truthies == 1 ? oneTruthy : elem;  // running list-xor
+                        return true;
+                    }
+                    acc = elem; // these all fold to the newest operand as-is
+                    if (scAnd) return elem.truthy();
+                    if (scOr)  return !elem.truthy();
+                    if (scDef) return !isDefined(elem);
+                    // andthen keeps going while defined, notandthen while undefined;
+                    // the dead operand itself is the fold value, Empty starts AFTER it
+                    bool dead = scAt ? !isDefined(elem) : isDefined(elem);
+                    if (dead) { emptyTail = true; return false; }
+                    return true;
+                };
+                for (auto& ie : le->items) {
+                    if (stopped) { // frozen: push the settled partial, skip the thunk
+                        sawTail = true;
+                        if (scScan && !emptyTail) out.arr->push_back(acc);
+                        continue;
+                    }
+                    Value v = eval(ie.get());
+                    bool whole = (ie->kind == NK::VarExpr &&
+                                  !static_cast<VarExpr*>(ie.get())->name.empty() &&
+                                  static_cast<VarExpr*>(ie.get())->name[0] == '$') ||
+                                 ie->kind == NK::ArrayLit;
+                    ValueList elems;
+                    if (!whole && v.t == VT::Range) for (auto& x : v.flatten()) elems.push_back(x);
+                    else if (!whole && v.t == VT::Array && v.arr && !v.itemized)
+                        for (auto& x : *v.arr) elems.push_back(x);
+                    else elems.push_back(std::move(v));
+                    for (auto& e : elems) {
+                        if (stopped) {
+                            sawTail = true;
+                            if (scScan && !emptyTail) out.arr->push_back(acc);
+                            continue;
+                        }
+                        if (!step(e)) stopped = true;
+                        if (scScan) out.arr->push_back(acc); // the decider's own partial
+                    }
+                }
+                if (scScan) return out;
+                return (emptyTail && sawTail) ? emptySlip() : acc;
+            }
+        }
         // Flatten like a slurpy arg list: @-vars/ranges/inner lists spread, but a
         // $-held container or an [..] literal stays ONE item ([===] $a, $a, [1,2]).
         ValueList items;
@@ -9018,6 +9427,13 @@ Value Interpreter::evalIndex(Index* idx) {
                     return;
                 }
                 Value dv = eval(de);
+                if (dv.t == VT::Whatever) { // a $var holding * — same as a literal star dim
+                    anyMulti = true;
+                    if (node.t == VT::Array && node.arr) for (auto& el : *node.arr) walk(el, d + 1);
+                    else if (node.t == VT::Range) for (auto& el : node.flatten()) walk(el, d + 1);
+                    else if (node.t == VT::Hash && node.hash) for (auto& kv : *node.hash) walk(kv.second, d + 1);
+                    return;
+                }
                 // a Callable dim resolves against this level (arrays: called with elems)
                 if (dv.t == VT::Code && dv.code) {
                     if (node.t == VT::Array && node.arr)
@@ -9251,6 +9667,12 @@ Value Interpreter::evalIndex(Index* idx) {
                 if (k.t == VT::Array || k.t == VT::Range || k.t == VT::Whatever) anyMulti = true;
                 keys.push_back(k);
             }
+            // a :delete'd (or :kv/:p/:v-reported) Array value decontainerizes to a List
+            // ((314,) not [314]) — the 6.e multislice result shape
+            auto decontList = [](const Value& v) {
+                if (v.t == VT::Array && v.arr && !v.isList) { Value c = v; c.isList = true; c.itemized = false; return c; }
+                return v;
+            };
             if (!anyMulti && !keys.empty()) {
                 auto resolveKey = [&](Value k, const Value& node) {
                     if (k.t == VT::Code && k.code) {
@@ -9305,11 +9727,104 @@ Value Interpreter::evalIndex(Index* idx) {
                 }
                 if (kF)  return exists ? keyTuple : Value::nil();
                 if (kvF) { if (!exists) return emptyList();
-                           Value o = Value::array({keyTuple, val}); o.isList = true; return o; }
-                if (pF)  return exists ? tuplePair(val) : Value::nil();
-                return exists ? val : Value::nil(); // plain :delete → the deleted value / Nil
+                           Value o = Value::array({keyTuple, decontList(val)}); o.isList = true; return o; }
+                if (pF)  return exists ? tuplePair(decontList(val)) : Value::nil();
+                return exists ? decontList(val) : Value::nil(); // plain :delete / :v → the value or Nil
             }
-            // slice dims (Whatever/list per level) with adverbs: fall through
+            if (anyMulti) {
+                // slice dims (Whatever / list / range per level) with adverbs:
+                // expand into concrete per-branch index tuples, then apply the
+                // adverb set per tuple, assembling one flat result list
+                std::vector<ValueList> tuples;
+                std::function<void(const Value&, size_t, ValueList&)> expand =
+                    [&](const Value& node, size_t d, ValueList& pref) {
+                    if (d == keys.size()) { tuples.push_back(pref); return; }
+                    auto emit1 = [&](Value kk) {
+                        if (kk.t == VT::Code && kk.code) // *-1 against this branch's size
+                            kk = (node.t == VT::Array && node.arr)
+                               ? callCallable(kk, ValueList{Value::integer((long long)node.arr->size())})
+                               : callCallable(kk, ValueList{node});
+                        Value child = Value::any();
+                        if (node.t == VT::Array && node.arr) {
+                            long long i = kk.toInt(), n = (long long)node.arr->size();
+                            if (i < 0) { i += n; kk = Value::integer(i); }
+                            if (i >= 0 && i < n) child = (*node.arr)[i];
+                        } else if (node.t == VT::Hash && node.hash) {
+                            auto it = node.hash->find(kk.toStr());
+                            if (it != node.hash->end()) child = it->second;
+                        }
+                        pref.push_back(kk);
+                        expand(child, d + 1, pref);
+                        pref.pop_back();
+                    };
+                    const Value& k = keys[d];
+                    if (k.t == VT::Whatever) {
+                        if (node.t == VT::Array && node.arr)
+                            for (long long i = 0; i < (long long)node.arr->size(); i++) emit1(Value::integer(i));
+                        else if (node.t == VT::Hash && node.hash)
+                            for (auto& kv2 : *node.hash) emit1(Value::str(kv2.first));
+                        return;
+                    }
+                    if (k.t == VT::Array || k.t == VT::Range) {
+                        for (auto& e2 : k.flatten()) emit1(e2);
+                        return;
+                    }
+                    emit1(k);
+                };
+                ValueList pref;
+                expand(base, 0, pref);
+                Value out = Value::array(); out.isList = true;
+                for (auto& tup : tuples) {
+                    Value cur = base; bool navOk = true;
+                    for (size_t d2 = 0; d2 + 1 < tup.size() && navOk; d2++) {
+                        if (cur.t == VT::Hash && cur.hash) {
+                            auto it = cur.hash->find(tup[d2].toStr());
+                            if (it == cur.hash->end()) { navOk = false; break; }
+                            cur = it->second;
+                        } else if (cur.t == VT::Array && cur.arr) {
+                            long long i = tup[d2].toInt(), n = (long long)cur.arr->size();
+                            if (i < 0) i += n;
+                            if (i < 0 || i >= n) { navOk = false; break; }
+                            cur = (*cur.arr)[i];
+                        } else navOk = false;
+                    }
+                    bool exists = false; Value val;
+                    if (navOk && cur.t == VT::Hash && cur.hash) {
+                        auto it = cur.hash->find(tup.back().toStr());
+                        if (it != cur.hash->end()) { exists = true; val = it->second; }
+                        if (wantDelete && exists) cur.hash->erase(tup.back().toStr());
+                    } else if (navOk && cur.t == VT::Array && cur.arr) {
+                        long long i = tup.back().toInt(), n = (long long)cur.arr->size();
+                        if (i < 0) i += n;
+                        if (i >= 0 && i < n && isDefined((*cur.arr)[i])) { exists = true; val = (*cur.arr)[i]; }
+                        if (wantDelete && exists) {
+                            (*cur.arr)[i] = Value::any();
+                            while (!cur.arr->empty() && !isDefined(cur.arr->back())) cur.arr->pop_back();
+                        }
+                    }
+                    Value keyTuple = Value::array(tup); keyTuple.isList = true;
+                    auto tuplePair = [&](const Value& v2) {
+                        Value p = Value::pair(keyTuple.toStr(), v2);
+                        p.pairKey = std::make_shared<Value>(keyTuple);
+                        return p;
+                    };
+                    if (wantExists) {
+                        Value ex = Value::boolean(negExists ? !exists : exists);
+                        if (kvF)      { if (exists) { out.arr->push_back(keyTuple); out.arr->push_back(ex); } }
+                        else if (pF)  { if (exists) out.arr->push_back(tuplePair(ex)); }
+                        else out.arr->push_back(ex);
+                    }
+                    else if (kF)  { if (exists) out.arr->push_back(keyTuple); }
+                    else if (kvF) { if (exists) { out.arr->push_back(keyTuple); out.arr->push_back(decontList(val)); } }
+                    else if (pF)  { if (exists) out.arr->push_back(tuplePair(decontList(val))); }
+                    else if (vF)  { if (exists) out.arr->push_back(decontList(val)); }
+                    else { // plain slice, possibly with :delete
+                        if (exists) out.arr->push_back(wantDelete ? decontList(val) : val);
+                        else out.arr->push_back(wantDelete ? Value::nil() : Value::any());
+                    }
+                }
+                return out;
+            }
         }
         Value iv = eval(idx->index.get());
         bool slice = iv.t == VT::Array || iv.t == VT::Range;

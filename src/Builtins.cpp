@@ -501,6 +501,7 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                                      : rakuStrLit(v.s) + " => " + rakuRepr(val, depth + 1, seen);
         }
         case VT::Array: {
+            if (v.s == "Slip" && (!v.arr || v.arr->empty())) return "Empty";
             // Junctions render as their constructor form: none(1, 2, 3)
             if (!v.enumName.empty() && v.arr &&
                 (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none")) {

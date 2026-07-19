@@ -33,9 +33,10 @@ struct Stmt : Node { using Node::Node; std::string label; };
 using StmtPtr = std::unique_ptr<Stmt>;
 
 // ---- Expressions ----
-struct IntLit : Expr { long long v; std::string big; explicit IntLit(long long x): Expr(NK::IntLit), v(x){} };
+struct IntLit : Expr { long long v; std::string big; std::string raw; /* source spelling (0xFF) for sink warnings */ explicit IntLit(long long x): Expr(NK::IntLit), v(x){} };
 struct NumLit : Expr {
     double v; bool imaginary = false;
+    std::string raw; // source spelling (6.02e23, ∞) for sink warnings
     bool isRat = false; long long ratNum = 0, ratDen = 1; // decimal literal `3.14` is a Rat (num/den)
     std::string bigNum, bigDen; // decimal strings when the exact Rat overflows long long
     // interpreter cache of the built Rat's (immutable) BigInt parts — literals in
@@ -169,6 +170,7 @@ struct RangeExpr : Expr {
 
 struct PairExpr : Expr {
     std::string key;     // used when keyExpr is null (bareword / literal key)
+    bool colonForm = false; // written as :key(value) — kept for diagnostics spelling
     bool quotedKey = false; // 'a' => 1 — quoted-key pairs are POSITIONAL args, never named
     ExprPtr keyExpr;     // dynamic key, e.g. $var => ... or (expr) => ...
     ExprPtr value;

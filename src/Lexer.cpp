@@ -581,7 +581,7 @@ Token Lexer::lexNumber() {
         // No valid digit after the 0x/0o/0b prefix — e.g. an Nl/No numeral or a
         // non-radix script (`0b¹0`, `0xΓαfe`) — is a malformed literal.
         if (digits.empty() || malformed) throw ParseError("Malformed radix number", line_);
-        Token t = make(Tok::IntLit, digits);
+        Token t = make(Tok::IntLit, std::string("0") + base + digits); // keep the 0x/0b spelling
         t.ival = std::strtoll(digits.c_str(), nullptr, b);
         return t;
     }

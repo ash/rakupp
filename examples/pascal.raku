@@ -13,7 +13,7 @@ my $rows = 12;
 my @triangle;
 my @row = 1;
 for ^$rows {
-    @triangle.push: @row;
+    @triangle.push: @row.clone;   # snapshot — `@row = …` below refills the same container
     @row = 1, |(@row Z+ @row[1 .. *]), 1;
 }
 
@@ -34,7 +34,7 @@ say '';
 say 'Row 11 is the binomial coefficients C(11, k):';
 say '  from triangle: ', @triangle[11];
 say '  from C(11, k): ', (0 .. 11).map({ choose(11, $_) });
-say '  match: ', @triangle[11] eqv (0 .. 11).map({ choose(11, $_) }).list;
+say '  match: ', @triangle[11].List eqv (0 .. 11).map({ choose(11, $_) }).List;
 
 # Colour each entry by parity: the odd numbers alone trace out the
 # Sierpinski triangle, a fractal hiding inside the arithmetic.

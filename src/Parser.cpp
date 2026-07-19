@@ -1466,6 +1466,7 @@ ExprPtr Parser::parseColonPair() {
     bool negate = false;
     if (isOp("!")) { advance(); negate = true; }
     auto pair = std::make_unique<PairExpr>();
+    pair->colonForm = true;
     // numeric adverb shorthand: :3c  ==  c => 3   (also :2.5x)
     if ((isKind(Tok::IntLit) || isKind(Tok::NumLit)) && peek().kind == Tok::Ident) {
         ExprPtr num = parsePrimary();
@@ -1729,6 +1730,7 @@ ExprPtr Parser::parsePrimary() {
         case Tok::IntLit: {
             const Token& tk = advance();
             auto e = std::make_unique<IntLit>(tk.ival);
+            e->raw = tk.text;
             if (tk.text.size() > 18 && tk.text.find_first_not_of("0123456789") == std::string::npos) {
                 try { (void)std::stoll(tk.text); } catch (...) { e->big = tk.text; }
             }
@@ -1740,6 +1742,7 @@ ExprPtr Parser::parsePrimary() {
             std::string txt = t.text;
             std::string den2 = t.text2; long long numeralNum = t.ival;
             auto e = std::make_unique<NumLit>(advance().nval);
+            e->raw = txt;
             e->imaginary = imag;
             if (isRat && !den2.empty()) {
                 // a Unicode vulgar-fraction numeral (½): num in ival, den in text2
@@ -2072,7 +2075,7 @@ ExprPtr Parser::parsePrimary() {
             if (t.text == "||") { // slip-subscript `@a[|| @dims]` / `%h{|| @keys}`: navigate by a list of indices/keys
                 advance(); auto u = std::make_unique<Unary>(); u->op = "dimslip"; u->operand = parseExpr(BP_COMMA + 1); return u;
             }
-            if (t.text == "\xE2\x88\x9E") { advance(); return std::make_unique<NumLit>(std::numeric_limits<double>::infinity()); } // ∞
+            if (t.text == "\xE2\x88\x9E") { advance(); auto inf = std::make_unique<NumLit>(std::numeric_limits<double>::infinity()); inf->raw = "\xE2\x88\x9E"; return inf; } // ∞
             if (t.text == ".") return std::make_unique<VarExpr>("$_"); // .method => $_.method
             if (t.text == "\\") { // capture: \(…) builds a Capture (assoc-indexable); bare \x itemizes
                 advance();
