@@ -1479,6 +1479,8 @@ static bool sinkPure(Expr* e, std::string& spell, std::string& kindw) {
             spell = "\"" + static_cast<StrLit*>(e)->v + "\"";
             kindw = "constant string ";
             return true;
+        case NK::AllomorphLit: // a `<42>`/`<1.5>` word warns as its numeric literal
+            return sinkPure(static_cast<AllomorphLit*>(e)->num.get(), spell, kindw);
         case NK::InterpStr: { // "foo" with nothing to interpolate is still constant
             std::string flat;
             for (auto& p : static_cast<InterpStr*>(e)->parts) {
@@ -3407,6 +3409,9 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         (type == "Int" || type == "UInt" || type == "Num" || type == "Rat" ||
          type == "Numeric" || type == "Real"))
         return arg.s.find('.') == std::string::npos || (type != "Int" && type != "UInt");
+    // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params and its own name
+    if (arg.isAllomorph() && (type == "Str" || type == "Stringy" || type == arg.typeName()))
+        return true;
     // native-typed params (`int $i`, `num $x`, `str $s`) take the boxed kind
     static const std::set<std::string> natIntTypes = {"int", "int8", "int16", "int32", "int64",
         "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
@@ -6599,6 +6604,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));
+            // an allomorph (IntStr/RatStr/NumStr) satisfies BOTH its numeric type and Str
+            if (!res && l.isAllomorph())
+                res = typeMatchesArg(l, r.s) || r.s == "Str" || r.s == "Stringy";
             // an object matches its class ancestry incl. a built-in parent (`is DateTime`)
             if (!res && l.t == VT::Object) res = typeMatchesArg(l, r.s);
             // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
@@ -10481,6 +10489,14 @@ Value Interpreter::eval(Expr* e) {
             }
             return Value::number(nl->v); }
         case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
+        case NK::AllomorphLit: {
+            auto* al = static_cast<AllomorphLit*>(e);
+            Value v = eval(al->num.get());
+            v.hashKind = v.t == VT::Int ? "IntStr" : v.t == VT::Rat ? "RatStr"
+                       : v.t == VT::Complex ? "ComplexStr" : "NumStr";
+            v.s = al->str; // the source spelling, so it stringifies back to itself
+            return v;
+        }
         case NK::RegexLit: {
             auto* rl = static_cast<RegexLit*>(e);
             // rx// is always the Regex object; bare /…/ and m// match against $_

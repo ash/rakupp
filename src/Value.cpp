@@ -217,6 +217,7 @@ static std::string ratToStr(const BigInt& num, const BigInt& den) {
 
 std::string Value::toStr() const {
     if (!enumName.empty()) return enumName;
+    if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
     switch (t) {
         case VT::Nil:
         case VT::Any:  return "";
@@ -289,6 +290,7 @@ std::string Value::toStr() const {
 }
 
 std::string Value::gist() const {
+    if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
     if (!enumName.empty()) {
         // a Junction gists with its eigenstates: any(1, 2, 3)
         if (t == VT::Array && arr &&
@@ -396,6 +398,7 @@ std::string Value::gist() const {
 
 std::string Value::typeName() const {
     if (!enumType.empty()) return enumType; // enum value / enum type object -> its enum type
+    if (isAllomorph()) return hashKind;     // IntStr / RatStr / NumStr / ComplexStr
     switch (t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";

@@ -10,7 +10,7 @@ enum class NK {
     // expressions
     IntLit, NumLit, StrLit, InterpStr, BoolLit, VarExpr, ListExpr,
     Assign, Binary, Unary, Call, MethodCall, Index, Ternary, Range,
-    Pair, BlockExpr, ArrayLit, HashLit, NameTerm, RegexLit, SubstLit, ChainExpr, SymbolicRef,
+    Pair, BlockExpr, ArrayLit, HashLit, NameTerm, RegexLit, SubstLit, ChainExpr, SymbolicRef, AllomorphLit,
     // statements
     ExprStmt, VarDecl, SubDecl, IfStmt, WhileStmt, ForStmt, LoopStmt,
     Block, ReturnStmt, LastStmt, NextStmt, RedoStmt, UseStmt, EmptyStmt,
@@ -46,6 +46,9 @@ struct NumLit : Expr {
     explicit NumLit(double x): Expr(NK::NumLit), v(x){}
 };
 struct StrLit : Expr { std::string v; explicit StrLit(std::string s): Expr(NK::StrLit), v(std::move(s)){} };
+// A numeric word in a `<…>` list is an allomorph: the numeric value of `num`,
+// tagged so it is ALSO the string `str` (`<42>` is IntStr, `<1/3>` RatStr, `<1e5>` NumStr).
+struct AllomorphLit : Expr { ExprPtr num; std::string str; AllomorphLit(): Expr(NK::AllomorphLit){} };
 struct RegexLit : Expr { std::string pattern; bool isRx = false; /* rx// : a Regex object, never an implicit match */ explicit RegexLit(std::string p): Expr(NK::RegexLit), pattern(std::move(p)){} };
 struct ChainExpr : Expr { std::vector<ExprPtr> operands; std::vector<std::string> ops; ChainExpr(): Expr(NK::ChainExpr){} };
 struct SubstLit : Expr { std::string pattern, repl; bool nonMut=false; SubstLit(std::string p, std::string r, bool nm=false): Expr(NK::SubstLit), pattern(std::move(p)), repl(std::move(r)), nonMut(nm){} };

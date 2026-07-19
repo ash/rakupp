@@ -162,6 +162,12 @@ struct Value {
     bool truthy() const;
     long long toInt() const;
     double toNum() const;
+    // an allomorph (IntStr/RatStr/NumStr/ComplexStr): a numeric value tagged so it
+    // is ALSO its source string. `s` holds the string; hashKind names the type.
+    bool isAllomorph() const {
+        return (t == VT::Int || t == VT::Rat || t == VT::Num || t == VT::Complex) &&
+               (hashKind == "IntStr" || hashKind == "RatStr" || hashKind == "NumStr" || hashKind == "ComplexStr");
+    }
     std::string toStr() const;        // Str coercion (~)
     std::string gist() const;         // .gist / say output
     std::string typeName() const;

@@ -1819,10 +1819,20 @@ ExprPtr Parser::parsePrimary() {
                 while (i < n && std::isspace((unsigned char)raw[i])) i++;
                 size_t start = i;
                 while (i < n && !std::isspace((unsigned char)raw[i])) i++;
-                if (i > start) arr->items.push_back(std::make_unique<StrLit>(raw.substr(start, i - start)));
+                if (i > start) {
+                    std::string word = raw.substr(start, i - start);
+                    // a numeric word is an allomorph (<42> IntStr, <1/3> RatStr, …) —
+                    // in a multi-word list too: <1 2 3>[0].WHAT is IntStr
+                    if (ExprPtr num = angleWordNumeric(word)) {
+                        auto al = std::make_unique<AllomorphLit>();
+                        al->num = std::move(num); al->str = word;
+                        arr->items.push_back(std::move(al));
+                    } else
+                        arr->items.push_back(std::make_unique<StrLit>(word));
+                }
             }
-            if (arr->items.size() == 1) // <42> / <1/3> / <1e5>: numeric allomorph
-                if (ExprPtr num = angleWordNumeric(static_cast<StrLit*>(arr->items[0].get())->v)) return num;
+            // a single `<word>` is that element itself, not a one-item list
+            if (arr->items.size() == 1) return std::move(arr->items[0]);
             return arr;
         }
         case Tok::Var: {
@@ -2106,13 +2116,26 @@ ExprPtr Parser::parsePrimary() {
                 return parsePrefix();
             }
             if (t.text == "<") {
-                // qw word list  < a b c >
+                // qw word list  < a b c > — a numeric word is an allomorph
+                // (<42> IntStr, <1/3> RatStr, <1e5> NumStr), in a multi-word list too
                 advance();
                 auto words = readAngleWords(">");
-                if (words.size() == 1)
-                    if (ExprPtr num = angleWordNumeric(words[0])) return num;
+                auto mkWord = [](const std::string& w) -> ExprPtr {
+                    if (ExprPtr num = angleWordNumeric(w)) {
+                        // only a single numeric TOKEN is an allomorph (42, 1.5, 1e5,
+                        // 3i, -2). `<1/3>` is a plain Rat and `<1+2i>` a plain Complex
+                        // (they carry an infix), so their .raku round-trips exactly.
+                        if (w.find('/') != std::string::npos || num->kind == NK::Binary)
+                            return num;
+                        auto al = std::make_unique<AllomorphLit>();
+                        al->num = std::move(num); al->str = w;
+                        return al;
+                    }
+                    return std::make_unique<StrLit>(w);
+                };
+                if (words.size() == 1) return mkWord(words[0]); // <42> is the value itself, not a list
                 auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : words) arr->items.push_back(std::make_unique<StrLit>(w));
+                for (auto& w : words) arr->items.push_back(mkWord(w));
                 arr->isList = true;
                 return arr;
             }

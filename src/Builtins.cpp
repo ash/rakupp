@@ -57,6 +57,9 @@ struct SemaphoreState { std::mutex m; std::condition_variable cv; long count = 0
 static const std::vector<std::string>& typeAncestry(const std::string& t) {
     static const std::map<std::string, std::vector<std::string>> A = {
         {"Int",     {"Int","Real","Numeric","Cool","Any","Mu"}},
+        {"IntStr",  {"IntStr","Int","Real","Numeric","Cool","Any","Mu"}},
+        {"RatStr",  {"RatStr","Rat","Real","Numeric","Cool","Any","Mu"}},
+        {"NumStr",  {"NumStr","Num","Real","Numeric","Cool","Any","Mu"}},
         {"Rat",     {"Rat","Real","Numeric","Cool","Any","Mu"}},
         {"FatRat",  {"FatRat","Rat","Real","Numeric","Cool","Any","Mu"}},
         {"Num",     {"Num","Real","Numeric","Cool","Any","Mu"}},
@@ -76,6 +79,11 @@ static const std::vector<std::string>& typeAncestry(const std::string& t) {
 static std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s : v.typeName(); }
 static std::string lubType(const std::string& a, const std::string& b) {
     if (a == b) return a;
+    // an allomorph does BOTH its numeric type (in the ancestry) AND Str — a linear
+    // ancestry can't hold the diamond, so pair it with Str/Stringy explicitly
+    auto allo = [](const std::string& t) { return t == "IntStr" || t == "RatStr" || t == "NumStr" || t == "ComplexStr"; };
+    if (allo(a) && (b == "Str" || b == "Stringy")) return b;
+    if (allo(b) && (a == "Str" || a == "Stringy")) return a;
     for (auto& x : typeAncestry(a)) for (auto& y : typeAncestry(b)) if (x == y) return x;
     return "Mu";
 }
