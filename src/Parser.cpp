@@ -1299,8 +1299,8 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
         }
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             static const std::set<std::string> containers = {
-                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-            if (wasIs && containers.count(cur().text)) lastContainerIs_ = cur().text; // my %h is Set
+                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash", "List"};
+            if (wasIs && containers.count(cur().text)) lastContainerIs_ = cur().text; // my %h is Set / my @a is List
             advance(); // trait name / type
         }
         if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }

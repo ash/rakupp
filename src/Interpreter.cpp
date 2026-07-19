@@ -5103,7 +5103,23 @@ Value Interpreter::evalValueOf(Expr* e) {
 }
 
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+    // `my @a is List` makes the container immutable — reassigning it throws (the
+    // declaration's own initialiser, declare=true, still runs; only later `@a = …` dies)
+    if (a->op == "=" && a->target->kind == NK::VarExpr) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        if (!ve->declare) {
+            Value* cur = tctx_.cur->find(ve->name);
+            if (cur && cur->readonly && cur->t == VT::Array)
+                throw RakuError{Value::typeObj("X::Assignment::RO"),
+                                "Cannot modify an immutable List"};
+        }
+    }
     Value r = evalAssignInner(a, sink);
+    if (a->target->kind == NK::VarExpr) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        if (ve->declare && ve->containerIs == "List")
+            if (Value* cur = tctx_.cur->find(ve->name)) cur->readonly = true;
+    }
     // one hook covers every assignment form (=, op=, ||= …): if the target is a
     // linked rw/raw param, push the new value through to the caller immediately
     if (anyRwLinks_) rwWriteThrough(a->target.get());

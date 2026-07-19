@@ -4817,18 +4817,38 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         bool isStdin = inv.hash->find("std") != inv.hash->end() && (*inv.hash)["std"].toStr() == "in";
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" || m == "slurp-rest") {
             if (inv.hash->find("lines") == inv.hash->end()) {
+                // a custom line separator (`.nl-in = "+"`) splits on that instead of \n
+                std::string sep;
+                auto nit = inv.hash->find("nl-in");
+                if (nit != inv.hash->end()) {
+                    if (nit->second.t == VT::Str) sep = nit->second.s;
+                    else if (nit->second.t == VT::Array && nit->second.arr && !nit->second.arr->empty())
+                        sep = (*nit->second.arr)[0].toStr(); // Array nl-in: first separator
+                }
                 Value lines = Value::array();
-                std::string line;
-                if (isStdin) { // $*IN — read standard input
-                    while (std::getline(std::cin, line)) {
-                        if (!line.empty() && line.back() == '\r') line.pop_back();
-                        lines.arr->push_back(Value::str(line));
+                if (!sep.empty() && sep != "\n") {
+                    std::string content;
+                    if (isStdin) { std::ostringstream ss; ss << std::cin.rdbuf(); content = ss.str(); }
+                    else { std::ifstream in((*inv.hash)["path"].toStr()); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
+                    size_t start = 0, p;
+                    while ((p = content.find(sep, start)) != std::string::npos) {
+                        lines.arr->push_back(Value::str(content.substr(start, p - start)));
+                        start = p + sep.size();
                     }
+                    if (start < content.size()) lines.arr->push_back(Value::str(content.substr(start)));
                 } else {
-                    std::ifstream in((*inv.hash)["path"].toStr());
-                    while (std::getline(in, line)) {
-                        if (!line.empty() && line.back() == '\r') line.pop_back();
-                        lines.arr->push_back(Value::str(line));
+                    std::string line;
+                    if (isStdin) { // $*IN — read standard input
+                        while (std::getline(std::cin, line)) {
+                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                            lines.arr->push_back(Value::str(line));
+                        }
+                    } else {
+                        std::ifstream in((*inv.hash)["path"].toStr());
+                        while (std::getline(in, line)) {
+                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                            lines.arr->push_back(Value::str(line));
+                        }
                     }
                 }
                 (*inv.hash)["lines"] = lines;
