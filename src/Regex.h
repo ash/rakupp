@@ -200,6 +200,7 @@ public:
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
         const std::string* curSym = nullptr;               // proto candidate's sym value, so `<sym>` matches it
         long firstCode = -1;                               // string pos at the first bare `{…}` block (ends the LTM declarative prefix)
+        long litPrefix = -1;                               // end pos of the leading literal-atom run from startPos (-1 = not started)
         long steps = 0;                                    // backtracking step budget (guards catastrophic patterns)
     };
     // Thrown when a match exceeds the step budget — a pathological pattern
@@ -259,12 +260,14 @@ public:
         bool matched = false;
         long end = 0;
         long declEnd = 0; // string pos where the LTM declarative prefix ends (first bare code block, else end)
+        long litPrefix = 0; // length of the leading literal-atom run (LTM specificity tie-break)
         std::vector<std::pair<long, long>> caps;
         std::map<std::string, std::pair<long, long>> named;
         std::shared_ptr<const ChildMap> kids; // frozen once; replays share, never copy
         std::shared_ptr<const std::set<std::string>> listNames; // the rule's quantified capture keys
     };
     long candDeclEnd_ = -1; // set by matchSubMeta after a candidate match: its declarative-prefix end (for proto LTM)
+    long candLitPrefix_ = 0; // set alongside candDeclEnd_: leading-literal length (LTM specificity)
     void clearMemo() { memo_.clear(); }
 
     using NameMeta = GrammarRuleMeta;

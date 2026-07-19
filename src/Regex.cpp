@@ -1000,6 +1000,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 char a = st.s[pos + j], b = n->lit[j];
                 if (a != b && !(n->icase && std::tolower((unsigned char)a) == std::tolower((unsigned char)b))) return false;
             }
+            // extend the leading literal run (LTM specificity) while still contiguous from startPos
+            if (st.litPrefix < 0) st.litPrefix = st.startPos;
+            if (st.litPrefix == pos) st.litPrefix = pos + m;
             return k(pos + m);
         }
         case K::Any: {
@@ -1467,7 +1470,9 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     }
     auto pit = protos.find(name);
     if (pit != protos.end()) m.proto = &pit->second;
-    m.isWs = (name == "ws");
+    // Only fall back to the built-in <ws> when the grammar hasn't defined its own —
+    // a user `token ws { … }` (e.g. to skip comments) must win over the builtin.
+    m.isWs = (name == "ws" && !rule);
     if (!rule) { // built-in char-class fallbacks for names the grammar doesn't define
         if (name == "digit") m.builtinClass = "d"; else if (name == "alpha") m.builtinClass = "a";
         else if (name == "alnum" || name == "ident") m.builtinClass = "ad";
@@ -1520,15 +1525,23 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // Longest-token-match ranks candidates by their DECLARATIVE-prefix length — the span
         // matched before the first bare `{…}` code block (which ends the declarative part);
         // a candidate with no code block ranks by its full match. First pass: measure each.
-        std::vector<std::pair<long, const std::string*>> ranked;
+        struct Ranked { long declEnd; long litPrefix; const std::string* cand; };
+        std::vector<Ranked> ranked;
         for (auto& cand : cands) {
-            candDeclEnd_ = -1;
+            candDeclEnd_ = -1; candLitPrefix_ = 0;
             if (matchSub(cand, args, "", st, pos, [&](long) { return true; }) && candDeclEnd_ >= 0)
-                ranked.push_back({candDeclEnd_, &cand});
+                ranked.push_back({candDeclEnd_, candLitPrefix_, &cand});
         }
-        std::stable_sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        // LTM ranking (S05): longest declarative match first; on a tie the more
+        // specific candidate — the longer literal prefix (a literal outranks an open
+        // char class / subrule) — wins; stable_sort leaves declaration order as the
+        // final tiebreak for genuinely equal candidates.
+        std::stable_sort(ranked.begin(), ranked.end(), [](const Ranked& a, const Ranked& b) {
+            if (a.declEnd != b.declEnd) return a.declEnd > b.declEnd;
+            return a.litPrefix > b.litPrefix;
+        });
         for (auto& r : ranked)
-            if (matchSub(*r.second, args, capKey, st, pos, k)) return true;
+            if (matchSub(*r.cand, args, capKey, st, pos, k)) return true;
         return false;
     }
     if (meta.isWs) { // built-in optional whitespace
@@ -1605,6 +1618,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             if (!mit->second.matched) return false;
             const MemoEntry& me = mit->second;
             candDeclEnd_ = me.declEnd;
+            candLitPrefix_ = me.litPrefix;
             return record(me.end, me.caps, me.named, me.kids, me.listNames);
         }
         std::map<std::string, std::string> bound;
@@ -1619,6 +1633,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
             me.matched = true; me.end = end;
             me.declEnd = (sub.firstCode >= 0 ? sub.firstCode : end);
+            me.litPrefix = (sub.litPrefix >= 0 ? sub.litPrefix - pos : 0);
             me.caps = sub.caps; me.named = sub.named;
             // the frame is committed (ratchet) — freeze its subtree without copying
             me.kids = sub.children.empty() ? nullptr
@@ -1629,6 +1644,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         auto& slot = (memo_[mkey] = std::move(me));
         if (!slot.matched) return false;
         candDeclEnd_ = slot.declEnd;
+        candLitPrefix_ = slot.litPrefix;
         return record(slot.end, slot.caps, slot.named, slot.kids, slot.listNames);
     }
 
@@ -1647,6 +1663,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         auto calleeScope = std::move(scope_.back()); scope_.pop_back();
         auto finish = [&](bool r) { scope_.push_back(std::move(calleeScope)); return r; };
         candDeclEnd_ = (sub.firstCode >= 0 ? sub.firstCode : end);
+        candLitPrefix_ = (sub.litPrefix >= 0 ? sub.litPrefix - pos : 0);
         // non-ratchet: the callee may complete again after backtracking, so its frame
         // stays live — freeze a COPY of the subtree for this completion
         return finish(record(end, sub.caps, sub.named,

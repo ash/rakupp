@@ -195,6 +195,7 @@ struct ClassInfo {
     std::vector<ClassAttr> attrs;
     std::map<std::string, Value> methods; // Code values (closures)
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
+    std::vector<std::string> ruleOrder; // rule names in DECLARATION order (proto LTM tie-break)
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     bool isGrammar = false;

@@ -2585,7 +2585,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         ca.containerIs = a.containerIs;
                         ci->attrs.push_back(ca);
                     }
-                    for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; }
+                    for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; ci->ruleOrder.push_back(r.name); }
                     noteSymbolMutation("augment (user type)");
                 } else {
                     // augment a built-in type — park methods in the extension table
@@ -2681,7 +2681,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             ci->isGrammar = cd->isGrammar;
             ci->isRole = cd->isRole;
             ci->declEnv = tctx_.cur; // capture the declaration scope (attr-default closures)
-            for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; }
+            for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; ci->ruleOrder.push_back(r.name); }
             for (auto& a : cd->attrs) {
                 ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.type = a.type;
                 ca.containerIs = a.containerIs;
@@ -7430,6 +7430,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // Gather every rule (walking the inheritance chain; child overrides parent)
     // into a backtrackable GrammarMatcher.
     GrammarMatcher gm;
+    // Rule names in DECLARATION order (base grammar first, then derived), so proto
+    // candidates keep source order — the final LTM tie-break (S05: earliest-declared
+    // wins on an equal-length, equal-specificity match). A std::map would give
+    // alphabetical order and silently mis-rank ties.
+    std::vector<std::string> declOrder;
+    std::set<std::string> declSeen;
     std::function<void(ClassInfo*)> collect = [&](ClassInfo* c) {
         if (!c) return;
         collect(c->parent.get());
@@ -7441,16 +7447,19 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             if (pit != c->ruleParams.end()) rule.params = pit->second;
             gm.rules[r.first] = std::move(rule);
         }
+        for (auto& nm : c->ruleOrder) if (declSeen.insert(nm).second) declOrder.push_back(nm);
     };
     collect(g);
+    // Safety net: any rule not seen via ruleOrder still gets ranked (append in map order).
+    for (auto& r : gm.rules) if (declSeen.insert(r.first).second) declOrder.push_back(r.first);
 
     // Register protoregex candidates: `element:<null>` / `element:sym<x>` is a
     // candidate of proto `element`; matching `<element>` tries them all (LTM).
-    for (auto& r : gm.rules) {
-        size_t c = r.first.find(":sym<");
-        if (c == std::string::npos) c = r.first.find(":sym\xC2\xAB"); // :sym«…»
-        if (c == std::string::npos) c = r.first.find(":<");
-        if (c != std::string::npos && c > 0) gm.protos[r.first.substr(0, c)].push_back(r.first);
+    for (auto& nm : declOrder) {
+        size_t c = nm.find(":sym<");
+        if (c == std::string::npos) c = nm.find(":sym\xC2\xAB"); // :sym«…»
+        if (c == std::string::npos) c = nm.find(":<");
+        if (c != std::string::npos && c > 0) gm.protos[nm.substr(0, c)].push_back(nm);
     }
 
     // Wire the match-time interpreter hooks. Embedded Raku (`<?{…}>` assertions,

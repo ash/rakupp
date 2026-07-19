@@ -1083,13 +1083,30 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     }
     if (peek() != '{') { pos_ = save; return false; }
     advance(); // {
+    // Read the `{ … }`-delimited regex body with the same quote/block/char-class
+    // awareness as the rx{…}/m{…} reader (see readPart): a `}` inside a string
+    // ('}'), an embedded code block ({…}), or a char class/group ([…]) must not
+    // be counted as the closing delimiter.
     std::string body;
-    int depth = 1;
-    while (!eof() && depth > 0) {
+    int depth = 1;   // delimiter nesting (only the outer { } pair)
+    char q = 0;      // active quote char inside the regex
+    int bd = 0;      // embedded { } code-block nesting
+    int sd = 0;      // [ ] group / <[…]> char-class nesting (shields the delimiter)
+    while (!eof()) {
         char ch = peek();
         if (ch == '\\') { body += advance(); if (!eof()) body += advance(); continue; }
-        if (ch == '{') depth++;
-        else if (ch == '}') { depth--; if (depth == 0) { advance(); break; } }
+        if (bd > 0) { if (ch == '{') bd++; else if (ch == '}') bd--; body += advance(); continue; }
+        if (q) { if (ch == q) q = 0; body += advance(); continue; }
+        // quotes open only OUTSIDE [ ] — inside a char class a quote character is
+        // a MEMBER (<-["]> = "anything but a double quote"), not a string opener;
+        // braces are inert inside [ ] either way, so nothing needs shielding there
+        if ((ch == '\'' || ch == '"') && sd == 0) { q = ch; body += advance(); continue; }
+        if (ch == '[') { sd++; body += advance(); continue; }
+        if (ch == ']' && sd > 0) { sd--; body += advance(); continue; }
+        // Braces are the delimiter / code blocks only outside a char class or
+        // group ([ … ]), where <[{}]> and similar hold literal brace characters.
+        if (sd == 0 && ch == '{') { bd++; body += advance(); continue; }
+        if (sd == 0 && ch == '}') { depth--; if (depth == 0) { advance(); break; } body += advance(); continue; }
         body += advance();
     }
     (void)afterKw;
@@ -1112,6 +1129,7 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
         static const std::set<std::string> decl = {
             "method", "submethod", "sub", "multi", "proto", "token", "rule",
             "regex", "macro", "my", "our", "has", "anon", "state", "class", "role",
+            "grammar", // `grammar Q { … }` — Q is a name here, not the Q{…} quote op
         };
         return decl.count(pv.text) > 0;
     }

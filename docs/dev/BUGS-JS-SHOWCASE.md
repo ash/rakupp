@@ -22,55 +22,48 @@ fine. If you see them referenced in an early memory note, that note is stale.
 
 ## Grammar / parser
 
-### G1. A `grammar` definition leaks parser state into the following block — HIGH
-
-The single sharpest one. After a small `grammar`, the *next* routine/block whose
-body contains a `;`-terminated statement fails to parse:
+### G1. A grammar named after a quote operator mis-lexes — FIXED
 
 ```raku
 grammar Q { token TOP { \d+ } }
-sub f { my $x = 1; say $x; }      # ===SORRY!=== Parse error: Confused (got '}')
+sub f { my $x = 1; say $x; }      # was: ===SORRY!=== Parse error: Confused (got '}')
 f();
 ```
 
-Expected: parses and prints `1` (Rakudo does). Actual: the closing `}` of `f`
-is rejected. Reliably triggered by *any* minimal grammar; a block with no
-`;`-terminated statement (`sub f { say 1 }`) is immune, as is an `if`/`unless`
-modifier statement.
+**The original diagnosis in this doc was wrong.** It was never a "parse-state
+leak," and grammar *size* was a red herring — every reproducer here happened to
+name the grammar `Q`, and `js.raku`'s grammar is `JSGrammar`. `Q` is Raku's
+generic-quote operator (`Q{…}`), so after the `grammar` keyword the lexer read
+`Q { token TOP { \d+ } }` as a `Q{…}` quote literal, swallowing the whole body;
+the leftover `sub … }` then failed. `grammar Foo { … }` always worked, and so
+did `class Q { … }` — because the lexer's `quoteBlockedHere` list (the
+declarator keywords after which `q`/`Q`/`m`/`rx`/… are names, not quotes)
+included `class` and `role` but **not `grammar`**. Any grammar named `q`, `Q`,
+`qq`, `m`, `rx`, `tr`, `s`, … hit it.
 
-Curiously, `showcase/js/js.raku`'s own large grammar does **not** trigger it —
-its ~120-line grammar (parameterized tokens, proto rules, `%` modifiers) leaves
-clean state, while `grammar Q { token TOP { \d+ } }` does not. Truncated
-prefixes of the js grammar are also safe. That order/content sensitivity points
-at leaked or uninitialised parser/lexer state at the `grammar`-block boundary
-rather than anything about the following `sub` — it is not reset deterministically
-when the grammar is small.
+- **Fix:** added `"grammar"` to the `decl` set in `quoteBlockedHere`
+  (`src/Lexer.cpp`). Lesson: when a bug's trigger seems to correlate with
+  something vague (grammar "size"), minimize the reproducer's *incidental*
+  details (here, the name) before theorizing about state.
 
-- **Where to look:** the grammar-body parse exit in `src/Parser.cpp` /
-  `src/Regex.cpp` — whatever lexer mode (regex vs. code) or brace-depth counter
-  the grammar declarator sets is likely not fully restored, and a larger grammar
-  happens to restore it as a side effect.
-- **Workaround:** none needed in js.raku (its grammar is large enough); a
-  minimal reproducer must avoid `;`-terminated statements in the first block
-  after the grammar. This is the highest-value fix here because it is a silent
-  trap for anyone writing a small grammar plus a helper sub.
-
-### G2. User-defined `token ws` is ignored by `rule` sigspace — HIGH
+### G2. User-defined `token ws` is ignored by `rule` sigspace — FIXED
 
 ```raku
 grammar W { token ws { [ \s | '#' \N* ]* } rule TOP { 'a' 'b' } }
-say W.parse("a # comment\n b").defined;   # rakupp: False — Rakudo: True
+say W.parse("a # comment\n b").defined;   # was: False — now: True (as Rakudo)
 ```
 
-`rule` always injects the builtin whitespace matcher; overriding `ws` (the
-standard way to make a grammar skip comments) has no effect.
+`rule` always injected the built-in whitespace matcher, so overriding `ws`
+(the standard way to skip comments) had no effect.
 
-- **Where to look:** how sigspace resolves `<.ws>` in `src/Regex.cpp` — it
-  binds the builtin rather than resolving `ws` in the grammar's method table.
-- **Workaround:** `showcase/js/js.raku` strips comments in a pre-pass
-  (`strip-comments`, blanking `//…` and `/*…*/` while preserving newlines)
-  before the grammar ever sees the source. Retiring this needs both `ws`
-  override support and the ability to write a comment-skipping `ws`.
+- **Fix:** in `nameMeta` (`src/Regex.cpp`) the built-in-`ws` shortcut was
+  unconditional — `m.isWs = (name == "ws")`. Now `m.isWs = (name == "ws" &&
+  !rule)`, so a grammar's own `token ws { … }` wins and the built-in is used
+  only as the fallback when none is defined.
+- **Workaround now removable:** `showcase/js/js.raku`'s `strip-comments`
+  pre-pass could be replaced by a comment-skipping `token ws`. Left in place for
+  now (the showcase also relies on it for the ASI pass, which needs the comments
+  gone before the newline scan).
 
 ### G3. Proto longest-match ties resolve to the identifier alternative — MEDIUM
 
@@ -89,32 +82,49 @@ grammar P {
 ```
 
 Rakudo's LTM would prefer the more specific `'null'` literal. Here the keyword
-branch never wins on a tie.
+branch never won on a tie.
 
-- **Where to look:** the proto/LTM tie-break in `src/Regex.cpp` /
-  `src/Interpreter.cpp` (see also `docs/dev/DISPATCH.md`). A literal prefix
-  should outrank an open character-class match of equal length.
-- **Workaround:** js.raku doesn't classify keywords in the grammar at all — it
-  parses every keyword-or-name as `<ident>` and sorts out `null`/`true`/`this`
-  etc. in the `primary:sym<ident>` action.
+**FIXED.** Two problems compounded: (1) proto candidates were collected by
+iterating a `std::map`, so they were ranked in *alphabetical* order, not
+declaration order — and the `stable_sort` tie-break then kept the alphabetically
+earlier candidate; (2) there was no specificity tie-break at all.
 
-### G4. Unbalanced `{`/`}` inside a regex breaks the source lexer — MEDIUM
+- **Fix:** `ClassInfo` now records `ruleOrder` (declaration order), and proto
+  candidates are built from it (`src/Interpreter.cpp`). The LTM ranking
+  (`src/Regex.cpp`) now sorts by `(declEnd desc, litPrefix desc)` with
+  declaration order as the stable final tiebreak — where `litPrefix` is the
+  length of a candidate's leading literal-atom run, tracked at match time
+  (a new `MState::litPrefix`, extended in the `K::Lit` matcher). So `'null'`
+  (4-char literal prefix) now outranks `<ident>` (`<[a..z]>+`, 0) at equal
+  length, matching S05's tie-break rules, regardless of declaration order.
+- **Workaround still fine:** js.raku classifies keywords in the
+  `primary:sym<ident>` action; it doesn't need to change.
 
-A brace inside a regex assertion or string — even correctly quoted or escaped —
-confuses the file lexer:
+### G4. Unbalanced `{`/`}` inside a `token`/`rule` body breaks the lexer — FIXED
+
+A brace inside a regex assertion or string — even correctly quoted — confused
+the declarator body reader:
 
 ```raku
 grammar B { token t { '$' <!before '{'> } token TOP { <t> 'x' } }
-# ===SORRY!=== Parse error: expected } (got '')
+# was: ===SORRY!=== Parse error: expected } (got '')  — now parses
 ```
 
-The lexer counts the `{` toward the enclosing block depth instead of treating it
-as regex content.
+`tryRuleDecl` (`src/Lexer.cpp`) read the `{ … }`-delimited body by counting
+braces with only backslash-escape handling — so a `{` inside a string, an
+embedded code block, or a char class was miscounted as nesting.
 
-- **Where to look:** brace/blocks tracking while scanning a regex literal in
-  `src/Lexer.cpp` — regex interior braces must not affect code-block nesting.
-- **Workaround:** js.raku writes `<!before \x7B>` (hex escape) instead of
-  `<!before '{'>` in the template-literal token.
+- **Fix:** the body reader is now quote-, code-block-, and char-class-aware,
+  matching the `rx{…}`/`m{…}` reader (`readPart`): a `}` inside `'…'`/`"…"`, a
+  `{…}` code block, or a `[…]`/`<[…]>` char class no longer ends the delimiter.
+  So `<!before '{'>` and `<[{}]>` now lex correctly.
+- **Workaround now removable:** js.raku's `<!before \x7B>` could go back to
+  `<!before '{'>`.
+- **Adjacent, still open:** a literal brace in a char class matched at *run
+  time* (`<[{]>`) is a separate regex-*compiler* limitation (`readPart` for
+  `rx//`/`m//` has the same char-class-brace gap), and `"ab{"` — an unmatched
+  `{` in a double-quoted string — is a string-interpolation quirk, not a
+  grammar bug. Neither is fixed here.
 
 ---
 
@@ -292,12 +302,16 @@ js.raku's `arr-prop` `sort` returns `<=> 0e0` for exactly this reason.
 
 ## Quick status table
 
-| # | Summary | Severity | Repro | js.raku workaround |
-|---|---|---|---|---|
-| G1 | `grammar` leaks parse state into next `;`-block | high | clean | none needed (large grammar) |
-| G2 | user `token ws` ignored by `rule` | high | clean | strip comments pre-pass |
-| G3 | proto LTM tie → identifier branch | medium | clean | classify keywords in action |
-| G4 | brace in regex breaks lexer | medium | clean | `\x7B` escape |
+| # | Summary | Status | Fix location |
+|---|---|---|---|
+| G1 | grammar named after a quote op (`Q`/`m`/…) mis-lexes | **FIXED** | `quoteBlockedHere` += `grammar` (Lexer.cpp) |
+| G2 | user `token ws` ignored by `rule` | **FIXED** | `m.isWs = name=="ws" && !rule` (Regex.cpp) |
+| G3 | proto LTM tie → identifier branch | **FIXED** | decl-order candidates + litPrefix specificity |
+| G4 | brace in `token`/`rule` body breaks lexer | **FIXED** | quote/block/class-aware body reader (Lexer.cpp) |
+
+The R\* (runtime) and N\* (`--exe`) rows below are **not yet fixed** — this pass
+covered the grammar/parser pitfalls only. Roast: +2 assertions, 0 regressions
+(full suite 187696 → 187698).
 | R1 | unmatched `CATCH` swallows | high | clean | `default { .rethrow }` |
 | R2 | `return`/`last` in `CATCH` lost | high | clean | set flag after block |
 | R3 | `with`/`without` modifiers unparsed | medium | clean | `if …defined` guard |
