@@ -4439,15 +4439,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         out << content;
         return Value::boolean(true);
     }
-    if ((m == "e" || m == "f" || m == "d" || m == "r" || m == "w" || m == "x") && inv.hashKind == "IO") {
+    if ((m == "e" || m == "f" || m == "d" || m == "r" || m == "w" || m == "x" ||
+         m == "rw" || m == "rx" || m == "wx" || m == "rwx") && inv.hashKind == "IO") {
         struct stat st;
         if (stat(inv.toStr().c_str(), &st) != 0) return Value::boolean(false);
         if (m == "d") return Value::boolean(S_ISDIR(st.st_mode));
         if (m == "f") return Value::boolean(S_ISREG(st.st_mode));
-        if (m == "r") return Value::boolean(::access(inv.toStr().c_str(), R_OK) == 0);
-        if (m == "w") return Value::boolean(::access(inv.toStr().c_str(), W_OK) == 0);
-        if (m == "x") return Value::boolean(::access(inv.toStr().c_str(), X_OK) == 0);
-        return Value::boolean(true); // e
+        if (m == "e") return Value::boolean(true);
+        // r/w/x and their combinations: every named permission must hold
+        int mode = 0;
+        if (m.find('r') != std::string::npos) mode |= R_OK;
+        if (m.find('w') != std::string::npos) mode |= W_OK;
+        if (m.find('x') != std::string::npos) mode |= X_OK;
+        return Value::boolean(::access(inv.toStr().c_str(), mode) == 0);
     }
     if (m == "l" && inv.hashKind == "IO") { // symlink? (lstat, so broken links still count)
 #if defined(_WIN32)
@@ -4457,19 +4461,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::boolean(::lstat(inv.toStr().c_str(), &st) == 0 && S_ISLNK(st.st_mode));
 #endif
     }
-    if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both fail if absent
+    if ((m == "s" || m == "z") && inv.hashKind == "IO") { // size / zero-length; both FAIL (softly) if absent
         struct stat st;
-        if (stat(inv.toStr().c_str(), &st) != 0)
-            throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
-                "Failed to stat '" + inv.toStr() + "': no such file or directory"};
+        if (stat(inv.toStr().c_str(), &st) != 0) {
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash)["exception"] = Value::typeObj("X::IO::DoesNotExist");
+            (*f.hash)["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
+            return f;
+        }
         if (m == "z") return Value::boolean(st.st_size == 0);
         return Value::integer((long long)st.st_size);
     }
     if (m == "mode" && inv.hashKind == "IO") { // permission bits as a 4-digit octal string
         struct stat st;
-        if (stat(inv.toStr().c_str(), &st) != 0)
-            throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
-                "Failed to stat '" + inv.toStr() + "': no such file or directory"};
+        if (stat(inv.toStr().c_str(), &st) != 0) {
+            Value f = Value::makeHash(); f.hashKind = "Failure";
+            (*f.hash)["exception"] = Value::typeObj("X::IO::DoesNotExist");
+            (*f.hash)["message"] = Value::str("Failed to stat '" + inv.toStr() + "': no such file or directory");
+            return f;
+        }
         char buf[8]; snprintf(buf, sizeof buf, "0%03o", st.st_mode & 07777);
         return Value::str(buf);
     }
@@ -4652,10 +4662,52 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             (*inv.hash)["buffer"] = Value::str((*inv.hash)["buffer"].toStr() + s);
             return Value::boolean(true);
         }
+        if (m == "t") { // is the handle a terminal? files never; std handles ask isatty
+            auto stdit = inv.hash->find("std");
+            if (stdit == inv.hash->end()) return Value::boolean(false);
+            std::string which = stdit->second.toStr();
+#ifdef _WIN32
+            int fd = which == "err" ? 2 : which == "in" ? 0 : 1;
+            return Value::boolean(::_isatty(fd) != 0);
+#else
+            int fd = which == "err" ? 2 : which == "in" ? 0 : 1;
+            return Value::boolean(::isatty(fd) != 0);
+#endif
+        }
+        if (m == "write") { // binary write: append the Blob/Buf's raw bytes
+            std::string bytes;
+            for (auto& a : args) {
+                if (a.t == VT::Str) bytes += a.s; // Buf/Blob byte string (or a plain Str's bytes)
+                else if ((a.t == VT::Array || a.t == VT::Range) && !(a.t == VT::Array && !a.arr))
+                    for (auto& e : a.flatten()) bytes += (char)(unsigned char)(e.toInt() & 0xFF);
+            }
+            (*inv.hash)["buffer"] = Value::str((*inv.hash)["buffer"].toStr() + bytes);
+            return Value::boolean(true);
+        }
+        if (m == "read") { // binary read: up to N bytes from a byte cursor, as a Buf
+            long long want = args.empty() ? 65536 : args[0].toInt();
+            if (inv.hash->find("bytes") == inv.hash->end()) {
+                std::ifstream in((*inv.hash)["path"].toStr(), std::ios::binary);
+                std::ostringstream ss; ss << in.rdbuf();
+                (*inv.hash)["bytes"] = Value::str(ss.str());
+                (*inv.hash)["bpos"] = Value::integer(0);
+            }
+            const std::string& all = (*inv.hash)["bytes"].s;
+            long long pos = (*inv.hash)["bpos"].toInt();
+            if (pos < 0) pos = 0;
+            if (want < 0) want = 0;
+            if (pos > (long long)all.size()) pos = all.size();
+            long long take = std::min(want, (long long)all.size() - pos);
+            Value b = Value::str(all.substr((size_t)pos, (size_t)take));
+            b.hashKind = "Buf";
+            (*inv.hash)["bpos"] = Value::integer(pos + take);
+            return b;
+        }
         if (m == "close") {
             std::string mode = (*inv.hash)["mode"].toStr();
             if (mode == "w" || mode == "a") { // flush write/append handles
-                std::ofstream out((*inv.hash)["path"].toStr(), mode == "a" ? std::ios::app : std::ios::trunc);
+                std::ofstream out((*inv.hash)["path"].toStr(),
+                                  std::ios::binary | (mode == "a" ? std::ios::app : std::ios::trunc));
                 if (out) out << (*inv.hash)["buffer"].toStr();
                 (*inv.hash)["flushed"] = Value::boolean(true); // exit-flush skips it now
             }
@@ -4780,8 +4832,34 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind; return b;
     }
     if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
-    if (m == "encode" && inv.t == VT::Str) { Value b = Value::str(inv.s); b.hashKind = "Blob"; return b; }
-    if (m == "decode" && inv.t == VT::Str) return Value::str(inv.s);
+    if ((m == "encode" || m == "decode") && inv.t == VT::Str) {
+        // normalize the encoding name: utf8 (default) or latin-1/iso-8859-1
+        std::string enc;
+        for (auto& a : args) if (a.t != VT::Pair) { enc = a.toStr(); break; }
+        std::string norm;
+        for (char ch : enc) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
+        bool latin1 = norm == "iso88591" || norm == "latin1" || norm == "windows1252";
+        if (m == "encode") {
+            Value b;
+            if (latin1) { // one byte per codepoint (<= 0xFF; others become '?')
+                std::string bytes;
+                for (uint32_t cp : utf8cp(inv.s)) bytes += (char)(unsigned char)(cp <= 0xFF ? cp : '?');
+                b = Value::str(bytes);
+            } else b = Value::str(inv.s); // utf8/ascii: the bytes as stored
+            b.hashKind = "Blob";
+            return b;
+        }
+        // decode: the invocant is a byte string (Buf/Blob)
+        if (latin1) { // each byte is a codepoint
+            std::string out;
+            for (unsigned char byte : inv.s) {
+                if (byte < 0x80) out += (char)byte;
+                else { out += (char)(0xC0 | (byte >> 6)); out += (char)(0x80 | (byte & 0x3F)); }
+            }
+            return Value::str(out);
+        }
+        return Value::str(inv.s); // utf8: bytes are the string
+    }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
         if (m == "chars") return Value::integer(graphemeCount(inv.toStr())); // graphemes
         if (m == "codes") return Value::integer(cpCount(inv.toStr()));       // codepoints
