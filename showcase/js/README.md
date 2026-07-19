@@ -136,10 +136,10 @@ interpreter.
 The pipeline is the same as the lisp and json showcases, scaled up: a
 `grammar` (~120 lines) with a precedence ladder of nine levels feeds an
 actions class that builds hash-based AST nodes, and `eval-stmt`/`eval-expr`
-walk them. Two pre-passes run before parsing, both working around the fact that
-the grammar can't see newlines (rakupp ignores a user-defined `ws`): comments
-are blanked out with newlines preserved, then `insert-asi` inserts real
-semicolons at statement-ending line breaks. A few rakupp-specific workarounds
+walk them. Two pre-passes run before parsing, since ASI is a token-stream
+transform, not a grammar-shaped problem (see [`ASI.md`](ASI.md)): comments are
+blanked out with newlines preserved, then `insert-asi` inserts real semicolons
+at statement-ending line breaks. A few rakupp-specific workarounds
 are marked with comments in the source: quantified captures are read through a
 list assignment before indexing, every `CATCH` carries a `default { .rethrow }`,
 and value keywords like `null` are classified in the ident action because

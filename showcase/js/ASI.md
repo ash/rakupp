@@ -22,13 +22,38 @@ rule statement:sym<return> { <.kw('return')> <expr>? ';' }
 A `rule` matches whitespace between atoms with the built-in `ws` token, and
 `ws` eats *all* whitespace, newlines included. So by the time a statement rule
 runs, the line breaks are gone — the grammar literally cannot tell
-`a = 1 \n b = 2` from `a = 1 b = 2`. To make ASI work in the grammar we would
+`a = 1 \n b = 2` from `a = 1 b = 2`. To make ASI work *in* the grammar you would
 need newlines to be significant, which means overriding `ws`.
 
-That is the normal way to do it in Raku, and it is blocked by a rakupp bug:
-**a user-defined `token ws` is ignored — `rule` sigspace always uses the builtin**
-(bug G2 in [`docs/dev/BUGS-JS-SHOWCASE.md`](../../docs/dev/BUGS-JS-SHOWCASE.md)).
-So we can't make newlines significant inside the grammar at all.
+> **Note (2026-07-19):** overriding `ws` now works — rakupp bug G2, which had
+> `rule` sigspace ignore a user-defined `token ws`, is fixed (see
+> [`docs/dev/BUGS-JS-SHOWCASE.md`](../../docs/dev/BUGS-JS-SHOWCASE.md)). So the
+> door to a grammar-based ASI is technically open. We still don't take it, on
+> purpose — see the next section.
+
+## Why not do it in the grammar
+
+Even with `ws` overridable, ASI belongs in a pre-pass, not the grammar:
+
+- **The complexity is inherent to ASI, not to newline-blindness.** The hard
+  part isn't seeing the line break — it's *deciding* whether it terminates or
+  continues (method chains, a trailing operator, object-vs-block `{`, the
+  `return`↵`expr` restricted production, the `a = b`↵`(c)` gotcha). Moving into
+  the grammar relocates that logic; it doesn't remove it.
+- **The decision is lookbehind, and grammars are bad at lookbehind.** The
+  scanner decides each newline from the *previous* token — "did a statement just
+  end?" — which it has for free. A grammar would need a stateful `ws` that
+  records whether it crossed a newline, a terminator that reads that flag, and
+  scattered lookahead for the restricted productions, all under backtracking:
+  more code, subtler, and slower than a linear scan that matches Node
+  byte-for-byte.
+- **Comments would still need pre-handling anyway.** `insert-asi` runs before
+  the grammar and must have comments gone to count newlines (a `/* … \n … */`
+  block otherwise miscounts), so moving comment-skipping into `ws` wouldn't
+  remove a pass — it would duplicate the handling.
+
+So the G2 fix is a real win for grammars in general, but it doesn't simplify
+this showcase. The pipeline stays a pre-pass.
 
 ## The approach: insert real semicolons before parsing
 
