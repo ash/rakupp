@@ -1846,14 +1846,30 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return h;
     }
     if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
-        if (m == "allocate")
+        if (m == "allocate") {
             for (size_t k = 1; k < args.size(); k++) // fill args must be numeric-ish
                 if (args[k].t == VT::Str && args[k].hashKind.empty())
                     throw RakuError{Value::typeObj("X::TypeCheck"),
                         "Cannot use a Str as a fill value in " + inv.s + ".allocate"};
+            // allocate(N) → N zero bytes; allocate(N, fill) → N fills;
+            // allocate(N, (list)) → the list repeated cyclically
+            long long an = args.empty() ? 0 : args[0].toInt();
+            if (an < 0) an = 0;
+            std::string fill;
+            if (args.size() > 1) {
+                if (args[1].t == VT::Array || args[1].t == VT::Range)
+                    for (auto& e : args[1].flatten()) fill += (char)(unsigned char)(e.toInt() & 0xFF);
+                else fill += (char)(unsigned char)(args[1].toInt() & 0xFF);
+            }
+            if (fill.empty()) fill.push_back('\0');
+            std::string bytes;
+            for (long long k = 0; k < an; k++) bytes += fill[(size_t)(k % (long long)fill.size())];
+            Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob"; return b;
+        }
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
             if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) add(e); }
+            else if (v.t == VT::Range) { for (auto& e : v.flatten()) add(e); } // Buf.new(^10)
             else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
         };
         for (auto& a : args) add(a);
@@ -4836,9 +4852,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // rvalue subbuf-rw reads like subbuf (the writable form is an assignment target)
         long long n = (long long)inv.s.size(), from, len;
         Value a0v = args.empty() ? Value::integer(0) : args[0];
+        if (a0v.t == VT::Code && a0v.code) a0v = callCallable(a0v, ValueList{Value::integer(n)});
         if (a0v.t == VT::Range) { from = a0v.rFrom + (a0v.rExFrom ? 1 : 0);
                                   len = (a0v.rTo - (a0v.rExTo ? 1 : 0)) - from + 1; }
-        else { from = a0v.toInt(); len = args.size() > 1 ? args[1].toInt() : n - from; }
+        else {
+            from = a0v.toInt();
+            if (args.size() > 1 && args[1].t == VT::Code && args[1].code) {
+                // a Callable count is called with .elems and names the INCLUSIVE
+                // end index: subbuf(5, *-3) of 10 elems is bytes 5..7
+                Value ev = callCallable(args[1], ValueList{Value::integer(n)});
+                len = ev.toInt() - from + 1;
+            }
+            else if (args.size() > 1 &&
+                     (args[1].t == VT::Whatever ||
+                      (args[1].t == VT::Num && std::isinf(args[1].n)))) len = n - from; // (5,*) / (5,Inf): to the end
+            else len = args.size() > 1 ? args[1].toInt() : n - from;
+        }
         if (from < 0) from += n;
         if (from < 0) from = 0; if (from > n) from = n;
         if (len < 0) len = 0; if (from + len > n) len = n - from;
