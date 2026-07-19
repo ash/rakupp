@@ -106,16 +106,58 @@ static bool msvcStyle(const std::string& cxx) {
     return b == "cl" || b == "clang-cl";
 }
 
-// The native compiler for --exe/--bundle: $CXX, else `cl` on Windows, `c++` elsewhere.
+#ifdef _WIN32
+static bool onPathW(const wchar_t* name) {
+    wchar_t buf[4096];
+    return ::SearchPathW(nullptr, name, L".exe", 4096, buf, nullptr) != 0;
+}
+#endif
+
+// The native compiler for --exe/--bundle: $CXX, else the first of cl / g++ /
+// clang-cl / clang++ found on PATH on Windows (cl if none — the vcvars
+// bootstrap below may still make it work), `c++` elsewhere.
 static std::string nativeCxx() {
     const char* e = std::getenv("CXX");
     if (e && *e) return e;
 #ifdef _WIN32
+    if (onPathW(L"cl")) return "cl";
+    if (onPathW(L"g++")) return "g++";           // MSYS2 / MinGW-w64 in PATH
+    if (onPathW(L"clang-cl")) return "clang-cl";
+    if (onPathW(L"clang++")) return "clang++";
     return "cl";
 #else
     return "c++";
 #endif
 }
+
+#ifdef _WIN32
+// `cl` requested but not on PATH (a plain cmd/PowerShell rather than a
+// Developer Command Prompt): locate Visual Studio through vswhere and prefix
+// the compile command with vcvars64.bat, so --exe works out of the box on any
+// machine with VS or the Build Tools installed.
+static std::string msvcEnvPrefix() {
+    if (onPathW(L"cl")) return "";
+    const char* pf = std::getenv("ProgramFiles(x86)");
+    std::string vswhere = std::string(pf ? pf : "C:\\Program Files (x86)") +
+                          "\\Microsoft Visual Studio\\Installer\\vswhere.exe";
+    if (!fileExists(vswhere)) return "";
+    std::string q = shq(vswhere) +
+        " -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+        " -property installationPath";
+    FILE* p = ::_wpopen(widen(q).c_str(), L"r");
+    if (!p) return "";
+    char line[1024]; std::string vs;
+    if (fgets(line, sizeof line, p)) {
+        vs = line;
+        while (!vs.empty() && (vs.back() == '\n' || vs.back() == '\r')) vs.pop_back();
+    }
+    ::_pclose(p);
+    if (vs.empty()) return "";
+    std::string vcvars = vs + "\\VC\\Auxiliary\\Build\\vcvars64.bat";
+    if (!fileExists(vcvars)) return "";
+    return "call " + shq(vcvars) + " >nul 2>&1 && ";
+}
+#endif
 
 // Build the compile-and-link command for a generated source + the runtime
 // archive, in the dialect of the chosen compiler. `opt` is the Unix-style
@@ -134,6 +176,9 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
         // the recursion guard's 2 MiB headroom reserve — the first guarded
         // call in a natively-compiled program threw X::Recursion immediately
         c += " /link /STACK:268435456";
+#ifdef _WIN32
+        c = msvcEnvPrefix() + c; // bootstrap vcvars when cl isn't in this shell
+#endif
         return c;
     }
     std::string c = cxx + " -std=c++17 " + (opt.empty() ? "-O2" : opt) + " -w -pthread -Wl,-w";
@@ -318,7 +363,13 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
     std::string cmd = compileCmd(nativeCxx(), "-O2", "", stubPath, lib, outPath);
     int rc = runCommand(cmd);
     removeFile(stubPath);
-    if (rc != 0) { std::cerr << "Compilation failed (compiler exit " << rc << ")\n"; return 5; }
+    if (rc != 0) {
+        std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
+#ifdef _WIN32
+        std::cerr << "(no C++ compiler? install Visual Studio Build Tools, or MSYS2 g++, or set CXX)\n";
+#endif
+        return 5;
+    }
     std::cerr << "Compiled " << srcName << " -> " << outPath << "\n";
     return 0;
 }
@@ -366,7 +417,13 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     std::string cmd = compileCmd(nativeCxx(), ccOpt, inc, genPath, lib, outPath);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
-    if (rc != 0) { std::cerr << "Compilation failed (compiler exit " << rc << ")\n"; return 5; }
+    if (rc != 0) {
+        std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
+#ifdef _WIN32
+        std::cerr << "(no C++ compiler? install Visual Studio Build Tools, or MSYS2 g++, or set CXX)\n";
+#endif
+        return 5;
+    }
     std::cerr << "Compiled (native) " << srcName << " -> " << outPath << "\n";
     return 0;
 }
@@ -405,7 +462,13 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
     std::string cmd = compileCmd(nativeCxx(), "-O2", inc, genPath, lib, outPath);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
-    if (rc != 0) { std::cerr << "Compilation failed (compiler exit " << rc << ")\n"; return 5; }
+    if (rc != 0) {
+        std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
+#ifdef _WIN32
+        std::cerr << "(no C++ compiler? install Visual Studio Build Tools, or MSYS2 g++, or set CXX)\n";
+#endif
+        return 5;
+    }
     std::cerr << "Compiled (AOT) " << srcName << " -> " << outPath << "\n";
     return 0;
 }
