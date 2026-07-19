@@ -2818,6 +2818,68 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto* fs = static_cast<ForStmt*>(s);
             ValueList collected; ValueList* col = fs->asExpr ? &collected : nullptr;
             auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::any(); };
+            // for over .values/.kv/.pairs of a SetHash/BagHash/MixHash ALIASES the
+            // weights: mutations through the loop variable write back into the
+            // container, and a weight of 0 (BagHash also <0) removes the element
+            if (!fs->asExpr && !fs->destructure && fs->params.empty() && !fs->rwVars &&
+                fs->list && fs->list->kind == NK::MethodCall) {
+                auto* mc = static_cast<MethodCall*>(fs->list.get());
+                int vmode = mc->method == "values" ? 1 : mc->method == "kv" ? 2
+                          : mc->method == "pairs" ? 3 : 0;
+                if (vmode && mc->args.empty() && !mc->hyper && !mc->meta && !mc->methodExpr &&
+                    (vmode == 2 ? fs->vars.size() == 2 : fs->vars.size() <= 1) &&
+                    // only probe side-effect-free invocants: resolving the lvalue of a
+                    // method chain ($fh.lines.kv) would evaluate it and consume state
+                    (mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::SelfTerm)) {
+                    Value* bagp = nullptr;
+                    try { bagp = lvalue(mc->inv.get()); } catch (RakuError&) {}
+                    if (bagp && bagp->t == VT::Hash && bagp->hash &&
+                        (bagp->hashKind == "SetHash" || bagp->hashKind == "BagHash" ||
+                         bagp->hashKind == "MixHash")) {
+                        auto h = bagp->hash;
+                        const std::string kind = bagp->hashKind;
+                        auto applyW = [&](const std::string& key, const Value& nv) {
+                            if (kind == "SetHash") {
+                                if (nv.truthy()) (*h)[key] = Value::boolean(true);
+                                else h->erase(key);
+                            }
+                            else if (kind == "BagHash") {
+                                long long n = nv.toInt();
+                                if (n <= 0) h->erase(key); else (*h)[key] = Value::integer(n);
+                            }
+                            else { // MixHash: 0 removes, negative weights stay
+                                if (nv.toNum() == 0.0) h->erase(key); else (*h)[key] = nv;
+                            }
+                        };
+                        std::vector<std::string> keys;
+                        for (auto& kv : *h) keys.push_back(kv.first);
+                        const std::string tvar = fs->vars.empty() ? "$_" : fs->vars[0];
+                        for (size_t i = 0; i < keys.size(); i++) {
+                            auto it0 = h->find(keys[i]);
+                            if (it0 == h->end()) continue; // removed by an earlier iteration
+                            Value w = it0->second;
+                            auto scope = std::make_shared<Env>();
+                            scope->parent = tctx_.cur;
+                            Value pv; // pairs mode: shared pairVal carries mutations back
+                            if (vmode == 1) scope->define(tvar, w);
+                            else if (vmode == 2) {
+                                scope->define(fs->vars[0], Value::str(keys[i]));
+                                scope->define(fs->vars[1], w);
+                            }
+                            else { pv = Value::pair(keys[i], w); scope->define(tvar, pv); }
+                            bool cont = runLoopBody(fs->body.get(), scope, fs->label,
+                                                    i == 0, i + 1 == keys.size(), col);
+                            if (vmode == 3) applyW(keys[i], pv.pairVal ? *pv.pairVal : w);
+                            else {
+                                auto it = scope->vars.find(vmode == 2 ? fs->vars[1] : tvar);
+                                applyW(keys[i], it != scope->vars.end() ? it->second : w);
+                            }
+                            if (!cont) break;
+                        }
+                        return forResult();
+                    }
+                }
+            }
             // `EXPR for LIST` — a statement modifier makes no implicit block: the body
             // runs in the enclosing scope (so `my $x = … for …` leaves $x declared),
             // with $_ topicalized per iteration and restored afterward.
@@ -3454,6 +3516,21 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         if (subsets_.count(p->type)) {
             if (!subsetMatches(p->type, pos[i])) return -1;
             score += 2; // a satisfied subset is very specific
+        }
+        else if (p->sigil == '&' && !p->type.empty() && p->type != "Callable") {
+            // `Int &x` constrains the routine's RETURN type — not modeled; accept
+            // any Code so dispatch proceeds (return-type dispatch logged as a gap)
+            if (pos[i].t != VT::Code) return -1;
+        }
+        else if ((p->sigil == '@' || p->sigil == '%') && !p->type.empty() &&
+                 p->type != "Any" && p->type != "Mu" && p->type != "Positional" &&
+                 p->type != "Associative" && p->type != "Iterable") {
+            // `Int @a` / `Str %h`: the type parameterizes the CONTAINER — only a
+            // matching typed container (my Int @a) dispatches, as in Rakudo
+            const Value& av = pos[i];
+            if (p->sigil == '@' ? av.t != VT::Array : av.t != VT::Hash) return -1;
+            if (av.ofType != p->type) return -1;
+            score += 2;
         }
         else if (!typeMatchesArg(pos[i], p->type)) return -1;
         // type smiley: :D requires a defined arg, :U requires an undefined one
@@ -4885,6 +4962,13 @@ Value* Interpreter::lvalue(Expr* e) {
     // method-call lvalue: $obj.accessor = value  (rw accessors)
     if (e->kind == NK::MethodCall) {
         auto* mc = static_cast<MethodCall*>(e);
+        // Pair.value is a writable container ($p.value = 5, .value-- in loops);
+        // pairVal is shared between pair copies so mutation is visible everywhere
+        if (mc->method == "value" && mc->args.empty() && !mc->meta && !mc->hyper) {
+            Value* base = nullptr;
+            try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
+            if (base && base->t == VT::Pair && base->pairVal) return base->pairVal.get();
+        }
         // container-access methods as l-values: `%h.AT-KEY("k") = v`,
         // `@a.AT-POS(i) = v`, and multidim `@a.AT-POS(i, j) = v`
         if ((mc->method == "AT-KEY" || mc->method == "AT-POS") && !mc->args.empty() && !mc->meta) {
@@ -4935,6 +5019,10 @@ Value* Interpreter::lvalue(Expr* e) {
     // for the container — assign into the inner slot
     if (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "ctx$")
         return lvalue(static_cast<Unary*>(e)->operand.get());
+    // `self{$k} = v` / `self[$i] = v` inside a method mutates the invocant
+    if (e->kind == NK::SelfTerm) {
+        if (Value* p = tctx_.cur->find("self")) return p;
+    }
     // sigilless variable used as an lvalue (`my \a := $a; a = 10`): a bareword that
     // resolves to a bound lexical is assignable through its slot.
     if (e->kind == NK::NameTerm) {
@@ -5311,6 +5399,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         else if (sigil == '%') {
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+            std::string keepType = lv->ofType; // typed container: `my Int %h` keeps Int
             if (lv->t == VT::Hash && setty.count(lv->hashKind)) // my %h is Set = 1,2,3
                 *lv = makeBaggy(rhs.flatten(), lv->hashKind);
             else {
@@ -5321,6 +5410,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
                 *lv = nv;
             }
+            if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
@@ -9154,7 +9244,8 @@ Value Interpreter::evalCall(Call* c) {
             return sl;
         }
         if ((c->name == "Array" || c->name == "List" || c->name == "Set" ||
-             c->name == "Bag" || c->name == "Mix") && !args.empty()) {
+             c->name == "Bag" || c->name == "Mix" || c->name == "SetHash" ||
+             c->name == "BagHash" || c->name == "MixHash") && !args.empty()) {
             if (c->name == "Array" || c->name == "List") {
                 Value out = Value::array();
                 out.isList = (c->name == "List");

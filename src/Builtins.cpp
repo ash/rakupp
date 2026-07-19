@@ -3303,6 +3303,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 // so it indexes/pushes natively while .WHAT answers the user type.
                 std::string nb;
                 for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
+                if (nb == "Set" || nb == "SetHash" || nb == "Bag" || nb == "BagHash" ||
+                    nb == "Mix" || nb == "MixHash") {
+                    // `class MySet is Set`: back the instance with a real quanthash
+                    // built from the args, so .elems/.keys/{k} dispatch to it
+                    auto od = std::make_shared<ObjectData>();
+                    od->cls = ci; od->hasBoxed = true;
+                    od->boxed = methodCall(Value::typeObj(nb), "new", args);
+                    Value self = Value::object(od);
+                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
+                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    return self;
+                }
                 if (nb == "Array" || nb == "List" || nb == "Hash" || nb == "Map") {
                     auto od = std::make_shared<ObjectData>();
                     od->cls = ci; od->hasBoxed = true;
@@ -5624,6 +5636,67 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Regex && m == "ACCEPTS") // returns the Match (or Nil), sets $/
         return regexMatch(args.empty() ? std::string() : args[0].toStr(), inv.s);
 
+    // quanthash smartmatch: same support with equal weights (topic coerced to
+    // the invocant's family — Set weights count as 1)
+    if (inv.t == VT::Hash && m == "ACCEPTS" && !args.empty() &&
+        (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||
+         inv.hashKind == "Bag" || inv.hashKind == "BagHash" ||
+         inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
+        static const std::set<std::string> qk = {"Set","SetHash","Bag","BagHash","Mix","MixHash"};
+        Value other = args[0];
+        if (!(other.t == VT::Hash && other.hash && qk.count(other.hashKind))) {
+            ValueList items = other.flatten();
+            bool mixK = inv.hashKind == "Mix" || inv.hashKind == "MixHash";
+            bool bagK = inv.hashKind == "Bag" || inv.hashKind == "BagHash";
+            other = makeBaggy(items, mixK ? "Mix" : bagK ? "Bag" : "Set", false);
+        }
+        auto wt = [](const Value& h, const std::string& k) -> double {
+            auto it = h.hash->find(k);
+            if (it == h.hash->end()) return 0.0;
+            return it->second.t == VT::Bool ? (it->second.b ? 1.0 : 0.0) : it->second.toNum();
+        };
+        bool eq = true;
+        if (!inv.hash || !other.hash) eq = (!inv.hash || inv.hash->empty()) && (!other.hash || other.hash->empty());
+        else {
+            for (auto& kv : *inv.hash)   if (wt(inv, kv.first) != wt(other, kv.first)) { eq = false; break; }
+            if (eq) for (auto& kv : *other.hash) if (wt(inv, kv.first) != wt(other, kv.first)) { eq = false; break; }
+        }
+        return Value::boolean(eq);
+    }
+    // quanthash STORE: replace contents — (items) or the (keys, values) candidate
+    if (inv.t == VT::Hash && m == "STORE" && !args.empty() &&
+        (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||
+         inv.hashKind == "Bag" || inv.hashKind == "BagHash" ||
+         inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
+        Value nv;
+        if (args.size() == 2 && (args[0].t == VT::Array || args[0].t == VT::Range) &&
+            (args[1].t == VT::Array || args[1].t == VT::Range)) {
+            ValueList ks = args[0].flatten(), vs = args[1].flatten(), pairs;
+            for (size_t i = 0; i < ks.size(); i++)
+                pairs.push_back(Value::pair(ks[i].toStr(), i < vs.size() ? vs[i] : Value::any()));
+            nv = makeBaggy(pairs, inv.hashKind, false);
+        } else {
+            ValueList items;
+            for (auto& a : args) {
+                if (a.t == VT::Array || a.t == VT::Range) for (auto& x : a.flatten()) items.push_back(x);
+                else items.push_back(a);
+            }
+            nv = makeBaggy(items, inv.hashKind, false);
+        }
+        if (inv.hash && nv.hash) { *inv.hash = *nv.hash; return inv; }
+        return nv;
+    }
+    // %h.Capture — a Capture whose named part is the hash's pairs
+    if (inv.t == VT::Hash && m == "Capture" &&
+        (inv.hashKind.empty() || inv.hashKind == "Map" ||
+         inv.hashKind == "Set" || inv.hashKind == "SetHash" ||
+         inv.hashKind == "Bag" || inv.hashKind == "BagHash" ||
+         inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
+        Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
+        if (inv.hash) for (auto& kv : *inv.hash) c.arr->push_back(Value::pair(kv.first, kv.second));
+        return c;
+    }
+
     // list / array / range
     if (inv.t == VT::Range && m == "ACCEPTS")
         return Value::boolean(applyArith("~~", args.empty() ? Value::any() : args[0], inv).truthy());
@@ -6810,6 +6883,14 @@ void Interpreter::registerBuiltins() {
     B["put"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string out; for (auto& v : a) out += I.strOf(v); out += "\n";
         return I.ioEmit(out, "$*OUT", false);
+    };
+    B["gist"] = [](Interpreter& I, ValueList& a) -> Value {
+        std::string out; bool first = true;
+        for (auto& v : a) { if (!first) out += " "; first = false; out += I.gistOf(v); }
+        return Value::str(out);
+    };
+    B["WHAT"] = [](Interpreter& I, ValueList& a) -> Value {
+        return a.empty() ? Value::any() : I.methodCall(a[0], "WHAT", ValueList{});
     };
     B["note"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return I.ioEmit("Noted\n", "$*ERR", true); // no-arg default
