@@ -302,9 +302,16 @@ EXAMPLES.forEach((ex, i) => {
 for (const cat of Object.keys(groups)) sel.appendChild(groups[cat]);
 
 function currentExample() { return EXAMPLES[+sel.value] || EXAMPLES[0]; }
-sel.onchange = () => { codeEl.value = currentExample().code; paintHL(); };
-codeEl.value = EXAMPLES[0].code;
-paintHL();
+// An example may preset the stdin box (the language interpreters use it as the
+// editable "source file" they run): fill + reveal it, or clear + hide it.
+function loadExample(ex) {
+  codeEl.value = ex.code;
+  stdinEl.value = ex.stdin || '';
+  stdinBox.open = !!ex.stdin;
+  paintHL();
+}
+sel.onchange = () => loadExample(currentExample());
+loadExample(EXAMPLES[0]);
 
 // ---- shareable links (no server storage) ----
 // Three URL forms open the playground pre-filled:

@@ -73,25 +73,24 @@ sub item-json(%it --> Str) {
     @parts.push: '"name": '     ~ json-str(%it<name>);
     @parts.push: '"category": ' ~ json-str(%it<category>);
     @parts.push: '"desc": '     ~ json-str(%it<desc>) if %it<desc>;
+    @parts.push: '"stdin": '    ~ json-str(%it<stdin>) if %it<stdin>;   # preset standard input
     @parts.push: '"code": '     ~ json-str(%it<code>);
     '{' ~ @parts.join(', ') ~ '}';
 }
 
 # ---- Language showcases (whole interpreters, bundled with a demo program) ----
 # From showcase/. Each is a complete interpreter; in the browser we disable its
-# CLI `MAIN` (no REPL/stdin) and append a driver that runs an embedded sample
-# through the interpreter's own entry sub. The source of truth stays showcase/.
+# CLI `MAIN` (no REPL) and make it read the program to interpret from STANDARD
+# INPUT — so the source file lives in the playground's editable stdin box (a
+# sample is preset via the example's `stdin` field). Source of truth: showcase/.
 my $showcased = $here.add('../showcase');
 
-sub showcase-code(Str $relpath, Str $entry, Str $demo --> Str) {
+sub showcase-code(Str $relpath, Str $entry --> Str) {
     my $src = $showcased.add($relpath).slurp;
     $src ~~ s/'sub MAIN'/sub MAIN-cli/;   # don't auto-run the CLI dispatcher (rename so it isn't called)
     $src ~ "\n\n"
-        ~ "# ---------- Raku.js playground: run an embedded program ----------\n"
-        ~ "# (the CLI reads a file or a REPL; in the browser we run this sample)\n"
-        ~ "my \$PLAYGROUND-INPUT = q:to/__PROGRAM__/.chomp;\n"
-        ~ $demo ~ "\n"
-        ~ "__PROGRAM__\n"
+        ~ "# ---------- Raku.js playground: interpret the program on standard input ----------\n"
+        ~ "# (the CLI reads a file; in the browser the STANDARD INPUT box is that file)\n"
         ~ $entry ~ "\n";
 }
 
@@ -131,13 +130,13 @@ my $js-demo = q:to/JS/.chomp;
 
 my @showcases =
     %( name => 'Lisp interpreter',  file => 'lisp/lisp.raku',
-       entry => 'run-source($PLAYGROUND-INPUT, global-env());', demo => $lisp-demo,
+       entry => 'run-source($*IN.slurp, global-env());', demo => $lisp-demo,
        desc => 'A small Scheme — a Raku grammar reads it, a tree-walker runs it' ),
     %( name => 'Forth interpreter', file => 'forth/forth.raku',
-       entry => 'run-source($PLAYGROUND-INPUT);', demo => $forth-demo,
+       entry => 'run-source($*IN.slurp);', demo => $forth-demo,
        desc => 'A stack machine + word dictionary — the other language model' ),
     %( name => 'JavaScript / TypeScript', file => 'js/js.raku',
-       entry => 'run-program($PLAYGROUND-INPUT);', demo => $js-demo,
+       entry => 'run-program($*IN.slurp);', demo => $js-demo,
        desc => 'A practical JS/TS interpreter — grammar, evaluator, ASI' );
 
 my @items;
@@ -151,7 +150,8 @@ for @showcases -> %sc {
         name     => %sc<name>,
         category => 'Language showcases',
         desc     => %sc<desc>,
-        code     => showcase-code(%sc<file>, %sc<entry>, %sc<demo>),
+        stdin    => %sc<demo>,   # the sample program, preset in the stdin box
+        code     => showcase-code(%sc<file>, %sc<entry>),
     };
 }
 
