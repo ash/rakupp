@@ -54,14 +54,50 @@ sub compile-native(Str $path, Str $out --> Bool) {
     $p.exitcode == 0;
 }
 
+# Capture a command's stdout (stderr is drained but ignored — Raku++ prints
+# compile-time warnings there). Returns Nil if the program exits non-zero, so a
+# crash reads as "no output" and is flagged rather than silently compared.
+sub capture(@cmd --> Str) {
+    my $p = run(|@cmd, :out, :err);
+    my $out = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    $p.exitcode == 0 ?? $out !! Str;
+}
+
+my $mismatch = False;
 printf "%-12s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'rakudo', 'note';
 for @benches -> %b {
     my $path = $bench.add(%b<file>).Str;
     my $nbin = "/tmp/rakupp-bench-$*PID-{%b<name>}"; # unique per run: macOS wedges re-execs of an overwritten exe path
 
-    my $interp = sprintf '%.1fms', measure([$RAKUPP, $path]);
-    my $rakudo = sprintf '%.1fms', measure([$RAKUDO, $path]);
-    my $native = compile-native($path, $nbin) ?? sprintf('%.1fms', measure([$nbin])) !! 'n/a';
+    # Correctness gate: every engine must emit byte-identical stdout, else the
+    # timings aren't a like-for-like comparison. Rakudo is the oracle; if it
+    # isn't available, Raku++'s interpreter is the reference instead.
+    my $built = compile-native($path, $nbin);
+    my $oi = capture([$RAKUPP, $path]);
+    my $on = $built ?? capture([$nbin]) !! Str;
+    my $or = capture([$RAKUDO, $path]);
+    my $oracle = $or.defined ?? 'rakudo' !! 'interp';
+    my $ref    = $or // $oi;
+    my @bad;
+    @bad.push('interp did not run')        unless $oi.defined;
+    @bad.push('native did not run')        if $built && !$on.defined;
+    @bad.push("interp ≠ $oracle")          if $oi.defined && $or.defined && $oi ne $or;
+    @bad.push("native ≠ $oracle")          if $on.defined && $ref.defined && $on ne $ref;
+    my $flag = '';
+    if @bad { $mismatch = True; $flag = "   ⚠ {@bad.join('; ')}"; }
 
-    printf "%-12s %10s %10s %10s   %s\n", %b<name>, $interp, $native, $rakudo, %b<note>;
+    my $interp = sprintf '%.1fms', measure([$RAKUPP, $path]);
+    my $native = $built     ?? sprintf('%.1fms', measure([$nbin]))    !! 'n/a';
+    my $rakudo = $or.defined ?? sprintf('%.1fms', measure([$RAKUDO, $path])) !! 'n/a';
+
+    printf "%-12s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $rakudo, %b<note>, $flag;
 }
+
+if $mismatch {
+    note '';
+    note '⚠ OUTPUT MISMATCH — a flagged engine disagreed with the reference; those rows are not a like-for-like comparison.';
+    exit 1;
+}
+say '';
+say '# all engines produced identical output';

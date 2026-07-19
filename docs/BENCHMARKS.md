@@ -65,8 +65,11 @@ there.)
   remaining 6** reported (least noisy; the mean was within a few percent). For
   the `native` column each program is compiled with `--exe` once, then the
   resulting binary is timed — the compile step is not counted.
-- **Fairness:** every benchmark program is byte-for-byte identical across all
-  three and was verified to produce identical output before timing.
+- **Fairness:** the harness runs each program under all three engines and
+  compares their stdout **before** timing anything; if `interp`, `native`, and
+  `rakudo` don't emit byte-identical output it flags the row and exits non-zero,
+  so a divergent kernel can't be silently benchmarked. (Rakudo is the reference;
+  every benchmark program is deterministic, so identical output is expected.)
 - **Harness overhead:** spawning + capturing a subprocess adds a small fixed
   cost per run. On top of that each engine pays its *own* process startup —
   negligible for Raku++'s native binary, but Rakudo loads a full precompiled
@@ -229,7 +232,7 @@ that was an unbounded lookbehind scan on a document this large.
 ## Reproducing
 
 ```sh
-./build/rakupp tools/run-bench.raku          # times interp + native + rakudo, prints the table
+./build/rakupp tools/run-bench.raku          # checks all three engines agree, then times them
 ```
 
 The harness compiles each program with `--exe` for the native column; the

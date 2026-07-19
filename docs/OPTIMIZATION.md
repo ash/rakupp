@@ -72,7 +72,7 @@ A call site takes the fast overload when it passes exactly the right number of
 calls through the adapter unchanged. Multi subs, indirect calls (`&fib`), and
 method calls are untouched.
 
-The same idea covers **36 named builtins** — `abs chr ord`, `say print put
+The same idea covers **37 named builtins** — `abs chr ord`, `say print put
 note` (1-arg forms), the numeric family
 (`sign floor ceiling round truncate sqrt exp log log10 log2 is-prime`), the
 string family (`uc lc chars flip trim chomp chop`), and the trig/hyperbolic
@@ -321,9 +321,10 @@ rough order of expected payoff:
 
 [`tools/optbench/`](../tools/optbench) holds programs each written to lean on one
 pass, and [`tools/run-optbench.raku`](../tools/run-optbench.raku) compiles every one
-twice — `--exe` and `--exe -O` — checks the two builds agree with the interpreter
-byte-for-byte, then times both and reports the `-O` speed-up (Rakudo shown for
-reference):
+twice — `--exe` and `--exe -O` — checks that both builds, the interpreter, and
+Rakudo all emit byte-identical output (a divergent row is flagged and the run
+exits non-zero), then times them and reports the `-O` speed-up (Rakudo also shown
+for reference):
 
 ```sh
 ./build/rakupp tools/run-optbench.raku
