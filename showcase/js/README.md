@@ -1,0 +1,116 @@
+# js — a JavaScript/TypeScript interpreter
+
+A working interpreter for a practical slice of JavaScript — with enough
+TypeScript on top that everyday `.ts` files run unchanged. One Raku grammar
+parses both languages into an AST; a tree-walking evaluator runs it. TypeScript
+is handled the way `tsc` handles it: type annotations, interfaces, type aliases
+and generics are parsed and erased, while enums (the one TS construct with
+runtime output) become real objects.
+
+```sh
+build/rakupp showcase/js/js.raku showcase/js/examples/fizzbuzz.js
+build/rakupp showcase/js/js.raku showcase/js/examples/bank.ts
+build/rakupp showcase/js/js.raku --ast=file.js     # dump the parsed AST
+build/rakupp showcase/js/js.raku                   # no file → a REPL
+```
+
+Ten example programs live in [`examples/`](examples/):
+
+| File | Shows off |
+|---|---|
+| `fizzbuzz.js`    | data-driven rules instead of an if-chain |
+| `fib.js`         | recursion, closures, memoization |
+| `closures.js`    | currying, compose, private counters, `once`, memoize |
+| `quicksort.js`   | quicksort + mergesort, array methods, non-destructive sorts |
+| `wordcount.js`   | strings and objects — count, rank, report |
+| `gameoflife.js`  | Conway's Game of Life on a wrap-around grid, nested loops |
+| `bank.ts`        | classes, inheritance, `super`, enums, generics, param properties |
+| `roman.ts`       | tuple types, `Record`, `[v, s]` destructuring, both-way conversion |
+| `shapes.ts`      | an interface + a class hierarchy with polymorphic dispatch |
+| `calculator.ts`  | a tokenizer + recursive-descent parser, in the language being parsed |
+
+The six `.js` examples produce byte-identical output under `node` and under
+`js.raku` — including `0.1 + 0.2` printing `0.30000000000000004`, `-7 % 3`
+being `-1`, and default `sort()` ordering numbers as strings. (`console.log`
+of a long array is the one place they differ: node wraps arrays past six
+elements into a grid, so the sort demo joins its arrays for display.)
+
+## What runs
+
+**JavaScript.** `let`/`const`/`var` (with multiple declarators),
+functions, closures, arrow functions (expression and block bodies, default
+parameters), `if`/`else`, `while`, `do`/`while`, classic `for`, `for…of`
+(arrays, strings, and `[k, v]` destructuring for `Object.entries`),
+`break`/`continue`, `return`, ternary, `&&`/`||`/`??` with short-circuit,
+`==`/`===` with JS coercion rules, `+` as concat-or-add, `**`, `typeof`,
+`x++`/`x--`, compound assignment, template literals with `${…}`, array and
+object literals (shorthand and method properties), `this`, classes with
+fields, `extends`, `super(...)`/`super.m(...)`, static members, `new`,
+`throw`/`try`/`catch`/`finally`, IIFEs, and `//` and `/* */` comments.
+
+**TypeScript.** Type annotations on variables, parameters, returns and fields;
+`interface` and `type` declarations; generic functions and generic call sites
+(`identity<string>("x")`); union types; optional (`x?`) and `readonly`/access
+modifiers; constructor parameter properties (`constructor(public r: number)`,
+which really assign); `as` casts and `x!` non-null assertions (erased);
+`enum` with auto and explicit values plus reverse mapping (`Color[10]`).
+
+**Built-ins.** `console.log/error/warn`; `Math` (floor, ceil, round, trunc,
+abs, sign, sqrt, pow, min, max, random, log, exp, hypot, PI, E);
+`JSON.stringify` (with indent); `Object.keys/values/entries`;
+`Array.isArray/from`; `Number(...)`, `String(...)`, `Boolean(...)`,
+`parseInt` (with radix), `parseFloat`, `isNaN`, `toFixed`; array methods
+(push, pop, shift, unshift, slice, indexOf, includes, join, map, filter,
+forEach, reduce, find, findIndex, some, every, concat, reverse, sort, flat);
+string methods (toUpperCase, toLowerCase, trim, charAt, charCodeAt, indexOf,
+includes, startsWith, endsWith, slice, substring, split, repeat, replace,
+replaceAll, padStart, padEnd, concat); `new Error(msg)` with `.message`.
+
+## What doesn't
+
+Semicolons are required (there is no automatic semicolon insertion). Not
+implemented: regex literals, `switch`, labels, getters/setters, object/array
+destructuring outside `for…of`, spread/rest, `async`/`await`, promises,
+generators, modules (`import`/`export`), `Symbol`, `Map`/`Set`, prototypes
+(`Object.create`, `.prototype`), `JSON.parse`, getters like `?.` optional
+chaining, and bitwise operators. Keywords are not valid identifiers.
+
+## Semantics worth knowing
+
+* Every number is an IEEE double, like JS. `1/0` is `Infinity`, `0/0` is
+  `NaN`, `%` truncates toward zero, integers print without a decimal point.
+* Truthiness, `==` coercion, string comparison with `<`, and `+`
+  concat-or-add all follow JS rules.
+* `sort()` without a comparator sorts as strings; with `(a, b) => a - b` it
+  sorts numerically. Both mutate, like JS.
+* Objects preserve insertion order (a `JSObject` keeps its own key list —
+  a plain Raku `Hash` wouldn't).
+* `this` is bound at the call site for functions and methods; arrows inherit
+  it lexically. `return`, `break`, `continue` and `throw` unwind as typed
+  Raku exceptions.
+
+## Speed
+
+It's a tree-walking interpreter written in an interpreted language: naive
+`fib(15)` (1973 calls) takes about 1.5 s under rakupp on an M-class laptop;
+the other three examples run in well under 0.1 s. Function bodies that end in
+a lone `return` skip the exception-based unwind path, which cut about a third
+off call-heavy code.
+
+`rakupp --exe` compiles it to a native binary that runs all four examples
+except `fib.js`'s deep memoized calls: the native binary currently has a
+smaller usable recursion budget than the interpreter (JS recursion deeper
+than ~15 levels hits it), so `fastFib(78)` only completes under the
+interpreter.
+
+## Implementation notes
+
+The pipeline is the same as the lisp and json showcases, scaled up: a
+`grammar` (~120 lines) with a precedence ladder of nine levels feeds an
+actions class that builds hash-based AST nodes, and `eval-stmt`/`eval-expr`
+walk them. Comments are blanked out (newlines preserved) in a pre-pass before
+parsing. A few rakupp-specific workarounds are marked with comments in the
+source: quantified captures are read through a list assignment before
+indexing, every `CATCH` carries a `default { .rethrow }`, and value keywords
+like `null` are classified in the ident action because proto-rule dispatch is
+longest-match.

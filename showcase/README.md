@@ -6,6 +6,7 @@ together they answer "what can it actually build?"
 | Project | Axis it showcases | How you run it |
 |---|---|---|
 | [**lisp/**](lisp/) | Language power — a grammar + a tree-walking evaluator | interpreter that runs Scheme files or a REPL |
+| [**js/**](js/) | Language power — a full precedence ladder, closures, classes | interpreter that runs JavaScript/TypeScript files or a REPL |
 | [**forth/**](forth/) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
 | [**markdown/**](markdown/) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
 | [**json/**](json/) | Parsing — a grammar that round-trips data | parse, pretty-print / minify, and query JSON |
@@ -34,6 +35,29 @@ build/rakupp showcase/lisp/lisp.raku                 # no file → a REPL
 The reader is a Raku `grammar` plus an actions class — source text turns
 straight into Raku data structures, which is exactly the job a language
 implementation exists to do.
+
+## js — the industrial-language story
+
+Where lisp shows that a grammar can host *a* language, **js** shows it can host
+the language everyone knows. It runs a practical slice of JavaScript — closures,
+arrows, classes with `extends`/`super`, template literals, `try`/`catch`,
+`for…of`, forty-odd built-in methods — plus enough TypeScript (annotations,
+interfaces and generics erased; enums made real) that everyday `.ts` files run
+unchanged. The `.js` examples print byte-identical output under `node` and
+under `js.raku`, down to `0.1 + 0.2` and JS's truncating `%`.
+
+```sh
+build/rakupp showcase/js/js.raku showcase/js/examples/fib.js
+build/rakupp showcase/js/js.raku showcase/js/examples/bank.ts
+build/rakupp showcase/js/js.raku --ast=file.js       # dump the parsed AST
+build/rakupp showcase/js/js.raku                     # no file → a REPL
+```
+
+The grammar is a nine-level precedence ladder in `rule`s over a token layer;
+an actions class folds matches into hash-based AST nodes, and a tree-walking
+evaluator with an environment chain does the rest — `return`/`break`/`throw`
+travel as typed Raku exceptions. See [`js/README.md`](js/README.md) for the
+exact subset.
 
 ## forth — the other language model
 
