@@ -23,6 +23,10 @@ int rakuppRunBigStack(const std::string& src, std::vector<std::string> args,
                       const std::string& fileName, const std::string& exePath,
                       const std::vector<std::string>& libPaths = {});
 
+// Run a generated `--exe` binary's main body on the same large-stack thread —
+// interpreter-parity recursion budget on every platform.
+int rakuppMainOnBigStack(int (*body)(void*), void* ctx);
+
 // Interpret an already-built Program (real AOT: the AST is reconstructed at the
 // compiled program's startup, so no lexing/parsing happens). `finish` is the
 // `$=finish` POD data block (empty if none).

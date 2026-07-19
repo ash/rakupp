@@ -154,6 +154,14 @@ int rakuppRunBigStack(const std::string& src, std::vector<std::string> args,
     return onBigStack([&]() { return rakuppRun(src, std::move(args), fileName, exePath, libPaths); });
 }
 
+// Generated `--exe` binaries route their whole main() through this, so native
+// programs get the same 1 GiB recursion budget as the interpreter on EVERY
+// platform — link-time stack flags only cover macOS (-stack_size, capped at
+// 512 MiB on arm64) and Windows (/STACK); Linux has no portable equivalent.
+int rakuppMainOnBigStack(int (*body)(void*), void* ctx) {
+    return onBigStack([&]() { return body(ctx); });
+}
+
 int rakuppRunProgramBigStack(Program& prog, std::vector<std::string> args,
                              const std::string& fileName, const std::string& exePath,
                              const std::string& finish) {
