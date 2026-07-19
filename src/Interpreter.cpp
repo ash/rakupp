@@ -9852,6 +9852,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // variable form ($name: active while the variable is true) or negated.
         bool wantExists = false, negExists = false, wantDelete = false;
         bool kvF = false, pF = false, kF = false, vF = false;
+        bool presenceNeg = false; // :k/:v/:kv/:p negative polarity (:!k / :k(False))
         {
             std::string rest = idx->adverb;
             while (!rest.empty()) {
@@ -9868,22 +9869,25 @@ Value Interpreter::evalIndex(Index* idx) {
                     part = part.substr(1);
                     neg = false;
                 }
+                bool hasArg = false, argOn = false;
                 size_t qm = part.find('?'); // `:exists($dont)` — variable-valued adverb
                 if (qm != std::string::npos) {
                     Value* vp = tctx_.cur->find(part.substr(qm + 1));
-                    bool on = vp && vp->truthy();
+                    argOn = vp && vp->truthy(); hasArg = true;
                     std::string nm = part.substr(0, qm);
-                    if (nm == "exists") { if (!on) neg = !neg; }      // :exists(False) tests NON-existence
-                    else if (nm == "delete") { if (!on) continue; }    // :delete(False) doesn't delete
-                    // k/kv/p/v: the arg only tunes missing-element filtering — stay active
+                    if (nm == "exists") { if (!argOn) neg = !neg; }    // :exists(False) tests NON-existence
+                    else if (nm == "delete") { if (!argOn) continue; }  // :delete(False) doesn't delete
                     part = nm;
                 }
+                // :k/:v/:kv/:p report a MISSING element (undefined value) only under
+                // NEGATIVE polarity — `:!k` or `:k(False)`; existing always reports.
+                bool posPol = hasArg ? (neg ? !argOn : argOn) : !neg;
                 if (part == "exists") { wantExists = true; negExists = neg; }
                 else if (part == "delete") wantDelete = true;
-                else if (part == "kv") kvF = true;
-                else if (part == "p") pF = true;
-                else if (part == "k") kF = true;
-                else if (part == "v") vF = true;
+                else if (part == "kv") { kvF = true; presenceNeg = !posPol; }
+                else if (part == "p")  { pF = true;  presenceNeg = !posPol; }
+                else if (part == "k")  { kF = true;  presenceNeg = !posPol; }
+                else if (part == "v")  { vF = true;  presenceNeg = !posPol; }
             }
         }
         if (idx->multiDim && !(wantExists || wantDelete || kvF || pF || kF || vF))
@@ -10071,9 +10075,19 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         Value iv = eval(idx->index.get());
-        bool slice = iv.t == VT::Array || iv.t == VT::Range;
+        // `@a[*]` / `%h{*}` — and the zen slice `@a[]`, which parses to `[*]` —
+        // with an adverb select EVERY element.
+        bool allElems = iv.t == VT::Whatever;
+        bool slice = allElems || iv.t == VT::Array || iv.t == VT::Range;
         ValueList sliceKeys;
-        if (slice) for (auto& k : iv.flatten()) sliceKeys.push_back(k);
+        if (allElems) {
+            if (idx->isHash && base.t == VT::Hash && base.hash)
+                for (auto& e2 : *base.hash) sliceKeys.push_back(Value::str(e2.first));
+            else if (base.t == VT::Array && base.arr)
+                for (long long i = 0; i < (long long)base.arr->size(); i++)
+                    sliceKeys.push_back(Value::integer(i));
+        }
+        else if (slice) for (auto& k : iv.flatten()) sliceKeys.push_back(k);
         else sliceKeys.push_back(iv);
         struct Hit { Value keyV; Value val; bool exists; };
         std::vector<Hit> hits;
@@ -10115,18 +10129,29 @@ Value Interpreter::evalIndex(Index* idx) {
         if (wantDelete && !idx->isHash && !idx->multiDim && !idx->semicolonSub &&
             base.t == VT::Array && base.arr)
             while (!base.arr->empty() && !isDefined(base.arr->back())) base.arr->pop_back();
+        // `:p` keeps the real key type — an array index is an Int (`1 => "b"`),
+        // not the stringified key a plain Pair would carry.
+        auto mkPair = [](const Value& kk, const Value& vv) {
+            Value p = Value::pair(kk.toStr(), vv);
+            if (kk.t != VT::Str) p.pairKey = std::make_shared<Value>(kk);
+            return p;
+        };
         if (!slice) {
             auto& h = hits[0];
             if (wantExists) {
                 Value ex = Value::boolean(negExists ? !h.exists : h.exists);
                 if (kvF) { Value o = Value::array({h.keyV, ex}); o.isList = true; return o; }
-                if (pF) return Value::pair(h.keyV.toStr(), ex);
+                if (pF) return mkPair(h.keyV, ex);
                 return ex;
             }
-            if (kF) return h.exists ? h.keyV : Value::array();
-            if (vF) return h.exists ? h.val : Value::array();
-            if (kvF) { Value o = h.exists ? Value::array({h.keyV, h.val}) : Value::array(); o.isList = true; return o; }
-            if (pF) return h.exists ? Value::pair(h.keyV.toStr(), h.val) : Value::array();
+            auto emptyL = []() { Value e = Value::array(); e.isList = true; return e; }; // () not []
+            Value mval = Value::any(); // a missing element's (undefined) value
+            if (kF)  return (h.exists || presenceNeg) ? h.keyV : emptyL();
+            if (vF)  return h.exists ? h.val : (presenceNeg ? mval : emptyL());
+            if (kvF) { if (!(h.exists || presenceNeg)) return emptyL();
+                       Value o = Value::array({h.keyV, h.exists ? h.val : mval}); o.isList = true; return o; }
+            if (pF)  return (h.exists || presenceNeg)
+                         ? mkPair(h.keyV, h.exists ? h.val : mval) : emptyL();
             if (h.exists) return h.val; // plain :delete (or all conditionals off after delete)
             Value dv = arrayMissingDefault(base); // `is default(v)` / typed element default
             return dv.t == VT::Nil ? Value::any() : dv;
@@ -10135,11 +10160,12 @@ Value Interpreter::evalIndex(Index* idx) {
         Value out = Value::array(); out.isList = true;
         for (auto& h : hits) {
             if (wantExists) { out.arr->push_back(Value::boolean(negExists ? !h.exists : h.exists)); continue; }
-            if (!h.exists) continue;
-            if (kvF) { out.arr->push_back(h.keyV); out.arr->push_back(h.val); }
-            else if (pF) out.arr->push_back(Value::pair(h.keyV.toStr(), h.val));
+            if (!h.exists && !presenceNeg) continue; // missing kept only under :!k / :k(False)
+            Value v = h.exists ? h.val : Value::any();
+            if (kvF) { out.arr->push_back(h.keyV); out.arr->push_back(v); }
+            else if (pF) out.arr->push_back(mkPair(h.keyV, v));
             else if (kF) out.arr->push_back(h.keyV);
-            else out.arr->push_back(h.val); // :v or plain :delete slice
+            else out.arr->push_back(v); // :v or plain :delete slice
         }
         return out;
         }
