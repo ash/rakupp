@@ -15,11 +15,13 @@ input, and get results back into your page.
 There is a single entry point:
 
 ```
-rakupp_run(source)   →   runs the Raku source string, returns the exit code
+rakupp_run(source, stdin)   →   runs the Raku source string, returns the exit code
 ```
 
-**The whole program is that one string.** There's no stdin, no command-line
-arguments, no files — the browser sandbox has none of those. Anything the
+**The whole program is that one string.** The optional second string is what
+the program's standard input contains — `get` / `lines` / `prompt` read it and
+then see EOF (pass `''` for an empty stdin). There are no command-line
+arguments and no files — the browser sandbox has none of those. Anything the
 program `say`s or `print`s is handed back to your page through Emscripten's
 `print` / `printErr` callbacks. So a Raku.js app is always this shape:
 
@@ -143,8 +145,21 @@ it's the same interpreter. Two things to keep in mind:
 
 ## 3. Giving the program input
 
-This is the part that isn't obvious. Since there's no stdin or file to read, the
-input has to become **part of the source string**. Two techniques:
+### Line-oriented input — just use stdin
+
+The second `rakupp_run` argument is the program's standard input, so anything
+that reads naturally line by line needs no tricks at all:
+
+```js
+mod.ccall('rakupp_run', 'number', ['string', 'string'],
+          ['say "Hello, {get}!";', nameBox.value + "\n"]);
+```
+
+### Input as part of the program
+
+Alternatively, the input can become **part of the source string** — the right
+shape when the program should treat it as a value rather than parse it. Two
+techniques:
 
 ### A number or short value — build a literal
 
@@ -294,5 +309,5 @@ Raku code runs in the terminal and in the browser.
 | `sub MAIN` never runs | no argv in the browser | call your subs directly, or strip `MAIN` and drive it |
 | Second run behaves oddly | leftover state / partial output | reuse `say` (see row 1); or recreate the worker per run |
 
-That's the whole model: **a program is a string, input goes into the string,
-output comes back as text.** Everything else is ordinary Raku.
+That's the whole model: **a program is a string, input goes in as stdin or into
+the string, output comes back as text.** Everything else is ordinary Raku.

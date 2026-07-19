@@ -17,7 +17,7 @@ in `../src` is modified — everything here is additive:
 
 | File | Purpose |
 |------|---------|
-| `rakupp_web.cpp` | Thin entry point exporting `rakupp_run(src)` — calls the interpreter's existing `rakupp::rakuppRun()`. |
+| `rakupp_web.cpp` | Thin entry point exporting `rakupp_run(src, stdin)` — calls the interpreter's existing `rakupp::rakuppRun()`, with the optional `stdin` string fed to `get`/`lines`/`prompt`. |
 | `build.sh` | Compiles `../src/*.cpp` (minus `main.cpp`) + `rakupp_web.cpp` to `playground/rakujs.{js,wasm}`. Bootstraps Emscripten locally if absent. |
 | `gen-examples.raku` | Generates `playground/examples.js` from `../examples/*.raku` (the single source of truth) — run with `rakupp` itself. |
 | `playground/index.html` | A self-contained editor + output console with the example programs. |

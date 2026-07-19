@@ -18,21 +18,37 @@
 #include <emscripten/emscripten.h>
 #include <cstdio>
 #include <iostream>
+#include <sstream>
 
 extern "C" {
 
-// Run a Raku program. `src` is UTF-8 Raku source. Everything the program prints
-// flows to the Module.print / Module.printErr callbacks the host page installs.
+// Run a Raku program. `src` is UTF-8 Raku source; `stdin_text` (may be null)
+// is what the program's standard input contains — `get` / `lines` / `prompt` /
+// `$*IN.slurp` read it and then see EOF, so nothing ever blocks. Everything
+// the program prints flows to the Module.print / Module.printErr callbacks the
+// host page installs.
 // Returns the Raku process exit code (0 = ok, 1 = parse/runtime error, 3 =
 // internal error) — rakuppRun() catches ParseError / RakuError / std::exception
 // internally and reports them to stderr, exactly like the native CLI.
 EMSCRIPTEN_KEEPALIVE
-int rakupp_run(const char* src) {
+int rakupp_run(const char* src, const char* stdin_text) {
+    // The interpreter reads input exclusively through std::cin, so feeding it
+    // is one rdbuf swap: no Emscripten TTY device, no stale-buffer or sticky
+    // EOF state between runs (rdbuf() also clears cin's eof/fail bits).
+    // Callers built against the old one-argument signature pass no second
+    // WASM arg, which arrives here as null — i.e. an empty stdin.
+    static std::istringstream web_stdin;
+    web_stdin.clear();
+    web_stdin.str(stdin_text ? stdin_text : "");
+    std::streambuf* old_in = std::cin.rdbuf(web_stdin.rdbuf());
+
     int rc = rakupp::rakuppRun(src ? src : "",
                                /*args*/    {},
                                /*fileName*/ "web",
                                /*exePath*/  "rakupp.wasm",
                                /*libPaths*/ {});
+
+    std::cin.rdbuf(old_in);
     // Push the final (possibly newline-less) line out to the host before we
     // hand control back to JavaScript.
     std::cout.flush();
