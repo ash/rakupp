@@ -7167,7 +7167,17 @@ void Interpreter::registerBuiltins() {
             else if (op == "ne") c = x.toStr() != y.toStr();
             else c = applyArith(op, x, y).truthy(); // ===, eqv, ~~, before/after, user ops…
         }
-        I.emitTest(c, a.size() > 3 ? a[3].toStr() : "");
+        // On failure, present the operands via .raku (the "presentable" form) — not
+        // .Str, which some objects make die — and name the matcher like Rakudo.
+        std::string diag;
+        if (!c && a.size() >= 3) {
+            auto pres = [&](const Value& v) { Value vv = v; return I.methodCall(vv, "raku", ValueList{}).toStr(); };
+            std::string mstr = a[1].t == VT::Code
+                ? [&]{ Value m = a[1]; return I.methodCall(m, "gist", ValueList{}).toStr(); }()
+                : "'infix:<" + a[1].toStr() + ">'";
+            diag = "# expected: " + pres(a[2]) + "\n#  matcher: " + mstr + "\n#      got: " + pres(a[0]) + "\n";
+        }
+        I.emitTest(c, a.size() > 3 ? a[3].toStr() : "", "", diag);
         return Value::boolean(c);
     };
     B["todo"] = [](Interpreter& I, ValueList& a) -> Value { // todo($reason, $count=1): mark next tests TODO
