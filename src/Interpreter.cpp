@@ -10062,8 +10062,15 @@ Value Interpreter::evalIndex(Index* idx) {
                     Value iv = eval(idx->index.get());
                     if (iv.t == VT::Int && !iv.big) {
                         long long ix = iv.i;
-                        if (ix < 0) ix += (long long)arr->size();
-                        if (ix >= 0 && ix < (long long)arr->size()) {
+                        if (ix < 0) { // negative is out of range (no Python wraparound) → Failure
+                            long long sz = (long long)arr->size();
+                            Value f = Value::makeHash(); f.hashKind = "Failure";
+                            (*f.hash)["exception"] = Value::typeObj("X::OutOfRange");
+                            (*f.hash)["message"] = Value::str("Index out of range. Is: " + std::to_string(ix) +
+                                                              ", should be in 0.." + std::to_string(sz > 0 ? sz - 1 : 0));
+                            return f;
+                        }
+                        if (ix < (long long)arr->size()) {
                             Value el = (*arr)[ix];
                             // an element is a scalar container: a nested Array stays
                             // ONE item downstream (`my @row = @m[0]` is [[...],])
@@ -10635,17 +10642,17 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (i == 0 || i == -1) return base;
                     return Value::nil();
                 }
-                // A `*-N` index (already resolved against the length) that lands
-                // below 0 is out of range → a Failure (fails-like X::OutOfRange);
-                // a plain negative literal keeps the from-the-end adjustment.
-                if (wasWhatever && i < 0) {
+                // A negative index is OUT OF RANGE in Raku (there is no Python-style
+                // from-the-end wraparound — that is what `@a[*-1]` is for). Both a
+                // literal `@a[-1]` and a `*-N` that resolves below 0 yield a Failure.
+                (void)wasWhatever;
+                if (i < 0) {
                     Value f = Value::makeHash(); f.hashKind = "Failure";
                     (*f.hash)["exception"] = Value::typeObj("X::OutOfRange");
                     (*f.hash)["message"] = Value::str("Index out of range. Is: " + std::to_string(i) +
                                                       ", should be in 0.." + std::to_string(n > 0 ? n - 1 : 0));
                     return f;
                 }
-                if (i < 0) i += n;
                 if (i >= 0 && i < n) {
                     // a hole (deleted slot) in a defaulted/typed array reads as the default
                     if (base.t == VT::Array && (src[i].t == VT::Nil || src[i].t == VT::Any) &&
