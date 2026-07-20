@@ -13,14 +13,14 @@ to WebAssembly; the two sites embed that WebAssembly; the Homebrew tap and the
 GitHub Release distribute the native binary; the corpus is test input run against
 it. There is one implementation behind every surface.
 
-| Project | What it is | Repository | Local checkout | Serves |
-|---|---|---|---|---|
-| **Raku++ (rakupp)** | The interpreter + native compiler in C++17. Source of truth for everything below. | [ash/rakupp](https://github.com/ash/rakupp) | *this repo* | native binary, `--exe` |
-| **Raku.js** | `../src` compiled to WebAssembly (Emscripten) — Raku in the browser, no server. Additive: nothing in `../src` is modified. | (part of rakupp, [`rakujs/`](../rakujs/README.md)) | `rakujs/` | `rakujs.{js,wasm}` |
-| **raku.online** | The public playground built on Raku.js — editor, output pane, share/open links, an embeddable widget (`raku.js`). | [ash/raku.online](https://github.com/ash/raku.online) | `/Users/ash/raku.online` | [raku.online](https://raku.online/) |
-| **raku-spec** | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku-spec](https://github.com/ash/raku-spec) | `/Users/ash/raku-spec` | [spec.raku.online](https://spec.raku.online/) |
-| **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | *(clone as needed)* | — (test input) |
-| **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `$(brew --repository)/Library/Taps/ash/homebrew-rakupp` | `brew install rakupp` |
+| Project | What it is | Repository | Serves |
+|---|---|---|---|
+| **Raku++ (rakupp)** | The interpreter + native compiler in C++17. Source of truth for everything below. | [ash/rakupp](https://github.com/ash/rakupp) | native binary, `--exe` |
+| **Raku.js** | `../src` compiled to WebAssembly (Emscripten) — Raku in the browser, no server. Additive: nothing in `../src` is modified. | (part of rakupp, [`rakujs/`](../rakujs/README.md)) | `rakujs.{js,wasm}` |
+| **raku.online** | The public playground built on Raku.js — editor, output pane, share/open links, an embeddable widget (`raku.js`). | [ash/raku.online](https://github.com/ash/raku.online) | [raku.online](https://raku.online/) |
+| **raku-spec** | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku-spec](https://github.com/ash/raku-spec) | [spec.raku.online](https://spec.raku.online/) |
+| **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
+| **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
 ## How they connect
 
@@ -116,11 +116,11 @@ refreshed by hand.
    ```
    (Bootstraps Emscripten into `rakujs/emsdk/` on first run; `-Oz` release build.
    The version string is baked from `CMakeLists.txt`, so Step A.1 must precede this.)
-3. **Copy the built artifacts into the site** — into
-   `/Users/ash/raku.online/www/`: `rakujs.js`, `rakujs.wasm`, `examples.js`
-   (always), plus `worker.js`/`index.html` **only if** they changed upstream in
+3. **Copy the built artifacts into the site** — into the `raku.online` checkout's
+   `www/`: `rakujs.js`, `rakujs.wasm`, `examples.js` (always), plus
+   `worker.js`/`index.html` **only if** they changed upstream in
    `rakujs/playground/` (raku.online keeps its own branded `index.html`).
-4. **Deploy** — mount the server (sshfs), then from `/Users/ash/raku.online`:
+4. **Deploy** — mount the server (sshfs), then from the `raku.online` checkout:
    ```sh
    ./deploy.sh
    ```
@@ -136,13 +136,13 @@ raku.online's `raku.js`). What remains is **content** — documenting features t
 release newly supports.
 
 1. **Author/update feature pages** — one Markdown-ish file per feature under
-   `/Users/ash/raku-spec/src/pages/<category>/<slug>.md` (categories: `literals`,
+   the `raku-spec` checkout's `src/pages/<category>/<slug>.md` (categories: `literals`,
    `operators`, `types`, `variables`, `control`, `subs`, `methods`, `builtins`,
    `regexes`, `phasers`, `concurrency`). Give each a ```` ```raku ```` example and,
    where deterministic, a matching ```` ```output ```` block — the build verifies
    these against the real interpreter. Update `status:` (`full`/`partial`/
    `divergent`/`ni`) for features whose support level changed.
-2. **Build + verify + deploy** — from `/Users/ash/raku-spec` (with `.deploy.env`
+2. **Build + verify + deploy** — from the `raku-spec` checkout (with `.deploy.env`
    pointing `RAKUPP` at the freshly built binary, `SPEC_DEST` at the doc root,
    and ideally `ORACLE=raku` + a Node `WASM=` build for cross-checking):
    ```sh
