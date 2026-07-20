@@ -242,6 +242,7 @@ struct SubDecl : Stmt {
     std::vector<SubTraitSpec> traits; // non-built-in `is` traits, dispatched to user trait_mod:<is> multis
     ExprPtr retLiteral; // `--> 1` literal return: an empty body yields this value
     bool isMulti = false;
+    bool isProto = false; // `proto` — defines the dispatch group; not a candidate itself
     bool isMethod = false;
     bool isSubmethod = false;
     std::vector<ExprPtr> immediateArgs; // `sub f($n) {…}(1)` — declare, then call at once

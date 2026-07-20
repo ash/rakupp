@@ -31,6 +31,7 @@ struct Callable {
     std::vector<std::string> placeholders;         // $^a auto-params (sorted)
     std::vector<Value> candidates;                 // multi-dispatch candidates
     bool isMultiDispatcher = false;
+    bool isProto = false;                           // `proto` — a dispatch group header, not a candidate
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant

@@ -2612,6 +2612,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code->body = &sd->body;
                 c.code->closure = tctx_.cur;
                 c.code->retType = sd->retType;
+                // Only a PURE `{*}` proto (a bare redispatcher) is excluded from
+                // dispatch; a proto with a real body (or an operator proto with no
+                // multis) stays a callable candidate.
+                c.code->isProto = sd->isProto && sd->body.size() == 1 &&
+                    sd->body[0]->kind == NK::ExprStmt &&
+                    static_cast<ExprStmt*>(sd->body[0].get())->e &&
+                    static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
                 if (sd->isNative) { c.code->isNative = true; c.code->nativeLib = sd->nativeLib;
                                     c.code->nativeSym = sd->nativeSym.empty() ? sd->name : sd->nativeSym; }
                 if (prms->empty()) c.code->placeholders = computePlaceholders(sd->body);
@@ -4474,6 +4481,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         std::function<Value(ValueList)> dispatch = [this, &c, &codeVal, rwArgs, visited, &dispatch](ValueList as) -> Value {
             const Value* best = nullptr; int bestScore = -1;
             for (auto& cand : c.candidates) {
+                if (cand.code && cand.code->isProto) continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 int s = scoreCandidate(cand, as);
@@ -4903,6 +4911,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             [this, &c, dispatcherVal, selfCopy, rwArgs, visited, parentNext, &dispatch](ValueList as) -> Value {
             const Value* best = nullptr; int bestScore = -1;
             for (auto& cand : c.candidates) {
+                if (cand.code && cand.code->isProto) continue; // the proto defines the group; it is not a candidate
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 int s = scoreCandidate(cand, as);

@@ -1531,10 +1531,13 @@ ExprPtr Parser::parseColonPair() {
         return pair;
     }
     if (isKind(Tok::Var)) {
-        // :$x  -> x => $x
+        // :$x -> x => $x ; a twigil is dropped from the KEY (`:$^radius` is
+        // `radius => $^radius`, `:$*foo` is `foo => $*foo`) but kept in the value.
         std::string vn = cur().text;
         advance();
-        pair->key = vn.size() > 1 ? vn.substr(1) : vn;
+        std::string key = vn.size() > 1 ? vn.substr(1) : vn;
+        if (!key.empty() && std::strchr("^.!*?:=~", key[0])) key = key.substr(1);
+        pair->key = key;
         pair->value = std::make_unique<VarExpr>(vn);
         return pair;
     }
@@ -3327,10 +3330,11 @@ std::vector<Param> Parser::parsePointyParams() {
     return parseSignature(Tok::LBrace);
 }
 
-StmtPtr Parser::parseSub(bool isMulti) {
+StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
     // 'sub' already consumed by caller
     auto s = std::make_unique<SubDecl>();
     s->isMulti = isMulti;
+    s->isProto = isProto;
     std::string declInfix; // set when this is an `infix:<…>` declaration (for precedence traits)
     if (isOp("!")) advance(); // private method `method !name` — stored under its bare name
     if (isKind(Tok::Ident)) s->name = advance().text;
@@ -4070,7 +4074,7 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "multi" || kw == "proto") {
             advance();
             if (isIdent("sub")) advance();
-            return parseSub(true);
+            return parseSub(true, kw == "proto");
         }
         if (kw == "if") { advance(); return parseIf(false); }
         if (kw == "unless") { advance(); return parseIf(true); }
