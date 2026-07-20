@@ -1,0 +1,263 @@
+########## 0295  (exercises/paradigms/await/await-a-supply.raku) ##########
+=== SOURCE (0295) ===
+my $sensor = Supply.from-list(18, 21, 19, 23);
+
+my $last = await $sensor;
+say "final reading: $last";
+=== RAKUDO rc=0 ===
+final reading: 23
+=== RAKUPP rc=0 ===
+final reading: values	18 21 19 23
+
+########## 0304  (exercises/paradigms/connections/send-and-receive.raku) ##########
+=== SOURCE (0304) ===
+my $conn = IO::Socket::INET.new(:host('example.com'), :port(80));
+
+$conn.print("HEAD / HTTP/1.0\r\nHost: example.com\r\n\r\n");
+my $response = $conn.recv;
+
+$conn.close;
+say $response.lines.first;
+=== RAKUDO rc=0 ===
+HTTP/1.1 200 OK
+=== RAKUPP rc=0 ===
+HTTP/1.1 200 OK
+
+########## 0306  (exercises/paradigms/cro/status-line.raku) ##########
+=== SOURCE (0306) ===
+use Cro::HTTP::Client;
+
+my $response = await Cro::HTTP::Client.get('http://example.com/');
+say $response.status;
+=== RAKUDO rc=0 ===
+200
+=== RAKUPP rc=1 ===
+
+########## 0740  (essentials/strings/escaping-special-characters/index.md#6) ##########
+=== SOURCE (0740) ===
+say 'a\b\c\\'; # a\b\c\
+=== RAKUDO rc=0 ===
+=== RAKUPP rc=0 ===
+a\b\c\
+
+########## 1140  (advanced/special-variables/twigils/index.md#1) ##########
+=== SOURCE (1140) ===
+say $?LINE; # the line number of this statement
+say $?FILE; # the path of this source file
+=== RAKUDO rc=0 ===
+1
+/private/var/folders/8y/kz8l_x2x63x5knxw5bpx16m40000gn/T/tmp.tGcGDEN5Qw/s.raku
+=== RAKUPP rc=0 ===
+1
+s.raku
+
+########## 1328  (oop/mop/adding-methods/index.md#1) ##########
+=== SOURCE (1328) ===
+class Empty {
+}
+
+Empty.^add_method('greet', method { 'hi' });
+
+say Empty.new.greet; # hi
+=== RAKUDO rc=0 ===
+hi
+=== RAKUPP rc=1 ===
+
+########## 1547  (paradigms/await/exercises/await-a-supply/solution/index.md#1) ##########
+=== SOURCE (1547) ===
+my $sensor = Supply.from-list(18, 21, 19, 23);
+
+my $last = await $sensor;
+say "final reading: $last";
+=== RAKUDO rc=0 ===
+final reading: 23
+=== RAKUPP rc=0 ===
+final reading: values	18 21 19 23
+
+########## 1572  (paradigms/connections/exercises/send-and-receive/solution/index.md#1) ##########
+=== SOURCE (1572) ===
+my $conn = IO::Socket::INET.new(:host('example.com'), :port(80));
+
+$conn.print("HEAD / HTTP/1.0\r\nHost: example.com\r\n\r\n");
+my $response = $conn.recv;
+
+$conn.close;
+say $response.lines.first;
+=== RAKUDO rc=0 ===
+HTTP/1.1 200 OK
+=== RAKUPP rc=0 ===
+HTTP/1.1 200 OK
+
+########## 1574  (paradigms/connections/sending-receiving/index.md#1) ##########
+=== SOURCE (1574) ===
+my $conn = IO::Socket::INET.new(:host('raku.org'), :port(80));
+
+$conn.print("GET / HTTP/1.0\r\nHost: raku.org\r\n\r\n");
+my $response = $conn.recv;
+
+$conn.close;
+say $response.lines.first;
+=== RAKUDO rc=0 ===
+HTTP/1.1 308 Permanent Redirect
+=== RAKUPP rc=0 ===
+HTTP/1.1 308 Permanent Redirect
+
+########## 1576  (paradigms/cro/client-modules/index.md#1) ##########
+=== SOURCE (1576) ===
+use Cro::HTTP::Router;
+use Cro::HTTP::Server;
+use Cro::HTTP::Client;
+
+# the tiny service from the previous page
+my $application = route {
+    get -> 'hello' { content 'text/plain', 'Hello from Cro!'; }
+}
+my $server = Cro::HTTP::Server.new(
+    :host('127.0.0.1'), :port(8080), :application($application),
+);
+$server.start;
+
+# now be the client and call it
+my $response = await Cro::HTTP::Client.get('http://127.0.0.1:8080/hello');
+say await $response.body-text; # Hello from Cro!
+
+$server.stop;
+=== RAKUDO rc=0 ===
+Hello from Cro!
+=== RAKUPP rc=1 ===
+
+########## 1579  (paradigms/cro/exercises/status-line/solution/index.md#1) ##########
+=== SOURCE (1579) ===
+use Cro::HTTP::Client;
+
+my $response = await Cro::HTTP::Client.get('http://example.com/');
+say $response.status;
+=== RAKUDO rc=0 ===
+200
+=== RAKUPP rc=1 ===
+
+########## 1580  (paradigms/cro/public-apis/index.md#1) ##########
+=== SOURCE (1580) ===
+use Cro::HTTP::Client;
+
+my $url = 'https://api.open-meteo.com/v1/forecast'
+        ~ '?latitude=52.52&longitude=13.41&current=temperature_2m,wind_speed_10m';
+
+my $response = await Cro::HTTP::Client.get($url);
+my %current  = (await $response.body)<current>;
+
+say "Berlin right now:";
+say "  temperature: %current<temperature_2m> °C";
+say "  wind speed:  %current<wind_speed_10m> km/h";
+=== RAKUDO rc=0 ===
+Berlin right now:
+  temperature: 16.5 °C
+  wind speed:  16.7 km/h
+=== RAKUPP rc=1 ===
+
+########## 1581  (paradigms/cro/public-apis/index.md#2) ##########
+=== SOURCE (1581) ===
+use Cro::HTTP::Client;
+
+my $response = await Cro::HTTP::Client.get(
+    'https://wttr.in/Berlin?format=3',
+    headers => [ User-Agent => 'curl' ],
+);
+print await $response.body-text;
+=== RAKUDO rc=0 ===
+Berlin: 🌤️  +15°C
+=== RAKUPP rc=1 ===
+
+########## 1619  (paradigms/hyper-race/batch-and-degree/index.md#4) ##########
+=== SOURCE (1619) ===
+my $h := (1..10).hyper;
+say $h.^attributes.first(*.name.contains('config')).get_value($h).raku;
+# HyperConfiguration.new(batch => 64, degree => 7)
+=== RAKUDO rc=0 ===
+HyperConfiguration.new(batch => 64, degree => 7)
+=== RAKUPP rc=1 ===
+
+########## 1676  (paradigms/react-whenever/two-timers/index.md#1) ##########
+=== SOURCE (1676) ===
+react {
+    whenever Supply.interval(0.3) {
+        say "tick $_";
+    }
+    whenever Supply.interval(0.5, 0.25) {
+        say "TOCK $_";
+    }
+    whenever Promise.in(1.4) {
+        done;
+    }
+}
+=== RAKUDO rc=0 ===
+tick 0
+TOCK 0
+tick 1
+tick 2
+TOCK 1
+tick 3
+tick 4
+TOCK 2
+=== RAKUPP rc=0 ===
+tick 0
+tick 1
+tick 2
+tick 3
+tick 4
+TOCK 0
+TOCK 1
+TOCK 2
+TOCK 3
+TOCK 4
+
+########## 1680  (paradigms/react-whenever/whenever/quiz2/index.md#1) ##########
+=== SOURCE (1680) ===
+my @out;
+
+react {
+    whenever Supply.from-list(1, 2, 3) {
+        @out.push($_);
+        done if $_ == 2;
+    }
+    whenever Supply.from-list(10, 20) {
+        @out.push($_);
+    }
+}
+
+say @out;
+=== RAKUDO rc=0 ===
+[1 2]
+=== RAKUPP rc=0 ===
+[1 2 10]
+
+########## 1718  (paradigms/supply-kinds/live-in-action/index.md#1) ##########
+=== SOURCE (1718) ===
+my $supplier = Supplier.new;
+my $events   = $supplier.Supply;
+
+my $log = $events.tap(-> $v { say "log:   $v" });    # first listener joins
+$supplier.emit('start');
+
+my $alert = $events.tap(-> $v { say "alert: $v" });  # a second listener joins
+$supplier.emit('warning');
+$supplier.emit('all clear');
+
+$log.close;                                          # the first listener leaves
+$supplier.emit('stop');
+=== RAKUDO rc=0 ===
+log:   start
+log:   warning
+alert: warning
+log:   all clear
+alert: all clear
+alert: stop
+=== RAKUPP rc=0 ===
+log:   start
+log:   warning
+alert: warning
+log:   all clear
+alert: all clear
+log:   stop
+alert: stop
+
