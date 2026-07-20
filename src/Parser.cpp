@@ -3500,6 +3500,12 @@ StmtPtr Parser::parseSub(bool isMulti) {
             s->body.push_back(parseStatement());
         }
     }
+    // A bodyless named `sub foo;` is only legal as the unit-scoped `unit sub foo;`
+    // (whose body is the rest of the file). Any other bodyless declaration is a
+    // compile error — you probably meant `unit sub` or forgot the block.
+    if (!hadBlock && s->body.empty() && !s->name.empty() && s->name != "MAIN" &&
+        !unitDecl_ && !s->isMulti && (isKind(Tok::Semicolon) || isKind(Tok::End)))
+        throw ParseError("Semicolon form of 'sub' without unit scope is illegal. You probably want 'unit sub'. (X::UnitScope::Invalid)", cur().line);
     // `sub f($n) {…}(1)` — declaration immediately invoked
     if (isKind(Tok::LParen) && !cur().spaceBefore) {
         advance();
@@ -3957,7 +3963,9 @@ StmtPtr Parser::parseStatementImpl() {
                 bool wasOur = (kw == "our");
                 bool wasUnit = (kw == "unit");
                 advance(); // strip scope/unit; re-dispatch on the declaration keyword
+                bool savedUnit = unitDecl_; unitDecl_ = wasUnit;
                 StmtPtr st = parseStatement();
+                unitDecl_ = savedUnit;
                 // `our sub`/`our multi` — remember package scope so it installs globally.
                 if (wasOur && st && st->kind == NK::SubDecl) static_cast<SubDecl*>(st.get())->isOur = true;
                 // `unit sub MAIN(…);` — no block: the REST OF THE FILE is the body
