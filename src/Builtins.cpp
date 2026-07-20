@@ -5098,7 +5098,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "index" || m == "rindex") {
         // positions are in characters, not bytes; the optional 2nd arg is the
         // start (index) / rightmost-allowed start (rindex) position.
+        // `:i`/`:ignorecase` case-folds both sides before comparing.
+        bool icase = false;
+        for (auto& av : args)
+            if (av.t == VT::Pair && (av.s == "i" || av.s == "ignorecase"))
+                icase = !av.pairVal || av.pairVal->truthy();
         auto cps = utf8cp(inv.toStr()); auto ncps = utf8cp(a0().toStr());
+        if (icase) { for (auto& c : cps) c = toLowerCp(c); for (auto& c : ncps) c = toLowerCp(c); }
         long long n = (long long)cps.size(), k = (long long)ncps.size();
         long long from = m == "index" ? 0 : n;
         if (args.size() > 1 && args[1].isNumeric()) {
