@@ -15,3 +15,8 @@ playground/examples.js
 
 # Scratch dir used when diffing WASM vs native example output.
 playground/_native/
+
+# Node-target build used as the spec site's WASM verification gate (raku-spec
+# build.raku --wasm=…/rakujs/node-build/rakujs.js). Regenerate with:
+#   RAKUJS_ENV=node RAKUJS_OUT=$PWD/rakujs/node-build rakujs/build.sh
+node-build/
