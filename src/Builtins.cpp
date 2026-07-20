@@ -7353,7 +7353,13 @@ void Interpreter::registerBuiltins() {
     // comparison and collapses per the junction's kind (any/all/one/none).
     auto isEq = [](const Value& got, const Value& exp) -> bool {
         auto scalarEq = [](const Value& g, const Value& e) {
-            // Rakudo's `is` compares stringified values with `eq` (Test::is), so
+            // Two undefined values match regardless of how they stringify: Rakudo's
+            // `is` treats an undefined expected as a definedness check, so
+            // `is @a[11], Any` passes even though a bare undef stringifies to '' but
+            // `Any` gists to '(Any)'. This is additive to the stringify compare below
+            // so a defined-empty got still matches an undefined expected (`is Nil, ''`).
+            if (!defined(g) && !defined(e)) return true;
+            // Otherwise Rakudo compares stringified values with `eq` (Test::is), so
             // `is 1/3, 0.333333` passes on matching decimal forms. (Exact-numeric
             // comparison lives in is-approx / cmp-ok, not plain `is`.)
             return g.toStr() == e.toStr();
