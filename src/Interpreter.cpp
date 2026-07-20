@@ -9401,6 +9401,10 @@ std::string Interpreter::gistOf(const Value& v) {
             if (it != v.obj->attrs.end()) return it->second.toStr();
         }
     }
+    // a `but VALUE` mixin boxes the base and adds a method named after VALUE's type
+    // (`42 but 'x'` → a Str method): its .gist is that mixed string, not the box's.
+    if (v.t == VT::Object && v.obj && v.obj->hasBoxed && v.obj->cls)
+        if (Value* m = v.obj->cls->findMethod("Str")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
     if (v.t == VT::Object && v.obj && v.obj->hasBoxed) return gistOf(v.obj->boxed);
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         // Rakudo's default gist: Class.new(pubattr => repr, ...) — public attrs
