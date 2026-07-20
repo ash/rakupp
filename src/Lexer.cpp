@@ -645,7 +645,10 @@ Token Lexer::lexNumber() {
         isFloat = true; hasExp = true;
         num += advance();
         if (peek() == '+' || peek() == '-') num += advance();
-        while (std::isdigit((unsigned char)peek())) num += advance();
+        while (std::isdigit((unsigned char)peek()) || peek() == '_') {
+            if (peek() == '_') { if (!std::isdigit((unsigned char)peek(1))) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); }
+            num += advance();
+        }
     }
     // the numeric VALUE is computed from the underscore-free digits
     std::string bare; for (char c : num) if (c != '_') bare += c;

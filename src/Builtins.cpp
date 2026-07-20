@@ -7143,6 +7143,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (m == "pop") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->back(); inv.arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
             if (m == "shift") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
+                // a lazy array only holds a prefix — materialize enough to cover the window
+                if (inv.ext) {
+                    long s0 = args.size() > 0 ? args[0].toInt() : 0;
+                    materializeLazy(inv, args.size() > 1 ? (size_t)(std::max(0L, s0) + args[1].toInt()) : 1000000);
+                }
                 long n = (long)inv.arr->size();
                 long start = args.size() > 0 ? args[0].toInt() : 0;
                 if (start < 0) start += n;

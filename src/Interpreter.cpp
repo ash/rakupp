@@ -5117,6 +5117,8 @@ Value* Interpreter::lvalue(Expr* e) {
             auto* dims = static_cast<ListExpr*>(idx->index.get());
             Value* node = base;
             bool hashy = idx->isHash;
+            auto shape = base->shape; // fixed-dimension array bounds (if any)
+            size_t d = 0;
             for (auto& de : dims->items) {
                 if (hashy || node->t == VT::Hash) {
                     if (node->t != VT::Hash) *node = Value::makeHash();
@@ -5130,10 +5132,17 @@ Value* Interpreter::lvalue(Expr* e) {
                     kv = callCallable(kv, ValueList{Value::integer((long long)node->arr->size())});
                 long long i = kv.toInt();
                 if (i < 0) i += (long long)node->arr->size();
+                // a shaped array's dimensions are FIXED — an out-of-range index dies
+                // rather than growing the array (`my @a[2;2]; @a[1;2] = 5` throws)
+                if (shape && d < shape->size() && (i < 0 || i >= (*shape)[d]))
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "Index " + std::to_string(kv.toInt()) + " out of range for dimension " +
+                        std::to_string(d) + " (0.." + std::to_string((*shape)[d] - 1) + ")"};
                 if (i < 0) i = 0;
                 while ((long long)node->arr->size() <= i)
                     node->arr->push_back(node->ofType.empty() ? Value::any() : typedElemDefault(*node));
                 node = &(*node->arr)[i];
+                d++;
             }
             return node;
         }
@@ -5481,6 +5490,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* ix = static_cast<Index*>(a->target.get());
             bool sliceForm = ix->index && !ix->multiDim &&
                 (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+                 ix->index->kind == NK::ArrayLit || // angle-word slice `%h<a b> = …`
                  (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
                   static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
                  (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^"));
