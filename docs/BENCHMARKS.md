@@ -34,22 +34,22 @@ there.)
 - **Startup:** ~2 ms cold on this machine (best of a 200-spawn loop: 1.8 ms) —
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
   small programs it is instant.
-- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.7× on
-  `arrayops` to 10.2× on `loopsum`, 13.4× on `hash`, and 36× on `strcat`.
+- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.6× on
+  `arrayops` to 9.7× on `loopsum`, 13.4× on `hash`, and 47.9× on `strcat`.
   Compiling removes interpreter overhead.
 - **Rakudo's JIT keeps two interpreter wins**: `fib` (1.7×) — deep recursion of
-  a tiny body — and `streq` (1.9×; string comparisons walk the interpreter's
-  operator-dispatch chain). Compiling flips both: `--exe` puts `fib` 2.8× ahead
-  and `streq` 6.6× ahead (string `eq`/`lt` compile to inline byte-compares — see
+  a tiny body — and `streq` (2.0×; string comparisons walk the interpreter's
+  operator-dispatch chain). Compiling flips both: `--exe` puts `fib` 2.9× ahead
+  and `streq` 6.2× ahead (string `eq`/`lt` compile to inline byte-compares — see
   [dev/DISPATCH.md](dev/DISPATCH.md) for the dispatch story).
 - Even the **interpreter** beats Rakudo on 7 of 9 — everything except `fib` and
-  `streq`, including the `loopsum` loop kernel (1.4×).
+  `streq`, including the `loopsum` loop kernel (1.3×).
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
-  O(n) rather than O(n²) — 14× ahead of Rakudo even interpreted.
+  O(n) rather than O(n²) — 15× ahead of Rakudo even interpreted.
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 24.6), measured 2026-07-19 on a lightly loaded
+- **Machine:** macOS (Darwin 24.6), measured 2026-07-20 on a lightly loaded
   desktop. (Rows are not comparable across doc revisions — absolute times
   shift a few percent with machine state; the Rakudo column, measured every
   time, is the fixed yardstick. A per-iteration `std::function` allocation that
@@ -88,15 +88,15 @@ Rakudo's VM leads on `fib` (tiny-body recursion, a JIT's best case) and on
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| strcat   | 11.5 ms  | 188.1 ms | **Raku++ 16.4×** |
-| bigint   | 32.4 ms  | 260.0 ms | **Raku++ 8.0×** |
-| hash     | 37.0 ms  | 231.3 ms | **Raku++ 6.3×** |
-| sortnums | 71.0 ms  | 260.5 ms | **Raku++ 3.7×** |
-| regex    | 82.5 ms  | 287.2 ms | **Raku++ 3.5×** |
-| arrayops | 108.6 ms | 289.9 ms | **Raku++ 2.7×** |
-| loopsum  | 191.6 ms | 273.3 ms | **Raku++ 1.4×** |
-| streq    | 551.3 ms | 292.8 ms | Rakudo 1.9× |
-| fib      | 786.4 ms | 472.2 ms | Rakudo 1.7× |
+| strcat   | 12.2 ms  | 187.0 ms | **Raku++ 15.3×** |
+| bigint   | 31.8 ms  | 257.1 ms | **Raku++ 8.1×** |
+| hash     | 38.3 ms  | 227.7 ms | **Raku++ 5.9×** |
+| sortnums | 71.8 ms  | 257.1 ms | **Raku++ 3.6×** |
+| regex    | 86.1 ms  | 283.6 ms | **Raku++ 3.3×** |
+| arrayops | 109.9 ms | 287.1 ms | **Raku++ 2.6×** |
+| loopsum  | 212.3 ms | 267.5 ms | **Raku++ 1.3×** |
+| streq    | 564.9 ms | 287.9 ms | Rakudo 2.0× |
+| fib      | 792.8 ms | 459.2 ms | Rakudo 1.7× |
 
 ### Native (`--exe`) vs Rakudo
 
@@ -106,20 +106,20 @@ speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| strcat   | 5.2 ms   | 188.1 ms | **Raku++ 36.2×** | 2.2× |
-| hash     | 17.2 ms  | 231.3 ms | **Raku++ 13.4×** | 2.2× |
-| loopsum  | 26.7 ms  | 273.3 ms | **Raku++ 10.2×** | 7.2× |
-| bigint   | 30.3 ms  | 260.0 ms | **Raku++ 8.6×**  | 1.1× |
-| streq    | 44.1 ms  | 292.8 ms | **Raku++ 6.6×**  | 12.5× |
-| sortnums | 53.0 ms  | 260.5 ms | **Raku++ 4.9×**  | 1.3× |
-| regex    | 65.0 ms  | 287.2 ms | **Raku++ 4.4×**  | 1.3× |
-| fib      | 167.9 ms | 472.2 ms | **Raku++ 2.8×**  | 4.7× |
-| arrayops | 107.0 ms | 289.9 ms | **Raku++ 2.7×**  | 1.0× |
+| strcat   | 3.9 ms   | 187.0 ms | **Raku++ 47.9×** | 3.1× |
+| hash     | 17.0 ms  | 227.7 ms | **Raku++ 13.4×** | 2.3× |
+| loopsum  | 27.7 ms  | 267.5 ms | **Raku++ 9.7×**  | 7.7× |
+| bigint   | 30.1 ms  | 257.1 ms | **Raku++ 8.5×**  | 1.1× |
+| streq    | 46.4 ms  | 287.9 ms | **Raku++ 6.2×**  | 12.2× |
+| sortnums | 55.2 ms  | 257.1 ms | **Raku++ 4.7×**  | 1.3× |
+| regex    | 67.2 ms  | 283.6 ms | **Raku++ 4.2×**  | 1.3× |
+| fib      | 161.1 ms | 459.2 ms | **Raku++ 2.9×**  | 4.9× |
+| arrayops | 108.4 ms | 287.1 ms | **Raku++ 2.6×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
-hurts — `streq` 12.5× (per-node walking around what is, after the fast path, a
-trivial byte-compare — see [dev/DISPATCH.md](dev/DISPATCH.md)), `loopsum` 7.2×,
-`fib` 4.7× (both re-dispatch a tiny body a huge number of times). It's a near
+hurts — `streq` 12.2× (per-node walking around what is, after the fast path, a
+trivial byte-compare — see [dev/DISPATCH.md](dev/DISPATCH.md)), `loopsum` 7.7×,
+`fib` 4.9× (both re-dispatch a tiny body a huge number of times). It's a near
 no-op (1.0–1.3×) for the workloads whose time is spent *inside* runtime
 methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and especially
 `bigint`, which lives almost entirely in `BigInt` multiply. There the driving
@@ -127,7 +127,7 @@ loop is trivial, so removing interpreter overhead changes little.
 
 `fib` — a tiny function called 1.6M times, the case a JIT specializes best — used
 to be the one place Rakudo led even the default `--exe`; hot-pathing integer
-arithmetic in the runtime (`applyArith`) closed that gap and put native ~2.7×
+arithmetic in the runtime (`applyArith`) closed that gap and put native ~2.9×
 ahead. `streq` got the same treatment on 2026-07-17: string comparisons used to
 walk `applyArith`'s full dispatch chain (~118 ns per `eq`). Compiled code now
 emits inline plain-`Str` byte-compares and calls builtins through pointers
@@ -162,15 +162,15 @@ for reference:
 
 | Benchmark | `--exe` | `--exe -O` | `-O` vs `--exe` | Rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| sieve       | 1037.7 ms | **25.7 ms**  | **40.4×** | 1000.7 ms | primes < 200k by trial division — `* <= %%` all laned |
-| powmod      | 559.7 ms  | **51.0 ms**  | **11.0×** | 754.6 ms  | 1M `** 3` then `% 1000` — inline pow + mod lane |
-| intsum      | 283.4 ms  | **30.4 ms**  | **9.3×**  | 664.0 ms  | 5M int accumulation — `+=` lane, zero boxing |
-| fibcalls    | 699.8 ms  | **194.5 ms** | **3.6×**  | 1413.3 ms | fib(32) — direct-arity calls + int-lane condition |
-| stringbuild | 23.5 ms   | 22.6 ms      | 1.0×      | 222.3 ms  | 400k `~=` appends — in-place O(n) string build |
+| sieve       | 1091.5 ms | **24.2 ms**  | **45.2×** | 985.0 ms  | primes < 200k by trial division — `* <= %%` all laned |
+| powmod      | 555.8 ms  | **53.0 ms**  | **10.5×** | 739.0 ms  | 1M `** 3` then `% 1000` — inline pow + mod lane |
+| intsum      | 298.2 ms  | **32.0 ms**  | **9.3×**  | 652.5 ms  | 5M int accumulation — `+=` lane, zero boxing |
+| fibcalls    | 668.2 ms  | **169.2 ms** | **3.9×**  | 1367.0 ms | fib(32) — direct-arity calls + int-lane condition |
+| stringbuild | 23.3 ms   | 23.3 ms      | 1.0×      | 215.6 ms  | 400k `~=` appends — in-place O(n) string build |
 
 The lanes (pass 3) dominate this table: `sieve`'s inner loop — `while $d * $d
 <= $n`, `if $n %% $d`, `$d++` — runs as raw `int64`, taking it from a tie with
-Rakudo at plain `--exe` to 39× ahead, and `intsum` shed its four
+Rakudo at plain `--exe` to 41× ahead, and `intsum` shed its four
 per-iteration `Value` constructions. On the main kernels above, `-O` puts fib
 at 47.0 ms (3.5× over `--exe`, 9.6× over Rakudo), loopsum at 8.6 ms, and streq
 at 17.5 ms (the `$c++`/`$c--` counters lane on top of the inline `eq`/`lt`).
@@ -239,6 +239,6 @@ The harness compiles each program with `--exe` for the native column; the
 benchmark programs are plain, readable Raku in `tools/bench/*.raku` (edit or add
 freely).
 
-_Snapshot taken 2026-07-19 with Raku++ 0.9.0 at 533 / 1,462 Roast files fully
+_Snapshot taken 2026-07-20 with Raku++ 0.9.1 at 558 / 1,462 Roast files fully
 passing, on Darwin 24.6 against Rakudo v2026.06 (kernels: best of 6 harness
 runs; `-O` kernels: best of 5; YAMLish: best of 5, unchanged from 2026-07-16)._
