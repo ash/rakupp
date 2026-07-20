@@ -142,6 +142,7 @@ course. Build it with `rakujs/build.sh`; details in
 - **[LINT.md](docs/LINT.md)** — the `--lint` static analyzer: the rules it applies, warnings vs. notes, exit codes, and why it stays conservative on Raku's dynamic constructs.
 - **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[DOGFOODING.md](docs/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
+- **[ECOSYSTEM.md](docs/ECOSYSTEM.md)** — the projects built on this interpreter (Raku.js, raku.online, spec.raku.online, raku-corpus), how they connect, and the release runbook for rebuilding wasm and redeploying the sites after a new version.
 
 ### Measurements & status
 
