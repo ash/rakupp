@@ -10822,7 +10822,7 @@ Value Interpreter::eval(Expr* e) {
             return p ? *p : Value::any();
         }
         case NK::NameTerm: {
-            if (static_cast<NameTerm*>(e)->name == "Empty") { // the Empty term: an empty Slip
+            if (static_cast<NameTerm*>(e)->name == "Empty" && !classes_.count("Empty")) { // the Empty term: an empty Slip (a user `class Empty` shadows it)
                 Value es = Value::array(); es.isList = true; es.s = "Slip"; return es;
             }
             auto* nt = static_cast<NameTerm*>(e);

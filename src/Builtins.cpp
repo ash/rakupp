@@ -2302,7 +2302,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 }
                 Value sup = (*inv.hash)["supplier"];
                 if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
-                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+                tapRec.hashKind = "Tap"; return tapRec; // shares the record's hash so .close can mark it closed
             }
             // eager: push every value to the emit callback, then run the done phaser
             // (or, if the supply block died, the quit callback with the reason).
@@ -2432,7 +2432,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "done" || m == "close" || m == "quit" || m == "wait") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
-        if (m == "close" || m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
+        // .close removes the tap from its source: mark it closed so emit skips it
+        if (m == "close") { if (inv.hash) (*inv.hash)["closed"] = Value::boolean(true); return Value::boolean(true); }
+        if (m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Attribute") {
         auto& h = *inv.hash;
@@ -8347,6 +8349,12 @@ void Interpreter::registerBuiltins() {
         return Value::nil();
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
+        // a `done` in an earlier whenever closes the react — later whenevers don't run
+        if (!I.reactStack_.empty()) {
+            auto ctx = I.reactStack_.back();
+            std::lock_guard<std::mutex> lk(ctx->m);
+            if (ctx->closed) return Value::nil();
+        }
         // whenever SUPPLY { BLOCK }: tap the supply, running BLOCK for each emitted value
         if (a.size() >= 2 && a.back().t == VT::Code) {
             Value s = a[0], blk = a.back();
@@ -8669,6 +8677,11 @@ void Interpreter::registerBuiltins() {
     B["await"] = [](Interpreter& I, ValueList& a) -> Value {
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {
+            // `await` a Supply drains it and yields its LAST emitted value
+            if (p.t == VT::Hash && p.hashKind == "Supply" && p.hash->count("values")) {
+                auto& vals = *(*p.hash)["values"].arr;
+                return vals.empty() ? Value::any() : vals.back();
+            }
             if (p.t != VT::Hash || p.hashKind != "Promise") return p;
             // PromiseState-backed promise (start / spawnPromise): block until it
             // settles, rethrowing the cause if it was broken.
