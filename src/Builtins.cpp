@@ -1525,7 +1525,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "count-only") return Value::integer(n - posV.i); // remaining, no advance
         if (m == "bool-only") return Value::boolean(posV.i < n);
-        if (m == "is-lazy") return Value::boolean(false);
+        if (m == "is-lazy") { auto it = inv.hash->find("lazy"); return Value::boolean(it != inv.hash->end() && it->second.truthy()); }
         if (m == "is-deterministic" || m == "is-monotonically-increasing") return Value::boolean(true);
         if (m == "can") { // introspection: which protocol methods this iterator supports
             static const std::set<std::string> ms = {
@@ -3987,8 +3987,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "iterator") { // S07: make an Iterator over this value's elements
         Value it = Value::makeHash(); it.hashKind = "Iterator";
         Value items = Value::array();
-        if (inv.t == VT::Array && inv.arr) *items.arr = *inv.arr;
-        else if (inv.t == VT::Range) *items.arr = inv.flatten();
+        bool lazy = false;
+        if (inv.t == VT::Array && inv.arr) { *items.arr = *inv.arr; lazy = inv.b; }
+        else if (inv.t == VT::Range) { *items.arr = inv.flatten();
+            lazy = inv.b || inv.rTo >= 9000000000000000000LL; } // infinite / `lazy`-marked range
         else if (inv.t == VT::Hash) { // plain hash and Set/Bag/Mix iterate their pairs
             ValueList none;
             Value ps = methodCall(inv, "pairs", none, nullptr);
@@ -3997,6 +3999,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         else if (inv.t != VT::Nil && inv.t != VT::Any) items.arr->push_back(inv);
         (*it.hash)["items"] = items;
         (*it.hash)["pos"] = Value::integer(0);
+        if (lazy) (*it.hash)["lazy"] = Value::boolean(true);
         return it;
     }
     // Date/DateTime clone rebuilds via `.new` so `:field(v)` overrides apply AND
