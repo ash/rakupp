@@ -560,6 +560,25 @@ Regex::NodePtr Regex::parseAtom() {
     if (c == '.') { pos_++; auto n = std::make_unique<Node>(); n->k = K::Any; return n; }
     if (c == '^') { pos_++; auto n = std::make_unique<Node>(); n->k = K::AnchorStart; if (peek() == '^') { pos_++; n->multiline = true; } return n; }
     if (c == '$') {
+        // Numbered capture alias `$N=(...)`: the group captures into position N,
+        // and auto-numbering continues from N+1 (`(.)(.)$7=(.)(.)` → $0 $1 $7 $8).
+        {
+            int j = 1; std::string num;
+            while (std::isdigit((unsigned char)peek(j))) { num += peek(j); j++; }
+            if (!num.empty() && peek(j) == '=' && peek(j + 1) == '(') {
+                int idx = std::atoi(num.c_str());
+                for (int t = 0; t < j + 2; t++) pos_++; // consume `$N=(`
+                bool savedI = curIcase_, savedS = sigspace_;
+                auto child = parseAlt();
+                curIcase_ = savedI; sigspace_ = savedS;
+                if (peek() == ')') pos_++;
+                auto g = std::make_unique<Node>();
+                g->k = K::Group; g->capIndex = idx;
+                g->kids.push_back(std::move(child));
+                if (idx + 1 > ncaps_) ncaps_ = idx + 1; // auto-numbering resumes after N
+                return g;
+            }
+        }
         // end anchor only when not an interpolation/backref. A following '$'
         // means the `$$` end-of-line anchor (its own second char isn't a var).
         char nx = peek(1);
