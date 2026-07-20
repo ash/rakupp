@@ -319,7 +319,15 @@ std::string Value::gist() const {
             return out + (isList ? ")" : "]");
         }
         case VT::Pair: return s + " => " + (pairVal ? pairVal->gist() : "");
-        case VT::Str:  return hashKind == "Version" ? "v" + s : s; // v1.2.3.gist is "v1.2.3" (.Str is "1.2.3")
+        case VT::Str:
+            if (hashKind == "Version") return "v" + s; // v1.2.3.gist is "v1.2.3" (.Str is "1.2.3")
+            if (hashKind == "Buf" || hashKind == "Blob") { // Buf:0x<01 02 03> / Buf[uint8]:0x<…>
+                std::string h = hashKind + (ofType.empty() ? "" : "[" + ofType + "]") + ":0x<";
+                static const char* hx = "0123456789ABCDEF";
+                for (size_t k = 0; k < s.size(); k++) { if (k) h += ' '; unsigned char b = s[k]; h += hx[b >> 4]; h += hx[b & 15]; }
+                return h + ">";
+            }
+            return s;
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
             std::ostringstream os;
             os << rFrom << ".." << (rExTo ? "^" : "") << rTo;

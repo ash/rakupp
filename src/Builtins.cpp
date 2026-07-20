@@ -6946,6 +6946,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         // mutators on real arrays
         if (inv.t == VT::Array && inv.arr) {
+            // a native-typed array (`my str @a`, `my int @a`) rejects a value of the
+            // wrong native kind — str takes Str, int/uint/byte take Int, num takes Real
+            auto natCheck = [&](const Value& v) {
+                if (inv.ofType.empty()) return;
+                std::string bt = inv.ofType.substr(0, inv.ofType.find(','));
+                bool isNat = bt == "str" || bt == "byte" || bt.compare(0, 3, "int") == 0 ||
+                             bt.compare(0, 4, "uint") == 0 || bt.compare(0, 3, "num") == 0;
+                if (!isNat) return; // boxed-type arrays keep their existing behaviour
+                bool ok = bt == "str" ? v.t == VT::Str
+                        : bt.compare(0, 3, "num") == 0 ? v.isNumeric()
+                        : (v.t == VT::Int || v.t == VT::Bool);
+                if (!ok) throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+                    "Type check failed in binding; expected " + bt + " but got " + v.typeName() + " (" + v.gist() + ")"};
+            };
+            if (m == "push" || m == "unshift" || m == "append" || m == "prepend") for (auto& a : args) natCheck(a);
             // push/unshift add each argument as one element; append/prepend flatten
             if (m == "push") { for (auto& a : args) inv.arr->push_back(a); return inv; } // returns the array (shared storage)
             // append/prepend follow the single-argument rule: a lone Positional arg is
