@@ -5800,9 +5800,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         else if (binop == "+" || binop == "-") *lv = Value::integer(0);
     }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
-    // string each step — O(n) string building instead of O(n²).
+    // string each step. Appending PURE-ASCII text can never change the NFC form of
+    // the existing buffer (ASCII is a base, never a combining mark, and is already
+    // NFC), so append in place — O(1) amortised, keeping string-building O(n). Only
+    // a non-ASCII right-hand side needs a re-normalisation across the join.
     if (!overloaded && binop == "~" && lv->t == VT::Str && rhs.t == VT::Str) {
-        lv->s = nfcNormalize(lv->s + rhs.s);
+        bool asciiRhs = true;
+        for (unsigned char c : rhs.s) if (c >= 0x80) { asciiRhs = false; break; }
+        if (asciiRhs) lv->s += rhs.s;
+        else lv->s = nfcNormalize(lv->s + rhs.s);
         return sink ? Value::any() : *lv;
     }
     if (!overloaded) {
