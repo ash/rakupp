@@ -5602,17 +5602,41 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
         if (sigil == '@') {
             std::string keepType = lv->ofType; // the container keeps its element type
-            // Shaped array (`my @a[2;2] = …`): fill row-major into the fixed structure,
-            // keep the shape, and reject too many values (`my @a[3] = 1,2,3,4` dies).
+            // Shaped array assignment (`my @a[2;2] = …`).
             if (a->op == "=" && lv->shape && !lv->shape->empty()) {
                 auto shp = lv->shape;
-                long long cap = 1; for (long long d : *shp) cap *= d;
-                ValueList flat; for (auto& x : rhs.flatten()) flat.push_back(x);
-                if ((long long)flat.size() > cap)
-                    throw RakuError{Value::typeObj("X::OutOfRange"),
-                        "Cannot assign " + std::to_string(flat.size()) +
-                        " elements to a shaped array of " + std::to_string(cap)};
-                *lv = makeShapedContainer(*shp, keepType, &flat);
+                if (shp->size() == 1) { // 1-dim: flat row fill, reject overflow
+                    long long cap = (*shp)[0];
+                    ValueList flat; for (auto& x : rhs.flatten()) flat.push_back(x);
+                    if ((long long)flat.size() > cap)
+                        throw RakuError{Value::typeObj("X::OutOfRange"),
+                            "Cannot assign " + std::to_string(flat.size()) +
+                            " elements to a shaped array of " + std::to_string(cap)};
+                    *lv = makeShapedContainer(*shp, keepType, &flat);
+                    return rhs;
+                }
+                // multi-dim: the RHS must MATCH the shape. A shaped source must have
+                // an identical shape; a nested list may not have MORE than dims[d]
+                // elements at any level (a flat list is rejected), but a shortfall is
+                // fine — missing slots keep the element default.
+                if (rhs.shape && *rhs.shape != *shp)
+                    throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
+                        "Cannot assign an array of a different shape"};
+                Value built = makeShapedContainer(*shp, keepType); // all defaults
+                std::function<void(Value&, const Value&, size_t)> overlay =
+                  [&](Value& dst, const Value& src, size_t d) {
+                    if (d == shp->size()) { dst = src; return; } // leaf
+                    if (!(src.t == VT::Array && src.arr))
+                        throw RakuError{Value::typeObj("X::Assignment::ToShaped"),
+                            "Assignment to a shaped array needs a matching nested structure"};
+                    if ((long long)src.arr->size() > (*shp)[d])
+                        throw RakuError{Value::typeObj("X::Assignment::ArrayShapeMismatch"),
+                            "Too many elements for dimension " + std::to_string(d)};
+                    for (size_t i = 0; i < src.arr->size(); i++)
+                        overlay((*dst.arr)[i], (*src.arr)[i], d + 1);
+                };
+                overlay(built, rhs, 0);
+                *lv = built;
                 return rhs;
             }
             // `=` assignment flattens iterables into the array; `:=` BINDS — the
