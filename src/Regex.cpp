@@ -69,7 +69,7 @@ Regex::NodePtr Regex::parseAlt() {
     // A leading/empty branch (`[ | A | B ]` — cosmetic in Raku) must NOT become a
     // zero-width alternative that always wins; drop empty branches.
     auto isEmpty = [](const NodePtr& n) { return n->k == K::Seq && n->kids.empty(); };
-    auto first = parseSeq();
+    auto first = parseConj();
     if (peek() != '|') return first;
     auto alt = std::make_unique<Node>();
     alt->k = K::Alt;
@@ -78,13 +78,33 @@ Regex::NodePtr Regex::parseAlt() {
     while (peek() == '|') {
         pos_++;
         if (peek() == '|') { pos_++; sawDouble = true; } // `||` = sequential first-match
-        auto branch = parseSeq();
+        auto branch = parseConj();
         if (!isEmpty(branch)) alt->kids.push_back(std::move(branch));
     }
     // pure `|` uses LTM (longest-token wins); any `||` present → first-match (conservative)
     alt->firstMatch = sawDouble;
     if (alt->kids.size() == 1) return std::move(alt->kids[0]);
     return alt;
+}
+
+// Conjunction: `A & B` (LTM) / `A && B` (sequential) — every term must match at
+// the same start position; the whole match is as long as the LAST term. Binds
+// tighter than alternation `|`, looser than concatenation.
+Regex::NodePtr Regex::parseConj() {
+    auto first = parseSeq();
+    { size_t p = pos_; skipWs(); if (peek() != '&') { pos_ = p; return first; } pos_ = p; }
+    auto conj = std::make_unique<Node>();
+    conj->k = K::Conj;
+    conj->kids.push_back(std::move(first));
+    for (;;) {
+        skipWs();
+        if (peek() != '&') break;
+        pos_++;
+        if (peek() == '&') pos_++; // `&&` matches like `&` for our purposes
+        conj->kids.push_back(parseSeq());
+    }
+    if (conj->kids.size() == 1) return std::move(conj->kids[0]);
+    return conj;
 }
 
 Regex::NodePtr Regex::parseSeq() {
@@ -96,7 +116,7 @@ Regex::NodePtr Regex::parseSeq() {
         skipWs();
         bool hadSpace = pos_ > before;
         char c = peek();
-        if (eof() || c == '|' || c == ')' || c == ']' ||
+        if (eof() || c == '|' || c == '&' || c == ')' || c == ']' ||
             (assertDepth_ > 0 && c == '>')) {
             // sigspace: TRAILING whitespace in a rule also matches <.ws> —
             // `rule TOP { \w+ '=' \N* }` accepts the line's trailing newline
@@ -883,6 +903,8 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
             }
             return {lo, hi};
         }
+        case K::Conj: // the match is as long as the last term (all share the start)
+            return n->kids.empty() ? std::make_pair(0L, 0L) : nodeWidth(n->kids.back().get(), st);
         case K::Group: return nodeWidth(n->kids[0].get(), st);
         case K::AnchorStart: case K::AnchorEnd: case K::WBLeft: case K::WBRight:
         case K::Nop: case K::Code: case K::Look: case K::CapStart:
@@ -1104,6 +1126,18 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 return matchNode(n->kids[i].get(), st, p, cont);
             };
             return go(go, 0, pos);
+        }
+        case K::Conj: {
+            // Every term must match at the SAME start `pos`. Earlier terms need only
+            // succeed (any end); the LAST term carries the real continuation, so the
+            // overall match ends where it ends. Backtracks across all terms.
+            auto go = [&](auto&& self, size_t i) -> bool {
+                if (i + 1 == n->kids.size())
+                    return matchNode(n->kids[i].get(), st, pos, k);
+                auto cont = [&, i](long) { return self(self, i + 1); };
+                return matchNode(n->kids[i].get(), st, pos, cont);
+            };
+            return n->kids.empty() ? k(pos) : go(go, 0);
         }
         case K::Code: { // <?{…}>/<!{…}> assertion, or `:my …`/bare `{…}` side-effect (runOnly)
             static const GrammarHooks::ParamMap noParams;

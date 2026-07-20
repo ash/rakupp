@@ -114,7 +114,7 @@ public:
     const GrammarHooks* runHooks = nullptr;
 
 private:
-    enum class K { Lit, Any, Class, Seq, Alt, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart };
+    enum class K { Lit, Any, Class, Seq, Alt, Conj, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart };
     struct Node {
         K k;
         std::string lit;                 // Lit
@@ -178,6 +178,7 @@ private:
 
     // parser
     NodePtr parseAlt();
+    NodePtr parseConj();
     NodePtr parseSeq();
     NodePtr parseQuant();
     NodePtr parseAtom();
