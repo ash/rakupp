@@ -951,6 +951,9 @@ bool Lexer::tryQuoteForm(Token& out) {
         }
         raw = std::move(s);
     }
+    // `qq{…}` — with `{}` as the DELIMITER, a nested `{block}` is literal text
+    // (only $/@/% still interpolate). Explicit `qq:c{…}` re-enables it above.
+    if (interp && d == '{') { out = make(Tok::StrInterp, "\x02sahfb\x02" + raw); return true; }
     out = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
     // q:o/…/ and q:format/…/ (6.e) build a Format object, not a plain string.
     if (adverbs.find(":o ") != std::string::npos || adverbs.find(":format ") != std::string::npos)

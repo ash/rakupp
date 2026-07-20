@@ -319,7 +319,7 @@ std::string Value::gist() const {
             return out + (isList ? ")" : "]");
         }
         case VT::Pair: return s + " => " + (pairVal ? pairVal->gist() : "");
-        case VT::Str:  return s;
+        case VT::Str:  return hashKind == "Version" ? "v" + s : s; // v1.2.3.gist is "v1.2.3" (.Str is "1.2.3")
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
             std::ostringstream os;
             os << rFrom << ".." << (rExTo ? "^" : "") << rTo;
@@ -392,6 +392,9 @@ std::string Value::gist() const {
             };
             return mg(*this, 0);
         }
+        case VT::Code:
+            if (code && code->isWhateverCode) return "WhateverCode.new"; // say (* > 2)
+            return toStr();
         default: return toStr();
     }
 }

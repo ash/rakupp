@@ -481,8 +481,10 @@ Value Interpreter::rtGather(Value blockClosure) {
     };
     const size_t INITIAL = 64;
     ValueList prefix;
-    if (!runGather(INITIAL, prefix)) return Value::array(std::move(prefix)); // finite: eager
-    Value arr = Value::array(prefix); arr.isList = true;
+    if (!runGather(INITIAL, prefix)) { // finite: eager, but still a Seq
+        Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq"; return a;
+    }
+    Value arr = Value::array(prefix); arr.isList = true; arr.s = "Seq";
     auto st = std::make_shared<LazySeqState>();
     st->appendNext = [this, runGather](ValueList& out) -> bool {
         ValueList grown;
@@ -3394,6 +3396,31 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             if (!explicitNamed.count(kv.first))
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Unexpected named argument '" + kv.first + "' passed"};
+
+    // enforce `where` constraints on the bound values (a single sub isn't dispatched,
+    // so scoreCandidate never ran — `sub p(Int $n where * > 0)` must reject p(-1))
+    for (auto& p : params) {
+        if (!p.whereExpr || p.slurpy || p.name.empty()) continue;
+        Value* bound = env->find(p.name);
+        if (!bound) continue;
+        Value val = *bound;
+        auto wenv = std::make_shared<Env>(); wenv->parent = env;
+        wenv->define("$_", val);
+        auto saved = tctx_.cur; tctx_.cur = wenv;
+        bool ok;
+        try {
+            Value cv = eval(p.whereExpr.get());
+            // `where EXPR` is a smartmatch: a Code/WhateverCode is called with the
+            // value; anything else (a type, a junction like `Any:U|Blob|Cool`) is
+            // smartmatched — NOT just boolified
+            if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{val}));
+            else ok = boolify(applyBinOp("~~", val, cv));
+        } catch (...) { tctx_.cur = saved; throw; }
+        tctx_.cur = saved;
+        if (!ok)
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+                "Constraint type check failed in binding to parameter '" + p.name + "'"};
+    }
 }
 
 // Does an argument satisfy a parameter type-constraint name?
@@ -8926,12 +8953,14 @@ Value Interpreter::evalUnary(Unary* u) {
         const size_t INITIAL = 64;
         ValueList prefix;
         // finite gather (terminates within the cap): eager, exactly as before
-        if (!runGather(INITIAL, prefix)) return Value::array(std::move(prefix));
+        if (!runGather(INITIAL, prefix)) { // finite: eager, but a Seq (gists with parens)
+            Value a = Value::array(std::move(prefix)); a.isList = true; a.s = "Seq"; return a;
+        }
         // hit the cap → treat as lazy: keep the prefix and extend on demand by
         // re-running the block with a larger cap (re-run because there are no
         // coroutines; fine for the usual pure generator `gather { loop { take … } }`).
         // Growth DOUBLES so the O(n²) re-run cost stays amortised-linear in takes.
-        Value arr = Value::array(prefix); arr.isList = true;
+        Value arr = Value::array(prefix); arr.isList = true; arr.s = "Seq";
         auto st = std::make_shared<LazySeqState>();
         st->appendNext = [this, runGather](ValueList& out) -> bool {
             ValueList grown;

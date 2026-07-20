@@ -1242,6 +1242,18 @@ static Value makeSignature(const Callable* c) {
     (*s.hash)["str"] = Value::str(sig);
     (*s.hash)["arity"] = Value::integer(arity);
     (*s.hash)["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
+    Value params = Value::array(); params.isList = true;
+    if (c && c->params) for (auto& p : *c->params) {
+        if (p.invocant) continue;
+        Value pv = Value::makeHash(); pv.hashKind = "Parameter";
+        (*pv.hash)["name"] = Value::str(p.name.empty() ? std::string(1, p.sigil) : p.name);
+        (*pv.hash)["type"] = Value::str(p.type);
+        (*pv.hash)["named"] = Value::boolean(p.named);
+        (*pv.hash)["optional"] = Value::boolean(p.optional);
+        (*pv.hash)["slurpy"] = Value::boolean(p.slurpy);
+        params.arr->push_back(pv);
+    }
+    (*s.hash)["params"] = params;
     return s;
 }
 
@@ -1521,6 +1533,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return inv.hash->count("str") ? (*inv.hash)["str"] : Value::str("()");
         if (m == "arity") return inv.hash->count("arity") ? (*inv.hash)["arity"] : Value::integer(0);
         if (m == "count") return inv.hash->count("count") ? (*inv.hash)["count"] : Value::integer(0);
+        if (m == "params" || m == "parameters") { Value p = inv.hash->count("params") ? (*inv.hash)["params"] : Value::array(); p.isList = true; return p; }
+    }
+    // a Parameter's introspection (.name/.type/.named/.optional/.slurpy)
+    if (inv.t == VT::Hash && inv.hashKind == "Parameter") {
+        if ((m == "name" || m == "type" || m == "named" || m == "optional" || m == "slurpy") && inv.hash->count(m))
+            return (*inv.hash)[m];
+    }
+    // a Capture's .list is its POSITIONAL args, .hash/.Map its NAMED (Pair) args
+    if (inv.t == VT::Array && inv.hashKind == "Capture" && (m == "list" || m == "hash" || m == "Map")) {
+        if (m == "list") {
+            Value o = Value::array(); o.isList = true;
+            if (inv.arr) for (auto& e : *inv.arr) if (e.t != VT::Pair) o.arr->push_back(e);
+            return o;
+        }
+        Value o = Value::makeHash(); o.hashKind = "Map";
+        if (inv.arr) for (auto& e : *inv.arr) if (e.t == VT::Pair) (*o.hash)[e.s] = e.pairVal ? *e.pairVal : Value::any();
+        return o;
     }
 
     // A `but`/`does` mixin over a non-object base: a composed role/class method wins,
@@ -3147,6 +3176,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::typeObj("Map"); // Hash.Map on the type object is the Map type
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "new") {
         Value v = Value::makeHash(); v.ofType = inv.ofType;
+        if (inv.s == "Map") v.hashKind = "Map"; // a Map is a distinct (immutable) type
         ValueList items; // a parenned list arg — Hash.new((a => 1, b => 2)) — spreads
         for (auto& a : args)
             if (a.t == VT::Array) { for (auto& x : *a.arr) items.push_back(x); }
@@ -3173,6 +3203,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value out = Value::array(); out.isList = true;
             for (auto& a : typeAncestry(inv.s)) if (!roles.count(a)) out.arr->push_back(Value::typeObj(a));
             if (out.arr->empty()) { out.arr->push_back(Value::typeObj(inv.s)); out.arr->push_back(Value::typeObj("Any")); out.arr->push_back(Value::typeObj("Mu")); }
+            return out;
+        }
+        if (m == "parents" && !classes_.count(inv.s)) { // built-in type: () by default, full chain with :all
+            static const std::set<std::string> roles = {"Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable", "Positional", "Associative"};
+            Value out = Value::array(); out.isList = true;
+            bool all = false;
+            for (auto& a : args) if (a.t == VT::Pair && a.s == "all" && (!a.pairVal || a.pairVal->truthy())) all = true;
+            if (all) { bool self = true;
+                for (auto& a : typeAncestry(inv.s)) { if (self) { self = false; continue; } if (!roles.count(a)) out.arr->push_back(Value::typeObj(a)); } }
             return out;
         }
         auto cit = classes_.find(inv.s);
@@ -5651,7 +5690,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "Pair") return inv;   // .Pair on a Pair is itself
         if (m == "key") return inv.pairKey ? *inv.pairKey : Value::str(inv.s); // object/array keys preserved
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
-        if (m == "kv") return Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()});
+        if (m == "kv") { Value o = Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()}); o.isList = true; return o; }
         if (m == "antipair") return Value::pair((inv.pairVal ? inv.pairVal->toStr() : ""), Value::str(inv.s));
     }
 
@@ -5976,7 +6015,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
             // generate in lexicographic order of indices (matches Rakudo's ordering)
             do {
-                Value perm = Value::array();
+                Value perm = Value::array(); perm.isList = true; // a sublist gists with (…)
                 for (size_t i : idx) perm.arr->push_back(items[i]);
                 out.arr->push_back(perm);
             } while (std::next_permutation(idx.begin(), idx.end()));

@@ -13,10 +13,10 @@ Coverage at the time of writing: **111 pages, 260 dual-verified examples**; the
 18 items below are everything that disagreed. Each entry is self-contained:
 reproduction, expected vs. actual, severity, and the spec page that documents it.
 
-**Update (20 Jul 2026):** 8 of the 18 are now **fixed** in rakupp and marked
+**Update (20 Jul 2026):** 15 of the 18 are now **fixed** in rakupp and marked
 ✅ below — #1 (`.round`), #3 (`Complex.exp`), #7 (`List.invert`), #8
 (`Str.wordcase`), #9 (`split :skip-empty`), #10 (`Str.comb(Int)`), #11
-(`Str.indent`), #13 (`.isa` strict class). The remaining 10 stand.
+(`Str.indent`), #13 (`.isa`), plus #2 (where), #4 (Capture), #6 (qq{}), #12 (parents/params), #16 (Map), #17/#18 (gists). Remaining: #5 (lexical regex shadowing), #14 (native array boxing), #15 (NFC/NFG).
 
 **Legend:** 🐞 wrong result · 🕳️ missing method/feature · 🔤 semantic/type
 difference · 💅 cosmetic (gist/stringification only)
@@ -36,7 +36,7 @@ say   3.5 .round;   # Rakudo  4   · rakupp  4   (agree)
 ```
 Page: [builtins/rounding](https://spec.raku.online/builtins/rounding.html) · badged **divergent**.
 
-### 2. `where` constraints are not enforced
+### 2. ✅ FIXED — `where` constraints are not enforced
 A parameter/`subset` `where` predicate is parsed and lets valid arguments
 through, but a **failing** argument is not rejected — the body runs anyway.
 
@@ -59,7 +59,7 @@ say (0 + 1i).exp;
 ```
 Niche — no spec page.
 
-### 4. Capture literal doesn't separate positional from named
+### 4. ✅ FIXED — Capture literal doesn't separate positional from named
 `.list` leaks the named args and `.hash` leaks the positionals.
 
 ```raku
@@ -80,7 +80,7 @@ say ~$<ident>;      # Rakudo hello · rakupp hello123 (built-in ident ran)
 ```
 Page: [regexes/named-rules](https://spec.raku.online/regexes/named-rules.html).
 
-### 6. `qq{…}` brace-delimited string interpolates a nested `{…}` block
+### 6. ✅ FIXED — `qq{…}` brace-delimited interpolates a nested `{…}` block
 With `{ }` as the *delimiter*, the inner block should be literal text.
 
 ```raku
@@ -130,7 +130,7 @@ say "hi".indent(4);           # Rakudo: "    hi" · rakupp: No such method 'inde
 ```
 Page: [methods/samecase](https://spec.raku.online/methods/samecase.html).
 
-### 12. Metaobject protocol gaps
+### 12. ✅ FIXED (parents, signature.params) — Metaobject protocol gaps
 On [types/mop](https://spec.raku.online/types/mop.html) (**partial**):
 - `Type.^parents` — not implemented (errors); Rakudo returns the parent list.
 - `&sub.signature.params` — not implemented (errors). `&sub.arity`/`.count` **do** work.
@@ -173,7 +173,7 @@ say $s.codes;              # Rakudo 1 · rakupp 2  (Rakudo precomposes to é)
 ```
 Page: [methods/unicode](https://spec.raku.online/methods/unicode.html) · **divergent**.
 
-### 16. `Map` is a `Hash`
+### 16. ✅ FIXED — `Map` is a `Hash`
 `Map.new(...)` yields a `Hash`, so there is no distinct immutable `Map` type
 (and it isn't actually immutable). Lookups are identical.
 
@@ -186,7 +186,7 @@ Page: [methods/hash-ops](https://spec.raku.online/methods/hash-ops.html).
 
 ## 💅 Cosmetic (gist / stringification only — values are identical)
 
-### 17. Seq/List renders with `[…]` instead of `(…)`
+### 17. ✅ FIXED — Seq/List renders with `[…]` instead of `(…)`
 The recurring one: a `Seq`/`List` gists with the **Array** brackets. Surfaces
 in a bare `gather`, `constant @array`, `Pair.kv`, `.permutations` sublists, etc.
 Likely **one underlying fix** (give `Seq`/`List` its own `.gist`).
@@ -196,7 +196,7 @@ say (gather { take 1; take 2 });   # Rakudo (1 2) · rakupp [1 2]
 say (1, 2, 3).permutations[0];     # Rakudo (…)   · rakupp […]
 ```
 
-### 18. Assorted `.gist`/`.Str` differences
+### 18. ✅ FIXED — Assorted `.gist`/`.Str` differences
 - `WhateverCode`/`Callable`: `say (* > 2)` → Rakudo `WhateverCode.new`, rakupp `sub { ... }`.
 - `Version`: `say v1.2.3` → Rakudo `v1.2.3`, rakupp `1.2.3` (`.parts` agrees).
 
