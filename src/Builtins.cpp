@@ -2167,9 +2167,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Supply as a type object: constructors that build an eager, list-backed Supply.
     if (inv.t == VT::Type && inv.s == "Supply") {
         auto mkSupply = [&](ValueList vals) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v; return s; };
-        if (m == "from-list") { // each arg is one value; Ranges/Lists expand, but [..] items don't
+        if (m == "from-list") {
+            // +@values single-arg rule: ONE array arg (from-list(@source)) emits its
+            // elements; with several args each stays whole (from-list([1,2],[3,4,5])
+            // is two list values). A Range always expands.
             ValueList out;
-            for (auto& a : args) {
+            if (args.size() == 1 && args[0].t == VT::Array && args[0].arr && !args[0].itemized) {
+                for (auto& x : *args[0].arr) out.push_back(x);
+            } else for (auto& a : args) {
                 if (a.t == VT::Range) { for (auto& x : a.flatten()) out.push_back(x); }
                 else if (a.t == VT::Array && a.isList && a.arr) { for (auto& x : *a.arr) out.push_back(x); }
                 else out.push_back(a);
@@ -2272,6 +2277,37 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return inv;
         }
         if (m == "list" || m == "List" || m == "Seq" || m == "eager") { Value o = Value::array(); *o.arr = vals(); o.isList = true; return o; }
+        if (m == "comb" && listy) { // concatenate the stream, run Str.comb, re-wrap
+            std::string all; for (auto& v : vals()) all += v.toStr();
+            Value res = methodCall(Value::str(all), m, args, rwArgs);
+            ValueList segs; if (res.t == VT::Array && res.arr) segs = *res.arr;
+            return mkSupply(std::move(segs));
+        }
+        if (m == "split" && listy) {
+            // Supply.split concatenates the stream and splits by the needle; unlike
+            // Str.split, a LIMIT keeps the first N CLEAN pieces (not N-1 + the rest),
+            // and :skip-empty drops empties (before the limit is applied).
+            std::string all; for (auto& v : vals()) all += v.toStr();
+            Value needle; bool haveNeedle = false, skipEmpty = false;
+            bool haveLimit = false; double limit = 0;
+            for (auto& a : args) {
+                if (a.t == VT::Pair) { if (a.s == "skip-empty") skipEmpty = !a.pairVal || a.pairVal->truthy(); continue; }
+                if (!haveNeedle) { needle = a; haveNeedle = true; continue; }
+                if (!haveLimit) { haveLimit = true;
+                    if (a.t == VT::Whatever) limit = INFINITY;
+                    else if (a.t == VT::Code) limit = callCallable(a, {}).toNum();
+                    else limit = a.toNum(); // Inf / "Inf" / 3 / "3" / -1 …
+                }
+            }
+            Value res = methodCall(Value::str(all), "split", ValueList{needle});
+            ValueList segs; if (res.t == VT::Array && res.arr) segs = *res.arr;
+            if (skipEmpty) { ValueList keep; for (auto& s : segs) if (!s.toStr().empty()) keep.push_back(s); segs.swap(keep); }
+            if (haveLimit) {
+                if (limit < 0 || (limit == 0)) segs.clear();
+                else if (std::isfinite(limit) && (double)segs.size() > limit) segs.resize((size_t)limit);
+            }
+            return mkSupply(std::move(segs));
+        }
         if (m == "Channel") { // drain a (from-list) Supply into a closed Channel
             Value c = Value::makeHash(); c.hashKind = "Channel";
             Value q = Value::array(); *q.arr = vals(); (*c.hash)["queue"] = q;
