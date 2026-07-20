@@ -240,6 +240,14 @@ std::string Value::toStr() const {
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
             // an infinite one keeps the endpoint form
+            if (rNum) { // fractional: space-join the stepped elements
+                std::string out2; bool first = true;
+                double lo = n + (rExFrom ? 1.0 : 0.0);
+                for (double x = lo; rExTo ? x < im - 1e-9 : x <= im + 1e-9; x += 1.0) {
+                    if (!first) out2 += " "; first = false; out2 += Value::number(x).toStr();
+                }
+                return out2;
+            }
             if (rTo < 9000000000000000000LL && rFrom > -9000000000000000000LL) {
                 long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
                 std::string out2;
