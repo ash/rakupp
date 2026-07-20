@@ -4224,9 +4224,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "floor") return Value::integer((long long)std::floor(inv.toNum()));
     if (m == "ceiling") return Value::integer((long long)std::ceil(inv.toNum()));
     if (m == "round") {
+        double x = inv.toNum();
+        if (!std::isfinite(x)) return Value::number(x); // NaN/±Inf round to themselves
         double scale = args.empty() ? 1.0 : a0().toNum();
         if (scale == 0) scale = 1.0;
-        return Value::number(std::round(inv.toNum() / scale) * scale);
+        // Rakudo rounds a half toward +∞ (floor(x+0.5)), not away from zero
+        double r = std::floor(x / scale + 0.5) * scale;
+        if (args.empty()) return Value::integer((long long)r); // .round with no arg is an Int
+        return Value::number(r);
     }
     if (m == "truncate") return Value::integer((long long)inv.toNum());
     if (m == "sign") {
@@ -5060,7 +5065,42 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "uc") return Value::str(mapCase(inv.toStr(), true, 0));
     if (m == "lc") return Value::str(mapCase(inv.toStr(), false, 0));
     if (m == "tc") return Value::str(mapCase(inv.toStr(), false, 1));
-    if (m == "tclc" || m == "wordcase") return Value::str(mapCase(inv.toStr(), false, 2));
+    if (m == "tclc") return Value::str(mapCase(inv.toStr(), false, 2));
+    if (m == "indent" && !args.empty()) { // add (negative: remove) indentation, AFTER existing leading whitespace
+        long long amt = args[0].toInt();
+        auto isWs = [](uint32_t c) {
+            return c == 0x09 || c == 0x0B || c == 0x0C || c == 0x0D || c == 0x20 || c == 0x85 || c == 0xA0 ||
+                   c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 ||
+                   c == 0x202F || c == 0x205F || c == 0x3000;
+        };
+        std::string s = inv.toStr(), out; size_t i = 0;
+        while (i <= s.size()) {
+            size_t nl = s.find('\n', i);
+            std::string line = s.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+            auto cps = utf8cp(line);
+            size_t lead = 0; while (lead < cps.size() && isWs(cps[lead])) lead++;
+            std::string leadStr, rest;
+            for (size_t k = 0; k < lead; k++) leadStr += cpToUtf8(cps[k]);
+            for (size_t k = lead; k < cps.size(); k++) rest += cpToUtf8(cps[k]);
+            if (amt >= 0) { if (!line.empty()) out += leadStr + std::string((size_t)amt, ' ') + rest; }
+            else { size_t drop = std::min((size_t)(-amt), lead);
+                   std::string kept; for (size_t k = 0; k < lead - drop; k++) kept += cpToUtf8(cps[k]);
+                   out += kept + rest; }
+            if (nl == std::string::npos) break;
+            out += '\n'; i = nl + 1;
+        }
+        return Value::str(out);
+    }
+    if (m == "wordcase") { // titlecase each word (first letter up, rest down)
+        auto cps = utf8cp(inv.toStr());
+        std::string r; bool wordStart = true;
+        for (uint32_t c : cps) {
+            bool ws = c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == 0x0B;
+            if (ws) { r += cpToUtf8(c); wordStart = true; }
+            else { r += cpToUtf8(wordStart ? toUpperCp(c) : toLowerCp(c)); wordStart = false; }
+        }
+        return Value::str(r);
+    }
     if (m == "fc") return Value::str(mapCase(inv.toStr(), false, 0));
     if (m == "samecase") { // copy the case pattern of the arg, position by position (last char repeats)
         auto src = utf8cp(inv.toStr());
@@ -5171,6 +5211,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "split") {
             Regex re(pat); Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
+            bool skipEmpty = false;
+            for (auto& la : args)
+                if (la.t == VT::Pair && la.s == "skip-empty" && (!la.pairVal || la.pairVal->truthy())) skipEmpty = true;
+            auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr->push_back(Value::str(piece)); };
             // optional limit (second positional): <=0 → empty, 1 → the whole string,
             // n → at most n pieces
             long long limit = -12345;
@@ -5180,14 +5224,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             bool haveLimit = limit != -12345;
             if (haveLimit && limit <= 0) return out;
-            if (haveLimit && limit == 1) { out.arr->push_back(Value::str(subj)); return out; }
+            if (haveLimit && limit == 1) { emit(subj); return out; }
             while (re.ok() && pos <= (long)subj.size() && re.search(subj, pos, mm)) {
                 if (haveLimit && (long long)out.arr->size() >= limit - 1) break;
                 if (mm.to == mm.from && mm.from == pos) { if (pos >= (long)subj.size()) break; }
-                out.arr->push_back(Value::str(subj.substr(pos, mm.from - pos)));
+                emit(subj.substr(pos, mm.from - pos));
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
             }
-            out.arr->push_back(Value::str(subj.substr(std::min((size_t)pos, subj.size()))));
+            emit(subj.substr(std::min((size_t)pos, subj.size())));
             return out;
         }
     }
@@ -5387,6 +5431,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             std::string subj = inv.toStr(), needle = args[0].toStr();
             for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size()))
                 out.arr->push_back(Value::str(needle));
+            return out;
+        }
+        if (!args.empty() && args[0].t == VT::Int) {
+            // .comb($n [, $limit]): consecutive chunks of $n graphemes
+            long long chunk = args[0].toInt(); if (chunk < 1) chunk = 1;
+            long long limit = (args.size() > 1 && args[1].isNumeric() && args[1].t != VT::Whatever) ? args[1].toInt() : -1;
+            auto cps = utf8cp(inv.toStr());
+            auto starts = uniGraphemeStarts(cps);
+            for (size_t gi = 0; gi < starts.size(); gi += (size_t)chunk) {
+                if (limit >= 0 && (long long)out.arr->size() >= limit) break;
+                size_t endGi = std::min(gi + (size_t)chunk, starts.size());
+                size_t from = starts[gi], to = endGi < starts.size() ? starts[endGi] : cps.size();
+                std::string g; for (size_t k = from; k < to; k++) g += cpToUtf8(cps[k]);
+                out.arr->push_back(Value::str(g));
+            }
             return out;
         }
         { // one entry per GRAPHEME (UAX #29 cluster), not per codepoint —
@@ -6639,6 +6698,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (inv.t == VT::Hash) { for (auto& kv : *inv.hash) out.arr->push_back(kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first)); }
             else for (size_t i = 0; i < items.size(); i++) out.arr->push_back(Value::integer((long long)i));
             out.isList = true;
+            return out;
+        }
+        if (m == "invert" && inv.t == VT::Array) { // (a=>1, b=>2).invert -> Seq of value=>key
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto push1 = [&](const Value& v, const Value& k) {
+                Value p = Value::pair(v.toStr(), k);
+                if (v.t != VT::Str) p.pairKey = std::make_shared<Value>(v); // keep a numeric key numeric
+                out.arr->push_back(std::move(p));
+            };
+            for (auto& e : items) if (e.t == VT::Pair) {
+                Value val = e.pairVal ? *e.pairVal : Value::any();
+                Value key = e.pairKey ? *e.pairKey : Value::str(e.s);
+                if (val.t == VT::Array && val.arr) for (auto& vv : *val.arr) push1(vv, key);
+                else push1(val, key);
+            }
             return out;
         }
         if (m == "invert" && inv.t == VT::Hash) { // %h.invert -> list of (value => key)
