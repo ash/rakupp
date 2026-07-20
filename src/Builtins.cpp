@@ -1296,6 +1296,52 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // reverse/rotate are illegal only on a MULTI-dimensional fixed array; a 1-dim
+    // shaped array reverses/rotates fine (returns a reordered list, no resize).
+    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && (m == "reverse" || m == "rotate"))
+        throw RakuError{Value::typeObj("X::IllegalOnFixedDimensionArray"),
+                        "Cannot " + m + " a fixed-dimension array"};
+    // Multi-dim shaped array (`my @a[2;2]`) — keys/values/kv/pairs/antipairs/flat/
+    // iterator walk the LEAVES, keyed by index tuples. (A 1-dim shaped array uses
+    // the ordinary Array handlers: keys are plain indices, .flat is a Seq, etc.)
+    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 &&
+        (m == "keys" || m == "values" || m == "kv" || m == "pairs" ||
+         m == "antipairs" || m == "flat" || m == "iterator")) {
+        size_t ndim = inv.shape->size();
+        std::vector<std::pair<Value, Value>> ents; // (index key, leaf value)
+        std::vector<long long> idx;
+        std::function<void(const Value&)> walk = [&](const Value& node) {
+            if (idx.size() == ndim) {
+                Value key;
+                if (ndim == 1) key = Value::integer(idx[0]);
+                else { key = Value::array(); key.isList = true;
+                       for (auto ix : idx) key.arr->push_back(Value::integer(ix)); }
+                ents.push_back({key, node});
+                return;
+            }
+            if (node.t == VT::Array && node.arr)
+                for (size_t i = 0; i < node.arr->size(); i++) {
+                    idx.push_back((long long)i); walk((*node.arr)[i]); idx.pop_back();
+                }
+        };
+        walk(inv);
+        if (m == "iterator") {
+            Value it = Value::makeHash(); it.hashKind = "Iterator";
+            Value items = Value::array();
+            for (auto& e : ents) items.arr->push_back(e.second);
+            (*it.hash)["items"] = items; (*it.hash)["pos"] = Value::integer(0);
+            return it;
+        }
+        Value o = Value::array(); o.isList = true;
+        for (auto& e : ents) {
+            if (m == "keys") o.arr->push_back(e.first);
+            else if (m == "values" || m == "flat") o.arr->push_back(e.second);
+            else if (m == "kv") { o.arr->push_back(e.first); o.arr->push_back(e.second); }
+            else if (m == "pairs") { Value p = Value::pair(e.first.toStr(), e.second); p.pairKey = std::make_shared<Value>(e.first); o.arr->push_back(std::move(p)); }
+            else { Value p = Value::pair(e.second.toStr(), e.first); p.pairKey = std::make_shared<Value>(e.second); o.arr->push_back(std::move(p)); } // antipairs
+        }
+        return o;
+    }
     // Junction invocant: the Str-using routines operate on the WHOLE junction
     // (no autothreading — `$j.print` prints the junction's string form, calling
     // each eigenstate's .Str; `$j.printf` treats that form as the format).
