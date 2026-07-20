@@ -187,6 +187,9 @@ Value numifyStr(const std::string& in) {
     if (a == std::string::npos) return Value::integer(0); // empty/whitespace -> 0
     size_t b = in.find_last_not_of(" \t\n\r\f\v");
     std::string s = in.substr(a, b - a + 1);
+    // Unicode MINUS SIGN (U+2212) is accepted as an ASCII '-' in numeric strings
+    for (size_t k = 0; (k = s.find("\xE2\x88\x92", k)) != std::string::npos; )
+        s.replace(k, 3, "-");
     // strip underscores that sit between two digits (numeric separators)
     if (s.find('_') != std::string::npos) {
         std::string t;
@@ -201,20 +204,64 @@ Value numifyStr(const std::string& in) {
     if (s == "-Inf") return Value::number(-INFINITY);
     if (s == "NaN") return Value::number(NAN);
     static const std::regex reInt(R"(^[+-]?\d+$)");
-    static const std::regex reRadix(R"(^[+-]?0[xob][0-9a-fA-F_]+$)");
-    static const std::regex reFloat(R"(^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$)");
+    static const std::regex reRadix(R"(^[+-]?0[xobd][0-9a-fA-F_]+$)");
+    static const std::regex reFloat(R"(^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$)");
     static const std::regex reRat(R"(^[+-]?\d+/\d+$)");
+    // convert a single radix digit (0-9, a-z / A-Z) → value, or -1 if not a digit
+    auto digitVal = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+        return -1;
+    };
+    // parse a radix number "d.d" (underscores already allowed) in the given base,
+    // validating each digit < base. Returns a numeric Value or Value::any() on failure.
+    auto parseRadix = [&](const std::string& raw, int base, bool neg) -> Value {
+        // underscores are separators only BETWEEN two digits — reject edges/doubles
+        for (size_t k = 0; k < raw.size(); k++)
+            if (raw[k] == '_' && (k == 0 || k + 1 == raw.size() ||
+                digitVal(raw[k-1]) < 0 || digitVal(raw[k+1]) < 0)) return Value::any();
+        std::string digs; for (char c : raw) if (c != '_') digs += c;
+        size_t dot = digs.find('.');
+        std::string ip = dot == std::string::npos ? digs : digs.substr(0, dot);
+        std::string fp = dot == std::string::npos ? "" : digs.substr(dot + 1);
+        if (ip.empty() && fp.empty()) return Value::any();
+        BigInt iv(0), b(base);
+        for (char c : ip) { int d = digitVal(c); if (d < 0 || d >= base) return Value::any(); iv = iv * b + BigInt(d); }
+        if (fp.empty()) { if (neg) iv = BigInt(0) - iv; return Value::bigint(iv); }
+        BigInt num = iv, den(1);
+        for (char c : fp) { int d = digitVal(c); if (d < 0 || d >= base) return Value::any(); num = num * b + BigInt(d); den = den * b; }
+        if (neg) num = BigInt(0) - num;
+        return Value::rat(num, den);
+    };
     try {
         if (std::regex_match(s, reInt)) {
             try { return Value::integer(std::stoll(s)); }
             catch (...) { return Value::bigint(BigInt::fromString(s)); }
         }
+        // :N<digits> radix notation, e.g. :10<42>, :2<11>, :36<aZ>, :16<c.8>
+        {
+            size_t off = (s[0] == '+' || s[0] == '-') ? 1 : 0;
+            bool neg = s[0] == '-';
+            if (off < s.size() && s[off] == ':') {
+                size_t lt = s.find('<', off);
+                if (lt != std::string::npos && s.back() == '>') {
+                    std::string baseStr = s.substr(off + 1, lt - off - 1);
+                    static const std::regex reDec(R"(^\d+$)");
+                    if (std::regex_match(baseStr, reDec)) {
+                        int base = std::atoi(baseStr.c_str());
+                        if (base >= 2 && base <= 36)
+                            return parseRadix(s.substr(lt + 1, s.size() - lt - 2), base, neg);
+                    }
+                }
+                return Value::any();
+            }
+        }
         if (std::regex_match(s, reRadix)) {
             bool neg = s[0] == '-'; size_t off = (s[0] == '+' || s[0] == '-') ? 1 : 0;
-            int base = s[off + 1] == 'x' ? 16 : s[off + 1] == 'o' ? 8 : 2;
-            std::string digits; for (size_t k = off + 2; k < s.size(); k++) if (s[k] != '_') digits += s[k];
-            long long v = std::strtoll(digits.c_str(), nullptr, base);
-            return Value::integer(neg ? -v : v);
+            char pc = s[off + 1];
+            int base = pc == 'x' ? 16 : pc == 'o' ? 8 : pc == 'd' ? 10 : 2;
+            return parseRadix(s.substr(off + 2), base, neg);
         }
         if (std::regex_match(s, reRat)) {
             size_t sl = s.find('/');
@@ -235,6 +282,30 @@ Value numifyStr(const std::string& in) {
                 }
             }
             return Value::number(std::stod(s));
+        }
+        // Complex: "a+bi" / "a-bi" / "bi" (i may be written "\i"). Split at the
+        // sign that separates real and imaginary parts (not a leading sign or an
+        // exponent sign), numify each half recursively.
+        {
+            std::string t = s;
+            size_t ip = t.rfind("\\i");
+            if (ip == t.size() - 2 && ip != std::string::npos) t.erase(ip, 1); // "\i" -> "i"
+            if (!t.empty() && (t.back() == 'i')) {
+                std::string body = t.substr(0, t.size() - 1); // drop trailing i
+                // find split sign: scan from the right for +/- not preceded by e/E
+                size_t split = std::string::npos;
+                for (size_t k = body.size(); k-- > 1; ) {
+                    if ((body[k] == '+' || body[k] == '-') &&
+                        body[k-1] != 'e' && body[k-1] != 'E') { split = k; break; }
+                }
+                std::string reStr, imStr;
+                if (split == std::string::npos) { reStr = "0"; imStr = body.empty() ? "1" : body; }
+                else { reStr = body.substr(0, split); imStr = body.substr(split);
+                       if (imStr == "+" || imStr == "-") imStr += "1"; }
+                Value rv = numifyStr(reStr), iv = numifyStr(imStr);
+                if (rv.isNumeric() && iv.isNumeric())
+                    return Value::complex(rv.toNum(), iv.toNum());
+            }
         }
     } catch (...) {}
     return Value::any(); // not numeric -> undefined (so .defined is False)
