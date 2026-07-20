@@ -3,8 +3,16 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
-## Unreleased
+## v0.9.1 — 2026-07-20
 
+Everything since v0.9.0 (2026-07-19), 80 commits. Every change is gated on the
+full Roast suite with no fully-passing file regressions.
+
+### Headline
+
+- **Roast: 558 / 1,462 files fully pass** (was 533). Passing assertions grew from
+  187,749 to **189,102** — **88.2%** of the 214,384 declared tests, and 97.4% of
+  the tests that actually ran.
 - **New `--lint` mode**: a static analyzer that parses a program and reports
   likely mistakes without running it — unused variables, unused lexical
   routines, redeclarations, unreachable code, self-assignment, constant
@@ -16,6 +24,62 @@ methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
   false positives near zero on Raku's dynamic constructs. Rule reference in
   [docs/LINT.md](docs/LINT.md); one-rule-per-file demos in
   [examples/lint/](examples/lint/).
+
+### Language & runtime
+
+- **Shaped multidimensional arrays**: `my @a[2;3]` / `Array.new(:shape)` —
+  declaration, fill, `.shape`, and multi-dim `AT`/`EXISTS`/`ASSIGN-POS`. Iteration
+  (`keys`/`values`/`kv`/`pairs`/`flat`) yields leaves with index tuples;
+  list ops (`join`/`map`/`sort`/`pick`/…) delegate to the leaves; `.gist`/`.raku`/
+  `.clone` are structured; assignment is structurally validated (nested must match
+  dims, shape-mismatch and flat-list throw); fixed-dim mutators/`reverse`/`rotate`
+  throw. Closes `decl`/`assign`/`methods`/`multi_dimensional_array`.
+- **Fractional numeric ranges**: `-1.5..1.5`, `1.1..^3.1` keep their real
+  endpoints and step by 1 across `list`/`for`/`min`/`max`/bounds/`gist`.
+- **Regex**: conjunction operators `&` / `&&` (all terms match at one position,
+  span the last); numbered capture aliases `$N=(…)`; named array `@<name>=(…)`
+  and hash `%<name>=(…)` capture aliases; the `:exhaustive`/`:ex` modifier.
+- **Version** comparison: Unicode-letter alpha parts, numeric-before-alpha
+  ordering, trailing-alpha-before-release, insignificant trailing zeros, and
+  underscores preserved in `<>` word-quote spellings — `version.t` fully passes.
+- **Negative-index semantics** now match Rakudo: an out-of-range negative
+  subscript returns a `Failure` (`X::OutOfRange`), not a Python-style wraparound
+  (`@a[*-1]` is how you index from the end); `:exists` on it is `False`; indexing
+  an unhandled `Failure` propagates it.
+- `classify`/`categorize` gain Hash and Array classifiers and `:into(%h)`
+  appending; `round()` the sub delegates to the method (honouring a scale arg and
+  NaN/Inf); Set-from-pairs uses value truthiness while Bag/Mix keep numeric
+  weight; `.tree` (nested view / depth-limit / per-level closures) and
+  `.^parameterize` (`Set.^parameterize(Str)` is `Set[Str]`).
+- Numeric-literal underscores must sit between two digits (`1__0`, `100_`,
+  `1_000_____000` are now rejected, in mantissa and exponent alike). String→number
+  coercion learns `:N<>` radix, the `0d` prefix, and Complex / unicode-minus forms.
+
+### Spec faithfulness
+
+Fixes from building **spec.raku.online** and diffing against Rakudo — each a
+behaviour where Raku++ had diverged: NFC/NFG string normalization; a lexical
+regex shadowing a same-named built-in subrule; `.isa` as strict class inheritance
+(roles excluded); round-half-up, `wordcase`, `comb(Int)`, `split :skip-empty`,
+`indent`, `List.invert`; `qq{}` brace-delimited interpolation; `where`
+enforcement and Capture/Map/Seq gists.
+
+### Performance
+
+- **`~=` string building is O(n) again in every mode.** The NFC-normalization
+  work in v0.9.0 had made in-place append re-normalize the whole accumulator on
+  each `~=`, turning `strcat` O(n²) (~360 ms). Appending pure-ASCII now skips the
+  re-normalize; non-ASCII appends still normalize across the join. `strcat` is
+  back to ~12 ms interpreted (15× Rakudo) and correctness is unchanged.
+
+### Ecosystem & docs
+
+- New [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md): the projects built on this
+  interpreter (Raku.js, raku.online, spec.raku.online, raku-corpus, the Homebrew
+  tap), how they connect, and the release runbook for rebuilding the wasm and
+  redeploying the sites after a version bump.
+- REFERENCE.md inventory refreshed to 183 subroutines / 562 methods; FEATURES and
+  the benchmark tables brought current.
 
 ## v0.9.0 — 2026-07-19
 
