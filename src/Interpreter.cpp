@@ -4896,7 +4896,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
 Value Interpreter::evalInterp(InterpStr* s) {
     std::string out;
     for (auto& p : s->parts) out += strOf(eval(p.get())); // honour user `method Str`/`gist`
-    return Value::str(out);
+    return Value::str(nfcNormalize(out)); // NFG: combining marks compose across part boundaries
 }
 
 Value* Interpreter::lvalue(Expr* e) {
@@ -5627,7 +5627,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
     // string each step — O(n) string building instead of O(n²).
     if (!overloaded && binop == "~" && lv->t == VT::Str && rhs.t == VT::Str) {
-        lv->s += rhs.s;
+        lv->s = nfcNormalize(lv->s + rhs.s);
         return sink ? Value::any() : *lv;
     }
     if (!overloaded) {
@@ -5947,7 +5947,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
         char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
         switch (c0) {
-            case '~': if (c1 == '\0') return Value::str(l.s + r.s); break;
+            case '~': if (c1 == '\0') return Value::str(nfcNormalize(l.s + r.s)); break;
             case 'e': if (c1 == 'q') return Value::boolean(l.s == r.s); break;
             case 'n': if (c1 == 'e') return Value::boolean(l.s != r.s); break;
             case 'l': if (c1 == 't') return Value::boolean(l.s <  r.s);
@@ -6496,8 +6496,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         // an undefined operand stringifies to "" (Rakudo warns; `Any ~ $x` is $x)
         auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil || v.t == VT::Type; };
-        return Value::str((undef(l) ? std::string() : l.toStr()) +
-                          (undef(r) ? std::string() : r.toStr()));
+        return Value::str(nfcNormalize((undef(l) ? std::string() : l.toStr()) +
+                                       (undef(r) ? std::string() : r.toStr())));
     }
     if (op == "x") {
         std::string base = l.toStr(), out;
@@ -10536,7 +10536,9 @@ Value Interpreter::eval(Expr* e) {
                 return v;
             }
             return Value::number(nl->v); }
-        case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
+        case NK::StrLit: { auto* sl = static_cast<StrLit*>(e); // NFC-normalize once (Raku's NFG storage)
+            if (!sl->nfcDone) { sl->v = nfcNormalize(sl->v); sl->nfcDone = true; }
+            return Value::str(sl->v); }
         case NK::AllomorphLit: {
             auto* al = static_cast<AllomorphLit*>(e);
             Value v = eval(al->num.get());

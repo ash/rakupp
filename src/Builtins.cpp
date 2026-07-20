@@ -645,9 +645,24 @@ static std::string mapCase(const std::string& s, bool upper, int tcMode) {
         else if (upper) r += upperCase1(c);                // may expand (ß -> SS)
         else r += cpToUtf8(toLowerCp(c));
     }
-    return r;
+    return nfcNormalize(r); // a case change is NFG-normalised (Ι+◌̈ composes to Ϊ)
 }
 static long long cpCount(const std::string& s) { return (long long)utf8cp(s).size(); }
+
+// NFC-normalise a UTF-8 string — Raku stores strings in NFG (NFC of graphemes),
+// so `"e" ~ "\x[301]"` composes to "é" (1 codepoint). Pure-ASCII is already NFC
+// (the hot path), and a string with no composable combiners returns unchanged.
+std::string nfcNormalize(std::string s) { // by value: the ASCII fast path moves through, no copy
+    bool ascii = true;
+    for (unsigned char c : s) if (c >= 0x80) { ascii = false; break; }
+    if (ascii) return s;
+    auto cps = utf8cp(s);
+    auto norm = uniNormalize(cps, 1 /*NFC*/);
+    if (norm == cps) return s;
+    std::string out; out.reserve(s.size());
+    for (uint32_t cp : norm) out += cpToUtf8(cp);
+    return out;
+}
 
 // Unicode combining marks (Mn/Mc/Me — the common ranges) — they attach to the preceding grapheme.
 static bool isCombiningMark(uint32_t c) {

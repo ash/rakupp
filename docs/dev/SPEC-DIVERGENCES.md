@@ -13,10 +13,10 @@ Coverage at the time of writing: **111 pages, 260 dual-verified examples**; the
 18 items below are everything that disagreed. Each entry is self-contained:
 reproduction, expected vs. actual, severity, and the spec page that documents it.
 
-**Update (20 Jul 2026):** 16 of the 18 are now **fixed** in rakupp and marked
+**Update (20 Jul 2026):** 17 of the 18 are now **fixed** in rakupp and marked
 ✅ below — #1 (`.round`), #3 (`Complex.exp`), #7 (`List.invert`), #8
 (`Str.wordcase`), #9 (`split :skip-empty`), #10 (`Str.comb(Int)`), #11
-(`Str.indent`), #13 (`.isa`), plus #2 (where), #4 (Capture), #6 (qq{}), #12 (parents/params), #16 (Map), #17/#18 (gists). Remaining: #14 (native array boxing), #15 (NFC/NFG normalization) — both deeper representation work.
+(`Str.indent`), #13 (`.isa`), plus #2 (where), #4 (Capture), #6 (qq{}), #12 (parents/params), #16 (Map), #17/#18 (gists). Remaining: only #14 (native array boxing) — a deep representation change (a native array is genuinely a distinct type, not a boxed Array).
 
 **Legend:** 🐞 wrong result · 🕳️ missing method/feature · 🔤 semantic/type
 difference · 💅 cosmetic (gist/stringification only)
@@ -162,7 +162,7 @@ say @a.WHAT;          # Rakudo (array[int]) · rakupp (Array[int])
 ```
 Values identical. Page: [types/native](https://spec.raku.online/types/native.html) · **divergent**.
 
-### 15. No NFC/NFG normalization
+### 15. ✅ FIXED — No NFC/NFG normalization
 Grapheme counting is correct (`.chars` agrees), but combining sequences are not
 normalised, so codepoint counts and composed-vs-decomposed identity differ.
 

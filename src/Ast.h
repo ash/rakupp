@@ -45,7 +45,7 @@ struct NumLit : Expr {
     mutable std::shared_ptr<void> cacheN, cacheD;
     explicit NumLit(double x): Expr(NK::NumLit), v(x){}
 };
-struct StrLit : Expr { std::string v; explicit StrLit(std::string s): Expr(NK::StrLit), v(std::move(s)){} };
+struct StrLit : Expr { std::string v; bool nfcDone = false; /* NFC-normalized in place on first eval */ explicit StrLit(std::string s): Expr(NK::StrLit), v(std::move(s)){} };
 // A numeric word in a `<…>` list is an allomorph: the numeric value of `num`,
 // tagged so it is ALSO the string `str` (`<42>` is IntStr, `<1/3>` RatStr, `<1e5>` NumStr).
 struct AllomorphLit : Expr { ExprPtr num; std::string str; AllomorphLit(): Expr(NK::AllomorphLit){} };

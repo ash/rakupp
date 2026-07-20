@@ -39,6 +39,8 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 // Numify a string with Raku-correct result type (Int/Rat/Num), BigInt-aware
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
 Value numifyStr(const std::string& in);
+// NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
+std::string nfcNormalize(std::string in);
 
 struct Env {
     std::unordered_map<std::string, Value> vars;
