@@ -950,8 +950,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 return (pos == target) ? k(pos) : false;
             }
             // built-in char-class rules (<.alpha>, <ident>, <ws>, …) resolve here and
-            // take precedence over an interpreter resolver that doesn't define them.
-            {
+            // take precedence over an interpreter resolver that doesn't define them —
+            // UNLESS a lexical `my regex NAME {…}` shadows the built-in.
+            if (!(st.lexNames && st.lexNames->count(n->ruleName))) {
                 long e = builtinRuleMatch(n->ruleName, st.s, pos, len);
                 if (e >= 0) {
                     if (n->ruleCapture && !n->ruleName.empty()) { // record $<name> for a capturing built-in
@@ -1322,11 +1323,13 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out) cons
     return search(subject, startPos, out, nullptr);
 }
 
-bool Regex::search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r) const {
+bool Regex::search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r,
+                   const std::set<std::string>* lexNames) const {
     if (!ok_ || !root_) return false;
     long budget = 0; // shared across start positions: a whole search is bounded, not each attempt
     for (long start = startPos; start <= (long)subject.size(); start++) {
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+        st.lexNames = lexNames;
         st.hooks = runHooks; // standalone matches may still run {…} blocks
         st.steps = budget;
         long endPos = -1;
@@ -1343,9 +1346,11 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
     return false;
 }
 
-bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r) const {
+bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r,
+                    const std::set<std::string>* lexNames) const {
     if (!ok_ || !root_) return false;
     MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+    st.lexNames = lexNames;
     long endPos = -1;
     try {
         if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {

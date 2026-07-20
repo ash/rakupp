@@ -13,10 +13,10 @@ Coverage at the time of writing: **111 pages, 260 dual-verified examples**; the
 18 items below are everything that disagreed. Each entry is self-contained:
 reproduction, expected vs. actual, severity, and the spec page that documents it.
 
-**Update (20 Jul 2026):** 15 of the 18 are now **fixed** in rakupp and marked
+**Update (20 Jul 2026):** 16 of the 18 are now **fixed** in rakupp and marked
 ✅ below — #1 (`.round`), #3 (`Complex.exp`), #7 (`List.invert`), #8
 (`Str.wordcase`), #9 (`split :skip-empty`), #10 (`Str.comb(Int)`), #11
-(`Str.indent`), #13 (`.isa`), plus #2 (where), #4 (Capture), #6 (qq{}), #12 (parents/params), #16 (Map), #17/#18 (gists). Remaining: #5 (lexical regex shadowing), #14 (native array boxing), #15 (NFC/NFG).
+(`Str.indent`), #13 (`.isa`), plus #2 (where), #4 (Capture), #6 (qq{}), #12 (parents/params), #16 (Map), #17/#18 (gists). Remaining: #14 (native array boxing), #15 (NFC/NFG normalization) — both deeper representation work.
 
 **Legend:** 🐞 wrong result · 🕳️ missing method/feature · 🔤 semantic/type
 difference · 💅 cosmetic (gist/stringification only)
@@ -69,7 +69,7 @@ say $c.hash;   # Rakudo Map.new((x => 3))  · rakupp {1 => 2, x => 3}
 ```
 No spec page.
 
-### 5. A lexical regex named like a built-in subrule is shadowed by the built-in
+### 5. ✅ FIXED — A lexical regex named like a built-in subrule is shadowed
 `my regex ident {…}` (or `ws`, `alpha`, `digit`, …) is ignored when called as
 `<ident>`; rakupp resolves to the built-in, Rakudo uses the lexical override.
 

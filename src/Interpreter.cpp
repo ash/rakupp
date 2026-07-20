@@ -6871,6 +6871,9 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             "Unsupported use of " + re.obsolete() + "; this Perl 5 metacharacter is gone in Raku"};
     // resolve <NAME> subrules against lexical `my regex/token NAME {…}`; unknown names stay
     // lenient (zero-width) so existing patterns with unhandled assertions don't start failing.
+    // A lexical name also SHADOWS a same-named built-in subrule (my regex ident {…} beats <ident>).
+    std::set<std::string> lexNames;
+    for (auto& kv : namedRegex_) lexNames.insert(kv.first);
     SubResolver resolver;
     resolver = [&](const std::string& name, const std::string& subj, long pos, RxMatch& out) -> bool {
         if (name == "ws") { long p = pos; while (p < (long)subj.size() && std::isspace((unsigned char)subj[p])) p++; out.from = pos; out.to = p; out.matched = true; return true; }
@@ -6881,7 +6884,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                           : kind == "token" ? "r"        // token: ratchet (no backtracking)
                           : "";                          // regex: backtracking, no sigspace
         Regex sub(it->second, flags);
-        return sub.matchAt(subj, pos, out, resolver);
+        return sub.matchAt(subj, pos, out, resolver, &lexNames);
     };
     auto build = [&](const RxMatch& m) {
         Value v = Value::matchVal(subject.substr(m.from, m.to - m.from), m.from, m.to);
@@ -6929,7 +6932,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         long pos = 0;
         while (re.ok() && pos <= (long)subject.size()) {
             RxMatch m;
-            if (!re.search(subject, pos, m, resolver)) break;
+            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
             all.push_back(m);
             pos = (m.to > m.from) ? m.to : m.to + 1;
         }
@@ -6951,7 +6954,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         long pos = 0;
         while (re.ok() && pos <= (long)subject.size()) {
             RxMatch m;
-            if (!re.search(subject, pos, m, resolver)) break;
+            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
             list.arr->push_back(build(m));
             pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
         }
@@ -6995,7 +6998,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         wantHooks = true;
     }
     if (wantHooks) re.runHooks = &rmHooks;
-    if (re.ok() && re.search(subject, 0, m, resolver)) mv = build(m);
+    if (re.ok() && re.search(subject, 0, m, resolver, &lexNames)) mv = build(m);
     else mv = Value::nil();
     if (mv.t == VT::Match && inlineMade) mv.pairVal = inlineMade; // $/.ast
     setMatchVar(mv);

@@ -104,9 +104,11 @@ public:
     int nCaps() const { return ncaps_; }
     // Find the first match whose start is >= startPos (unanchored search).
     bool search(const std::string& subject, long startPos, RxMatch& out) const;
-    bool search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r) const;
+    bool search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r,
+                const std::set<std::string>* lexNames = nullptr) const;
     // Match anchored exactly at `pos` (used for grammar subrule calls).
-    bool matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r) const;
+    bool matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r,
+                 const std::set<std::string>* lexNames = nullptr) const;
     // Optional interpreter callbacks for standalone (non-grammar) matches — lets a
     // plain `/ … { make 1 } … /` execute its code blocks. Null = lenient no-op.
     const GrammarHooks* runHooks = nullptr;
@@ -194,6 +196,7 @@ public:
         std::map<std::string, std::vector<ParseNode>> children; // named subrule sub-trees (grammar path)
         const SubResolver* resolver = nullptr;             // plain-regex subrule path (atomic)
         class GrammarMatcher* grammar = nullptr;           // grammar path (backtrackable)
+        const std::set<std::string>* lexNames = nullptr;   // lexical `my regex NAME` overrides — shadow built-in subrules
         std::map<int, std::vector<std::pair<long, long>>> capReps; // list-valued positional capture occurrences
         long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
         long capFrom = -1;                                 // `<(` capture-start position (overall match .from), -1 = none
