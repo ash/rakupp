@@ -8182,7 +8182,11 @@ void Interpreter::registerBuiltins() {
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSqrt(I, a.empty() ? Value::integer(0) : a[0]); };
     B["floor"] = [](Interpreter& I, ValueList& a) -> Value { return rtBFloor(I, a.empty() ? Value::integer(0) : a[0]); };
     B["ceiling"] = [](Interpreter& I, ValueList& a) -> Value { return rtBCeiling(I, a.empty() ? Value::integer(0) : a[0]); };
-    B["round"] = [](Interpreter& I, ValueList& a) -> Value { return rtBRound(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["round"] = [](Interpreter& I, ValueList& a) -> Value { // delegate so a scale arg (round($x, 0.1)) and NaN/Inf are honoured
+        if (a.empty()) return Value::integer(0);
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "round", rest);
+    };
     B["truncate"] = [](Interpreter& I, ValueList& a) -> Value { return rtBTruncate(I, a.empty() ? Value::integer(0) : a[0]); };
     B["exp"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && (a[0].t == VT::Complex || a[0].t == VT::Object)) { ValueList none; return I.methodCall(a[0], "exp", none); }
