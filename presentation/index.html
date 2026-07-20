@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raku++ — a Raku implementation in C++, and its ecosystem</title>
+<style>
+  :root {
+    --bg: #0b0d13;
+    --bg-2: #12151e;
+    --bg-3: #171b27;
+    --line: #262b3a;
+    --line-2: #333a4d;
+    --ink: #e9ebf1;
+    --ink-2: #a6adbf;
+    --ink-3: #717a90;
+    --accent: #f0518a;
+    --accent-soft: rgba(240,81,138,0.14);
+    --accent-2: #37c9bb;
+    --accent-2-soft: rgba(55,201,187,0.13);
+    --accent-3: #f0b23c;
+    --accent-3-soft: rgba(240,178,60,0.14);
+    --shadow: 0 24px 60px -20px rgba(0,0,0,0.6);
+    --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f3f5f9;
+      --bg-2: #ffffff;
+      --bg-3: #eef1f6;
+      --line: #dde1ea;
+      --line-2: #cbd1de;
+      --ink: #14171f;
+      --ink-2: #4d5468;
+      --ink-3: #808898;
+      --accent: #d1356e;
+      --accent-soft: rgba(209,53,110,0.10);
+      --accent-2: #0f938a;
+      --accent-2-soft: rgba(15,147,138,0.11);
+      --accent-3: #b07714;
+      --accent-3-soft: rgba(176,119,20,0.12);
+      --shadow: 0 22px 50px -24px rgba(30,40,70,0.28);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0d13; --bg-2: #12151e; --bg-3: #171b27; --line: #262b3a; --line-2: #333a4d;
+    --ink: #e9ebf1; --ink-2: #a6adbf; --ink-3: #717a90;
+    --accent: #f0518a; --accent-soft: rgba(240,81,138,0.14);
+    --accent-2: #37c9bb; --accent-2-soft: rgba(55,201,187,0.13);
+    --accent-3: #f0b23c; --accent-3-soft: rgba(240,178,60,0.14);
+    --shadow: 0 24px 60px -20px rgba(0,0,0,0.6);
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f5f9; --bg-2: #ffffff; --bg-3: #eef1f6; --line: #dde1ea; --line-2: #cbd1de;
+    --ink: #14171f; --ink-2: #4d5468; --ink-3: #808898;
+    --accent: #d1356e; --accent-soft: rgba(209,53,110,0.10);
+    --accent-2: #0f938a; --accent-2-soft: rgba(15,147,138,0.11);
+    --accent-3: #b07714; --accent-3-soft: rgba(176,119,20,0.12);
+    --shadow: 0 22px 50px -24px rgba(30,40,70,0.28);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  /* ---- deck shell ---- */
+  #deck { position: fixed; inset: 0; }
+  .slide {
+    position: absolute; inset: 0;
+    display: grid;
+    grid-template-columns: minmax(88px, 8vw) 1fr minmax(48px, 6vw);
+    grid-template-rows: 1fr;
+    opacity: 0; visibility: hidden;
+    transform: translateX(28px);
+    transition: opacity .5s ease, transform .5s ease, visibility 0s linear .5s;
+  }
+  .slide.active { opacity: 1; visibility: visible; transform: none; transition: opacity .55s ease, transform .55s ease; z-index: 2; }
+  .slide.prev { transform: translateX(-28px); }
+
+  .gutter {
+    grid-column: 1;
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: clamp(20px, 4vh, 44px) 0 clamp(20px, 4vh, 44px) clamp(18px, 3vw, 40px);
+  }
+  .gutter .num { font-family: var(--font-mono); font-size: clamp(28px, 4vw, 46px); font-weight: 600; color: var(--accent); line-height: 1; }
+  .gutter .num small { color: var(--ink-3); font-size: .42em; font-weight: 500; }
+  .gutter .sect {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--ink-3); writing-mode: vertical-rl; transform: rotate(180deg); align-self: flex-start;
+  }
+  .stage {
+    grid-column: 2;
+    padding: clamp(28px, 6vh, 72px) clamp(30px, 4vw, 72px);
+    display: flex; flex-direction: column; justify-content: center;
+    min-width: 0; max-width: 1180px;
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .2em; text-transform: uppercase;
+    color: var(--accent-2); margin: 0 0 clamp(14px, 2.4vh, 26px);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow::before { content: ""; width: 24px; height: 1px; background: var(--accent-2); display: inline-block; }
+
+  h1, h2 { text-wrap: balance; margin: 0; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: clamp(26px, 4.4vw, 50px); line-height: 1.05; }
+  .lede { color: var(--ink-2); font-size: clamp(15px, 1.7vw, 20px); line-height: 1.5; max-width: 60ch; margin: clamp(16px,2.4vh,26px) 0 0; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  .accent { color: var(--accent); }
+  .accent-2 { color: var(--accent-2); }
+  code, .mono { font-family: var(--font-mono); }
+  .stage p code { background: var(--bg-3); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: .88em; color: var(--ink); }
+
+  /* ---- title slide ---- */
+  .title-slide .stage { justify-content: center; }
+  .wordmark { font-family: var(--font-mono); font-weight: 600; line-height: .9; letter-spacing: -0.03em; font-size: clamp(64px, 15vw, 190px); }
+  .wordmark .pp { color: var(--accent); }
+  .cursor { display: inline-block; width: .07em; height: .92em; background: var(--accent-2); margin-left: .06em; vertical-align: -0.08em; animation: blink 1.05s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .title-sub { font-size: clamp(17px, 2.3vw, 27px); color: var(--ink); margin-top: clamp(14px, 2.5vh, 30px); max-width: 30ch; font-weight: 600; letter-spacing: -0.01em; }
+  .title-sub .q { color: var(--ink-2); font-weight: 400; }
+  .title-meta { display: flex; flex-wrap: wrap; gap: 10px 8px; margin-top: clamp(22px, 4vh, 42px); }
+  .chip {
+    font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .02em;
+    border: 1px solid var(--line-2); border-radius: 999px; padding: 7px 14px; color: var(--ink-2);
+    background: var(--bg-2);
+  }
+  .chip b { color: var(--ink); font-weight: 600; }
+
+  /* ---- generic building blocks ---- */
+  .grid { display: grid; gap: clamp(12px, 1.6vw, 20px); margin-top: clamp(20px, 3vh, 34px); }
+  .g2 { grid-template-columns: repeat(2, 1fr); }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  .g4 { grid-template-columns: repeat(4, 1fr); }
+  .card {
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px;
+    padding: clamp(14px, 1.6vw, 20px); min-width: 0;
+  }
+  .card h3 { margin: 0 0 6px; font-size: 15.5px; font-weight: 650; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+  .card p { margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 1.48; }
+  .card .tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+  .dot { width: 8px; height: 8px; border-radius: 3px; background: var(--accent); flex: none; }
+  .dot.t { background: var(--accent-2); } .dot.a { background: var(--accent-3); }
+
+  /* ---- stat row ---- */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(14px, 2vw, 30px); margin-top: clamp(24px, 4vh, 40px); }
+  .stat { border-left: 2px solid var(--accent); padding-left: clamp(14px, 1.4vw, 20px); }
+  .stat.t { border-color: var(--accent-2); } .stat.a { border-color: var(--accent-3); }
+  .stat .n { font-family: var(--font-mono); font-weight: 600; font-size: clamp(30px, 4.6vw, 56px); line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .stat .n small { font-size: .42em; color: var(--ink-3); font-weight: 500; }
+  .stat .l { margin-top: 10px; color: var(--ink-2); font-size: 13.5px; line-height: 1.45; }
+  .stat .l b { color: var(--ink); font-weight: 600; }
+
+  /* ---- code block ---- */
+  .code {
+    font-family: var(--font-mono); font-size: clamp(12.5px, 1.15vw, 15px); line-height: 1.7;
+    background: var(--bg-3); border: 1px solid var(--line); border-radius: 12px;
+    padding: clamp(16px, 1.8vw, 24px); color: var(--ink); overflow-x: auto; white-space: pre;
+  }
+  .code .c { color: var(--ink-3); } .code .k { color: var(--accent); } .code .s { color: var(--accent-2); } .code .o { color: var(--accent-3); }
+
+  /* ---- ways-to-run list ---- */
+  .runs { display: flex; flex-direction: column; gap: 10px; margin-top: clamp(20px, 3vh, 32px); }
+  .run { display: grid; grid-template-columns: minmax(150px, 210px) 1fr; gap: clamp(14px,1.6vw,24px); align-items: baseline; padding: 13px 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--bg-2); }
+  .run code { font-family: var(--font-mono); font-size: 13.5px; color: var(--accent); font-weight: 600; white-space: nowrap; }
+  .run span { color: var(--ink-2); font-size: 13.5px; line-height: 1.4; }
+  .run span b { color: var(--ink); font-weight: 600; }
+
+  /* ---- benchmark bars ---- */
+  .bench { margin-top: clamp(16px, 2.6vh, 28px); display: flex; flex-direction: column; gap: 9px; }
+  .brow { display: grid; grid-template-columns: 92px 1fr 132px; align-items: center; gap: 14px; }
+  .brow .bname { font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); }
+  .btrack { position: relative; height: 22px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .bfill { position: absolute; inset: 0 auto 0 0; border-radius: 5px 0 0 5px; }
+  .bfill.win { background: linear-gradient(90deg, var(--accent-2-soft), var(--accent-2)); }
+  .bfill.lose { background: linear-gradient(90deg, var(--accent-soft), var(--accent)); }
+  .bval { font-family: var(--font-mono); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+  .bval.win { color: var(--accent-2); } .bval.lose { color: var(--accent); }
+  .bench-note { margin-top: 13px; color: var(--ink-3); font-size: 12.5px; font-family: var(--font-mono); line-height: 1.55; }
+
+  /* ---- ecosystem diagram ---- */
+  .eco { margin-top: clamp(18px, 3vh, 30px); display: flex; flex-direction: column; align-items: center; gap: 0; }
+  .eco-src { font-family: var(--font-mono); font-weight: 600; font-size: 15px; color: var(--ink); background: var(--bg-2); border: 1.5px solid var(--accent); border-radius: 10px; padding: 12px 22px; box-shadow: var(--shadow); }
+  .eco-src span { color: var(--accent); }
+  .eco-stem { width: 1px; height: 26px; background: var(--line-2); }
+  .eco-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: clamp(10px, 1.2vw, 16px); width: 100%; }
+  .eco-node { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; position: relative; }
+  .eco-node::before { content: ""; position: absolute; top: -26px; left: 50%; width: 1px; height: 26px; background: var(--line-2); }
+  .eco-node h4 { margin: 0 0 4px; font-family: var(--font-mono); font-size: 13px; font-weight: 650; color: var(--ink); }
+  .eco-node p { margin: 0; font-size: 11.5px; color: var(--ink-2); line-height: 1.4; }
+  .eco-node .arrow { color: var(--accent-2); font-family: var(--font-mono); font-size: 11px; display: block; margin-top: 7px; }
+
+  /* ---- showcase chips ---- */
+  .show { display: grid; grid-template-columns: repeat(4, 1fr); gap: clamp(11px,1.4vw,16px); margin-top: clamp(18px,3vh,30px); }
+  .scard { background: var(--bg-2); border: 1px solid var(--line); border-radius: 11px; padding: 14px 15px; }
+  .scard .st { font-weight: 650; font-size: 14.5px; letter-spacing: -0.01em; }
+  .scard .sd { color: var(--ink-2); font-size: 12px; line-height: 1.4; margin-top: 4px; }
+  .scard .sk { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin-top: 8px; }
+  .scard.t .sk { color: var(--accent-2); } .scard.a .sk { color: var(--accent-3); }
+
+  /* ---- closing ---- */
+  .install { display: flex; flex-direction: column; gap: 12px; margin-top: clamp(20px,3vh,32px); max-width: 640px; }
+  .iline { background: var(--bg-3); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; font-family: var(--font-mono); font-size: 14px; color: var(--ink); display: flex; align-items: center; gap: 12px; }
+  .iline .p { color: var(--accent-2); user-select: none; } .iline .cmt { color: var(--ink-3); }
+  .links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .links a { text-decoration: none; font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); border: 1px solid var(--line-2); border-radius: 999px; padding: 8px 15px; transition: color .18s, border-color .18s; }
+  .links a:hover { color: var(--accent); border-color: var(--accent); }
+  .links a:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+
+  ul.plain { margin: clamp(16px,2.4vh,24px) 0 0; padding: 0; list-style: none; display: grid; gap: 11px; max-width: 62ch; }
+  ul.plain li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; color: var(--ink-2); font-size: 15px; line-height: 1.5; }
+  ul.plain li b { color: var(--ink); font-weight: 600; }
+  ul.plain li .m { color: var(--accent); font-family: var(--font-mono); }
+
+  /* ---- chrome: progress, rail, nav, theme ---- */
+  #bar { position: fixed; top: 0; left: 0; height: 2px; background: var(--accent); z-index: 30; transition: width .45s ease; }
+  #rail { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 9px; z-index: 30; align-items: center; }
+  #rail button { width: 8px; height: 8px; padding: 0; border-radius: 50%; border: none; background: var(--line-2); cursor: pointer; transition: background .2s, transform .2s; }
+  #rail button:hover { background: var(--ink-3); }
+  #rail button.on { background: var(--accent); transform: scale(1.35); }
+  #rail button:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 3px; }
+  .navbtn { position: fixed; top: 50%; transform: translateY(-50%); z-index: 30; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg-2); color: var(--ink-2); cursor: pointer; font-size: 20px; display: grid; place-items: center; transition: color .18s, border-color .18s, opacity .18s; }
+  .navbtn:hover { color: var(--accent); border-color: var(--accent); }
+  .navbtn:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+  #next { right: 14px; } #prev { left: 14px; }
+  #counter { position: fixed; bottom: 15px; right: 18px; z-index: 30; font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); letter-spacing: .05em; font-variant-numeric: tabular-nums; }
+  #theme { position: fixed; top: 14px; right: 16px; z-index: 30; border: 1px solid var(--line); background: var(--bg-2); color: var(--ink-2); font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; border-radius: 999px; padding: 7px 13px; cursor: pointer; }
+  #theme:hover { color: var(--accent); border-color: var(--accent); }
+  #hint { position: fixed; bottom: 16px; left: 18px; z-index: 30; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+
+  @media (max-width: 720px) {
+    .slide { grid-template-columns: 44px 1fr 0; }
+    .gutter { padding-left: 12px; } .gutter .sect { display: none; }
+    .g2, .g3, .g4, .show, .stats, .eco-row { grid-template-columns: 1fr 1fr; }
+    .run { grid-template-columns: 1fr; gap: 4px; }
+    .brow { grid-template-columns: 64px 1fr 104px; gap: 10px; }
+    .navbtn { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .slide { transition: opacity .01s; transform: none; }
+    .cursor { animation: none; }
+    #bar { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="bar"></div>
+<button id="theme" aria-label="Toggle colour theme">Theme</button>
+
+<div id="deck">
+
+  <!-- 1 · TITLE -->
+  <section class="slide title-slide" data-sect="Raku++">
+    <div class="gutter"><div class="num">01<small>/12</small></div><div class="sect">Overview</div></div>
+    <div class="stage">
+      <div class="wordmark">Raku<span class="pp">++</span><span class="cursor"></span></div>
+      <div class="title-sub">A from-scratch <span class="q">Raku, hand-written in C++17.</span></div>
+      <div class="title-meta">
+        <span class="chip"><b>Interpreter</b> + native compiler</span>
+        <span class="chip">runs in the <b>browser</b> via WebAssembly</span>
+        <span class="chip"><b>Zero</b> third-party dependencies</span>
+        <span class="chip mono">v0.9.1</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 · WHAT IT IS -->
+  <section class="slide" data-sect="What it is">
+    <div class="gutter"><div class="num">02<small>/12</small></div><div class="sect">What it is</div></div>
+    <div class="stage">
+      <div class="eyebrow">not a Rakudo fork — shares no code with it</div>
+      <h2>One implementation of the <span class="accent">language</span>,<br>from lexer to native binary.</h2>
+      <p class="lede">A hand-written lexer, parser, and tree-walking evaluator for real <strong>Raku</strong> — classes, roles, grammars, regexes, multi-dispatch, junctions, lazy sequences, a bignum tower, Unicode-correct strings, concurrency. It can also <strong>compile</strong> a program to a standalone native executable, and — as <strong>Raku.js</strong> — run client-side in a browser.</p>
+      <div class="grid g3">
+        <div class="card"><h3><span class="dot"></span>C++17, no deps</h3><p>Hand-rolled bignum, Unicode tables, and regex engine. Builds anywhere CMake and a C++17 compiler run.</p></div>
+        <div class="card"><h3><span class="dot t"></span>Interpret <em>or</em> compile</h3><p>The same binary tree-walks a script or transpiles it to C++ and compiles native.</p></div>
+        <div class="card"><h3><span class="dot a"></span>Measured, not claimed</h3><p>Graded test-by-test against Roast, the official Raku specification suite.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · THE NUMBERS -->
+  <section class="slide" data-sect="Conformance">
+    <div class="gutter"><div class="num">03<small>/12</small></div><div class="sect">Conformance</div></div>
+    <div class="stage">
+      <div class="eyebrow">graded against Roast — the official suite</div>
+      <h2>How much Raku actually runs.</h2>
+      <div class="stats">
+        <div class="stat"><div class="n">88.2<small>%</small></div><div class="l"><b>189,102 / 214,384</b> declared tests pass — 97.4% of the tests that actually run.</div></div>
+        <div class="stat t"><div class="n">558<small>/ 1,462</small></div><div class="l">files pass on the strict <b>all-or-nothing</b> bar — every assertion in the file must pass (~38%).</div></div>
+        <div class="stat a"><div class="n">~3½<small>min</small></div><div class="l">to run the whole suite through a <b>self-hosted harness</b> — written in Raku, run by Raku++ itself.</div></div>
+      </div>
+      <p class="lede" style="margin-top:clamp(20px,3vh,32px)">Every release is gated on the full suite with <strong>zero fully-passing-file regressions</strong>. Numbers are measured on each tag, never projected.</p>
+    </div>
+  </section>
+
+  <!-- 4 · THE LANGUAGE -->
+  <section class="slide" data-sect="Language">
+    <div class="gutter"><div class="num">04<small>/12</small></div><div class="sect">Language</div></div>
+    <div class="stage">
+      <div class="eyebrow">the breadth of what's implemented</div>
+      <h2>Big-language Raku, most corners lit.</h2>
+      <div class="grid g4">
+        <div class="card"><span class="tag">numbers</span><h3>Exact by default</h3><p>Arbitrary-precision <code>Int</code>, exact <code>Rat</code> — <code>0.1+0.2-0.3</code> is exactly <code>0</code> — <code>Num</code>, <code>Complex</code>, allomorphs.</p></div>
+        <div class="card"><span class="tag">objects</span><h3>class · role · grammar</h3><p>Multi-dispatch, <code>BUILD</code>/<code>TWEAK</code>, mixins, <code>augment</code>, full <code>.^</code> introspection, <code>.wrap</code>.</p></div>
+        <div class="card"><span class="tag">regex</span><h3>Grammars that parse</h3><p>Backtracking engine, Unicode classes, <code>token</code>/<code>rule</code>, <code>.parse</code> with action classes &amp; <code>make</code>.</p></div>
+        <div class="card"><span class="tag">signatures</span><h3>multi &amp; proto</h3><p>Type / literal / <code>where</code> constraints, destructuring, coercion types, <code>callsame</code>.</p></div>
+        <div class="card"><span class="tag">functional</span><h3>Lazy &amp; higher-order</h3><p>Closures, <code>*</code> WhateverCode, junctions, <code>gather</code>/<code>take</code>, feeds, <code>1,2,*+*...Inf</code>.</p></div>
+        <div class="card"><span class="tag">metaprog</span><h3>Your own operators</h3><p>User ops in all six categories with working precedence traits and meta-operators over them.</p></div>
+        <div class="card"><span class="tag">concurrency</span><h3>Real OS threads</h3><p><code>start</code>/<code>await</code>, <code>Supply</code>/<code>react</code>/<code>whenever</code>, <code>Channel</code>, atomics; opt-in true parallelism.</p></div>
+        <div class="card"><span class="tag">unicode</span><h3>Grapheme-correct</h3><p>UAX #29 (emoji ZWJ), NFC/NFD/NFKC/NFKD, UCA collation — generated UCD/UCA 17.0 tables.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 · WAYS TO RUN -->
+  <section class="slide" data-sect="Execution">
+    <div class="gutter"><div class="num">05<small>/12</small></div><div class="sect">Execution</div></div>
+    <div class="stage">
+      <div class="eyebrow">one source, five targets</div>
+      <h2>Four ways to run — and a fifth in the browser.</h2>
+      <div class="runs">
+        <div class="run"><code>rakupp prog.raku</code><span><b>Interpret</b> — the default; covers the whole language.</span></div>
+        <div class="run"><code>--bundle&nbsp;-o prog</code><span>Standalone binary that re-parses the source at startup.</span></div>
+        <div class="run"><code>--aot&nbsp;-o prog</code><span>Standalone binary embedding the already-parsed AST.</span></div>
+        <div class="run"><code>--exe&nbsp;-o prog</code><span><b>Transpile to C++ and compile native</b> — anything unsupported falls back to <code>--bundle</code> automatically.</span></div>
+        <div class="run"><code>Raku.js&nbsp;→&nbsp;WASM</code><span><b>In the browser</b> — same semantics as native, client-side, no server, with an embeddable playground.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 · SPEED -->
+  <section class="slide" data-sect="Speed">
+    <div class="gutter"><div class="num">06<small>/12</small></div><div class="sect">Speed</div></div>
+    <div class="stage">
+      <div class="eyebrow">interpreter · × vs Rakudo v2026.06 · byte-identical output gate</div>
+      <h2>Fast to start, fast to run.</h2>
+      <div class="bench" id="benchBars"></div>
+      <div class="bench-note">~2 ms cold start (best 1.8 ms of a 200-spawn loop) — a tiny native binary, no VM to spin up. Even <span class="accent-2">interpreted</span>, Raku++ wins 7 of 9 kernels; the two it trails on — <code>streq</code>, <code>fib</code> — the next slide compiles away.</div>
+    </div>
+  </section>
+
+  <!-- 7 · NATIVE -->
+  <section class="slide" data-sect="Native">
+    <div class="gutter"><div class="num">07<small>/12</small></div><div class="sect">Native</div></div>
+    <div class="stage">
+      <div class="eyebrow">rakupp --exe · transpiled to C++, compiled native · × vs Rakudo</div>
+      <h2>Compiled, it wins <span class="accent-2">every</span> kernel.</h2>
+      <div class="bench" id="benchBarsNative"></div>
+      <div class="bench-note"><code>--exe</code> strips the tree-walk: every benchmark lands <span class="accent-2">2.6× to 47.9×</span> ahead of Rakudo — <code>streq</code> and <code>fib</code>, the interpreter's only two losses, now included. Anything the compiler can't lower falls back to bundling automatically.</div>
+    </div>
+  </section>
+
+  <!-- 8 · ECOSYSTEM -->
+  <section class="slide" data-sect="Ecosystem">
+    <div class="gutter"><div class="num">08<small>/12</small></div><div class="sect">Ecosystem</div></div>
+    <div class="stage">
+      <div class="eyebrow">one interpreter behind every surface</div>
+      <h2>A small constellation, one source of truth.</h2>
+      <div class="eco">
+        <div class="eco-src"><span>src/</span> — the C++ interpreter</div>
+        <div class="eco-stem"></div>
+        <div class="eco-row">
+          <div class="eco-node"><h4>native</h4><p>The binary + <code>--exe</code> compiler.</p><span class="arrow">brew · releases</span></div>
+          <div class="eco-node"><h4>Raku.js</h4><p>src/ compiled to WebAssembly (Emscripten).</p><span class="arrow">rakujs.{js,wasm}</span></div>
+          <div class="eco-node"><h4>raku.online</h4><p>Public playground — editor, share links, widget.</p><span class="arrow">embeds the wasm</span></div>
+          <div class="eco-node"><h4>raku-spec</h4><p>Behavioural spec; examples verified live.</p><span class="arrow">spec.raku.online</span></div>
+          <div class="eco-node"><h4>raku-corpus</h4><p>Real programs as a beyond-Roast test target.</p><span class="arrow">differential run</span></div>
+        </div>
+      </div>
+      <p class="lede" style="margin-top:clamp(18px,2.6vh,26px);max-width:70ch">Everything downstream ships the <em>same</em> interpreter — the wasm, the two sites, the Homebrew tap, and the release binaries all trace back to <code>src/</code>. The spec inherits a new engine for free the moment the playground redeploys.</p>
+    </div>
+  </section>
+
+  <!-- 9 · SHOWCASE -->
+  <section class="slide" data-sect="Showcase">
+    <div class="gutter"><div class="num">09<small>/12</small></div><div class="sect">Showcase</div></div>
+    <div class="stage">
+      <div class="eyebrow">mid-size programs, each leaning on a different part of the language</div>
+      <h2>Real programs, written <span class="accent">in</span> Raku.</h2>
+      <div class="show">
+        <div class="scard t"><div class="st">Scheme</div><div class="sd">A Lisp interpreter on a Raku grammar.</div><div class="sk">grammar · eval</div></div>
+        <div class="scard t"><div class="st">Forth</div><div class="sd">Stack machine, also grammar-parsed.</div><div class="sk">grammar</div></div>
+        <div class="scard"><div class="st">Markdown → HTML</div><div class="sd">Converter — also runs in the browser.</div><div class="sk">regex · wasm</div></div>
+        <div class="scard"><div class="st">JSON</div><div class="sd">Parser + formatter, browser-ready too.</div><div class="sk">grammar · wasm</div></div>
+        <div class="scard a"><div class="st">Pastebin</div><div class="sd">HTTP service on raw sockets.</div><div class="sk">sockets</div></div>
+        <div class="scard a"><div class="st">Chat server</div><div class="sd">Concurrent, many-client.</div><div class="sk">threads</div></div>
+        <div class="scard a"><div class="st">Key-value store</div><div class="sd">Its own wire protocol.</div><div class="sk">sockets</div></div>
+        <div class="scard a"><div class="st">rakus</div><div class="sd">A static-file HTTP server.</div><div class="sk">sockets</div></div>
+      </div>
+      <p class="lede" style="margin-top:clamp(16px,2.4vh,24px);max-width:72ch">Plus larger experiments — a <strong>JavaScript/TypeScript</strong> interpreter, a <strong>Perl 5</strong> interpreter (Raku parsing its own ancestor), and a <strong>raytracer</strong>. Every one of the 24 bundled <code>examples/</code> also compiles natively with <code>--exe</code>, byte-for-byte identical.</p>
+    </div>
+  </section>
+
+  <!-- 10 · DOGFOODING -->
+  <section class="slide" data-sect="Dogfooding">
+    <div class="gutter"><div class="num">10<small>/12</small></div><div class="sect">Dogfooding</div></div>
+    <div class="stage">
+      <div class="eyebrow">beyond what Roast's unit granularity exercises</div>
+      <h2>Real applications run <span class="accent">unmodified</span>.</h2>
+      <div class="grid g2">
+        <div class="card"><span class="tag">raku-course</span><h3>~1,500 pages, byte-identical</h3><p>The full course static-site generator regenerates the entire site byte-for-byte identically to Rakudo — including the real zef-installed <code>YAMLish</code> module.</p></div>
+        <div class="card"><span class="tag">covid.observer</span><h3>End-to-end build</h3><p>The site builder runs start to finish on Raku++ — a genuine data-processing application, not a curated snippet.</p></div>
+      </div>
+      <div class="code" style="margin-top:clamp(16px,2.6vh,26px)"><span class="c"># exact arithmetic, lazy infinite sequence, grapheme strings —</span>
+<span class="c"># the things that make real programs match, not just tests</span>
+say <span class="k">0.1</span> + <span class="k">0.2</span> - <span class="k">0.3</span>;              <span class="c"># 0  (exact Rat)</span>
+say (<span class="k">1</span>, <span class="k">2</span>, <span class="o">*</span>+<span class="o">*</span> <span class="o">...</span> <span class="o">*</span>)[<span class="s">^10</span>];  <span class="c"># 1 1 2 3 5 8 13 21 34 55</span>
+say <span class="s">"café"</span>.chars;               <span class="c"># 4  (graphemes, not bytes)</span></div>
+    </div>
+  </section>
+
+  <!-- 11 · ROADMAP -->
+  <section class="slide" data-sect="Roadmap">
+    <div class="gutter"><div class="num">11<small>/12</small></div><div class="sect">Roadmap</div></div>
+    <div class="stage">
+      <div class="eyebrow">honest about the edges</div>
+      <h2>Not there yet.</h2>
+      <ul class="plain">
+        <li><span class="m">▹</span><span><b>Macros / RakuAST / slangs</b> — compile-time metaprogramming and pluggable syntax.</span></li>
+        <li><span class="m">▹</span><span><b>libffi-grade NativeCall</b> — structs and callbacks (basic C FFI to libc / <code>&lt;math.h&gt;</code> already works, without libffi).</span></li>
+        <li><span class="m">▹</span><span>Some <b>IO</b> and <b>POD</b> corners.</span></li>
+        <li><span class="m">▹</span><span><b>Lock-free parallel atomics.</b></span></li>
+      </ul>
+      <p class="lede">Early-stage and growing test-first — the direction is more of Roast, passing file by file, with every release gated on no regressions.</p>
+    </div>
+  </section>
+
+  <!-- 12 · GET IT -->
+  <section class="slide" data-sect="Get it">
+    <div class="gutter"><div class="num">12<small>/12</small></div><div class="sect">Get it</div></div>
+    <div class="stage">
+      <div class="eyebrow">macOS · Linux · Windows · the browser</div>
+      <h2>Try <span class="accent">Raku<span style="font-family:var(--font-mono)">++</span></span> today.</h2>
+      <div class="install">
+        <div class="iline"><span class="p">$</span>brew tap ash/rakupp<span class="cmt"> &nbsp;# macOS</span></div>
+        <div class="iline"><span class="p">$</span>brew install rakupp</div>
+        <div class="iline"><span class="p">↗</span>raku.online<span class="cmt"> &nbsp;# run it in the browser, no install</span></div>
+      </div>
+      <div class="links">
+        <a href="https://github.com/ash/rakupp" target="_blank" rel="noopener">github.com/ash/rakupp</a>
+        <a href="https://raku.online" target="_blank" rel="noopener">raku.online</a>
+        <a href="https://spec.raku.online" target="_blank" rel="noopener">spec.raku.online</a>
+      </div>
+      <p class="lede" style="margin-top:22px">Prebuilt archives on every GitHub Release — macOS universal, Linux static, Windows static-CRT — plus the WebAssembly bundle. No runtime dependencies, anywhere.</p>
+    </div>
+  </section>
+
+</div>
+
+<button class="navbtn" id="prev" aria-label="Previous slide">‹</button>
+<button class="navbtn" id="next" aria-label="Next slide">›</button>
+<div id="rail" role="tablist" aria-label="Slides"></div>
+<div id="counter"></div>
+<div id="hint">← → to navigate</div>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var n = slides.length, i = 0;
+  var rail = document.getElementById('rail');
+  var bar = document.getElementById('bar');
+  var counter = document.getElementById('counter');
+
+  // benchmark data (interpreter vs Rakudo v2026.06)
+  // [name, interp × vs Rakudo, win/lose, native --exe × vs Rakudo]
+  var bench = [
+    ['strcat', 15.3, 'win', 47.9], ['bigint', 8.1, 'win', 8.5], ['hash', 5.9, 'win', 13.4],
+    ['sortnums', 3.6, 'win', 4.7], ['regex', 3.3, 'win', 4.2], ['arrayops', 2.6, 'win', 2.6],
+    ['loopsum', 1.3, 'win', 9.7], ['streq', 2.0, 'lose', 6.2], ['fib', 1.7, 'lose', 2.9]
+  ];
+  function renderBars(el, rows, maxv) {
+    if (!el) return;
+    el.innerHTML = rows.map(function (r) {
+      var pct = Math.max(6, (r.val / maxv) * 100);
+      return '<div class="brow"><span class="bname">' + r.name + '</span>' +
+        '<span class="btrack"><span class="bfill ' + r.cls + '" style="width:' + pct + '%"></span></span>' +
+        '<span class="bval ' + r.cls + '">' + r.label + '</span></div>';
+    }).join('');
+  }
+  // interpreter — measured order; the two losses stay magenta
+  renderBars(document.getElementById('benchBars'), bench.map(function (b) {
+    return { name: b[0], val: b[1], cls: b[2],
+      label: (b[2] === 'win' ? 'Raku++ ' : 'Rakudo ') + b[1].toFixed(1) + '×' };
+  }), 15.3);
+  // native --exe — sorted fastest-first, all wins → all green
+  renderBars(document.getElementById('benchBarsNative'),
+    bench.map(function (b) { return { name: b[0], val: b[3] }; })
+      .sort(function (a, b) { return b.val - a.val; })
+      .map(function (r) { return { name: r.name, val: r.val, cls: 'win',
+        label: 'Raku++ ' + r.val.toFixed(1) + '×' }; }),
+    47.9);
+
+  // build rail
+  slides.forEach(function (s, idx) {
+    var b = document.createElement('button');
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-label', 'Slide ' + (idx + 1) + ': ' + (s.getAttribute('data-sect') || ''));
+    b.addEventListener('click', function () { go(idx); });
+    rail.appendChild(b);
+  });
+  var dots = Array.prototype.slice.call(rail.children);
+
+  function go(t) {
+    if (t < 0) t = 0; if (t > n - 1) t = n - 1;
+    slides.forEach(function (s, idx) {
+      s.classList.toggle('active', idx === t);
+      s.classList.toggle('prev', idx < t);
+    });
+    dots.forEach(function (d, idx) { d.classList.toggle('on', idx === t); d.setAttribute('aria-selected', idx === t); });
+    bar.style.width = ((t) / (n - 1) * 100) + '%';
+    counter.textContent = String(t + 1).padStart(2, '0') + ' / ' + String(n).padStart(2, '0');
+    i = t;
+    try { history.replaceState(null, '', '#' + (t + 1)); } catch (e) {}
+  }
+
+  document.getElementById('next').addEventListener('click', function () { go(i + 1); });
+  document.getElementById('prev').addEventListener('click', function () { go(i - 1); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { go(i + 1); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { go(i - 1); e.preventDefault(); }
+    else if (e.key === 'Home') { go(0); }
+    else if (e.key === 'End') { go(n - 1); }
+  });
+
+  // theme toggle
+  var root = document.documentElement;
+  document.getElementById('theme').addEventListener('click', function () {
+    var cur = root.getAttribute('data-theme');
+    if (!cur) cur = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+
+  var start = (parseInt((location.hash || '').replace('#', ''), 10) || 1) - 1;
+  go(isNaN(start) ? 0 : start);
+})();
+</script>
+</body>
+</html>
