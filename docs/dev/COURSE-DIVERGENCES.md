@@ -36,25 +36,25 @@ bugs. The **17 with Rakudo exit 0** are the real signal, below.
 
 Reactive / async — the richest cluster:
 
-- **`await` on a `Supply` returns the wrong value.** `my $s = Supply.from-list(18,21,19,23); say await $s;` — Rakudo yields the **last** emitted value (`23`); rakupp yields the whole list gist (`values\t18 21 19 23`). (`await-a-supply` exercise + solution.)
-- **`done` inside `react` does not stop sibling `whenever`s atomically.** Two `whenever`s, the first calls `done` on its 2nd value; Rakudo delivers `[1 2]` (the whole block ends at once), rakupp delivers `[1 2 10]` — one value from the *other* supply leaks through before the block tears down. (`whenever/quiz2`; this is exactly what that quiz teaches.)
-- **`Supply.interval` timers don't wall-clock-interleave.** Two intervals of different periods in one `react`: Rakudo interleaves by time (`tick 0, TOCK 0, tick 1, …`); rakupp emits one timer's values then the other's (`tick 0..4, TOCK 0..4`), stable across runs — the timers aren't scheduled on real time concurrently. (`two-timers`.)
-- **Subscriber dispatch order on a `Supplier` differs.** A `.tap` and a `react`/`whenever` on the same live `Supply`: on the final event Rakudo and rakupp order the two subscribers' output differently (`… alert: stop` vs `… log: stop  alert: stop`). (`supply-kinds/live-in-action`.)
+- **`await` on a `Supply` returns the wrong value.** `my $s = Supply.from-list(18,21,19,23); say await $s;` — Rakudo yields the **last** emitted value (`23`); rakupp yields the whole list gist (`values\t18 21 19 23`). ([`await-a-supply`](https://course.raku.org/paradigms/await/exercises/await-a-supply/) exercise + solution.)
+- **`done` inside `react` does not stop sibling `whenever`s atomically.** Two `whenever`s, the first calls `done` on its 2nd value; Rakudo delivers `[1 2]` (the whole block ends at once), rakupp delivers `[1 2 10]` — one value from the *other* supply leaks through before the block tears down. ([`whenever/quiz2`](https://course.raku.org/paradigms/react-whenever/whenever/quiz2/); this is exactly what that quiz teaches.)
+- **`Supply.interval` timers don't wall-clock-interleave.** Two intervals of different periods in one `react`: Rakudo interleaves by time (`tick 0, TOCK 0, tick 1, …`); rakupp emits one timer's values then the other's (`tick 0..4, TOCK 0..4`), stable across runs — the timers aren't scheduled on real time concurrently. ([`two-timers`](https://course.raku.org/paradigms/react-whenever/two-timers/).)
+- **Subscriber dispatch order on a `Supplier` differs.** A `.tap` and a `react`/`whenever` on the same live `Supply`: on the final event Rakudo and rakupp order the two subscribers' output differently (`… alert: stop` vs `… log: stop  alert: stop`). ([`supply-kinds/live-in-action`](https://course.raku.org/paradigms/supply-kinds/live-in-action/).)
 
 MOP / introspection:
 
-- **`^add_method` fails.** `Empty.^add_method('greet', method { 'hi' })` → rakupp dies with `No such method 'add_method' for invocant of type 'Slip'`; Rakudo adds the method and prints `hi`. (`oop/mop/adding-methods`.)
-- **HyperSeq config introspection fails.** `(1..10).hyper` then `.^attributes.first(*.name.contains('config')).get_value($h).raku` → rakupp exits 1; Rakudo prints `HyperConfiguration.new(batch => 64, degree => 7)`. (`hyper-race/batch-and-degree`; the batch/degree numbers are implementation-defined, but the introspection path should work.)
+- **`^add_method` fails.** `Empty.^add_method('greet', method { 'hi' })` → rakupp dies with `No such method 'add_method' for invocant of type 'Slip'`; Rakudo adds the method and prints `hi`. ([`oop/mop/adding-methods`](https://course.raku.org/oop/mop/adding-methods/).)
+- **HyperSeq config introspection fails.** `(1..10).hyper` then `.^attributes.first(*.name.contains('config')).get_value($h).raku` → rakupp exits 1; Rakudo prints `HyperConfiguration.new(batch => 64, degree => 7)`. ([`hyper-race/batch-and-degree`](https://course.raku.org/paradigms/hyper-race/batch-and-degree/); the batch/degree numbers are implementation-defined, but the introspection path should work.)
 
 Minor:
 
-- **`$?FILE` is a bare basename.** rakupp prints `s.raku`; Rakudo prints the absolute path of the source file. (`special-variables/twigils`.)
+- **`$?FILE` is a bare basename.** rakupp prints `s.raku`; Rakudo prints the absolute path of the source file. ([`special-variables/twigils`](https://course.raku.org/advanced/special-variables/twigils/).)
 
 ### Not Raku++ bugs (recorded so they aren't re-triaged)
 
-- **Rakudo quirk, rakupp is correct:** a comment ending in `\` right before EOF makes **Rakudo** emit nothing (`say 42; # x\␊` → Rakudo prints ``, rakupp prints `42`). Minimal repro confirmed; drop the final newline and Rakudo prints normally. (`strings/escaping-special-characters` — worth a course note too, since that example would show no output under Rakudo when it's the block's last line.)
-- **Cosmetic:** the raw-socket HTTP examples (`send-and-receive`, `sending-receiving`) match visibly; rakupp differs by one trailing newline on the `.lines.first` status line.
-- **Environmental / not reproducible:** the Cro client examples (`client-modules`, `public-apis`, `status-line`) hit live services (weather JSON, HTTP→HTTPS redirects) whose responses vary between the two runs.
+- **Rakudo quirk, rakupp is correct:** a comment ending in `\` right before EOF makes **Rakudo** emit nothing (`say 42; # x\␊` → Rakudo prints ``, rakupp prints `42`). Minimal repro confirmed; drop the final newline and Rakudo prints normally. ([`strings/escaping-special-characters`](https://course.raku.org/essentials/strings/escaping-special-characters/) — worth a course note too, since that example would show no output under Rakudo when it's the block's last line.)
+- **Cosmetic:** the raw-socket HTTP examples ([`send-and-receive`](https://course.raku.org/paradigms/connections/exercises/send-and-receive/), [`sending-receiving`](https://course.raku.org/paradigms/connections/sending-receiving/)) match visibly; rakupp differs by one trailing newline on the `.lines.first` status line.
+- **Environmental / not reproducible:** the Cro client examples ([`client-modules`](https://course.raku.org/paradigms/cro/client-modules/), [`public-apis`](https://course.raku.org/paradigms/cro/public-apis/), [`status-line`](https://course.raku.org/paradigms/cro/exercises/status-line/)) hit live services (weather JSON, HTTP→HTTPS redirects) whose responses vary between the two runs.
 
 ---
 

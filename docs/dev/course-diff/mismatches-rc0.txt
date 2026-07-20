@@ -1,4 +1,5 @@
 ########## 0295  (exercises/paradigms/await/await-a-supply.raku) ##########
+PAGE: https://github.com/ash/raku-course/blob/master/exercises/paradigms/await/await-a-supply.raku
 === SOURCE (0295) ===
 my $sensor = Supply.from-list(18, 21, 19, 23);
 
@@ -10,6 +11,7 @@ final reading: 23
 final reading: values	18 21 19 23
 
 ########## 0304  (exercises/paradigms/connections/send-and-receive.raku) ##########
+PAGE: https://github.com/ash/raku-course/blob/master/exercises/paradigms/connections/send-and-receive.raku
 === SOURCE (0304) ===
 my $conn = IO::Socket::INET.new(:host('example.com'), :port(80));
 
@@ -24,6 +26,7 @@ HTTP/1.1 200 OK
 HTTP/1.1 200 OK
 
 ########## 0306  (exercises/paradigms/cro/status-line.raku) ##########
+PAGE: https://github.com/ash/raku-course/blob/master/exercises/paradigms/cro/status-line.raku
 === SOURCE (0306) ===
 use Cro::HTTP::Client;
 
@@ -34,6 +37,7 @@ say $response.status;
 === RAKUPP rc=1 ===
 
 ########## 0740  (essentials/strings/escaping-special-characters/index.md#6) ##########
+PAGE: https://course.raku.org/essentials/strings/escaping-special-characters/
 === SOURCE (0740) ===
 say 'a\b\c\\'; # a\b\c\
 === RAKUDO rc=0 ===
@@ -41,6 +45,7 @@ say 'a\b\c\\'; # a\b\c\
 a\b\c\
 
 ########## 1140  (advanced/special-variables/twigils/index.md#1) ##########
+PAGE: https://course.raku.org/advanced/special-variables/twigils/
 === SOURCE (1140) ===
 say $?LINE; # the line number of this statement
 say $?FILE; # the path of this source file
@@ -52,6 +57,7 @@ say $?FILE; # the path of this source file
 s.raku
 
 ########## 1328  (oop/mop/adding-methods/index.md#1) ##########
+PAGE: https://course.raku.org/oop/mop/adding-methods/
 === SOURCE (1328) ===
 class Empty {
 }
@@ -64,6 +70,7 @@ hi
 === RAKUPP rc=1 ===
 
 ########## 1547  (paradigms/await/exercises/await-a-supply/solution/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/await/exercises/await-a-supply/solution/
 === SOURCE (1547) ===
 my $sensor = Supply.from-list(18, 21, 19, 23);
 
@@ -75,6 +82,7 @@ final reading: 23
 final reading: values	18 21 19 23
 
 ########## 1572  (paradigms/connections/exercises/send-and-receive/solution/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/connections/exercises/send-and-receive/solution/
 === SOURCE (1572) ===
 my $conn = IO::Socket::INET.new(:host('example.com'), :port(80));
 
@@ -89,6 +97,7 @@ HTTP/1.1 200 OK
 HTTP/1.1 200 OK
 
 ########## 1574  (paradigms/connections/sending-receiving/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/connections/sending-receiving/
 === SOURCE (1574) ===
 my $conn = IO::Socket::INET.new(:host('raku.org'), :port(80));
 
@@ -103,6 +112,7 @@ HTTP/1.1 308 Permanent Redirect
 HTTP/1.1 308 Permanent Redirect
 
 ########## 1576  (paradigms/cro/client-modules/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/cro/client-modules/
 === SOURCE (1576) ===
 use Cro::HTTP::Router;
 use Cro::HTTP::Server;
@@ -127,6 +137,7 @@ Hello from Cro!
 === RAKUPP rc=1 ===
 
 ########## 1579  (paradigms/cro/exercises/status-line/solution/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/cro/exercises/status-line/solution/
 === SOURCE (1579) ===
 use Cro::HTTP::Client;
 
@@ -137,6 +148,7 @@ say $response.status;
 === RAKUPP rc=1 ===
 
 ########## 1580  (paradigms/cro/public-apis/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/cro/public-apis/
 === SOURCE (1580) ===
 use Cro::HTTP::Client;
 
@@ -156,6 +168,7 @@ Berlin right now:
 === RAKUPP rc=1 ===
 
 ########## 1581  (paradigms/cro/public-apis/index.md#2) ##########
+PAGE: https://course.raku.org/paradigms/cro/public-apis/
 === SOURCE (1581) ===
 use Cro::HTTP::Client;
 
@@ -169,6 +182,7 @@ Berlin: 🌤️  +15°C
 === RAKUPP rc=1 ===
 
 ########## 1619  (paradigms/hyper-race/batch-and-degree/index.md#4) ##########
+PAGE: https://course.raku.org/paradigms/hyper-race/batch-and-degree/
 === SOURCE (1619) ===
 my $h := (1..10).hyper;
 say $h.^attributes.first(*.name.contains('config')).get_value($h).raku;
@@ -178,6 +192,7 @@ HyperConfiguration.new(batch => 64, degree => 7)
 === RAKUPP rc=1 ===
 
 ########## 1676  (paradigms/react-whenever/two-timers/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/react-whenever/two-timers/
 === SOURCE (1676) ===
 react {
     whenever Supply.interval(0.3) {
@@ -212,6 +227,7 @@ TOCK 3
 TOCK 4
 
 ########## 1680  (paradigms/react-whenever/whenever/quiz2/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/react-whenever/whenever/quiz2/
 === SOURCE (1680) ===
 my @out;
 
@@ -232,6 +248,7 @@ say @out;
 [1 2 10]
 
 ########## 1718  (paradigms/supply-kinds/live-in-action/index.md#1) ##########
+PAGE: https://course.raku.org/paradigms/supply-kinds/live-in-action/
 === SOURCE (1718) ===
 my $supplier = Supplier.new;
 my $events   = $supplier.Supply;
