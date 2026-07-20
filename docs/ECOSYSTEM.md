@@ -75,18 +75,28 @@ whenever the release adds or changes user-visible behaviour; D is a safety net.
 3. **Update `CHANGELOG.md`** — move the `## Unreleased` block to
    `## vX.Y.Z — <date>`.
 4. **Refresh the stat/doc numbers** — README status table, ROAST/COUNTING/
-   FEATURES/OVERVIEW/GUIDE/ROADMAP, and the BENCHMARKS footer snapshot. Re-run
-   `tools/run-bench.raku` + `tools/run-optbench.raku` if kernels may have shifted.
-   (The full checklist of which files carry which numbers is the doc-sync
-   discipline; grep the old figures to find every occurrence.)
-5. **Tag and push** — `git tag vX.Y.Z && git push --tags`. The
+   FEATURES/OVERVIEW/GUIDE/ROADMAP. (The full checklist of which files carry
+   which numbers is the doc-sync discipline; grep the old figures to find every
+   occurrence.)
+5. **Re-run the benchmarks** — always, not just when a kernel *looks* like it
+   moved: a perf regression can hide anywhere, and the release is exactly when to
+   catch it (v0.9.1 shipped an O(n²) `~=` regression that only a benchmark run
+   surfaced). Run both harnesses and update [BENCHMARKS.md](BENCHMARKS.md):
+   ```sh
+   build/rakupp tools/run-bench.raku        # interp / --exe / Rakudo kernels
+   build/rakupp tools/run-optbench.raku     # --exe vs --exe -O
+   ```
+   Refresh both comparison tables, the `-O` table, the short-version bullets, the
+   prose speed-ups, and the dated footer snapshot. If a number went the wrong way,
+   fix the code before tagging — don't just record the regression.
+6. **Tag and push** — `git tag vX.Y.Z && git push --tags`. The
    [`release.yml`](../.github/workflows/release.yml) CI then builds the
    binaries for macOS (universal), Linux (static), and Windows (MSVC + MinGW),
    **and** the `wasm` job builds `rakujs-<tag>.zip` (playground bundle) and the
    showcase bundle, attaching all of them to the GitHub Release. No manual
    binary building is needed.
-6. **Bump the Homebrew formula** — in the [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp)
-   repo (`Formula/rakupp.rb`), after the Release CI (Step A.5) has published the
+7. **Bump the Homebrew formula** — in the [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp)
+   repo (`Formula/rakupp.rb`), after the Release CI (Step A.6) has published the
    assets. The formula pins the version in **three** places — all must move together:
    - top-level `url` → `…/archive/refs/tags/vX.Y.Z.tar.gz` + its `sha256`
      (the **source** tarball, used by the Linux/Intel build-from-source path);
@@ -171,5 +181,6 @@ deploy — nothing to publish, just a signal before (or right after) tagging.
 | example programs (`examples/`) | rebuild wasm so `examples.js` regenerates (**B.2**), redeploy raku.online (**B**) |
 | the playground UI (`rakujs/playground/`) | copy the changed file into `raku.online/www/` and redeploy (**B.3–4**) |
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
-| stat numbers (Roast/benchmarks) | refresh the docs per the doc-sync checklist (**A.4**) |
-| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.6**) |
+| stat numbers (Roast) | refresh the docs per the doc-sync checklist (**A.4**) |
+| the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
+| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**) |
