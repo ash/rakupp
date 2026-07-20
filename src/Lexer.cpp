@@ -618,12 +618,22 @@ Token Lexer::lexNumber() {
         t.ival = std::strtoll(digits.c_str(), nullptr, b);
         return t;
     }
-    while (takeDigit(num) || peek() == '_') { if (peek() == '_') advance(); }
+    // A numeric separator `_` is only legal BETWEEN two digits — reject trailing
+    // and consecutive underscores (`100_`, `1__0`), matching Rakudo.
+    auto isDigitNext = [&](int off) {
+        unsigned char d = (unsigned char)peek(off);
+        return std::isdigit(d) || d >= 0x80; // ASCII digit, or a multibyte (possible Unicode Nd)
+    };
+    while (takeDigit(num) || peek() == '_') {
+        if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); advance(); }
+    }
     bool hasDot = false, hasExp = false;
     if (peek() == '.' && std::isdigit((unsigned char)peek(1))) {
         isFloat = true; hasDot = true;
         num += advance(); // .
-        while (takeDigit(num) || peek() == '_') { if (peek() == '_') advance(); }
+        while (takeDigit(num) || peek() == '_') {
+            if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); advance(); }
+        }
     }
     if ((peek() == 'e' || peek() == 'E') &&
         (std::isdigit((unsigned char)peek(1)) ||
