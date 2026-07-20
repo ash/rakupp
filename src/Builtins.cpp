@@ -3210,19 +3210,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             throw RakuError{Value::typeObj("X::MustBeParametric"),
                             "Must first parameterize the vector type, e.g.: array[int32]"};
         Value v = Value::array(); v.isList = (inv.s == "List" || inv.s == "Seq"); v.ofType = inv.ofType;
-        long long shape = -1;
+        std::vector<long long> dims;
+        ValueList seed;
         for (auto& a : args) {
-            if (a.t == VT::Pair && a.s == "shape") { shape = a.pairVal ? a.pairVal->toInt() : 0; continue; }
-            for (auto& x : toList(a)) v.arr->push_back(x);
+            if (a.t == VT::Pair && a.s == "shape") {
+                if (a.pairVal) for (auto& d : a.pairVal->flatten()) dims.push_back(d.toInt());
+                continue;
+            }
+            for (auto& x : toList(a)) seed.push_back(x);
         }
-        if (shape >= 0) { // 1-dim shaped array: pre-sized with the element default
-            bool natNum = v.ofType == "num" || v.ofType == "num32" || v.ofType == "num64";
-            bool natStr = v.ofType == "str" || v.ofType == "Str";
-            bool natInt = !v.ofType.empty() && !natNum && !natStr && v.ofType != "Any" && v.ofType != "Mu";
-            while ((long long)v.arr->size() < shape)
-                v.arr->push_back(natNum ? Value::number(0) : natStr ? Value::str("")
-                               : natInt ? Value::integer(0) : Value::any());
+        if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape
+            std::string et = v.ofType == "Any" || v.ofType == "Mu" ? "" : v.ofType;
+            Value s = makeShapedContainer(dims, et, seed.empty() ? nullptr : &seed);
+            s.isList = v.isList;
+            return s;
         }
+        *v.arr = seed;
         return v;
     }
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "Map")
@@ -4369,6 +4372,33 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
     if (inv.t == VT::Array && inv.arr &&
         (m == "AT-POS" || m == "EXISTS-POS" || m == "ASSIGN-POS" || m == "DELETE-POS")) {
+        // multi-dim access on a shaped array (`@a.AT-POS(i, j)`): walk each index
+        // level. ASSIGN-POS takes a trailing value, so its last arg is the value.
+        size_t nidx = (m == "ASSIGN-POS") ? (args.size() > 1 ? args.size() - 1 : args.size()) : args.size();
+        if (nidx > 1) {
+            Value* cur = &inv;
+            bool oob = false;
+            for (size_t d = 0; d + 1 < nidx; d++) { // descend to the innermost array
+                long long ix = args[d].toInt();
+                if (!cur->arr || ix < 0 || ix >= (long long)cur->arr->size()) { oob = true; break; }
+                cur = &(*cur->arr)[ix];
+            }
+            long long last = args[nidx - 1].toInt();
+            bool in = !oob && cur->t == VT::Array && cur->arr && last >= 0 && last < (long long)cur->arr->size();
+            if (m == "EXISTS-POS") return Value::boolean(in && defined((*cur->arr)[last]));
+            if (m == "AT-POS") {
+                if (!in) throw RakuError{Value::typeObj("X::OutOfRange"), "Index out of range"};
+                return (*cur->arr)[last];
+            }
+            if (m == "ASSIGN-POS") {
+                Value v = args.back();
+                if (in) (*cur->arr)[last] = v;
+                return v;
+            }
+            Value old = in ? (*cur->arr)[last] : Value::any();
+            if (in) (*cur->arr)[last] = Value::any();
+            return old;
+        }
         long long i = args.empty() ? 0 : args[0].toInt();
         if (i < 0) i += (long long)inv.arr->size();
         bool in = i >= 0 && i < (long long)inv.arr->size();
@@ -6144,9 +6174,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (auto& v : items) if (v.t == VT::Pair) (*h.hash)[v.s] = v.pairVal ? *v.pairVal : Value::any();
             return h;
         }
-        if (m == "shape") { // unshaped arrays answer (*,) — declared shapes aren't retained yet
+        if (m == "shape") { // a declared shape (my @a[2;3]) reports its dims; else (*,)
             Value o = Value::array(); o.isList = true;
-            o.arr->push_back(Value::whatever());
+            if (inv.shape && !inv.shape->empty())
+                for (long long d : *inv.shape) o.arr->push_back(Value::integer(d));
+            else o.arr->push_back(Value::whatever());
             return o;
         }
         if (m == "hyper" || m == "race") { Value o = Value::array(items); o.isList = true; return o; } // parallel -> sequential
@@ -6971,6 +7003,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (!ok) throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
                     "Type check failed in binding; expected " + bt + " but got " + v.typeName() + " (" + v.gist() + ")"};
             };
+            // a shaped array (`my @a[2;2]`) has fixed dimensions — size-changing
+            // operations are illegal
+            if (inv.shape && !inv.shape->empty()) {
+                static const std::set<std::string> fixedIllegal = {
+                    "push", "append", "pop", "unshift", "prepend", "shift",
+                    "splice", "reverse", "rotate"};
+                if (fixedIllegal.count(m))
+                    throw RakuError{Value::typeObj("X::IllegalOnFixedDimensionArray"),
+                        "Cannot " + m + " a fixed-dimension array"};
+            }
             if (m == "push" || m == "unshift" || m == "append" || m == "prepend") for (auto& a : args) natCheck(a);
             // push/unshift add each argument as one element; append/prepend flatten
             if (m == "push") { for (auto& a : args) inv.arr->push_back(a); return inv; } // returns the array (shared storage)

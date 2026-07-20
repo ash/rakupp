@@ -1420,6 +1420,20 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if (isKind(Tok::Var)) {
         auto ve = std::make_unique<VarExpr>(advance().text);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
+        // shaped array `my @a[3]` / `my @a[2;2]`: the `[...]` right after the sigil
+        // (no space) is a dimension list, not a subscript. Semicolons separate dims.
+        if (ve->name[0] == '@' && isKind(Tok::LBracket) && !cur().spaceBefore) {
+            advance(); // '['
+            auto dims = std::make_unique<ListExpr>();
+            dims->semicolon = true;
+            while (!isKind(Tok::RBracket) && !isKind(Tok::End)) {
+                dims->items.push_back(parseExpr(BP_COMMA + 1));
+                if (isKind(Tok::Semicolon) || isKind(Tok::Comma)) { advance(); continue; } // `[3;3]` or `[3,3]`
+                break;
+            }
+            expectKind(Tok::RBracket, "]");
+            ve->declShape = dims->items.size() == 1 ? std::move(dims->items[0]) : std::move(dims);
+        }
         // `%a{Str}` — hash key-type shape declaration
         std::string keyType;
         if (isKind(Tok::LBrace) && peek().kind == Tok::Ident && peek(2).kind == Tok::RBrace) {

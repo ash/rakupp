@@ -316,6 +316,41 @@ static Value defaultFor(char sigil) {
     if (sigil == '%') return Value::makeHash();
     return Value::any();
 }
+// Build a shaped array `my @a[2;3]`: a fixed-size row-major structure pre-filled
+// with the element-type default, tagged with its dimensions for `.shape`.
+Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
+                          const ValueList* fill) {
+    // native (lowercase) element types default to a concrete zero/empty; named
+    // types default to the type object; untyped to Any.
+    Value elemDef;
+    if (declType.empty()) elemDef = Value::any();
+    else if (declType == "str") elemDef = Value::str("");
+    else if (declType.rfind("num", 0) == 0) elemDef = Value::number(0);
+    else if (declType.rfind("int", 0) == 0 || declType.rfind("uint", 0) == 0 || declType == "byte")
+        elemDef = Value::integer(0);
+    else elemDef = Value::typeObj(declType);
+    size_t idx = 0;
+    std::function<Value(size_t)> mk = [&](size_t lvl) -> Value {
+        Value a = Value::array(); a.ofType = declType;
+        long long n = lvl < dims.size() ? dims[lvl] : 0;
+        for (long long i = 0; i < n; i++) {
+            if (lvl + 1 < dims.size()) a.arr->push_back(mk(lvl + 1));
+            else a.arr->push_back(fill && idx < fill->size() ? (*fill)[idx++] : elemDef);
+        }
+        return a;
+    };
+    Value v = mk(0);
+    v.shape = std::make_shared<std::vector<long long>>(dims);
+    return v;
+}
+// Evaluate the dimension list of a shaped-array declaration (`my @a[2;3]` → {2,3}).
+std::vector<long long> Interpreter::evalShapeDims(Expr* shape) {
+    std::vector<long long> dims;
+    if (shape && shape->kind == NK::ListExpr)
+        for (auto& d : static_cast<ListExpr*>(shape)->items) dims.push_back(eval(d.get()).toInt());
+    else if (shape) dims.push_back(eval(shape).toInt());
+    return dims;
+}
 // default value for a typed declaration: native lowercase types (num/int/str) have
 // concrete defaults; a named type (`my Int $x`) defaults to that type object.
 static Value typedDefault(const std::string& type, char sigil) {
@@ -1842,8 +1877,12 @@ int Interpreter::run(Program& prog) {
             auto one = [this](Expr* x) {
                 if (x && x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare) {
                     auto* ve = static_cast<VarExpr*>(x);
-                    if (!ve->name.empty() && !global_->vars.count(ve->name))
-                        global_->define(ve->name, typedDefault(ve->declType, ve->name[0]));
+                    if (!ve->name.empty() && !global_->vars.count(ve->name)) {
+                        if (ve->declShape && ve->name[0] == '@')
+                            global_->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
+                        else
+                            global_->define(ve->name, typedDefault(ve->declType, ve->name[0]));
+                    }
                 }
             };
             if (!e) return;
@@ -4993,6 +5032,8 @@ Value* Interpreter::lvalue(Expr* e) {
                 return &tctx_.curStateEnv->vars[ve->name];
             }
             Value init = typedDefault(ve->declType, sigil);
+            if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
+                init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
             if (!ve->containerIs.empty() && sigil == '%') // my %h is Set — an empty Setty
                 init = makeBaggy({}, ve->containerIs);
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
@@ -5561,6 +5602,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
         if (sigil == '@') {
             std::string keepType = lv->ofType; // the container keeps its element type
+            // Shaped array (`my @a[2;2] = …`): fill row-major into the fixed structure,
+            // keep the shape, and reject too many values (`my @a[3] = 1,2,3,4` dies).
+            if (a->op == "=" && lv->shape && !lv->shape->empty()) {
+                auto shp = lv->shape;
+                long long cap = 1; for (long long d : *shp) cap *= d;
+                ValueList flat; for (auto& x : rhs.flatten()) flat.push_back(x);
+                if ((long long)flat.size() > cap)
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "Cannot assign " + std::to_string(flat.size()) +
+                        " elements to a shaped array of " + std::to_string(cap)};
+                *lv = makeShapedContainer(*shp, keepType, &flat);
+                return rhs;
+            }
             // `=` assignment flattens iterables into the array; `:=` BINDS — the
             // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
             // elements: a Range, a List, an Array — not their union).
@@ -10755,6 +10809,10 @@ Value Interpreter::eval(Expr* e) {
                     }
                     tctx_.cur->varDefault[ve->name] = dv;
                     tctx_.cur->define(ve->name, dv);
+                    return tctx_.cur->vars[ve->name];
+                }
+                if (ve->declShape && sigil == '@') { // shaped array `my @a[2;3]`
+                    tctx_.cur->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
                     return tctx_.cur->vars[ve->name];
                 }
                 if (!ve->declType.empty() || !tctx_.cur->vars.count(ve->name)) {

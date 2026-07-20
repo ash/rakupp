@@ -69,6 +69,8 @@ struct Value {
     std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
     std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
     bool fatRat = false; // VT::Rat tagged as FatRat (type identity; arithmetic stays FatRat)
+    // shaped array `my @a[2;3]`: fixed dimensions (row-major). Empty/null = unshaped.
+    std::shared_ptr<std::vector<long long>> shape;
     // range
     long long rFrom = 0, rTo = 0;
     bool rExFrom = false, rExTo = false;

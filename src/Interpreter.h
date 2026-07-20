@@ -39,6 +39,10 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 // Numify a string with Raku-correct result type (Int/Rat/Num), BigInt-aware
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
 Value numifyStr(const std::string& in);
+// Build a shaped array (`my @a[2;3]` / `Array.new(:shape(2;3))`): a fixed row-major
+// structure, optionally filled from a flat list, tagged with its dimensions.
+Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
+                          const ValueList* fill = nullptr);
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
 
@@ -222,6 +226,7 @@ public:
         return it == builtins_.end() ? nullptr : &it->second;
     }
     Value seqOp(Value l, Value r, bool exclusive); // the `...` sequence operator (also used by codegen)
+    std::vector<long long> evalShapeDims(Expr* shape); // `my @a[2;3]` dimension list
     Value rtGather(Value blockClosure); // gather with probe-and-double laziness (native codegen)
     // Emit text for say/print/put/note: route through a user-overridden $*OUT/$*ERR
     // (call its .print), else write to the real stream.
