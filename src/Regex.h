@@ -109,6 +109,9 @@ public:
     // Match anchored exactly at `pos` (used for grammar subrule calls).
     bool matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r,
                  const std::set<std::string>* lexNames = nullptr) const;
+    // `:exhaustive` — every match at every start position and every length.
+    std::vector<RxMatch> searchExhaustive(const std::string& subject, const SubResolver& r,
+                 const std::set<std::string>* lexNames = nullptr) const;
     // Optional interpreter callbacks for standalone (non-grammar) matches — lets a
     // plain `/ … { make 1 } … /` execute its code blocks. Null = lenient no-op.
     const GrammarHooks* runHooks = nullptr;

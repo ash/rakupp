@@ -5226,7 +5226,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (start < 0) start += n;
         if (start < 0) start = 0;
         if (start > n) start = n;
-        long long len = args.size() > 1 ? args[1].toInt() : n - start;
+        // The length may be a Whatever/WhateverCode: `*` means "to the end" and
+        // `*-1` etc. is called with the max available length (n - start).
+        long long len;
+        if (args.size() <= 1) len = n - start;
+        else if (args[1].t == VT::Whatever) len = n - start;
+        else if (args[1].t == VT::Code) { ValueList wa{Value::integer(n - start)}; len = callCallable(args[1], wa).toInt(); }
+        else len = args[1].toInt();
         if (len < 0) len = n - start + len;
         if (len < 0) len = 0;
         if (start + len > n) len = n - start;

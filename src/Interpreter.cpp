@@ -6872,6 +6872,9 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     bool global = false;
     for (const char* adv : {":g ", ":global "}) // :g / :global adverb
         { size_t gp = pat.find(adv); if (gp != std::string::npos) { global = true; pat.erase(gp, strlen(adv)); } }
+    bool exhaustive = false;
+    for (const char* adv : {":exhaustive ", ":ex "}) // :ex / :exhaustive adverb
+        { size_t gp = pat.find(adv); if (gp != std::string::npos) { exhaustive = true; pat.erase(gp, strlen(adv)); } }
     // counted adverbs — m:nth(N)/, m:nth(*)/, m:nth(2,3):global/, ordinals m:3rd/
     // (sloppy suffixes like :7st accepted, as in Rakudo)
     bool haveNth = false, nthStar = false; long long nthOfs = 0;
@@ -7024,6 +7027,13 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         if (nthList.size() == 1 && !global) { setMatchVar(picked[0]); return picked[0]; }
         Value list = Value::array(); list.isList = true;
         for (auto& p : picked) list.arr->push_back(p);
+        setMatchVar(list);
+        return list;
+    }
+    if (exhaustive) { // m:ex// — a List of every match at every position and length
+        Value list = Value::array(); list.isList = true;
+        if (re.ok())
+            for (auto& m : re.searchExhaustive(subject, resolver, &lexNames)) list.arr->push_back(build(m));
         setMatchVar(list);
         return list;
     }

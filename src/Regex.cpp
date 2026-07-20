@@ -1399,6 +1399,34 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
     return false;
 }
 
+std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const SubResolver& r,
+                                             const std::set<std::string>* lexNames) const {
+    std::vector<RxMatch> results;
+    if (!ok_ || !root_) return results;
+    long budget = 0;
+    for (long start = 0; start <= (long)subject.size(); start++) {
+        MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+        st.lexNames = lexNames;
+        st.hooks = runHooks;
+        st.steps = budget;
+        try {
+            // A `false`-returning continuation records the match then forces the
+            // engine to keep backtracking, so EVERY reachable end is enumerated.
+            matchNode(root_.get(), st, start, [&](long e) -> bool {
+                RxMatch out;
+                out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = e;
+                out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+                out.children = st.children; out.capReps = st.capReps;
+                out.listCaps = listCaps_; out.listNames = listNames_;
+                results.push_back(std::move(out));
+                return false;
+            });
+        } catch (const StepLimitExceeded&) { break; }
+        budget = st.steps;
+    }
+    return results;
+}
+
 bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r,
                     const std::set<std::string>* lexNames) const {
     if (!ok_ || !root_) return false;
