@@ -1230,7 +1230,9 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
                 } else if (w.toNum() != 0.0) { w.pairKey = keep; (*h.hash)[v.s] = w; }
                 continue;
             }
-            add(v.s, w.toInt(), v.pairKey);         // a `1 => 2` pair carries its typed key in pairKey
+            // Set membership is the value's TRUTHINESS (`:e<meow>` joins, `:0d`/`:f('')`
+            // do not); Bag/Mix use the numeric weight. (typed key travels in pairKey)
+            add(v.s, isSet ? (w.truthy() ? 1 : 0) : w.toInt(), v.pairKey);
         }
         else add(v.toStr(), 1, baggyKey(v));
     }
