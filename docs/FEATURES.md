@@ -39,7 +39,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 
 ## Lexical & Literals
 - Int (arbitrary precision / bignum), Num, Rat, **Complex** (`3+4i`); FatRat ~
-- Radix `0x` `0o` `0b`, `_` separators, exponent `1e5`
+- Radix `0x` `0o` `0b` `0d` and `:N<…>` (`:16<ff>`, `:36<aZ>`), `_` separators (strictly between digits — `1__0`/`100_` are errors), exponent `1e5`; string→number coercion parses all of these plus Complex (`+"1+2i"`) and the Unicode minus `−`
 - Leading-dot fractions `.5`, imaginary `4i`, `∞`/`Inf`/`NaN`, superscripts `²`
 - Strings: `'…'` `"…"` `q//` `qq//` `Q//`, heredocs `q:to/END/`
 - Unicode string quotes `‘’ “” ｢｣`, qw `<…>` and guillemet `«…»`
@@ -52,7 +52,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - Comparison `== != < > <= >= <=> eq ne lt gt le ge cmp leg before after`, chained
 - Logical `&& || // ^^ and or xor not`, `andthen` / `orelse`
 - Identity / smartmatch `=== !== eqv ~~ !~~` (types, values, ranges, hashes, regex, junctions, object identity)
-- Ranges `.. ..^ ^.. ^..^`, sequence `…`, junctions `| & ^`
+- Ranges `.. ..^ ^.. ^..^` — integer, string (`'a'..'z'`), and **fractional** (`1.1 .. 3.1`, `-1.5 ..^ 3` step by 1 keeping the fraction); sequence `…` (arithmetic/geometric/closure generators, ascending & descending), junctions `| & ^`
 - Reduce `[+]`, zip `Z`, cross `X`, hyper `>>op>>` / `«op»`
 - Contextualizers `$( ) @( ) %( ) $[ ]`, ternary `?? !!`, assignment `= := += …`
 - Divisibility `%%` and negated `!%%` (both return `Bool`)
@@ -87,7 +87,7 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - `class`/`role`/`grammar`, attributes `has $.x`/`$!x` (+ defaults), accessors
 - `method`/`multi method`/`submethod`, `self`, single inheritance `is`, `does`
 - `BUILD`, default `.new`, `bless`, enums
-- Metamodel: `.^name .^methods .^mro .^parents .^roles .^add_method .^find_method`, `.WHAT .WHICH .HOW`
+- Metamodel: `.^name .^methods .^mro .^parents .^roles .^add_method .^find_method .^parameterize` (`Set.^parameterize(Str)` is `Set[Str]`), `.WHAT .WHICH .HOW`
 - `augment`/`supersede` reopen a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`); `does`/`but` runtime role mixins
 - Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
 - **Gaps:** `Metamodel::*` construction, submethod-not-inherited
@@ -96,13 +96,14 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`
 - Unicode property classes: general category short + long (`<:Nd>`/`<:L>`/`<:UppercaseLetter>`), `<:LC>`/`<:Assigned>`, **blocks** `<:InArabic>` (real 16.0 table), and **binary props** `<:Math>`/`<:Alphabetic>`/`<:Soft_Dotted>`/`<:White_Space>`/`<:Other_*>` (DerivedCoreProperties + PropList); negated `<:!…>` and inverted `<-:…>`
 - Script classes `<:Latin> <:Syriac> <:Canadian_Aboriginal> …` (real 16.0 Scripts.txt) and `Bidi_Class` `<:bc<L>>`/`<:bc<EN>>`; zero-width property assertions `<?:prop>`/`<!:prop>`
-- Anchors `^ $ ^^`, quantifiers `* + ? ** {n..m}`, alternation, groups, named captures
+- Anchors `^ $ ^^`, quantifiers `* + ? ** {n..m}`, alternation `|`/`||`, **conjunction `A & B` / `A && B`** (all terms match at the same position; the match spans the last term), groups, named captures
 - Repeated named captures under a quantifier collate into a list (`@<content>`, `$<x>[1]`)
+- **Capture aliases**: numbered `$7=(…)` (sets the capture index, auto-numbering resumes at N+1), named `$<x>=(…)`, list-valued `@<x>=(…)` (each occurrence → an Array element), hash-valued `%<x>=(…)` (matched strings become Hash keys)
 - Subrules, grammars (`token`/`rule`/`regex`, `.parse`/`.subparse`/`.parsefile`), `$/ $0…`, actions
 - Capture interpolation `"$0/$1"`, callable `.subst` (`.subst(/…/, *.uc)`), non-mutating `S///`
 - `Match` accessors: `.from`/`.to`, `.orig`, `.prematch`/`.postmatch`, `.made`/`.ast`
-- Substitution adverbs `:g :x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
-- **Gaps:** named-capture storage (`$<name>=(…)`), backtracking control, `:ratchet`
+- Match adverbs `:g(lobal) :ex(haustive)` (every match at every position and length) `:x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
+- **Gaps:** backtracking control, `:ratchet`; `<:Block(…)>` block-by-name and nested sub-rule capture aliases
 
 ## Unicode (generated from UCD/UCA 17.0 — see [UNICODE.md](UNICODE.md))
 - Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni`/`NFC`/`NFD` types; `Uni.new(…).Str` is NFC (NFG semantics) — all `nf*-*.t` + `mass-equality.t` pass
@@ -115,7 +116,9 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 ## Data Types & Built-ins
 - Array, List/Seq, Hash, Map, Pair, Range, Set/Bag/Mix (+Hash variants), Junction, IO::Path, Proc, Promise
 - String: `chars codes uc lc tc fc wordcase samecase index rindex substr split comb subst trans words lines flip trim starts-with~ ends-with~ contains sprintf ords chrs ord chr` (`.trans` supports `a..z` ranges); `undefine($x)` resets a container
-- List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift splice keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll`; `slip(…)` spreads into the enclosing list; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; list methods on scalars (`5.map`, `42.grep`); `roundrobin`
+- List: `map grep sort reverse join first reduce produce sum min max elems push pop shift unshift splice keys values kv pairs antipairs invert unique repeated squish classify categorize rotor batch permutations combinations rotate flat head tail skip pick roll tree`; `slip(…)` spreads into the enclosing list; `.grep` smartmatches Type/Regex/value; `.head`/`.tail`/`.skip` take `*`/`*-N`/`Inf`; `.min`/`.max` skip undefined elements; list methods on scalars (`5.map`, `42.grep`); `roundrobin`. `.classify`/`.categorize` accept a Callable, Hash, or Array mapper and an `:into(%h)` target; `.tree` builds a nested view (`.tree(N)` depth-limited, `.tree(&c1,&c2,…)` per-level closures)
+- **Shaped arrays**: `my @a[3]` / `my @a[2;2]` / `Array.new(:shape(2;2))` — fixed-dimension, `.shape`, row-major fill with structural validation (out-of-range or over-full assignment throws `X::OutOfRange`/`X::Assignment::*`), size-changing ops (`push`/`pop`/…) throw `X::IllegalOnFixedDimensionArray`, multi-dim `@a[i;j]` + `AT/EXISTS/ASSIGN-POS(i,j)`, leaf-walking `keys`/`values`/`kv`/`pairs`/`antipairs`/`iterator`/`flat` with index tuples
+- Negative list index is out of range (a Failure, no Python-style wraparound — `@a[*-1]` is the from-the-end form); an unhandled Failure propagates through further indexing (`@a[-1][0]`)
 - **Iterator protocol** (S07): `.iterator` on any collection with `pull-one`/`push-all`/`push-exactly`/`skip-at-least`/`count-only`/… and the `IterationEnd` sentinel; **lazy infinite sources** — `^Inf`/`1..Inf` with `.head`/`.skip`/`.grep`/`.first`/`.map` composing lazily (`(^Inf).grep(*.is-prime).head(5)`)
 - Hash: `push`/`append` (accumulate values under a key), `kv keys values pairs invert antipairs`
 - Math: `abs sqrt floor ceiling round sign exp log log10 log2` + full trig, `polymod`, `base`, `rand` / `.rand`, constants `pi tau e`
