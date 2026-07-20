@@ -1342,6 +1342,51 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return o;
     }
+    // A multi-dim shaped array renders its structure: rows on their own lines for
+    // .gist, and a `Array.new(:shape(…), row, …)` constructor for .raku.
+    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && inv.arr &&
+        (m == "gist" || m == "raku" || m == "perl")) {
+        if (m == "gist") {
+            std::string out = "[";
+            for (size_t i = 0; i < inv.arr->size(); i++) { if (i) out += "\n "; out += gistOf((*inv.arr)[i]); }
+            return Value::str(out + "]");
+        }
+        std::string ctor;
+        if (inv.ofType.empty() || inv.ofType == "Any" || inv.ofType == "Mu") ctor = "Array";
+        else if (std::islower((unsigned char)inv.ofType[0])) ctor = "array[" + inv.ofType + "]";
+        else ctor = "Array[" + inv.ofType + "]";
+        std::string out = ctor + ".new(:shape(";
+        for (size_t i = 0; i < inv.shape->size(); i++) { if (i) out += ", "; out += std::to_string((*inv.shape)[i]); }
+        out += ")";
+        for (auto& row : *inv.arr) { ValueList none; out += ", " + methodCall(row, "raku", none).toStr(); }
+        return Value::str(out + ")");
+    }
+    if (inv.t == VT::Array && inv.shape && !inv.shape->empty() && inv.arr && m == "clone") {
+        Value c = inv; // deep-copy the nested storage so containers are independent
+        std::function<Value(const Value&)> deep = [&](const Value& n) -> Value {
+            if (n.t == VT::Array && n.arr) { Value a = n; a.arr = std::make_shared<ValueList>();
+                for (auto& e : *n.arr) a.arr->push_back(deep(e)); return a; }
+            return n;
+        };
+        c = deep(inv);
+        c.shape = std::make_shared<std::vector<long long>>(*inv.shape);
+        return c;
+    }
+    // Most list operations on a multi-dim shaped array run over its LEAVES — flatten
+    // the fixed structure to a plain list and delegate.
+    if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && inv.arr &&
+        (m == "join" || m == "map" || m == "grep" || m == "combinations" ||
+         m == "permutations" || m == "rotor" || m == "pick" || m == "roll" ||
+         m == "first" || m == "reduce" || m == "sum" || m == "min" || m == "max" ||
+         m == "sort" || m == "reverse" || m == "List" || m == "Slip" || m == "Bag")) {
+        Value flat = Value::array(); flat.isList = true;
+        std::function<void(const Value&)> collect = [&](const Value& n) {
+            if (n.t == VT::Array && n.arr) for (auto& e : *n.arr) collect(e);
+            else flat.arr->push_back(n);
+        };
+        for (auto& e : *inv.arr) collect(e);
+        return methodCall(flat, m, args, rwArgs);
+    }
     // Junction invocant: the Str-using routines operate on the WHOLE junction
     // (no autothreading — `$j.print` prints the junction's string form, calling
     // each eigenstate's .Str; `$j.printf` treats that form as the format).
