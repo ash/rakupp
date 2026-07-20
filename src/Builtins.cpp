@@ -5102,12 +5102,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         long long n = (long long)cps.size(), k = (long long)ncps.size();
         long long from = m == "index" ? 0 : n;
         if (args.size() > 1 && args[1].isNumeric()) {
-            double fd = args[1].toNum(); // huge positions must not saturate into the loop bound
-            if (fd < 0 || fd > (double)n)
+            double fd = args[1].toNum();
+            // only a NEGATIVE (or int64-overflowing) start is out of range; a
+            // moderate position past the end just yields no match (Nil), matching
+            // Rakudo (`index("Hello","l",10)` is Nil, but `…,-1` / `…,1e35` throw)
+            if (fd < 0 || fd > 9.2e18)
                 throw RakuError{Value::typeObj("X::OutOfRange"),
                     "start argument to " + m + " out of range. Is: " + args[1].gist() +
                     "; should be in 0.." + std::to_string(n)};
             from = args[1].toInt();
+            if (m == "rindex" && from > n) from = n; // rindex clamps the rightmost start
         }
         auto eq = [&](long long at) {
             if (at < 0 || at + k > n) return false;
@@ -7899,17 +7903,16 @@ void Interpreter::registerBuiltins() {
     B["log2"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Complex) return I.methodCall(a[0], "log2", {});
         return rtBLog2(I, a.empty() ? Value::integer(0) : a[0]); };
-    B["index"] = [](Interpreter&, ValueList& a) -> Value {
-        if (a.size() < 2) return Value::nil();
-        std::string s = a[0].toStr(), needle = a[1].toStr();
-        size_t from = a.size() > 2 ? (size_t)a[2].toInt() : 0;
-        size_t p = s.find(needle, from);
-        return p == std::string::npos ? Value::nil() : Value::integer((long long)p); };
-    B["rindex"] = [](Interpreter&, ValueList& a) -> Value {
-        if (a.size() < 2) return Value::nil();
-        std::string s = a[0].toStr(), needle = a[1].toStr();
-        size_t p = a.size() > 2 ? s.rfind(needle, (size_t)a[2].toInt()) : s.rfind(needle);
-        return p == std::string::npos ? Value::nil() : Value::integer((long long)p); };
+    // the sub forms delegate to the methods so they share the char-based
+    // positioning, junction autothreading, and negative/out-of-range validation
+    B["index"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::nil();
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "index", rest); };
+    B["rindex"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::nil();
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "rindex", rest); };
     B["min"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = flattenArgs(a); Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) < 0) { best = v; s = true; } } return s ? best : Value::any(); };
     B["max"] = [](Interpreter&, ValueList& a) -> Value { ValueList f = flattenArgs(a); Value best; bool s = false; for (auto& v : f) { if (!s || valueCmp(v, best) > 0) { best = v; s = true; } } return s ? best : Value::any(); };
     B["minmax"] = [](Interpreter&, ValueList& a) -> Value {
