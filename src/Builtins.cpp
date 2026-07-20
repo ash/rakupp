@@ -6421,12 +6421,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
             Value best, bestKey; bool started = false;
             for (auto& v : items) {
+                // undefined elements (holes in a sparse array, type objects) don't compete
+                if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) continue;
                 Value key = v;
                 if (mapper.t == VT::Code) { ValueList one{v}; key = callCallable(mapper, one); }
                 if (!started) { best = v; bestKey = key; started = true; continue; }
                 int c = valueCmp(key, bestKey); // strict compare keeps the FIRST on ties
                 if ((!wantMax && c < 0) || (wantMax && c > 0)) { best = v; bestKey = key; }
             }
+            if (!started) return Value::number(m == "min" ? INFINITY : -INFINITY); // all undefined
             return best;
         }
         // resolve a head/tail count arg: Int, `*` (all), or `*-N` (WhateverCode of the length)

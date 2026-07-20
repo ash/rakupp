@@ -10086,6 +10086,9 @@ Value Interpreter::evalIndex(Index* idx) {
         }
     }
     Value base = eval(idx->base.get());
+    // Indexing an unhandled Failure propagates it (`@a[-1][0]` keeps the Failure
+    // from the out-of-range outer index rather than reading through it).
+    if (base.t == VT::Hash && base.hashKind == "Failure") return base;
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
     if (base.t == VT::Type && !idx->isHash && idx->index) {
         Value p = eval(idx->index.get());
@@ -10458,7 +10461,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 long long ai = (kres.t == VT::Whatever || std::isinf(kres.toNum())) ? asz - 1 : kres.toInt();
                 bool inBounds = false;
                 if (base.t == VT::Array && base.arr) {
-                    if (ai < 0) ai += (long long)base.arr->size();
+                    // a negative index is out of range (no from-the-end wraparound)
                     if (ai >= 0 && ai < (long long)base.arr->size()) { inBounds = true; exists = isDefined((*base.arr)[ai]); val = (*base.arr)[ai]; }
                 }
                 if (lazySlice && !inBounds) break; // lazy slice stops at the first hole
