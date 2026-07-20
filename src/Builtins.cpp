@@ -1557,6 +1557,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::str(inv.typeName());
         }
         if (mm == "WHAT") return Value::typeObj(inv.typeName());
+        // `X.^parameterize(T)` yields the parameterized type `X[T]` (same as `X[T]`)
+        if (mm == "parameterize") {
+            Value ty = Value::typeObj(inv.t == VT::Type ? inv.s : inv.typeName());
+            for (auto& a : args) {
+                std::string pn = a.t == VT::Type ? a.s : a.typeName();
+                ty.ofType = ty.ofType.empty() ? pn : ty.ofType + "," + pn;
+            }
+            return ty;
+        }
         // meta-methods (.^methods/.^attributes/.^parents/…) resolve against the
         // type (HOW), even when called on an instance.
         Value tobj = (inv.t == VT::Object && inv.obj && inv.obj->cls) ? Value::typeObj(inv.obj->cls->name) : inv;
