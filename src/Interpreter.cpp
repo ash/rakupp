@@ -709,9 +709,13 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     return out;
                 }
         const size_t CAP = 1000000;
+        bool dirKnown = !hasGen; // for a closure gen the travel direction is learned
         while (out.arr->size() < CAP) {
             double lastV = out.arr->back().toNum();
-            if (!infinite && !endCode && (ascending ? lastV >= endVal : lastV <= endVal)) break; // reached endpoint
+            // Non-gen numeric sequences can pre-check the endpoint; a closure gen
+            // must generate first (its direction — and thus overshoot test — is
+            // only known once we see the next value).
+            if (!hasGen && !infinite && !endCode && (ascending ? lastV >= endVal : lastV <= endVal)) break; // reached endpoint
             Value next;
             if (hasGen) {
                 ValueList args; size_t n = out.arr->size();
@@ -719,6 +723,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 // `last` inside the generator terminates the sequence
                 try { next = callCallable(gen, args); }
                 catch (const LastEx&) { break; }
+                if (!dirKnown && !infinite && !endCode && next.isNumeric()) {
+                    ascending = next.toNum() >= lastV; dirKnown = true;
+                }
             } else if (succSeed) { // H.new ... *.y > 10 : step by succ/pred
                 const Value& lastE = out.arr->back();
                 if (lastE.t == VT::Str) {
