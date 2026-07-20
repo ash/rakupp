@@ -624,15 +624,17 @@ Token Lexer::lexNumber() {
         unsigned char d = (unsigned char)peek(off);
         return std::isdigit(d) || d >= 0x80; // ASCII digit, or a multibyte (possible Unicode Nd)
     };
+    // Underscores are KEPT in the spelling `num` (so `<1.2.1_01>` word-quotes and
+    // .raku round-trip preserve them) and stripped only when computing the value.
     while (takeDigit(num) || peek() == '_') {
-        if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); advance(); }
+        if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); num += advance(); }
     }
     bool hasDot = false, hasExp = false;
     if (peek() == '.' && std::isdigit((unsigned char)peek(1))) {
         isFloat = true; hasDot = true;
         num += advance(); // .
         while (takeDigit(num) || peek() == '_') {
-            if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); advance(); }
+            if (peek() == '_') { if (!isDigitNext(1)) throw ParseError("Cannot use underscore between digits unless it is between two digits", line_); num += advance(); }
         }
     }
     if ((peek() == 'e' || peek() == 'E') &&
@@ -645,31 +647,33 @@ Token Lexer::lexNumber() {
         if (peek() == '+' || peek() == '-') num += advance();
         while (std::isdigit((unsigned char)peek())) num += advance();
     }
+    // the numeric VALUE is computed from the underscore-free digits
+    std::string bare; for (char c : num) if (c != '_') bare += c;
     // imaginary literal suffix: 4i, 2.5i  (not part of an identifier like `4info`)
     if (peek() == 'i' && !isIdentCont(peek(1))) {
         advance();
         Token t = make(Tok::NumLit, num + "i");
-        t.nval = std::strtod(num.c_str(), nullptr);
+        t.nval = std::strtod(bare.c_str(), nullptr);
         return t;
     }
     if (isFloat) {
         Token t = make(Tok::NumLit, num);
-        t.nval = std::strtod(num.c_str(), nullptr);
+        t.nval = std::strtod(bare.c_str(), nullptr);
         t.flag = (hasDot && !hasExp); // a decimal literal with no exponent is a Rat (3.14), not a Num
         return t;
     }
     // A decimal integer written with a leading 0 (`069`) does not mean octal in
     // Raku; warn like Rakudo does, suggesting the 0o form when the digits are octal.
-    if (num.size() > 1 && num[0] == '0' && !warnedLeadingZero_) {
+    if (bare.size() > 1 && bare[0] == '0' && !warnedLeadingZero_) {
         warnedLeadingZero_ = true;
         bool allOctal = true;
-        for (char c : num) if (c < '0' || c > '7') { allOctal = false; break; }
-        std::string suggest = allOctal ? ("0o" + num.substr(1)) : "0o";
+        for (char c : bare) if (c < '0' || c > '7') { allOctal = false; break; }
+        std::string suggest = allOctal ? ("0o" + bare.substr(1)) : "0o";
         std::cerr << "Potential difficulties:\n    Leading 0 does not indicate octal in Raku; "
                   << "please use " << suggest << " if you meant that.\n";
     }
     Token t = make(Tok::IntLit, num);
-    t.ival = std::strtoll(num.c_str(), nullptr, 10);
+    t.ival = std::strtoll(bare.c_str(), nullptr, 10);
     return t;
 }
 

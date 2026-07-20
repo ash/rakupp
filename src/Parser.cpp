@@ -1785,17 +1785,18 @@ ExprPtr Parser::parsePrimary() {
     switch (t.kind) {
         case Tok::IntLit: {
             const Token& tk = advance();
+            std::string bare; for (char c : tk.text) if (c != '_') bare += c; // spelling keeps separators; value drops them
             auto e = std::make_unique<IntLit>(tk.ival);
-            e->raw = tk.text;
-            if (tk.text.size() > 18 && tk.text.find_first_not_of("0123456789") == std::string::npos) {
-                try { (void)std::stoll(tk.text); } catch (...) { e->big = tk.text; }
+            e->raw = bare;
+            if (bare.size() > 18 && bare.find_first_not_of("0123456789") == std::string::npos) {
+                try { (void)std::stoll(bare); } catch (...) { e->big = bare; }
             }
             return e;
         }
         case Tok::NumLit: {
             bool imag = !t.text.empty() && t.text.back() == 'i';
             bool isRat = t.flag && !imag; // decimal literal with no exponent -> Rat
-            std::string txt = t.text;
+            std::string txt; for (char c : t.text) if (c != '_') txt += c; // value drops separators
             std::string den2 = t.text2; long long numeralNum = t.ival;
             auto e = std::make_unique<NumLit>(advance().nval);
             e->raw = txt;

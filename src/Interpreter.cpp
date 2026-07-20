@@ -6358,8 +6358,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     size_t nz = d.find_first_not_of('0');
                     out.push_back({true, nz == std::string::npos ? "0" : d.substr(nz)});
                     i = j;
-                } else if (std::isalpha(c)) {
-                    size_t j = i; while (j < s.size() && std::isalpha((unsigned char)s[j])) j++;
+                } else if (std::isalpha(c) || c >= 0x80) { // ASCII or Unicode letters (α, β, …) are alpha parts
+                    size_t j = i; while (j < s.size() && (std::isalpha((unsigned char)s[j]) || (unsigned char)s[j] >= 0x80)) j++;
                     out.push_back({false, s.substr(i, j - i)});
                     i = j;
                 } else if (c == '*') { out.push_back({false, "*"}); i++; }
@@ -6371,16 +6371,23 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         int c = 0;
         size_t n = pa.size() > pb.size() ? pa.size() : pb.size();
         for (size_t k = 0; k < n && !c; k++) {
-            std::pair<bool, std::string> a = k < pa.size() ? pa[k] : std::make_pair(true, std::string("0"));
-            std::pair<bool, std::string> b = k < pb.size() ? pb[k] : std::make_pair(true, std::string("0"));
-            if (a.second == "*" || b.second == "*") continue;
-            if (a.first && b.first)
-                c = a.second.size() != b.second.size()
-                      ? (a.second.size() < b.second.size() ? -1 : 1)
+            bool aP = k < pa.size(), bP = k < pb.size();
+            if (aP && pa[k].second == "*") continue;
+            if (bP && pb[k].second == "*") continue;
+            if (aP && bP) {
+                auto& a = pa[k]; auto& b = pb[k];
+                if (a.first && b.first) // both numeric: by length then lexicographically
+                    c = a.second.size() != b.second.size() ? (a.second.size() < b.second.size() ? -1 : 1)
                       : (a.second < b.second ? -1 : a.second > b.second ? 1 : 0);
-            else if (!a.first && !b.first)
-                c = a.second < b.second ? -1 : a.second > b.second ? 1 : 0;
-            else c = a.first ? 1 : -1; // alpha before numeric
+                else if (!a.first && !b.first) // both alpha: string compare
+                    c = a.second < b.second ? -1 : a.second > b.second ? 1 : 0;
+                else c = a.first ? -1 : 1; // a numeric part sorts BEFORE an alpha part (3 < "a")
+            }
+            // one side ran out: an EXTRA non-zero numeric part makes that side greater
+            // (1.2.1.1 > 1.2.1) but a trailing ZERO is insignificant (1.2.1a1.0 == 1.2.1a1);
+            // an EXTRA alpha part makes it LESS (1.2.1γ < 1.2.1).
+            else if (aP) c = pa[k].first ? (pa[k].second == "0" ? 0 : 1) : -1;
+            else         c = pb[k].first ? (pb[k].second == "0" ? 0 : -1) : 1;
         }
         if (op == "cmp") return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c);
         if (op == "==" || op == "eqv" || op == "eq" || op == "~~") return Value::boolean(c == 0);
