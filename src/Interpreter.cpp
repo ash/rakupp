@@ -3078,7 +3078,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                     }
                 };
-                if (listv.t == VT::Range) {
+                if (listv.t == VT::Range && !listv.rNum) {
                     long long lo = listv.rFrom + (listv.rExFrom ? 1 : 0);
                     long long hi = listv.rTo - (listv.rExTo ? 1 : 0);
                     for (long long k = lo; k <= hi; k++) {
@@ -11408,6 +11408,21 @@ Value Interpreter::eval(Expr* e) {
                 return Value::range(from.toInt(), 9223372036854775807LL, r->exFrom, false);
             if (from.t == VT::Whatever)
                 return Value::range(-9223372036854775807LL - 1, to.toInt(), false, r->exTo);
+            // Fractional numeric range: at least one endpoint is a non-integer
+            // Num/Rat. Keep the real endpoints (elements step by 1 from `from`).
+            {
+                bool fFrac = (from.t == VT::Num || from.t == VT::Rat) &&
+                             from.toNum() != std::floor(from.toNum());
+                bool tFrac = (to.t == VT::Num || to.t == VT::Rat) &&
+                             to.toNum() != std::floor(to.toNum());
+                if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
+                    std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
+                    Value rr = Value::range((long long)std::floor(from.toNum()),
+                                            (long long)std::floor(to.toNum()), r->exFrom, r->exTo);
+                    rr.rNum = true; rr.n = from.toNum(); rr.im = to.toNum();
+                    return rr;
+                }
+            }
             {
                 Value rr = Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
                 if (to.t == VT::Int && to.big) rr.big = to.big; // keep the big bound (pick/roll sample it)

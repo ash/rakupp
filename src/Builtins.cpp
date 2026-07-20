@@ -5981,11 +5981,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "excludes-min") return Value::boolean(inv.rExFrom);
         if (m == "excludes-max") return Value::boolean(inv.rExTo);
         if (m == "infinite")     return Value::boolean(false);
-        if (m == "is-int")       return Value::boolean(true); // rakupp Ranges are integer-bounded
-        if (m == "min")          return Value::integer(inv.rFrom);
-        if (m == "max")          return Value::integer(inv.rTo);
+        if (m == "is-int")       return Value::boolean(!inv.rNum); // fractional ranges aren't integer-bounded
+        if (m == "min")          return inv.rNum ? Value::number(inv.n) : Value::integer(inv.rFrom);
+        if (m == "max")          return inv.rNum ? Value::number(inv.im) : Value::integer(inv.rTo);
         if (m == "bounds") {
-            Value o = Value::array({Value::integer(inv.rFrom), Value::integer(inv.rTo)}); o.isList = true; return o;
+            Value o = inv.rNum ? Value::array({Value::number(inv.n), Value::number(inv.im)})
+                               : Value::array({Value::integer(inv.rFrom), Value::integer(inv.rTo)});
+            o.isList = true; return o;
         }
         if (m == "int-bounds") {
             Value o = Value::array({Value::integer(inv.rFrom + (inv.rExFrom ? 1 : 0)),

@@ -72,6 +72,10 @@ struct Value {
     // range
     long long rFrom = 0, rTo = 0;
     bool rExFrom = false, rExTo = false;
+    // A fractional numeric range (`1.1 .. 3.1`, `-1.5 ..^ 3`) keeps its real
+    // endpoints in the otherwise-unused `n`/`im` doubles; elements step by 1 from
+    // `n` while <= `im`. Integer ranges leave this false and use rFrom/rTo.
+    bool rNum = false;
     std::string enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
     std::string enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
     std::string ofType;   // parameter/element type: `Array[Int]` type object, or a typed `my Int @a`/`%h`

@@ -329,6 +329,7 @@ std::string Value::gist() const {
             }
             return s;
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
+            if (rNum) return Value::number(n).toStr() + ".." + (rExTo ? "^" : "") + Value::number(im).toStr();
             std::ostringstream os;
             os << rFrom << ".." << (rExTo ? "^" : "") << rTo;
             return os.str();
@@ -450,6 +451,12 @@ ValueList Value::flatten() const {
                 out.push_back(v);
             }
         }
+    } else if (t == VT::Range && rNum) {
+        // fractional range: step by 1 from `n`, stopping at `im` (exclusive bounds
+        // drop an endpoint that lands exactly on it)
+        double lo = n + (rExFrom ? 1.0 : 0.0), hi = im;
+        for (double x = lo; rExTo ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
+            out.push_back(Value::number(x));
     } else if (t == VT::Range) {
         long long lo = rFrom + (rExFrom ? 1 : 0);
         long long hi = rTo - (rExTo ? 1 : 0);
