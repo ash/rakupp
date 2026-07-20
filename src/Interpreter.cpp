@@ -6987,6 +6987,13 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (!m.children.count(kv.first))
                 v.hashRef()[kv.first] = Value::matchVal(subject.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
         for (auto& kv : m.children) {
+            // `%<name>=…` — each occurrence's matched text is a Hash KEY (value undefined)
+            if (m.hashNames && m.hashNames->count(kv.first)) {
+                Value h = Value::makeHash();
+                for (auto& c : kv.second) h.hashRef()[subject.substr(c.from, c.to - c.from)] = Value::any();
+                v.hashRef()[kv.first] = h;
+                continue;
+            }
             // a capture repeated under a quantifier collates into a list of Matches —
             // and a quantified name is a list even with a single occurrence
             bool asList = kv.second.size() > 1

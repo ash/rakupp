@@ -68,6 +68,7 @@ struct RxMatch {
     std::map<std::string, std::pair<long, long>> subs;  // subrule names matched (for $<name> tree access)
     std::map<std::string, std::vector<ParseNode>> children; // per-name occurrence list; repeated captures collate here
     std::shared_ptr<const std::set<std::string>> listNames; // subrule keys under a quantifier → always list-valued
+    std::shared_ptr<const std::set<std::string>> hashNames; // `%<name>=…` keys → built as a Hash of matched strings
 };
 
 // Resolver for grammar subrule calls <name>: match rule `name` against `subj`
@@ -169,6 +170,7 @@ private:
     int ncaps_ = 0;
     std::set<int> listCaps_;             // positional capture indices under a repetition quantifier
     std::shared_ptr<std::set<std::string>> listNames_; // subrule capture keys under a repetition quantifier
+    std::shared_ptr<std::set<std::string>> hashNames_; // `%<name>=…` hash-valued capture keys
     void collectListNames(const Node* n); // walk a quantified atom, gathering capturing subrule keys
     bool ok_ = true;
     std::string obsolete_;               // retired metachar seen (e.g. "\\A"), for X::Obsolete

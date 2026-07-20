@@ -266,10 +266,11 @@ Regex::NodePtr Regex::parseAtom() {
     if ((c == '>' && peek(1) == '>') || ((unsigned char)c == 0xC2 && (unsigned char)peek(1) == 0xBB)) {
         pos_ += 2; auto n = std::make_unique<Node>(); n->k = K::WBRight; return n;
     }
-    if ((c == '$' || c == '@') && peek(1) == '<') {
-        // named capture: $<name>=(...) / $<name>=[...]; the `@<name>=…` form is a
-        // list-valued named capture (every occurrence collected into an Array).
+    if ((c == '$' || c == '@' || c == '%') && peek(1) == '<') {
+        // named capture: $<name>=(...) / $<name>=[...]; `@<name>=…` is list-valued
+        // (occurrences → Array); `%<name>=…` is hash-valued (occurrences → Hash keys).
         bool listCap = (c == '@');
+        bool hashCap = (c == '%');
         size_t save = pos_;
         pos_ += 2;
         std::string name;
@@ -280,11 +281,16 @@ Regex::NodePtr Regex::parseAtom() {
             pos_++;
             skipWs();
             auto child = parseQuant(); // bind the whole quantified atom: `$<v>=.*` = `$<v>=[.*]`
-            if (listCap) { // force the named capture to be list-valued
-                if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
-                listNames_->insert(name);
-                // `@<name>=( … )+` collects EACH iteration: name the inner repeated
-                // group so every occurrence collates into the named list.
+            if (listCap || hashCap) { // force the named capture to be list/hash-valued
+                if (listCap) {
+                    if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
+                    listNames_->insert(name);
+                } else {
+                    if (!hashNames_) hashNames_ = std::make_shared<std::set<std::string>>();
+                    hashNames_->insert(name);
+                }
+                // `@<name>=( … )+` / `%<name>=( … )+` collects EACH iteration: name the
+                // inner repeated group so every occurrence collates under the name.
                 Node* inner = child.get();
                 if (inner->k == K::Rep && !inner->kids.empty() && inner->kids[0]->k == K::Group)
                     inner = inner->kids[0].get();
@@ -1402,7 +1408,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
             if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
                 out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = endPos;
                 out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-                out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_;
+                out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
                 return true;
             }
         } catch (const StepLimitExceeded&) { return false; } // pathological pattern: give up (no match)
@@ -1429,7 +1435,7 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
                 out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = e;
                 out.caps = st.caps; out.named = st.named; out.subs = st.subs;
                 out.children = st.children; out.capReps = st.capReps;
-                out.listCaps = listCaps_; out.listNames = listNames_;
+                out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
                 results.push_back(std::move(out));
                 return false;
             });
@@ -1449,7 +1455,7 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
         if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
             out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = endPos;
             out.caps = st.caps; out.named = st.named; out.subs = st.subs;
-            out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_;
+            out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
             return true;
         }
     } catch (const StepLimitExceeded&) { return false; }
