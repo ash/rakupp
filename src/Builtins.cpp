@@ -1985,6 +1985,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
         return Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
     }
+    // `List.tree` / `Array.tree` on a type object is identity (returns the type)
+    if (inv.t == VT::Type && m == "tree") return inv;
     // type-level coercions: `DateTime.Date` is Date:U, `Date.DateTime` is DateTime:U
     if (inv.t == VT::Type && (inv.s == "DateTime" || inv.s == "Date") &&
         (m == "Date" || m == "DateTime"))
@@ -6750,6 +6752,43 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 std::stable_sort(items.begin(), items.end(), [](const Value& x, const Value& y) { return valueCmp(x, y) < 0; });
             }
             return Value::list(items);
+        }
+        if (m == "tree") {
+            // .tree — a nested view of the list. No arg: identity (already nested).
+            // .tree(N): N levels deep, flattening everything below level N into leaves.
+            // .tree(&c0, &c1, …): descend, then apply closure cD to each level-D node.
+            if (args.empty()) { Value o = Value::array(); *o.arr = items; o.isList = true; return o; }
+            // closures may be passed as bare args (`.tree(&a, &b)`) or one array (`.tree([&a, &b])`)
+            ValueList closures;
+            if (args[0].t == VT::Array && args[0].arr) { for (auto& e : *args[0].arr) if (e.t == VT::Code) closures.push_back(e); }
+            else for (auto& a : args) if (a.t == VT::Code) closures.push_back(a);
+            bool byClosure = !closures.empty();
+            long long depth = byClosure ? (long long)closures.size() : args[0].toInt();
+            std::function<Value(const Value&, long long)> build = [&](const Value& node, long long d) -> Value {
+                bool isList = node.t == VT::Array || node.t == VT::Range;
+                if (!isList) return node;
+                if (byClosure) {
+                    if (d >= (long long)closures.size()) return node; // past the last closure: leaf
+                    // the LAST closure is applied to the node itself (by identity, so a
+                    // single-closure `.tree(&c)` calls c(self)); deeper closures rebuild
+                    if (d + 1 >= (long long)closures.size()) return callCallable(closures[d], ValueList{node});
+                    Value kids = Value::array(); kids.isList = true;
+                    for (auto& e : (node.t == VT::Range ? node.flatten() : *node.arr))
+                        kids.arr->push_back(build(e, d + 1));
+                    return callCallable(closures[d], ValueList{kids});
+                }
+                if (d >= depth) { // depth cap: flatten the rest into one level
+                    Value o = Value::array(); o.isList = true;
+                    for (auto& e : node.flatten()) o.arr->push_back(e);
+                    return o;
+                }
+                Value kids = Value::array(); kids.isList = true;
+                for (auto& e : (node.t == VT::Range ? node.flatten() : *node.arr))
+                    kids.arr->push_back(build(e, d + 1));
+                return kids;
+            };
+            Value self = inv; self.isList = true; // shares the invocant's storage (=== identity)
+            return build(self, 0);
         }
         if ((m == "deepmap" || m == "nodemap" || m == "duckmap") && !args.empty() &&
             args[0].t == VT::Code) {
