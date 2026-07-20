@@ -13,6 +13,11 @@ Coverage at the time of writing: **111 pages, 260 dual-verified examples**; the
 18 items below are everything that disagreed. Each entry is self-contained:
 reproduction, expected vs. actual, severity, and the spec page that documents it.
 
+**Update (20 Jul 2026):** 8 of the 18 are now **fixed** in rakupp and marked
+✅ below — #1 (`.round`), #3 (`Complex.exp`), #7 (`List.invert`), #8
+(`Str.wordcase`), #9 (`split :skip-empty`), #10 (`Str.comb(Int)`), #11
+(`Str.indent`), #13 (`.isa` strict class). The remaining 10 stand.
+
 **Legend:** 🐞 wrong result · 🕳️ missing method/feature · 🔤 semantic/type
 difference · 💅 cosmetic (gist/stringification only)
 
@@ -20,7 +25,7 @@ difference · 💅 cosmetic (gist/stringification only)
 
 ## 🐞 Behavioural bugs (produce a wrong result)
 
-### 1. `.round` rounds negative halves the wrong way
+### 1. ✅ FIXED — `.round` rounds negative halves the wrong way
 Rakudo rounds halves toward **+∞**; rakupp rounds **away from zero**. Positive
 halves agree.
 
@@ -44,7 +49,7 @@ can't be used for validation in rakupp.
 Pages: [subs/constraints](https://spec.raku.online/subs/constraints.html),
 [types/subsets](https://spec.raku.online/types/subsets.html) · badged **partial**.
 
-### 3. `Complex.exp` computes the wrong value
+### 3. ✅ FIXED — `Complex.exp` computes the wrong value
 Real `sin`/`cos`/`exp` are fine; the complex exponential is not.
 
 ```raku
@@ -90,7 +95,7 @@ Page: [literals/strings](https://spec.raku.online/literals/strings.html).
 
 ## 🕳️ Missing methods / features (error or no-op)
 
-### 7. `List.invert` — not implemented
+### 7. ✅ FIXED — `List.invert`
 ```raku
 say (a => 1, b => 2).invert;
 # Rakudo: (1 => a 2 => b)
@@ -98,28 +103,28 @@ say (a => 1, b => 2).invert;
 ```
 (`Pair.antipair` works.)
 
-### 8. `Str.wordcase` — returns the string unchanged
+### 8. ✅ FIXED — `Str.wordcase`
 ```raku
 say "hello world".wordcase;   # Rakudo: Hello World · rakupp: hello world
 ```
 (`.tc`/`.tclc`/`.uc`/`.lc` work.)
 Page: [methods/case](https://spec.raku.online/methods/case.html) · **partial**.
 
-### 9. `Str.split(:skip-empty)` — adverb ignored
+### 9. ✅ FIXED — `Str.split(:skip-empty)`
 ```raku
 say "a1b2c3".split(/\d/, :skip-empty);
 # Rakudo: (a b c)   · rakupp: (a b c )   (trailing empty kept)
 ```
 Page: [methods/split](https://spec.raku.online/methods/split.html) · **partial**.
 
-### 10. `Str.comb(Int)` — chunk size ignored
+### 10. ✅ FIXED — `Str.comb(Int)`
 ```raku
 say "hello".comb(2);          # Rakudo: (he ll o) · rakupp: (h e l l o)
 ```
 (`.comb` with no arg or a regex works.)
 Page: [methods/split](https://spec.raku.online/methods/split.html) · **partial**.
 
-### 11. `Str.indent` — not implemented
+### 11. ✅ FIXED — `Str.indent`
 ```raku
 say "hi".indent(4);           # Rakudo: "    hi" · rakupp: No such method 'indent'
 ```
@@ -138,7 +143,7 @@ On [types/mop](https://spec.raku.online/types/mop.html) (**partial**):
 
 ## 🔤 Semantic / type differences
 
-### 13. `.isa(Role)` includes roles
+### 13. ✅ FIXED — `.isa(Role)` includes roles
 rakupp's `.isa` answers "does it type-match" (roles included); Rakudo's `.isa`
 is strict **class** inheritance.
 

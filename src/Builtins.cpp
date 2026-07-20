@@ -4331,14 +4331,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::string want = args[0].t == VT::Type ? args[0].s : args[0].toStr();
         std::string tn = inv.t == VT::Type ? inv.s : (inv.obj && inv.obj->cls ? inv.obj->cls->name : inv.typeName());
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
+        // `.isa` is strict CLASS inheritance — a role (Numeric, Real, …) is never
+        // an `isa` ancestor (use `~~`/`.does` for role membership)
+        static const std::set<std::string> roles = {
+            "Numeric", "Real", "Stringy", "Positional", "Associative", "Iterable",
+            "Callable", "Rational", "Baggy", "Setty", "Mixy"};
+        if (roles.count(want)) return Value::boolean(false);
         ClassInfo* c0 = inv.t == VT::Object && inv.obj ? inv.obj->cls.get() : nullptr;
         if (!c0) { auto cit = classes_.find(tn); if (cit != classes_.end()) c0 = cit->second.get(); }
         for (ClassInfo* c = c0; c; c = c->parent.get()) {
             if (c->name == want || c->nativeParent == want) return Value::boolean(true);
             if (!c->nativeParent.empty())
-                for (auto& anc : typeAncestry(c->nativeParent)) if (anc == want) return Value::boolean(true);
+                for (auto& anc : typeAncestry(c->nativeParent)) if (anc == want && !roles.count(anc)) return Value::boolean(true);
         }
-        for (auto& anc : typeAncestry(tn)) if (anc == want) return Value::boolean(true);
+        for (auto& anc : typeAncestry(tn)) if (anc == want && !roles.count(anc)) return Value::boolean(true);
         return Value::boolean(false);
     }
     if (m == "package" && inv.t == VT::Code && inv.code)
