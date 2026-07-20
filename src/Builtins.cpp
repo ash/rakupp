@@ -4704,9 +4704,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "IO") {
         // Any has no .IO (Cool does): an undefined invocant dies rather than
         // silently becoming the "" path; Nil keeps its absorb-everything rule.
-        if (inv.t == VT::Any)
+        // A bare type object (Date:U, Int:U, …) has no instance to make a path from.
+        if (inv.t == VT::Any || inv.t == VT::Type)
             throw RakuError{Value::typeObj("X::Method::NotFound"),
-                            "No such method 'IO' for invocant of type 'Any'"};
+                            "No such method 'IO' for invocant of type '" +
+                            (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
         if (inv.t == VT::Nil) return Value::nil();
         rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p;
     }

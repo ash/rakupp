@@ -2014,6 +2014,13 @@ ExprPtr Parser::parsePrimary() {
                     advance(); // ]
                     auto u = std::make_unique<Unary>();
                     u->op = "[" + innerOp + "]";
+                    // A reduction metaop is a list-prefix: its argument needs whitespace
+                    // (`[+] @a`) or the parenthesised function form (`[+](@a)`). A term
+                    // glued directly to `]` — `[+]@a` — is Confused.
+                    if (!cur().spaceBefore && !isKind(Tok::LParen) && !isKind(Tok::Comma) &&
+                        !isKind(Tok::RParen) && !isKind(Tok::RBracket) && !isKind(Tok::Semicolon) &&
+                        !isKind(Tok::End) && startsTermToken(cur()))
+                        throw ParseError("Confused (whitespace required before a reduction metaop's argument) (X::Syntax::Confused)", cur().line);
                     // listop-style forms: `([op], 42)` (comma before the args) and
                     // the zero-argument `([op])`
                     if (isKind(Tok::Comma)) advance();
@@ -2552,6 +2559,14 @@ ExprPtr Parser::parsePrimary() {
             // list-op style call without parens
             // but a capitalized bareword followed by a block is a type + block body, e.g. `if Mu { }`
             if (isKind(Tok::LBrace) && !name.empty() && std::isupper((unsigned char)name[0]))
+                return std::make_unique<NameTerm>(name);
+            // A capitalized bareword (a type) followed by whitespace then `.method` is
+            // a postfix method call on the type — `Thing .new` is `Thing.new`, NOT a
+            // listop call `Thing(.new)`. (Whitespace before a postfix `.` is allowed.)
+            // Require an identifier after the dot so `.method` is meant, not `.=`/`.(`.
+            if (!name.empty() && std::isupper((unsigned char)name[0]) &&
+                cur().kind == Tok::Op && cur().text == "." && cur().spaceBefore &&
+                peek().kind == Tok::Ident)
                 return std::make_unique<NameTerm>(name);
             // A name declared sigilless (`my \x`, `\a` param, `-> \d`) is a TERM, not a
             // listop: `x2 < 0 || 1 > 7` is two comparisons, never `x2(< 0 || 1 >) 7`.
