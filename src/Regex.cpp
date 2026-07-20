@@ -266,8 +266,10 @@ Regex::NodePtr Regex::parseAtom() {
     if ((c == '>' && peek(1) == '>') || ((unsigned char)c == 0xC2 && (unsigned char)peek(1) == 0xBB)) {
         pos_ += 2; auto n = std::make_unique<Node>(); n->k = K::WBRight; return n;
     }
-    if (c == '$' && peek(1) == '<') {
-        // named capture: $<name>=(...) / $<name>=[...]
+    if ((c == '$' || c == '@') && peek(1) == '<') {
+        // named capture: $<name>=(...) / $<name>=[...]; the `@<name>=…` form is a
+        // list-valued named capture (every occurrence collected into an Array).
+        bool listCap = (c == '@');
         size_t save = pos_;
         pos_ += 2;
         std::string name;
@@ -278,6 +280,16 @@ Regex::NodePtr Regex::parseAtom() {
             pos_++;
             skipWs();
             auto child = parseQuant(); // bind the whole quantified atom: `$<v>=.*` = `$<v>=[.*]`
+            if (listCap) { // force the named capture to be list-valued
+                if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
+                listNames_->insert(name);
+                // `@<name>=( … )+` collects EACH iteration: name the inner repeated
+                // group so every occurrence collates into the named list.
+                Node* inner = child.get();
+                if (inner->k == K::Rep && !inner->kids.empty() && inner->kids[0]->k == K::Group)
+                    inner = inner->kids[0].get();
+                if (inner->k == K::Group) { inner->capName = name; return child; }
+            }
             auto g = std::make_unique<Node>();
             g->k = K::Group; g->capIndex = -1; g->capName = name;
             g->kids.push_back(std::move(child));
