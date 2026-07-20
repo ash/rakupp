@@ -10034,15 +10034,9 @@ Value Interpreter::evalIndex(Index* idx) {
         };
         if (idx->adverb.empty()) return multiDimRead(eval(idx->base.get()));
     }
-    // A shaped DECLARATION `my int @a[5]` (or anonymous `my int @[5]`) used as an
-    // expression evaluates to the typed array itself, not to an element of it.
-    if (!idx->isHash && idx->base->kind == NK::VarExpr &&
-        static_cast<VarExpr*>(idx->base.get())->declare &&
-        !static_cast<VarExpr*>(idx->base.get())->name.empty() &&
-        static_cast<VarExpr*>(idx->base.get())->name[0] == '@') {
-        Value* slot = lvalue(idx->base.get());
-        if (slot) { (void)eval(idx->index.get()); return *slot; } // shape dims noted, value is the array
-    }
+    // (Shaped declarations `my @a[5]` now carry their dimensions on the declarator
+    // itself — `declShape` — so they never reach here as an Index node. A bare
+    // `(my @)[i]` is therefore a genuine subscript on the freshly-declared array.)
     // Fast path: `@plainvar[intexpr]` — the overwhelmingly common array read.
     // Grab the array's shared_ptr (one refcount, safe across the index eval)
     // instead of copying the whole ~300-byte Value three times through eval().
@@ -10598,8 +10592,11 @@ Value Interpreter::evalIndex(Index* idx) {
             Value iv = eval(idx->index.get());
             // Whatever-star index: `@a[*-1]` (WhateverCode called with the length),
             // `@a[*]` (all elements).
-            if (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)
+            bool wasWhatever = false;
+            if (iv.t == VT::Code && iv.code && iv.code->isWhateverCode) {
                 iv = callCallable(iv, ValueList{Value::integer(n)});
+                wasWhatever = true;
+            }
             if (iv.t == VT::Whatever) {
                 isSlice = true;
                 for (long long k = 0; k < n; k++) indices.push_back(k);
@@ -10627,6 +10624,16 @@ Value Interpreter::evalIndex(Index* idx) {
                     base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex) {
                     if (i == 0 || i == -1) return base;
                     return Value::nil();
+                }
+                // A `*-N` index (already resolved against the length) that lands
+                // below 0 is out of range → a Failure (fails-like X::OutOfRange);
+                // a plain negative literal keeps the from-the-end adjustment.
+                if (wasWhatever && i < 0) {
+                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    (*f.hash)["exception"] = Value::typeObj("X::OutOfRange");
+                    (*f.hash)["message"] = Value::str("Index out of range. Is: " + std::to_string(i) +
+                                                      ", should be in 0.." + std::to_string(n > 0 ? n - 1 : 0));
+                    return f;
                 }
                 if (i < 0) i += n;
                 if (i >= 0 && i < n) {
