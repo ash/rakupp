@@ -6288,6 +6288,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "classify" || m == "categorize") { // group elements by a mapper into a Hash of lists
+            Value* into = nullptr;
+            for (auto& x : args) if (x.t == VT::Pair && x.s == "into" && x.pairVal) into = x.pairVal.get();
             Value mapper = args.empty() ? Value::nil() : args[0];
             Value h = Value::makeHash();
             auto add = [&](const std::string& key, const Value& v) {
@@ -6296,9 +6298,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 else { if (it->second.t != VT::Array) { Value a = Value::array(); a.arr->push_back(it->second); it->second = a; } it->second.arr->push_back(v); }
             };
             for (auto& v : items) {
-                Value k = mapper.t == VT::Code ? callCallable(mapper, {v}) : v;
+                // the classifier may be a Callable (called), a Hash (indexed by the
+                // element), or an Array (indexed by the element as position)
+                Value k;
+                if (mapper.t == VT::Code) k = callCallable(mapper, {v});
+                else if (mapper.t == VT::Hash && mapper.hash) { auto it = mapper.hash->find(v.toStr()); k = it != mapper.hash->end() ? it->second : Value::any(); }
+                else if (mapper.t == VT::Array && mapper.arr) { long long i = v.toInt(); k = (i >= 0 && i < (long long)mapper.arr->size()) ? (*mapper.arr)[i] : Value::any(); }
+                else k = v;
                 if (m == "categorize" && k.t == VT::Array && k.arr) { for (auto& kk : *k.arr) add(kk.toStr(), v); }
                 else add(k.toStr(), v);
+            }
+            if (into) { // :into(%h) — append into an existing hash and return it
+                if (into->t != VT::Hash || !into->hash) *into = Value::makeHash();
+                for (auto& kv : *h.hash) {
+                    auto it = into->hash->find(kv.first);
+                    if (it == into->hash->end()) (*into->hash)[kv.first] = kv.second;
+                    else if (it->second.t == VT::Array && kv.second.t == VT::Array)
+                        for (auto& e : *kv.second.arr) it->second.arr->push_back(e);
+                }
+                return *into;
             }
             return h;
         }
@@ -8819,10 +8837,22 @@ void Interpreter::registerBuiltins() {
         return z;
     };
     B["classify"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() < 2) return Value::makeHash();
-        Value mapper = a[0];
-        Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
-        ValueList ma{mapper}; return I.methodCall(list, "classify", ma);
+        // `:into(%h)` classifies into an existing hash, APPENDING to its lists.
+        Value* into = nullptr; ValueList pos;
+        for (auto& x : a) { if (x.t == VT::Pair && x.s == "into" && x.pairVal) into = x.pairVal.get(); else pos.push_back(x); }
+        if (pos.size() < 2) return into ? *into : Value::makeHash();
+        Value mapper = pos[0];
+        Value list = pos.size() == 2 ? pos[1] : Value::array(ValueList(pos.begin() + 1, pos.end()));
+        ValueList ma{mapper}; Value res = I.methodCall(list, "classify", ma);
+        if (!into) return res;
+        if (into->t != VT::Hash || !into->hash) *into = Value::makeHash();
+        if (res.hash) for (auto& kv : *res.hash) { // append the grouped elements
+            auto it = into->hash->find(kv.first);
+            if (it == into->hash->end()) (*into->hash)[kv.first] = kv.second;
+            else if (it->second.t == VT::Array && kv.second.t == VT::Array)
+                for (auto& e : *kv.second.arr) it->second.arr->push_back(e);
+        }
+        return *into;
     };
     // sub forms of the mapper family: routine(&code, list) == list.routine(&code)
     for (const char* mf : {"categorize", "deepmap", "duckmap", "nodemap"}) {
