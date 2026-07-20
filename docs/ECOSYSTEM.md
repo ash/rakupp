@@ -9,8 +9,9 @@ on a stale interpreter.
 ## The pieces
 
 Everything downstream ships the *same* interpreter. Raku.js is `../src` compiled
-to WebAssembly; the two sites embed that WebAssembly; the corpus is test input
-run against the native binary. There is one implementation, presented four ways.
+to WebAssembly; the two sites embed that WebAssembly; the Homebrew tap and the
+GitHub Release distribute the native binary; the corpus is test input run against
+it. There is one implementation behind every surface.
 
 | Project | What it is | Repository | Local checkout | Serves |
 |---|---|---|---|---|
@@ -19,6 +20,7 @@ run against the native binary. There is one implementation, presented four ways.
 | **raku.online** | The public playground built on Raku.js — editor, output pane, share/open links, an embeddable widget (`raku.js`). | [ash/raku.online](https://github.com/ash/raku.online) | `/Users/ash/raku.online` | [raku.online](https://raku.online/) |
 | **raku-spec** | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku-spec](https://github.com/ash/raku-spec) | `/Users/ash/raku-spec` | [spec.raku.online](https://spec.raku.online/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | *(clone as needed)* | — (test input) |
+| **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `$(brew --repository)/Library/Taps/ash/homebrew-rakupp` | `brew install rakupp` |
 
 ## How they connect
 
@@ -30,6 +32,8 @@ graph TD
     ONLINE["raku.online<br/>playground + raku.js widget"]
     SPEC["spec.raku.online<br/>feature spec, live examples"]
     CORPUS["raku-corpus<br/>real-world programs"]
+    BREW["Homebrew tap<br/>ash/rakupp"]
+    REL["GitHub Release<br/>binaries + wasm zip"]
 
     SRC --> NATIVE
     SRC -->|rakujs/build.sh<br/>Emscripten| WASM
@@ -37,6 +41,8 @@ graph TD
     ONLINE -->|raku.js engine<br/>embedded cross-origin| SPEC
     NATIVE -->|rakupp build.raku<br/>--verify generator| SPEC
     NATIVE -->|differential run| CORPUS
+    SRC -->|tag → release.yml CI| REL
+    REL -->|bump url + sha256| BREW
 ```
 
 Two things are worth internalising because they drive the release runbook:
@@ -79,8 +85,22 @@ whenever the release adds or changes user-visible behaviour; D is a safety net.
    **and** the `wasm` job builds `rakujs-<tag>.zip` (playground bundle) and the
    showcase bundle, attaching all of them to the GitHub Release. No manual
    binary building is needed.
-6. **Homebrew tap** — if the `ash/rakupp` formula pins a version/tarball URL +
-   sha256, bump it to the new release archive. (Lives in a separate tap repo.)
+6. **Bump the Homebrew formula** — in the [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp)
+   repo (`Formula/rakupp.rb`), after the Release CI (Step A.5) has published the
+   assets. The formula pins the version in **three** places — all must move together:
+   - top-level `url` → `…/archive/refs/tags/vX.Y.Z.tar.gz` + its `sha256`
+     (the **source** tarball, used by the Linux/Intel build-from-source path);
+   - the `on_macos` block's `url` → `…/releases/download/vX.Y.Z/rakupp-macos-universal.tar.gz`,
+     its `sha256`, and `version "X.Y.Z"` (the **prebuilt** Apple-Silicon binary).
+
+   Compute each hash straight from the published asset, e.g.:
+   ```sh
+   curl -sL https://github.com/ash/rakupp/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+   curl -sL https://github.com/ash/rakupp/releases/download/vX.Y.Z/rakupp-macos-universal.tar.gz | shasum -a 256
+   ```
+   Then `brew install --build-from-source rakupp` and `brew test rakupp` to
+   verify before committing and pushing the tap. (The `head "…"` line needs no
+   change — `--HEAD` always tracks `main`.)
 
 ### B. Regenerate the WebAssembly and update raku.online
 
@@ -152,3 +172,4 @@ deploy — nothing to publish, just a signal before (or right after) tagging.
 | the playground UI (`rakujs/playground/`) | copy the changed file into `raku.online/www/` and redeploy (**B.3–4**) |
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
 | stat numbers (Roast/benchmarks) | refresh the docs per the doc-sync checklist (**A.4**) |
+| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.6**) |
