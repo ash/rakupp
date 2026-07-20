@@ -355,9 +355,29 @@ void Lexer::skipWhitespaceAndComments() {
     for (;;) {
         char c = peek();
         bool atLineStart = (col_ == 1);
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
+            c == '\v' || c == '\f') { // VT (U+000B), FF (U+000C)
             advance();
             continue;
+        }
+        // Unicode whitespace beyond ASCII (UTF-8 multibyte): NEL, NBSP, OGHAM
+        // SPACE, the U+2000..200A run, LINE/PARAGRAPH SEPARATOR, NARROW/MEDIUM/
+        // IDEOGRAPHIC spaces. Treated as token separators like ordinary space.
+        {
+            // Breaking Unicode whitespace only. The non-breaking spaces — NBSP
+            // (U+00A0), FIGURE SPACE (U+2007), NARROW NBSP (U+202F) — are left
+            // intact so `<a<NBSP>b>` stays a single word-quote element.
+            unsigned char b0 = (unsigned char)c, b1 = (unsigned char)peek(1), b2 = (unsigned char)peek(2);
+            int uws = 0;
+            if (b0 == 0xC2 && b1 == 0x85) uws = 2;                            // NEL
+            else if (b0 == 0xE1 && b1 == 0x9A && b2 == 0x80) uws = 3;         // OGHAM SPACE MARK
+            else if (b0 == 0xE2 && b1 == 0x80 &&
+                     (b2 == 0x80 || b2 == 0x81 || b2 == 0x82 || b2 == 0x83 || b2 == 0x84 ||
+                      b2 == 0x85 || b2 == 0x86 || b2 == 0x88 || b2 == 0x89 || b2 == 0x8A ||
+                      b2 == 0xA8 || b2 == 0xA9)) uws = 3;                     // U+2000..200A (minus FIGURE 2007), LS, PS
+            else if (b0 == 0xE2 && b1 == 0x81 && b2 == 0x9F) uws = 3;         // MEDIUM MATH SPACE (U+205F)
+            else if (b0 == 0xE3 && b1 == 0x80 && b2 == 0x80) uws = 3;         // IDEOGRAPHIC SPACE (U+3000)
+            if (uws) { for (int k = 0; k < uws; k++) advance(); continue; }
         }
         // atomic-operator marker ⚛ (U+269B): under the GIL, atomic ops are plain ops,
         // so `$x⚛++`/`⚛$x`/`$x ⚛= v` reduce to `$x++`/`$x`/`$x = v` — just drop the ⚛.
@@ -370,11 +390,24 @@ void Lexer::skipWhitespaceAndComments() {
         }
         // unspace: backslash + whitespace run is ignored and JOINS the tokens
         // (`.doit\ ()` parses like `.doit()` — the next token is not spaceBefore)
-        if (c == '\\' && (peek(1) == ' ' || peek(1) == '\t' || peek(1) == '\n' || peek(1) == '\r')) {
-            advance(); // backslash
-            while (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r') advance();
-            atomDropEnd_ = pos_; // like the ⚛ drop: this movement is not whitespace
-            continue;
+        if (c == '\\') {
+            // unspace also joins across Unicode whitespace, not just ASCII
+            auto uwsAt = [&](int off) -> int {
+                unsigned char a0 = (unsigned char)peek(off), a1 = (unsigned char)peek(off + 1), a2 = (unsigned char)peek(off + 2);
+                if (a0 == ' ' || a0 == '\t' || a0 == '\n' || a0 == '\r' || a0 == '\v' || a0 == '\f') return 1;
+                if (a0 == 0xC2 && a1 == 0x85) return 2;                       // NEL
+                if (a0 == 0xE1 && a1 == 0x9A && a2 == 0x80) return 3;         // OGHAM
+                if (a0 == 0xE2 && a1 == 0x80 && ((a2 >= 0x80 && a2 <= 0x8A && a2 != 0x87) || a2 == 0xA8 || a2 == 0xA9)) return 3;
+                if (a0 == 0xE2 && a1 == 0x81 && a2 == 0x9F) return 3;
+                if (a0 == 0xE3 && a1 == 0x80 && a2 == 0x80) return 3;
+                return 0;
+            };
+            if (uwsAt(1)) {
+                advance(); // backslash
+                while (int w = uwsAt(0)) { for (int k = 0; k < w; k++) advance(); }
+                atomDropEnd_ = pos_; // like the ⚛ drop: this movement is not whitespace
+                continue;
+            }
         }
         if (c == '#') {
             // embedded comment #`( ... ) / #`[ ... ] / #`{ ... }: skip the balanced
@@ -719,7 +752,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     while (p < src_.size() && std::isalpha((unsigned char)src_[p])) { w += src_[p]; p++; }
     bool isRegex = (w == "rx" || w == "m" || w == "ms" || w == "mm");
     bool isSubst = (w == "s" || w == "S" || w == "ss" || w == "SS");
-    bool isTrans = (w == "tr" || w == "y"); // transliteration tr/from/to/
+    bool isTrans = (w == "tr"); // transliteration tr/from/to/ (Raku dropped y///)
     bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww"); // word-list quotes
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans) return false;
     // adverbs between keyword and delimiter, e.g. m:i/.../ , s:g/.../.../

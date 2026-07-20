@@ -14,6 +14,29 @@
 
 namespace rakupp {
 
+// Byte length of a Unicode whitespace char at s[i], or 0 if s[i] is not
+// whitespace. Covers ASCII plus the multibyte forms (NEL, NBSP, OGHAM SPACE,
+// the U+2000..200A run, LS/PS, NNBSP, U+205F, U+3000) — matches the lexer.
+// When `breaking` is true (word-quote splitting), the non-breaking spaces —
+// NBSP (U+00A0), FIGURE SPACE (U+2007), NARROW NBSP (U+202F) — are NOT treated
+// as separators, so `<a<NBSP>b>` stays a single word (matches Rakudo).
+static int uniWsLen(const std::string& s, size_t i, bool breaking = false) {
+    unsigned char b0 = (unsigned char)s[i];
+    if (b0 == ' ' || b0 == '\t' || b0 == '\n' || b0 == '\r' || b0 == '\v' || b0 == '\f') return 1;
+    unsigned char b1 = i + 1 < s.size() ? (unsigned char)s[i + 1] : 0;
+    unsigned char b2 = i + 2 < s.size() ? (unsigned char)s[i + 2] : 0;
+    if (b0 == 0xC2 && b1 == 0x85) return 2;                                 // NEL
+    if (b0 == 0xC2 && b1 == 0xA0) return breaking ? 0 : 2;                  // NBSP (non-breaking)
+    if (b0 == 0xE1 && b1 == 0x9A && b2 == 0x80) return 3;                   // OGHAM SPACE MARK
+    if (b0 == 0xE2 && b1 == 0x80 && b2 == 0x87) return breaking ? 0 : 3;    // FIGURE SPACE (non-breaking)
+    if (b0 == 0xE2 && b1 == 0x80 && b2 == 0xAF) return breaking ? 0 : 3;    // NARROW NBSP (non-breaking)
+    if (b0 == 0xE2 && b1 == 0x80 &&
+        ((b2 >= 0x80 && b2 <= 0x8A) || b2 == 0xA8 || b2 == 0xA9)) return 3; // U+2000..200A, LS, PS
+    if (b0 == 0xE2 && b1 == 0x81 && b2 == 0x9F) return 3;                   // MEDIUM MATH SPACE
+    if (b0 == 0xE3 && b1 == 0x80 && b2 == 0x80) return 3;                   // IDEOGRAPHIC SPACE
+    return 0;
+}
+
 // binding powers (higher = tighter)
 // Raku orders these (tightest→loosest): additive `+ -` > replication `x xx` >
 // concatenation `~` > range. So `"-" x $n + 2` == `"-" x ($n + 2)` and
@@ -1816,9 +1839,9 @@ ExprPtr Parser::parsePrimary() {
             arr->isList = true;
             size_t i = 0, n = raw.size();
             while (i < n) {
-                while (i < n && std::isspace((unsigned char)raw[i])) i++;
+                for (int w; i < n && (w = uniWsLen(raw, i, true)); ) i += w;
                 size_t start = i;
-                while (i < n && !std::isspace((unsigned char)raw[i])) i++;
+                while (i < n && !uniWsLen(raw, i, true)) i++;
                 if (i > start) {
                     std::string word = raw.substr(start, i - start);
                     // a numeric word is an allomorph (<42> IntStr, <1/3> RatStr, …) —
