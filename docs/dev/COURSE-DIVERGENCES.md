@@ -4,6 +4,60 @@ Source: [The Complete Course of the Raku Programming
 Language](https://course.raku.org/) —
 [source on GitHub](https://github.com/ash/raku-course).
 
+---
+
+## Fresh run — 2026-07-20 (rakupp 0.9.0)
+
+Re-ran after the course grew (all of Part 6 / Addendum, Cro, WebSockets, the
+new reactive theory pages). **Method:** extract every `exercises/**/*.raku` file
+(399) plus every ```` ```raku ```` fenced block from the English pages (1,379) →
+**1,778 snippets**; run each under Rakudo v2026.06 twice (a determinism filter)
+and under `build-arm64/rakupp` once, sandboxed, `TZ=UTC`, stdin `/dev/null`,
+12 s timeout; compare stdout + exit code byte-for-byte. Data + harness in
+[`course-diff/`](course-diff/) (`verdicts.tsv`, `manifest.tsv`, `harness/`,
+and `mismatches-rc0.txt` for the deterministic diffs).
+
+**1,698 / 1,778 exact matches (95.5 %).**
+
+| Verdict | Count | Meaning |
+|---|---:|---|
+| MATCH | 1698 | stdout + exit code identical |
+| DIFF-BOTH | 26 | different stdout and exit code |
+| DIFF-EXIT | 21 | same stdout, different exit code |
+| DIFF-OUT | 13 | same exit code, different stdout |
+| RAKUDO-TIMEOUT | 17 | server / infinite-`react` example — not comparable, skipped |
+| NONDET | 3 | Rakudo's own two runs differed (hash order etc.), skipped |
+
+Of the 60 DIFFs, **43 have empty Rakudo stdout with a non-zero exit** — theory
+fragments that don't run standalone (they compile-error under Rakudo too), not
+bugs. The **17 with Rakudo exit 0** are the real signal, below.
+
+### Fix candidates (deterministic Raku++ divergences)
+
+Reactive / async — the richest cluster:
+
+- **`await` on a `Supply` returns the wrong value.** `my $s = Supply.from-list(18,21,19,23); say await $s;` — Rakudo yields the **last** emitted value (`23`); rakupp yields the whole list gist (`values\t18 21 19 23`). (`await-a-supply` exercise + solution.)
+- **`done` inside `react` does not stop sibling `whenever`s atomically.** Two `whenever`s, the first calls `done` on its 2nd value; Rakudo delivers `[1 2]` (the whole block ends at once), rakupp delivers `[1 2 10]` — one value from the *other* supply leaks through before the block tears down. (`whenever/quiz2`; this is exactly what that quiz teaches.)
+- **`Supply.interval` timers don't wall-clock-interleave.** Two intervals of different periods in one `react`: Rakudo interleaves by time (`tick 0, TOCK 0, tick 1, …`); rakupp emits one timer's values then the other's (`tick 0..4, TOCK 0..4`), stable across runs — the timers aren't scheduled on real time concurrently. (`two-timers`.)
+- **Subscriber dispatch order on a `Supplier` differs.** A `.tap` and a `react`/`whenever` on the same live `Supply`: on the final event Rakudo and rakupp order the two subscribers' output differently (`… alert: stop` vs `… log: stop  alert: stop`). (`supply-kinds/live-in-action`.)
+
+MOP / introspection:
+
+- **`^add_method` fails.** `Empty.^add_method('greet', method { 'hi' })` → rakupp dies with `No such method 'add_method' for invocant of type 'Slip'`; Rakudo adds the method and prints `hi`. (`oop/mop/adding-methods`.)
+- **HyperSeq config introspection fails.** `(1..10).hyper` then `.^attributes.first(*.name.contains('config')).get_value($h).raku` → rakupp exits 1; Rakudo prints `HyperConfiguration.new(batch => 64, degree => 7)`. (`hyper-race/batch-and-degree`; the batch/degree numbers are implementation-defined, but the introspection path should work.)
+
+Minor:
+
+- **`$?FILE` is a bare basename.** rakupp prints `s.raku`; Rakudo prints the absolute path of the source file. (`special-variables/twigils`.)
+
+### Not Raku++ bugs (recorded so they aren't re-triaged)
+
+- **Rakudo quirk, rakupp is correct:** a comment ending in `\` right before EOF makes **Rakudo** emit nothing (`say 42; # x\␊` → Rakudo prints ``, rakupp prints `42`). Minimal repro confirmed; drop the final newline and Rakudo prints normally. (`strings/escaping-special-characters` — worth a course note too, since that example would show no output under Rakudo when it's the block's last line.)
+- **Cosmetic:** the raw-socket HTTP examples (`send-and-receive`, `sending-receiving`) match visibly; rakupp differs by one trailing newline on the `.lines.first` status line.
+- **Environmental / not reproducible:** the Cro client examples (`client-modules`, `public-apis`, `status-line`) hit live services (weather JSON, HTTP→HTTPS redirects) whose responses vary between the two runs.
+
+---
+
 Method: every fenced code block (```raku and untagged) from the English course
 pages (`essentials advanced oop paradigms regexes addendum about-this-course
 exercises` — 1,318 pages) plus the exercise `.raku` files was run under both
