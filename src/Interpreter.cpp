@@ -392,6 +392,7 @@ static void wrapNative(Value& v, int bits, bool sign) {
 // ---- placeholder ($^a) collection ----
 static void collectPHExpr(const Expr* e, std::set<std::string>& out);
 static void collectPHStmt(const Stmt* s, std::set<std::string>& out);
+void collectPHExprPublic(const Expr* e, std::set<std::string>& out) { collectPHExpr(e, out); }
 
 static void addIfPlaceholder(const std::string& name, std::set<std::string>& out) {
     if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) out.insert(name); // $^a positional, $:n named
@@ -3005,6 +3006,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; ci->ruleOrder.push_back(r.name); }
             for (auto& a : cd->attrs) {
+                // a placeholder in an attribute default has no block to bind to
+                if (a.def) {
+                    std::set<std::string> ph;
+                    std::vector<StmtPtr> tmp; // reuse the stmt walker via a shim below
+                    collectPHExprPublic(a.def.get(), ph);
+                    for (auto& n : ph)
+                        if (n[1] == '^' || n[1] == ':')
+                            throwTyped("X::Placeholder::Attribute", {{"placeholder", n}},
+                                "Placeholder variable '" + n + "' may not be used in an attribute default");
+                }
                 // a class may not redeclare an attribute a composed role declares
                 if (!cd->isRole)
                     for (ClassInfo* role : composedRoles)

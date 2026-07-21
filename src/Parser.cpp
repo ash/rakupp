@@ -569,6 +569,10 @@ ExprPtr Parser::parseExpr(int minbp) {
             continue;
         }
         if (in.isFatArrow) {
+            // `1, => 2` — a fat-arrow directly after a comma has no key term
+            if (pos_ > 0 && toks_[pos_ - 1].kind == Tok::Comma)
+                throw ParseError("Preceding context expects a term, but found infix => instead",
+                                 cur().line, "X::Syntax::InfixInTermPosition", {{"infix", "=>"}});
             advance();
             auto p = std::make_unique<PairExpr>();
             if (lhs->kind == NK::NameTerm) p->key = static_cast<NameTerm*>(lhs.get())->name;
@@ -1960,6 +1964,10 @@ ExprPtr Parser::parsePrimary() {
     }
     const Token& t = cur();
     switch (t.kind) {
+        case Tok::FatArrow:
+            // `1, => 2` — an infix pair-arrow with no key is a term-position infix
+            throw ParseError("Preceding context expects a term, but found infix => instead",
+                             cur().line, "X::Syntax::InfixInTermPosition", {{"infix", "=>"}});
         case Tok::IntLit: {
             const Token& tk = advance();
             std::string bare; for (char c : tk.text) if (c != '_') bare += c; // spelling keeps separators; value drops them
@@ -2077,6 +2085,10 @@ ExprPtr Parser::parsePrimary() {
             // `${ ... }` — itemized hash literal (the lexer split off a lone `$`;
             // without this, the braces would parse as a hash-index on `$`).
             if (cur().text == "$" && peek().kind == Tok::LBrace && !peek().spaceBefore) {
+                // Perl-5 `${a}` (a single bareword inside) is obsolete Raku
+                if (peek(2).kind == Tok::Ident && peek(3).kind == Tok::RBrace)
+                    throw ParseError("Unsupported use of ${" + peek(2).text + "}; in Raku please use :key or $()",
+                                     cur().line, "X::Obsolete", {{"old", "${" + peek(2).text + "}"}});
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = "ctx$"; u->operand = parsePrimary();
@@ -3395,6 +3407,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
             else error("expected variable in named-parameter alias");
+            // `:in(:$in)` — the alias and the variable name collide
+            if (p.aliasBoth && p.name.size() > 1 && p.namedKey == p.name.substr(1))
+                throw ParseError("Name " + p.namedKey + " used for more than one named parameter",
+                                 cur().line, "X::Signature::NameClash", {{"name", p.namedKey}});
             p.named = true;
             if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             if (matchOp("?")) p.optional = true;
