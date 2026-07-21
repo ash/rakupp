@@ -1597,6 +1597,18 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     const Rule* rule = rit != rules.end() ? &rit->second : nullptr;
     m.rule = rule;
     m.ratchet = rule && rule->kind != "regex";
+    // A body that declares `:my` gets a fresh dynamic scope per invocation: its vars must be
+    // rolled back when the rule exits (dynamic scoping). And any body that touches a dynamic
+    // var — declaring `:my` or reading `$*`/`@*`/`%*` (e.g. an indentation `<?{ … == $*IND }>`)
+    // — can match differently depending on caller state the packrat key doesn't capture, so
+    // it must not be memoised.
+    if (rule) {
+        const std::string& p = rule->pattern;
+        m.scoped = p.find(":my") != std::string::npos;
+        m.dynDep = m.scoped || p.find("$*") != std::string::npos
+                            || p.find("@*") != std::string::npos
+                            || p.find("%*") != std::string::npos;
+    }
     m.id = (int)nameMeta_.size();
     // Rules with no params whose whole body is a single-character class (space, break,
     // plainfirst-ish …) get inlined at call sites — they dominate call volume.
@@ -1749,24 +1761,34 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // grammars run in polynomial rather than exponential time. Build an INTEGER key
         // and probe the memo BEFORE compiling/interpolating — the hot no-arg tokens
         // (space, alnum…) hit here and skip all string work.
+        // Dynamic-var-dependent rules skip the memo: their match can depend on caller state
+        // ($*IND, …) not in the key, and any `:my` side effects are rolled back on exit.
+        bool memoise = !meta.dynDep;
         uint64_t mkey = (uint64_t)meta.id * 1099511628211ULL + (uint64_t)pos * 131ULL;
-        if (!args.empty()) // fold param VALUES (not text) into the key — they vary by caller scope
-            for (auto& a : splitArgs(args)) { for (char c : evalArg(a)) mkey = mkey * 131 + (unsigned char)c; mkey = mkey * 131 + 1; }
-        auto mit = memo_.find(mkey);
-        if (mit != memo_.end()) {
-            if (!mit->second.matched) return false;
-            const MemoEntry& me = mit->second;
-            candDeclEnd_ = me.declEnd;
-            candLitPrefix_ = me.litPrefix;
-            return record(me.end, me.caps, me.named, me.kids, me.listNames);
+        if (memoise) {
+            if (!args.empty()) // fold param VALUES (not text) into the key — they vary by caller scope
+                for (auto& a : splitArgs(args)) { for (char c : evalArg(a)) mkey = mkey * 131 + (unsigned char)c; mkey = mkey * 131 + 1; }
+            auto mit = memo_.find(mkey);
+            if (mit != memo_.end()) {
+                if (!mit->second.matched) return false;
+                const MemoEntry& me = mit->second;
+                candDeclEnd_ = me.declEnd;
+                candLitPrefix_ = me.litPrefix;
+                return record(me.end, me.caps, me.named, me.kids, me.listNames);
+            }
         }
         std::map<std::string, std::string> bound;
         Regex* re = (args.empty() && meta.noArg) ? meta.noArg
                   : compiledFor(*static_cast<const Rule*>(meta.rule), name, args, bound);
-        if (!re || !re->ok()) { memo_[mkey].matched = false; return false; }
+        if (!re || !re->ok()) { if (memoise) memo_[mkey].matched = false; return false; }
         Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
         sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr;
         scope_.push_back(std::move(bound));
+        // A `:my` rule opens a fresh dynamic scope: snapshot the interpreter's `:my` vars so
+        // the rule's declarations (and shadows) are rolled back when it exits, restoring the
+        // caller's bindings — this is what makes indentation-style dedent work.
+        std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
+                                         ? st.hooks->saveState() : nullptr;
         MemoEntry me;
         me.listNames = re->listNamesPtr();
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
@@ -1779,7 +1801,14 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                     : std::make_shared<const ChildMap>(std::move(sub.children));
             return true; // commit to the first complete match — ratchet never backtracks in
         });
+        if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
         scope_.pop_back();
+        if (!memoise) {
+            if (!me.matched) return false;
+            candDeclEnd_ = me.declEnd;
+            candLitPrefix_ = me.litPrefix;
+            return record(me.end, me.caps, me.named, me.kids, me.listNames);
+        }
         auto& slot = (memo_[mkey] = std::move(me));
         if (!slot.matched) return false;
         candDeclEnd_ = slot.declEnd;
@@ -1795,6 +1824,8 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
     sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr; // propagate hooks + candidate sym
     scope_.push_back(std::move(bound));
+    std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
+                                     ? st.hooks->saveState() : nullptr;   // fresh dynamic scope for `:my`
     bool ok = re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
         // The callee has matched; the continuation `k` belongs to the CALLER, so its
         // code blocks must see the caller's params — pop the callee's param frame for
@@ -1809,6 +1840,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                              sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children),
                              re->listNamesPtr()));
     });
+    if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
     scope_.pop_back();
     return ok;
 }

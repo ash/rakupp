@@ -86,6 +86,10 @@ struct GrammarRuleMeta {
     Regex* noArg = nullptr;        // pre-compiled body for a parameterless rule
     const std::vector<std::string>* proto = nullptr; // protoregex candidate names (if this name is a proto)
     bool isWs = false;             // built-in <ws>
+    bool scoped = false;           // body declares `:my` — its dynamic vars are per-invocation
+                                   // (save/restore interpreter scope around the call)
+    bool dynDep = false;           // body declares `:my` or reads a dynamic var ($*/@*/%*): its match
+                                   // can depend on caller state not in the packrat key, so don't memoise
     std::string builtinClass;      // unknown name: built-in char-class flags ("d","a",…), else empty
 };
 
