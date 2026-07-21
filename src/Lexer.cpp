@@ -878,7 +878,9 @@ bool Lexer::tryQuoteForm(Token& out) {
                 continue;
             }
             if (quoteAware && q) { if (ch == q) q = 0; raw += advance(); continue; }
-            if (quoteAware && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
+            // quotes open only OUTSIDE [ ] — inside a char class a quote is a
+            // MEMBER (<-["]> = anything but a double quote), not a string opener
+            if (quoteAware && sd == 0 && (ch == '\'' || ch == '"')) { q = ch; raw += advance(); continue; }
             if (blocks && ch == '{') { bd++; raw += advance(); continue; } // enter code block
             // Raku regex/subst pattern: `[ ... ]` groups & char classes (incl. <-[/]>) shield the delimiter
             if (quoteAware && !p5 && ch == '[') { sd++; raw += advance(); continue; }

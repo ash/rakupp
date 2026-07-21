@@ -1961,6 +1961,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::str(out);
         }
         if (m == "close") return Value::boolean(true);
+        // Rakudo has not implemented the write half of CatHandle either — these
+        // throw X::NYI there, and roast (A02) checks exactly that
+        static const std::set<std::string> catNyi = {
+            "flush", "out-buffer", "print", "printf", "print-nl", "put", "say", "write",
+            "WRITE", "READ", "EOF"};
+        if (catNyi.count(m))
+            throw RakuError{Value::typeObj("X::NYI"),
+                            m + " is not yet implemented. Sorry."};
+        if (m == "slurp-rest")
+            throw RakuError{Value::typeObj("X::Obsolete"),
+                            "Unsupported use of slurp-rest; in Raku please use slurp with IO::CatHandle"};
+        if (m == "Str") return Value::str("<closed IO::CatHandle>");
     }
     if (inv.t == VT::Type && inv.s == "IO::Special" && m == "new") {
         Value sp = Value::str(args.empty() ? "" : args[0].toStr());
@@ -2675,7 +2687,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::string kind = inv.hash->count("kind") ? (*inv.hash)["kind"].toStr() : "";
 
         // keep / break — settle a manual promise (or the vow that controls it).
+        // Settling takes the promise's vow; once vowed (explicitly via .vow or
+        // implicitly by a prior keep/break), only the Vow object may settle it.
+        auto takeVow = [&]() {
+            if (inv.hashKind == "Vow") return;
+            bool vowed = inv.hash->count("vowed");
+            std::string st = inv.hash->count("status") ? (*inv.hash)["status"].toStr() : "";
+            if (vowed || st == "Kept" || st == "Broken")
+                throw RakuError{Value::typeObj("X::Promise::Vowed"),
+                                "Access denied to keep/break this Promise; already vowed"};
+            (*inv.hash)["vowed"] = Value::boolean(true);
+        };
         if (m == "keep") {
+            takeVow();
             Value v = args.empty() ? Value::boolean(true) : args[0];
             std::vector<std::function<void()>> fire;
             if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done) { ps->result = v; ps->done = true; } fire.swap(ps->thens); ps->cv.notify_all(); }
@@ -2684,6 +2708,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return inv;
         }
         if (m == "break") {
+            takeVow();
             Value c = args.empty() ? Value::str("Died") : args[0];
             // A non-exception cause (e.g. break("msg")) is wrapped in X::AdHoc so
             // that `$p.cause.message` works, mirroring `die "msg"`.
@@ -2701,7 +2726,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             for (auto& f : fire) f();
             return inv;
         }
-        if (m == "vow") { Value v = inv; v.hashKind = "Vow"; return v; }
+        if (m == "vow") { takeVow(); Value v = inv; v.hashKind = "Vow"; return v; }
 
         // Fold the state of an anyof/allof combinator lazily from its children.
         auto childState = [&](Value& c, bool& done, bool& broken) {
@@ -3313,6 +3338,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.s == "array" && inv.ofType.empty()) // native arrays need a type parameter
             throw RakuError{Value::typeObj("X::MustBeParametric"),
                             "Must first parameterize the vector type, e.g.: array[int32]"};
+        // Seq.new(iterator-object): a user object doing Iterator drains by pull-one
+        if (inv.s == "Seq" && args.size() == 1 && args[0].t == VT::Object && args[0].obj &&
+            args[0].obj->cls && args[0].obj->cls->findMethod("pull-one")) {
+            Value* po = args[0].obj->cls->findMethod("pull-one");
+            Value v = Value::array(); v.isList = true; v.s = "Seq";
+            for (;;) {
+                ValueList none;
+                Value x = invokeMethod(*po, args[0], none);
+                if (x.t == VT::Type && x.s == "IterationEnd") break;
+                v.arr->push_back(x);
+            }
+            return v;
+        }
         Value v = Value::array(); v.isList = (inv.s == "List" || inv.s == "Seq"); v.ofType = inv.ofType;
         std::vector<long long> dims;
         ValueList seed;
@@ -4130,6 +4168,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Object && inv.obj) { char buf[24]; std::snprintf(buf, sizeof buf, "|%p", (void*)inv.obj.get()); return Value::str(inv.typeName() + buf); }
         return Value::str(inv.typeName() + "|" + inv.toStr());
     }
+    if (m == "WHERE") { // memory address of the value (an Int)
+        const void* p = inv.t == VT::Object && inv.obj ? (const void*)inv.obj.get()
+                      : inv.t == VT::Array && inv.arr  ? (const void*)inv.arr.get()
+                      : inv.t == VT::Hash && inv.hash  ? (const void*)inv.hash.get()
+                      : (const void*)&inv;
+        return Value::integer((long long)(intptr_t)p);
+    }
+    if (m == "DUMP") return Value::str(inv.t == VT::Type ? inv.s : inv.gist()); // debug snapshot (loose form)
     if (m == "does") { // .does(Role/Type) — role/type membership introspection
         if (args.empty()) return Value::boolean(false);
         // HOW form: `$obj.HOW.does($obj, Role)` — the metaclass takes (object, role)
@@ -7300,6 +7346,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Real numification protocol: built-in numerics answer .Bridge with a Num
     if (m == "Bridge" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool))
         return Value::number(inv.toNum());
+    // `has $.b handles <m1 m2>` — an unknown method listed in an attribute's
+    // handles trait is delegated to that attribute's value.
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
+        for (ClassInfo* c = inv.obj->cls.get(); c; c = c->parent.get()) {
+            for (auto& a : c->attrs)
+                for (auto& h : a.handles)
+                    if (h == m || h == "*") { // `handles *` delegates any unknown method
+                        auto ait = inv.obj->attrs.find(a.name);
+                        Value target = ait != inv.obj->attrs.end() ? ait->second : Value::any();
+                        // an unset typed attr delegates to its type object
+                        if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
+                            target = Value::typeObj(a.type);
+                        return methodCall(target, m, std::move(args), rwArgs);
+                    }
+        }
+    }
     // Real-role bridge: an object whose class defines .Bridge (`class F does Real
     // { method Bridge() {…} }`) answers unknown methods through the bridged
     // value — .succ/.Int/.Bool/.sqrt/… all come from Real via the bridge.
@@ -7516,12 +7578,32 @@ void Interpreter::registerBuiltins() {
         (*f.hash)["exception"] = ex;
         throw ReturnEx{f};
     };
-    B["prompt"] = [](Interpreter&, ValueList& a) -> Value {
+    // val(Str) — a fully-numeric string becomes the matching allomorph
+    // (IntStr/RatStr/NumStr/ComplexStr: the number AND its source spelling);
+    // anything else passes through unchanged. prompt() routes its line here.
+    auto valAllomorph = [](const Value& v) -> Value {
+        if (v.t != VT::Str) return v;
+        if (v.s.find_first_not_of(" \t\n\r\f\v") == std::string::npos) return v; // empty/blank stays Str
+        Value n = numifyStr(v.s);
+        switch (n.t) {
+            case VT::Int:     n.hashKind = "IntStr";     break;
+            case VT::Rat:     n.hashKind = "RatStr";     break;
+            case VT::Num:     n.hashKind = "NumStr";     break;
+            case VT::Complex: n.hashKind = "ComplexStr"; break;
+            default: return v;
+        }
+        n.s = v.s; // the allomorph's Str face is the original spelling
+        return n;
+    };
+    B["val"] = [valAllomorph](Interpreter&, ValueList& a) -> Value {
+        return a.empty() ? Value::nil() : valAllomorph(a[0]);
+    };
+    B["prompt"] = [valAllomorph](Interpreter&, ValueList& a) -> Value {
         if (!a.empty()) { std::cout << a[0].toStr(); std::cout.flush(); }
         std::string line;
         if (!std::getline(std::cin, line)) return Value::nil(); // EOF -> Nil
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        Value s = Value::str(line); return s; // Raku returns a Str that numifies on demand
+        return valAllomorph(Value::str(line)); // Raku returns Str-with-val: numeric input is an allomorph
     };
     B["dd"] = [](Interpreter&, ValueList& a) -> Value {
         std::string out;

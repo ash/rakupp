@@ -40,6 +40,7 @@ struct Callable {
     std::vector<Value> wrappers;                      // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
+    bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
 };
 
 enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
@@ -198,6 +199,8 @@ struct ClassAttr {
     const Expr* def = nullptr; // borrowed from AST
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`
+    std::vector<std::string> handles; // `has $.b handles <m1 m2>` — methods delegated to this attr
+    const void* declId = nullptr;     // identity of the declaring AttrDecl (diamond-composition dedup)
 };
 
 struct ClassInfo {
@@ -214,6 +217,7 @@ struct ClassInfo {
     bool isGrammar = false;
     bool isRole = false;
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
+    std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented
     std::set<std::string> doneRoles; // names of roles this class/role composes (for ~~ / .does)
     std::shared_ptr<Env> declEnv; // scope the type was declared in (for evaluating attr defaults)
 

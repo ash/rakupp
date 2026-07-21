@@ -10,11 +10,27 @@
 #if defined(_WIN32)
 #include "Platform.h"   // pulls <windows.h>
 #include <process.h>    // _beginthreadex
+#include <direct.h>     // _getcwd
 #else
 #include <pthread.h>
+#include <unistd.h>     // getcwd
 #endif
 
 namespace rakupp {
+
+// $?FILE is the source path as an absolute path: cwd-prefixed when invoked
+// relatively (Rakudo keeps the `./` — no realpath canonicalization).
+static std::string absSrcPath(const std::string& f) {
+    if (f.empty()) return f;
+#if defined(_WIN32)
+    if (f[0] == '/' || f[0] == '\\' || (f.size() > 1 && f[1] == ':')) return f;
+    char buf[4096]; if (_getcwd(buf, sizeof buf)) return std::string(buf) + "\\" + f;
+#else
+    if (f[0] == '/') return f;
+    char buf[4096]; if (getcwd(buf, sizeof buf)) return std::string(buf) + "/" + f;
+#endif
+    return f;
+}
 
 void setConsoleUtf8() {
 #if defined(_WIN32)
@@ -80,6 +96,7 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         interp.podDom_ = parsePod(src);   // $=pod structured DOM
         interp.docMode_ = g_docMode;
         interp.srcFile_ = fileName;
+        interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
         // -I <path> lib dirs take priority over the built-in / env-derived ones.
         interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
@@ -106,6 +123,7 @@ int rakuppRunProgram(Program& prog, std::vector<std::string> args,
         interp.setArgs(std::move(args));
         interp.finishData_ = finish;
         interp.srcFile_ = fileName;
+        interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
         return interp.run(prog);
     } catch (const RakuError& e) {

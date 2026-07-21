@@ -499,7 +499,8 @@ public:
     std::string podData_;             // rendered =pod content (printed at end in --doc mode)
     std::vector<Value> podDom_;       // $=pod structured DOM (Pod::Block values)
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
-    std::string srcFile_;             // source file path (for $?FILE)
+    std::string srcFile_;             // source file path as invoked ($*PROGRAM-NAME)
+    std::string srcFileAbs_;          // absolute source file path ($?FILE)
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)

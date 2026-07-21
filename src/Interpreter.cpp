@@ -43,11 +43,6 @@ namespace rakupp {
 // Does a CATCH block contain `when`/`default` clauses? If so, an exception that
 // matches none of them is NOT handled and must rethrow; a CATCH with only plain
 // statements is an unconditional handler.
-static bool catchHasWhen(const Block* catchBlk) {
-    for (auto& s : catchBlk->stmts) if (s->kind == NK::WhenStmt) return true;
-    return false;
-}
-
 static thread_local bool g_rand_seeded = false;
 static thread_local unsigned short g_rand_xs[3];
 // `srand($seed)` reseeds the generator (Raku returns the seed used). NB rakupp's PRNG
@@ -1054,7 +1049,12 @@ thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStac
 thread_local std::vector<std::shared_ptr<ReactCtx>> Interpreter::reactStack_;
 thread_local int Interpreter::threadDepth_ = 0;
 
+// the live interpreter's class registry, for free-function smartmatch on user
+// type objects (applyArith has no Interpreter&); the newest instance wins
+static std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* g_matchClasses = nullptr;
+
 Interpreter::Interpreter() {
+    g_matchClasses = &classes_;
     initInstant_ = std::chrono::duration<double>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     defaultScheduler_ = Value::makeHash(); defaultScheduler_.hashKind = "Scheduler";
@@ -2383,8 +2383,10 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         }
         catch (BreakGivenEx&) { matched = true; /* when/default matched */ }
         catch (ResumeEx&) { return 1; }
-        // when/default clauses that matched none don't handle it (R1) → rethrow
-        return (!matched && catchHasWhen(catchBlk)) ? 2 : 0;
+        // only a matching when/default HANDLES the exception — a CATCH body
+        // without one runs (it can read $_/.message) but the exception rethrows
+        // (Rakudo dies even under try in that shape)
+        return matched ? 0 : 2;
     };
     try {
         for (size_t i = 0; i < b->stmts.size(); i++) {
@@ -2824,14 +2826,112 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
                         "Class '" + cd->name + "' cannot inherit from '" + pn + "' because it is unknown"};
             }
+            // -------- role composition helpers --------
+            // a stub body is a bare `...` / `!!!` — in a role it declares a
+            // requirement the composing class must fulfil
+            auto sigKeyParams = [](const std::vector<Param>* ps) {
+                std::string k;
+                if (ps) for (auto& p : *ps) {
+                    if (p.named || p.slurpy) continue;
+                    k += (p.type.empty() ? "Any" : p.type) + ",";
+                }
+                return k;
+            };
+            auto codeIsStub = [](const Value& v) -> bool {
+                if (v.t != VT::Code || !v.code) return false;
+                if (v.code->isMultiDispatcher) {
+                    if (v.code->candidates.empty()) return true;
+                    for (auto& c : v.code->candidates) if (!(c.code && c.code->isStub)) return false;
+                    return true;
+                }
+                return v.code->isStub;
+            };
+            auto cloneDispatcher = [](const Value& v) {
+                Value nv = v;
+                auto fresh = std::make_shared<Callable>();
+                fresh->pkg = v.code->pkg; fresh->name = v.code->name;
+                fresh->isMultiDispatcher = true; fresh->isProto = v.code->isProto;
+                fresh->isMethod = v.code->isMethod;
+                fresh->candidates = v.code->candidates;
+                nv.code = fresh;
+                return nv;
+            };
+            // every role this type composes (the first `does` lands as parent)
+            std::vector<ClassInfo*> composedRoles;
+            if (ci->parent && ci->parent->isRole) composedRoles.push_back(ci->parent.get());
+            for (auto& p : ci->extraParents) if (p && p->isRole) composedRoles.push_back(p.get());
+            for (auto& rn : cd->roles) { auto it = classes_.find(rn); if (it != classes_.end() && it->second->isRole) composedRoles.push_back(it->second.get()); }
+            // conflict detection: the same method (same signature for multis)
+            // provided — as a real implementation — by two different roles must be
+            // resolved by the class's own method (diamonds share the Callable, so
+            // pointer identity exempts them)
+            std::map<std::string, std::map<std::string, std::set<const Callable*>>> provided;
+            std::map<std::string, std::set<std::string>> providerRoles;
+            for (ClassInfo* role : composedRoles)
+                for (auto& kv : role->methods) {
+                    if (kv.second.t != VT::Code || !kv.second.code) continue;
+                    if (kv.second.code->isMultiDispatcher) {
+                        for (auto& c : kv.second.code->candidates)
+                            if (c.code && !c.code->isStub) { provided[kv.first][sigKeyParams(c.code->params)].insert(c.code.get()); providerRoles[kv.first].insert(role->name); }
+                    }
+                    else if (!kv.second.code->isStub) { provided[kv.first][""].insert(kv.second.code.get()); providerRoles[kv.first].insert(role->name); }
+                }
+            std::set<std::string> conflicted;
+            for (auto& kv : provided) for (auto& sk : kv.second) if (sk.second.size() > 1) conflicted.insert(kv.first);
             // compose additional `does Role`s: flatten their methods/attrs in (the
-            // class's own methods, registered below, override by key)
+            // class's own methods, registered below, override by key). Multi
+            // dispatchers are CLONED (never share the role's own dispatcher) and
+            // merged per candidate; an implementation displaces a same-signature
+            // stub, never the other way around.
             for (auto& rn : cd->roles) {
                 ci->doneRoles.insert(rn); // record membership (for ~~ Role / .does), even if unknown
                 auto it = classes_.find(rn);
                 if (it == classes_.end()) continue;
-                for (auto& kv : it->second->methods) ci->methods[kv.first] = kv.second;
-                for (auto& a : it->second->attrs) ci->attrs.push_back(a);
+                for (auto& kv : it->second->methods) {
+                    bool newDisp = kv.second.t == VT::Code && kv.second.code && kv.second.code->isMultiDispatcher;
+                    auto ex = ci->methods.find(kv.first);
+                    if (ex == ci->methods.end()) {
+                        ci->methods[kv.first] = newDisp ? cloneDispatcher(kv.second) : kv.second;
+                        continue;
+                    }
+                    Value& e = ex->second;
+                    if (e.code == kv.second.code) continue; // identical method (diamond)
+                    bool exDisp = e.t == VT::Code && e.code && e.code->isMultiDispatcher;
+                    if (exDisp && newDisp) {
+                        for (auto& c : kv.second.code->candidates) {
+                            std::string sk = sigKeyParams(c.code ? c.code->params : nullptr);
+                            bool cStub = c.code && c.code->isStub;
+                            bool placed = false;
+                            for (auto& e2 : e.code->candidates) {
+                                if (sigKeyParams(e2.code ? e2.code->params : nullptr) != sk) continue;
+                                bool eStub = e2.code && e2.code->isStub;
+                                if (eStub && !cStub) e2 = c; // implementation replaces stub
+                                placed = true; break;
+                            }
+                            if (!placed) e.code->candidates.push_back(c);
+                        }
+                        continue;
+                    }
+                    bool eStub = codeIsStub(e), nStub = codeIsStub(kv.second);
+                    if (nStub) continue;                    // a stub never displaces
+                    if (eStub) ci->methods[kv.first] = newDisp ? cloneDispatcher(kv.second) : kv.second;
+                    // both real implementations: recorded in `conflicted` above
+                }
+                for (auto& a : it->second->attrs) {
+                    bool dup = false;
+                    for (auto& ex : ci->attrs)
+                        if (ex.name == a.name && ex.sigil == a.sigil) {
+                            // the same declaration arriving twice (diamond) is fine;
+                            // two distinct same-name declarations conflict in a class
+                            if (!(ex.declId && a.declId && ex.declId == a.declId) && !cd->isRole)
+                                throw RakuError{Value::typeObj("X::Role::Attribute::Conflicts"),
+                                    "Attribute '" + std::string(1, a.sigil) + "!" + a.name +
+                                    "' conflicts in " + std::string(cd->isRole ? "role" : "class") +
+                                    " '" + clsName + "' composition: declared in both '" + rn + "' and another role"};
+                            dup = true; break;
+                        }
+                    if (!dup) ci->attrs.push_back(a);
+                }
                 for (auto& sub : it->second->doneRoles) ci->doneRoles.insert(sub); // role-of-role
             }
             // a role used as a parent (`class C does R` where R lands as parent) also counts
@@ -2839,14 +2939,38 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
             ci->isGrammar = cd->isGrammar;
             ci->isRole = cd->isRole;
-            ci->declEnv = tctx_.cur; // capture the declaration scope (attr-default closures)
+            // the class/role BODY scope: body lexicals (`my $lex = ...`) live here,
+            // and methods/attr-defaults close over it
+            auto bodyEnv = std::make_shared<Env>();
+            bodyEnv->parent = tctx_.cur;
+            ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; ci->ruleOrder.push_back(r.name); }
             for (auto& a : cd->attrs) {
+                // a class may not redeclare an attribute a composed role declares
+                if (!cd->isRole)
+                    for (ClassInfo* role : composedRoles)
+                        for (auto& ra : role->attrs)
+                            if (ra.name == a.name && ra.sigil == a.sigil)
+                                throw RakuError{Value::typeObj("X::Role::Attribute::Conflicts"),
+                                    "Attribute '" + std::string(1, a.sigil) + "!" + a.name +
+                                    "' conflicts in class '" + clsName +
+                                    "' composition: also declared in role '" + role->name + "'"};
                 ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.type = a.type;
                 ca.containerIs = a.containerIs;
+                ca.handles = a.handles;
                 ca.def = a.def.get();
+                ca.declId = &a;
                 ci->attrs.push_back(ca);
             }
+            auto stmtIsStub = [](const std::vector<StmtPtr>& body) -> bool {
+                if (body.size() != 1 || body[0]->kind != NK::ExprStmt) return false;
+                Expr* e = static_cast<ExprStmt*>(body[0].get())->e.get();
+                if (!e || e->kind != NK::Call) return false;
+                auto* c = static_cast<Call*>(e);
+                return (c->name == "..." || c->name == "!!!") && c->args.empty() && !c->callee;
+            };
+            std::set<const void*> ownParams; // this declaration's own method signatures
+            for (auto& md : cd->methods) ownParams.insert(&md->params);
             for (auto& md : cd->methods) {
                 Value code; code.t = VT::Code;
                 code.code = std::make_shared<Callable>();
@@ -2854,13 +2978,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code->params = &md->params;
                 code.code->retType = md->retType;
                 code.code->body = &md->body;
-                code.code->closure = tctx_.cur;
+                code.code->closure = bodyEnv;
                 code.code->isMethod = true; // invoked via .() binds the 1st arg as self
+                code.code->isStub = stmtIsStub(md->body);
                 if (md->params.empty()) code.code->placeholders = computePlaceholders(md->body);
                 if (md->isMulti) {
                     auto it = ci->methods.find(md->name);
                     if (it != ci->methods.end() && it->second.code && it->second.code->isMultiDispatcher) {
-                        it->second.code->candidates.push_back(code);
+                        // an own candidate overrides a same-signature candidate
+                        // composed from a role (never another own candidate)
+                        auto& cands = it->second.code->candidates;
+                        std::string sk = sigKeyParams(code.code->params);
+                        cands.erase(std::remove_if(cands.begin(), cands.end(), [&](const Value& c){
+                            return c.code && !ownParams.count(c.code->params) &&
+                                   sigKeyParams(c.code->params) == sk; }), cands.end());
+                        cands.push_back(code);
                     } else {
                         Value disp; disp.t = VT::Code; disp.code = std::make_shared<Callable>();
                         disp.code->name = md->name; disp.code->isMultiDispatcher = true;
@@ -2871,26 +3003,114 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     ci->methods[md->name] = code;
                 }
             }
+            // aggregate role requirements (composed roles already carry the ones
+            // they inherited from roles they compose, so this is transitive) and
+            // record this role's own stub methods as requirements
+            std::map<std::string, std::set<std::string>> reqFrom; // req name -> role names (for the message)
+            for (ClassInfo* role : composedRoles) {
+                for (const std::string& rq : role->requiredMethods) { ci->requiredMethods.insert(rq); reqFrom[rq].insert(role->name); }
+                for (auto& kv : role->requiredMultiSigs) {
+                    auto& dst = ci->requiredMultiSigs[kv.first];
+                    for (auto& s : kv.second) if (std::find(dst.begin(), dst.end(), s) == dst.end()) dst.push_back(s);
+                    reqFrom[kv.first].insert(role->name);
+                }
+            }
+            if (cd->isRole)
+                for (auto& md : cd->methods)
+                    if (stmtIsStub(md->body)) {
+                        ci->requiredMethods.insert(md->name);
+                        if (md->isMulti) ci->requiredMultiSigs[md->name].push_back(sigKeyParams(&md->params));
+                    }
             // role composition check: a non-role class that composes a role must
-            // implement every method the role requires (e.g. CompUnit::Repository).
+            // implement every method the role requires — via its own methods, a
+            // composed/inherited implementation, a public attribute's accessor,
+            // or an attribute `handles` delegation. Roles compose freely.
             if (!cd->isRole) {
-                std::vector<ClassInfo*> composed;
-                if (ci->parent && ci->parent->isRole) composed.push_back(ci->parent.get());
-                for (auto& p : ci->extraParents) if (p && p->isRole) composed.push_back(p.get());
-                for (auto& rn : cd->roles) { auto it = classes_.find(rn); if (it != classes_.end() && it->second->isRole) composed.push_back(it->second.get()); }
-                for (ClassInfo* role : composed)
-                    for (const std::string& req : role->requiredMethods)
-                        if (!ci->findMethod(req))
-                            throw RakuError{Value::typeObj("X::Role::Unimplemented"),
-                                "Method '" + req + "' must be implemented by " +
-                                (cd->name.empty() ? "<anon>" : "'" + cd->name + "'") +
-                                " because it is required by role '" + role->name + "'"};
+                std::set<std::string> classOwn;
+                for (auto& md : cd->methods) classOwn.insert(md->name);
+                // conflicts first: two roles provided the same real implementation
+                for (const std::string& cn : conflicted)
+                    if (!classOwn.count(cn)) {
+                        std::string rl; for (auto& r : providerRoles[cn]) { if (!rl.empty()) rl += ", "; rl += r; }
+                        throw RakuError{Value::typeObj("X::Role::Unresolved::Method"),
+                            "Method '" + cn + "' must be resolved by class " + clsName +
+                            " because it exists in multiple roles (" + rl + ")"};
+                    }
+                // a real (non-stub) implementation anywhere in the effective type
+                std::function<bool(ClassInfo*, const std::string&, const std::string*)> hasImpl =
+                    [&](ClassInfo* c, const std::string& n, const std::string* sig) -> bool {
+                    if (!c) return false;
+                    auto mit = c->methods.find(n);
+                    if (mit != c->methods.end() && mit->second.t == VT::Code && mit->second.code) {
+                        if (mit->second.code->isMultiDispatcher) {
+                            for (auto& cand : mit->second.code->candidates)
+                                if (cand.code && !cand.code->isStub &&
+                                    (!sig || sigKeyParams(cand.code->params) == *sig)) return true;
+                        }
+                        else if (!mit->second.code->isStub) return true; // a plain method covers any signature
+                    }
+                    if (hasImpl(c->parent.get(), n, sig)) return true;
+                    for (auto& p : c->extraParents) if (p && hasImpl(p.get(), n, sig)) return true;
+                    return false;
+                };
+                std::function<bool(ClassInfo*, const std::string&)> attrCovers =
+                    [&](ClassInfo* c, const std::string& n) -> bool {
+                    if (!c) return false;
+                    for (auto& a : c->attrs) {
+                        if (a.pub && a.name == n) return true; // accessor counts as the method
+                        for (auto& h : a.handles) if (h == n) return true;
+                    }
+                    if (attrCovers(c->parent.get(), n)) return true;
+                    for (auto& p : c->extraParents) if (p && attrCovers(p.get(), n)) return true;
+                    return false;
+                };
+                for (const std::string& rq : ci->requiredMethods) {
+                    bool ok;
+                    auto sigsIt = ci->requiredMultiSigs.find(rq);
+                    if (sigsIt != ci->requiredMultiSigs.end() && !sigsIt->second.empty()) {
+                        ok = true;
+                        for (auto& s : sigsIt->second) if (!hasImpl(ci.get(), rq, &s)) { ok = false; break; }
+                    }
+                    else ok = hasImpl(ci.get(), rq, nullptr) ||
+                              classOwn.count(rq) || // an own stub is a deliberate promise
+                              attrCovers(ci.get(), rq);
+                    if (!ok && attrCovers(ci.get(), rq)) ok = true;
+                    if (!ok) {
+                        std::string rl; for (auto& r : reqFrom[rq]) { if (!rl.empty()) rl += ", "; rl += r; }
+                        throw RakuError{Value::typeObj("X::Comp::AdHoc"),
+                            "Method '" + rq + "' must be implemented by " + clsName +
+                            " because it is required by roles: " + (rl.empty() ? "?" : rl) + "."};
+                    }
+                }
+                // requirements verified: drop role-composed stubs so calls reach a
+                // parent implementation / accessor instead of executing the stub
+                // (a stub the class itself declares stays callable-and-dies)
+                for (auto mit = ci->methods.begin(); mit != ci->methods.end(); ) {
+                    Value& mv = mit->second; bool drop = false;
+                    if (mv.t == VT::Code && mv.code) {
+                        if (mv.code->isMultiDispatcher) {
+                            auto& cs = mv.code->candidates;
+                            cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const Value& c){
+                                return c.code && c.code->isStub && !ownParams.count(c.code->params); }), cs.end());
+                            drop = cs.empty();
+                        }
+                        else if (mv.code->isStub && !ownParams.count(mv.code->params)) drop = true;
+                    }
+                    if (drop) mit = ci->methods.erase(mit); else ++mit;
+                }
             }
             noteSymbolMutation("class/role/grammar declaration");
             classes_[clsName] = ci;
             if (!cd->name.empty()) tctx_.cur->define(cd->name, Value::typeObj(cd->name));
-            // register nested classes/enums (and static subs) declared in the body
-            for (auto& st : cd->body) exec(st.get());
+            // run the body statements in the body scope: nested classes/enums and
+            // static subs register; `my` lexicals land where the methods see them
+            {
+                auto saved = tctx_.cur;
+                tctx_.cur = bodyEnv;
+                try { for (auto& st : cd->body) exec(st.get()); }
+                catch (...) { tctx_.cur = saved; throw; }
+                tctx_.cur = saved;
+            }
             // evaluate to the type object, so `my class Foo {…}` / anon `role {…}` work as expressions
             return Value::typeObj(clsName);
         }
@@ -3093,6 +3313,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return forResult();
             }
             Value listv = eval(fs->list.get());
+            // a user object doing the Iterator role iterates by the pull-one
+            // protocol: drain it (until IterationEnd) and loop over the values
+            if (listv.t == VT::Object && listv.obj && listv.obj->cls &&
+                listv.obj->cls->findMethod("pull-one")) {
+                Value* po = listv.obj->cls->findMethod("pull-one");
+                Value acc = Value::array(); acc.isList = true;
+                for (;;) {
+                    ValueList none;
+                    Value v = invokeMethod(*po, listv, none);
+                    if (v.t == VT::Type && v.s == "IterationEnd") break;
+                    acc.arr->push_back(v);
+                }
+                listv = acc;
+            }
             // A `$`-sigil scalar source (or an explicitly itemized value) is a single item:
             // `for $scalar { }` runs once even when the scalar holds an Array/Range, because a
             // scalar container does not flatten in list context. `@a`, ranges, and lists still flatten.
@@ -4005,7 +4239,7 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
 Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*CWD") { char buf[4096]; Value p = Value::str(getcwd(buf, sizeof buf) ? buf : "."); p.hashKind = "IO"; return p; }
     if (name == "$*RAKU" || name == "$*PERL" || name == "$?RAKU" || name == "$?PERL") { Value r = Value::makeHash(); r.hashKind = "Raku"; return r; }
-    if (name == "$?FILE") return Value::str(srcFile_);
+    if (name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
     if (name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; }
     if (name == "$*PROGRAM-NAME") return Value::str(srcFile_);
     if (name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
@@ -4611,7 +4845,13 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // implicit $_ / @_ — NB: no implicit $a/$b (Perl-5 style sort vars are
         // invalid Raku; defining them here shadowed legitimate outer $a/$b in
         // every paramless block: `map {$_+$a}, @k` doubled elements)
-        env->define("$_", args.empty() ? Value::any() : args[0]);
+        // a zero-arg BLOCK call inherits the topic lexically (Rakudo's implicit
+        // block signature is `$_? is raw = OUTER::<$_>`): define NO local $_, so
+        // reads AND writes fall through the closure chain to the outer $_ —
+        // `for <a> { lives-ok { $_.foo } }` sees the loop topic inside the inner
+        // block, at zero per-call cost. Routines still get a fresh $_.
+        if (!(args.empty() && c.isBlock))
+            env->define("$_", args.empty() ? Value::any() : args[0]);
         // a bare block invoked with no args (a gather/do wrapper) leaves @_
         // unbound, so an inner for-body's @_ can synthesize from its own topic
         if (!(c.isBlock && args.empty()))
@@ -4714,9 +4954,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             } catch (BreakGivenEx&) { matched = true; /* a when/default matched */ }
             catch (ResumeEx&) { matched = true; /* .resume: absorbed; body can't re-enter, treat as handled */ }
             catch (...) { if (c.body) runLeavePhasers(*c.body); restore(); throw; } // die/rethrow from CATCH
-            // A CATCH built from when/default clauses that matched none does NOT
-            // handle the exception (R1): rethrow it to the caller.
-            if (!matched && catchHasWhen(catchBlk)) {
+            // Only a matching when/default handles the exception (R1): a CATCH
+            // whose clauses matched none — or with no clauses at all — rethrows.
+            if (!matched) {
                 if (c.body) runLeavePhasers(*c.body);
                 runLetRestoresOf(tctx_.cur);
                 tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
@@ -6880,6 +7120,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     if (tw != tower.end()) for (auto& anc : tw->second) if (anc == rn) { baseOk = true; break; }
                 }
                 if (baseOk && (r.ofType.empty() || r.ofType == l.ofType)) res = true;
+                // a user type object matches its own ancestry: parent classes,
+                // composed roles, and roles/parents anywhere up the chain
+                if (!res && g_matchClasses) {
+                    auto itc = g_matchClasses->find(ln);
+                    if (itc != g_matchClasses->end())
+                        for (ClassInfo* c = itc->second.get(); c && !res; c = c->parent.get()) {
+                            if (c->name == rn || c->doneRoles.count(rn)) { res = true; break; }
+                            for (auto& p : c->extraParents)
+                                if (p && (p->name == rn || p->doneRoles.count(rn))) { res = true; break; }
+                        }
+                }
             }
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {
@@ -10823,7 +11074,7 @@ Value Interpreter::eval(Expr* e) {
             }
             if (ve->name == "$=finish") return Value::str(finishData_); // =finish data block
             if (ve->name == "$?LINE") return Value::integer(ve->line);
-            if (ve->name == "$?FILE") return Value::str(srcFile_);
+            if (ve->name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
             // Built-in magic dynamic vars ($*OUT, $*CWD, …). A user binding
             // (`my $*OUT = …`) or a fresh declaration takes precedence, so only
             // fall back to the built-in default when the name is neither being

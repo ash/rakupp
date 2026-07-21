@@ -1,6 +1,7 @@
 #include "Parser.h"
 #include <cstdint>
 #include <memory>
+#include <sstream>
 #include "Lexer.h"
 #include "Unicode.h"
 #include <cctype>
@@ -3683,10 +3684,24 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 size_t idx = 1;
                 if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }
                 a.name = vn.substr(idx);
-                // traits before the default: is rw / is readonly / of Type / does Role / where EXPR
-                while (isIdent("is") || isIdent("of") || isIdent("does") || isIdent("where")) {
+                // traits before the default: is rw / is readonly / of Type / does Role / where EXPR / handles <...>
+                while (isIdent("is") || isIdent("of") || isIdent("does") || isIdent("where") || isIdent("handles")) {
                     std::string tr = advance().text;
                     if (tr == "where") { parseExpr(BP_ASSIGN); continue; }
+                    if (tr == "handles") { // handles <m1 m2> / handles "m" / handles 'm'
+                        if (isOp("<")) { // bare angle list lexes as Op '<' + words
+                            advance();
+                            for (auto& w : readAngleWords(">")) a.handles.push_back(w);
+                        }
+                        else if (isKind(Tok::QwList)) {
+                            std::istringstream ws(advance().text);
+                            for (std::string w; ws >> w; ) a.handles.push_back(w);
+                        }
+                        else if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident))
+                            a.handles.push_back(advance().text);
+                        else if (isOp("*")) { advance(); a.handles.push_back("*"); } // delegate any unknown method
+                        continue;
+                    }
                     if (tr == "is" && isIdent("rw")) a.rw = true;
                     if (tr == "is" && isKind(Tok::Ident)) {
                         static const std::set<std::string> containers = {
@@ -3768,9 +3783,23 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             }
         }
         // anything else in class body: nested classes/enums get registered globally;
-        // other statements (constants, phasers) are parsed and discarded.
+        // `my` lexicals and plain expressions run in the body scope the methods
+        // close over (`my $lex = ...; method m { $lex }`); the rest is discarded.
         auto st = parseStatement();
-        if (st && (st->kind == NK::ClassDecl || st->kind == NK::EnumDecl || st->kind == NK::SubDecl))
+        // a bare `...`/`!!!`/`???` is the whole-type stub (`class Foo { ... }`) —
+        // it must not execute at declaration time
+        bool bareStub = false;
+        if (st && st->kind == NK::ExprStmt) {
+            Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+            if (e && e->kind == NK::Call) {
+                auto* c = static_cast<Call*>(e);
+                bareStub = (c->name == "..." || c->name == "!!!" || c->name == "???") &&
+                           c->args.empty() && !c->callee;
+            }
+        }
+        if (st && !bareStub &&
+            (st->kind == NK::ClassDecl || st->kind == NK::EnumDecl || st->kind == NK::SubDecl ||
+             st->kind == NK::VarDecl || st->kind == NK::ExprStmt))
             cd->body.push_back(std::move(st));
     }
     if (braced) expectKind(Tok::RBrace, "}");
