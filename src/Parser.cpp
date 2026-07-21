@@ -309,6 +309,11 @@ bool Parser::startsListopArg(const Token& t) const {
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `say 0, ++$x`
+                   // `test *..1, …` — a Whatever RANGE endpoint can only be an arg
+                   // (infix `*` would need a term after it, and `..` isn't one)
+                   (t.text == "*" && &t == &cur() && peek().kind == Tok::Op &&
+                    (peek().text == ".." || peek().text == "..^" || peek().text == "..." ||
+                     peek().text == "^.." || peek().text == "^..^")) || // `*..1` / `*^..1`
                    t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
@@ -316,7 +321,8 @@ bool Parser::startsListopArg(const Token& t) const {
                    t.text == "::" || // symbolic reference `say ::($name)` / `say ::Foo`
                    t.text == "$" || // item contextualizer `ok $%*ENV` / `say $(1,2)` (bare `$` is never an infix)
                    ((t.text == "%" || t.text == "@") && &t == &cur() &&
-                    peek().kind == Tok::LParen && !peek().spaceBefore) || // hash/list contextualizer `is-deeply %(...)…` / `push @(...)…`
+                    ((peek().kind == Tok::LParen && !peek().spaceBefore) ||
+                     (peek().kind == Tok::Var && !peek().spaceBefore && peek().text.size() > 1))) || // `%(...)` / `@(...)` / `@$x` / `%$h` contextualizers
                    (t.text == "&" && &t == &cur() &&
                     peek().kind == Tok::LBracket && !peek().spaceBefore) || // infix-as-value `say &[+](2,3)`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
@@ -1396,6 +1402,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 if (!nm.empty()) sigilless_.insert(nm);
                 auto ve = std::make_unique<VarExpr>(nm);
                 ve->declare = true; ve->declScope = scope;
+                if (isIdent("where")) { advance(); parseExpr(BP_COMMA + 1); } // constraint parsed, not enforced
                 list->items.push_back(std::move(ve));
                 if (!matchKind(Tok::Comma)) break;
                 continue;
@@ -1424,9 +1431,20 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 }
                 if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
             }
+            // a literal element in a destructuring declaration (`my ($a, "foo")`)
+            // binds nothing — an anonymous slot stands in
+            if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::IntLit) || isKind(Tok::NumLit)) {
+                advance();
+                auto anon = std::make_unique<VarExpr>("$!anon");
+                anon->declare = true; anon->declScope = scope;
+                list->items.push_back(std::move(anon));
+                if (!matchKind(Tok::Comma)) break;
+                continue;
+            }
             if (!isKind(Tok::Var)) error("expected variable in declaration");
             auto ve = std::make_unique<VarExpr>(advance().text);
             ve->declare = true; ve->declScope = scope; ve->declType = t2;
+            if (isIdent("where")) { advance(); parseExpr(BP_COMMA + 1); } // constraint parsed, not yet enforced here
             if (isOp("=") ) { // per-item initializer: `my Int:D ($x = 5)`
                 advance();
                 auto as = std::make_unique<Assign>();
@@ -1465,8 +1483,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         }
         // `of Type` postfix trait sets the value/element type
         if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
-        // Hash[valueType,keyType]
-        if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
+        // Hash[valueType,keyType] — an object hash with no explicit value type
+        // is Hash[Mu, KeyType]: its missing-key default is Mu, not Any
+        if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Mu" : ve->declType) + "," + keyType;
         lastContainerIs_.clear();
         skipTraits(scope != "has", &ve->declDefault);
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
@@ -1484,7 +1503,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         std::string sig = advance().text;
         auto ve = std::make_unique<VarExpr>(sig + "!anon");
         ve->declare = true; ve->declScope = scope; ve->declType = type;
-        skipTraits(scope != "has");
+        // anonymous object hash `my %{Str:D} is default(…)` — the braced key type
+        if (sig == "%" && isKind(Tok::LBrace) && peek().kind == Tok::Ident) {
+            advance();
+            std::string keyType = advance().text;
+            if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
+            matchKind(Tok::RBrace);
+            ve->declType = (ve->declType.empty() ? "Mu" : ve->declType) + "," + keyType;
+        }
+        skipTraits(scope != "has", &ve->declDefault);
         return ve;
     }
     error("expected variable after declarator");
@@ -2015,6 +2042,16 @@ ExprPtr Parser::parsePrimary() {
         case Tok::Var: {
             if (cur().text.rfind("&?ROUTINE", 0) == 0 && routineDepth_ == 0)
                 throw ParseError("&?ROUTINE is only available inside a routine (X::Undeclared::Symbols)", cur().line);
+            // sigil contextualizer glued to a variable: `@$x` == @($x), `%$h` == %($h)
+            if (cur().text.size() == 1 &&
+                (cur().text[0] == '@' || cur().text[0] == '%' || cur().text[0] == '$') &&
+                peek().kind == Tok::Var && !peek().spaceBefore && peek().text.size() > 1) {
+                char sig = advance().text[0];
+                auto u = std::make_unique<Unary>();
+                u->op = sig == '@' ? "ctx@" : sig == '%' ? "ctx%" : "ctx$";
+                u->operand = std::make_unique<VarExpr>(advance().text);
+                return u;
+            }
             // `$.^name` / `$.?meth` etc.: a bare `$` glued to a `.` postfix is the
             // `$.` self-shortcut (self followed by a method/meta call). `$.foo` is a
             // single twigil token handled elsewhere; this only fires when the char
@@ -2042,6 +2079,32 @@ ExprPtr Parser::parsePrimary() {
             }
             bool svCond = stmtCond_; stmtCond_ = false; // parens re-allow block listop args
             struct CondRestore { bool* f; bool v; ~CondRestore() { *f = v; } } cr{&stmtCond_, svCond};
+            // `(LABEL: for … { })` / `(for LIST { })` — a loop STATEMENT in term
+            // position collects each iteration's value (labels stay attached, so
+            // `next LABEL` works from nested loops)
+            {
+                bool loopKw = (isIdent("for") || isIdent("loop") || isIdent("while") ||
+                               isIdent("until") || isIdent("repeat")) &&
+                              peek().kind != Tok::FatArrow && peek().kind != Tok::Comma;
+                bool labeled = isKind(Tok::Ident) && peek().kind == Tok::Op && peek().text == ":" &&
+                               !peek().spaceBefore && peek(2).kind == Tok::Ident &&
+                               (peek(2).text == "for" || peek(2).text == "while" ||
+                                peek(2).text == "until" || peek(2).text == "loop" || peek(2).text == "repeat");
+                if (loopKw || labeled) {
+                    auto st = parseStatement();
+                    if (st) {
+                        if (st->kind == NK::ForStmt) static_cast<ForStmt*>(st.get())->asExpr = true;
+                        else if (st->kind == NK::WhileStmt) static_cast<WhileStmt*>(st.get())->asExpr = true;
+                        else if (st->kind == NK::LoopStmt) static_cast<LoopStmt*>(st.get())->asExpr = true;
+                    }
+                    auto be = std::make_unique<BlockExpr>();
+                    be->body.push_back(std::move(st));
+                    auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                    ExprPtr e = std::move(u);
+                    expectKind(Tok::RParen, ")");
+                    return e;
+                }
+            }
             // `(if COND { } elsif ... else { })` — an if STATEMENT in term position
             // evaluates to the chosen block's value (likewise unless)
             if ((isIdent("if") || isIdent("unless")) &&
@@ -2057,6 +2120,9 @@ ExprPtr Parser::parsePrimary() {
                 return e;
             }
             ExprPtr e = parseExpression();
+            // statement modifiers inside parens CHAIN: `($_ * $_ if $_ %% 2 for
+            // ^10)` is a list comprehension — each modifier wraps the value so far
+            for (;;) {
             // statement modifier inside parens:  (42 if $x)  (42 unless $x)  (42 with $y)
             if (isIdent("if") || isIdent("unless") || isIdent("with") || isIdent("without")) {
                 std::string mod = advance().text;
@@ -2084,8 +2150,9 @@ ExprPtr Parser::parsePrimary() {
                     else { tern->then = std::move(e); tern->els = std::move(empty); }
                     e = std::move(tern);
                 }
+                continue;
             }
-            else if (isIdent("for")) {
+            if (isIdent("for")) {
                 // (EXPR for LIST) — a for statement-modifier inside parens; run EXPR
                 // per item ($_ bound). Desugar to map({ EXPR }, LIST).
                 advance();
@@ -2097,6 +2164,40 @@ ExprPtr Parser::parsePrimary() {
                 call->args.push_back(std::move(blk));
                 call->args.push_back(std::move(list));
                 e = std::move(call);
+                continue;
+            }
+            // (EXPR while COND) / (EXPR until COND) — collect the value per iteration
+            if (isIdent("while") || isIdent("until")) {
+                bool untl = cur().text == "until";
+                advance();
+                auto ws = std::make_unique<WhileStmt>();
+                ws->cond = parseExpression();
+                ws->isUntil = untl;
+                ws->asExpr = true;
+                ws->body = std::make_unique<Block>();
+                auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+                ws->body->stmts.push_back(std::move(es));
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(ws));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                e = std::move(u);
+                continue;
+            }
+            // (EXPR given TOPIC) — evaluate EXPR with $_ bound to TOPIC
+            if (isIdent("given") && peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
+                advance();
+                auto gs = std::make_unique<GivenStmt>();
+                gs->topic = parseExpression();
+                auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+                gs->body = std::make_unique<Block>();
+                gs->body->stmts.push_back(std::move(es));
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(gs));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                e = std::move(u);
+                continue;
+            }
+            break;
             }
             // `( a; b; … )` — a SEMICOLON LIST: each `;`-separated segment is
             // evaluated (its comma-list value) and the results collected into a
@@ -2283,6 +2384,14 @@ ExprPtr Parser::parsePrimary() {
                 auto c = std::make_unique<Call>(); c->name = advance().text; return c;
             }
             if (t.text == ":") return parseColonPair();
+            // sink-assignment to an anonymous container: `@ = (…)` / `$ = …`
+            if ((t.text == "@" || t.text == "%" || t.text == "$") &&
+                peek().kind == Tok::Op && peek().text == "=" && peek().spaceBefore) {
+                advance();
+                auto ve = std::make_unique<VarExpr>(t.text + "!anon");
+                ve->declare = true; ve->declScope = "my";
+                return ve;
+            }
             if (t.text == "*") { advance(); return std::make_unique<WhateverExpr>(); }
             if (t.text == "**") { advance(); auto w = std::make_unique<WhateverExpr>(); w->hyper = true; return w; } // HyperWhatever (e.g. %h{**})
             if (t.text == "||") { // slip-subscript `@a[|| @dims]` / `%h{|| @keys}`: navigate by a list of indices/keys

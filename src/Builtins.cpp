@@ -7721,6 +7721,22 @@ void Interpreter::registerBuiltins() {
             // `Any` gists to '(Any)'. This is additive to the stringify compare below
             // so a defined-empty got still matches an undefined expected (`is Nil, ''`).
             if (!defined(g) && !defined(e)) return true;
+            // Same-size lists compare elementwise FIRST so an undefined element
+            // matches an undefined expected (`is %h{<B C>}, (Any, Any)` — the
+            // sides stringify differently but are equal). Only an all-elements
+            // match short-circuits; anything else falls through to the plain
+            // string compare, so this can only ADD passes.
+            if (g.t == VT::Array && e.t == VT::Array && g.arr && e.arr &&
+                g.arr->size() == e.arr->size() && !g.arr->empty()) {
+                bool all = true;
+                for (size_t i = 0; i < g.arr->size() && all; i++) {
+                    const Value& gi = (*g.arr)[i];
+                    const Value& ei = (*e.arr)[i];
+                    if (!defined(gi) && !defined(ei)) continue;
+                    if (gi.toStr() != ei.toStr()) all = false;
+                }
+                if (all) return true;
+            }
             // Otherwise Rakudo compares stringified values with `eq` (Test::is), so
             // `is 1/3, 0.333333` passes on matching decimal forms. (Exact-numeric
             // comparison lives in is-approx / cmp-ok, not plain `is`.)

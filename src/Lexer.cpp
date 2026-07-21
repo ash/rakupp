@@ -792,7 +792,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     bool isRegex = (w == "rx" || w == "m" || w == "ms" || w == "mm");
     bool isSubst = (w == "s" || w == "S" || w == "ss" || w == "SS");
     bool isTrans = (w == "tr"); // transliteration tr/from/to/ (Raku dropped y///)
-    bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww"); // word-list quotes
+    bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww" || w == "qqww"); // word-list quotes
     if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans) return false;
     // adverbs between keyword and delimiter, e.g. m:i/.../ , s:g/.../.../
     std::string adverbs;

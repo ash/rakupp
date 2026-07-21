@@ -10540,8 +10540,11 @@ Value Interpreter::evalIndex(Index* idx) {
     }
 
     // Hash whatever-slice `%h{*}` (all top-level values) and hyperslice `%h{**}`
-    // (all leaf values, descending nested hashes), with :k/:v/:kv/:p adverbs.
-    if (idx->isHash && base.t == VT::Hash && base.hash && idx->index && idx->index->kind == NK::Whatever) {
+    // (all leaf values, descending nested hashes). An ADVERBED `{*}` falls
+    // through to the full adverb machinery below (negation, :k($flag), :exists,
+    // :delete); only the plain form and the hyperslice take this fast path.
+    if (idx->isHash && base.t == VT::Hash && base.hash && idx->index && idx->index->kind == NK::Whatever &&
+        (idx->adverb.empty() || static_cast<const WhateverExpr*>(idx->index.get())->hyper)) {
         bool hyper = static_cast<const WhateverExpr*>(idx->index.get())->hyper;
         std::vector<std::pair<std::string, Value>> leaves;
         std::function<void(const Value&)> walk = [&](const Value& h) {
@@ -10806,8 +10809,10 @@ Value Interpreter::evalIndex(Index* idx) {
                     };
                     if (wantExists) {
                         Value ex = Value::boolean(negExists ? !exists : exists);
-                        if (kvF)      { if (exists) { out.arr->push_back(keyTuple); out.arr->push_back(ex); } }
-                        else if (pF)  { if (exists) out.arr->push_back(tuplePair(ex)); }
+                        // :kv/:p pair with :exists only under positive presence —
+                        // or ALWAYS under negated presentation (`:!kv`)
+                        if (kvF)      { if (exists || presenceNeg) { out.arr->push_back(keyTuple); out.arr->push_back(ex); } }
+                        else if (pF)  { if (exists || presenceNeg) out.arr->push_back(tuplePair(ex)); }
                         else out.arr->push_back(ex);
                     }
                     else if (kF)  { if (exists) out.arr->push_back(keyTuple); }
@@ -10887,22 +10892,25 @@ Value Interpreter::evalIndex(Index* idx) {
             if (kk.t != VT::Str) p.pairKey = std::make_shared<Value>(kk);
             return p;
         };
-        // a missing element's reported value is the container's typed default
-        // (`Str` for `my Str @s`, `Any` untyped), not a bare Any
+        // a missing element's reported value is the container's typed default —
+        // the TYPE OBJECT (`Str` for `my Str @s`, `Any` untyped), so it compares
+        // and stringifies like Rakudo's ("B", Any), not as a blank undefined
         auto missLeaf = [&]() -> Value {
             if (idx->isHash) {
                 if (base.t == VT::Hash && !base.ofType.empty()) return typedElemDefault(base);
-                return Value::any();
+                return Value::typeObj("Any");
             }
             Value dv = arrayMissingDefault(base);
-            return dv.t == VT::Nil ? Value::any() : dv;
+            return dv.t == VT::Nil || dv.t == VT::Any ? Value::typeObj("Any") : dv;
         };
         if (!slice) {
             auto& h = hits[0];
             if (wantExists) {
                 Value ex = Value::boolean(negExists ? !h.exists : h.exists);
-                if (kvF) { Value o = Value::array({h.keyV, ex}); o.isList = true; return o; }
-                if (pF) return mkPair(h.keyV, ex);
+                auto emptyE = []() { Value e = Value::array(); e.isList = true; return e; };
+                if (kvF) { if (!(h.exists || presenceNeg)) return emptyE();
+                           Value o = Value::array({h.keyV, ex}); o.isList = true; return o; }
+                if (pF) return (h.exists || presenceNeg) ? mkPair(h.keyV, ex) : emptyE();
                 return ex;
             }
             auto emptyL = []() { Value e = Value::array(); e.isList = true; return e; }; // () not []
@@ -10920,7 +10928,13 @@ Value Interpreter::evalIndex(Index* idx) {
         // slice + adverb: :exists is per-key; the others filter to existing keys
         Value out = Value::array(); out.isList = true;
         for (auto& h : hits) {
-            if (wantExists) { out.arr->push_back(Value::boolean(negExists ? !h.exists : h.exists)); continue; }
+            if (wantExists) {
+                Value ex = Value::boolean(negExists ? !h.exists : h.exists);
+                if (kvF)      { if (h.exists || presenceNeg) { out.arr->push_back(h.keyV); out.arr->push_back(ex); } }
+                else if (pF)  { if (h.exists || presenceNeg) out.arr->push_back(mkPair(h.keyV, ex)); }
+                else out.arr->push_back(ex);
+                continue;
+            }
             if (!h.exists && !presenceNeg) continue; // missing kept only under :!k / :k(False)
             Value v = h.exists ? h.val : missLeaf();
             if (kvF) { out.arr->push_back(h.keyV); out.arr->push_back(v); }
