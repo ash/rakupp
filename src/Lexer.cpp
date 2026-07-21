@@ -1073,6 +1073,17 @@ bool Lexer::tryQuoteForm(Token& out) {
         return true;
     }
     if (isRegex) {
+        // matcher-only adverbs are illegal on an rx// literal (no match to drive)
+        if (w == "rx") {
+            static const std::pair<const char*, const char*> kBad[] = {
+                {":g ", "g"}, {":global ", "global"}, {":nth(", "nth"}, {":x(", "x"}};
+            for (auto& [pat, name] : kBad)
+                if (adverbs.find(pat) != std::string::npos)
+                    throw ParseError(std::string("Adverb ") + name +
+                                     " not allowed on rx", line_,
+                                     "X::Syntax::Regex::Adverb",
+                                     {{"adverb", name}, {"construct", "rx"}});
+        }
         out = make(Tok::RegexLit, adverbs + raw);
         out.flag = (w == "rx"); // rx// is a Regex object, never an implicit $_ match
         return true;

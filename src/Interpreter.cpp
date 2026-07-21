@@ -2218,6 +2218,20 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH) {
             }
         *prog = parser.parseProgram();
     } catch (ParseError& e) {
+        if (e.exType == "X::Package::Stubbed") {
+            // the space-joined `packages` names become a real list attribute
+            std::string names;
+            for (auto& kv : e.exAttrs) if (kv.first == "packages") names = kv.second;
+            Value arr = Value::array(); arr.isList = true;
+            size_t p = 0;
+            while (p < names.size()) {
+                size_t q = names.find(' ', p);
+                arr.arr->push_back(Value::str(names.substr(p, q - p)));
+                if (q == std::string::npos) break;
+                p = q + 1;
+            }
+            throwTypedV("X::Package::Stubbed", {{"packages", arr}}, e.what());
+        }
         if (e.exType == "X::Comp::Group") {
             // parse-level group diagnostic: the `sorrow` attr names the inner
             // exception type; rebuild it as a real object list in .sorrows
@@ -2921,6 +2935,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     throw RakuError{Value::typeObj(cd->isRole ? "X::InvalidType" : "X::Inheritance::SelfInherit"),
                         std::string(cd->isRole ? "Role" : "Class") + " '" + cd->name + "' cannot inherit from / compose itself"};
                 auto it = classes_.find(cd->parent);
+                // `does X` where X is a class or a concrete core type: only
+                // roles compose (built-in role names like Positional stay fine)
+                if (cd->parentIsDoes) {
+                    static const std::set<std::string> kConcreteTy = {
+                        "Int", "Str", "Num", "Rat", "Bool", "Complex", "Array", "Hash"};
+                    if ((it != classes_.end() && !it->second->isRole) ||
+                        (it == classes_.end() && kConcreteTy.count(cd->parent)))
+                        throwTypedV("X::Composition::NotComposable",
+                            {{"target-name", Value::str(clsName)},
+                             {"composer", Value::typeObj(cd->parent)}},
+                            cd->parent + " is not composable, so " + clsName +
+                            " cannot compose it");
+                }
                 if (it != classes_.end()) ci->parent = it->second;
                 else if (isKnownTypeName(cd->parent)) ci->nativeParent = cd->parent; // is Str / is Cool / …
                 else if (!cd->isRole && !cd->parentIsDoes && !isKnownTypeName(cd->parent))
@@ -2998,8 +3025,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // merged per candidate; an implementation displaces a same-signature
             // stub, never the other way around.
             for (auto& rn : cd->roles) {
-                ci->doneRoles.insert(rn); // record membership (for ~~ Role / .does), even if unknown
                 auto it = classes_.find(rn);
+                {   // only a role (or an unknown/built-in role name) composes;
+                    // a class or concrete core type is X::Composition::NotComposable
+                    static const std::set<std::string> kConcrete = {
+                        "Int", "Str", "Num", "Rat", "Bool", "Complex", "Array", "Hash"};
+                    bool bad = (it != classes_.end() && !it->second->isRole) ||
+                               (it == classes_.end() && kConcrete.count(rn));
+                    if (bad)
+                        throwTypedV("X::Composition::NotComposable",
+                            {{"target-name", Value::str(cd->name)},
+                             {"composer", Value::typeObj(rn)}},
+                            rn + " is not composable, so " + cd->name +
+                            " cannot compose it");
+                }
+                ci->doneRoles.insert(rn); // record membership (for ~~ Role / .does), even if unknown
                 if (it == classes_.end()) continue;
                 for (auto& kv : it->second->methods) {
                     bool newDisp = kv.second.t == VT::Code && kv.second.code && kv.second.code->isMultiDispatcher;

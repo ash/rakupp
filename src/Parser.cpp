@@ -669,6 +669,13 @@ ExprPtr Parser::parseExpr(int minbp) {
             r->exFrom = (in.op == "^.." || in.op == "^..^");
             lhs = std::move(r);
         } else {
+            // non-associative operators cannot chain: `1 <=> 2 <=> 3`
+            if ((in.op == "<=>" || in.op == "cmp" || in.op == "leg" ||
+                 in.op == "unicmp" || in.op == "coll") &&
+                cur().kind == Tok::Op && cur().text == in.op)
+                throw ParseError("Operator " + in.op + " is not associative",
+                                 cur().line, "X::Syntax::NonAssociative",
+                                 {{"left", in.op}, {"right", in.op}});
             auto b = std::make_unique<Binary>();
             b->op = in.op; b->lhs = std::move(lhs); b->rhs = std::move(rhs);
             lhs = std::move(b);
@@ -1534,6 +1541,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         auto ve = std::make_unique<VarExpr>(advance().text);
         ve->declare = true; ve->declScope = scope;
         skipTraits();
+        // `constant foo;` — a constant must be initialized
+        if (isKind(Tok::Semicolon) || isKind(Tok::End))
+            throw ParseError("Missing initializer on constant declaration",
+                             cur().line, "X::Syntax::Missing",
+                             {{"what", "initializer on constant declaration"}});
         return ve;
     }
     // bare sigil = anonymous variable: `my $`, `my @`, `my %`, `my Int % = …`
@@ -3214,7 +3226,18 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 case '@': lit += '@'; break;
                 case '%': lit += '%'; break;
                 case '{': lit += '{'; break;
-                default: lit += e; break;
+                default:
+                    // every unassigned alphabetic escape is reserved: `"\u"`.
+                    // c/x/o pass through — their bracketed forms are handled
+                    // above and the bare-digit forms (\c10, \x41) downstream.
+                    if (std::isalpha((unsigned char)e) &&
+                        e != 'c' && e != 'x' && e != 'o')
+                        throw ParseError("Unrecognized backslash sequence: '\\" +
+                                         std::string(1, e) + "'", cur().line,
+                                         "X::Backslash::UnrecognizedSequence",
+                                         {{"sequence", std::string(1, e)}});
+                    lit += e;
+                    break;
             }
             i += 2;
             continue;
@@ -4884,6 +4907,7 @@ StmtPtr Parser::parseStatementImpl() {
 void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
     std::map<std::string, int> subs;  // 1=non-multi seen, 2=multi seen, 3=both
     std::map<std::string, int> types;
+    std::vector<std::string> stubbed; // `class Foo {...}` stubs not yet completed
     int catchBlocks = 0;
     for (auto& s : stmts) {
         if (!s) continue;
@@ -4927,7 +4951,13 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
         }
         else if (s->kind == NK::ClassDecl) {
             auto* cd = static_cast<const ClassDecl*>(s.get());
-            if (cd->name.empty() || cd->isAugment || cd->isStubDecl || cd->parameterized) continue;
+            if (cd->name.empty() || cd->isAugment || cd->parameterized) continue;
+            if (cd->isStubDecl) {
+                stubbed.push_back(cd->name);
+                continue;
+            }
+            stubbed.erase(std::remove(stubbed.begin(), stubbed.end(), cd->name),
+                          stubbed.end());
             if (types[cd->name]++)
                 throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
                                  "X::Redeclaration", {{"symbol", cd->name}});
@@ -4939,6 +4969,20 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
                 throw ParseError("Redeclaration of symbol '" + su->name + "'", su->line,
                                  "X::Redeclaration", {{"symbol", su->name}});
         }
+    }
+    if (!stubbed.empty()) {
+        // a stub naming a `use`d module is a redeclaration hint, not a promise
+        std::set<std::string> used;
+        for (auto& s : stmts)
+            if (s && s->kind == NK::UseStmt)
+                used.insert(static_cast<const UseStmt*>(s.get())->module);
+        std::string names;
+        for (auto& n : stubbed)
+            if (!used.count(n)) { if (!names.empty()) names += " "; names += n; }
+        if (!names.empty())
+            throw ParseError("The following packages were stubbed but not defined: " +
+                             names, stmts.empty() ? 0 : stmts.back()->line,
+                             "X::Package::Stubbed", {{"packages", names}});
     }
 }
 
