@@ -4113,7 +4113,7 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
     if (base.t == VT::Object && base.obj) {
         for (ClassInfo* ci = base.obj->cls.get(); ci; ci = ci->parent.get())
             for (auto& at : ci->attrs)
-                if (at.name == name && at.pub && !at.rw)
+                if (at.name == name && !(at.pub && at.rw)) // private or public read-only
                     throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable '" + name + "'"};
         return base.obj->attrs[name];
@@ -5230,12 +5230,19 @@ Value* Interpreter::lvalue(Expr* e) {
             return &(*base->hash)[mc->method];
         }
         if (base->t == VT::Object && base->obj) {
-            // a public accessor is read-only unless declared `is rw`
-            for (ClassInfo* ci = base->obj->cls.get(); ci; ci = ci->parent.get())
-                for (auto& at : ci->attrs)
-                    if (at.name == mc->method && at.pub && !at.rw)
-                        throw RakuError{Value::typeObj("X::Assignment::RO"),
-                            "Cannot modify an immutable '" + mc->method + "'"};
+            // Assigning to `$obj.attr` is only allowed through a PUBLIC `is rw`
+            // accessor. If the name matches any other attribute — a private
+            // `$!x`, or a public read-only `$.x` — the value is read-only, so
+            // reject it rather than writing straight into the (private) slot.
+            // Exceptions kept writable: `$obj!attr` (explicit private-access
+            // syntax — self/trusts writes), and a name matching NO attribute
+            // (a plain method call; `is rw`/`return-rw` lvalue methods rely on it).
+            if (!mc->bang)
+                for (ClassInfo* ci = base->obj->cls.get(); ci; ci = ci->parent.get())
+                    for (auto& at : ci->attrs)
+                        if (at.name == mc->method && !(at.pub && at.rw))
+                            throw RakuError{Value::typeObj("X::Assignment::RO"),
+                                "Cannot modify an immutable '" + mc->method + "'"};
             return &base->obj->attrs[mc->method];
         }
     }
