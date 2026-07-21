@@ -4,6 +4,19 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 [`index.html`](index.html). No build step and no dependencies: open the file
 in a browser, or serve the directory statically.
 
+**Just want to look?** [`slides.pdf`](slides.pdf) is a 12-page PDF export
+(GitHub renders it inline). The interactive `index.html` is the real thing —
+keyboard navigation, a light/dark toggle, hover states. Regenerate the PDF from
+the deck with a headless browser:
+
+```sh
+# forces the dark theme, one slide per landscape page
+sed 's/<html lang="en">/<html lang="en" data-theme="dark">/' index.html > /tmp/deck-print.html
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --no-pdf-header-footer --virtual-time-budget=4000 \
+  --print-to-pdf="slides.pdf" "file:///tmp/deck-print.html"
+```
+
 - **Navigate:** `←` / `→` (also PageUp/PageDown, Space), `Home` / `End`, the dot
   rail, or the on-screen arrows.
 - **Theme:** light/dark toggle, top-right (follows the OS setting by default).

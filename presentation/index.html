@@ -249,6 +249,23 @@
     .cursor { animation: none; }
     #bar { transition: none; }
   }
+
+  /* ---- print / PDF export: one slide per landscape page ---- */
+  @media print {
+    @page { size: 1280px 720px; margin: 0; }
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    html, body { height: auto; overflow: visible; }
+    #deck { position: static; }
+    .slide {
+      position: relative; inset: auto;
+      opacity: 1; visibility: visible; transform: none;
+      width: 1280px; height: 720px; background: var(--bg);
+      break-after: page; page-break-after: always; overflow: hidden;
+    }
+    .slide:last-of-type { break-after: auto; page-break-after: auto; }
+    #bar, #rail, #counter, #hint, #theme, .navbtn { display: none !important; }
+    .cursor { animation: none; }
+  }
 </style>
 </head>
 <body>
