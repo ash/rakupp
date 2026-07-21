@@ -9,6 +9,7 @@ together they answer "what can it actually build?"
 | [**js/**](js/) | Language power — a full precedence ladder, closures, classes | interpreter that runs JavaScript/TypeScript files or a REPL |
 | [**forth/**](forth/) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
 | [**perl/**](perl/) | Language power — sigil variables, context, regex | interpreter that runs Perl 5 files or a REPL |
+| [**python/**](python/) | Language power — the off-side rule, via an INDENT/DEDENT tokenizer | interpreter that runs Python 3 files or a REPL |
 | [**markdown/**](markdown/) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
 | [**json/**](json/) | Parsing — a grammar that round-trips data | parse, pretty-print / minify, and query JSON |
 | [**pastebin/**](pastebin/) | Deployable — a hand-written HTTP server on raw sockets | native binary you point a browser at |
@@ -108,6 +109,37 @@ All six example programs produce byte-identical output under the system `perl`
 and under `perl.raku`. References and nested data structures, `tr///`, packages
 and file I/O are out of scope — see [perl/README.md](perl/) for the exact
 boundary.
+
+## python — the off-side rule
+
+Python's blocks are delimited by indentation, which a PEG grammar can't track on
+its own. So, like CPython, a tokenizer pass converts indentation into explicit
+`INDENT`/`DEDENT` markers first, and an ordinary grammar parses the marker
+stream — its block rule is just `suite: NEWLINE INDENT stmt+ DEDENT`, with no
+indentation logic. Run any example with `--tokens` to watch a program turn into
+that stream.
+
+```sh
+build/rakupp showcase/python/python.raku showcase/python/examples/fib.py
+build/rakupp showcase/python/python.raku --tokens=file.py   # show INDENT/DEDENT
+build/rakupp showcase/python/python.raku                    # no file → a REPL
+```
+
+```python
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+print([fib(i) for i in range(15)])
+```
+
+All five example programs produce byte-identical output under CPython 3 and
+under `python.raku` — arbitrary-precision ints, `0.1 + 0.2` printing
+`0.30000000000000004`, comprehensions, closures, and `lambda`-key sorting
+included. Classes, imports, exceptions and generators are out of scope; see
+[python/README.md](python/) for the exact boundary and a walk-through of the
+indentation tokenizer.
 
 ## markdown — the parsing story
 
