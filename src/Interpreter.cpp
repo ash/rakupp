@@ -2603,6 +2603,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::Block: {
             auto* b = static_cast<Block*>(s);
+            // a statement-level `{}` with no statements is Rakudo's empty-hash
+            // composer, not a block (EVAL('{}') is {}, not Any)
+            if (b->stmts.empty() && b->phaser.empty() && !b->isCatch)
+                return Value::makeHash();
             auto scope = std::make_shared<Env>();
             scope->parent = tctx_.cur;
             return execBlock(b, scope);
@@ -3575,6 +3579,67 @@ Value Interpreter::makeClosure(BlockExpr* be) {
 // a Pair that arrived as a value (from a variable, list, iteration, or return) is positional.
 static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.namedArg; }
 
+// Build the effective symbol name of a (possibly multi-segment) symbolic ref:
+// join `pkg` + the head + `::seg` parts, hoist a sigil on the LAST segment to
+// the front (`OUR::('$x')` looks up `$OUR::x`), then rewrite pseudo-package
+// heads (GLOBAL:: strips, OUR:: is the current package, MY::/UNIT::/OUTER::/
+// CALLER::/SETTING::/CORE:: fall back to the lexical chain — approximations).
+std::string Interpreter::symRefName(SymbolicRef* sr) {
+    std::string nm;
+    if (sr->nameExpr) nm = eval(sr->nameExpr.get()).toStr();
+    for (auto& sg : sr->segs) {
+        if (!nm.empty()) nm += "::";
+        nm += eval(sg.get()).toStr();
+    }
+    if (!sr->pkg.empty()) nm = sr->pkg + "::" + nm;
+    // a sigil written on the last path part names the variable: A::B::$x == $A::B::x
+    size_t lastSep = nm.rfind("::");
+    if (lastSep != std::string::npos && lastSep + 2 < nm.size() &&
+        std::strchr("$@%&", nm[lastSep + 2]))
+        nm = nm[lastSep + 2] + nm.substr(0, lastSep + 2) + nm.substr(lastSep + 3);
+    if (!sr->sigil.empty() && (nm.empty() || !std::strchr("$@%&", nm[0])))
+        nm = sr->sigil + nm;
+    // pseudo-package heads
+    std::string sig;
+    if (!nm.empty() && std::strchr("$@%&", nm[0])) { sig = nm.substr(0, 1); nm = nm.substr(1); }
+    for (;;) {
+        if      (nm.rfind("GLOBAL::",  0) == 0) nm = nm.substr(8);
+        else if (nm.rfind("OUR::",     0) == 0) nm = tctx_.pkgPrefix + nm.substr(5);
+        else if (nm.rfind("MY::",      0) == 0) nm = nm.substr(4);
+        else if (nm.rfind("UNIT::",    0) == 0) nm = nm.substr(6);
+        else if (nm.rfind("OUTER::",   0) == 0) nm = nm.substr(7);
+        else if (nm.rfind("CALLER::",  0) == 0) nm = nm.substr(8);
+        else if (nm.rfind("SETTING::", 0) == 0) nm = nm.substr(9);
+        else if (nm.rfind("CORE::",    0) == 0) nm = nm.substr(6);
+        else break;
+    }
+    return sig + nm;
+}
+
+// A lone typed candidate rejects a mismatched argument (multi dispatch already
+// type-selects; without this a single `sub f(Int $x)` bound anything). Type
+// objects/undefined bind (no :D enforcement here) and junction kinds pass —
+// they were autothreaded upstream; one reaching here is a matcher-style arg.
+void Interpreter::typeCheckBind(const Param& p, const Value& v) {
+    if (v.t == VT::Type || v.t == VT::Nil || v.t == VT::Any) return;
+    if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
+                             v.enumName == "one" || v.enumName == "none")) return;
+    // a type name we can't resolve (a `::T` capture, an unimported module type)
+    // cannot be enforced — bind freely like before. Native lowercase names are
+    // resolvable even though isKnownTypeName (boxed names) doesn't list them.
+    static const std::set<std::string> natNames = {
+        "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
+        "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint"};
+    if (!classes_.count(p.type) && !subsets_.count(p.type) &&
+        !isKnownTypeName(p.type) && !natNames.count(p.type)) return;
+    if (typeOrSubsetMatches(v, p.type)) return;
+    std::string gist = v.t == VT::Str ? "\"" + v.s + "\"" : v.gist();
+    if (gist.size() > 50) gist = gist.substr(0, 47) + "...";
+    throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+        "Type check failed in binding to parameter '" + p.name + "'; expected " +
+        p.type + " but got " + v.typeName() + " (" + gist + ")"};
+}
+
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                              std::shared_ptr<Env>& env, bool methodCtx) {
     // Fast path: every parameter is a plain mandatory positional scalar and no
@@ -3586,13 +3651,14 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         for (auto& p : params)
             if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
                 p.isRw || p.isCopy || p.defaultVal || p.subSig || p.litVal ||
-                p.whereExpr || p.defConstraint) { simple = false; break; }
+                p.whereExpr || p.defConstraint || p.coerce) { simple = false; break; }
         if (simple)
             for (auto& a : args) if (isNamedArg(a)) { simple = false; break; }
         if (simple) {
             for (size_t i = 0; i < params.size(); i++) {
                 if (i < args.size()) {
                     Value v = args[i];
+                    if (!params[i].type.empty()) typeCheckBind(params[i], v);
                     v.readonly = true;               // plain scalar param is readonly
                     env->define(params[i].name, std::move(v));
                 } else {
@@ -3712,6 +3778,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
                         "Type check failed in binding to parameter '" + p.name + "'"};
                 if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
+                if (!p.subSig && p.sigil == '$' && !p.type.empty() && !p.coerce)
+                    typeCheckBind(p, it->second);
                 if (!p.name.empty() || !p.subSig) env->define(p.name, it->second);
             }
             else if (p.defaultVal) env->define(p.name, evalDefault(p.defaultVal.get()));
@@ -3736,6 +3804,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // its .Type method — which FAILS where the method does (Int on <1/0>)
             if (p.coerce && !p.type.empty() && v.typeName() != p.type)
                 v = methodCall(v, p.type, ValueList{});
+            else if (p.sigil == '$' && !p.invocant && !p.type.empty())
+                typeCheckBind(p, v); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
             if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;
             env->define(p.name, v);
@@ -3801,6 +3871,10 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
     // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params and its own name
     if (arg.isAllomorph() && (type == "Str" || type == "Stringy" || type == arg.typeName()))
         return true;
+    // a tagged built-in value (IO::Path, Version, Duration, Promise, …) matches
+    // its own reported type — hashKind is empty for plain values, so this
+    // costs one branch on the hot path
+    if (!arg.hashKind.empty() && (type == arg.hashKind || type == arg.typeName())) return true;
     // native-typed params (`int $i`, `num $x`, `str $s`) take the boxed kind
     static const std::set<std::string> natIntTypes = {"int", "int8", "int16", "int32", "int64",
         "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
@@ -3824,6 +3898,7 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Object:
             for (ClassInfo* ci = arg.obj ? arg.obj->cls.get() : nullptr; ci; ci = ci->parent.get()) {
                 if (ci->name == type || ci->nativeParent == type) return true;
+                if (ci->doneRoles.count(type)) return true; // composed roles count as types
                 for (auto& p : ci->extraParents) if (p && p->name == type) return true;
             }
             // a subclass of a built-in (`class F is DateTime`) matches the built-in
@@ -5344,9 +5419,7 @@ Value* Interpreter::lvalue(Expr* e) {
     }
     if (e->kind == NK::SymbolicRef) {
         auto* sr = static_cast<SymbolicRef*>(e);
-        std::string nm;
-        if (sr->nameExpr) nm = eval(sr->nameExpr.get()).toStr();
-        if (!sr->sigil.empty()) nm = sr->sigil + nm;
+        std::string nm = symRefName(sr);
         if (nm.empty())
             throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
         VarExpr tmp(nm); tmp.line = e->line;
@@ -5548,6 +5621,15 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (ve->declare && ve->containerIs == "List")
             if (Value* cur = tctx_.cur->find(ve->name)) cur->readonly = true;
+        // `our $x = v` anywhere publishes the initialized value to the package
+        // (GLOBAL) stash — `$OUR::x` / `$GLOBAL::x` find it from other scopes
+        if (ve->declare && ve->declScope == "our" && ve->name.size() > 1) {
+            if (Value* p = tctx_.cur->find(ve->name)) {
+                std::string qual = ve->name.substr(0, 1) + tctx_.pkgPrefix + ve->name.substr(1);
+                noteSymbolMutation("our-declaration publish");
+                global_->define(qual, *p);
+            }
+        }
     }
     // one hook covers every assignment form (=, op=, ||= …): if the target is a
     // linked rw/raw param, push the new value through to the caller immediately
@@ -9348,9 +9430,19 @@ Value Interpreter::evalUnary(Unary* u) {
         else pushFlat(eval(u->operand.get()), false);
         return applyReduce(op, items);
     }
+    if (u->op == "siglit") { // :( … ) — a first-class Signature literal
+        Value c = eval(u->operand.get()); // the params-only closure
+        ValueList none;
+        return methodCall(c, "signature", none);
+    }
     if (u->op == "capture") { // \(…): a Capture — one item, assoc-indexable on its named parts
         Value v = eval(u->operand.get());
-        if (v.t == VT::Array) { v.hashKind = "Capture"; v.itemized = true; v.isList = false; }
+        if (v.t != VT::Array) { // \(:named) / \(42): a single part is still a Capture
+            Value one = Value::array();
+            if (v.t != VT::Nil) one.arr->push_back(std::move(v));
+            v = std::move(one);
+        }
+        v.hashKind = "Capture"; v.itemized = true; v.isList = false;
         return v;
     }
     if (u->op == "ctx$" || u->op == "ctx@" || u->op == "ctx%") {
@@ -9846,6 +9938,15 @@ Value Interpreter::evalCall(Call* c) {
         return callCallable(f, args, &c->args);
     }
     if (!c->name.empty()) {
+        // bare `::` — the current-scope stash: a Hash of every visible symbol
+        // (innermost binding wins), for `::.keys` / `::{'$var'}` introspection
+        if (c->name == "__stash__") {
+            Value h = Value::makeHash(); h.hashKind = "Stash";
+            for (Env* en = tctx_.cur.get(); en; en = en->parent.get())
+                for (auto& kv : en->vars)
+                    if (!h.hash->count(kv.first)) (*h.hash)[kv.first] = kv.second;
+            return h;
+        }
         // cas $x, {code} — atomic read-modify-write; cas($x, $expected, $new) —
         // conditional swap. Returns the value seen. Serialized by a mutex so it
         // stays atomic in parallel (no-GIL) mode too.
@@ -11292,6 +11393,18 @@ Value Interpreter::eval(Expr* e) {
                 }
                 return out;
             }
+            // static pseudo-package-qualified form: $GLOBAL::x / $OUR::x / $MY::x
+            if (ve->name.size() > 1) {
+                std::string head = ve->name.substr(1);
+                std::string rest;
+                if      (head.rfind("GLOBAL::", 0) == 0) rest = head.substr(8);
+                else if (head.rfind("OUR::",    0) == 0) rest = tctx_.pkgPrefix + head.substr(5);
+                else if (head.rfind("MY::",     0) == 0) rest = head.substr(4);
+                if (!rest.empty()) {
+                    VarExpr tmp(ve->name.substr(0, 1) + rest); tmp.line = e->line;
+                    return eval(&tmp);
+                }
+            }
             if (!isSpecialVar(ve->name) && !noStrict_)
                 throw RakuError{Value::typeObj("X::Undeclared"),
                                 "Variable '" + ve->name + "' is not declared"};
@@ -11299,9 +11412,7 @@ Value Interpreter::eval(Expr* e) {
         }
         case NK::SymbolicRef: {
             auto* sr = static_cast<SymbolicRef*>(e);
-            std::string nm;
-            if (sr->nameExpr) nm = eval(sr->nameExpr.get()).toStr();
-            if (!sr->sigil.empty()) nm = sr->sigil + nm;
+            std::string nm = symRefName(sr);
             if (nm.empty())
                 throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
             char c0 = nm[0];

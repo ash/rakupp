@@ -279,6 +279,8 @@ public:
     std::unordered_map<const void*, bool> ffState_; // per-site `ff`/`fff` flip-flop latch
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
+    void typeCheckBind(const Param& p, const Value& v); // lone-candidate bind: throw X::TypeCheck::Binding on mismatch
+    std::string symRefName(SymbolicRef* sr); // effective name of a multi-segment symbolic ref
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
     bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed

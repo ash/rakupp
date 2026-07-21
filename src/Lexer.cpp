@@ -402,9 +402,31 @@ void Lexer::skipWhitespaceAndComments() {
                 if (a0 == 0xE3 && a1 == 0x80 && a2 == 0x80) return 3;
                 return 0;
             };
-            if (uwsAt(1)) {
+            // an embedded comment counts as unspace-able whitespace: `4\#`(quux).sqrt`
+            auto embCommentAt = [&](int off) -> bool {
+                return peek(off) == '#' && peek(off + 1) == '`' &&
+                       (peek(off + 2) == '(' || peek(off + 2) == '[' || peek(off + 2) == '{');
+            };
+            // zero-width unspace before a postfix dot: `"xxxxxx"\.chars`
+            if (peek(1) == '.' && !std::isdigit((unsigned char)peek(2))) {
+                advance(); // backslash only; the '.' stays tight
+                atomDropEnd_ = pos_;
+                continue;
+            }
+            if (uwsAt(1) || embCommentAt(1)) {
                 advance(); // backslash
-                while (int w = uwsAt(0)) { for (int k = 0; k < w; k++) advance(); }
+                for (;;) {
+                    if (int w = uwsAt(0)) { for (int k = 0; k < w; k++) advance(); continue; }
+                    if (embCommentAt(0)) {
+                        advance(); advance(); // # `
+                        char ob = peek(), cb = ob == '(' ? ')' : ob == '[' ? ']' : '}';
+                        int d = 0;
+                        do { if (peek() == ob) d++; else if (peek() == cb) d--; advance(); }
+                        while (d > 0 && !eof());
+                        continue;
+                    }
+                    break;
+                }
                 atomDropEnd_ = pos_; // like the ⚛ drop: this movement is not whitespace
                 continue;
             }
@@ -893,7 +915,32 @@ bool Lexer::tryQuoteForm(Token& out) {
     };
     while (pos_ < p) advance(); // consume keyword + adverbs
     advance();                  // opening delimiter
-    std::string raw = readPart(patQuoteAware, codeBlocks);
+    // repeated bracket delimiters: q{{ … }} / q[[[ … ]]] — only an equally long
+    // run of closers ends the quote; shorter runs are literal content
+    int reps = 1;
+    while (bracket && !isRegex && !isSubst && !isTrans && peek() == d) { advance(); reps++; }
+    std::string raw;
+    if (reps > 1) {
+        int rdepth = 1;
+        while (!eof()) {
+            char ch = peek();
+            if (ch == d) {
+                int run = 0; while (peek(run) == d) run++;
+                if (run >= reps) { for (int k = 0; k < reps; k++) raw += advance(); rdepth++; continue; }
+            }
+            if (ch == close) {
+                int run = 0; while (peek(run) == close) run++;
+                if (run >= reps) {
+                    for (int k = 0; k < reps; k++) advance();
+                    if (--rdepth == 0) break;
+                    for (int k = 0; k < reps; k++) raw += close;
+                    continue;
+                }
+            }
+            raw += advance();
+        }
+    }
+    else raw = readPart(patQuoteAware, codeBlocks);
     if (isWords) { // qw<...> / Qw<...> / qqw<...> : raw content, split on whitespace by the parser
         out = make(Tok::QwList, raw);
         return true;
@@ -1397,6 +1444,39 @@ Token Lexer::lexOperator() {
     return make(Tok::Op, std::string(1, c));
 }
 
+// Is a `<` here a bare word-list opener?  Only where NO term precedes it — a
+// comparison needs a left operand, so directly after `(`/`[`/`,`/`;`/`=>`/most
+// operators/list-keywords a `<` can only open `< a b >`.  Mirrors regexContext.
+static bool angleTermContext(const std::vector<Token>& out) {
+    if (out.empty()) return true;
+    const Token& pv = out.back();
+    switch (pv.kind) {
+        case Tok::LParen: case Tok::LBracket: case Tok::LBrace:
+        case Tok::Comma: case Tok::Semicolon: case Tok::FatArrow:
+            return true;
+        case Tok::Op:
+            // after an infix a term follows; postfix ops/closers mean a term
+            // ended, and `!` composes a negated comparison (`3 !< 3`)
+            return pv.text != "++" && pv.text != "--" && pv.text != "!" &&
+                   pv.text != ">" && pv.text != "<" && pv.text != ">>" && pv.text != "<<" &&
+                   pv.text != ">=" && pv.text != "<=" && pv.text != "*" &&
+                   pv.text != "\xC2\xAB" && pv.text != "\xC2\xBB";
+        case Tok::Ident: {
+            static const std::set<std::string> kw = {
+                "for", "say", "print", "put", "note", "return", "take", "die",
+                "is", "ok", "nok", "isnt", "like", "unlike", "and", "or", "not", "so", "dd",
+            };
+            return kw.count(pv.text) > 0;
+        }
+        case Tok::IntLit:
+            // radix colonpair `:16<2_F_A_C_E_D>` / `:2<1.1*10**10>`: the angle
+            // content is digits-as-words, not code
+            return out.size() >= 2 && out[out.size() - 2].kind == Tok::Op &&
+                   out[out.size() - 2].text == ":";
+        default: return false;
+    }
+}
+
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> out;
     for (;;) {
@@ -1409,8 +1489,11 @@ std::vector<Token> Lexer::tokenize() {
         if (eof()) break;
         char c = peek();
         Token t;
+        // inside a bare `< … >` word list the content is words: no quotes, no
+        // regexes, no q-forms — those characters glue into words as-is
+        const bool inAngle = angleWords_ > 0;
         // corner-bracket literal quote ｢...｣ (U+FF62 .. U+FF63)
-        if ((unsigned char)c == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA2) {
+        if (!inAngle && (unsigned char)c == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA2) {
             advance(); advance(); advance(); // ｢
             std::string raw;
             while (!eof() && !((unsigned char)peek() == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA3))
@@ -1422,7 +1505,7 @@ std::vector<Token> Lexer::tokenize() {
             continue;
         }
         // Unicode string quotes: ‘…’ (U+2018/2019, literal) and “…” (U+201C/201D, interpolating)
-        if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 &&
+        if (!inAngle && (unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 &&
             ((unsigned char)peek(2) == 0x98 || (unsigned char)peek(2) == 0x9C)) {
             bool interp = (unsigned char)peek(2) == 0x9C;                 // “ vs ‘
             unsigned char closeB = interp ? 0x9D : 0x99;                  // ” / ’
@@ -1491,13 +1574,21 @@ std::vector<Token> Lexer::tokenize() {
             std::string op = "-";
             if (peek() == '=' && peek(1) != '=') { advance(); op += "="; } // −= compound assign
             t = make(Tok::Op, op);
+        } else if (inAngle && std::isdigit((unsigned char)c)) {
+            // inside `< … >` a digit-run is a WORD (`4_2`, `2_a`, `0o777`) — the
+            // numeric/underscore validation of real literals must not fire; the
+            // parser decides allomorph-ness from the final word text
+            std::string w;
+            while (!eof() && (std::isalnum((unsigned char)peek()) || peek() == '_' || peek() == '.'))
+                w += advance();
+            t = make(Tok::Ident, w);
         } else if (std::isdigit((unsigned char)c) ||
             (!afterBareSigil && (unsigned char)c >= 0x80 &&
              (ndDigitValue(codepointHere()) >= 0 || unicodeNumeralValue(codepointHere(), nvN, nvD)))) {
             t = lexNumber(); // ASCII digit, Unicode-Nd digit, or an Nl/No numeral
-        } else if (c == '\'') {
+        } else if (c == '\'' && !inAngle) {
             t = lexQuoted('\'');
-        } else if (c == '"') {
+        } else if (c == '"' && !inAngle) {
             t = lexQuoted('"');
         } else if (c == '$' || c == '@' || c == '%' || c == '&' || isIdentStart(c) || unicodeLetterHere()) {
             // '%' and '&' could be operators; treat as var only if followed by name/twigil
@@ -1507,7 +1598,7 @@ std::vector<Token> Lexer::tokenize() {
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
                   ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {
                 t = lexOperator();
-            } else if (isIdentStart(c) && !quoteBlockedHere(out, spaced) && tryQuoteForm(t)) {
+            } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) && tryQuoteForm(t)) {
                 // t set by tryQuoteForm
             } else {
                 t = lexIdentOrVar();
@@ -1521,7 +1612,7 @@ std::vector<Token> Lexer::tokenize() {
         else if (c == ']') { advance(); t = make(Tok::RBracket, "]"); }
         else if (c == ';') { advance(); t = make(Tok::Semicolon, ";"); }
         else if (c == ',') { advance(); t = make(Tok::Comma, ","); }
-        else if (c == '/' && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
+        else if (c == '/' && !inAngle && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
                  // `[/]` (and `[\/]`) is the division reduce metaop, not a regex
                  !(peek(1) == ']' && !out.empty() &&
                    (out.back().kind == Tok::LBracket ||
@@ -1556,6 +1647,26 @@ std::vector<Token> Lexer::tokenize() {
         else {
             t = lexOperator();
         }
+        // bare `< … >` word-list tracking: enter in term context (never for the
+        // `[<]` reduce metaop), nest on inner `<`, leave on a `>`-leading op;
+        // a stray unclosed `<` must not poison the rest of the file, so any
+        // brace or `;` bails out (word lists never span statements or blocks)
+        if (t.kind == Tok::Op && !t.text.empty()) {
+            if (angleWords_ == 0) {
+                if (t.text == "<" && peek() != ']' && angleTermContext(out)) angleWords_++;
+            } else {
+                // inside a list: an exact `<` nests; a token LEADING with `>`
+                // (`>`, `>=`, `>>`) or END-glued to one with no `<` inside
+                // (`+>` from `infix:<+>`) closes. Mixed tokens (`<=>`, the
+                // normalized hyper `<<+<<`) are content — neutral.
+                if (t.text == "<") angleWords_++;
+                else if (t.text[0] == '>' ||
+                         (t.text.back() == '>' && t.text.find('<') == std::string::npos))
+                    angleWords_--;
+            }
+        }
+        else if (angleWords_ > 0 && (t.kind == Tok::LBrace || t.kind == Tok::RBrace))
+            angleWords_ = 0; // NB `;` is a legal WORD inside a list (`< $; $, >`), so only braces bail
         t.spaceBefore = spaced;
         out.push_back(t);
         if (!heredocMarker_.empty()) { // a q:to/MARKER/ was just lexed

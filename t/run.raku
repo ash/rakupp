@@ -203,16 +203,30 @@ section('showcase/kvstore (a key-value protocol)');
     my $script = $ROOT.add('showcase/kvstore/kvstore.raku').Str;
     my $port = 6392;
     if start-server($script, $port) {
-        # one connection, a sequence of commands, each reply read in turn
+        # one connection, a sequence of commands, each reply read in turn.
+        # NB replies are read per LINE through a buffer — two back-to-back
+        # commands can coalesce into one recv, and a raw recv here would eat
+        # the next command's reply (the INCR check flapped on exactly that).
         my $s = IO::Socket::INET.new(:host('127.0.0.1'), :port($port));
         $s.recv;                                   # greeting
-        sub cmd(Str $c --> Str) { $s.print("$c\r\n"); ($s.recv // '').trim }
+        my $rbuf = '';
+        sub cmd(Str $c --> Str) {
+            $s.print("$c\r\n");
+            until $rbuf.contains("\n") {
+                my $r = $s.recv // '';
+                last if $r eq '';
+                $rbuf ~= $r;
+            }
+            my $i = $rbuf.index("\n");
+            with $i { my $line = $rbuf.substr(0, $i); $rbuf = $rbuf.substr($i + 1); return $line.trim }
+            my $line = $rbuf; $rbuf = ''; $line.trim
+        }
         ok(cmd('SET name ada') eq 'OK',            "kvstore: SET replies OK");
         ok(cmd('GET name') eq 'ada',               "kvstore: GET returns the value");
         ok(cmd('SET g "hello world"') eq 'OK' && cmd('GET g') eq 'hello world',
                                                    "kvstore: quoted values keep their spaces");
         cmd('INCR hits');
-        ok(cmd('INCR hits') eq '2',                "kvstore: INCR counts up");
+        is(cmd('INCR hits'), '2',                  "kvstore: INCR counts up");
         ok(cmd('EXISTS name') eq '1' && cmd('EXISTS nope') eq '0',
                                                    "kvstore: EXISTS reports presence");
         ok(cmd('DEL name') eq '1' && cmd('GET name') eq '(nil)',

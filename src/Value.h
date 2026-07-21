@@ -41,6 +41,8 @@ struct Callable {
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
+    bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
+    std::vector<const Param*> primedParams;           // params left unbound by the priming (point into the AST)
 };
 
 enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };

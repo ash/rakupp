@@ -448,6 +448,11 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
     // blindly builds an unbounded string and exhausts memory. Detect a revisited
     // container (a cycle) and stop; a large depth cap backstops pathological nesting.
     if (depth > 512) return "...";
+    if (v.isAllomorph()) { // IntStr.new(42, "42") — round-trips via EVAL
+        Value num = v; num.hashKind.clear();
+        std::string face = num.s; num.s.clear();
+        return v.typeName() + ".new(" + rakuRepr(num, depth + 1, seen) + ", " + rakuStrLit(face) + ")";
+    }
     switch (v.t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";
@@ -510,6 +515,16 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
         }
         case VT::Array: {
             if (v.s == "Slip" && (!v.arr || v.arr->empty())) return "Empty";
+            if (v.hashKind == "Capture") { // \(…) literal round-trips as itself
+                std::string o = "\\(";
+                bool first = true;
+                if (v.arr) for (auto& e : *v.arr) {
+                    if (!first) o += ", "; first = false;
+                    if (e.t == VT::Pair) o += ":" + e.s + "(" + rakuRepr(e.pairVal ? *e.pairVal : Value(), depth + 1, seen) + ")";
+                    else o += rakuRepr(e, depth + 1, seen);
+                }
+                return o + ")";
+            }
             // Junctions render as their constructor form: none(1, 2, 3)
             if (!v.enumName.empty() && v.arr &&
                 (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none")) {
@@ -1242,9 +1257,17 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
 // Build a Signature introspection value from a routine's parameters.
 // Rendered as a Hash tagged "Signature" carrying its .raku text and arity/count.
 static Value makeSignature(const Callable* c) {
+    // a .assuming wrapper carries its residual params; everything else renders
+    // its declared params
+    std::vector<const Param*> ps;
+    if (c) {
+        if (c->hasPrimed) ps = c->primedParams;
+        else if (c->params) for (auto& p : *c->params) ps.push_back(&p);
+    }
     std::string sig = "(";
     long long arity = 0, count = 0; bool slurpy = false, first = true;
-    if (c && c->params) for (auto& p : *c->params) {
+    for (const Param* pp : ps) {
+        const Param& p = *pp;
         if (p.invocant) continue;
         if (!first) sig += ", ";
         first = false;
@@ -1260,7 +1283,8 @@ static Value makeSignature(const Callable* c) {
     (*s.hash)["arity"] = Value::integer(arity);
     (*s.hash)["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
     Value params = Value::array(); params.isList = true;
-    if (c && c->params) for (auto& p : *c->params) {
+    for (const Param* pp : ps) {
+        const Param& p = *pp;
         if (p.invocant) continue;
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
         (*pv.hash)["name"] = Value::str(p.name.empty() ? std::string(1, p.sigil) : p.name);
@@ -1977,6 +2001,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Type && inv.s == "IO::Special" && m == "new") {
         Value sp = Value::str(args.empty() ? "" : args[0].toStr());
         sp.hashKind = "IO::Special"; return sp;
+    }
+    if (inv.t == VT::Type && m == "new" &&
+        (inv.s == "IntStr" || inv.s == "NumStr" || inv.s == "RatStr" || inv.s == "ComplexStr")) {
+        // IntStr.new(42, "42") — the number AND its string face
+        Value n = args.empty() ? Value::integer(0) : args[0];
+        std::string face = args.size() > 1 ? args[1].toStr() : n.toStr();
+        n.hashKind = inv.s;
+        n.s = face;
+        return n;
     }
     if (inv.t == VT::Type && inv.s == "Version" && m == "new") {
         std::string s = args.empty() ? "" : args[0].toStr();
@@ -3756,15 +3789,40 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 ValueList all = pre; for (auto& x : a) all.push_back(x);
                 return I.callCallable(orig, all);
             };
+            // residual signature: params the priming bound disappear; the rest
+            // (unbound positional tail, unbound nameds, slurpies) remain
+            if (inv.code->params) {
+                size_t posBound = 0; std::set<std::string> namedBound;
+                for (auto& a : pre) {
+                    if (a.t == VT::Pair) namedBound.insert(a.s);
+                    else posBound++;
+                }
+                size_t pos = 0;
+                code.code->hasPrimed = true;
+                for (auto& p : *inv.code->params) {
+                    if (p.invocant) continue;
+                    if (p.named) {
+                        std::string key = !p.namedKey.empty() ? p.namedKey
+                                        : p.name.size() > 1 ? p.name.substr(1) : p.name;
+                        if (namedBound.count(key)) continue;
+                        code.code->primedParams.push_back(&p);
+                    }
+                    else if (p.slurpy) code.code->primedParams.push_back(&p);
+                    else if (pos < posBound) pos++;      // consumed by the priming
+                    else code.code->primedParams.push_back(&p);
+                }
+            }
             return code;
         }
         if (m == "arity") {
+            if (inv.code->isWhateverCode) return Value::integer(std::max(1LL, inv.code->whateverArity));
             long long n = 0;
             if (inv.code->params) { for (auto& p : *inv.code->params) if (!p.slurpy && !p.named && !p.optional) n++; }
             else n = (long long)inv.code->placeholders.size();
             return Value::integer(n);
         }
         if (m == "count") { // required + optional positionals; a slurpy makes it Inf
+            if (inv.code->isWhateverCode) return Value::integer(std::max(1LL, inv.code->whateverArity));
             long long n = 0; bool slurpy = false;
             if (inv.code->params) for (auto& p : *inv.code->params) {
                 if (p.named) continue;

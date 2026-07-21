@@ -90,6 +90,7 @@ struct ListExpr : Expr {
 // `pkg` holds an optional package qualifier: `Foo::($bar)` → pkg="Foo".
 struct SymbolicRef : Expr {
     ExprPtr nameExpr;
+    std::vector<ExprPtr> segs; // trailing `::seg` path parts (literal StrLit or dynamic `::(…)`)
     std::string pkg;      // optional package qualifier `Foo::($bar)` → "Foo"
     std::string sigil;    // sigil form `$::(…)`/`@::(…)`/`%::(…)`/`&::(…)`; empty = bare `::(…)`
     SymbolicRef(): Expr(NK::SymbolicRef) {}

@@ -21,6 +21,7 @@ private:
     std::string podData_;    // rendered content of =begin pod blocks
     size_t pos_ = 0;
     size_t atomDropEnd_ = (size_t)-1; // pos right after a dropped ⚛ marker (not whitespace)
+    int angleWords_ = 0; // depth inside a bare `< … >` word list: quote/regex lexing is off (content is words)
     int line_ = 1;
 public:
     std::map<int, std::string> declPod_; // `#= text` trailing declarator pod, by line
