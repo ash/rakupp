@@ -3281,6 +3281,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
         blk->stmts.push_back(parseStatement());
         if (!isKind(Tok::Semicolon)) enforceStmtSep();
     }
+    checkRedeclarations(blk->stmts);
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
     return blk;
@@ -3895,6 +3896,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         advance();
         parseSignature(Tok::RBracket);
         matchKind(Tok::RBracket);
+        cd->parameterized = true;
     }
     if (isPackage) {
         // package/module: the BRACED form `module Foo { ... }` runs its body in a
@@ -4108,6 +4110,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                            c->args.empty() && !c->callee;
             }
         }
+        if (bareStub) cd->isStubDecl = true; // `class A { ... }` — a redeclarable forward decl
         if (st && !bareStub &&
             (st->kind == NK::ClassDecl || st->kind == NK::EnumDecl || st->kind == NK::SubDecl ||
              st->kind == NK::VarDecl || st->kind == NK::ExprStmt))
@@ -4603,6 +4606,55 @@ StmtPtr Parser::parseStatementImpl() {
     return s;
 }
 
+
+// Same-scope redeclarations: a second non-multi `sub a`, a non-multi/multi
+// mix, or a duplicated type name (class/role/grammar/subset in any mix) is
+// X::Redeclaration, checked per parsed statement list (parse-level, so sub
+// hoisting and EVAL scoping cannot confuse it).
+void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
+    std::map<std::string, int> subs;  // 1=non-multi seen, 2=multi seen, 3=both
+    std::map<std::string, int> types;
+    for (auto& s : stmts) {
+        if (!s) continue;
+        if (s->kind == NK::SubDecl) {
+            auto* sd = static_cast<const SubDecl*>(s.get());
+            if (sd->name.empty() || sd->isProto || sd->isMethod) continue;
+            // `sub f {...}` (bare yada body) is a redeclarable forward stub
+            if (sd->body.size() == 1 && sd->body[0]->kind == NK::ExprStmt) {
+                const Expr* e = static_cast<const ExprStmt*>(sd->body[0].get())->e.get();
+                if (e && e->kind == NK::Call) {
+                    const auto* c = static_cast<const Call*>(e);
+                    if ((c->name == "..." || c->name == "!!!" || c->name == "???") &&
+                        c->args.empty() && !c->callee) continue;
+                }
+            }
+            int& f = subs[sd->name];
+            int bit = sd->isMulti ? 2 : 1;
+            if ((f & 1) && bit == 1)
+                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
+                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            if ((f && bit == 1) || ((f & 1) && bit == 2))
+                throw ParseError("Redeclaration of routine '" + sd->name + "' (multi/only mix)", sd->line,
+                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            f |= bit;
+        }
+        else if (s->kind == NK::ClassDecl) {
+            auto* cd = static_cast<const ClassDecl*>(s.get());
+            if (cd->name.empty() || cd->isAugment || cd->isStubDecl || cd->parameterized) continue;
+            if (types[cd->name]++)
+                throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
+                                 "X::Redeclaration", {{"symbol", cd->name}});
+        }
+        else if (s->kind == NK::SubsetDecl) {
+            auto* su = static_cast<const SubsetDecl*>(s.get());
+            if (su->name.empty()) continue;
+            if (types[su->name]++)
+                throw ParseError("Redeclaration of symbol '" + su->name + "'", su->line,
+                                 "X::Redeclaration", {{"symbol", su->name}});
+        }
+    }
+}
+
 Program Parser::parseProgram() {
     Program prog;
     while (!isKind(Tok::End)) {
@@ -4610,6 +4662,7 @@ Program Parser::parseProgram() {
         prog.stmts.push_back(parseStatement());
         if (!matchKind(Tok::Semicolon)) enforceStmtSep();
     }
+    checkRedeclarations(prog.stmts);
     return prog;
 }
 

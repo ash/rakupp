@@ -23,6 +23,7 @@ class Parser {
 public:
     explicit Parser(std::vector<Token> toks);
     Program parseProgram();
+    void checkRedeclarations(const std::vector<StmtPtr>& stmts); // same-scope dup subs/types
     ExprPtr parseExpressionPublic() { return parseExpression(); }
     // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
     void declareUserOp(const std::string& kind, const std::string& name) {
