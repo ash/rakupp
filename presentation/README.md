@@ -5,9 +5,9 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 in a browser, or serve the directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
-12-page PDF export — download it and flip through in any PDF viewer. (It's an
-image-per-page export; GitHub's inline blob viewer is unreliable with PDFs, so
-download it rather than expecting a preview.) The interactive `index.html` is the
+12-page PDF export — download it and flip through in any PDF viewer (the text
+stays selectable). GitHub's inline blob viewer is unreliable with PDFs, so
+download it rather than expecting a preview. The interactive `index.html` is the
 real thing: keyboard navigation, a light/dark toggle, hover states. Regenerate
 the PDF from the deck:
 
@@ -16,16 +16,11 @@ the PDF from the deck:
 sed 's/<html lang="en">/<html lang="en" data-theme="dark">/' index.html > /tmp/deck-print.html
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --no-pdf-header-footer --virtual-time-budget=4000 \
-  --print-to-pdf="/tmp/deck.pdf" "file:///tmp/deck-print.html"
+  --print-to-pdf="/tmp/deck-chrome.pdf" "file:///tmp/deck-print.html"
 
-# 2. rasterise to PNGs and assemble an image-per-page PDF (renders on GitHub)
-pdftoppm -png -r 150 /tmp/deck.pdf /tmp/pg
-python3 - <<'PY'
-from PIL import Image; import glob
-imgs = [Image.open(f).convert('RGB') for f in sorted(glob.glob('/tmp/pg-*.png'))]
-imgs[0].save('rakupp-presentation.pdf', save_all=True, append_images=imgs[1:],
-             resolution=150.0, title='Raku++ — presentation')
-PY
+# 2. normalise to PDF 1.4 — smaller and widely compatible, text preserved
+gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/prepress \
+   -dNOPAUSE -dBATCH -dQUIET -sOutputFile="rakupp-presentation.pdf" /tmp/deck-chrome.pdf
 ```
 
 - **Navigate:** `←` / `→` (also PageUp/PageDown, Space), `Home` / `End`, the dot
