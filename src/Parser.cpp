@@ -2520,7 +2520,10 @@ ExprPtr Parser::parsePrimary() {
             std::string name = t.text;
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
-            if (name == "self") { advance(); return std::make_unique<SelfTerm>(); }
+            if (name == "self" && peek().kind != Tok::FatArrow) {
+                advance(); // `self => v` stays an autoquoted pair key
+                return std::make_unique<SelfTerm>();
+            }
             // mathematical constants are TERMS, never listops: `e + 1`, `pi + 0`,
             // `Inf+100` (else `+100` is misread as a listop argument to `Inf`).
             // A tight `pi()` is left as a call so it dies as an undeclared routine.
@@ -2584,7 +2587,8 @@ ExprPtr Parser::parsePrimary() {
                  (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace))) {
                 advance(); // consume the keyword (parseClass expects it already consumed)
                 auto decl = parseClass(name == "role", name == "grammar",
-                                       name == "package" || name == "module");
+                                       name == "package" || name == "module",
+                                       false, name);
                 auto be = std::make_unique<BlockExpr>();
                 be->body.push_back(std::move(decl));
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
@@ -3288,6 +3292,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
 std::unique_ptr<Block> Parser::parseBlock() {
     expectKind(Tok::LBrace, "{");
     size_t opMark = opUndo_.size(); // user operators are lexically scoped
+    monkeyScopes_.push_back(0);
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
@@ -3295,6 +3300,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
         if (!isKind(Tok::Semicolon)) enforceStmtSep();
     }
     checkRedeclarations(blk->stmts);
+    monkeyScopes_.pop_back();
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
     return blk;
@@ -3650,6 +3656,28 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             advance();
         }
     }
+    // X::Parameter::WrongOrder — required positionals come first, then
+    // optional positionals, then variadics; positionals cannot follow nameds.
+    {
+        std::string seen; // last disqualifying group: optional / variadic / named
+        for (const auto& p : params) {
+            if (p.invocant || p.sigil == '|' || p.sigil == '\\') continue;
+            if (p.named) { if (!p.slurpy) seen = "named"; continue; }
+            if (p.slurpy) { if (p.sigil != '%') seen = "variadic"; continue; }
+            bool opt = p.optional || p.defaultVal != nullptr;
+            if (!opt && !seen.empty())
+                throw ParseError("Cannot put required parameter " + p.name +
+                                 " after " + seen + " parameters", cur().line,
+                                 "X::Parameter::WrongOrder",
+                                 {{"misplaced", "required"}, {"after", seen}});
+            if (opt && seen == "variadic")
+                throw ParseError("Cannot put optional positional parameter " + p.name +
+                                 " after variadic parameters", cur().line,
+                                 "X::Parameter::WrongOrder",
+                                 {{"misplaced", "optional positional"}, {"after", seen}});
+            if (opt && seen.empty()) seen = "optional";
+        }
+    }
     return params;
 }
 
@@ -3898,8 +3926,27 @@ void Parser::skipToStatementEnd() {
     }
 }
 
-StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isUnit) {
+void Parser::checkVirtualCallInDefault(size_t defStart) {
+    // `has $.x = $.y` — a virtual call in an attribute default runs against a
+    // partially constructed object; Rakudo rejects it at compile time.
+    for (size_t i = defStart; i < pos_ && i < toks_.size(); i++) {
+        const Token& tk = toks_[i];
+        if (tk.kind == Tok::Var && tk.text.size() > 2 && tk.text[1] == '.' &&
+            (std::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+            throw ParseError("Virtual call " + tk.text + " may not be used on "
+                             "partially constructed object", tk.line,
+                             "X::Syntax::VirtualCall", {{"call", tk.text}});
+    }
+}
+
+StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isUnit,
+                           const std::string& kindKw) {
     // 'class'/'role'/'grammar'/'module'/'package' already consumed
+    struct DepthGuard {
+        int& d;
+        DepthGuard(int& x) : d(x) { d++; }
+        ~DepthGuard() { d--; }
+    } classDepthGuard(classDepth_);
     auto cd = std::make_unique<ClassDecl>();
     cd->isRole = isRole;
     cd->isGrammar = isGrammar;
@@ -3929,6 +3976,12 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         advance(); // {
         while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;
+            if (isIdent("has") &&
+                (peek().kind == Tok::Var || peek().kind == Tok::LParen ||
+                 (peek().kind == Tok::Ident && peek(2).kind == Tok::Var)))
+                throw ParseError("A " + kindKw + " cannot have attributes",
+                                 cur().line, "X::Attribute::Package",
+                                 {{"package-kind", kindKw}});
             cd->body.push_back(parseStatement());
         }
         expectKind(Tok::RBrace, "}");
@@ -3977,6 +4030,10 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             continue;
         }
         if (isIdent("has")) {
+            if (isPackage)
+                throw ParseError("A " + kindKw + " cannot have attributes",
+                                 cur().line, "X::Attribute::Package",
+                                 {{"package-kind", kindKw}});
             advance();
             // optional type before the attribute var: `has Int $.x`, `has Int:D $.x`,
             // `has Array[Int] $.x` — consume the type name, any :D/:U/:_ smiley, and [..] params.
@@ -3997,7 +4054,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         size_t idx = 1;
                         if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }
                         a.name = vn.substr(idx);
-                        if (matchOp("=")) a.def = parseExpr(BP_ASSIGN);
+                        if (matchOp("=")) {
+                            size_t defStart = pos_;
+                            a.def = parseExpr(BP_ASSIGN);
+                            checkVirtualCallInDefault(defStart);
+                        }
                         cd->attrs.push_back(std::move(a));
                     } else advance();
                     matchKind(Tok::Comma);
@@ -4041,7 +4102,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     if (isKind(Tok::Ident) || isKind(Tok::Var)) advance();
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
                 }
-                if (matchOp("=") || matchOp(".=")) a.def = parseExpr(BP_ASSIGN);
+                if (matchOp("=") || matchOp(".=")) {
+                    size_t defStart = pos_;
+                    a.def = parseExpr(BP_ASSIGN);
+                    checkVirtualCallInDefault(defStart);
+                }
                 // a newline may end the declaration (`has $.cl = { … }` with no
                 // ';'): don't skip INTO the next class-body statement hunting one
                 if (!(cur().kind == Tok::Ident &&
@@ -4070,11 +4135,17 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         }
         if ((isIdent("multi") || isIdent("proto")) &&
             !(peek(1).text == "token" || peek(1).text == "rule" || peek(1).text == "regex")) {
+            std::string multiness = cur().text;
             advance();
             bool isM = false, isSub = false;
             if (isIdent("method") || isIdent("submethod")) { isSub = isIdent("submethod"); advance(); isM = true; }
             else if (isIdent("sub")) advance();
             auto s = parseSub(true);
+            if (static_cast<SubDecl*>(s.get())->name.empty())
+                throw ParseError("Cannot put " + multiness + " on anonymous routine",
+                                 cur().line, "X::Anon::Multi",
+                                 {{"multiness", multiness},
+                                  {"routine-type", isM ? "method" : "sub"}});
             static_cast<SubDecl*>(s.get())->isMethod = isM;
             static_cast<SubDecl*>(s.get())->isSubmethod = isSub;
             cd->methods.push_back(std::unique_ptr<SubDecl>(static_cast<SubDecl*>(s.release())));
@@ -4317,6 +4388,13 @@ StmtPtr Parser::parseStatementImpl() {
              peek().text == "grammar" || peek().text == "monitor")) {
             advance(); // augment
             std::string what = advance().text; // class/role/grammar/monitor
+            if (!monkeyActive())
+                throw ParseError("augment not allowed without 'use MONKEY-TYPING'",
+                                 t.line, "X::Syntax::Augment::WithoutMonkeyTyping", {});
+            if (what == "role")
+                throw ParseError("Cannot augment role " + cur().text +
+                                 ", since roles are immutable",
+                                 t.line, "X::Syntax::Augment::Illegal", {});
             // A smiley (`:D`/`:U`) or `:auth`/`:ver`/`:api` adverb on an augment
             // target is illegal — you can only augment a bare type name (S12).
             if (cur().kind == Tok::Ident && peek().kind == Tok::Op && peek().text == ":" &&
@@ -4326,7 +4404,13 @@ StmtPtr Parser::parseStatementImpl() {
                     error("cannot augment a type with a '" + adv + "' adverb");
             }
             auto st = parseClass(what == "role", what == "grammar");
-            if (st->kind == NK::ClassDecl) static_cast<ClassDecl*>(st.get())->isAugment = true;
+            if (st->kind == NK::ClassDecl) {
+                auto* acd = static_cast<ClassDecl*>(st.get());
+                if (acd->name.empty())
+                    throw ParseError("Cannot augment anonymous " + what, t.line,
+                                     "X::Anon::Augment", {{"package-kind", what}});
+                acd->isAugment = true;
+            }
             return st;
         }
         // `unit class/role/grammar Foo;` — the rest of the file is the body.
@@ -4335,6 +4419,22 @@ StmtPtr Parser::parseStatementImpl() {
             advance(); // unit
             std::string what = advance().text; // class/role/grammar
             return parseClass(what == "role", what == "grammar", false, /*isUnit=*/true);
+        }
+        // `has` reaches plain statement parsing either outside any class body
+        // (an error) or nested in a block within one, e.g. `has` inside a
+        // class-body sub, which Rakudo allows (parseClass consumes plain
+        // class-body attribute declarations itself). Only diagnose at true
+        // program top level: some anon-class parse routes (colon-args) also
+        // deliver their body statements here.
+        if (kw == "has" && classDepth_ == 0 && monkeyScopes_.size() == 1) {
+            if (peek().kind == Tok::Ident && declKw.count(peek().text))
+                throw ParseError("Cannot use 'has' with a " + peek().text + " declaration",
+                                 t.line, "X::Declaration::Scope",
+                                 {{"scope", "has"}, {"declaration", peek().text}});
+            if (peek().kind == Tok::Var || peek().kind == Tok::LParen)
+                throw ParseError("You cannot declare an attribute here; "
+                                 "maybe you'd like a class or a role?",
+                                 t.line, "X::Attribute::NoPackage", {});
         }
         if (kw == "my" || kw == "our" || kw == "state" || kw == "has" ||
             kw == "anon" || kw == "unit" || kw == "augment") {
@@ -4346,7 +4446,17 @@ StmtPtr Parser::parseStatementImpl() {
                 StmtPtr st = parseStatement();
                 unitDecl_ = savedUnit;
                 // `our sub`/`our multi` — remember package scope so it installs globally.
-                if (wasOur && st && st->kind == NK::SubDecl) static_cast<SubDecl*>(st.get())->isOur = true;
+                if (wasOur && st && st->kind == NK::SubDecl) {
+                    auto* osd = static_cast<SubDecl*>(st.get());
+                    if (osd->isProto) ourProtos_.insert(osd->name);
+                    // candidates under an our-scoped proto are fine (roast
+                    // S06-multi/type-based.t); only a bare `our multi` errs
+                    if (osd->isMulti && !osd->isProto && !ourProtos_.count(osd->name))
+                        throw ParseError("Cannot use 'our' with individual multi candidates",
+                                         t.line, "X::Declaration::Scope::Multi",
+                                         {{"scope", "our"}, {"declaration", "multi"}});
+                    osd->isOur = true;
+                }
                 // `unit sub MAIN(…);` — no block: the REST OF THE FILE is the body
                 if (wasUnit && st && st->kind == NK::SubDecl &&
                     static_cast<SubDecl*>(st.get())->body.empty()) {
@@ -4410,6 +4520,8 @@ StmtPtr Parser::parseStatementImpl() {
                 return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
+            if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
+                monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)
             if (u->module == "lib" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
                 !isKind(Tok::StrLit) && !isKind(Tok::StrInterp)) {
                 u->argExpr = parseExpression(); // `use lib $?FILE.IO.parent`
@@ -4434,7 +4546,13 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "multi" || kw == "proto") {
             advance();
             if (isIdent("sub")) advance();
-            return parseSub(true, kw == "proto");
+            auto st = parseSub(true, kw == "proto");
+            if (st && st->kind == NK::SubDecl &&
+                static_cast<SubDecl*>(st.get())->name.empty())
+                throw ParseError("Cannot put " + kw + " on anonymous routine", t.line,
+                                 "X::Anon::Multi",
+                                 {{"multiness", kw}, {"routine-type", "sub"}});
+            return st;
         }
         if (kw == "if") { advance(); return parseIf(false); }
         if (kw == "unless") { advance(); return parseIf(true); }
@@ -4553,7 +4671,8 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "class" || kw == "role" || kw == "monitor" ||
             kw == "grammar" || kw == "module" || kw == "package") {
             advance(); return parseClass(kw == "role", kw == "grammar",
-                                         kw == "module" || kw == "package");
+                                         kw == "module" || kw == "package",
+                                         false, kw);
         }
         if (kw == "subset") { advance(); return parseSubset(); }
         if (kw == "enum") { advance(); return parseEnum(); }

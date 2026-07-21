@@ -2802,7 +2802,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; ci->ruleOrder.push_back(r.name); }
                     noteSymbolMutation("augment (user type)");
                 } else {
-                    // augment a built-in type — park methods in the extension table
+                    // augment a built-in type — park methods in the extension
+                    // table; a name that is neither a user type nor a known
+                    // built-in has nothing to augment
+                    if (!isKnownTypeName(cd->name))
+                        throwTyped("X::Augment::NoSuchType",
+                                   {{"package-kind", "class"}, {"package", cd->name}},
+                                   "You tried to augment class " + cd->name +
+                                   ", but it does not exist");
                     for (auto& md : cd->methods) addTo(builtinExt_[cd->name], md.get());
                     noteSymbolMutation("augment (built-in type)");
                 }
@@ -11474,6 +11481,10 @@ Value Interpreter::eval(Expr* e) {
             }
             if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
                 Value* selfp = tctx_.cur->find("self");
+                if (!selfp)
+                    throwTyped("X::Syntax::NoSelf", {{"variable", ve->name}},
+                               "Variable " + ve->name +
+                               " used where no 'self' is available");
                 if (selfp && selfp->t == VT::Object && selfp->obj) {
                     std::string an = ve->name.substr(2);
                     auto it = selfp->obj->attrs.find(an);
@@ -11632,7 +11643,10 @@ Value Interpreter::eval(Expr* e) {
         }
         case NK::SelfTerm: {
             Value* p = tctx_.cur->find("self");
-            return p ? *p : Value::any();
+            if (!p)
+                throwTyped("X::Syntax::Self::WithoutObject", {},
+                           "'self' used where no object is available");
+            return *p;
         }
         case NK::NameTerm: {
             if (static_cast<NameTerm*>(e)->name == "Empty" && !classes_.count("Empty")) { // the Empty term: an empty Slip (a user `class Empty` shadows it)

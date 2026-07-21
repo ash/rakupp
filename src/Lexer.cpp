@@ -1130,8 +1130,66 @@ bool Lexer::tryQuoteForm(Token& out) {
     return true;
 }
 
+bool Lexer::p5AssignAhead(size_t off) const {
+    while (peek(off) == ' ' || peek(off) == '\t') off++;
+    return peek(off) == '=' && peek(off + 1) != '=' && peek(off + 1) != '>' &&
+           peek(off + 1) != '~';
+}
+
 Token Lexer::lexIdentOrVar() {
     char sig = peek();
+    // Perl 5 variable forms are compile-time errors (X::Syntax::Perl5Var).
+    // Punctuation vars only reject when directly assigned, so the legal
+    // readings ($.foo, $?FILE, %!attr, my $;, anonymous $, contextualizers)
+    // stay untouched. Inside a `< … >` word list everything is words.
+    if (sig == '$' && angleWords_ == 0) {
+        char c1 = peek(1);
+        if (c1 == '^' && std::isupper((unsigned char)peek(2)) &&
+            !(std::isalnum((unsigned char)peek(3)) || peek(3) == '_'))
+            throw ParseError("Unsupported use of $^" + std::string(1, peek(2)) +
+                             " variable; in Raku please use a different construct",
+                             line_, "X::Syntax::Perl5Var", {});
+        if (c1 == '#' && (isIdentStart(peek(2)) || peek(2) == '$'))
+            throw ParseError("Unsupported use of $# variable; in Raku please "
+                             "use .end or .elems on the array",
+                             line_, "X::Syntax::Perl5Var", {});
+        // `$/ = "\n\n"` — assigning a literal newline string to $/ is the Perl 5
+        // input-record-separator idiom ($/ itself stays a normal variable)
+        if (c1 == '/') {
+            size_t off = 2;
+            while (peek(off) == ' ' || peek(off) == '\t') off++;
+            if (peek(off) == '=' && peek(off + 1) != '=' && peek(off + 1) != '>') {
+                off++;
+                while (peek(off) == ' ' || peek(off) == '\t') off++;
+                if (peek(off) == '"') {
+                    size_t q = off + 1;
+                    int esc = 0;
+                    while (peek(q) == '\\' && (peek(q + 1) == 'n' || peek(q + 1) == 'r')) { q += 2; esc++; }
+                    if (esc && peek(q) == '"')
+                        throw ParseError("Unsupported use of $/ variable as input "
+                                         "record separator; in Raku please use "
+                                         "the filehandle's .nl-in attribute",
+                                         line_, "X::Syntax::Perl5Var", {});
+                }
+            }
+        }
+        static const std::string p5punct = "\"$;&`',.\\|?@";
+        if (c1 && p5punct.find(c1) != std::string::npos && p5AssignAhead(2)) {
+            std::string sugg = c1 == '\\'
+                ? "; in Raku please use the .nl-out attribute on a filehandle"
+                : "; in Raku please use a different construct";
+            throw ParseError("Unsupported use of $" + std::string(1, c1) +
+                             " variable" + sugg, line_, "X::Syntax::Perl5Var", {});
+        }
+    }
+    else if ((sig == '@' || sig == '%') && angleWords_ == 0 &&
+             (peek(1) == '-' || peek(1) == '+' || (sig == '%' && peek(1) == '!')) &&
+             p5AssignAhead(2)) {
+        throw ParseError("Unsupported use of " + std::string(1, sig) +
+                         std::string(1, peek(1)) +
+                         " variable; in Raku please use the named captures directly",
+                         line_, "X::Syntax::Perl5Var", {});
+    }
     if (sig == '$' || sig == '@' || sig == '%' || sig == '&') {
         std::string name;
         name += advance(); // sigil
@@ -1663,6 +1721,10 @@ std::vector<Token> Lexer::tokenize() {
             t = lexQuoted('"');
         } else if (c == '$' || c == '@' || c == '%' || c == '&' || isIdentStart(c) || unicodeLetterHere()) {
             // '%' and '&' could be operators; treat as var only if followed by name/twigil
+            if (c == '%' && !inAngle && (peek(1) == '-' || peek(1) == '+') && p5AssignAhead(2))
+                throw ParseError("Unsupported use of %" + std::string(1, peek(1)) +
+                                 " variable; in Raku please use the named captures directly",
+                                 line_, "X::Syntax::Perl5Var", {});
             if ((c == '%' || c == '&') &&
                 !(isIdentStart(peek(1)) || peek(1) == '*' || peek(1) == '.' ||
                   peek(1) == '!' || peek(1) == '^' ||

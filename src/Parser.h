@@ -110,8 +110,18 @@ private:
     StmtPtr parseStatementImpl();
     StmtPtr applyModifiers(StmtPtr s);
     std::unique_ptr<Block> parseBlock();
+    void checkVirtualCallInDefault(size_t defStart); // `has $.x = $.y` is illegal
     StmtPtr parseSub(bool isMulti, bool isProto = false);
-    StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false, bool isUnit = false);
+    StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false, bool isUnit = false,
+                       const std::string& kindKw = "");
+    int classDepth_ = 0; // >0 while parsing inside a class/role/grammar body
+    std::set<std::string> ourProtos_; // names with an our-scoped proto (our multi is then legal)
+    // `use MONKEY-TYPING` is lexically scoped: one frame per block, program frame at [0]
+    std::vector<char> monkeyScopes_ = {0};
+    bool monkeyActive() const {
+        for (char f : monkeyScopes_) if (f) return true;
+        return false;
+    }
     void skipToStatementEnd(); // advance to the next ; or class-body }, balancing ({[ ]})
     StmtPtr parseSubset();
     StmtPtr parseEnum();

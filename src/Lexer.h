@@ -52,6 +52,7 @@ private:
     bool warnedLeadingZero_ = false; // emit the leading-0-isn't-octal warning once
     Token lexIdentOrVar();
     Token lexOperator();
+    bool p5AssignAhead(size_t off) const; // ws* then a plain `=` (not == => =~)
 
     Token make(Tok k, const std::string& t);
 };
