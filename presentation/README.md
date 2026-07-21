@@ -5,11 +5,11 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 in a browser, or serve the directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
-12-page PDF export (GitHub renders it inline). It's an *image* PDF — one
-rendered slide per page — because GitHub's inline viewer rejects the vector PDFs
-that Chrome and Ghostscript produce. The interactive `index.html` is the real
-thing: keyboard navigation, a light/dark toggle, hover states. Regenerate the
-PDF from the deck:
+12-page PDF export — download it and flip through in any PDF viewer. (It's an
+image-per-page export; GitHub's inline blob viewer is unreliable with PDFs, so
+download it rather than expecting a preview.) The interactive `index.html` is the
+real thing: keyboard navigation, a light/dark toggle, hover states. Regenerate
+the PDF from the deck:
 
 ```sh
 # 1. force the dark theme, print one slide per 1280x720 landscape page
