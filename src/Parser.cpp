@@ -1351,7 +1351,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     // term; `my $p = my package X {}` routes type declarations the same way
     if (isKind(Tok::Ident) &&
         (((cur().text == "sub" || cur().text == "method") &&
-          (peek().kind == Tok::LBrace || peek().kind == Tok::LParen)) ||
+          (peek().kind == Tok::LBrace || peek().kind == Tok::LParen ||
+           (peek().kind == Tok::Ident &&
+            (peek(2).kind == Tok::LBrace || peek(2).kind == Tok::LParen ||
+             (peek(2).kind == Tok::Op && peek(2).text.rfind("(|", 0) == 0))))) || // `my method bar (|) {…}` — "(|)" lexes as the set-op
          ((cur().text == "class" || cur().text == "role" || cur().text == "grammar" ||
            cur().text == "package" || cur().text == "module") &&
           (peek().kind == Tok::LBrace ||
@@ -1996,7 +1999,9 @@ ExprPtr Parser::parsePrimary() {
             return e;
         }
         case Tok::StrLit: {
-            bool fmt = cur().flag; auto e = std::make_unique<StrLit>(advance().text);
+            bool fmt = cur().flag; bool qx = cur().text2 == "qx";
+            auto e = std::make_unique<StrLit>(advance().text);
+            if (qx) { auto c = std::make_unique<Call>(); c->name = "__qx__"; c->args.push_back(std::move(e)); return c; }
             if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
             return e;
         }
@@ -2008,7 +2013,9 @@ ExprPtr Parser::parsePrimary() {
             return mc;
         }
         case Tok::StrInterp: {
-            bool fmt = cur().flag; std::string raw = advance().text; auto e = parseInterpString(raw);
+            bool fmt = cur().flag; bool qx = cur().text2 == "qx";
+            std::string raw = advance().text; auto e = parseInterpString(raw);
+            if (qx) { auto c = std::make_unique<Call>(); c->name = "__qx__"; c->args.push_back(std::move(e)); return c; }
             if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
             return e;
         }

@@ -793,9 +793,25 @@ bool Lexer::tryQuoteForm(Token& out) {
     bool isSubst = (w == "s" || w == "S" || w == "ss" || w == "SS");
     bool isTrans = (w == "tr"); // transliteration tr/from/to/ (Raku dropped y///)
     bool isWords = (w == "qw" || w == "Qw" || w == "qqw" || w == "qww" || w == "qqww"); // word-list quotes
-    if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans) return false;
-    // adverbs between keyword and delimiter, e.g. m:i/.../ , s:g/.../.../
+    bool isExec = (w == "qx" || w == "qqx"); // shell-execute quotes: qx/env/
+    // Q-shorthands: Qs/Qa/Qh/Qc/Qb/Qq — `Q` with one feature adverb glued on
+    std::string shortAdv;
+    if (w.size() == 2 && w[0] == 'Q' && std::strchr("sahcbqf", w[1])) {
+        shortAdv = std::string(":") + w[1] + " ";
+        w = "Q";
+    }
+    if (w != "q" && w != "qq" && w != "Q" && !isRegex && !isSubst && !isWords && !isTrans && !isExec) return false;
+    // adverbs between keyword and delimiter, e.g. m:i/.../ , s:g/.../.../ —
+    // whitespace before/between adverbs is allowed (`q :w /a b/`); a quote form
+    // only commits if a delimiter follows, so a stray `q :foo` still falls back
     std::string adverbs;
+    auto skipWsBeforeAdverb = [&]() {
+        size_t ws = p;
+        while (ws < src_.size() && (src_[ws] == ' ' || src_[ws] == '\t')) ws++;
+        if (ws > p && ws + 1 < src_.size() && src_[ws] == ':' &&
+            (std::isalpha((unsigned char)src_[ws + 1]) || src_[ws + 1] == '!')) p = ws;
+    };
+    skipWsBeforeAdverb();
     while (p < src_.size() && src_[p] == ':') {
         size_t q = p + 1;
         std::string a;
@@ -809,7 +825,9 @@ bool Lexer::tryQuoteForm(Token& out) {
         }
         adverbs += ":" + a + arg + " ";
         p = q;
+        skipWsBeforeAdverb();
     }
+    if (!shortAdv.empty()) adverbs = shortAdv + adverbs; // Qs → Q:s
     if (w == "ss" || w == "SS") adverbs = ":samespace " + adverbs; // ss/// == s:samespace///
     // whitespace is allowed before a bracketing delimiter: `s:g [ pat ] = repl`,
     // and before `/` too (`s :g /pat//`, `qw /a b/` — Rakudo accepts both)
@@ -818,6 +836,51 @@ bool Lexer::tryQuoteForm(Token& out) {
           (src_[ws] == '(' || src_[ws] == '[' || src_[ws] == '{' || src_[ws] == '<' ||
            src_[ws] == '/')) p = ws; }
     if (p >= src_.size()) return false;
+    // arbitrary Unicode delimiter: `Q:b♥…♥` — the same codepoint closes; no
+    // nesting, backslash protects. Only plain q/qq/Q forms (not m/s/tr/words).
+    if (!isRegex && !isSubst && !isTrans && !isWords && !isExec &&
+        (unsigned char)src_[p] >= 0x80 &&
+        !((unsigned char)src_[p] == 0xC2 && p + 1 < src_.size() && (unsigned char)src_[p + 1] == 0xAB) && // « handled below
+        !((unsigned char)src_[p] == 0xEF)) { // ｢ handled elsewhere
+        unsigned char b0 = (unsigned char)src_[p];
+        int dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+        if (p + dlen <= src_.size()) {
+            std::string D = src_.substr(p, dlen);
+            while (pos_ < p) advance();
+            for (int k = 0; k < dlen; k++) advance(); // opening delimiter
+            std::string raw;
+            while (!eof() && src_.compare(pos_, dlen, D) != 0) {
+                if (peek() == '\\') {
+                    raw += advance();
+                    if (!eof() && src_.compare(pos_, dlen, D) == 0) { for (int k = 0; k < dlen; k++) raw += advance(); }
+                    else if (!eof()) raw += advance();
+                    continue;
+                }
+                raw += advance();
+            }
+            if (!eof()) for (int k = 0; k < dlen; k++) advance(); // closing delimiter
+            bool interp = (w == "qq");
+            std::string feats = interp ? "sahfcb" : "";
+            bool anyFeat = false;
+            auto toggle = [&](const char* name, char f) {
+                if (adverbs.find(":" + std::string(name) + " ") != std::string::npos) {
+                    anyFeat = true;
+                    if (feats.find(f) == std::string::npos) feats += f;
+                }
+                if (adverbs.find(":!" + std::string(name) + " ") != std::string::npos) {
+                    anyFeat = true;
+                    size_t at = feats.find(f);
+                    if (at != std::string::npos) feats.erase(at, 1);
+                }
+            };
+            toggle("s", 's'); toggle("a", 'a'); toggle("h", 'h');
+            toggle("f", 'f'); toggle("c", 'c'); toggle("b", 'b');
+            if (anyFeat && !feats.empty()) out = make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
+            else if (interp) out = make(Tok::StrInterp, raw);
+            else out = make(Tok::StrLit, raw);
+            return true;
+        }
+    }
     // guillemet-delimited quote: Q«…» / Q««…»» (double «« matches »», so a single
     // » may appear inside). q interpolates nothing extra; qq interpolates.
     if (!isRegex && !isSubst && !isTrans && !isWords &&
@@ -941,7 +1004,14 @@ bool Lexer::tryQuoteForm(Token& out) {
         }
     }
     else raw = readPart(patQuoteAware, codeBlocks);
-    if (isWords) { // qw<...> / Qw<...> / qqw<...> : raw content, split on whitespace by the parser
+    if (isExec) { // qx = literal command, qqx = interpolated command
+        out = make(w == "qqx" ? Tok::StrInterp : Tok::StrLit, raw);
+        out.text2 = "qx";
+        return true;
+    }
+    // the :w / :words adverb makes any q-form a word list: `q:w /a b/`
+    if (isWords || adverbs.find(":w ") != std::string::npos ||
+        adverbs.find(":words ") != std::string::npos) {
         out = make(Tok::QwList, raw);
         return true;
     }
@@ -1382,8 +1452,9 @@ Token Lexer::lexOperator() {
         }
         // An inner beginning with `.` is a hyper method call (`@a>>.foo>>.bar`),
         // not a binary metaop — leave it for parsePostfix (else `>>.Str>>` would be
-        // read as one infix token and the method chain would break).
-        if (!inner.empty() && inner[0] != '.' &&
+        // read as one infix token and the method chain would break). A `:` inner
+        // is a colonpair WORD in a `<<:def>>` qww list, never an operator.
+        if (!inner.empty() && inner[0] != '.' && inner[0] != ':' &&
             ((peek() == '>' && peek(1) == '>') || (peek() == '<' && peek(1) == '<'))) {
             s += inner; s += advance(); s += advance();
             return make(Tok::Op, s);

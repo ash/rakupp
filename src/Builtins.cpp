@@ -3868,6 +3868,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
 
+    // $handle.restore — undo the wrap this WrapHandle came from (sugar for
+    // &routine.unwrap($handle))
+    if (inv.t == VT::Hash && inv.hashKind == "WrapHandle" && m == "restore") {
+        Value routine = inv.hash->count("routine") ? (*inv.hash)["routine"] : Value();
+        if (routine.t == VT::Code && routine.code) {
+            ValueList one{inv};
+            return methodCall(routine, "unwrap", one);
+        }
+        return Value::boolean(false);
+    }
     // CompUnit::DependencySpecification accessors.
     if (inv.t == VT::Hash && inv.hashKind == "DependencySpec") {
         if (m == "short-name" || m == "version-matcher" || m == "auth-matcher" || m == "api-matcher")
@@ -7662,6 +7672,22 @@ void Interpreter::registerBuiltins() {
         if (!std::getline(std::cin, line)) return Value::nil(); // EOF -> Nil
         if (!line.empty() && line.back() == '\r') line.pop_back();
         return valAllomorph(Value::str(line)); // Raku returns Str-with-val: numeric input is an allomorph
+    };
+    B["__qx__"] = [](Interpreter&, ValueList& a) -> Value { // qx// / qqx// shell capture
+        std::string cmd = a.empty() ? "" : a[0].toStr();
+        std::string outp; char buf[4096]; size_t n;
+#if defined(_WIN32)
+        FILE* p = _popen(cmd.c_str(), "r");
+        if (!p) return Value::str("");
+        while ((n = fread(buf, 1, sizeof buf, p)) > 0) outp.append(buf, n);
+        _pclose(p);
+#else
+        FILE* p = popen(cmd.c_str(), "r");
+        if (!p) return Value::str("");
+        while ((n = fread(buf, 1, sizeof buf, p)) > 0) outp.append(buf, n);
+        pclose(p);
+#endif
+        return Value::str(outp);
     };
     B["dd"] = [](Interpreter&, ValueList& a) -> Value {
         std::string out;
