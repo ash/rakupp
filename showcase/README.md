@@ -49,7 +49,7 @@ unchanged. The `.js` examples print byte-identical output under `node` and
 under `js.raku`, down to `0.1 + 0.2` and JS's truncating `%`.
 
 ```sh
-build/rakupp showcase/js/js.raku showcase/js/examples/fib.js
+build/rakupp showcase/js/js.raku showcase/js/examples/fizzbuzz.js
 build/rakupp showcase/js/js.raku showcase/js/examples/bank.ts
 build/rakupp showcase/js/js.raku --ast=file.js       # dump the parsed AST
 build/rakupp showcase/js/js.raku                     # no file → a REPL
@@ -120,7 +120,7 @@ indentation logic. Run any example with `--tokens` to watch a program turn into
 that stream.
 
 ```sh
-build/rakupp showcase/python/python.raku showcase/python/examples/fib.py
+build/rakupp showcase/python/python.raku showcase/python/examples/fizzbuzz.py
 build/rakupp showcase/python/python.raku --tokens=file.py   # show INDENT/DEDENT
 build/rakupp showcase/python/python.raku                    # no file → a REPL
 ```

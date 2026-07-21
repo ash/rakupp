@@ -5,7 +5,7 @@
 # explicit INDENT / DEDENT markers, and a normal Raku grammar parses the marker
 # stream into an AST that a tree-walking evaluator runs.
 #
-#   build/rakupp showcase/python/python.raku showcase/python/examples/fib.py
+#   build/rakupp showcase/python/python.raku showcase/python/examples/fizzbuzz.py
 #   build/rakupp showcase/python/python.raku --tokens=file.py   # show the marker stream
 #   build/rakupp showcase/python/python.raku --ast=file.py      # dump the AST
 #   build/rakupp showcase/python/python.raku                    # REPL

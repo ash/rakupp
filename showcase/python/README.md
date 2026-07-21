@@ -8,7 +8,7 @@ exactly like CPython — a **tokenizer pass turns indentation into explicit
 `INDENT` / `DEDENT` markers**, and a normal grammar parses the marker stream.
 
 ```sh
-build/rakupp showcase/python/python.raku showcase/python/examples/fib.py
+build/rakupp showcase/python/python.raku showcase/python/examples/fizzbuzz.py
 build/rakupp showcase/python/python.raku --tokens=file.py    # show the marker stream
 build/rakupp showcase/python/python.raku --ast=file.py       # dump the AST
 build/rakupp showcase/python/python.raku                     # no file → a REPL
