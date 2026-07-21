@@ -395,6 +395,7 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out);
 
 static void addIfPlaceholder(const std::string& name, std::set<std::string>& out) {
     if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) out.insert(name); // $^a positional, $:n named
+    else if (name == "@_") out.insert(name); // implicit slurpy — consumers filter
     else if (name.size() > 2 && name[1] == '!' &&
              (std::isalpha((unsigned char)name[2]) || name[2] == '_'))
         out.insert(name); // $!attr — attribute references; placeholder consumers filter these
@@ -463,8 +464,18 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
     std::set<std::string> ph;
     for (auto& s : body) collectPHStmt(s.get(), ph);
     std::vector<std::string> out;
-    for (auto& n : ph) if (n[1] != '!') out.push_back(n); // drop the $!attr refs
+    for (auto& n : ph) if (n[1] != '!' && n != "@_") out.push_back(n); // drop $!attr and @_ refs
     return out; // std::set is sorted
+}
+
+// the first placeholder-ish name (incl. @_) in a body that TAKES NO signature —
+// for the X::Placeholder::Block diagnostic
+std::string firstBlockPlaceholder(const std::vector<StmtPtr>& body) {
+    std::set<std::string> ph;
+    for (auto& s : body) collectPHStmt(s.get(), ph);
+    for (auto& n : ph) if (n[1] == '^' || n[1] == ':') return n;
+    if (ph.count("@_")) return "@_";
+    return "";
 }
 
 // every `$!x`/`@!x`/`%!x` attribute reference in a body (for undeclared-attribute checks)
@@ -2206,6 +2217,7 @@ Value Interpreter::evalString(const std::string& src) {
             }
         *prog = parser.parseProgram();
     } catch (ParseError& e) {
+        if (!e.exType.empty()) throwTyped(e.exType, e.exAttrs, e.what()); // typed compile diagnostic
         throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
     }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
@@ -2645,6 +2657,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
                 if (sd->isNative) { c.code->isNative = true; c.code->nativeLib = sd->nativeLib;
                                     c.code->nativeSym = sd->nativeSym.empty() ? sd->name : sd->nativeSym; }
+                for (auto& p : *prms) {
+                    // a default makes no sense on a slurpy or a required param
+                    if (p.defaultVal && p.slurpy)
+                        throwTyped("X::Parameter::Default", {{"how", "slurpy"}, {"parameter", p.name}},
+                            "Cannot put default on slurpy parameter " + p.name);
+                    if (p.defaultVal && p.required)
+                        throwTyped("X::Parameter::Default", {{"how", "required"}, {"parameter", p.name}},
+                            "Cannot put default on required parameter " + p.name);
+                }
                 if (prms->empty()) {
                     c.code->placeholders = computePlaceholders(sd->body);
                     // an explicit signature — even `()` — forbids placeholders
@@ -2975,6 +2996,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto bodyEnv = std::make_shared<Env>();
             bodyEnv->parent = tctx_.cur;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
+            {   // a class body takes no arguments — placeholders are compile errors
+                std::string ph = firstBlockPlaceholder(cd->body);
+                if (!ph.empty())
+                    throwTyped("X::Placeholder::Block", {{"placeholder", ph}},
+                        "Placeholder variable '" + ph +
+                        "' may not be used here because the surrounding block does not take a signature");
+            }
             for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; if (!r.params.empty()) ci->ruleParams[r.name] = r.params; ci->ruleOrder.push_back(r.name); }
             for (auto& a : cd->attrs) {
                 // a class may not redeclare an attribute a composed role declares
@@ -9542,8 +9570,19 @@ Value Interpreter::evalUnary(Unary* u) {
         return v; // item context
     }
     if (u->op == "do") {
-        if (u->operand->kind == NK::BlockExpr)
-            return callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {});
+        if (u->operand->kind == NK::BlockExpr) {
+            auto* be = static_cast<BlockExpr*>(u->operand.get());
+            // a `do { }` block takes no arguments, so a placeholder inside it is
+            // a compile error (X::Placeholder::Block), like Rakudo
+            if (be->params.empty()) {
+                std::string ph = firstBlockPlaceholder(be->body);
+                if (!ph.empty())
+                    throwTyped("X::Placeholder::Block", {{"placeholder", ph}},
+                        "Placeholder variable '" + ph +
+                        "' may not be used here because the surrounding block does not take a signature");
+            }
+            return callCallable(makeClosure(be), {});
+        }
         return eval(u->operand.get());
     }
     if (u->op == "stmtseq") {

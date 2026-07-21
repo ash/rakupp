@@ -3497,7 +3497,19 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // compile-time twigil vars ($?VERSION) can't be parameters —
             // dynamic ($*SCHEDULER) and accessor ($.x) parameters are legal
             if (cur().text.size() > 1 && cur().text[1] == '?')
-                error("Cannot use a variable with twigil '?' as a parameter");
+                throw ParseError("Cannot use a variable with twigil '?' as a parameter",
+                                 cur().line, "X::Parameter::Twigil",
+                                 {{"parameter", cur().text}, {"twigil", "?"}});
+            // a placeholder can't BE a declared parameter: `sub f($:x)` → :$x
+            if (cur().text.size() > 2 && (cur().text[1] == ':' || cur().text[1] == '^')) {
+                std::string pn = cur().text;
+                std::string right = pn[1] == ':' ? (":" + std::string(1, pn[0]) + pn.substr(2))
+                                                 : (std::string(1, pn[0]) + pn.substr(2));
+                throw ParseError("In signature parameter, placeholder variables like " + pn +
+                                 " are illegal; you probably meant a named parameter: '" + right + "'",
+                                 cur().line, "X::Parameter::Placeholder",
+                                 {{"parameter", pn}, {"right", right}});
+            }
             p.name = cur().text; p.sigil = cur().text[0]; advance();
             p.named = named;
         } else if (isKind(Tok::Op) && cur().text.size() == 1 &&

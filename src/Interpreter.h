@@ -730,6 +730,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // $^a/$^b names, sorted (also used by codegen)
 std::vector<std::string> collectAttrRefs(const std::vector<StmtPtr>& body); // $!x/@!x/%!x references in a body
+std::string firstBlockPlaceholder(const std::vector<StmtPtr>& body); // first $^/$:/@_ in a signature-less body
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method

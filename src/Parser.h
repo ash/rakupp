@@ -11,7 +11,12 @@ namespace rakupp {
 
 struct ParseError : std::runtime_error {
     int line;
+    std::string exType; // typed compile diagnostic (X::Parameter::Twigil, …); "" = generic
+    std::vector<std::pair<std::string, std::string>> exAttrs;
     ParseError(const std::string& msg, int line) : std::runtime_error(msg), line(line) {}
+    ParseError(const std::string& msg, int line, std::string type,
+               std::vector<std::pair<std::string, std::string>> attrs)
+        : std::runtime_error(msg), line(line), exType(std::move(type)), exAttrs(std::move(attrs)) {}
 };
 
 class Parser {
