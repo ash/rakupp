@@ -35,6 +35,10 @@ static char** rakupp_environ() { return environ; }
 #if !defined(_WIN32)
 #include <dirent.h>   // Windows gets the FindFirstFile-based shim from Platform.h
 #endif
+#if defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+#include <signal.h>      // stack_t (used by pthread_stackseg_np's out-param)
+#include <pthread_np.h>  // pthread_stackseg_np (OpenBSD) / pthread_attr_get_np (Free/Net/DragonFly)
+#endif
 
 namespace rakupp {
 
@@ -4045,6 +4049,20 @@ static size_t currentThreadStackSize() {
     return sz ? sz : (size_t(8) << 20);
 #elif defined(__APPLE__)
     size_t sz = pthread_get_stacksize_np(pthread_self());
+    return sz ? sz : (size_t(8) << 20);
+#elif defined(__OpenBSD__)
+    // OpenBSD has no pthread_getattr_np; pthread_stackseg_np fills a stack_t
+    // whose ss_size is the thread's stack size (glibc extension by another name).
+    stack_t ss; size_t sz = 0;
+    if (pthread_stackseg_np(pthread_self(), &ss) == 0) sz = ss.ss_size;
+    return sz ? sz : (size_t(8) << 20);
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+    // These BSDs spell it pthread_attr_get_np, and the attr must be init'd first.
+    pthread_attr_t attr; void* base = nullptr; size_t sz = 0;
+    pthread_attr_init(&attr);
+    if (pthread_attr_get_np(pthread_self(), &attr) == 0)
+        pthread_attr_getstack(&attr, &base, &sz);
+    pthread_attr_destroy(&attr);
     return sz ? sz : (size_t(8) << 20);
 #else
     pthread_attr_t attr; void* base = nullptr; size_t sz = 0;
