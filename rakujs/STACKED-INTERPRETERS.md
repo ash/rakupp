@@ -74,7 +74,7 @@ Two caveats on the numbers:
 
 ## Why it's (pleasantly) fast
 
-Nothing in the stack is clever, and that is rather the point:
+Nothing in the stack is unusual, and that is rather the point:
 
 - Raku++ is a plain tree-walking interpreter, but C++ compiled to WebAssembly
   runs close to native once the browser tiers it up to its optimizing compiler.
