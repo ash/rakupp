@@ -126,6 +126,13 @@ To regenerate after adding an example, re-run `build.sh` (or just
 `rakupp gen-examples.raku`). Deep-recursion examples are unaffected by the ~200
 recursion cap; all shipped examples stay well under it.
 
+The dropdown also includes **language showcases** — whole interpreters (Lisp,
+Forth, JS/TS, Perl, Python) from [`../showcase/`](../showcase/), each running a
+sample program in the browser. A Python program interpreted by a Raku program
+interpreted by a C++ interpreter compiled to WebAssembly, in a fraction of a
+second — [**Interpreters all the way down**](STACKED-INTERPRETERS.md) explains
+how that stack works and why it's fast.
+
 ## Embedding in your own page
 
 > **New to this? See [TUTORIAL.md](TUTORIAL.md)** — a short, worked guide to
