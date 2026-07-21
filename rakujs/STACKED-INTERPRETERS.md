@@ -16,8 +16,9 @@ interpreter for **another** language, written in Raku, running in your browser:
 | Perl        | `perl.raku`   — 1,630 lines / 65 KB | Perl 5 |
 | Python      | `python.raku` — 1,472 lines / 63 KB | Python 3 |
 
-Pick "Python interpreter", run the "Classes" sample, and this is the stack,
-top to bottom:
+Open the Python interpreter with the "Classes" sample —
+[**raku.online/?ex=python-interpreter&in=classes&run**](https://raku.online/?ex=python-interpreter&in=classes&run)
+— and this is the stack, top to bottom:
 
 ```
   classes.py       ← your Python program (in the Stdin box)
