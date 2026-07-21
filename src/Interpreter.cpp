@@ -4633,7 +4633,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
     return (*base.arr)[i];
 }
 
-Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame) {
     // A wrapped routine (&r.wrap({…})) runs its wrapper stack first. Each wrapper's
     // `callsame`/`nextsame` drops to the next inner wrapper, finally to the original
     // routine body (callCallableRaw). Wrappers are consulted outermost-first.
@@ -4648,14 +4648,14 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
                 rc.restart = [this, &codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
                 redispatchStack_.push_back(std::move(rc));
                 Value r;
-                try { r = callCallable(wraps[level], as, rwArgs); }
+                try { r = callCallable(wraps[level], as, rwArgs, /*ownFrame=*/true); }
                 catch (...) { redispatchStack_.pop_back(); throw; }
                 redispatchStack_.pop_back();
                 return r;
             };
         return runLevel((int)wraps.size() - 1, std::move(args));
     }
-    return callCallableRaw(codeVal, std::move(args), rwArgs);
+    return callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame);
 }
 
 static bool ncIsFloatType(const std::string& t) {
@@ -4741,7 +4741,18 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
     e->letRestores.clear();
 }
 
-Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame) {
+    // callsame/nextsame are ROUTINE-scoped: a routine activation sees only
+    // redispatch frames pushed for it (ownFrame) or by its own body. Blocks
+    // inherit the enclosing routine's floor.
+    struct FloorGuard {
+        ExecContext& t; size_t saved; bool active;
+        ~FloorGuard() { if (active) t.redispatchFloor = saved; }
+    } floorG{tctx_, tctx_.redispatchFloor, false};
+    if (codeVal.t == VT::Code && codeVal.code && !codeVal.code->isBlock) {
+        floorG.active = true;
+        tctx_.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
+    }
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
     const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
     bool noAT = noAutothread_; noAutothread_ = false; // one-shot too (Junction.THREAD)
@@ -4841,7 +4852,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             rc.restart = [this, codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
             redispatchStack_.push_back(std::move(rc));
             Value r;
-            try { r = callCallable(*best, as, rwArgs); }
+            try { r = callCallable(*best, as, rwArgs, /*ownFrame=*/true); }
             catch (...) { redispatchStack_.pop_back(); throw; }
             redispatchStack_.pop_back();
             return r;
@@ -5216,13 +5227,13 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     };
     redispatchStack_.push_back(std::move(rc));
     Value r;
-    try { r = invokeMethod(*um, self, args, rwArgs); }
+    try { r = invokeMethod(*um, self, args, rwArgs, /*ownFrame=*/true); }
     catch (...) { redispatchStack_.pop_back(); throw; }
     redispatchStack_.pop_back();
     return r;
 }
 
-Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame) {
     if (codeVal.t != VT::Code || !codeVal.code) return Value::any();
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code;
@@ -5277,7 +5288,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             };
             redispatchStack_.push_back(std::move(rc));
             Value r;
-            try { r = invokeMethod(*best, selfCopy, as, rwArgs); }
+            try { r = invokeMethod(*best, selfCopy, as, rwArgs, /*ownFrame=*/true); }
             catch (...) { redispatchStack_.pop_back(); throw; }
             redispatchStack_.pop_back();
             return r;
@@ -5312,6 +5323,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     } else env->define("@_", Value::array(args));
     auto saved = tctx_.cur;
     tctx_.cur = env;
+    // callsame/nextsame scope: this activation sees only frames pushed FOR it
+    // (ownFrame) — never the caller's (a frameless bottom method must not
+    // re-enter its caller's chain; that was an infinite nextsame loop)
+    size_t savedFloor = tctx_.redispatchFloor;
+    tctx_.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
+    struct FloorGuard2 { ExecContext& t; size_t s; ~FloorGuard2() { t.redispatchFloor = s; } } floorG2{tctx_, savedFloor};
     // A method is a routine boundary for cooperative return, exactly like a sub:
     // establish a frame so a `return` inside a loop/native block in the body unwinds
     // to here instead of leaking the `returning` flag past the loop (mirrors callCallable).
@@ -9933,8 +9950,61 @@ Value Interpreter::evalCall(Call* c) {
         !tctx_.cur->find("&" + c->name))
         return evalTempLet(c);
     ValueList args = evalArgs(c->args);
+    // Whatever-curry over USER-DEFINED infixes: `* quack 5` / `5 quack *` /
+    // `* quack *` build a WhateverCode, exactly like built-in binaries
+    if (c->name.rfind("infix:<", 0) == 0 && args.size() == 2) {
+        auto isW = [](const Value& v) {
+            return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
+        };
+        if (isW(args[0]) || isW(args[1])) {
+            Value* fp = tctx_.cur->find("&" + c->name);
+            if (fp) {
+                Value f = *fp;
+                Value a0 = args[0], a1 = args[1];
+                auto wArity = [&](const Value& v) -> long long {
+                    if (v.t == VT::Whatever) return 1;
+                    if (v.t == VT::Code && v.code && v.code->isWhateverCode)
+                        return v.code->whateverArity > 0 ? v.code->whateverArity : 1;
+                    return 0;
+                };
+                Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+                code.code->isWhateverCode = true;
+                code.code->whateverArity = wArity(a0) + wArity(a1);
+                code.code->builtin = [f, a0, a1](Interpreter& I, ValueList& as) -> Value {
+                    size_t k = 0;
+                    auto feed = [&](const Value& side) -> Value {
+                        if (side.t == VT::Whatever) return k < as.size() ? as[k++] : Value::any();
+                        if (side.t == VT::Code && side.code && side.code->isWhateverCode) {
+                            long long n = side.code->whateverArity > 0 ? side.code->whateverArity : 1;
+                            ValueList sub;
+                            for (long long j = 0; j < n && k < as.size(); j++) sub.push_back(as[k++]);
+                            return I.callCallable(side, std::move(sub));
+                        }
+                        return side;
+                    };
+                    Value x = feed(a0), y = feed(a1);
+                    return I.callCallable(f, ValueList{x, y});
+                };
+                return code;
+            }
+        }
+    }
     if (c->callee) {
         Value f = eval(c->callee.get());
+        // `.&(*.tc)` on a Whatever chain COMPOSES (curry continues) instead of
+        // applying the callee to the code object
+        if (f.t == VT::Code && f.code && f.code->isWhateverCode &&
+            args.size() == 1 && args[0].t == VT::Code && args[0].code && args[0].code->isWhateverCode) {
+            Value inner = args[0], outer = f;
+            Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+            code.code->isWhateverCode = true;
+            code.code->whateverArity = inner.code->whateverArity > 0 ? inner.code->whateverArity : 1;
+            code.code->builtin = [inner, outer](Interpreter& I, ValueList& as) -> Value {
+                Value mid = I.callCallable(inner, as);
+                return I.callCallable(outer, ValueList{mid});
+            };
+            return code;
+        }
         return callCallable(f, args, &c->args);
     }
     if (!c->name.empty()) {
@@ -11884,6 +11954,36 @@ Value Interpreter::eval(Expr* e) {
             auto* r = static_cast<RangeExpr*>(e);
             Value from = eval(r->from.get());
             Value to = eval(r->to.get());
+            // a WhateverCODE endpoint curries the whole range: `1..*-1` is a
+            // WhateverCode (bare `1..*` stays an infinite Range)
+            {
+                auto isWC = [](const Value& v) {
+                    return v.t == VT::Code && v.code && v.code->isWhateverCode;
+                };
+                if (isWC(from) || isWC(to)) {
+                    Value f2 = from, t2 = to;
+                    bool exF = r->exFrom, exT = r->exTo;
+                    Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+                    code.code->isWhateverCode = true;
+                    long long ar = (isWC(from) ? std::max(1LL, from.code->whateverArity) : 0)
+                                 + (isWC(to)   ? std::max(1LL, to.code->whateverArity)   : 0);
+                    code.code->whateverArity = ar ? ar : 1;
+                    code.code->builtin = [f2, t2, exF, exT, isWC](Interpreter& I, ValueList& as) -> Value {
+                        size_t k = 0;
+                        auto feed = [&](const Value& side) -> Value {
+                            if (!isWC(side)) return side;
+                            long long n = std::max(1LL, side.code->whateverArity);
+                            ValueList sub;
+                            for (long long j = 0; j < n && k < as.size(); j++) sub.push_back(as[k++]);
+                            return I.callCallable(side, std::move(sub));
+                        };
+                        Value lo = feed(f2), hi = feed(t2);
+                        Value rr = Value::range(lo.toInt(), hi.toInt(), exF, exT);
+                        return rr;
+                    };
+                    return code;
+                }
+            }
             // a Date..Date range enumerates days eagerly (numeric Range can't
             // hold Date endpoints; a century is only ~36k elements)
             if (from.t == VT::Hash && from.hashKind == "Date" && from.hash &&

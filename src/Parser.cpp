@@ -311,9 +311,14 @@ bool Parser::startsListopArg(const Token& t) const {
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `say 0, ++$x`
                    // `test *..1, …` — a Whatever RANGE endpoint can only be an arg
                    // (infix `*` would need a term after it, and `..` isn't one)
-                   (t.text == "*" && &t == &cur() && peek().kind == Tok::Op &&
-                    (peek().text == ".." || peek().text == "..^" || peek().text == "..." ||
-                     peek().text == "^.." || peek().text == "^..^")) || // `*..1` / `*^..1`
+                   (t.text == "*" && &t == &cur() &&
+                    ((peek().kind == Tok::Op &&
+                      (peek().text == ".." || peek().text == "..^" || peek().text == "..." ||
+                       peek().text == "^.." || peek().text == "^..^")) ||
+                     (peek().kind == Tok::Ident &&
+                      (userInfix_.count(peek().text) ||
+                       peek().text == "min" || peek().text == "max" || peek().text == "gcd" ||
+                       peek().text == "lcm" || peek().text == "div" || peek().text == "mod")))) || // `*..1` / `* quack 5` / `* min 2`
                    t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
@@ -1212,8 +1217,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             bool metaCall = false;
             if (isOp("^")) { metaCall = true; advance(); } // .^meta
-            else if (isOp("&") && (peek().kind == Tok::LBrace || peek().kind == Tok::Var)) {
-                // .&{ … } / .&$callable — call it with the invocant as the argument
+            else if (isOp("&") && (peek().kind == Tok::LBrace || peek().kind == Tok::Var ||
+                                   peek().kind == Tok::LParen)) {
+                // .&{ … } / .&$callable / .&(EXPR) — call it with the invocant as the argument
                 advance(); // &
                 if (hyperNext) { // >>.&{ … } maps the callable over the elements
                     auto mc2 = std::make_unique<MethodCall>();
@@ -1492,6 +1498,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         lastContainerIs_.clear();
         skipTraits(scope != "has", &ve->declDefault);
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
+        // `my $a is default(42) where * == 42` — constraint parsed, not yet enforced
+        if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN + 1); }
         return ve;
     }
     if (scope == "constant" && isKind(Tok::Ident)) {

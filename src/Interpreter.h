@@ -125,6 +125,7 @@ struct ExecContext {
     bool returning = false;
     Value returnV;
     uint64_t frameTop = 0;        // incremented per callCallableRaw activation
+    size_t redispatchFloor = 0;   // frames below this index are another routine's (callsame/nextsame can't see them)
     uint64_t curRoutineFrame = 0; // frameTop at the nearest enclosing ROUTINE entry
     // Cooperative unlabelled next/last/redo: set when the statement executes in
     // the SAME callable frame as the innermost native loop (no closure between);
@@ -195,7 +196,7 @@ public:
                                                     // collect!=null: append each iteration's value (value context)
 
     // calling
-    Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+    Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false);
     // When set (one-shot), a paramless block's mutated implicit $_ is copied back
     // here after the call — `@a.grep({ $_++; True })` writes into @a's element.
     Value* topicWriteback_ = nullptr;
@@ -208,7 +209,7 @@ public:
     // Supply.on-close callbacks registered while a supply/react block runs;
     // fired when that block finishes (our model's "tap closed" moment)
     std::vector<std::vector<Value>> supplyCloseStack_;
-    Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs); // no wrap layer
+    Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false); // no wrap layer
     Value callNative(Callable& c, ValueList& args); // `is native` C FFI
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
@@ -248,7 +249,7 @@ public:
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
     std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
-    Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+    Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false);
     // Invoke method `name` found from `startCls`, pushing a redispatch context so
     // callsame/nextsame reach the same method on the owning class's parent (recursively).
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,

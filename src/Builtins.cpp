@@ -7595,35 +7595,60 @@ void Interpreter::registerBuiltins() {
     // callsame/callwith return its result; nextsame/nextwith return it FROM the current routine.
     // `lastcall` marks the current candidate as the final one: a subsequent
     // callsame/nextsame finds no more candidates (returns Nil / an empty result).
-    B["lastcall"] = [](Interpreter& I, ValueList&) -> Value {
-        if (!I.redispatchStack_.empty()) I.redispatchStack_.back().lastcall = true;
+    // Frames below the current routine activation's floor belong to a CALLER's
+    // dispatch: invisible here. A visible-empty stack inside someone's dispatch
+    // means "nothing further" — soft Nil (Rakudo: a bottom method's nextsame
+    // does not die); a truly empty stack is the hard no-dispatcher error.
+    auto dispTop = [](Interpreter& I) -> Interpreter::RedispatchCtx* {
+        if (I.redispatchStack_.size() <= I.tctx_.redispatchFloor) return nullptr;
+        return &I.redispatchStack_.back();
+    };
+    B["lastcall"] = [dispTop](Interpreter& I, ValueList&) -> Value {
+        if (auto* d = dispTop(I)) d->lastcall = true;
         return Value::boolean(true);
     };
-    B["callsame"] = [](Interpreter& I, ValueList&) -> Value {
-        if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callsame with no dispatcher in scope"};
-        if (I.redispatchStack_.back().lastcall) return Value::nil(); // trimmed by lastcall
-        return I.redispatchStack_.back().next(I.redispatchStack_.back().sameArgs);
+    B["callsame"] = [dispTop](Interpreter& I, ValueList&) -> Value {
+        auto* d = dispTop(I);
+        if (!d) {
+            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callsame with no dispatcher in scope"};
+            return Value::nil(); // exhausted chain bottom
+        }
+        if (d->lastcall) return Value::nil(); // trimmed by lastcall
+        return d->next(d->sameArgs);
     };
-    B["callwith"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callwith with no dispatcher in scope"};
-        if (I.redispatchStack_.back().lastcall) return Value::nil();
-        return I.redispatchStack_.back().next(a);
+    B["callwith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
+        auto* d = dispTop(I);
+        if (!d) {
+            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callwith with no dispatcher in scope"};
+            return Value::nil();
+        }
+        if (d->lastcall) return Value::nil();
+        return d->next(a);
     };
-    B["nextsame"] = [](Interpreter& I, ValueList&) -> Value {
-        if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextsame with no dispatcher in scope"};
-        if (I.redispatchStack_.back().lastcall) throw ReturnEx{Value::nil()};
-        throw ReturnEx{I.redispatchStack_.back().next(I.redispatchStack_.back().sameArgs)};
+    B["nextsame"] = [dispTop](Interpreter& I, ValueList&) -> Value {
+        auto* d = dispTop(I);
+        if (!d) {
+            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextsame with no dispatcher in scope"};
+            throw ReturnEx{Value::nil()};
+        }
+        if (d->lastcall) throw ReturnEx{Value::nil()};
+        throw ReturnEx{d->next(d->sameArgs)};
     };
-    B["samewith"] = [](Interpreter& I, ValueList& a) -> Value {
+    B["samewith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
         // re-dispatch the CURRENT routine from scratch with new args, returning its result
-        if (I.redispatchStack_.empty() || !I.redispatchStack_.back().restart)
+        auto* d = dispTop(I);
+        if (!d || !d->restart)
             throw RakuError{Value::typeObj("X::NoDispatcher"), "samewith with no dispatcher in scope"};
-        return I.redispatchStack_.back().restart(a);
+        return d->restart(a);
     };
-    B["nextwith"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextwith with no dispatcher in scope"};
-        if (I.redispatchStack_.back().lastcall) throw ReturnEx{Value::nil()};
-        throw ReturnEx{I.redispatchStack_.back().next(a)};
+    B["nextwith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
+        auto* d = dispTop(I);
+        if (!d) {
+            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextwith with no dispatcher in scope"};
+            throw ReturnEx{Value::nil()};
+        }
+        if (d->lastcall) throw ReturnEx{Value::nil()};
+        throw ReturnEx{d->next(a)};
     };
     B["fail"] = [](Interpreter& I, ValueList& a) -> Value {
         // Return an (undefined) Failure from the enclosing sub carrying an exception:
