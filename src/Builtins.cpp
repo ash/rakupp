@@ -3507,7 +3507,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     RedispatchCtx prc; prc.next = builtinParse; prc.sameArgs = args;
                     redispatchStack_.push_back(std::move(prc));
                     Value r;
-                    try { r = invokeMethod(*um, inv, args, rwArgs); }
+                    // ownFrame: the frame just pushed belongs to the invoked
+                    // method — its redispatch floor must sit BELOW it, or
+                    // nextwith/callsame can't reach the built-in parse
+                    try { r = invokeMethod(*um, inv, args, rwArgs, /*ownFrame=*/true); }
                     catch (...) { redispatchStack_.pop_back(); throw; }
                     redispatchStack_.pop_back();
                     return r;
