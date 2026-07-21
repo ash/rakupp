@@ -6920,7 +6920,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     auto isWhateverish = [](const Value& v) {
         return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
     };
-    if (isWhateverish(l) || isWhateverish(r)) {
+    // `*.abs ~~ Code` does NOT curry: an already-composed WhateverCode on the
+    // left of a smartmatch is a VALUE (a bare `*` on the left still curries)
+    bool skipCurry = (op == "~~" || op == "!~~") &&
+                     l.t == VT::Code && l.code && l.code->isWhateverCode &&
+                     r.t != VT::Whatever;
+    if (!skipCurry && (isWhateverish(l) || isWhateverish(r))) {
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
         code.code->isWhateverCode = true;
         // each `*` consumes one argument left-to-right, so `* + *` has arity 2
@@ -7497,6 +7502,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             }
         } else if (r.t == VT::Type) {
             res = (l.typeName() == r.s) || r.s == "Any" || r.s == "Mu" ||
+                  (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
+                   (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));
@@ -11981,6 +11988,14 @@ Value Interpreter::eval(Expr* e) {
             std::vector<bool> isW; isW.reserve(ch->operands.size());
             bool anyWhatever = false;
             for (auto& o : ch->operands) { bool w = exprHasWhateverLit(o.get()); isW.push_back(w); anyWhatever = anyWhatever || w; }
+            // a smartmatch chain with a COMPOSED WhateverCode on the left is a
+            // value comparison (`*.abs ~~ Code` is True); only a bare `*`
+            // operand keeps the chain currying (`* ~~ /rx/` for grep/first)
+            if (anyWhatever && ch->ops.size() == 1 &&
+                (ch->ops[0] == "~~" || ch->ops[0] == "!~~") &&
+                ch->operands[0]->kind != NK::Whatever &&
+                !exprHasWhateverLit(ch->operands[1].get()))
+                anyWhatever = false;
             if (anyWhatever) {
                 ValueList ops;
                 for (auto& o : ch->operands) ops.push_back(eval(o.get()));
@@ -12198,7 +12213,8 @@ Value Interpreter::eval(Expr* e) {
             // the stored WhateverCode instead. On a BARE `*` even metamethods curry
             // (`.map(*.^name)`); on a composed WhateverCode the macros answer directly.
             static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "WHICH", "VAR", "WHY"};
-            if ((inv.t == VT::Whatever ||
+            if (((inv.t == VT::Whatever &&
+                  (mc->meta || !kMetaMacros.count(mc->method))) ||
                  (inv.t == VT::Code && inv.code && inv.code->isWhateverCode &&
                   !mc->meta && !kMetaMacros.count(mc->method))) &&
                 exprHasWhateverLit(mc->inv.get())) {

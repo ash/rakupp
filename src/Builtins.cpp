@@ -3783,6 +3783,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 
     // `*.method` -> a WhateverCode that applies the method to its argument
     if (inv.t == VT::Whatever) {
+        // introspection metamethods do NOT autocurry: *.WHAT is (Whatever)
+        if (m == "WHAT") return Value::typeObj("Whatever");
+        if (m == "HOW" || m == "WHO" || m == "VAR" || m == "WHICH" || m == "raku" || m == "perl")
+            { /* fall through to the generic paths below with the Whatever value */ }
+        else {
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
         std::string mc = m; ValueList ar = args;
         code.code->builtin = [mc, ar](Interpreter& I, ValueList& a) -> Value {
@@ -3791,6 +3796,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return I.methodCall(arg, mc, aa);
         };
         return code;
+        }
     }
 
     // Code introspection / currying
@@ -8985,7 +8991,13 @@ void Interpreter::registerBuiltins() {
     B["map"] = [](Interpreter& I, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (a.size() >= 2 && a[0].t == VT::Code)
-            for (auto& v : toList(a[1])) { Value r = I.callCallable(a[0], {v}); if (r.t == VT::Array && r.isList && r.s == "Slip") for (auto& x : *r.arr) out.arr->push_back(x); else out.arr->push_back(r); }
+            for (size_t i = 1; i < a.size(); i++) // `map fn, 1, 2, 3` — every list arg
+                for (auto& v : toList(a[i])) {
+                    Value r = I.callCallable(a[0], {v});
+                    if (r.t == VT::Array && r.isList && r.s == "Slip")
+                        for (auto& x : *r.arr) out.arr->push_back(x);
+                    else out.arr->push_back(r);
+                }
         return out;
     };
     B["grep"] = [](Interpreter& I, ValueList& a) -> Value {

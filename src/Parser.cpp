@@ -314,7 +314,11 @@ bool Parser::startsListopArg(const Token& t) const {
                    (t.text == "*" && &t == &cur() &&
                     ((peek().kind == Tok::Op &&
                       (peek().text == ".." || peek().text == "..^" || peek().text == "..." ||
-                       peek().text == "^.." || peek().text == "^..^")) ||
+                       peek().text == "^.." || peek().text == "^..^" ||
+                       // `say *.abs` / `map *.abs, @a` — a tight `.method` on `*`
+                       // is a WhateverCode argument, never infix multiplication
+                       (peek().text == "." && !peek().spaceBefore &&
+                        peek(2).kind == Tok::Ident))) ||
                      (peek().kind == Tok::Ident &&
                       (userInfix_.count(peek().text) ||
                        peek().text == "min" || peek().text == "max" || peek().text == "gcd" ||
