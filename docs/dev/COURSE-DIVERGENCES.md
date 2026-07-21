@@ -51,7 +51,12 @@ Object model / encapsulation — found manually via the [stack solution](https:/
 
 - **FIXED (`a444559`): a private attribute was writable from outside.** `class Account { has $!balance = 0; method balance { $!balance } }; my $a = Account.new; $a.balance = 1000;` — Rakudo dies with `Cannot modify an immutable Int`; rakupp let the assignment through and rewrote the private `$!balance`. A private `$!x` is stored under its bare name, and the `$obj.attr = v` lvalue path only rejected *public read-only* accessors, so the write landed in the private slot. Now any attribute that is not a public `is rw` accessor rejects dot-path assignment; `$obj!attr` (private-access syntax, self/`trusts`) and plain methods (the `is rw`/`return-rw` lvalue-method path) stay writable. Gated Roast-neutral (zero per-file changes).
 
-MOP / introspection:
+Parser — found because the course *generator* (`raku-pages.raku`) itself runs under rakupp:
+
+- **A `"` inside a regex character class breaks the parse — two different ways.** Construct: `s:g/ (<-["]>+) /Y/` (a negated char class containing a double quote; same for a positive class).
+  - *Inside a sub body:* hard parse error, reported at EOF — `sub f($h is copy) { $h ~~ s:g/ (<-["]>+) /Y/; return $h }` → `===SORRY!=== Parse error at line N: expected } (got '')`. Rakudo: parses and runs fine.
+  - *At top level:* **worse — silent truncation.** `say 'before'; my $h = 'ab'; $h ~~ s:g/ (<-["]>+) /Y/; say 'after';` → rakupp prints `before` and exits 0; `after` never runs, no diagnostic. Rakudo prints all three lines. A program that compiles clean (`-c` says `Syntax OK`) but silently stops executing partway is a miscompile-class bug — worth prioritising over the diagnostic-only facet.
+  - Presumably the `"` starts a string/interpolation state inside the char-class scan that never pops. Char classes with other delimiters (`<-[}]>`, `<-[)]>`, `<-[/]>`, `<-[>]>`, `` <-[`]> ``) parse fine — the course generator uses those throughout. Workaround used in the generator: a non-greedy `(.*?)` between quoted literals instead of the char class.
 
 - **`^add_method` fails.** `Empty.^add_method('greet', method { 'hi' })` → rakupp dies with `No such method 'add_method' for invocant of type 'Slip'`; Rakudo adds the method and prints `hi`. ([`oop/mop/adding-methods`](https://course.raku.org/oop/mop/adding-methods/).)
 - **HyperSeq config introspection fails.** `(1..10).hyper` then `.^attributes.first(*.name.contains('config')).get_value($h).raku` → rakupp exits 1; Rakudo prints `HyperConfiguration.new(batch => 64, degree => 7)`. ([`hyper-race/batch-and-degree`](https://course.raku.org/paradigms/hyper-race/batch-and-degree/); the batch/degree numbers are implementation-defined, but the introspection path should work.)
