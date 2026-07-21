@@ -285,6 +285,9 @@ public:
     [[noreturn]] void throwTyped(const std::string& type,
                     std::vector<std::pair<std::string, std::string>> attrs,
                     const std::string& message); // typed exception OBJECT with attributes
+    [[noreturn]] void throwTypedV(const std::string& type,
+                    std::vector<std::pair<std::string, Value>> attrs,
+                    const std::string& message); // same, attribute values as Values
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
     bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
@@ -295,7 +298,7 @@ public:
     void runLeavePhasers(const std::vector<StmtPtr>& stmts); // LEAVE/KEEP/UNDO at block exit (reverse order)
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
     bool suppressLoopFirst_ = false; // set while running a loop body so execBlock skips FIRST
-    Value evalString(const std::string& src); // EVAL
+    Value evalString(const std::string& src, bool mainlinePH = false); // EVAL
     void loadModule(const std::string& name);  // `use Foo::Bar` -> compile lib file into global scope
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;

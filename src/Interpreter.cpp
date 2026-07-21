@@ -2199,7 +2199,7 @@ void Interpreter::loadModule(const std::string& name) {
         std::cerr << "===WARNING=== Could not find module '" << name << "' (use ignored)\n";
 }
 
-Value Interpreter::evalString(const std::string& src) {
+Value Interpreter::evalString(const std::string& src, bool mainlinePH) {
     Lexer lexer(src);
     auto prog = std::make_shared<Program>();
     try {
@@ -2221,6 +2221,12 @@ Value Interpreter::evalString(const std::string& src) {
         if (!e.exType.empty()) throwTyped(e.exType, e.exAttrs, e.what()); // typed compile diagnostic
         throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
     }
+    // a placeholder in the EVAL mainline has no signature to attach to (only
+    // for user-level EVAL: internal reparses, e.g. S{}=repl, must stay silent)
+    if (mainlinePH)
+        if (std::string ph = firstBlockPlaceholder(prog->stmts); !ph.empty())
+            throwTyped("X::Placeholder::Mainline", {{"placeholder", ph}},
+                       "Cannot use placeholder parameter " + ph + " in the mainline");
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
     Value last = Value::any();
     for (auto& s : prog->stmts) {
@@ -3668,9 +3674,9 @@ static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.name
 // Throw a typed exception as a real OBJECT carrying attributes, so
 // throws-like matchers (`symbol => '$!bar'`) can introspect it. The class is
 // registered on first use with exactly the attributes passed.
-void Interpreter::throwTyped(const std::string& type,
-                             std::vector<std::pair<std::string, std::string>> attrs,
-                             const std::string& message) {
+void Interpreter::throwTypedV(const std::string& type,
+                              std::vector<std::pair<std::string, Value>> attrs,
+                              const std::string& message) {
     auto it = classes_.find(type);
     if (it == classes_.end()) {
         auto ci = std::make_shared<ClassInfo>();
@@ -3682,9 +3688,24 @@ void Interpreter::throwTyped(const std::string& type,
     }
     Value ex; ex.t = VT::Object; ex.obj = std::make_shared<ObjectData>();
     ex.obj->cls = it->second;
-    for (auto& kv : attrs) ex.obj->attrs[kv.first] = Value::str(kv.second);
+    for (auto& kv : attrs) ex.obj->attrs[kv.first] = kv.second;
     ex.obj->attrs["message"] = Value::str(message);
     throw RakuError{ex, message};
+}
+
+void Interpreter::throwTyped(const std::string& type,
+                             std::vector<std::pair<std::string, std::string>> attrs,
+                             const std::string& message) {
+    std::vector<std::pair<std::string, Value>> va;
+    va.reserve(attrs.size());
+    for (auto& kv : attrs)
+        // a `type` attribute naming a core type is the type OBJECT (so
+        // throws-like `type => Array` smartmatches), not the string
+        if (kv.first == "type" && isKnownTypeName(kv.second))
+            va.emplace_back(kv.first, Value::typeObj(kv.second));
+        else
+            va.emplace_back(kv.first, Value::str(kv.second));
+    throwTypedV(type, std::move(va), message);
 }
 
 // Build the effective symbol name of a (possibly multi-segment) symbolic ref:
@@ -5864,6 +5885,34 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 bp->arr->insert(bp->arr->begin() + from, repl.begin(), repl.end());
                 return sink ? Value::any() : rhs;
             }
+        }
+    }
+    if (a->op == ":=") {
+        // Perl-6-level bind diagnostics (roast S32-exceptions/misc2.t)
+        if (a->target->kind == NK::Call || a->target->kind == NK::MethodCall)
+            throwTyped("X::Bind", {{"target", "a call"}},
+                       "Cannot use bind operator with this left-hand side");
+        if (a->target->kind == NK::NameTerm)
+            throwTyped("X::Bind",
+                       {{"target", static_cast<NameTerm*>(a->target.get())->name}},
+                       "Cannot bind to '" +
+                       static_cast<NameTerm*>(a->target.get())->name + "'");
+        if (a->target->kind == NK::VarExpr) {
+            auto* tv = static_cast<VarExpr*>(a->target.get());
+            static const std::set<std::string> natTy = {
+                "int", "int8", "int16", "int32", "int64", "uint", "uint8",
+                "uint16", "uint32", "uint64", "num", "num32", "num64", "str", "byte"};
+            if (tv->declare && natTy.count(tv->declType))
+                throwTyped("X::Bind::NativeType", {{"name", tv->name}},
+                           "Cannot bind to natively typed variable '" + tv->name +
+                           "'; native types are not containers");
+        }
+        if (a->target->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            if (!ix->index)
+                throwTypedV("X::Bind::ZenSlice",
+                            {{"type", Value::typeObj(ix->isHash ? "Hash" : "Array")}},
+                            "Cannot bind to a zen slice");
         }
     }
     if (a->op == "=" || a->op == ":=") {

@@ -1021,6 +1021,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance();
             if (isKind(Tok::RBracket)) { // zen slice @a[] == @a (an adverbed zen keeps an Index for :exists etc.)
                 advance();
+                if (isOp(":=")) // a zen slice is not a bindable container
+                    throw ParseError("Cannot bind to a zen Array slice", cur().line,
+                                     "X::Bind::ZenSlice", {{"type", "Array"}});
                 if (isOp(":") && (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
                                   (peek().kind == Tok::Op && peek().text == "!"))) {
                     auto zi = std::make_unique<Index>();
@@ -1053,6 +1056,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance();
             if (isKind(Tok::RBrace)) { // zen slice %h{} == %h (adverbed zen keeps an Index)
                 advance();
+                if (isOp(":=")) // a zen slice is not a bindable container
+                    throw ParseError("Cannot bind to a zen Hash slice", cur().line,
+                                     "X::Bind::ZenSlice", {{"type", "Hash"}});
                 if (isOp(":") && (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
                                   (peek().kind == Tok::Op && peek().text == "!"))) {
                     auto zi = std::make_unique<Index>();
@@ -1485,6 +1491,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                                  "' on a '" + scope + "'-scoped variable", cur().line,
                                  "X::Syntax::Variable::Twigil",
                                  {{"twigil", std::string(1, vn[1])}, {"scope", scope}});
+            // `my $<a>` — match variables cannot be declared
+            if (vn.size() == 1 && peek().kind == Tok::Op && peek().text == "<" &&
+                !peek().spaceBefore)
+                throw ParseError("Cannot declare a match variable", cur().line,
+                                 "X::Syntax::Variable::Match", {});
         }
         auto ve = std::make_unique<VarExpr>(advance().text);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
@@ -1697,7 +1708,14 @@ ExprPtr Parser::parseColonPair() {
     if (isKind(Tok::Ident) || isKind(Tok::IntLit)) {
         pair->key = cur().text;
         advance();
-        if (negate) { pair->value = std::make_unique<BoolLit>(false); return pair; }
+        if (negate) {
+            if (isKind(Tok::LParen) && !cur().spaceBefore)
+                throw ParseError("Argument not allowed on negated pair with key '" +
+                                 pair->key + "'", cur().line,
+                                 "X::Syntax::NegatedPair", {{"key", pair->key}});
+            pair->value = std::make_unique<BoolLit>(false);
+            return pair;
+        }
         if (isKind(Tok::LParen) && !cur().spaceBefore) {
             advance();
             if (isKind(Tok::RParen)) { pair->value = std::make_unique<ListExpr>(); advance(); return pair; }
@@ -2524,6 +2542,14 @@ ExprPtr Parser::parsePrimary() {
                 advance(); // `self => v` stays an autoquoted pair key
                 return std::make_unique<SelfTerm>();
             }
+            if (name == "undef" && peek().kind != Tok::FatArrow)
+                throw ParseError("Unsupported use of undef as a value; in Raku "
+                                 "please use something more specific: an undefined "
+                                 "type object such as Any, or Nil as the absence "
+                                 "of a value",
+                                 cur().line, "X::Obsolete",
+                                 {{"old", "undef as a value"},
+                                  {"replacement", "something more specific"}});
             // mathematical constants are TERMS, never listops: `e + 1`, `pi + 0`,
             // `Inf+100` (else `+100` is misread as a listop argument to `Inf`).
             // A tight `pi()` is left as a call so it dies as an undeclared routine.
@@ -3928,14 +3954,22 @@ void Parser::skipToStatementEnd() {
 
 void Parser::checkVirtualCallInDefault(size_t defStart) {
     // `has $.x = $.y` — a virtual call in an attribute default runs against a
-    // partially constructed object; Rakudo rejects it at compile time.
+    // partially constructed object; `has $.a = $^b` — a placeholder cannot
+    // parameterize an attribute default. Rakudo rejects both at compile time.
     for (size_t i = defStart; i < pos_ && i < toks_.size(); i++) {
         const Token& tk = toks_[i];
-        if (tk.kind == Tok::Var && tk.text.size() > 2 && tk.text[1] == '.' &&
+        if (tk.kind != Tok::Var || tk.text.size() <= 2) continue;
+        if (tk.text[1] == '.' &&
             (std::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
             throw ParseError("Virtual call " + tk.text + " may not be used on "
                              "partially constructed object", tk.line,
                              "X::Syntax::VirtualCall", {{"call", tk.text}});
+        if (tk.text[1] == '^' &&
+            (std::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+            throw ParseError("Placeholder variable " + tk.text + " may not be "
+                             "used here because the surrounding block does not "
+                             "take a signature", tk.line,
+                             "X::Placeholder::Attribute", {{"placeholder", tk.text}});
     }
 }
 
@@ -4218,6 +4252,10 @@ StmtPtr Parser::parseIf(bool isUnless) {
     auto blk = parseBlock();
     s->branches.emplace_back(std::move(cond), std::move(blk));
     s->branchVars.push_back(s->thenVar);
+    if (isUnless && (isIdent("else") || isIdent("elsif")))
+        throw ParseError("\"unless\" does not take \"" + cur().text +
+                         "\", please rewrite using \"if\"",
+                         cur().line, "X::Syntax::UnlessElse", {});
     while (isIdent("elsif")) {
         advance();
         ExprPtr c;
@@ -4246,6 +4284,25 @@ StmtPtr Parser::parseWhile(bool isUntil) {
 }
 
 StmtPtr Parser::parseFor() {
+    // Perl 5 loop forms: `for my $x (...)` and C-style `for (a; b; c)`
+    if (isKind(Tok::Ident) && cur().text == "my" && peek().kind == Tok::Var &&
+        peek(2).kind == Tok::LParen)
+        throw ParseError("This appears to be Perl 5 code", cur().line,
+                         "X::Syntax::P5", {});
+    if (isKind(Tok::LParen)) {
+        int d = 0;
+        for (size_t i = pos_; i < toks_.size(); i++) {
+            if (toks_[i].kind == Tok::LParen) d++;
+            else if (toks_[i].kind == Tok::RParen) { if (--d == 0) break; }
+            else if (toks_[i].kind == Tok::LBrace) break;
+            else if (toks_[i].kind == Tok::Semicolon && d == 1)
+                throw ParseError("Unsupported use of C-style \"for (;;)\" loop; "
+                                 "in Raku please use \"loop (;;)\"",
+                                 cur().line, "X::Obsolete",
+                                 {{"old", "C-style \"for (;;)\" loop"},
+                                  {"replacement", "\"loop (;;)\""}});
+        }
+    }
     auto s = std::make_unique<ForStmt>();
     { bool sv = stmtCond_; stmtCond_ = true; s->list = parseExpression(); stmtCond_ = sv; }
     bool doubly = isOp("<->");
@@ -4554,6 +4611,10 @@ StmtPtr Parser::parseStatementImpl() {
                                  {{"multiness", kw}, {"routine-type", "sub"}});
             return st;
         }
+        if (kw == "foreach")
+            throw ParseError("Unsupported use of 'foreach'; in Raku please use 'for'",
+                             t.line, "X::Obsolete",
+                             {{"old", "'foreach'"}, {"replacement", "'for'"}});
         if (kw == "if") { advance(); return parseIf(false); }
         if (kw == "unless") { advance(); return parseIf(true); }
         if (kw == "while") { advance(); return parseWhile(false); }
@@ -4760,6 +4821,17 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
             ++catchBlocks > 1)
             throw ParseError("Only one CATCH block is allowed in a block", s->line,
                              "X::Phaser::Multiple", {{"block", "CATCH"}});
+        // `my &a; multi a { }` — a &-sigiled lexical already owns the name
+        if (s->kind == NK::ExprStmt) {
+            const Expr* e = static_cast<const ExprStmt*>(s.get())->e.get();
+            if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
+            if (e && e->kind == NK::VarExpr) {
+                auto* ve = static_cast<const VarExpr*>(e);
+                if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&')
+                    subs[ve->name.substr(1)] |= 1;
+            }
+            continue;
+        }
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<const SubDecl*>(s.get());
             if (sd->name.empty() || sd->isProto || sd->isMethod) continue;

@@ -8019,7 +8019,7 @@ void Interpreter::registerBuiltins() {
         if (!a.empty()) {
             try {
                 if (a[0].t == VT::Code) I.callCallable(a[0], {});
-                else if (a[0].t == VT::Str) I.evalString(a[0].s);
+                else if (a[0].t == VT::Str) I.evalString(a[0].s, /*mainlinePH=*/true);
             } catch (RakuError&) { threw = true; }
         }
         std::string desc = a.size() > 2 ? a[2].toStr() : (a.size() > 1 && a[1].t == VT::Str ? a[1].toStr() : "");
@@ -8046,7 +8046,7 @@ void Interpreter::registerBuiltins() {
             try {
                 Value r;
                 if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
-                else if (a[0].t == VT::Str) r = I.evalString(a[0].s);
+                else if (a[0].t == VT::Str) r = I.evalString(a[0].s, /*mainlinePH=*/true);
                 if (r.t == VT::Hash && r.hashKind == "Failure" &&
                     !(r.hash->count("handled") && (*r.hash)["handled"].truthy())) {
                     Value ex = r.hash->count("exception") ? (*r.hash)["exception"] : Value::any();
@@ -8074,13 +8074,13 @@ void Interpreter::registerBuiltins() {
     };
     B["eval-lives-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool lived = true;
-        try { if (!a.empty()) I.evalString(a[0].toStr()); } catch (RakuError&) { lived = false; }
+        try { if (!a.empty()) I.evalString(a[0].toStr(), /*mainlinePH=*/true); } catch (RakuError&) { lived = false; }
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(lived);
     };
     B["eval-dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool died = false;
-        try { if (!a.empty()) I.evalString(a[0].toStr()); } catch (RakuError&) { died = true; }
+        try { if (!a.empty()) I.evalString(a[0].toStr(), /*mainlinePH=*/true); } catch (RakuError&) { died = true; }
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(died);
     };
@@ -8098,7 +8098,7 @@ void Interpreter::registerBuiltins() {
         // control flow may not escape an EVAL: a top-level `return`/`next`/… in
         // the string is X::ControlFlow, not a silent unwind of the whole program
         // evalString itself converts escaping control flow (routine-aware)
-        return I.evalString(code.toStr());
+        return I.evalString(code.toStr(), /*mainlinePH=*/true);
     };
     B["exit"] = [](Interpreter&, ValueList& a) -> Value {
         throw ExitEx{(int)(a.empty() ? 0 : a[0].toInt())};

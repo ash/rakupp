@@ -1219,6 +1219,10 @@ Token Lexer::lexIdentOrVar() {
                 name += advance(); name += advance();
                 consumeIdentChars(name);
             }
+            // `$a::::b` — an empty package segment is a null name component
+            if (peek() == ':' && peek(1) == ':' && peek(2) == ':' && peek(3) == ':')
+                throw ParseError("Name component may not be null", line_,
+                                 "X::Syntax::Name::Null", {});
         } else if (peek() == '/' || peek() == '!' || peek() == '~') {
             name += advance(); // special vars $/ $! $~
         }
@@ -1786,6 +1790,12 @@ std::vector<Token> Lexer::tokenize() {
         // brace or `;` bails out (word lists never span statements or blocks)
         if (t.kind == Tok::Op && !t.text.empty()) {
             if (angleWords_ == 0) {
+                // tight `<>` in term position is the Perl 5 null-filehandle read
+                if (t.text == "<" && peek() == '>' && angleTermContext(out))
+                    throw ParseError("Unsupported use of <>; in Raku please use "
+                                     "lines() to read input, ('') for a null "
+                                     "string or () for an empty list",
+                                     line_, "X::Obsolete", {{"old", "<>"}});
                 if (t.text == "<" && peek() != ']' && angleTermContext(out)) angleWords_++;
             } else {
                 // inside a list: an exact `<` nests; a token LEADING with `>`
