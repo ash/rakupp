@@ -4,8 +4,8 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 [`index.html`](index.html). No build step and no dependencies: open the file
 in a browser, or serve the directory statically.
 
-**Just want to look?** [`slides.pdf`](slides.pdf) is a 12-page PDF export
-(GitHub renders it inline). The interactive `index.html` is the real thing —
+**Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
+12-page PDF export (GitHub renders it inline). The interactive `index.html` is the real thing —
 keyboard navigation, a light/dark toggle, hover states. Regenerate the PDF from
 the deck with a headless browser:
 
@@ -14,7 +14,12 @@ the deck with a headless browser:
 sed 's/<html lang="en">/<html lang="en" data-theme="dark">/' index.html > /tmp/deck-print.html
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --no-pdf-header-footer --virtual-time-budget=4000 \
-  --print-to-pdf="slides.pdf" "file:///tmp/deck-print.html"
+  --print-to-pdf="/tmp/deck-chrome.pdf" "file:///tmp/deck-print.html"
+
+# Re-encode to PDF 1.4 so GitHub's inline viewer can render it
+# (Chrome emits PDF 1.7 object/xref streams that GitHub's PDF.js chokes on)
+gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/prepress \
+   -dNOPAUSE -dBATCH -dQUIET -sOutputFile="rakupp-presentation.pdf" /tmp/deck-chrome.pdf
 ```
 
 - **Navigate:** `←` / `→` (also PageUp/PageDown, Space), `Home` / `End`, the dot

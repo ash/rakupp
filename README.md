@@ -114,7 +114,7 @@ course. Build it with `rakujs/build.sh`; details in
 
 ### Start here
 
-- **[presentation/](presentation/)** — a slide deck introducing Raku++ and its ecosystem. View it right here on GitHub as [slides.pdf](presentation/slides.pdf), or open [`index.html`](presentation/index.html) in a browser for the interactive, keyboard-navigable version. The quickest visual tour.
+- **[presentation/](presentation/)** — a slide deck introducing Raku++ and its ecosystem. View it right here on GitHub as [rakupp-presentation.pdf](presentation/rakupp-presentation.pdf), or open [`index.html`](presentation/index.html) in a browser for the interactive, keyboard-navigable version. The quickest visual tour.
 - **[HIGHLIGHTS.md](docs/HIGHLIGHTS.md)** — the key features, in bullets, on one page.
 - **[OVERVIEW.md](docs/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
 - **[GUIDE.md](docs/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
