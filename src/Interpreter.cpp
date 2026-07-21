@@ -7475,7 +7475,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (r.t == VT::Range) {
-            if (l.t == VT::Rat) { // exact endpoint compare: 4.99…(45 digits) ~~ 0..^5
+            if (l.t == VT::Range) {
+                // Range ~~ Range: containment — every element of l is in r
+                double llo = l.rNum ? l.n : (double)l.rFrom;
+                double lhi = l.rNum ? l.im : (double)l.rTo;
+                double rlo = r.rNum ? r.n : (double)r.rFrom;
+                double rhi = r.rNum ? r.im : (double)r.rTo;
+                bool loOK = r.rExFrom ? (llo > rlo || (l.rExFrom && llo >= rlo))
+                                      : (llo >= rlo);
+                bool hiOK = r.rExTo ? (lhi < rhi || (l.rExTo && lhi <= rhi))
+                                    : (lhi <= rhi);
+                res = loOK && hiOK;
+            }
+            else if (l.t == VT::Rat) { // exact endpoint compare: 4.99…(45 digits) ~~ 0..^5
                 res = applyArith(r.rExFrom ? ">" : ">=", l, Value::integer(r.rFrom)).truthy() &&
                       applyArith(r.rExTo ? "<" : "<=", l, Value::integer(r.rTo)).truthy();
             } else {
@@ -12354,6 +12366,8 @@ Value Interpreter::eval(Expr* e) {
             }
             // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
             // marks an infinite range, same as 1..Inf)
+            if (from.t == VT::Whatever && to.t == VT::Whatever)
+                return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, false, false);
             if (to.t == VT::Whatever)
                 return Value::range(from.toInt(), 9223372036854775807LL, r->exFrom, false);
             if (from.t == VT::Whatever)

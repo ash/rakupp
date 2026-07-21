@@ -6248,8 +6248,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "excludes-max") return Value::boolean(inv.rExTo);
         if (m == "infinite")     return Value::boolean(false);
         if (m == "is-int")       return Value::boolean(!inv.rNum); // fractional ranges aren't integer-bounded
-        if (m == "min")          return inv.rNum ? Value::number(inv.n) : Value::integer(inv.rFrom);
-        if (m == "max")          return inv.rNum ? Value::number(inv.im) : Value::integer(inv.rTo);
+        if (m == "min")
+            return inv.rNum ? Value::number(inv.n)
+                 : inv.rFrom <= -9000000000000000000LL ? Value::number(-INFINITY)
+                 : Value::integer(inv.rFrom);
+        if (m == "max")
+            return inv.rNum ? Value::number(inv.im)
+                 : inv.rTo >= 9000000000000000000LL ? Value::number(INFINITY)
+                 : Value::integer(inv.rTo);
         if (m == "bounds") {
             Value o = inv.rNum ? Value::array({Value::number(inv.n), Value::number(inv.im)})
                                : Value::array({Value::integer(inv.rFrom), Value::integer(inv.rTo)});
@@ -6269,7 +6275,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value o = Value::array(); o.isList = true; for (long long i = 0; i < n; i++) o.arr->push_back(Value::integer(lo + i)); return o; }
         if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo, false, inv.rExTo); }
         if (m == "elems" || m == "Numeric" || m == "Int") return Value::number(INFINITY);
-        if (m == "min") return Value::integer(inv.rFrom);
+        if (m == "min") return inv.rFrom <= -9000000000000000000LL
+            ? Value::number(-INFINITY) : Value::integer(inv.rFrom);
         if (m == "max") return Value::number(INFINITY);                 // `1..*` .max is Inf, not an error
         if (m == "excludes-min") return Value::boolean(inv.rExFrom);
         if (m == "excludes-max") return Value::boolean(inv.rExTo);
