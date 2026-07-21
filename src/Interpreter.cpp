@@ -2673,6 +2673,45 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         throwTyped("X::Parameter::Default", {{"how", "required"}, {"parameter", p.name}},
                             "Cannot put default on required parameter " + p.name);
                 }
+                // a `--> 42` / `--> "foo"` / `--> Nil` constraint forbids
+                // `return <value>` anywhere in the body (compile error in Rakudo)
+                if (sd->retLiteral || sd->retType == "Nil") {
+                    std::string repr = "Nil";
+                    if (sd->retLiteral) {
+                        const Expr* rl = sd->retLiteral.get();
+                        if (rl->kind == NK::IntLit)
+                            repr = std::to_string(static_cast<const IntLit*>(rl)->v);
+                        else if (rl->kind == NK::StrLit)
+                            repr = "\"" + static_cast<const StrLit*>(rl)->v + "\"";
+                        else if (rl->kind == NK::NumLit)
+                            repr = Value::number(static_cast<const NumLit*>(rl)->v).gist();
+                    }
+                    std::function<bool(const Stmt*)> hasRetVal = [&](const Stmt* st) -> bool {
+                        if (!st) return false;
+                        if (st->kind == NK::ReturnStmt)
+                            return static_cast<const ReturnStmt*>(st)->value != nullptr;
+                        if (st->kind == NK::Block) {
+                            for (auto& b : static_cast<const Block*>(st)->stmts)
+                                if (hasRetVal(b.get())) return true;
+                        }
+                        else if (st->kind == NK::IfStmt) {
+                            auto* is = static_cast<const IfStmt*>(st);
+                            for (auto& br : is->branches) if (hasRetVal(br.second.get())) return true;
+                            if (hasRetVal(is->elseBlock.get())) return true;
+                        }
+                        else if (st->kind == NK::WhileStmt)
+                            return hasRetVal(static_cast<const WhileStmt*>(st)->body.get());
+                        else if (st->kind == NK::ForStmt)
+                            return hasRetVal(static_cast<const ForStmt*>(st)->body.get());
+                        return false;
+                    };
+                    for (auto& st : sd->body)
+                        if (hasRetVal(st.get()))
+                            throwTyped("X::Comp",
+                                {{"payload", repr}},
+                                "No return arguments allowed when return value " +
+                                repr + " is already specified in the signature");
+                }
                 if (prms->empty()) {
                     c.code->placeholders = computePlaceholders(sd->body);
                     // an explicit signature — even `()` — forbids placeholders
@@ -5170,7 +5209,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             throw;
         }
         copyOutRw(c.params, env, rwArgs, false);
-        return r.v;
+        return c.retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
     } catch (BreakGivenEx& b) { // `when` matched in this block: its value is the block's result
         if (c.body) runLeavePhasers(*c.body);
         restore();
@@ -5224,7 +5263,21 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (it != env->vars.end()) *topicWB = it->second;
     }
     copyOutRw(c.params, env, rwArgs, false);
-    return last;
+    return c.retType.empty() ? std::move(last) : checkRetType(c, std::move(last));
+}
+
+// Enforce a routine's declared nominal return type on its result value.
+Value Interpreter::checkRetType(const Callable& c, Value v) {
+    if (c.retType.empty() || !isDefined(v)) return v;
+    static const std::set<std::string> kRet = {
+        "Int", "Num", "Rat", "Complex", "Str", "Bool", "Junction"};
+    if (kRet.count(c.retType) && !rtTypeMatch(v, c.retType) &&
+        !(c.retType == "Int" && v.t == VT::Bool))
+        throwTypedV("X::TypeCheck::Return",
+                    {{"got", v}, {"expected", Value::typeObj(c.retType)}},
+                    "Type check failed for return value; expected " + c.retType +
+                    " but got " + v.typeName() + " (" + v.gist() + ")");
+    return v;
 }
 
 // Copy `is rw` parameter final values back to the caller's argument lvalues.
@@ -5887,6 +5940,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
         }
     }
+    if (a->op == "=" &&
+        (a->target->kind == NK::IntLit || a->target->kind == NK::NumLit ||
+         a->target->kind == NK::StrLit))
+        throwTyped("X::Assignment::RO", {},
+                   "Cannot modify an immutable value");
     if (a->op == ":=") {
         // Perl-6-level bind diagnostics (roast S32-exceptions/misc2.t)
         if (a->target->kind == NK::Call || a->target->kind == NK::MethodCall)
@@ -5906,6 +5964,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 throwTyped("X::Bind::NativeType", {{"name", tv->name}},
                            "Cannot bind to natively typed variable '" + tv->name +
                            "'; native types are not containers");
+            // `my Str $x := 3` — typed bind of a LITERAL value (literals only:
+            // an expression RHS must not be evaluated twice)
+            static const std::set<std::string> kBindChecked = {
+                "Int", "Num", "Rat", "Complex", "Str", "Bool"};
+            if (tv->declare && kBindChecked.count(tv->declType) &&
+                (a->value->kind == NK::IntLit || a->value->kind == NK::NumLit ||
+                 a->value->kind == NK::StrLit || a->value->kind == NK::BoolLit)) {
+                Value bv = eval(a->value.get());
+                if (!rtTypeMatch(bv, tv->declType) &&
+                    !(tv->declType == "Int" && bv.t == VT::Bool))
+                    throwTypedV("X::TypeCheck::Binding",
+                        {{"got", bv}, {"expected", Value::typeObj(tv->declType)}},
+                        "Type check failed in binding; expected " + tv->declType +
+                        " but got " + bv.typeName() + " (" + bv.gist() + ")");
+            }
         }
         if (a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
@@ -6236,10 +6309,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         if (di->second.t == VT::Type && kChecked.count(di->second.s) &&
                             !rtTypeMatch(rhs, di->second.s) &&
                             !(di->second.s == "Int" && rhs.t == VT::Bool)) // Bool is an Int subtype
-                            throw RakuError{Value::typeObj("X::TypeCheck::Assignment"),
+                            throwTypedV("X::TypeCheck::Assignment",
+                                {{"got", rhs},
+                                 {"expected", Value::typeObj(di->second.s)},
+                                 {"symbol", Value::str(nm)}},
                                 "Type check failed in assignment to " + nm +
                                 "; expected " + di->second.s + " but got " + rhs.typeName() +
-                                " (" + rhs.gist() + ")"};
+                                " (" + rhs.gist() + ")");
                         break;
                     }
                     if (en->vars.count(nm)) break;
