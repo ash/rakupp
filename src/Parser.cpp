@@ -1473,6 +1473,19 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         return list;
     }
     if (isKind(Tok::Var)) {
+        {   // `my $0` — numeric names are reserved for captures; `my $!x`/`my $?X`
+            // — those twigils cannot take a `my`-style scope
+            const std::string& vn = cur().text;
+            if (vn.size() > 1 && std::isdigit((unsigned char)vn[1]))
+                throw ParseError("Cannot declare a numeric variable " + vn, cur().line,
+                                 "X::Syntax::Variable::Numeric", {});
+            if (vn.size() > 2 && (vn[1] == '!' || vn[1] == '?') &&
+                (scope == "my" || scope == "our" || scope == "state" || scope == "constant"))
+                throw ParseError("Cannot use twigil '" + std::string(1, vn[1]) +
+                                 "' on a '" + scope + "'-scoped variable", cur().line,
+                                 "X::Syntax::Variable::Twigil",
+                                 {{"twigil", std::string(1, vn[1])}, {"scope", scope}});
+        }
         auto ve = std::make_unique<VarExpr>(advance().text);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
         // shaped array `my @a[3]` / `my @a[2;2]`: the `[...]` right after the sigil
@@ -3511,6 +3524,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.sigil = '\\';
             if (!p.name.empty()) sigilless_.insert(p.name);
         } else if (isKind(Tok::Var)) {
+            // `sub f($0)` — numeric names can't be parameters either
+            if (cur().text.size() > 1 && std::isdigit((unsigned char)cur().text[1]))
+                throw ParseError("Cannot use a numeric variable as a parameter", cur().line,
+                                 "X::Syntax::Variable::Numeric", {{"what", "parameter"}});
             // compile-time twigil vars ($?VERSION) can't be parameters —
             // dynamic ($*SCHEDULER) and accessor ($.x) parameters are legal
             if (cur().text.size() > 1 && cur().text[1] == '?')
@@ -4541,9 +4558,11 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "subset") { advance(); return parseSubset(); }
         if (kw == "enum") { advance(); return parseEnum(); }
         if (kw == "CATCH" || kw == "CONTROL") {
+            std::string which = kw;
             advance();
             auto blk = parseBlock();
             blk->isCatch = true;
+            blk->phaser = which; // distinguishes CATCH from CONTROL (one of each is fine)
             return blk;
         }
         if (kw == "BEGIN" || kw == "END" || kw == "INIT" || kw == "CHECK" ||
@@ -4614,8 +4633,14 @@ StmtPtr Parser::parseStatementImpl() {
 void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
     std::map<std::string, int> subs;  // 1=non-multi seen, 2=multi seen, 3=both
     std::map<std::string, int> types;
+    int catchBlocks = 0;
     for (auto& s : stmts) {
         if (!s) continue;
+        if (s->kind == NK::Block && static_cast<const Block*>(s.get())->isCatch &&
+            static_cast<const Block*>(s.get())->phaser == "CATCH" &&
+            ++catchBlocks > 1)
+            throw ParseError("Only one CATCH block is allowed in a block", s->line,
+                             "X::Phaser::Multiple", {{"block", "CATCH"}});
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<const SubDecl*>(s.get());
             if (sd->name.empty() || sd->isProto || sd->isMethod) continue;

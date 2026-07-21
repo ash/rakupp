@@ -11602,8 +11602,8 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             if (!isSpecialVar(ve->name) && !noStrict_)
-                throw RakuError{Value::typeObj("X::Undeclared"),
-                                "Variable '" + ve->name + "' is not declared"};
+                throwTyped("X::Undeclared", {{"symbol", ve->name}},
+                           "Variable '" + ve->name + "' is not declared");
             return defaultFor(sigil);
         }
         case NK::SymbolicRef: {
