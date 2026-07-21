@@ -395,6 +395,9 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out);
 
 static void addIfPlaceholder(const std::string& name, std::set<std::string>& out) {
     if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) out.insert(name); // $^a positional, $:n named
+    else if (name.size() > 2 && name[1] == '!' &&
+             (std::isalpha((unsigned char)name[2]) || name[2] == '_'))
+        out.insert(name); // $!attr — attribute references; placeholder consumers filter these
 }
 
 static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
@@ -459,7 +462,18 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
     std::set<std::string> ph;
     for (auto& s : body) collectPHStmt(s.get(), ph);
-    return std::vector<std::string>(ph.begin(), ph.end()); // std::set is sorted
+    std::vector<std::string> out;
+    for (auto& n : ph) if (n[1] != '!') out.push_back(n); // drop the $!attr refs
+    return out; // std::set is sorted
+}
+
+// every `$!x`/`@!x`/`%!x` attribute reference in a body (for undeclared-attribute checks)
+std::vector<std::string> collectAttrRefs(const std::vector<StmtPtr>& body) {
+    std::set<std::string> ph;
+    for (auto& s : body) collectPHStmt(s.get(), ph);
+    std::vector<std::string> out;
+    for (auto& n : ph) if (n[1] == '!') out.push_back(n);
+    return out;
 }
 
 Value listToArray(const ValueList& items) {
@@ -2631,7 +2645,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
                 if (sd->isNative) { c.code->isNative = true; c.code->nativeLib = sd->nativeLib;
                                     c.code->nativeSym = sd->nativeSym.empty() ? sd->name : sd->nativeSym; }
-                if (prms->empty()) c.code->placeholders = computePlaceholders(sd->body);
+                if (prms->empty()) {
+                    c.code->placeholders = computePlaceholders(sd->body);
+                    // an explicit signature — even `()` — forbids placeholders
+                    if (sd->hadSig && !c.code->placeholders.empty())
+                        throwTyped("X::Signature::Placeholder",
+                            {{"placeholder", c.code->placeholders[0]},
+                             {"line", std::to_string(sd->line > 0 ? sd->line : 1)}},
+                            "Placeholder variable '" + c.code->placeholders[0] +
+                            "' cannot override existing signature");
+                }
                 return c;
             };
             Value code = makeCand(&sd->params);
@@ -2989,6 +3012,23 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code->closure = bodyEnv;
                 code.code->isMethod = true; // invoked via .() binds the 1st arg as self
                 code.code->isStub = stmtIsStub(md->body);
+                // an undeclared `$!attr` reference in a method body is a compile
+                // error in a CLASS (roles get their attrs from consumers)
+                if (!cd->isRole)
+                    for (auto& ar : collectAttrRefs(md->body)) {
+                        std::string bare = ar.substr(2);
+                        bool known = false;
+                        for (ClassInfo* cc = ci.get(); cc && !known; cc = cc->parent.get())
+                            for (auto& at : cc->attrs)
+                                if (at.name == bare) { known = true; break; }
+                        if (!known)
+                            throwTyped("X::Attribute::Undeclared",
+                                {{"symbol", ar}, {"package-name", clsName},
+                                 {"package-kind", cd->isGrammar ? "grammar" : "class"},
+                                 {"what", "attribute"}},
+                                "Attribute " + ar + " not declared in " +
+                                (cd->isGrammar ? "grammar " : "class ") + clsName);
+                    }
                 if (md->params.empty()) code.code->placeholders = computePlaceholders(md->body);
                 if (md->isMulti) {
                     auto it = ci->methods.find(md->name);
@@ -3578,6 +3618,28 @@ Value Interpreter::makeClosure(BlockExpr* be) {
 // A Pair argument counts as *named* only if it was written syntactically (k=>v / :k(v));
 // a Pair that arrived as a value (from a variable, list, iteration, or return) is positional.
 static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.namedArg; }
+
+// Throw a typed exception as a real OBJECT carrying attributes, so
+// throws-like matchers (`symbol => '$!bar'`) can introspect it. The class is
+// registered on first use with exactly the attributes passed.
+void Interpreter::throwTyped(const std::string& type,
+                             std::vector<std::pair<std::string, std::string>> attrs,
+                             const std::string& message) {
+    auto it = classes_.find(type);
+    if (it == classes_.end()) {
+        auto ci = std::make_shared<ClassInfo>();
+        ci->name = type;
+        for (auto& kv : attrs) { ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        { ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        classes_[type] = ci;
+        it = classes_.find(type);
+    }
+    Value ex; ex.t = VT::Object; ex.obj = std::make_shared<ObjectData>();
+    ex.obj->cls = it->second;
+    for (auto& kv : attrs) ex.obj->attrs[kv.first] = Value::str(kv.second);
+    ex.obj->attrs["message"] = Value::str(message);
+    throw RakuError{ex, message};
+}
 
 // Build the effective symbol name of a (possibly multi-segment) symbolic ref:
 // join `pkg` + the head + `::seg` parts, hoist a sigil on the LAST segment to

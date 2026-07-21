@@ -3676,6 +3676,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
         s->name += ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
     }
     if (isKind(Tok::LParen)) {
+        s->hadSig = true;
         sigRetType_.clear(); sigRetLiteral_.reset(); advance(); s->params = parseSignature();
         // a `--> T` that follows a parameter (not comma-separated) is left for us
         if (isOp("-->")) { advance();

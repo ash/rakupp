@@ -4,7 +4,7 @@
 # and reductions. Everything stays exact `Int`, so the answers are precise.
 
 # Pretty-print a matrix with right-aligned, fixed-width columns.
-sub show(@m, $label) {
+sub show(@m, $label) 
     my $cell = @m.map(*.map(*.chars).max).max + 1;
     say $label;
     for @m -> @row {

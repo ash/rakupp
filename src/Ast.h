@@ -244,6 +244,7 @@ struct SubDecl : Stmt {
     ExprPtr retLiteral; // `--> 1` literal return: an empty body yields this value
     bool isMulti = false;
     bool isProto = false; // `proto` — defines the dispatch group; not a candidate itself
+    bool hadSig = false;  // explicit `(...)` signature (even empty) — placeholders then illegal
     bool isMethod = false;
     bool isSubmethod = false;
     std::vector<ExprPtr> immediateArgs; // `sub f($n) {…}(1)` — declare, then call at once

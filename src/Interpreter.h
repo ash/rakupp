@@ -282,6 +282,9 @@ public:
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     void typeCheckBind(const Param& p, const Value& v); // lone-candidate bind: throw X::TypeCheck::Binding on mismatch
     std::string symRefName(SymbolicRef* sr); // effective name of a multi-segment symbolic ref
+    [[noreturn]] void throwTyped(const std::string& type,
+                    std::vector<std::pair<std::string, std::string>> attrs,
+                    const std::string& message); // typed exception OBJECT with attributes
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
     bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
@@ -726,6 +729,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // $^a/$^b names, sorted (also used by codegen)
+std::vector<std::string> collectAttrRefs(const std::vector<StmtPtr>& body); // $!x/@!x/%!x references in a body
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method
