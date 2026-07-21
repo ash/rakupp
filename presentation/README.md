@@ -5,21 +5,27 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 in a browser, or serve the directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
-12-page PDF export (GitHub renders it inline). The interactive `index.html` is the real thing —
-keyboard navigation, a light/dark toggle, hover states. Regenerate the PDF from
-the deck with a headless browser:
+12-page PDF export (GitHub renders it inline). It's an *image* PDF — one
+rendered slide per page — because GitHub's inline viewer rejects the vector PDFs
+that Chrome and Ghostscript produce. The interactive `index.html` is the real
+thing: keyboard navigation, a light/dark toggle, hover states. Regenerate the
+PDF from the deck:
 
 ```sh
-# forces the dark theme, one slide per landscape page
+# 1. force the dark theme, print one slide per 1280x720 landscape page
 sed 's/<html lang="en">/<html lang="en" data-theme="dark">/' index.html > /tmp/deck-print.html
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --no-pdf-header-footer --virtual-time-budget=4000 \
-  --print-to-pdf="/tmp/deck-chrome.pdf" "file:///tmp/deck-print.html"
+  --print-to-pdf="/tmp/deck.pdf" "file:///tmp/deck-print.html"
 
-# Re-encode to PDF 1.4 so GitHub's inline viewer can render it
-# (Chrome emits PDF 1.7 object/xref streams that GitHub's PDF.js chokes on)
-gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/prepress \
-   -dNOPAUSE -dBATCH -dQUIET -sOutputFile="rakupp-presentation.pdf" /tmp/deck-chrome.pdf
+# 2. rasterise to PNGs and assemble an image-per-page PDF (renders on GitHub)
+pdftoppm -png -r 150 /tmp/deck.pdf /tmp/pg
+python3 - <<'PY'
+from PIL import Image; import glob
+imgs = [Image.open(f).convert('RGB') for f in sorted(glob.glob('/tmp/pg-*.png'))]
+imgs[0].save('rakupp-presentation.pdf', save_all=True, append_images=imgs[1:],
+             resolution=150.0, title='Raku++ — presentation')
+PY
 ```
 
 - **Navigate:** `←` / `→` (also PageUp/PageDown, Space), `Home` / `End`, the dot
