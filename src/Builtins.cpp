@@ -1322,6 +1322,11 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // a binary buffer has no string semantics: .Str is an error (use .decode)
+    if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
+        m == "Str")
+        throwTyped("X::Buf::AsStr", {{"method", "Str"}},
+                   "Cannot use a Buf as a string, but you called the Str method on it");
     // reverse/rotate are illegal only on a MULTI-dimensional fixed array; a 1-dim
     // shaped array reverses/rotates fine (returns a reordered list, no resize).
     if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && (m == "reverse" || m == "rotate"))
@@ -2940,21 +2945,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             // and for DateTime hour 0..23, minute 0..59 (seconds are leap-checked separately).
             {
                 if (mo < 1 || mo > 12)
-                    throw RakuError{Value::typeObj("X::OutOfRange"),
-                        "Month out of range. Is: " + std::to_string(mo) + ", should be in 1..12"};
+                    throwTyped("X::OutOfRange",
+                        {{"what", "Month"}, {"got", std::to_string(mo)}, {"range", "1..12"}},
+                        "Month out of range. Is: " + std::to_string(mo) + ", should be in 1..12");
                 static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
                 long long dim = mlen[mo - 1];
                 if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) dim = 29;
                 if (d < 1 || d > dim)
-                    throw RakuError{Value::typeObj("X::OutOfRange"),
-                        "Day out of range. Is: " + std::to_string(d) + ", should be in 1.." + std::to_string(dim)};
+                    throwTyped("X::OutOfRange",
+                        {{"what", "Day"}, {"got", std::to_string(d)}, {"range", "1.." + std::to_string(dim)}},
+                        "Day out of range. Is: " + std::to_string(d) + ", should be in 1.." + std::to_string(dim));
                 if (inv.s == "DateTime") {
                     if (h < 0 || h > 23)
-                        throw RakuError{Value::typeObj("X::OutOfRange"),
-                            "Hour out of range. Is: " + std::to_string(h) + ", should be in 0..23"};
+                        throwTyped("X::OutOfRange",
+                            {{"what", "Hour"}, {"got", std::to_string(h)}, {"range", "0..23"}},
+                            "Hour out of range. Is: " + std::to_string(h) + ", should be in 0..23");
                     if (mi < 0 || mi > 59)
-                        throw RakuError{Value::typeObj("X::OutOfRange"),
-                            "Minute out of range. Is: " + std::to_string(mi) + ", should be in 0..59"};
+                        throwTyped("X::OutOfRange",
+                            {{"what", "Minute"}, {"got", std::to_string(mi)}, {"range", "0..59"}},
+                            "Minute out of range. Is: " + std::to_string(mi) + ", should be in 0..59");
                 }
             }
             Value v = Value::makeHash(); v.hashKind = inv.s;
@@ -2986,8 +2995,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
                 19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
             if (ep % 86400 != 86399 || !leapDays.count(ymd))
-                throw RakuError{Value::typeObj("X::OutOfRange"),
-                    "Second out of range. Is: 60, should be in 0..^60"};
+                throwTyped("X::OutOfRange",
+                    {{"what", "Second"}, {"got", "60"}, {"range", "0..^60"},
+                     {"comment", "or leap second not allowed here"}},
+                    "Second out of range. Is: 60, should be in 0..^60"
+                    " (or leap second not allowed here)");
         };
         if (m == "now" || m == "today") {
             time_t t = time(nullptr); struct tm* lt = localtime(&t);

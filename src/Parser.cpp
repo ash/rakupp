@@ -3048,6 +3048,8 @@ ExprPtr Parser::parsePrimary() {
             return std::make_unique<NameTerm>(name);
         }
         default:
+            if (isKind(Tok::End)) // `42 +` — an infix with no right-hand side
+                error("Confused: missing required term after infix");
             error("Confused"); // Rakudo's generic "confused parse" message
     }
 }
