@@ -119,7 +119,7 @@ em++ \
   -sINVOKE_RUN=0 \
   -sEXIT_RUNTIME=0 \
   -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-  -sEXPORTED_FUNCTIONS='["_rakupp_run","_rakupp_version","_malloc","_free"]' \
+  -sEXPORTED_FUNCTIONS='["_rakupp_run","_rakupp_highlight","_rakupp_version","_malloc","_free"]' \
   -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString"]' \
   ${EXTRA_S[@]+"${EXTRA_S[@]}"} \
   -o "$OUT_DIR/rakujs.js"

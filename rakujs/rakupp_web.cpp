@@ -14,11 +14,13 @@
 // real stack size and throws X::Recursion before it overflows, so this is safe.
 
 #include "Runtime.h"
+#include "Highlight.h"
 
 #include <emscripten/emscripten.h>
 #include <cstdio>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <unistd.h>
 
 extern "C" {
@@ -63,6 +65,20 @@ int rakupp_run(const char* src, const char* stdin_text) {
     fsync(STDOUT_FILENO);
     fsync(STDERR_FILENO);
     return rc;
+}
+
+// Syntax-highlight Raku source with rakupp's own tokenizer (the same one behind
+// `rakupp --highlight`) — so an embed can paint the editor exactly as the CLI
+// would, instead of an approximate JS tokenizer. Returns HTML: a
+// `<div class="highlight"><pre>…<span class="k">…</span>…</pre></div>` string
+// using Pygments token classes. The result lives in a static string valid until
+// the next call — the caller (synchronous, single-threaded) copies it out
+// immediately, as with rakupp_version().
+EMSCRIPTEN_KEEPALIVE
+const char* rakupp_highlight(const char* src) {
+    static std::string out;
+    out = rakupp::highlight(src ? src : "", "html");
+    return out.c_str();
 }
 
 // The Raku++ version string, for the playground footer / cache-busting.
