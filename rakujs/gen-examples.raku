@@ -176,7 +176,14 @@ my @showcases =
                    'Quicksort'      => sample-file('perl/examples/quicksort.pl'),
                    'Regex'          => sample-file('perl/examples/regex.pl'),
                    'Sieve'          => sample-file('perl/examples/sieve.pl'),
-                   'Word frequency' => sample-file('perl/examples/wordfreq.pl')) );
+                   'Word frequency' => sample-file('perl/examples/wordfreq.pl')) ),
+    %( name => 'Python interpreter', file => 'python/python.raku',
+       entry => 'run-python($*IN.slurp);',
+       desc => 'A Python 3 interpreter — off-side rule, classes, generators',
+       samples => ('FizzBuzz'       => sample-file('python/examples/fizzbuzz.py'),
+                   'Sieve'          => sample-file('python/examples/sieve.py'),
+                   'Word count'     => sample-file('python/examples/wordcount.py'),
+                   'Classes'        => sample-file('python/examples/classes.py')) );
 
 # Serialize a showcase's samples as a JSON array of {name, code} objects.
 sub samples-json(@samples --> Str) {
