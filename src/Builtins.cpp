@@ -3002,6 +3002,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             std::vector<Value> pos;
             bool isoStr = false;
             bool haveNamedField = false;
+            size_t posN = 0;
+            for (auto& a : args) if (a.t != VT::Pair) posN++;
             for (auto& a : args) {
                 if (a.t == VT::Pair) {
                     long long val = a.pairVal ? a.pairVal->toInt() : 0;
@@ -3009,6 +3011,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     else if (a.s == "hour") { h = val; haveNamedField = true; } else if (a.s == "minute") { mi = val; haveNamedField = true; }
                     else if (a.s == "second") { secV = a.pairVal ? *a.pairVal : Value::integer(0); haveNamedField = true; } // exact (frac OK)
                     else if (a.s == "timezone") tz = val;
+                } else if (a.t == VT::Str && a.s.find('-', 1) == std::string::npos &&
+                           !a.s.empty() && std::isdigit((unsigned char)a.s[0]) &&
+                           posN == 1) {
+                    // the SINGLE string positional that is NOT ISO-shaped (no
+                    // dashes): "2012/04" etc. — invalid temporal format
+                    // (multiple positionals are the y,m,d form, digits legal)
+                    throwTyped("X::Temporal::InvalidFormat",
+                        {{"invalid-str", a.s},
+                         {"format", inv.s == "Date" ? "yyyy-mm-dd" : "an ISO 8601 timestamp"}},
+                        "Invalid " + inv.s + " string '" + a.s +
+                        "'; use " + (inv.s == "Date" ? "yyyy-mm-dd" : "an ISO 8601 timestamp") + " instead");
                 } else if (a.t == VT::Str && a.s.find('-', 1) != std::string::npos) {
                     // ISO 8601: YYYY-MM-DD[THH:MM:SS[.frac]][Z|±HH:MM|±HHMM]
                     isoStr = true;

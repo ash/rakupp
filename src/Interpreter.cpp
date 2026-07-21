@@ -2218,6 +2218,15 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH) {
             }
         *prog = parser.parseProgram();
     } catch (ParseError& e) {
+        if (e.exType == "X::Comp::Group") {
+            // parse-level group diagnostic: the `sorrow` attr names the inner
+            // exception type; rebuild it as a real object list in .sorrows
+            std::string stype = "X::AdHoc";
+            for (auto& kv : e.exAttrs) if (kv.first == "sorrow") stype = kv.second;
+            Value arr = Value::array(); arr.isList = true;
+            arr.arr->push_back(makeTypedEx(stype, {}, e.what()));
+            throwTypedV("X::Comp::Group", {{"sorrows", arr}}, e.what());
+        }
         if (!e.exType.empty()) throwTyped(e.exType, e.exAttrs, e.what()); // typed compile diagnostic
         throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
     }
@@ -3713,9 +3722,9 @@ static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.name
 // Throw a typed exception as a real OBJECT carrying attributes, so
 // throws-like matchers (`symbol => '$!bar'`) can introspect it. The class is
 // registered on first use with exactly the attributes passed.
-void Interpreter::throwTypedV(const std::string& type,
-                              std::vector<std::pair<std::string, Value>> attrs,
-                              const std::string& message) {
+Value Interpreter::makeTypedEx(const std::string& type,
+                               std::vector<std::pair<std::string, Value>> attrs,
+                               const std::string& message) {
     auto it = classes_.find(type);
     if (it == classes_.end()) {
         auto ci = std::make_shared<ClassInfo>();
@@ -3729,6 +3738,13 @@ void Interpreter::throwTypedV(const std::string& type,
     ex.obj->cls = it->second;
     for (auto& kv : attrs) ex.obj->attrs[kv.first] = kv.second;
     ex.obj->attrs["message"] = Value::str(message);
+    return ex;
+}
+
+void Interpreter::throwTypedV(const std::string& type,
+                              std::vector<std::pair<std::string, Value>> attrs,
+                              const std::string& message) {
+    Value ex = makeTypedEx(type, std::move(attrs), message);
     throw RakuError{ex, message};
 }
 

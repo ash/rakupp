@@ -1637,6 +1637,11 @@ ExprPtr Parser::parseColonPair() {
     // radix literal: :16<FF> / :2<1010> / :8<777>  (a number written in the given base)
     if (isKind(Tok::IntLit) && peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
         int base = std::atoi(cur().text.c_str());
+        if (base < 2 || base > 36)
+            throw ParseError("Radix " + std::to_string(base) +
+                             " out of range (allowed: 2..36)", cur().line,
+                             "X::Syntax::Number::RadixOutOfRange",
+                             {{"radix", std::to_string(base)}});
         advance(); advance(); // radix and '<'
         std::vector<std::string> words = readAngleWords(">");
         std::string digits = words.empty() ? "" : words[0];
@@ -1696,6 +1701,11 @@ ExprPtr Parser::parseColonPair() {
     // string form parsed in the given base (an Int).
     if (isKind(Tok::IntLit) && peek().kind == Tok::LParen && !peek().spaceBefore) {
         int base = std::atoi(cur().text.c_str());
+        if (base < 2 || base > 36)
+            throw ParseError("Radix " + std::to_string(base) +
+                             " out of range (allowed: 2..36)", cur().line,
+                             "X::Syntax::Number::RadixOutOfRange",
+                             {{"radix", std::to_string(base)}});
         advance(); advance(); // radix and '('
         ExprPtr arg = isKind(Tok::RParen) ? std::make_unique<StrLit>("") : parseExpression();
         expectKind(Tok::RParen, ")");
@@ -2066,8 +2076,40 @@ ExprPtr Parser::parsePrimary() {
             if (fmt) { auto c = std::make_unique<Call>(); c->name = "__format__"; c->args.push_back(std::move(e)); return c; }
             return e;
         }
-        case Tok::RegexLit: { Token tk = advance(); auto e = std::make_unique<RegexLit>(tk.text); e->isRx = tk.flag; return e; }
-        case Tok::SubstLit: { const Token& t = advance(); return std::make_unique<SubstLit>(t.text, t.text2, t.flag); }
+        case Tok::RegexLit: {
+            Token tk = advance();
+            // the lexer prepends the adverbs (":P5 ", ":i ") to the pattern
+            // text — strip them for the null check, and note a P5 regex
+            // (where a trailing | or & is a literal, not an empty branch)
+            const std::string& full = tk.text;
+            size_t i = 0;
+            bool p5 = false;
+            while (i < full.size() && full[i] == ':') {
+                size_t j = i + 1;
+                int d = 0;
+                while (j < full.size() && (d > 0 || full[j] != ' ')) {
+                    if (full[j] == '(') d++;
+                    else if (full[j] == ')') d--;
+                    j++;
+                }
+                // lexer-prepended adverbs always end with a space; a tight
+                // inline adverb (`/:s^.../`) is part of the pattern — stop
+                if (j >= full.size() || full[j] != ' ') break;
+                std::string adv = full.substr(i + 1, j - i - 1);
+                if (adv == "P5" || adv == "Perl5") p5 = true;
+                i = j;
+                while (i < full.size() && full[i] == ' ') i++;
+            }
+            checkNullRegex(full.substr(i), tk.line, !p5);
+            auto e = std::make_unique<RegexLit>(tk.text);
+            e->isRx = tk.flag;
+            return e;
+        }
+        case Tok::SubstLit: {
+            const Token& t = advance();
+            checkNullRegex(t.text, t.line, /*branches=*/false);
+            return std::make_unique<SubstLit>(t.text, t.text2, t.flag);
+        }
         case Tok::QwList: { // qw<...> : split raw content on whitespace into a list of strings
             std::string raw = advance().text;
             auto arr = std::make_unique<ArrayLit>();
@@ -3952,6 +3994,25 @@ void Parser::skipToStatementEnd() {
     }
 }
 
+void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
+    // an empty regex (or an empty alternation branch / group) is X::Syntax::
+    // Regex::NullRegex — `/ /`, `/ a | /`, `/ [] /`, `/ () /`, `s//x/`.
+    // branches=false skips the trailing |/& heuristic (P5 regexes and
+    // substitution patterns, where those chars can be literal).
+    size_t b = pat.find_first_not_of(" \t\n");
+    std::string t = b == std::string::npos
+        ? std::string()
+        : pat.substr(b, pat.find_last_not_of(" \t\n") - b + 1);
+    bool null = t.empty() ||
+        (branches && (t == "[]" || t == "()" || t == "[ ]" || t == "( )"));
+    if (!null && branches && (t.back() == '|' || t.back() == '&') &&
+        (t.size() < 2 || t[t.size() - 2] != '\\'))
+        null = true;
+    if (null)
+        throw ParseError("Null regex not allowed", line,
+                         "X::Syntax::Regex::NullRegex", {});
+}
+
 void Parser::checkVirtualCallInDefault(size_t defStart) {
     // `has $.x = $.y` — a virtual call in an attribute default runs against a
     // partially constructed object; `has $.a = $^b` — a placeholder cannot
@@ -4199,6 +4260,8 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     std::string kind = advance().text;
                     std::string nm = isKind(Tok::Ident) ? advance().text : "";
                     std::string pat = isKind(Tok::RegexLit) ? advance().text : "";
+                    if (kind == "regex" && !wasProtoMulti)
+                        checkNullRegex(pat, cur().line);
                     // split a captured signature `NAME(Str $indent, …)` → name + param var names
                     std::vector<std::string> params;
                     auto lp = nm.find('(');
@@ -4615,6 +4678,14 @@ StmtPtr Parser::parseStatementImpl() {
             throw ParseError("Unsupported use of 'foreach'; in Raku please use 'for'",
                              t.line, "X::Obsolete",
                              {{"old", "'foreach'"}, {"replacement", "'for'"}});
+        if ((kw == "if" || kw == "unless" || kw == "with" || kw == "without" ||
+             kw == "while" || kw == "until") &&
+            peek().kind == Tok::LParen && !peek().spaceBefore &&
+            peek(2).kind == Tok::RParen)
+            throw ParseError("Word '" + kw + "' interpreted as '" + kw +
+                             "()' function call; please use whitespace before any parentheses",
+                             t.line, "X::Comp::Group",
+                             {{"sorrow", "X::Syntax::KeywordAsFunction"}});
         if (kw == "if") { advance(); return parseIf(false); }
         if (kw == "unless") { advance(); return parseIf(true); }
         if (kw == "while") { advance(); return parseWhile(false); }

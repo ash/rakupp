@@ -289,6 +289,9 @@ public:
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // same, attribute values as Values
     Value checkRetType(const Callable& c, Value v); // enforce declared return type
+    Value makeTypedEx(const std::string& type,
+                    std::vector<std::pair<std::string, Value>> attrs,
+                    const std::string& message); // build (don't throw) a typed exception object
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
     bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
