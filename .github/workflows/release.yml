@@ -341,3 +341,36 @@ jobs:
         run: cmake --build build -j 4
       - name: Smoke test
         run: build/rakupp tools/smoke.raku
+
+  # OpenBSD portability gate. GitHub has no native BSD runner, so vmactions boots
+  # a real OpenBSD guest under QEMU inside the Ubuntu runner and runs the build
+  # in it. OpenBSD's base `c++` is clang + libc++ (no libstdc++), so no static
+  # portability flags here. The one non-obvious trap: OpenBSD's default login-
+  # class `datasize` limit is low enough that an -O3 C++ compile can be killed
+  # for exhausting memory — `ulimit -d` lifts it before configuring.
+  openbsd-portability:
+    name: openbsd (build + smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build & test on OpenBSD
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          # cmake + gmake: CMake's Unix Makefiles generator needs GNU make on
+          # BSD; `cmake --build` then drives gmake. clang/clang++ are in base.
+          prepare: |
+            pkg_add -I cmake gmake
+          run: |
+            set -e
+            ulimit -d 2097152 || true   # raise datasize so the compile isn't OOM-killed
+            cc --version
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+            cmake --build build -j 2
+            build/rakupp tools/smoke.raku
+            out=$(build/rakupp -e 'say 6 * 7')
+            echo "got: [$out]"
+            test "$out" = "42"
+            # --exe end-to-end: compiles generated C++ with the base clang toolchain
+            build/rakupp --exe tools/smoke.raku -o smoke-native
+            ./smoke-native
