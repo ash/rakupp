@@ -17,6 +17,7 @@ point; everything else lives here.
 - **[RUNTIME.md](RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — what a `Value` is, how variables and containers relate, calls and dispatch, and lazy/infinite sequences.
 - **[MEMORY.md](MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
 - **[METAPROGRAMMING.md](METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
+- **[NQP.md](NQP.md)** — the `use nqp` compatibility subset that lets ecosystem modules (JSON::Fast, …) run: what it covers, how it compiles, and why it's zero-cost when unused.
 - **[DOGFOODING.md](DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
 
 ## Native compile & the browser
