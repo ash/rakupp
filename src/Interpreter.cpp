@@ -6954,6 +6954,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
         (op.substr(op.size() - 2) == ">>" || op.substr(op.size() - 2) == "<<")) {
         std::string inner = op.substr(2, op.size() - 4);
+        // hyper compound assignment: `@a <<+=>> 2019` applies the base op
+        // elementwise and MUTATES the left array (Value.arr is shared storage,
+        // so writing through it reaches the caller's container)
+        static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
+        if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
+            l.t == VT::Array && l.arr) {
+            std::string base = inner.substr(0, inner.size() - 1);
+            ValueList b = r.flatten();
+            if (!b.empty())
+                for (size_t i = 0; i < l.arr->size(); i++)
+                    (*l.arr)[i] = applyArith(base, (*l.arr)[i], b[i % b.size()]);
+            return l;
+        }
         ValueList a = l.flatten(), b = r.flatten();
         Value out = Value::array(); out.isList = true;
         size_t n = a.size() > b.size() ? a.size() : b.size();
@@ -9097,6 +9110,19 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
         (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
         std::string inner = op.substr(2, op.size() - 4);
+        // hyper compound assignment: `@a <<+=>> 2019` applies the base op
+        // elementwise and MUTATES the left array (Value.arr is shared storage,
+        // so writing through it reaches the caller's container)
+        static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
+        if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
+            l.t == VT::Array && l.arr) {
+            std::string base = inner.substr(0, inner.size() - 1);
+            ValueList b = r.flatten();
+            if (!b.empty())
+                for (size_t i = 0; i < l.arr->size(); i++)
+                    (*l.arr)[i] = applyBinOp(base, (*l.arr)[i], b[i % b.size()]);
+            return l;
+        }
         bool strictL = op.compare(0, 2, ">>") == 0;
         bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
         Value ll = l, rr = r;
@@ -9252,6 +9278,19 @@ Value Interpreter::evalBinary(Binary* b) {
                 return code;
             }
             std::string inner = op.substr(2, op.size() - 4);
+            // hyper compound assignment: `@a <<+=>> 2019` applies the base op
+            // elementwise and MUTATES the left array (Value.arr is shared
+            // storage, so writing through it reaches the caller's container)
+            static const std::set<std::string> eqTailCmp = {"==", "!=", "<=", ">=", "===", "=:="};
+            if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
+                l.t == VT::Array && l.arr) {
+                std::string base = inner.substr(0, inner.size() - 1);
+                ValueList b = r.flatten();
+                if (!b.empty())
+                    for (size_t i = 0; i < l.arr->size(); i++)
+                        (*l.arr)[i] = applyBinOp(base, (*l.arr)[i], b[i % b.size()]);
+                return l;
+            }
             bool strictL = op.compare(0, 2, ">>") == 0;
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
             Value ll = l, rr = r;
