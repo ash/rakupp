@@ -4748,6 +4748,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         std::string want = args[0].t == VT::Type ? args[0].s : args[0].toStr();
         std::string tn = inv.t == VT::Type ? inv.s : (inv.obj && inv.obj->cls ? inv.obj->cls->name : inv.typeName());
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
+        // an allomorph (IntStr/NumStr/RatStr/ComplexStr) IS both its numeric
+        // type and Str by inheritance
+        if (inv.isAllomorph() &&
+            (want == "Str" || want == "Int" || want == "Num" || want == "Rat" || want == "Complex")) {
+            if (want == "Str") return Value::boolean(true);
+            return Value::boolean(tn == want + std::string("Str"));
+        }
         // `.isa` is strict CLASS inheritance — a role (Numeric, Real, …) is never
         // an `isa` ancestor (use `~~`/`.does` for role membership)
         static const std::set<std::string> roles = {
@@ -8067,6 +8074,15 @@ void Interpreter::registerBuiltins() {
     B["isa-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string want = a.size() > 1 ? (a[1].t == VT::Type ? a[1].s : a[1].toStr()) : "";
         std::string got = a.empty() ? "Any" : a[0].typeName();
+        // the real .isa knows allomorphs and user-class chains — consult it first
+        if (a.size() > 1) {
+            ValueList ia{a[1]};
+            Value r = I.methodCall(a[0], "isa", ia);
+            if (r.truthy()) {
+                I.emitTest(true, a.size() > 2 ? a[2].toStr() : "isa " + want);
+                return Value::boolean(true);
+            }
+        }
         static const std::map<std::string, std::set<std::string>> isa = {
             {"Int", {"Int", "Cool", "Numeric", "Real", "Any", "Mu"}},
             {"Num", {"Num", "Cool", "Numeric", "Real", "Any", "Mu"}},
