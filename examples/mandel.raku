@@ -6,7 +6,7 @@
 #   (~2004), translated from C by Glenn Rhoads and ported to Perl 6 by
 #   Leopold Tötsch <lt@toetsch.at>. That file no longer compiles under
 #   present-day Raku (nor under raku++) because of two language changes
-#   since the Parrot era; see docs/MANDEL.md for the full story.
+#   since the Parrot era; see docs/dev/MANDEL.md for the full story.
 #
 # This is a faithful modernisation. Only two things changed, both forced
 # by the language rather than by any single implementation:

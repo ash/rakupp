@@ -35,21 +35,21 @@ there.)
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
   small programs it is instant.
 - **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.6× on
-  `arrayops` to 9.7× on `loopsum`, 13.4× on `hash`, and 47.9× on `strcat`.
+  `arrayops` to 9.6× on `loopsum`, 13.7× on `hash`, and 43.0× on `strcat`.
   Compiling removes interpreter overhead.
-- **Rakudo's JIT keeps two interpreter wins**: `fib` (1.7×) — deep recursion of
-  a tiny body — and `streq` (2.0×; string comparisons walk the interpreter's
+- **Rakudo's JIT keeps two interpreter wins**: `fib` (1.8×) — deep recursion of
+  a tiny body — and `streq` (1.9×; string comparisons walk the interpreter's
   operator-dispatch chain). Compiling flips both: `--exe` puts `fib` 2.9× ahead
-  and `streq` 6.2× ahead (string `eq`/`lt` compile to inline byte-compares — see
+  and `streq` 6.4× ahead (string `eq`/`lt` compile to inline byte-compares — see
   [dev/DISPATCH.md](dev/DISPATCH.md) for the dispatch story).
 - Even the **interpreter** beats Rakudo on 7 of 9 — everything except `fib` and
-  `streq`, including the `loopsum` loop kernel (1.3×).
+  `streq`, including the `loopsum` loop kernel (1.4×).
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
-  O(n) rather than O(n²) — 15× ahead of Rakudo even interpreted.
+  O(n) rather than O(n²) — 14× ahead of Rakudo even interpreted.
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 24.6), measured 2026-07-20 on a lightly loaded
+- **Machine:** macOS (Darwin 24.6), measured 2026-07-22 on a lightly loaded
   desktop. (Rows are not comparable across doc revisions — absolute times
   shift a few percent with machine state; the Rakudo column, measured every
   time, is the fixed yardstick. A per-iteration `std::function` allocation that
@@ -88,15 +88,15 @@ Rakudo's VM leads on `fib` (tiny-body recursion, a JIT's best case) and on
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| strcat   | 12.2 ms  | 187.0 ms | **Raku++ 15.3×** |
-| bigint   | 31.8 ms  | 257.1 ms | **Raku++ 8.1×** |
-| hash     | 38.3 ms  | 227.7 ms | **Raku++ 5.9×** |
-| sortnums | 71.8 ms  | 257.1 ms | **Raku++ 3.6×** |
-| regex    | 86.1 ms  | 283.6 ms | **Raku++ 3.3×** |
-| arrayops | 109.9 ms | 287.1 ms | **Raku++ 2.6×** |
-| loopsum  | 212.3 ms | 267.5 ms | **Raku++ 1.3×** |
-| streq    | 564.9 ms | 287.9 ms | Rakudo 2.0× |
-| fib      | 792.8 ms | 459.2 ms | Rakudo 1.7× |
+| strcat   | 13.1 ms  | 189.3 ms | **Raku++ 14.4×** |
+| bigint   | 31.8 ms  | 258.9 ms | **Raku++ 8.1×** |
+| hash     | 38.4 ms  | 231.0 ms | **Raku++ 6.0×** |
+| sortnums | 70.7 ms  | 261.6 ms | **Raku++ 3.7×** |
+| regex    | 86.3 ms  | 285.7 ms | **Raku++ 3.3×** |
+| arrayops | 114.9 ms | 287.0 ms | **Raku++ 2.5×** |
+| loopsum  | 195.9 ms | 269.8 ms | **Raku++ 1.4×** |
+| streq    | 562.5 ms | 296.2 ms | Rakudo 1.9× |
+| fib      | 818.4 ms | 465.1 ms | Rakudo 1.8× |
 
 ### Native (`--exe`) vs Rakudo
 
@@ -106,20 +106,20 @@ speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| strcat   | 3.9 ms   | 187.0 ms | **Raku++ 47.9×** | 3.1× |
-| hash     | 17.0 ms  | 227.7 ms | **Raku++ 13.4×** | 2.3× |
-| loopsum  | 27.7 ms  | 267.5 ms | **Raku++ 9.7×**  | 7.7× |
-| bigint   | 30.1 ms  | 257.1 ms | **Raku++ 8.5×**  | 1.1× |
-| streq    | 46.4 ms  | 287.9 ms | **Raku++ 6.2×**  | 12.2× |
-| sortnums | 55.2 ms  | 257.1 ms | **Raku++ 4.7×**  | 1.3× |
-| regex    | 67.2 ms  | 283.6 ms | **Raku++ 4.2×**  | 1.3× |
-| fib      | 161.1 ms | 459.2 ms | **Raku++ 2.9×**  | 4.9× |
-| arrayops | 108.4 ms | 287.1 ms | **Raku++ 2.6×**  | 1.0× |
+| strcat   | 4.4 ms   | 189.3 ms | **Raku++ 43.0×** | 3.0× |
+| hash     | 16.9 ms  | 231.0 ms | **Raku++ 13.7×** | 2.3× |
+| loopsum  | 28.0 ms  | 269.8 ms | **Raku++ 9.6×**  | 7.0× |
+| bigint   | 30.4 ms  | 258.9 ms | **Raku++ 8.5×**  | 1.0× |
+| streq    | 46.1 ms  | 296.2 ms | **Raku++ 6.4×**  | 12.2× |
+| sortnums | 54.3 ms  | 261.6 ms | **Raku++ 4.8×**  | 1.3× |
+| regex    | 67.8 ms  | 285.7 ms | **Raku++ 4.2×**  | 1.3× |
+| fib      | 161.7 ms | 465.1 ms | **Raku++ 2.9×**  | 5.1× |
+| arrayops | 111.2 ms | 287.0 ms | **Raku++ 2.6×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
 hurts — `streq` 12.2× (per-node walking around what is, after the fast path, a
-trivial byte-compare — see [dev/DISPATCH.md](dev/DISPATCH.md)), `loopsum` 7.7×,
-`fib` 4.9× (both re-dispatch a tiny body a huge number of times). It's a near
+trivial byte-compare — see [dev/DISPATCH.md](dev/DISPATCH.md)), `loopsum` 7.0×,
+`fib` 5.1× (both re-dispatch a tiny body a huge number of times). It's a near
 no-op (1.0–1.3×) for the workloads whose time is spent *inside* runtime
 methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and especially
 `bigint`, which lives almost entirely in `BigInt` multiply. There the driving
@@ -132,7 +132,7 @@ ahead. `streq` got the same treatment on 2026-07-17: string comparisons used to
 walk `applyArith`'s full dispatch chain (~118 ns per `eq`). Compiled code now
 emits inline plain-`Str` byte-compares and calls builtins through pointers
 resolved once at startup; the interpreter gained a matching char-dispatched
-Str/Str fast path at the top of `applyArith` (909.7 → 547.9 ms — the remaining
+Str/Str fast path at the top of `applyArith` (909.7 → 562.5 ms — the remaining
 gap to Rakudo is per-node tree-walk cost, not operator dispatch).
 [dev/DISPATCH.md](dev/DISPATCH.md) has the measurements.
 
@@ -162,17 +162,17 @@ for reference:
 
 | Benchmark | `--exe` | `--exe -O` | `-O` vs `--exe` | Rakudo | showcases |
 |---|---:|---:|---:|---:|---|
-| sieve       | 1091.5 ms | **24.2 ms**  | **45.2×** | 985.0 ms  | primes < 200k by trial division — `* <= %%` all laned |
-| powmod      | 555.8 ms  | **53.0 ms**  | **10.5×** | 739.0 ms  | 1M `** 3` then `% 1000` — inline pow + mod lane |
-| intsum      | 298.2 ms  | **32.0 ms**  | **9.3×**  | 652.5 ms  | 5M int accumulation — `+=` lane, zero boxing |
-| fibcalls    | 668.2 ms  | **169.2 ms** | **3.9×**  | 1367.0 ms | fib(32) — direct-arity calls + int-lane condition |
-| stringbuild | 23.3 ms   | 23.3 ms      | 1.0×      | 215.6 ms  | 400k `~=` appends — in-place O(n) string build |
+| sieve       | 1189.9 ms | **23.5 ms**  | **50.5×** | 991.9 ms  | primes < 200k by trial division — `* <= %%` all laned |
+| powmod      | 571.0 ms  | **53.2 ms**  | **10.7×** | 748.8 ms  | 1M `** 3` then `% 1000` — inline pow + mod lane |
+| intsum      | 298.7 ms  | **31.8 ms**  | **9.4×**  | 656.5 ms  | 5M int accumulation — `+=` lane, zero boxing |
+| fibcalls    | 670.6 ms  | **169.6 ms** | **4.0×**  | 1417.4 ms | fib(32) — direct-arity calls + int-lane condition |
+| stringbuild | 24.0 ms   | 25.6 ms      | 1.0×      | 219.5 ms  | 400k `~=` appends — in-place O(n) string build |
 
 The lanes (pass 3) dominate this table: `sieve`'s inner loop — `while $d * $d
 <= $n`, `if $n %% $d`, `$d++` — runs as raw `int64`, taking it from a tie with
-Rakudo at plain `--exe` to 41× ahead, and `intsum` shed its four
+Rakudo at plain `--exe` to 42× ahead, and `intsum` shed its four
 per-iteration `Value` constructions. On the main kernels above, `-O` puts fib
-at 47.0 ms (3.5× over `--exe`, 9.6× over Rakudo), loopsum at 8.6 ms, and streq
+at 43.3 ms (3.7× over `--exe`, 10.7× over Rakudo), loopsum at 9.2 ms, and streq
 at 17.5 ms (the `$c++`/`$c--` counters lane on top of the inline `eq`/`lt`).
 `stringbuild` gains nothing because in-place append is already the default
 everywhere. It's opt-in, off by default, and produces identical output
@@ -193,8 +193,8 @@ Best of 5 runs, wall-clock (`time`), lower is better.
 
 | Workload | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| load-yamls, one parse per process | 0.50 s | 0.97 s | **Raku++ 1.9×** |
-| load-yamls, 10 parses in-process   | 5.03 s | 6.37 s | **Raku++ 1.3×** |
+| load-yamls, one parse per process | 0.54 s | 0.98 s | **Raku++ 1.8×** |
+| load-yamls, 10 parses in-process   | 5.48 s | 6.43 s | **Raku++ 1.2×** |
 
 The single-parse figure is the realistic one — `raku-pages.raku` (the course
 generator) reads the TOC once per invocation, and Raku++ regenerates the entire
@@ -239,6 +239,11 @@ The harness compiles each program with `--exe` for the native column; the
 benchmark programs are plain, readable Raku in `tools/bench/*.raku` (edit or add
 freely).
 
-_Snapshot taken 2026-07-20 with Raku++ 0.9.1 at 558 / 1,462 Roast files fully
+_Snapshot taken 2026-07-22 with Raku++ 1.0.0 at 583 / 1,462 Roast files fully
 passing, on Darwin 24.6 against Rakudo v2026.06 (kernels: best of 6 harness
-runs; `-O` kernels: best of 5; YAMLish: best of 5, unchanged from 2026-07-16)._
+runs; `-O` kernels: best of 5; YAMLish: best of 5, re-measured). The YAMLish
+rows drifted ~8% slower than the 2026-07-20 snapshot (0.50→0.54 s single
+parse) — snapshot-binary bisect shows the cost accreted gradually across the
+90%-campaign legs (5.06 s → 5.21 s → 5.50 s on the 10-parse row, Jul 15 → 19 →
+22), spread over the parse/regex hot paths rather than one change; profiling
+shows no single new hotspot. Tracked as a post-1.0 item._
