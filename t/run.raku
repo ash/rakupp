@@ -24,6 +24,10 @@ sub ok(Mu $cond, Str $desc) {
     if $cond { say "ok $count - $desc" }
     else     { $fails++; say "not ok $count - $desc" }
 }
+sub is(Mu $got, Mu $want, Str $desc) {
+    ok($got eq $want, $desc);
+    diag("got '$got', expected '$want'") unless $got eq $want;
+}
 sub diag(Str $m) { note "# $m" }
 sub section(Str $t) { note ""; note "# ── $t ──" }
 
