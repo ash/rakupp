@@ -165,25 +165,49 @@ int64 sum. Without `use nqp`, none of it happens: the same source stays a call t
 an undefined routine, and `evalNqpOp` is never linked into any code path the run
 reaches.
 
-### Native compilation (`--exe`)
+## Native compilation (`--cpp` / `--exe`)
 
-The subset compiles too — a `use nqp` program native-compiles rather than
-falling back to interpreter bundling. The eager leaf ops share their
-implementation with the interpreter through a free `rtNqpOp(NqpOpc, ValueList&)`
-in the runtime library, so the compiled binary runs the *exact same* op logic
-(`src/Builtins.cpp`); the codegen just emits a call to it:
+The subset is a **first-class part of the transpiler**, not just the
+interpreter. A `use nqp` program native-compiles like any other — it does **not**
+fall back to interpreter bundling.
 
-```cpp
-// generated for  nqp::add_i(1, 2)
-([&]()->Value{ ValueList __na = ValueList{Value::integer(1LL), Value::integer(2LL)};
-               return rtNqpOp(NqpOpc(10), __na); }())
+Inspect the generated C++ with `--cpp`:
+
+```console
+$ rakupp --cpp -e 'use nqp; say nqp::add_i(1, 2)'
+…
+rtCallB(RT, __bfp0, "say", ValueList{
+    ([&]()->Value{ ValueList __na = ValueList{Value::integer(1LL), Value::integer(2LL)};
+                   return rtNqpOp(NqpOpc(10), __na); }())});
 ```
 
-The lazy control forms don't route through a runtime call — they emit native
-C++ directly (a real `while`, a statement sequence), preserving their
-non-eager evaluation in the compiled code. Interpreter and compiled binary
-produce byte-identical output (`t/regression/nqp-codegen.raku` asserts it), and
-a program *without* `use nqp` emits zero references to any of this.
+Compile to a standalone binary with `--exe` and run it:
+
+```console
+$ rakupp --exe prog.raku -o prog     # prog.raku begins with `use nqp;`
+Compiled (native) prog.raku -> prog
+$ ./prog                             # identical output to `rakupp prog.raku`
+```
+
+Two emission strategies, mirroring how the ops evaluate:
+
+- **Eager leaf ops** share their implementation with the interpreter through a
+  free `rtNqpOp(NqpOpc, ValueList&)` in the runtime library (`src/Builtins.cpp`).
+  `Interpreter::evalNqpOp` delegates to it, and the codegen emits a call to the
+  *same* function — so there is exactly one copy of the op logic, and the
+  compiled binary can never drift from the interpreted meaning.
+- **Lazy control forms** (`while` / `until` / `stmts` / `ifnull`) do *not* route
+  through a runtime call — they emit native C++ directly (a real `while`, a
+  statement sequence), preserving their non-eager evaluation in compiled code.
+  (`nqp::if` / `unless` were already ternary nodes, so they compile like any
+  Raku ternary.)
+
+Interpreter and compiled binary produce **byte-identical output**
+(`t/regression/nqp-codegen.raku` compiles a program and asserts native output
+equals the interpreter's). And the zero-cost guarantee extends here too: a
+program **without** `use nqp` emits zero references to `rtNqpOp` or any nqp
+machinery — its `--cpp`/`--exe` output is exactly what it was before the subset
+existed.
 
 ## What's covered
 
