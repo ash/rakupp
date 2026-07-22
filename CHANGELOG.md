@@ -3,6 +3,84 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## v1.0.0 — 2026-07-22
+
+Everything since v0.9.1 (2026-07-20), 65 commits — the "90% campaign": many
+small, fully-gated legs, each run against the complete Roast suite with zero
+fully-passing-file regressions.
+
+### Headline
+
+- **1.0**: the campaign target set for this release — 90% of all declared
+  Roast tests — is reached. **194,496 / 216,066 declared assertions pass
+  (90.0%)**, up from 189,102 / 214,384 (88.2%); **583 / 1,462 files fully
+  pass** (was 558). 97.4% of tests that actually run pass. (The declared
+  denominator grew because files that previously died before announcing a
+  plan now declare their real, often larger, plans.)
+- **A regression-test suite is born**: [t/regression/](t/regression/) — one
+  self-contained case per bug we introduced and had to fix (21 cases,
+  auto-discovered by `t/run.raku`; the suite is at 79 checks).
+
+### Language & runtime
+
+- **Quanthashes grew up** (`Set`/`Bag`/`Mix` + `*Hash` variants): `.of`/`.keyof`
+  report the real value/key types; `Bag[Int]`-style parameterization is
+  enforced end-to-end (declaration, `Set[Str].new`, assignment — bad keys
+  throw `X::TypeCheck::Binding`); the immutable three reject re-initialization,
+  autovivification, and element assignment; `^Inf .Bag` throws a typed
+  `X::Cannot::Lazy` with `.what`; non-numeric/NaN/Inf/complex weights throw
+  typed conversion errors; `%h<a>--` on a `BagHash` removes the key at zero;
+  `.new` follows the single-arg rule (a quanthash argument is ONE element, a
+  plain Hash iterates, bare named args are swallowed); the coercers flatten one
+  level through bare Lists only, keeping `».Bag` nodal.
+- **`index`/`rindex`**: splatted multi-needle form (`.index("a", "o", :i)`) and
+  needle lists, with `:i`/`:ignorecase`; out-of-range start positions return a
+  typed `X::OutOfRange` **Failure** (so `fails-like` semantics hold).
+- **`sort`**: `:k` (sorted indices) and `:by(&cmp)` on both sub and method
+  forms; `NaN` orders last and is `eqv`-identical to itself; a declared
+  0-arity comparator is rejected.
+- **`RUN-MAIN` / CLI**: full command-line parsing — repeated options become
+  arrays, values are `val()`-allomorphed, `--` ends options, `--/name`
+  negates, `%*SUB-MAIN-OPTS<named-anywhere>` honoured.
+- **Declarator pod**: leading `#|` and trailing `#=` comments attach to subs,
+  classes, and parameters and surface through `.WHY`.
+- **Arity enforcement** for direct calls to subs with declared signatures
+  (too many positionals now die, with the lenient carve-outs Rakudo has).
+- **Typed exceptions throughout**: unknown operator categories
+  (`X::Syntax::Extension::Category`), blank `:sym<>` (`…::Null`), pod
+  `=begin` without an identifier, `else if`/`elsif` misspellings, malformed
+  loop specs, stubbed packages (`X::Package::Stubbed`), method-not-found with
+  `.method`/`.typename`, undeclared return types, and more.
+- **Str ranges**: `'a'..'z'` is a real Range (codepoint-stepped endpoints,
+  containment, `min`/`max`, `.pick`/`.roll`, reversibility).
+- **Sequence operator**: generator + literal endpoint is properly lazy
+  (`1, 2, * + 1 … 10` stops on exact match; runaway-capped).
+- **Unicode quoting**: the curly-quote family (`‘’ “” „ ‚`), CJK corner
+  brackets with nesting, and arbitrary paired-punctuation delimiters.
+- **Numification follows the Str ladder everywhere it should**: `+"9"`,
+  `+$0` (Match captures), and prefix `-` yield `Int`/`Rat`/`Num` like Rakudo,
+  and allomorphs answer `.isa` on both faces.
+- Also: `once` blocks, `.VAR.dynamic`, `pairup`, `samemark`, `roots`,
+  `trusts` declarations, for-loop sub-signatures on the multi-element path,
+  regex bodies containing `{ … }` code blocks, and `--highlight` support for
+  multi-line embedded comments (`` #`( … ) ``).
+
+### Tooling, benchmarks, ecosystem
+
+- **Benchmarks re-measured at release** (per the runbook): kernels and the
+  `-O` suite within noise of v0.9.1's snapshot (sieve 50.5× with lanes;
+  `mandel` 0.13 s vs Rakudo 0.47 s). The YAMLish grammar workload drifted
+  ~8% slower over the campaign week — bisected to gradual accretion across
+  parse/regex hot paths, no single culprit; recorded in
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) as a post-1.0 item.
+- **Suite infra**: the test-server `stop-server` used `pkill -f` with the
+  full script path — a regex in which `raku++` is invalid, so no server ever
+  died; 54 zombies had accumulated and one answered a later run's INCR with a
+  stale count. Servers are now killed by basename.
+- REFERENCE.md appendices regenerated from source (188 subs, 571 methods);
+  spec.raku.online's conformance map generator now parses its counting block
+  from the results file instead of hard-coded literals.
+
 ## v0.9.1 — 2026-07-20
 
 Everything since v0.9.0 (2026-07-19), 80 commits. Every change is gated on the
