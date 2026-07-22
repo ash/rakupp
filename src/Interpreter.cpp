@@ -3537,7 +3537,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             const std::vector<std::string>& loopVars = phVars.empty() ? fs->vars : phVars;
             // Fast paths for the common single-topic loop: avoid materializing the
             // whole sequence up front (a Range of N ints or a copy of an N-elem array).
-            if (!scalarItem && !fs->destructure && loopVars.size() <= 1) {
+            if (!scalarItem && !fs->destructure && loopVars.size() <= 1 &&
+                fs->params.empty()) { // a sub-signature (`-> $ (:$k)`) needs real binding
                 const std::string var = loopVars.empty() ? "$_" : loopVars[0];
                 // Reuse one Env across iterations for speed. This is only safe when
                 // nothing captured the previous iteration's scope (a closure would
@@ -3601,6 +3602,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 for (size_t i = 0; i < items.size(); i++) {
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                     ValueList one{items[i]};
+                    one[0].namedArg = false; // a loop topic is a VALUE, never a named arg
                     bindParams(fs->params, one, scope);
                     if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == items.size(), col)) break;
                 }
