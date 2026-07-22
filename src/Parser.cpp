@@ -286,8 +286,12 @@ bool Parser::startsListopArg(const Token& t) const {
     switch (t.kind) {
         case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::VersionLit: case Tok::StrInterp: case Tok::RegexLit: case Tok::SubstLit:
         case Tok::QwList:
-        case Tok::Var: case Tok::LBracket: case Tok::LParen:
+        case Tok::Var: case Tok::LParen:
             return true;
+        case Tok::LBracket:
+            // `foo [1,2]` (spaced) is an array-literal argument; TIGHT `foo[10]`
+            // indexes the call's RESULT (Rakudo semantics: (foo())[10])
+            return t.spaceBefore;
         case Tok::LBrace: {
             if (!stmtCond_) return true;
             // In a statement condition (`when foo { }`, `if foo { }`) a brace is

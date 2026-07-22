@@ -2678,6 +2678,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code->body = &sd->body;
                 c.code->closure = tctx_.cur;
                 c.code->retType = sd->retType;
+                {   // `sub f { @_ }` — an @_/%_ reference implies a slurpy signature
+                    std::set<std::string> ph2;
+                    for (auto& s2 : sd->body) collectPHStmt(s2.get(), ph2);
+                    c.code->usesArgs = ph2.count("@_") || ph2.count("%_");
+                    c.code->hadSig = sd->hadSig;
+                }
                 // Only a PURE `{*}` proto (a bare redispatcher) is excluded from
                 // dispatch; a proto with a real body (or an operator proto with no
                 // multis) stays a callable candidate.
@@ -4857,7 +4863,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
     return (*base.arr)[i];
 }
 
-Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame) {
+Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
     // A wrapped routine (&r.wrap({…})) runs its wrapper stack first. Each wrapper's
     // `callsame`/`nextsame` drops to the next inner wrapper, finally to the original
     // routine body (callCallableRaw). Wrappers are consulted outermost-first.
@@ -4879,7 +4885,7 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
             };
         return runLevel((int)wraps.size() - 1, std::move(args));
     }
-    return callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame);
+    return callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame, arityCheck);
 }
 
 static bool ncIsFloatType(const std::string& t) {
@@ -4965,7 +4971,7 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
     e->letRestores.clear();
 }
 
-Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame) {
+Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
     // callsame/nextsame are ROUTINE-scoped: a routine activation sees only
     // redispatch frames pushed for it (ownFrame) or by its own body. Blocks
     // inherit the enclosing routine's floor.
@@ -5137,6 +5143,52 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.isMethod && !args.empty()) {
         env->define("self", args[0]);
         args.erase(args.begin());
+    }
+    // Arity enforcement for NAMED plain user subs (Rakudo rejects these at
+    // compile time; we reject at call time with the same message shape).
+    // Blocks, methods, multis/protos and builtins keep their lax binding.
+    if (arityCheck && c.hadSig &&
+        !c.name.empty() && !c.isMethod && !c.isProto && !c.isMultiDispatcher &&
+        !c.isWhateverCode && !c.isNative && !c.builtin && !c.hasPrimed &&
+        c.placeholders.empty() && !c.usesArgs) { // `sub f { @_ }` slurps implicitly
+        bool unbounded = false;
+        int maxPos = 0, reqPos = 0;
+        if (c.params)
+            for (auto& p : *c.params) {
+                if (p.invocant || p.named) continue;
+                if (p.slurpy || p.sigil == '|' || p.sigil == '\\') { unbounded = true; continue; }
+                // an @-positional historically absorbs capture-interpolated
+                // argument lists (foo(|$c) with sub foo(@arr) — roast-blessed),
+                // and the interpolation is invisible after flattening: treat it
+                // as unbounded for the too-many test (still required below)
+                if (p.sigil == '@') unbounded = true;
+                maxPos++;
+                if (!p.optional && !p.defaultVal && !p.litVal) reqPos++;
+            }
+        // Pairs are ambiguous at this level (quoted-key pairs bind
+        // positionally; capture-flattened named args LOSE the namedArg bit),
+        // so the too-many test counts only non-Pair positionals and the
+        // too-few test credits every pair — reject only what can never fit.
+        int posStrict = 0, pairish = 0;
+        for (auto& a : args) { if (a.t == VT::Pair) pairish++; else posStrict++; }
+        if (posStrict + pairish < reqPos || (!unbounded && posStrict > maxPos)) {
+            std::string prof, sigt;
+            for (auto& a : args) {
+                if (isNamedArg(a)) continue;
+                if (!prof.empty()) prof += ", ";
+                prof += a.typeName();
+            }
+            if (c.params)
+                for (auto& p : *c.params) {
+                    if (p.invocant) continue;
+                    if (!sigt.empty()) sigt += ", ";
+                    sigt += (p.slurpy ? "*" : "") + std::string(p.named ? ":" : "") +
+                            p.name + (p.optional && !p.named ? "?" : "");
+                }
+            throw RakuError{Value::typeObj("X::Signature::ArityMismatch"),
+                "Calling " + c.name + "(" + prof + ") will never work with "
+                "declared signature (" + sigt + ")"};
+        }
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, c.isMethod);
@@ -10368,7 +10420,7 @@ Value Interpreter::evalCall(Call* c) {
             };
             return code;
         }
-        return callCallable(f, args, &c->args);
+        return callCallable(f, args, &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
     }
     if (!c->name.empty()) {
         // bare `::` — the current-scope stash: a Hash of every visible symbol
@@ -10424,7 +10476,7 @@ Value Interpreter::evalCall(Call* c) {
                 if (c->name == "atomic-assign")    { Value v = c->args.size() > 1 ? eval(c->args[1].get()) : Value::any(); *lv = v; return v; }
             }
         }
-        if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args, &c->args);
+        if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args, &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
         auto it = builtins_.find(c->name);
         if (it != builtins_.end()) return it->second(*this, args);
         // enum-type coercion: `Color(1)` -> the enum value whose number is 1

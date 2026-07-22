@@ -51,6 +51,8 @@ struct Callable {
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
+    bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
+    bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
     std::vector<const Param*> primedParams;           // params left unbound by the priming (point into the AST)
 };

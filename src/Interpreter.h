@@ -196,7 +196,7 @@ public:
                                                     // collect!=null: append each iteration's value (value context)
 
     // calling
-    Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false);
+    Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false);
     // When set (one-shot), a paramless block's mutated implicit $_ is copied back
     // here after the call — `@a.grep({ $_++; True })` writes into @a's element.
     Value* topicWriteback_ = nullptr;
@@ -209,7 +209,7 @@ public:
     // Supply.on-close callbacks registered while a supply/react block runs;
     // fired when that block finishes (our model's "tap closed" moment)
     std::vector<std::vector<Value>> supplyCloseStack_;
-    Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false); // no wrap layer
+    Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false, bool arityCheck = false); // no wrap layer
     Value callNative(Callable& c, ValueList& args); // `is native` C FFI
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
