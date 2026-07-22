@@ -4173,6 +4173,29 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
     else if (isOp("::")) advance(); // anonymous type: `class :: does R { … }`
+    // name adverbs: `module M:ver<0.19>:auth<zef:x>:api<2> { … }` — without
+    // this, the `:` failed the brace check and the package took the UNIT-form
+    // branch, swallowing the block up to its first `;` (JSON::Fast was
+    // unloadable because of it)
+    while (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident) {
+        advance();                          // :
+        std::string adv = advance().text;   // ver / auth / api / …
+        std::string val;
+        if (isKind(Tok::QwList) && !cur().spaceBefore) val = advance().text;
+        else if (isOp("<") && !cur().spaceBefore) {
+            advance();
+            auto ws = readAngleWords(">");
+            val = ws.empty() ? std::string() : ws[0];
+        }
+        else if (isKind(Tok::LParen)) {     // :adverb(expr) — skip balanced
+            int d = 0;
+            do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+            while (d > 0 && !isKind(Tok::End));
+        }
+        if (adv == "ver") cd->ver = val;
+        else if (adv == "auth") cd->auth = val;
+        else if (adv == "api") cd->api = val;
+    }
     if (isRole && isKind(Tok::LBracket)) {
         // parameterized role: role R[Any $desc] { } — the signature parses (so
         // the body's braces stay balanced); argument BINDING is not wired yet,
