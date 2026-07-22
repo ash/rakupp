@@ -7523,7 +7523,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     auto orderVal = [](int c) {
         return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c < 0 ? -1 : c > 0 ? 1 : 0);
     };
-    if (op == "<=>") { double a = l.toNum(), b = r.toNum(); return orderVal(a < b ? -1 : a > b ? 1 : 0); }
+    if (op == "<=>") {
+        // numeric comparison: a non-numeric Str operand cannot coerce
+        for (const Value* s : {&l, &r})
+            if (s->t == VT::Str && !numifyStr(s->s).isNumeric())
+                throw RakuError{Value::typeObj("X::Str::Numeric"),
+                    "Cannot convert string to number: base-10 number must "
+                    "begin with valid digits or '.' in '" + s->s + "'"};
+        double a = l.toNum(), b = r.toNum();
+        return orderVal(a < b ? -1 : a > b ? 1 : 0);
+    }
     if (op == "cmp" || op == "leg") { return orderVal(valueCmp(l, r)); }
     if (op == "unicmp" || op == "coll") { // UCA collation (DUCET) over the two strings
         auto decode = [](const std::string& str) {

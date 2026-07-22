@@ -841,18 +841,27 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (!isRegex && !isSubst && !isTrans && !isWords && !isExec &&
         (unsigned char)src_[p] >= 0x80 &&
         !((unsigned char)src_[p] == 0xC2 && p + 1 < src_.size() && (unsigned char)src_[p + 1] == 0xAB) && // « handled below
-        !((unsigned char)src_[p] == 0xEF)) { // ｢ handled elsewhere
+        !((unsigned char)src_[p] == 0xEF && p + 2 < src_.size() &&
+          (unsigned char)src_[p + 1] == 0xBD && (unsigned char)src_[p + 2] == 0xA2)) { // ｢ handled elsewhere (fullwidth EF-pairs stay eligible)
         unsigned char b0 = (unsigned char)src_[p];
         int dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
         if (p + dlen <= src_.size()) {
             std::string D = src_.substr(p, dlen);
-            // PAIRED delimiters close with their partner (open+1), not the same
-            // codepoint: 「…」 『…』 〈…〉 《…》 (the U+3008..U+300F family)
+            // Any Unicode OPEN-punctuation delimiter (category Ps, plus the
+            // U+301D reversed-double-prime quote) closes with codepoint+1 —
+            // true across the CJK, fullwidth, vertical and ornate families
             std::string DC = D;
-            if (dlen == 3 && (unsigned char)D[0] == 0xE3 && (unsigned char)D[1] == 0x80 &&
-                ((unsigned char)D[2] == 0x8C || (unsigned char)D[2] == 0x8E ||
-                 (unsigned char)D[2] == 0x88 || (unsigned char)D[2] == 0x8A))
-                DC[2] = (char)((unsigned char)D[2] + 1);
+            {
+                uint32_t cp = (unsigned char)D[0] & (0xFF >> (dlen + 1));
+                for (int k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)D[k] & 0x3F);
+                if (uniGeneralCategory(cp) == "Ps" || cp == 0x301D) {
+                    uint32_t cc = cp + 1;
+                    DC.clear();
+                    if (cc < 0x800) { DC += (char)(0xC0 | (cc >> 6)); DC += (char)(0x80 | (cc & 0x3F)); }
+                    else if (cc < 0x10000) { DC += (char)(0xE0 | (cc >> 12)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
+                    else { DC += (char)(0xF0 | (cc >> 18)); DC += (char)(0x80 | ((cc >> 12) & 0x3F)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
+                }
+            }
             while (pos_ < p) advance();
             for (int k = 0; k < dlen; k++) advance(); // opening delimiter
             std::string raw;
@@ -1679,16 +1688,23 @@ std::vector<Token> Lexer::tokenize() {
         }
         // Unicode string quotes: ‘…’ (U+2018/2019, literal) and “…” (U+201C/201D, interpolating)
         if (!inAngle && (unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x80 &&
-            ((unsigned char)peek(2) == 0x98 || (unsigned char)peek(2) == 0x9C)) {
-            bool interp = (unsigned char)peek(2) == 0x9C;                 // “ vs ‘
-            unsigned char closeB = interp ? 0x9D : 0x99;                  // ” / ’
+            ((unsigned char)peek(2) == 0x98 || (unsigned char)peek(2) == 0x9C ||
+             (unsigned char)peek(2) == 0x9E || (unsigned char)peek(2) == 0x9A ||
+             (unsigned char)peek(2) == 0x9D || (unsigned char)peek(2) == 0x99)) {
+            unsigned char openB = (unsigned char)peek(2);
+            bool interp = openB == 0x9C || openB == 0x9E || openB == 0x9D; // double-quote family interpolates
+            unsigned char closeB = (openB == 0x98 || openB == 0x9A || openB == 0x99) ? 0x99 : 0x9D;
+            unsigned char closeB2 = (openB == 0x9E || openB == 0x9D) ? 0x9C  // low-9/Swedish double also close with open-curly
+                                  : (openB == 0x9A || openB == 0x99) ? 0x98 : 0; // low-9/Swedish single likewise
             advance(); advance(); advance();
             std::string raw; int depth = 1;
             while (!eof()) {
                 if ((unsigned char)peek() == 0xE2 && (unsigned char)peek(1) == 0x80) {
                     unsigned char b2 = (unsigned char)peek(2);
-                    if (b2 == closeB) { if (--depth == 0) { advance(); advance(); advance(); break; } }
-                    else if (b2 == (interp ? 0x9C : 0x98)) depth++; // nested opener
+                    if (b2 == closeB || (closeB2 && b2 == closeB2)) {
+                        if (--depth == 0) { advance(); advance(); advance(); break; }
+                    }
+                    else if (b2 == openB && (openB == 0x98 || openB == 0x9C)) depth++; // nested opener (curly pairs only)
                     raw += advance(); raw += advance(); raw += advance(); continue;
                 }
                 raw += advance();
