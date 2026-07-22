@@ -90,7 +90,7 @@ for <fact closures> -> $n {
 golden([$lisp, $ROOT.add('t/fixtures/lisp-features.scm').Str],
        $EXP.add('lisp-features.out').Str, "lisp: feature fixture (lists, HOFs, quasiquote, bignums)");
 {
-    my ($fact, $e) = run-rakupp($lisp, $ROOT.add('showcase/lisp/examples/fact.scm').Str);
+    my ($fact, $) = run-rakupp($lisp, $ROOT.add('showcase/lisp/examples/fact.scm').Str);
     ok($fact.contains('100! = 933262154439441526816992388562667004907'),
        "lisp: (fact 100) is exact to all 158 digits");
 }
@@ -109,7 +109,7 @@ my $md = $ROOT.add('showcase/markdown/md2html.raku').Str;
 golden([$md, $ROOT.add('showcase/markdown/sample.md').Str],
        $EXP.add('markdown-sample.out').Str, "markdown: sample.md → golden HTML");
 {
-    my ($out, $e) = run-rakupp($md, $ROOT.add('showcase/markdown/sample.md').Str);
+    my ($out, $) = run-rakupp($md, $ROOT.add('showcase/markdown/sample.md').Str);
     contains-all($out, [
         '<h1>Raku++ Markdown</h1>', '<strong>Markdown</strong>', '<em>Raku</em>',
         '<code>grammar</code>', '<a href="https://github.com/ash/rakupp">links</a>',
@@ -123,9 +123,9 @@ section('showcase/json (parse + serialize + query)');
     my $json   = $ROOT.add('showcase/json/json.raku').Str;
     my $sample = $ROOT.add('showcase/json/sample.json').Str;
     golden([$json, $sample], $EXP.add('json-sample.out').Str, "json: pretty-print → golden");
-    my ($name, $e1) = run-rakupp($json, '--query=.users[1].name', $sample);
+    my ($name, $) = run-rakupp($json, '--query=.users[1].name', $sample);
     ok($name.trim eq '"Grace"', "json: --query pulls a nested value (indexes correctly)");
-    my ($compact, $e2) = run-rakupp($json, '--compact', $sample);
+    my ($compact, $) = run-rakupp($json, '--compact', $sample);
     ok($compact.contains('"version":"0.5.1"') && !$compact.contains("\n  "),
        "json: --compact minifies to one line");
 }
@@ -190,7 +190,7 @@ section('showcase/chat (concurrent TCP)');
     my $port = 6691;
     if start-server($script, $port) {
         # The two-client interaction runs in its own process (see the fixture).
-        my ($out, $exit) = run-rakupp($ROOT.add('t/fixtures/chat-client.raku').Str, ~$port);
+        my ($out, $) = run-rakupp($ROOT.add('t/fixtures/chat-client.raku').Str, ~$port);
         ok($out.contains('CHAT-OK'), "chat: nick, join, broadcast, and /who across two clients");
         diag($out.trim) unless $out.contains('CHAT-OK');
     }
@@ -298,7 +298,7 @@ for <examples tools/bench tools/optbench> -> $dir {
     $p.out.slurp(:close);
     my $msg = $p.err.slurp(:close);   # "Compiled (native) …" is reported on stderr
     ok($p.exitcode == 0 && $msg.contains('(native)'), "--exe builds fibonacci as a native binary");
-    my $p = run($bin, :out);
+    $p = run($bin, :out);
     my $got = $p.out.slurp(:close);
     ok($got eq $EXP.add('fibonacci.out').IO.slurp, "the native fibonacci binary matches the golden");
     try unlink $bin;
@@ -312,7 +312,7 @@ for <examples tools/bench tools/optbench> -> $dir {
     $p.out.slurp(:close);
     my $msg = $p.err.slurp(:close);
     ok($p.exitcode == 0 && $msg.contains('(native)'), "--exe builds the native-parity fixture natively");
-    my $p = run($bin, :out);
+    $p = run($bin, :out);
     my $got = $p.out.slurp(:close);
     my $want = q:to/END/;
         deep: 30000
