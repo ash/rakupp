@@ -132,6 +132,14 @@ Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 433 files):
 
 ## Next
 
+**The v2.0.0 campaign — ecosystem modules** is planned in
+[dev/V2-MODULES-PLAN.md](dev/V2-MODULES-PLAN.md): run the top-50 zef modules
+(tiered — top-10 test suites ≥95%, top-25 usage-verified, top-50 loading),
+selected by reverse-dependency count, vendored + sandboxed for safety, with
+`zef` under rakupp as the stretch flagship. Baseline measured 2026-07-22:
+all 62 locally installed dists already `use` cleanly.
+
+
 The cheap Roast wins are largely spent; moving the full-pass count now takes
 *whole features* (parse + runtime + dispatch together). Roughly ordered:
 
