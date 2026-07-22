@@ -3845,6 +3845,15 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
     if (isKind(Tok::Ident)) s->name = advance().text;
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
     // trait handler declaration: sub trait_mod:<is>(…) — name keeps the angle form
+    // an unknown extension category (`sub twigil:<@>`) cannot be added
+    static const std::set<std::string> kCats = {
+        "infix", "prefix", "postfix", "circumfix", "postcircumfix", "trait_mod", "term"};
+    if (!s->name.empty() && !kCats.count(s->name) && isOp(":") &&
+        !peek().spaceBefore &&
+        peek().kind == Tok::Op && (peek().text == "<" || peek().text == "<<"))
+        throw ParseError("Cannot add tokens of category '" + s->name + "'",
+                         cur().line, "X::Syntax::Extension::Category",
+                         {{"category", s->name}});
     if (s->name == "trait_mod" && isOp(":")) {
         advance(); // :
         std::vector<std::string> w;
@@ -3856,6 +3865,18 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
          s->name == "circumfix" || s->name == "postcircumfix") && isOp(":")) {
         std::string cat = s->name;
         advance(); // :
+        if (isIdent("sym")) { // `sub infix:sym<op>` spelling
+            advance();
+            if (isOp("<")) {
+                advance();
+                std::vector<std::string> sw = readAngleWords(">");
+                std::string sym = sw.empty() ? "" : sw[0];
+                if (sym.empty() || sym.find_first_not_of(" \t") == std::string::npos)
+                    throw ParseError("Null operator is not allowed", cur().line,
+                                     "X::Syntax::Extension::Null", {});
+                s->name = cat + ":<" + sym + ">";
+            }
+        }
         std::vector<std::string> w;
         if (isOp("<")) { advance(); w = readAngleWords(">"); }
         else if (cur().kind == Tok::Op && cur().text.size() > 1 && cur().text[0] == '<' &&

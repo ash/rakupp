@@ -172,6 +172,22 @@ struct Scanner {
     }
 
     void scanLineComment() {
+        // embedded (multi-line) comment: #`( … ) / #`[ … ] / #`{ … } / #`< … >
+        // — and the declarator bracket forms #|( … ) / #=( … ). Brackets nest.
+        if (i + 2 < s.size() && (s[i + 1] == '`' || s[i + 1] == '|' || s[i + 1] == '=') &&
+            (s[i + 2] == '(' || s[i + 2] == '[' || s[i + 2] == '{' || s[i + 2] == '<')) {
+            char open = s[i + 2], close = closeDelim(open);
+            size_t j = i + 3;
+            int d = 1;
+            while (j < s.size() && d > 0) {
+                if (s[j] == open) d++;
+                else if (s[j] == close) d--;
+                j++;
+            }
+            emit(s.substr(i, j - i), "cm", false);
+            i = j;
+            return;
+        }
         size_t j = i;
         while (j < s.size() && s[j] != '\n') j++;
         emit(s.substr(i, j - i), "c1", false);

@@ -65,13 +65,13 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 194,273 / 198,906 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 194,273 / 209,990 (~92%) | + tests lost when a file aborts mid-plan |
+| tests that **ran** | 194,273 / 199,572 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 194,273 / 212,641 (~91%) | + tests lost when a file aborts mid-plan |
 | **all declared** tests | 194,273 / 216,066 (~89%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The ~89% is the per-test analog of the ~38% file coverage. Two caveats on scope:
 
-1. **~7.3k of the denominator comes from no-TAP files** (148 of them, read from
+1. **~3.4k of the denominator comes from no-TAP files** (101 of them, read from
    source); 5 more no-TAP files use a dynamic `plan *` / `done-testing` and are
    genuinely uncountable, so they sit outside even this figure.
 2. **S15 (Unicode) is ~91k of the reached total**, passing at ~100%, so it lifts
@@ -95,32 +95,32 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 52 | 62 | 0 | 33 | 3710/4355 | 85% |
-| S03 | Operators | 42 | 57 | 3 | 23 | 21306/21926 | 97% |
-| S04 | Blocks, statements, phasers | 28 | 35 | 0 | 13 | 816/980 | 83% |
-| S05 | Regexes & grammars | 34 | 55 | 0 | 9 | 5374/6024 | 89% |
-| S06 | Subroutines & signatures | 17 | 46 | 0 | 31 | 824/1168 | 71% |
+| S02 | Literals, types, magicals | 54 | 74 | 0 | 19 | 4364/5042 | 87% |
+| S03 | Operators | 46 | 59 | 3 | 17 | 21650/22328 | 97% |
+| S04 | Blocks, statements, phasers | 30 | 40 | 0 | 6 | 1088/1328 | 82% |
+| S05 | Regexes & grammars | 34 | 56 | 0 | 8 | 5386/6045 | 89% |
+| S06 | Subroutines & signatures | 20 | 54 | 0 | 20 | 1200/1550 | 77% |
 | S07 | Iterators | 2 | 4 | 0 | 0 | 225/268 | 84% |
-| S09 | Data structures | 2 | 19 | 0 | 1 | 849/1027 | 83% |
+| S09 | Data structures | 2 | 20 | 0 | 0 | 906/1111 | 82% |
 | S10 | Packages | 2 | 5 | 0 | 2 | 34/72 | 47% |
-| S11 | Modules | 8 | 9 | 0 | 5 | 55/86 | 64% |
-| S12 | Objects & classes | 26 | 59 | 0 | 15 | 923/1182 | 78% |
+| S11 | Modules | 8 | 10 | 0 | 4 | 56/87 | 64% |
+| S12 | Objects & classes | 26 | 59 | 0 | 15 | 964/1206 | 80% |
 | S13 | Overloading | 4 | 2 | 0 | 1 | 50/52 | 96% |
-| S14 | Roles | 5 | 16 | 0 | 4 | 129/190 | 68% |
+| S14 | Roles | 7 | 15 | 0 | 3 | 208/259 | 80% |
 | S15 | Unicode / strings / NFG | 75 | 5 | 1 | 0 | 91682/91750 | 100% |
-| S16 | I/O | 17 | 14 | 0 | 6 | 413/548 | 75% |
-| S17 | Concurrency (supply/promise/async) | 36 | 47 | 5 | 11 | 814/1006 | 81% |
+| S16 | I/O | 17 | 15 | 0 | 5 | 415/552 | 75% |
+| S17 | Concurrency (supply/promise/async) | 36 | 47 | 5 | 11 | 817/1009 | 81% |
 | S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 3/3 | 100% |
-| S24 | Testing | 11 | 6 | 0 | 0 | 86/131 | 66% |
-| S26 | Documentation (POD) | 6 | 14 | 0 | 7 | 322/348 | 93% |
+| S24 | Testing | 11 | 6 | 0 | 0 | 87/134 | 65% |
+| S26 | Documentation (POD) | 6 | 19 | 0 | 2 | 407/444 | 92% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
-| S29 | Builtins & context | 7 | 6 | 0 | 1 | 398/411 | 97% |
-| S32 | Standard types (str/list/num/…) | 99 | 129 | 1 | 34 | 39751/40994 | 97% |
-| integration | Cross-feature programs | 41 | 55 | 0 | 23 | 820/940 | 87% |
-| 6.c | v6.c language snapshot | 3 | 7 | 0 | 8 | 94/126 | 75% |
+| S29 | Builtins & context | 7 | 6 | 0 | 1 | 399/411 | 97% |
+| S32 | Standard types (str/list/num/…) | 103 | 133 | 1 | 26 | 42680/43795 | 97% |
+| integration | Cross-feature programs | 46 | 55 | 0 | 18 | 920/1034 | 89% |
+| 6.c | v6.c language snapshot | 3 | 11 | 0 | 4 | 307/600 | 51% |
 | 6.d | v6.d language snapshot | 14 | 4 | 0 | 0 | 20260/20310 | 100% |
-| APPENDICES | — | 1 | 3 | 1 | 1 | 32/48 | 67% |
+| APPENDICES | — | 2 | 2 | 1 | 1 | 33/48 | 69% |
 | MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
 
 ### Reading the table
@@ -160,7 +160,7 @@ the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
 
-_Snapshot: 582 / 1,462 files fully passing (~39% coverage); 671 partial,
-212 no-TAP, 11 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 194,273 / 198,906 (see
+_Snapshot: 582 / 1,462 files fully passing (~39% coverage); 702 partial,
+167 no-TAP, 11 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 194,273 / 199,572 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._

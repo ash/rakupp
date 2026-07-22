@@ -481,6 +481,10 @@ void Lexer::skipWhitespaceAndComments() {
                 while (peek() == ' ' || peek() == '\t') advance();
                 while (isIdentCont(peek())) name += advance();
                 while (!eof() && peek() != '\n') advance();
+                if (name.empty()) // bare `=begin` with no block identifier
+                    throw ParseError("=begin without an identifier", line_,
+                                     "X::Syntax::Pod::BeginWithoutIdentifier",
+                                     {{"line", std::to_string(line_)}, {"filename", "EVAL_0"}});
                 bool capture = (name == "pod"); // collect pod block content for `$=pod` / --doc
                 size_t contentStart = eof() ? pos_ : pos_ + 1; // just after this line's newline
                 // skip until the matching =end <name> (nested =begin/=end of other names are skipped over)
