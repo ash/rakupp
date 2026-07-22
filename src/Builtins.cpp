@@ -9707,6 +9707,15 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     ValueList v;
     v.reserve(a.size());
     for (auto& e : a) v.push_back(eval(e.get()));
+    return rtNqpOp(n->op, v); // eager leaf ops — shared with native codegen
+}
+
+// The eager (non-control) nqp ops, operating on ALREADY-evaluated arguments.
+// Free function so native `--exe` codegen can call it directly: the lazy control
+// forms (Stmts/While/Until/IfNull) are emitted as native C++ by the codegen and
+// nqp::if/unless are Ternaries, so only these leaf ops need a runtime entry.
+Value rtNqpOp(NqpOpc op, ValueList& v) {
+    using O = NqpOpc;
     auto I = [&](size_t i) -> long long { return i < v.size() ? v[i].toInt() : 0; };
     auto S = [&](size_t i) -> std::string { return i < v.size() ? v[i].toStr() : std::string(); };
     auto cclassHas = [](long long mask, uint32_t cp) -> bool {
@@ -9726,7 +9735,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                             (cp >= 'A' && cp <= 'F'))) return true;      // HEXADECIMAL
         return false;
     };
-    switch (n->op) {
+    switch (op) {
         case O::IseqI: return Value::integer(I(0) == I(1));
         case O::IsneI: return Value::integer(I(0) != I(1));
         case O::IsltI: return Value::integer(I(0) <  I(1));
@@ -9828,7 +9837,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             long long i = I(1);
             if (v[0].t == VT::Array && v[0].arr && i >= 0 && i < (long long)v[0].arr->size())
                 return (*v[0].arr)[i];
-            return n->op == O::AtposI ? Value::integer(0) : Value::nil();
+            return op == O::AtposI ? Value::integer(0) : Value::nil();
         }
         case O::Bindpos: case O::BindposI: {
             if (v[0].t == VT::Array && v[0].arr) {
@@ -9906,7 +9915,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
                 v[0].obj->attrs[bare] = v[3];
             }
-            return n->op == O::P6BindAttrInvRes ? v[0] : v[3];
+            return op == O::P6BindAttrInvRes ? v[0] : v[3];
         }
         case O::P6ScalarWithValue:
             return v.size() > 1 ? v[1] : Value::nil(); // container wrap is a no-op for us

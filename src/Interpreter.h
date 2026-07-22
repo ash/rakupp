@@ -762,6 +762,7 @@ Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); /
 ValueList rtMainArgs(const std::vector<std::string>& argv); // argv -> MAIN args (--opt named, rest positional)
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
 Value  rtReduce(const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop
+Value  rtNqpOp(NqpOpc op, ValueList& args);                 // eager `use nqp` leaf ops (interp + codegen)
 Value  rtAttrGet(const Value& self, const std::string& name);   // $!attr / $.attr read (codegen)
 Value& rtAttrRef(Value& self, const std::string& name);         // $!attr write (codegen)
 bool   rtTypeMatch(const Value& v, const std::string& type);    // nominal type check for multi-dispatch (codegen)

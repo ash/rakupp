@@ -165,6 +165,26 @@ int64 sum. Without `use nqp`, none of it happens: the same source stays a call t
 an undefined routine, and `evalNqpOp` is never linked into any code path the run
 reaches.
 
+### Native compilation (`--exe`)
+
+The subset compiles too — a `use nqp` program native-compiles rather than
+falling back to interpreter bundling. The eager leaf ops share their
+implementation with the interpreter through a free `rtNqpOp(NqpOpc, ValueList&)`
+in the runtime library, so the compiled binary runs the *exact same* op logic
+(`src/Builtins.cpp`); the codegen just emits a call to it:
+
+```cpp
+// generated for  nqp::add_i(1, 2)
+([&]()->Value{ ValueList __na = ValueList{Value::integer(1LL), Value::integer(2LL)};
+               return rtNqpOp(NqpOpc(10), __na); }())
+```
+
+The lazy control forms don't route through a runtime call — they emit native
+C++ directly (a real `while`, a statement sequence), preserving their
+non-eager evaluation in the compiled code. Interpreter and compiled binary
+produce byte-identical output (`t/regression/nqp-codegen.raku` asserts it), and
+a program *without* `use nqp` emits zero references to any of this.
+
 ## What's covered
 
 Around 50 ops, chosen from the actual inventory of the modules in the

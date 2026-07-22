@@ -131,6 +131,7 @@ struct Codegen {
             // own closure scopes (e.g. `.grep(* %% 3)`), handled when each arg is emitted.
             case NK::MethodCall: return hasWhatever(static_cast<MethodCall*>(e)->inv.get());
             case NK::Call:       return hasWhatever(static_cast<Call*>(e)->callee.get());
+            case NK::NqpOp:      { for (auto& x : static_cast<NqpOp*>(e)->args) if (hasWhatever(x.get())) return true; return false; }
             case NK::Index:      return hasWhatever(static_cast<Index*>(e)->base.get()); // *<key> / *[0]
             default: return false;
         }
@@ -331,6 +332,7 @@ struct Codegen {
             case NK::Binary: { auto* b = static_cast<Binary*>(e); return exprAssignsCaptured(b->lhs.get(), local) || exprAssignsCaptured(b->rhs.get(), local); }
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return exprAssignsCaptured(t->cond.get(), local) || exprAssignsCaptured(t->then.get(), local) || exprAssignsCaptured(t->els.get(), local); }
             case NK::Call: { auto* c = static_cast<Call*>(e); for (auto& x : c->args) if (exprAssignsCaptured(x.get(), local)) return true; return false; }
+            case NK::NqpOp: { for (auto& x : static_cast<NqpOp*>(e)->args) if (exprAssignsCaptured(x.get(), local)) return true; return false; }
             case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e); if (m->mutate && isCapturedTarget(m->inv.get())) return true; if (exprAssignsCaptured(m->inv.get(), local)) return true; for (auto& x : m->args) if (exprAssignsCaptured(x.get(), local)) return true; return false; }
             case NK::ListExpr: { for (auto& x : static_cast<ListExpr*>(e)->items) if (exprAssignsCaptured(x.get(), local)) return true; return false; }
             case NK::Index: { auto* ix = static_cast<Index*>(e); return exprAssignsCaptured(ix->base.get(), local) || (ix->index && exprAssignsCaptured(ix->index.get(), local)); }
@@ -407,6 +409,7 @@ struct Codegen {
                 case NK::Binary: { auto* b = static_cast<Binary*>(e); we(b->lhs.get()); we(b->rhs.get()); break; }
                 case NK::Ternary: { auto* t = static_cast<Ternary*>(e); we(t->cond.get()); we(t->then.get()); we(t->els.get()); break; }
                 case NK::Call: { auto* c = static_cast<Call*>(e); if (c->callee) we(c->callee.get()); for (auto& x : c->args) we(x.get()); break; }
+                case NK::NqpOp: { for (auto& x : static_cast<NqpOp*>(e)->args) we(x.get()); break; }
                 case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e);
                     if (m->mutate) record(m->inv.get());
                     we(m->inv.get()); for (auto& x : m->args) we(x.get()); break; }
@@ -766,6 +769,41 @@ struct Codegen {
             case NK::Ternary: {
                 auto* t = static_cast<Ternary*>(e);
                 return "(" + exBool(t->cond.get()) + " ? (" + ex(t->then.get()) + ") : (" + ex(t->els.get()) + "))";
+            }
+            case NK::NqpOp: {
+                // `use nqp` subset. Control forms emit native C++ (their args must
+                // not all evaluate eagerly); every leaf op evaluates its args and
+                // calls the shared runtime entry rtNqpOp — so the compiled binary
+                // uses the exact same op logic as the interpreter.
+                auto* nq = static_cast<NqpOp*>(e);
+                auto& a = nq->args;
+                switch (nq->op) {
+                    case NqpOpc::Stmts: {                 // eval each, value = last
+                        std::string o = "([&]()->Value{ Value __r = Value::nil();";
+                        for (auto& x : a) o += " __r = (" + ex(x.get()) + ");";
+                        return o + " return __r; }())";
+                    }
+                    case NqpOpc::While:                   // loop while/until cond
+                    case NqpOpc::Until: {
+                        if (a.size() < 2) return "Value::nil()";
+                        std::string body;
+                        for (size_t i = 1; i < a.size(); i++) body += " (void)(" + ex(a[i].get()) + ");";
+                        std::string neg = nq->op == NqpOpc::Until ? "!" : "";
+                        return "([&]()->Value{ while (" + neg + exBool(a[0].get()) + ") {" + body +
+                               " } return Value::nil(); }())";
+                    }
+                    case NqpOpc::IfNull: {                 // arg0 unless it's null
+                        std::string alt = a.size() > 1 ? ex(a[1].get()) : "Value::nil()";
+                        return "([&]()->Value{ Value __v = (" + ex(a[0].get()) +
+                               "); return (__v.t==VT::Nil||__v.t==VT::Any) ? (" + alt + ") : __v; }())";
+                    }
+                    default:                              // eager leaf op
+                        // rtNqpOp takes ValueList& (push/bindpos mutate the array
+                        // arg in place) — bind a named local to hand it an lvalue
+                        return "([&]()->Value{ ValueList __na = " + argsVL(a) +
+                               "; return rtNqpOp(NqpOpc(" + std::to_string((int)nq->op) +
+                               "), __na); }())";
+                }
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
@@ -1144,6 +1182,7 @@ struct Codegen {
             case NK::Unary: collectExprDecls(static_cast<Unary*>(e)->operand.get(), out, false); break;
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); collectExprDecls(t->cond.get(), out, false); collectExprDecls(t->then.get(), out, false); collectExprDecls(t->els.get(), out, false); break; }
             case NK::Call: { auto* c = static_cast<Call*>(e); for (auto& x : c->args) collectExprDecls(x.get(), out, false); if (c->callee) collectExprDecls(c->callee.get(), out, false); break; }
+            case NK::NqpOp: { for (auto& x : static_cast<NqpOp*>(e)->args) collectExprDecls(x.get(), out, false); break; }
             case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e); collectExprDecls(m->inv.get(), out, false); for (auto& x : m->args) collectExprDecls(x.get(), out, false); break; }
             case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) collectExprDecls(x.get(), out, false); break;
             case NK::ArrayLit: for (auto& x : static_cast<ArrayLit*>(e)->items) collectExprDecls(x.get(), out, false); break;
