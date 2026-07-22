@@ -3970,6 +3970,22 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     for (auto& p : params) {
         std::string bareName = !p.namedKey.empty() ? p.namedKey
                              : (p.name.size() > 1 ? p.name.substr(1) : p.name);
+        // attributive param `:$!attr` / `:$.attr` (BUILD/TWEAK style): the named
+        // key is the attribute's bare name, and a bound value writes through to
+        // the invocant's attribute
+        bool attributive = p.named && p.name.size() > 2 &&
+                           (p.name[1] == '!' || p.name[1] == '.');
+        if (attributive && p.namedKey.empty()) bareName = p.name.substr(2);
+        auto attrWrite = [&](const Value& v) {
+            if (!attributive) return;
+            if (Value* sp = env->find("self"))
+                if (sp->t == VT::Object && sp->obj) {
+                    Value av = v;
+                    if (p.name[0] == '@') av = coerceArray(av);
+                    else if (p.name[0] == '%') av = coerceHash(av);
+                    sp->obj->attrs[p.name.substr(2)] = std::move(av);
+                }
+        };
         if (p.slurpy) {
             if (p.sigil == '%') {
                 Value h = Value::makeHash();
@@ -4053,8 +4069,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (!p.subSig && p.sigil == '$' && !p.type.empty() && !p.coerce)
                     typeCheckBind(p, it->second);
                 if (!p.name.empty() || !p.subSig) env->define(p.name, it->second);
+                attrWrite(it->second);
             }
-            else if (p.defaultVal) env->define(p.name, evalDefault(p.defaultVal.get()));
+            else if (p.defaultVal) {
+                Value dv = evalDefault(p.defaultVal.get());
+                env->define(p.name, dv);
+                attrWrite(dv); // `:$!x = 42` with no arg still initializes the attr
+            }
             else if (p.required)
                 throw RakuError{Value::typeObj("X::Parameter::RequiredNamed"),
                                 "Required named parameter '" + bareName + "' not passed"};

@@ -3736,7 +3736,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     if (nb == "Hash" || nb == "Map") od->boxed = Value::makeHash();
                     else { od->boxed = Value::array(); od->boxed.isList = (nb == "List"); }
                     od->boxed.ofType = inv.ofType; // A[Int] -> element type on the box
-                    for (auto& arg : args) if (arg.t == VT::Pair) od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
+                    for (auto& arg : args)
+                        if (arg.t == VT::Pair) {
+                            const ClassAttr* at = ci->findAttr(arg.s);
+                            if (at && at->pub)
+                                od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
+                        }
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
                 if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
@@ -3800,8 +3805,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                             dv = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
                         od->attrs[at.name] = dv;
                     }
+                // the default constructor binds nameds to declared PUBLIC attributes
+                // only; anything else is silently ignored (Rakudo semantics — an
+                // unknown name must NOT enter the attr store, or `$.name` inside a
+                // method would see it instead of dying with X::Method::NotFound)
                 for (auto& arg : args)
-                    if (arg.t == VT::Pair) od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
+                    if (arg.t == VT::Pair) {
+                        const ClassAttr* at = ci->findAttr(arg.s);
+                        if (at && at->pub)
+                            od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
+                    }
                 Value self = Value::object(od);
                 // bless does not re-run BUILD-from-new args the same way, but running
                 // BUILD here matches the common `self.bless(:attr(...))` usage.
@@ -4399,7 +4412,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (m == "name" && !args.empty()) return Value::str(args[0].typeName());
             return Value::str("Perl6::Metamodel::ClassHOW");
         }
-        return Value::str(inv.typeName());
+        // plain .name is NOT a universal method: a user-class instance with no
+        // name method/attr dies X::Method::NotFound like Rakudo ($.name typo)
+        if (m == "^name" || !(inv.t == VT::Object && inv.obj && inv.obj->cls))
+            return Value::str(inv.typeName());
     }
 
     // Set/Bag/Mix coercions and queries
