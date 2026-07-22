@@ -10196,7 +10196,11 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Int && v.big) return Value::bigint(-(*v.big));
         if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
         if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN), *v.ratD); r.fatRat = v.fatRat; return r; }
-        if (v.t == VT::Str) { Value n = numifyStr(v.s); return n.t==VT::Rat ? Value::rat(-(*n.ratN),*n.ratD) : Value::number(-n.toNum()); }
+        if (v.t == VT::Str || v.t == VT::Match) {
+            Value n = numifyStr(v.t == VT::Str ? v.s : strOf(v));
+            if (n.t == VT::Int && !n.big) return Value::integer(-n.toInt());
+            return n.t==VT::Rat ? Value::rat(-(*n.ratN),*n.ratD) : Value::number(-n.toNum());
+        }
         return Value::number(-v.toNum());
     }
     if (u->op == "+") {
@@ -10204,6 +10208,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.isAllomorph()) { // +IntStr strips to the pure numeric side
             Value nv = v; nv.hashKind.clear(); nv.s.clear(); return nv;
         }
+        if (v.t == VT::Match) return numifyStr(strOf(v)); // +$0 of digits is an Int, like +Str
         return v.isNumeric() ? v : (v.t == VT::Str ? numifyStr(v.s) : Value::number(v.toNum()));
     }
     if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
