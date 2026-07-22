@@ -2762,16 +2762,33 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 // a `--> 42` / `--> "foo"` / `--> Nil` constraint forbids
                 // `return <value>` anywhere in the body (compile error in Rakudo)
-                if (sd->retLiteral || sd->retType == "Nil") {
+                if (sd->retLiteralPresent || sd->retType == "Nil") {
                     std::string repr = "Nil";
-                    if (sd->retLiteral) {
-                        const Expr* rl = sd->retLiteral.get();
+                    // the literal was appended as the body's LAST statement (parseSub);
+                    // read it back from there for the error message
+                    const Expr* rl = nullptr;
+                    if (sd->retLiteralPresent && !sd->body.empty() &&
+                        sd->body.back()->kind == NK::ExprStmt)
+                        rl = static_cast<const ExprStmt*>(sd->body.back().get())->e.get();
+                    if (rl) {
                         if (rl->kind == NK::IntLit)
                             repr = std::to_string(static_cast<const IntLit*>(rl)->v);
                         else if (rl->kind == NK::StrLit)
                             repr = "\"" + static_cast<const StrLit*>(rl)->v + "\"";
                         else if (rl->kind == NK::NumLit)
                             repr = Value::number(static_cast<const NumLit*>(rl)->v).gist();
+                        else if (rl->kind == NK::InterpStr) { // `"foo"` lexes as an InterpStr
+                            std::string flat; bool constStr = true;
+                            for (auto& p : static_cast<const InterpStr*>(rl)->parts) {
+                                if (p->kind == NK::StrLit) flat += static_cast<const StrLit*>(p.get())->v;
+                                else { constStr = false; break; }
+                            }
+                            if (constStr) repr = "\"" + flat + "\"";
+                        }
+                        else if (rl->kind == NK::BoolLit)
+                            repr = static_cast<const BoolLit*>(rl)->v ? "True" : "False";
+                        else if (rl->kind == NK::NameTerm)
+                            repr = static_cast<const NameTerm*>(rl)->name; // `--> True`/`--> Nil`
                     }
                     std::function<bool(const Stmt*)> hasRetVal = [&](const Stmt* st) -> bool {
                         if (!st) return false;

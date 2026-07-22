@@ -3484,7 +3484,11 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // end of the signature so smileys (IO::Path:D) and parametrised types
         // (Positional[Int], (Int, Str)) don't trip the `)`-expectation.
         if (matchOp("-->")) {
-            if (isKind(Tok::Ident)) sigRetType_ = cur().text; // remember the return type
+            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+                sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
+            else if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+                sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text; // remember the return type
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) || isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `(… --> 1)`: literal return value
             int depth = 0;
@@ -3803,7 +3807,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
-            if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+                sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text;
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                      isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `($n --> 99)`: literal return value
@@ -3823,7 +3829,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     // some param branches break out before the in-loop handler sees a trailing
     // `--> Type` (e.g. `-> \x --> Int { }`) — catch it here
     if (matchOp("-->")) {
-        if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+        if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+                sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text;
         else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                  isKind(Tok::StrLit) || isKind(Tok::StrInterp))
             sigRetLiteral_ = parsePrimary();
@@ -3958,7 +3966,9 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
         sigRetType_.clear(); sigRetLiteral_.reset(); advance(); s->params = parseSignature();
         // a `--> T` that follows a parameter (not comma-separated) is left for us
         if (isOp("-->")) { advance();
-                           if (isKind(Tok::Ident)) sigRetType_ = cur().text;
+                           if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
+                sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
+            else if (isKind(Tok::Ident)) sigRetType_ = cur().text;
                            else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) ||
                                     isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                                sigRetLiteral_ = parsePrimary(); // `(2 --> 1)`: literal return
@@ -4066,7 +4076,13 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
         inReactBlock_ = saved;
         s->body = std::move(blk->stmts);
     }
-    if (s->body.empty() && s->retLiteral) { // `multi f (2 --> 1) {}` returns the literal
+    if (s->retLiteral) { // `--> 1` / `--> True` : the literal IS the return value.
+        // The body still runs (for its side effects — parse-false does
+        // `$pos = $pos + 5` and `--> False`), then the literal is the last
+        // expression, hence the return. `return <value>` in the body is a
+        // separate compile error, checked at registration via retLiteralPresent
+        // (which outlives the move below).
+        s->retLiteralPresent = true;
         auto es = std::make_unique<ExprStmt>();
         es->e = std::move(s->retLiteral);
         s->body.push_back(std::move(es));

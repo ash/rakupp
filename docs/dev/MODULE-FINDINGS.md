@@ -35,12 +35,24 @@ ECOSYSTEM-TOP50.md.
    protocol (returns a Map of &name=>&code imports), hyphenated qualified
    names (`M::from-json` was lexed as `M::from` `-` `json`), and useNqp_
    propagation into string-interpolation sub-parses.
-4c. **JSON::Fast now runs its real parser** but has residual nqp-op edge bugs
-   (2026-07-23): `\u0041` escape decode ("invalid hexadecimal char") and a
-   value-path off-by-something on the qualified entry — likely native `str`/
-   `int` typed locals interacting with our ops, or an ordat/substr boundary.
-   Next module leg: trace from-json on `[1,2]` + `"x\u0041"` and fix the
-   specific ops; the machinery is all in place.
+4c. **JSON::Fast `from-json` WORKS** — RESOLVED 2026-07-23, byte-identical to
+   Rakudo across arrays, objects, nesting, bools, null, Unicode, negatives,
+   exponents (the only diff is the `$[…]` itemization marker in `.raku`, a
+   display artifact). Four fixes got it there, each a general correctness win:
+   (a) `nqp::bindattr($container,…,'$!reified',$buffer)` now SHARES backing
+   storage (lvalue repoint of the shared_ptr) so buffer pushes show through
+   the container; (b) `.Numeric`/`.Real` on a Str use the type ladder
+   (`"1"`→Int, `"1.5"`→Rat), not a blanket Num; (c) cooperative `return`/
+   `last`/`next` escapes `nqp::while`/`nqp::stmts` (the native loops now check
+   the flags — was an infinite loop); (d) `--> True`/`False`/`Nil`/literal
+   return constraints override a NON-empty body (body runs for side effects,
+   literal is returned) — parse-false is `{ $pos = $pos+5 }` with `--> False`.
+   Gate: definite-return.t 7→10, misc2 restored. Regression
+   t/regression/nqp-json-fast-support.raku.
+4d. **JSON::Fast `to-json` still recurses** (2026-07-23): "Too many levels of
+   recursion" — its `jsonify` type-dispatch loops under rakupp (nested helper
+   subs over `str @out` with a multi/given type switch). Separate leg; the
+   read direction (what most consumers need) is done.
 KNOWN TRADEOFF: recognizing+skipping `is repr("…")` means a repr-changing
    class redeclaration no longer throws X::TooLateForREPR (S32-exceptions/
    misc.t:69, −1). Accepted — loading every `is repr()` module is worth far

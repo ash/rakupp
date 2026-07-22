@@ -4175,7 +4175,14 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Rat) return Value::boolean(inv.ratD && inv.ratD->isZero() && inv.ratN && inv.ratN->isZero()); // 0/0
         if (inv.t == VT::Int || inv.t == VT::Bool) return Value::boolean(false);
     }
-    if (m == "Num" || m == "Numeric" || m == "Real") return Value::number(inv.toNum());
+    if (m == "Num") return Value::number(inv.toNum());
+    if (m == "Numeric" || m == "Real") {
+        // a string numifies via the type-preserving ladder ("1"->Int, "1.5"->Rat,
+        // "1e0"->Num), like `+$str` — not a blanket Num.
+        if (inv.t == VT::Str) return numifyStr(inv.s);
+        if (inv.t == VT::Match) return numifyStr(inv.toStr());
+        return Value::number(inv.toNum());
+    }
     if (m == "Bool" || m == "so") {
         if (inv.t == VT::Object) return Value::boolean(boolify(inv)); // honours user Bool / Real Bridge
         return Value::boolean(inv.truthy());
@@ -9684,7 +9691,14 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     switch (n->op) {
         case O::Stmts: {
             Value last = Value::nil();
-            for (auto& e : a) last = eval(e.get());
+            for (auto& e : a) {
+                last = eval(e.get());
+                // a cooperative return/last/next inside the sequence (no callable
+                // boundary) sets a flag rather than throwing — stop evaluating
+                // the rest and let it propagate (JSON::Fast's parse loops `return`
+                // out of nqp::while(1, nqp::stmts(…)))
+                if (tctx_.returning || tctx_.loopCtl) return last;
+            }
             return last;
         }
         case O::While:
@@ -9692,7 +9706,13 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (a.size() < 2) return Value::nil();
             long long guard = 0;
             while (boolify(eval(a[0].get())) == (n->op == O::While)) {
-                for (size_t i = 1; i < a.size(); i++) eval(a[i].get());
+                if (tctx_.returning) return Value::nil();
+                for (size_t i = 1; i < a.size(); i++) {
+                    eval(a[i].get());
+                    if (tctx_.returning) return Value::nil(); // cooperative return escapes
+                    if (tctx_.loopCtl == 2) { tctx_.loopCtl = 0; return Value::nil(); } // last
+                    if (tctx_.loopCtl == 1) { tctx_.loopCtl = 0; break; }               // next
+                }
                 if (++guard > 1000000000LL) break; // runaway backstop
             }
             return Value::nil();
@@ -9701,6 +9721,32 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             Value v = eval(a[0].get());
             if (v.t == VT::Nil || v.t == VT::Any) return a.size() > 1 ? eval(a[1].get()) : Value::nil();
             return v;
+        }
+        // nqp::bindattr(@container, T, '$!reified'/'$!storage', $buffer) rebinds
+        // the container's BACKING STORE to the buffer — they must then SHARE it
+        // (pushes to the buffer show through the container). Needs the caller's
+        // lvalue: the container's shared_ptr is repointed at the buffer's, so
+        // both alias one vector/map. (Value-copy semantics can't express this.)
+        case O::Bindattr:
+        case O::P6BindAttrInvRes: {
+            if (a.size() >= 4) {
+                std::string an = eval(a[2].get()).toStr();
+                if (an == "$!reified" || an == "$!storage" || an == "$!array") {
+                    Value* lv = nullptr;
+                    try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
+                    Value buf = eval(a[3].get());
+                    if (lv) {
+                        if (buf.t == VT::Array || lv->t == VT::Array) {
+                            if (lv->t != VT::Array) *lv = Value::array();
+                            if (buf.t == VT::Array && buf.arr) lv->arr = buf.arr; // SHARE
+                        } else if (buf.t == VT::Hash) {
+                            lv->t = VT::Hash; lv->hash = buf.hash;               // SHARE
+                        }
+                        return n->op == O::P6BindAttrInvRes ? *lv : buf;
+                    }
+                }
+            }
+            break; // ordinary attr bind — fall through to the eager path
         }
         default: break;
     }
