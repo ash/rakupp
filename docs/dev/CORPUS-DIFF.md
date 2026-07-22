@@ -1,3 +1,50 @@
+# Corpus differential — Round 2 (2026-07-22, v1.0.0 + hp1)
+
+Re-run of the full harness against the corpus's committed Rakudo v2026.06
+references (`expected/` + `run-status.tsv`, same protocol: sandbox copy, TZ=UTC,
+stdin /dev/null, 30 s alarm, `-I. -Ilib -I../lib`).
+
+**Headline: 1490 / 1789 exact matches (83.3%)**, up from 1475 (82.4%) at Round 1's
+fix batch. 37 of the 299 mismatches are environmental (`src-hint` files: the
+reference recorded a 2026-07-18 date, a srand sequence, thread ids, or machine
+paths) — **against the 1,752 stable references the match rate is 85.0%**, and the
+real divergence backlog is ~262 files. Verdicts: `corpus-diff/rp-verdicts3.tsv`;
+per-file clusters: `corpus-diff/rp-classes3.tsv`.
+
+## What's left, clustered (fix-priority order)
+
+| # | Cluster | Files | Notes / example |
+|---|---|---:|---|
+| 1 | **Grammar/Match residue** | ~41 | The largest real block. Match tree shape: named keys render positionally (` 0 => ｢letter｣` for ` type => ｢letter｣`, regex/36) and multi-level capture nesting mis-indents (grammars/6, 10). Values lost through actions: `.made`/`make` chains yield `(Any)`/`Nil` (grammar2/4 — the parked embedded-code-block cluster — plus grammars/12, 15, calculator-grammars.pl → `0`). `$/` as an action-method parameter fails its binding constraint (grammars/22). |
+| 2 | **Regex-engine string ops** | ~8 | `s:g` with quantified captures (compressor.pl prints the input unchanged), `.comb` with a regex range (array-comb.pl `[21 23]` vs `[21 23 25 27 29]`), recursive/balanced patterns (balanced-brackets.pl), roman-numeral parse (roman2). |
+| 3 | **CLI one-liner flags** | 14 | Glued `-ne'…'`/`-npe'…'` still rejected (12), plus `.sh` wrappers that invoke `perl6`/`raku` by name (needs argv0/shim handling in the harness or a real alias). |
+| 4 | **parse gaps** | ~20 | Postfix-dot forms (`.=`, `.7`, `."meth"` — 6 files); pod declarator blocks; `polar` (Confused at `)`); underscored fractional literals (05-pi); unicode set ops `⊄` and bare-term emoji; `<<mm>>` word-quote vs hyper ambiguity; misc (std-deviation, comment edge). |
+| 5 | **prompt/EOF behaviour** | 9 | `prompt` at EOF: Rakudo returns Nil and the program stops quietly; rakupp prints `(Any)` or proceeds with an empty answer (palindrome3, exceptions/04, allomorphs). |
+| 6 | **encode/NF*/IO gists** | ~9 | `utf8:0x<…>`/`NFC:0x<…>` vs our `Blob:0x<…>`/codepoint arrays (uni2/3/4); `dir()` entries gist as `"x".IO` in Rakudo vs our `./x` (file6, 19-parallel-dir). Round-1 clusters 10/12, still open. |
+| 7 | **exceptions & exits** | ~12 | Uncaught-exception exit codes (we exit 0 where Rakudo exits 1 — exceptions/09-2, 11, 12, 19, sleep-sort); backtrace shape (`  in block <unit> at … line N`); message detail (`divide 1 by zero`); typed-vs-AdHoc identity differences (14.pl); `X::` ACCEPTS on Int (op51). |
+| 8 | **is-rw returns / lvalue subs** | 5 | `return-rw`/`is rw` sub results not assignable ("Target is not assignable", return_rw-6.pl) — the known multis/indirect rw-param gap. |
+| 9 | **modules/our-scope** | ~7 | `our`-scoped vars/constants invisible cross-module (x.pl, read-pi); qualified `Module::sub()` calls; `import`; `Undefined routine 'N::n'`. |
+| 10 | **numeric gists** | 6 | `Num` prints 15 significant digits where Rakudo round-trips 17 (01-multiply, 27-power); `Rat` gist digit budget (newton); `("9" + 1).WHAT` Num-vs-Int = spec divergence #42 (mul.pl). |
+| 11 | **bignum edges** | 2 | `.substr(*-10)` on a large Int ignores the Whatever start (euler 048); euler 013 prints an int64-max prefix (sum path overflows somewhere the minimal repro doesn't hit). |
+| 12 | **containers/gist** | ~8 | Array-vs-List brackets after hyper/assignment (`(11 13…)` vs `[11 13…]`, whitespace.pl the other way); slurpy-hash iteration order (43-slurpy-hash — insertion order vs ours); hash3. |
+| 13 | **introspection** | 6 | `$*THREAD` gist, `.HOW` gist (`Perl6::Metamodel::ClassHOW.new`), `Int.^methods`, `IO::Handle` type name (we say `FileHandle`). |
+| 14 | **parked from Round 1** | 4 | op48 (`:=` container aliasing), metaop18 (`S&`), channel9 + one more deadlock TIMEOUT. |
+| 15 | **singles** | ~15 | classz (`!meth` private-call), 47-call-all-methods (`.^methods` walk misses), 52a/b stars-homework, EVAL-of-expression calculator (AoC-18 ×2), take-rw/rename/move builtins, `Cannot resolve caller chars(Any:U)`, recursion-depth difference, and friends — one file each, see rp-classes3.tsv. |
+
+## Round-2 protocol notes
+
+- References are now **committed in the corpus repo** (`expected/`,
+  `run-status.tsv`) — the harness no longer depends on a session scratchpad.
+  Runner: `corpus-diff/run-rakupp.sh` pattern with CORPUS/RES paths adjusted;
+  eligibility = run-status rows OK/NONZERO (1,789 files).
+- The 37 `src-hint` mismatches are expected drift (dates, srand, threads,
+  machine paths), not bugs; consider regenerating `expected/` periodically or
+  teaching the differ per-file compare policies (Round 1's still-open idea).
+- MATCH count remains the regression metric: **1490** (Round 1: 1443 → 1475).
+
+
+---
+
 # Corpus differential run — 2026-07-18
 
 > **UPDATE (same day, after the first fix batch):** **1475 / 1789 exact matches

@@ -1,0 +1,299 @@
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/02-sum-values-in-a-row.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/03a-reverse-each-line.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/03b-reverse-each-line.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/05a-remove-all-blank-lines.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/05b-remove-all-blank-lines.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/06-number-all-lines.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/07-convert-text-to-uppercase.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/08-strip-whitespace.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/09-print-first-line.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/19-big-number-power.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-BOTH	./books/raku-one-liners/28-42-via-the-cubes.sh
+CLI: glued -ne/-npe one-liner flags	DIFF-OUT	./books/raku-one-liners/10-print-first-10-lines.sh
+CLI: shell one-liner invokes perl6/raku by name	DIFF-BOTH	./books/raku-one-liners/04-double-space-a-file.sh
+CLI: shell one-liner invokes perl6/raku by name	DIFF-EXIT	./books/raku-one-liners/01-print-current-user.sh
+ENV: date/random/machine-dependent reference	DIFF-BOTH	./books/raku-one-liners/18b-random-integers-seeded.sh
+ENV: date/random/machine-dependent reference	DIFF-BOTH	./course/exercises/paradigms/cro/status-line.raku
+ENV: date/random/machine-dependent reference	DIFF-BOTH	./snippets/perl6-assorti/05-emoji.pl
+ENV: date/random/machine-dependent reference	DIFF-BOTH	./snippets/perl6tests/parallel/promise7.pl
+ENV: date/random/machine-dependent reference	DIFF-EXIT	./snippets/perl6-play/promise/sleep-sort.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/perl6-at-a-glance/op61.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/perl6-calendar-2019/10-oct-todays-date.raku
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/raku-one-liners/31a-date-today.raku
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/raku-one-liners/31b-date-today.raku
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/raku-one-liners/32-custom-date-formatter.raku
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/using-raku/formatteddate2.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/using-raku/parallel-dir.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./books/using-raku/srand.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./challenges/perl-weekly-challenge/054/ch-2.raku
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/2/channel-closed.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/2/channel-closed1.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/2/channel-list-context.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/2/channel-list-context1.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/promise/in.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/promise/promise1.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/promise/then.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6-play/promise/timeout-await.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/grammars/16.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/allof.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/channel3.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/channel6.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/channel8.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/new-thread2.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/promise10.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/promise12.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/thread-id.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/thread-name.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/thread-sleep.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/thread-str.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/thread.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/perl6tests/parallel/var-thread.pl
+ENV: date/random/machine-dependent reference	DIFF-OUT	./snippets/yr2017-perl6/19-parallel-dir.pl
+EVAL: full-expression parse (AoC-18 calculator)	DIFF-BOTH	./challenges/advent-of-code/2020/18/18-2.raku
+EVAL: full-expression parse (AoC-18 calculator)	DIFF-BOTH	./challenges/advent-of-code/2020/18/18.raku
+IO: prompt at EOF	DIFF-BOTH	./books/using-raku/palindrome2.pl
+IO: prompt at EOF	DIFF-BOTH	./books/using-raku/palindrome3.pl
+IO: prompt at EOF	DIFF-BOTH	./course/examples/allomorphs.raku
+IO: prompt at EOF	DIFF-BOTH	./snippets/perl6tests/exceptions/03.pl
+IO: prompt at EOF	DIFF-BOTH	./snippets/perl6tests/exceptions/07.pl
+IO: prompt at EOF	DIFF-OUT	./books/using-raku/removespaces.pl
+IO: prompt at EOF	DIFF-OUT	./snippets/perl6tests/exceptions/04.pl
+IO: prompt at EOF	DIFF-OUT	./snippets/perl6tests/exceptions/05.pl
+IO: prompt at EOF	DIFF-OUT	./snippets/perl6tests/exceptions/08.pl
+exceptions: message detail	DIFF-OUT	./books/perl6-at-a-glance/try1.pl
+exceptions: message detail	DIFF-OUT	./snippets/perl6-play/1/divide0.pl
+exit-code only (uncaught-exception exit status)	DIFF-EXIT	./snippets/perl6tests/exceptions/09-2.pl
+exit-code only (uncaught-exception exit status)	DIFF-EXIT	./snippets/perl6tests/exceptions/11.pl
+exit-code only (uncaught-exception exit status)	DIFF-EXIT	./snippets/perl6tests/exceptions/12.pl
+exit-code only (uncaught-exception exit status)	DIFF-EXIT	./snippets/perl6tests/exceptions/19.pl
+exit-code only (uncaught-exception exit status)	DIFF-EXIT	./snippets/perl6tests/subroutines/isrw-const.pl
+exit-code only (uncaught-exception exit status)	DIFF-OUT	./course/exercises/paradigms/connections/send-and-receive.raku
+gist: Array-vs-List brackets	DIFF-OUT	./books/using-raku/add-arrays.pl
+gist: Array-vs-List brackets	DIFF-OUT	./books/using-raku/rotatelist2.pl
+gist: Array-vs-List brackets	DIFF-OUT	./snippets/perl6tests/operators/hyper-op.pl
+gist: Array-vs-List brackets	DIFF-OUT	./snippets/perl6tests/operators/hyper2.pl
+gist: Array-vs-List brackets	DIFF-OUT	./snippets/perl6tests/whitespace.pl
+gist: Array-vs-List brackets	DIFF-OUT	./snippets/yr2017-perl6/11-add-arrays.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./books/perl6-at-a-glance/grammar2.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./books/raku-one-liners/52b-stars-homework-expanded.raku
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./books/using-raku/approx.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./challenges/perl-weekly-challenge/049/ch-1.raku
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./challenges/perl-weekly-challenge/063/ch-1.raku
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./challenges/perl-weekly-challenge/073/ch-2.raku
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./course/exercises/advanced/module-introspection/lookup-symbol/lookup.raku
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./course/exercises/advanced/modules-basics/read-the-constant/read-pi.raku
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./programs/perl6-grammar-play/mini-lang/lang-2.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./programs/perl6-grammar-play/test1/4.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./programs/perl6-grammar-play/test3/1.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./programs/perl6-grammar-play/test3/2.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6-assorti/09-compare.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6-play/fosdem/fib1.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6tests/grammars/14.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6tests/grammars/15.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6tests/grammars/17.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6tests/grammars/20.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6tests/input-output/open3.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/perl6tests/oop/34.pl
+grammar/modules: value lost (make/our-scope/(Any))	DIFF-OUT	./snippets/yr2017-perl6/12-approx.pl
+grammar: $/ parameter binding in actions	DIFF-BOTH	./snippets/perl6tests/grammars/19.pl
+grammar: $/ parameter binding in actions	DIFF-OUT	./snippets/perl6tests/grammars/22.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./books/using-raku/firstodd2.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./programs/perl6-grammar-play/test1/1.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./programs/perl6-grammar-play/test1/3.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./programs/perl6-grammar-play/test2/1.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./programs/perl6-grammar-play/test2/2.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/grammars/10.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/grammars/2.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/grammars/4.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/grammars/5.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/grammars/6.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/grammars/8.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/grammars/9.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/regex/30.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/regex/35.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/regex/36.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/regex/38.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/regex/49.pl
+grammar: Match tree shape (named keys, nesting)	DIFF-OUT	./snippets/perl6tests/regex/56.pl
+introspection: $*THREAD gist	DIFF-OUT	./snippets/perl6tests/parallel/junction.pl
+introspection: type/HOW names	DIFF-OUT	./snippets/perl6tests/input-output/open.pl
+introspection: type/HOW names	DIFF-OUT	./snippets/perl6tests/input-output/open2.pl
+introspection: type/HOW names	DIFF-OUT	./snippets/perl6tests/input-output/open6.pl
+introspection: type/HOW names	DIFF-OUT	./snippets/perl6tests/oop/35.pl
+introspection: type/HOW names	DIFF-OUT	./snippets/perl6tests/oop/introspection.pl
+is-rw returns / lvalue subs	DIFF-BOTH	./books/using-raku/swap4.pl
+is-rw returns / lvalue subs	DIFF-BOTH	./snippets/perl5to6/return_rw-6.pl
+is-rw returns / lvalue subs	DIFF-BOTH	./snippets/perl6-assorti/13-swap.pl
+is-rw returns / lvalue subs	DIFF-BOTH	./snippets/perl6tests/operators/pipe.pl
+is-rw returns / lvalue subs	DIFF-BOTH	./snippets/raku-test/010/substr-rw.raku
+missing builtin: rename/move/take-rw	DIFF-BOTH	./snippets/raku-test/010/take-rw.raku
+missing builtin: rename/move/take-rw	DIFF-EXIT	./snippets/perl6tests/input-output/move.pl
+missing builtin: rename/move/take-rw	DIFF-EXIT	./snippets/perl6tests/input-output/rename.pl
+missing method: .ACCEPTS	DIFF-BOTH	./books/perl6-at-a-glance/op51.pl
+missing method: .ACCEPTS	DIFF-BOTH	./snippets/perl6tests/operators/smartmatch.pl
+missing method: .Date	DIFF-BOTH	./snippets/perl6tests/input-output/modified.pl
+missing method: .keys	DIFF-BOTH	./course/exercises/advanced/module-introspection/list-the-symbols/list.raku
+missing method: .methods	DIFF-BOTH	./books/perl6-at-a-glance/op21.pl
+missing method: .min	DIFF-OUT	./snippets/raku-test/008/empty-min-max.raku
+modules: qualified Module::sub / import	DIFF-BOTH	./books/perl6-at-a-glance/mod6.pl
+modules: qualified Module::sub / import	DIFF-BOTH	./books/perl6-at-a-glance/mod8.pl
+modules: qualified Module::sub / import	DIFF-BOTH	./books/perl6-at-a-glance/mod9.pl
+modules: qualified Module::sub / import	DIFF-BOTH	./snippets/perl6tests/oop/22.pl
+numeric: Num/Rat gist precision	DIFF-OUT	./books/using-raku/calculator-regexes.pl
+numeric: Num/Rat gist precision	DIFF-OUT	./snippets/perl6-assorti/23-newton.pl
+numeric: Num/Rat gist precision	DIFF-OUT	./snippets/perl6-assorti/27-power.pl
+numeric: Num/Rat gist precision	DIFF-OUT	./snippets/perl6tests/subroutines/multi4.pl
+numeric: Num/Rat gist precision	DIFF-OUT	./snippets/yr2017-perl6/01-multiply.pl
+other runtime error: Calling add(Int) will never work with declared sig	DIFF-OUT	./snippets/perl6tests/subroutines/add7.pl
+other runtime error: Calling add(Int, Int) will never work with declare	DIFF-OUT	./snippets/perl6tests/subroutines/add5.pl
+other runtime error: Cannot convert string to number: base-10 number mu	DIFF-BOTH	./challenges/perl-weekly-challenge/263/ch-2.raku
+other runtime error: Cannot modify an immutable List	DIFF-BOTH	./challenges/perl-weekly-challenge/354/ch-2.raku
+other runtime error: Cannot resolve caller chars(Any:U); the invocant i	DIFF-BOTH	./programs/lingua/misc/parse_number.raku
+other runtime error: Constraint type check failed in binding to paramet	DIFF-BOTH	./challenges/perl-weekly-challenge/017/ch-1.raku
+other runtime error: Failed to open file dummy.txt: no such file or dir	DIFF-BOTH	./snippets/perl6tests/exceptions/18.pl
+other runtime error: Too many levels of recursion	DIFF-BOTH	./challenges/perl-weekly-challenge/021/ch-1.raku
+other runtime error: Type check failed in binding to parameter '$x'; ex	DIFF-OUT	./snippets/perl6tests/subroutines/add4.pl
+other runtime error: Undefined routine 'add'	DIFF-BOTH	./snippets/perl6tests/subroutines/anon2.pl
+other runtime error: Undefined routine 'f'	DIFF-BOTH	./books/perl6-at-a-glance/mod7.pl
+other runtime error: Undefined routine 'process'	DIFF-BOTH	./programs/lingua/misc/calc.raku
+other runtime error: Undefined routine 'x'	DIFF-BOTH	./books/perl6-at-a-glance/class10.pl
+other runtime error: Useless use of constant string "$name" in sink con	DIFF-OUT	./snippets/perl6tests/operators/{}.pl
+other runtime error: Useless use of constant string "$x" in sink contex	DIFF-OUT	./snippets/perl6tests/subroutines/israw2.pl
+other runtime error: Variable '$total' is not declared	DIFF-BOTH	./snippets/a-language-a-day/counter.raku
+other runtime error: Variable '$total' is not declared	DIFF-BOTH	./snippets/advent-2019/counter.raku
+other runtime error: [ 1 3 9 4 8 7 8 5 4 ]	DIFF-OUT	./books/using-raku/sumofdigits.pl
+output: extra/missing trailing lines	DIFF-BOTH	./books/perl6-at-a-glance/sub12.pl
+output: extra/missing trailing lines	DIFF-BOTH	./course/exercises/essentials/positionals/months-names.raku
+output: extra/missing trailing lines	DIFF-BOTH	./course/exercises/essentials/positionals/spell-a-number.raku
+output: extra/missing trailing lines	DIFF-BOTH	./course/exercises/positionals/months-names.raku
+output: extra/missing trailing lines	DIFF-BOTH	./course/exercises/positionals/spell-a-number.raku
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/add.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/exceptions/06-2.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/exceptions/06.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/exceptions/15.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/input-output/enc2.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/modulo2.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/oop/5.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/oop/6.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/oop/7.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/subroutines/add3.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/subroutines/block3.pl
+output: extra/missing trailing lines	DIFF-BOTH	./snippets/perl6tests/subroutines/d.pl
+output: extra/missing trailing lines	DIFF-OUT	./books/raku-one-liners/55g-golf-fibonacci.raku
+output: extra/missing trailing lines	DIFF-OUT	./challenges/perl-weekly-challenge/022/ch-1.raku
+output: extra/missing trailing lines	DIFF-OUT	./challenges/perl-weekly-challenge/047/ch-2.raku
+output: extra/missing trailing lines	DIFF-OUT	./challenges/perl-weekly-challenge/077/ch-2.raku
+output: extra/missing trailing lines	DIFF-OUT	./challenges/perl-weekly-challenge/078/ch-1.raku
+output: extra/missing trailing lines	DIFF-OUT	./snippets/perl6tests/exceptions/13.pl
+output: extra/missing trailing lines	DIFF-OUT	./snippets/perl6tests/input-output/eof.pl
+output: extra/missing trailing lines	DIFF-OUT	./snippets/perl6tests/input-output/z2.pl
+output: extra/missing trailing lines	DIFF-OUT	./snippets/perl6tests/regex/59.pl
+output: first-line diff (misc)	DIFF-BOTH	./snippets/perl6tests/exceptions/10.pl
+output: first-line diff (misc)	DIFF-BOTH	./snippets/perl6tests/exceptions/14.pl
+output: first-line diff (misc)	DIFF-BOTH	./snippets/perl6tests/exceptions/module.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/classz.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/file6.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/hash3.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/metaop18.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/op48.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/uni2.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/uni3.pl
+output: first-line diff (misc)	DIFF-OUT	./books/perl6-at-a-glance/uni4.pl
+output: first-line diff (misc)	DIFF-OUT	./books/raku-one-liners/43-slurpy-hash.raku
+output: first-line diff (misc)	DIFF-OUT	./books/raku-one-liners/47-call-all-methods.raku
+output: first-line diff (misc)	DIFF-OUT	./books/raku-one-liners/52a-stars-homework.raku
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/array-comb.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/balanced-brackets.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/calculator-grammars.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/compressor.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/distance.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/dna-rna.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/double-character2.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/isinlist.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/license-plate.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/most-frequent-word.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/pig-latin.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/roman-test.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/roman2.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/run.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/templating.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/unique.pl
+output: first-line diff (misc)	DIFF-OUT	./books/using-raku/vowels.pl
+output: first-line diff (misc)	DIFF-OUT	./challenges/advent-of-code/2020/04/04-2.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/advent-of-code/2020/06/06-2.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/advent-of-code/2020/09/09.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/087/ch-2.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/092/ch-1a.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/127/ch-1.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/227/ch-2.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/263/ch-1.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/327/ch-2a.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/338/ch-1.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/346/ch-1.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/perl-weekly-challenge/351/ch-1.raku
+output: first-line diff (misc)	DIFF-OUT	./challenges/project-euler/013.pl
+output: first-line diff (misc)	DIFF-OUT	./challenges/project-euler/048.pl
+output: first-line diff (misc)	DIFF-OUT	./programs/perl6-grammar-play/test1/5.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl5to6/heredocs-sub-tab-6.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl5to6/re7a-6.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl5to6/re8-6.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6-assorti/20-roman-test.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6-play/1/bare-sigil.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/exceptions/06-1.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/exceptions/16.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/grammars/11.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/grammars/12.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/grammars/13.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/grammars/21.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/grammars/7.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/input-output/dir.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/input-output/dir2.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/input-output/path.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/input-output/printf.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/input-output/printf2.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/input-output/split.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/modules/test.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/modules/x.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/mul.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/oop/1.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/oop/26.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/oop/8.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/operators/leg.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/operators/more-op.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/operators/not.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/operators/q.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/operators/upto.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/100.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/20.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/23.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/24.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/25.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/27.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/28.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/55.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/regex/63.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/perl6tests/subroutines/operator.pl
+output: first-line diff (misc)	DIFF-OUT	./snippets/raku-test/008/min-by.raku
+output: first-line diff (misc)	DIFF-OUT	./snippets/yr2017-perl6/16-roman2.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./books/perl6-at-a-glance/metaop3.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./books/using-raku/polar.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./books/using-raku/std-deviation.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./challenges/perl-weekly-challenge/003/ch-1.raku
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./challenges/perl-weekly-challenge/060/ch-2.raku
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./snippets/perl6tests/comment2.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./snippets/perl6tests/operators/user-op.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./snippets/perl6tests/regex/62.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./snippets/raku-test/010/return-rw.raku
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-BOTH	./snippets/yr2017-perl6/05-pi.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-EXIT	./books/using-raku/pod.pl
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-EXIT	./programs/languages-in-raku/stack-based/stacky.raku
+parse: misc (pod-block, polar, numeric literal, comment edge)	DIFF-EXIT	./snippets/raku-test/004/calc2.raku
+parse: postfix-dot forms (.=, .7, ."meth")	DIFF-BOTH	./books/perl6-at-a-glance/op20.pl
+parse: postfix-dot forms (.=, .7, ."meth")	DIFF-BOTH	./books/perl6-at-a-glance/op22.pl
+parse: postfix-dot forms (.=, .7, ."meth")	DIFF-BOTH	./books/perl6-at-a-glance/op23.pl
+parse: postfix-dot forms (.=, .7, ."meth")	DIFF-BOTH	./books/perl6-at-a-glance/plus_m.pl
+parse: postfix-dot forms (.=, .7, ."meth")	DIFF-BOTH	./snippets/perl6tests/oop/methods.pl
+parse: postfix-dot forms (.=, .7, ."meth")	DIFF-BOTH	./snippets/perl6tests/oop/methods2.pl
+parse: unicode set-op/term chars	DIFF-BOTH	./books/using-raku/array-difference.pl
+timeout (channel deadlock family)	TIMEOUT	./challenges/advent-of-code/2019/02/02-2.raku
+timeout (channel deadlock family)	TIMEOUT	./snippets/perl6tests/parallel/channel9.pl
