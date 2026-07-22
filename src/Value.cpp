@@ -353,11 +353,13 @@ std::string Value::gist() const {
             }
             return s;
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
+            const char* exF = rExFrom ? "^" : "";
+            const char* exT = rExTo ? "^" : "";
             if (ofType == "Str")
-                return "\"" + cpToU8((uint32_t)rFrom) + "\"" + ".." + (rExTo ? "^" : "") + "\"" + cpToU8((uint32_t)rTo) + "\"";
-            if (rNum) return Value::number(n).toStr() + ".." + (rExTo ? "^" : "") + Value::number(im).toStr();
+                return "\"" + cpToU8((uint32_t)rFrom) + "\"" + exF + ".." + exT + "\"" + cpToU8((uint32_t)rTo) + "\"";
+            if (rNum) return Value::number(n).toStr() + exF + ".." + exT + Value::number(im).toStr();
             std::ostringstream os;
-            os << rFrom << ".." << (rExTo ? "^" : "") << rTo;
+            os << rFrom << exF << ".." << exT << rTo;
             return os.str();
         }
         case VT::Hash: {

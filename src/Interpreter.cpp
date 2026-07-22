@@ -6312,6 +6312,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
             // elements: a Range, a List, an Array — not their union).
             if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
+            else if (a->op == "=" && a->value && a->value->kind == NK::VarExpr &&
+                     !static_cast<VarExpr*>(a->value.get())->name.empty() &&
+                     static_cast<VarExpr*>(a->value.get())->name[0] == '$' &&
+                     rhs.t == VT::Range) {
+                // a $-container ITEMIZES: `my @r = $r` is ONE element (the
+                // Range), unlike the flattening `my @r = 1..5` (Array/List
+                // itemization is wider surgery; Range is the roast-tested bit)
+                Value one = Value::array();
+                one.arr->push_back(rhs);
+                *lv = one;
+            }
             else {
                 Value nv = coerceArray(rhs);
                 // `=` REFILLS the same container (Raku identity): anything bound
@@ -6973,6 +6984,26 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         long long d = op == "+" ? r.toInt() : -r.toInt();
         Value out = Value::range(l.rFrom + d, l.rTo + d, l.rExFrom, l.rExTo);
         return out;
+    }
+    // Range * n / Range / n scale both endpoints (n * Range commutes);
+    // a non-integer result becomes a fractional range
+    if (l.t == VT::Range && !l.rNum && l.ofType.empty() &&
+        (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
+        (op == "*" || op == "/")) {
+        double f = r.toNum();
+        if (f != 0 || op == "*") {
+            double lo = l.rFrom * (op == "*" ? f : 1.0 / f);
+            double hi = l.rTo * (op == "*" ? f : 1.0 / f);
+            if (lo == (long long)lo && hi == (long long)hi && r.t == VT::Int)
+                return Value::range((long long)lo, (long long)hi, l.rExFrom, l.rExTo);
+            Value out = Value::range((long long)lo, (long long)hi, l.rExFrom, l.rExTo);
+            out.rNum = true; out.n = lo; out.im = hi;
+            return out;
+        }
+    }
+    if (r.t == VT::Range && !r.rNum && r.ofType.empty() && l.t == VT::Int && op == "*") {
+        long long f = l.toInt();
+        return Value::range(r.rFrom * f, r.rTo * f, r.rExFrom, r.rExTo);
     }
     if (r.t == VT::Range && (l.t == VT::Int || l.t == VT::Bool) && op == "+") {
         long long d = l.toInt();

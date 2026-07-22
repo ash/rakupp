@@ -542,6 +542,11 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                 bool first = true;
                 for (auto& e : *v.arr) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
                 if (v.isList && v.arr->size() == 1) o += ",";
+                // a 1-element ARRAY holding an iterable disambiguates with a
+                // trailing comma too: [1..5,] (else the raku form would flatten)
+                if (!v.isList && v.arr->size() == 1 &&
+                    ((*v.arr)[0].t == VT::Range || (*v.arr)[0].t == VT::Array))
+                    o += ",";
                 seen.erase(v.arr.get());
             }
             o += v.isList ? ')' : ']';
