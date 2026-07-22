@@ -263,6 +263,19 @@ section('showcase/rakus (a static HTTP file server)');
     stop-server($script);
 }
 
+# ---- once-broken regressions ------------------------------------------
+# t/regression/ holds minimal repros of bugs a rakupp change INTRODUCED and
+# a later commit fixed (each file's header says what broke and what fixed
+# it). Auto-discovered: a case passes iff it exits 0 with `PASS` as its
+# last stdout line. Add new cases as plain files; nothing to register.
+section('t/regression (once broken, must stay fixed)');
+for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
+    my ($out, $exit) = run-rakupp($f.Str);
+    my $last = $out.lines.tail // '';
+    ok($exit == 0 && $last eq 'PASS', "regression: {$f.basename}");
+    diag("exit=$exit last-line='$last'") if $exit != 0 || $last ne 'PASS';
+}
+
 # ---- native codegen coverage -------------------------------------------
 # Every example and bench kernel must stay NATIVELY compilable: `--cpp` exits
 # 0 when the transpiler covers the program, 5 when `--exe` would fall back to
