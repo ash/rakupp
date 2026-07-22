@@ -145,8 +145,8 @@ decision point is after the Tier-3 baseline — with numbers, not vibes.
 - Every gate-caught or user-reported bug gets a `t/regression/` case.
 - Divergences vs Rakudo logged (spec-divergences memory / CORPUS-DIFF style
   triage docs). "The module itself is buggy / Rakudo-illegal" is a finding
-  too — recorded in **our own triage files only** (a MODULE-FINDINGS.md in
-  the battery repo). **We do not submit bug reports to module authors**;
+  too — recorded in **our own triage files only**
+  ([MODULE-FINDINGS.md](MODULE-FINDINGS.md), here in docs/dev). **We do not submit bug reports to module authors**;
   everything stays in-repo, for us.
 - Docs numbers synced per leg: MODULES.md joins ROAST.md/FEATURES.md in the
   doc-sync discipline.
