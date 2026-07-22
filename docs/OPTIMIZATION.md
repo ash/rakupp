@@ -297,12 +297,45 @@ The design leans on the fallback: anything the fast path doesn't recognize (a
 `Rat`, a bignum operand, a non-`Int` type, a named/slurpy call) routes to the
 same runtime code the non-`-O` build uses.
 
+## The value model: the box stays, only its per-op cost goes
+
+A common question about `--exe`: does a native-compiled `my int $x` become a
+bare C++ `long long`? **No.** The generated code keeps one uniform
+representation — everything is a `Value`, at every optimization level. A
+`Value` is a tagged union carrying the int64 inline in its `.i` field, next to
+slots for `Num`/`Complex`/`Str`/`Array`/`Hash`/`BigInt`/`Rat` and their
+`shared_ptr`s; on this build **`sizeof(Value)` is 376 bytes** (versus 8 for a
+`long long`). `my int $s` compiles to `Value v_ss`, not `long long s`.
+
+What the passes remove is per-*operation* overhead, not the box:
+
+- **Default `--exe`:** `$s = $s + $i` is `v_ss = rtAdd(v_ss, v_si)` — a runtime
+  dispatch that also **constructs a fresh 376-byte `Value`** for the result.
+- **`-O` (pass 3):** the arithmetic runs as raw `int64` in registers and the
+  result is written **into `v_ss`'s existing `.i` slot in place** — no `Value`
+  is constructed per operation (this is the "zero boxing" behind `intsum`'s
+  7.9×). But `v_ss` is *still* a 376-byte `Value`; the storage is unchanged, and
+  a guard miss (non-int operand, overflow to bignum) falls back to the boxed
+  path.
+
+So `-O` makes hot integer *work* native without allocation, but it does **not**
+shrink the variables, and loops still copy full `Value`s (e.g. the loop topic
+each iteration — cheap when the `shared_ptr`s are null, but 376 bytes moved).
+
+Why keep the box? Because the transpile is uniform: any expression must be able
+to flow anywhere — into a runtime function, an array element, `say()`, an
+untyped assignment — and Raku's `my int` is readable in `Any` context while
+non-native `Int` can hold `Nil` or promote to bignum. Emitting a bare
+`long long` local is only sound once analysis proves the variable never escapes
+into a `Value` context; that's the **native int locals** pass below, not a small
+tweak.
+
 ## Limits and what's next
 
 `-O` is deliberately conservative — it removes per-operation overhead without
-changing the value model. Pass 3 delivered the first slice of **leaving the
-`Value` box entirely** for statements and conditions; the remaining levers, in
-rough order of expected payoff:
+changing the value model (see the section just above). Pass 3 delivered the
+first slice of **leaving the `Value` box entirely** for statements and
+conditions; the remaining levers, in rough order of expected payoff:
 
 - **value-position lanes** — laneable int expressions inside larger
   expressions (call arguments, list elements) still box;
@@ -310,8 +343,12 @@ rough order of expected payoff:
   checks needed, just tag guards);
 - **array-element lanes** — `@a[$i]` reads/writes inside the lane (a bounds +
   tag guard against the underlying vector);
-- **native int locals** — proving a `my $x` never escapes or leaves `Int` and
-  emitting a raw `long long` with no box at all (full type inference);
+- **native int locals** — the big one for both memory and speed: prove a typed
+  local (`my int $x`) never escapes into a `Value` context and never leaves
+  `Int`, then emit a raw `long long` with **no box at all** — eliminating the
+  376-byte storage and the per-iteration `Value` copies, not just the per-op
+  construction. This is a genuine escape-analysis / type-flow pass, the natural
+  successor to pass 3;
 - devirtualizing monomorphic method calls, constant-folding literal
   arithmetic, and specializing `.map`/`.grep`/`.sort` on native element types.
 
