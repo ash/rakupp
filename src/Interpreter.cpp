@@ -9678,7 +9678,12 @@ Value Interpreter::hyperUnary(const std::string& op, Value v) {
             return nv;
         }
         if (op == "-") return applyBinOp("-", Value::integer(0), x);
-        if (op == "+") return applyBinOp("+", Value::integer(0), x);
+        if (op == "+") {
+            if (x.isAllomorph()) { // +IntStr strips to the pure numeric side
+                Value nx = x; nx.hashKind.clear(); nx.s.clear(); return nx;
+            }
+            return applyBinOp("+", Value::integer(0), x);
+        }
         if (op == "!") return Value::boolean(!boolify(x));
         if (op == "?") return Value::boolean(boolify(x));
         return Value::str(x.toStr()); // ~
@@ -10095,7 +10100,12 @@ Value Interpreter::evalUnary(Unary* u) {
             if (inner.t == VT::Code && inner.code && inner.code->isWhateverCode) b = I.callCallable(inner, ValueList{arg});
             if (op == "~") return Value::str(b.toStr());
             if (op == "-") return b.t == VT::Int ? Value::integer(-b.toInt()) : Value::number(-b.toNum());
-            if (op == "+") return b.isNumeric() ? b : Value::number(b.toNum());
+            if (op == "+") {
+                if (b.isAllomorph()) { // +IntStr strips to the pure numeric side
+                    Value nb = b; nb.hashKind.clear(); nb.s.clear(); return nb;
+                }
+                return b.isNumeric() ? b : Value::number(b.toNum());
+            }
             if (op == "?" || op == "so") return Value::boolean(b.truthy());
             return Value::boolean(!b.truthy()); // ! / not
         };
@@ -10142,6 +10152,9 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (u->op == "+") {
         if (v.t == VT::Bool) return Value::integer(v.b ? 1 : 0); // +True == 1
+        if (v.isAllomorph()) { // +IntStr strips to the pure numeric side
+            Value nv = v; nv.hashKind.clear(); nv.s.clear(); return nv;
+        }
         return v.isNumeric() ? v : (v.t == VT::Str ? numifyStr(v.s) : Value::number(v.toNum()));
     }
     if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
