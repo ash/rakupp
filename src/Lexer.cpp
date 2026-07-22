@@ -1814,12 +1814,16 @@ std::vector<Token> Lexer::tokenize() {
             std::string raw;
             char quote = 0;       // '...' / "..." protect an inner /
             int angle = 0, brack = 0; // <...> assertions/classes and [...] groups protect an inner /
+            int brace = 0;            // {...} embedded code protects an inner / (e.g. `{ take $/.Str }`)
             while (!eof()) {
                 char ch = peek();
                 if (ch == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
                 if (quote) { if (ch == quote) quote = 0; raw += advance(); continue; }
                 // '...'/"..." protect an inner '/', but inside a <[...]> char class they are literal chars
                 if ((ch == '\'' || ch == '"') && brack == 0) { quote = ch; raw += advance(); continue; }
+                if (ch == '{') { brace++; raw += advance(); continue; }
+                if (ch == '}' && brace > 0) { brace--; raw += advance(); continue; }
+                if (brace > 0) { raw += advance(); continue; } // code block: consume raw
                 // `<(` and `)>` are the match-capture markers, not balanced <…> groups
                 if (ch == '<' && peek(1) == '(') { raw += advance(); raw += advance(); continue; }
                 if (ch == ')' && peek(1) == '>') { raw += advance(); raw += advance(); continue; }
