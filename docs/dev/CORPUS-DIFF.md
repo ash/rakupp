@@ -1,3 +1,30 @@
+# Corpus differential — Round 4 (2026-07-22, corpus reorganization)
+
+The corpus itself was reorganized (raku-corpus @ 22e1ad2): the 69 programs
+Rakudo cannot compile moved to `rejected/`; 13 never-terminating programs
+(servers, interactive loops) got a new ETERNAL status; two slow-but-honest PWC
+solutions (044/048 — 35 s/50 s of real compute) recovered with a scaled alarm;
+the 24 rakupp cookbook programs joined as `programs/rakupp-examples/`; and the
+differential harness + `perl6`/`raku` shim are now COMMITTED in the corpus
+(`harness/`), parameterized by RAKUPP/RAKU/ALARM.
+
+**1532 / 1812 exact matches (84.5%)** on the enlarged set — every added file
+matches except two that turned out to be coin-flips and were reclassified
+NONDET (op61.pl is `rand < 0.5`; sleep-sort's reference had Rakudo's own
+scheduler jitter in it — rakupp actually sorted correctly). Zero regressions
+on the old set. Verdicts: `corpus-diff/rp-verdicts5.tsv`; **MATCH = 1532 of
+1812** is the regression metric.
+
+Also probed and parked: the rakupp *showcase* interpreters (js/perl/python)
+are NOT Rakudo-clean — perl.raku dies at runtime under Rakudo, python.raku
+fails to compile (rakupp tolerates a missing semicolon Rakudo rejects, line
+338). Making them dual-run is a worthy future campaign; each fix is either a
+showcase bug or a rakupp-too-lenient divergence. Until then they cannot join a
+Rakudo-referenced corpus.
+
+
+---
+
 # Corpus differential — Round 3 (2026-07-22, same day, after the fix batch)
 
 **1509 / 1789 exact matches (84.3%)** — 19 files fixed over Round 2's 1490, zero
