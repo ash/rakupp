@@ -12,6 +12,16 @@
 namespace rakupp {
 
 struct Value;
+
+// codepoint -> UTF-8 (shared: Str-Range endpoints derive their text from rFrom/rTo)
+inline std::string cpToU8(uint32_t cp) {
+    std::string o;
+    if (cp < 0x80) o += (char)cp;
+    else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+    else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+    return o;
+}
 struct Env;
 class Interpreter;
 

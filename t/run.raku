@@ -205,7 +205,8 @@ section('showcase/chat (concurrent TCP)');
 section('showcase/kvstore (a key-value protocol)');
 {
     my $script = $ROOT.add('showcase/kvstore/kvstore.raku').Str;
-    my $port = 6392;
+    my $port = 6300 + $*PID % 200; # per-run port: a leaked server from a
+                                   # previous run can't poison this run's INCR
     if start-server($script, $port) {
         # one connection, a sequence of commands, each reply read in turn.
         # NB replies are read per LINE through a buffer — two back-to-back

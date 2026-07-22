@@ -3546,7 +3546,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                     }
                 };
-                if (listv.t == VT::Range && !listv.rNum) {
+                if (listv.t == VT::Range && !listv.rNum && listv.ofType != "Str") {
                     long long lo = listv.rFrom + (listv.rExFrom ? 1 : 0);
                     long long hi = listv.rTo - (listv.rExTo ? 1 : 0);
                     for (long long k = lo; k <= hi; k++) {
@@ -6588,6 +6588,12 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
     // membership against a RANGE is an arithmetic bounds check — no
     // materialization, so 0..10**42 (and open-ended ranges) work
     auto rangeHas = [](const Value& rng, const Value& x) -> bool {
+        if (rng.ofType == "Str") { // Str range: string ordering between endpoints
+            const std::string v = x.toStr();
+            const std::string lo = cpToU8((uint32_t)rng.rFrom), hi = cpToU8((uint32_t)rng.rTo);
+            return (rng.rExFrom ? v > lo : v >= lo) &&
+                   (rng.rExTo ? v < hi : v <= hi);
+        }
         double v = x.toNum();
         double lo = (double)rng.rFrom + (rng.rExFrom ? 1 : 0);
         if (rng.rTo >= 9000000000000000000LL) return v >= lo; // huge/unbounded top
@@ -7491,6 +7497,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 bool hiOK = r.rExTo ? (lhi < rhi || (l.rExTo && lhi <= rhi))
                                     : (lhi <= rhi);
                 res = loOK && hiOK;
+            }
+            else if (r.ofType == "Str") {
+                // Str range: string ordering between the endpoints ("b" ~~ "a".."c")
+                const std::string v = l.toStr();
+                const std::string lo = cpToU8((uint32_t)r.rFrom), hi = cpToU8((uint32_t)r.rTo);
+                res = (r.rExFrom ? v > lo : v >= lo) &&
+                      (r.rExTo ? v < hi : v <= hi);
             }
             else if (l.t == VT::Rat) { // exact endpoint compare: 4.99…(45 digits) ~~ 0..^5
                 res = applyArith(r.rExFrom ? ">" : ">=", l, Value::integer(r.rFrom)).truthy() &&
@@ -12350,21 +12363,14 @@ Value Interpreter::eval(Expr* e) {
                             for (int k = 1; k < len && k < (int)s.size(); k++) cp = (cp << 6) | (s[k] & 0x3F);
                             return cp;
                         };
-                        auto toU8 = [](uint32_t cp) -> std::string {
-                            std::string o;
-                            if (cp < 0x80) o += (char)cp;
-                            else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
-                            else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
-                            else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
-                            return o;
-                        };
-                        Value arr = Value::array(); arr.isList = true;
-                        uint32_t a = firstCp(from.s) + (r->exFrom ? 1 : 0), b = firstCp(to.s);
-                        for (uint32_t c = a; c <= b; c++) {
-                            if (r->exTo && c == b) break;
-                            arr.arr->push_back(Value::str(toU8(c)));
-                        }
-                        return arr;
+                        // a real Str Range VALUE: codepoints live in rFrom/rTo
+                        // (so elems/iteration arithmetic works), the endpoint
+                        // STRINGS in s/enumName, ofType tags it (raku/gist,
+                        // smartmatch, and flatten() render chars from it)
+                        Value rr = Value::range(firstCp(from.s), firstCp(to.s),
+                                                r->exFrom, r->exTo);
+                        rr.ofType = "Str"; // endpoint text derives from the codepoints
+                        return rr;
                     }
                 }
                 Value arr = Value::array(); arr.isList = true; // a string range is list-like (flattens)
@@ -12418,7 +12424,8 @@ Value Interpreter::eval(Expr* e) {
                 // so `.key` and `.raku` reflect its real type (e.g. `1 => 2`, not `"1" => 2`)
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
                     kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
-                    kv.t == VT::Match || kv.t == VT::Code) pr.pairKey = std::make_shared<Value>(kv);
+                    kv.t == VT::Match || kv.t == VT::Code ||
+                    kv.t == VT::Range) pr.pairKey = std::make_shared<Value>(kv);
                 return pr;
             }
             return Value::pair(p->key, evalValueOf(p->value.get())); // `:err(/pat/)` → Regex value

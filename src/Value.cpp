@@ -9,6 +9,16 @@
 #include <limits>
 #include <sstream>
 
+// codepoint -> UTF-8 (for Str-Range element rendering)
+static std::string cpToU8(uint32_t cp) {
+    std::string o;
+    if (cp < 0x80) o += (char)cp;
+    else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+    else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+    return o;
+}
+
 namespace rakupp {
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
@@ -240,6 +250,12 @@ std::string Value::toStr() const {
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
             // an infinite one keeps the endpoint form
+            if (ofType == "Str") { // Str range: space-join the chars
+                long long lo = rFrom + (rExFrom ? 1 : 0), hi = rTo - (rExTo ? 1 : 0);
+                std::string out2;
+                for (long long k2 = lo; k2 <= hi; k2++) { if (k2 != lo) out2 += " "; out2 += cpToU8((uint32_t)k2); }
+                return out2;
+            }
             if (rNum) { // fractional: space-join the stepped elements
                 std::string out2; bool first = true;
                 double lo = n + (rExFrom ? 1.0 : 0.0);
@@ -337,6 +353,8 @@ std::string Value::gist() const {
             }
             return s;
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
+            if (ofType == "Str")
+                return "\"" + cpToU8((uint32_t)rFrom) + "\"" + ".." + (rExTo ? "^" : "") + "\"" + cpToU8((uint32_t)rTo) + "\"";
             if (rNum) return Value::number(n).toStr() + ".." + (rExTo ? "^" : "") + Value::number(im).toStr();
             std::ostringstream os;
             os << rFrom << ".." << (rExTo ? "^" : "") << rTo;
@@ -449,6 +467,7 @@ std::string Value::typeName() const {
     return "Any";
 }
 
+
 ValueList Value::flatten() const {
     ValueList out;
     if (t == VT::Array && arr) {
@@ -466,6 +485,10 @@ ValueList Value::flatten() const {
         double lo = n + (rExFrom ? 1.0 : 0.0), hi = im;
         for (double x = lo; rExTo ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
             out.push_back(Value::number(x));
+    } else if (t == VT::Range && ofType == "Str") {
+        long long lo = rFrom + (rExFrom ? 1 : 0);
+        long long hi = rTo - (rExTo ? 1 : 0);
+        for (long long k = lo; k <= hi; k++) out.push_back(Value::str(cpToU8((uint32_t)k)));
     } else if (t == VT::Range) {
         long long lo = rFrom + (rExFrom ? 1 : 0);
         long long hi = rTo - (rExTo ? 1 : 0);

@@ -502,6 +502,9 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             return v.s.find('/') == std::string::npos ? "rx/" + v.s + "/" : "rx{" + v.s + "}";
         case VT::Complex: return "<" + v.gist() + ">";
         case VT::Range:
+            if (v.ofType == "Str") // Str range: quoted endpoint form
+                return "\"" + cpToU8((uint32_t)v.rFrom) + "\"" + (v.rExFrom ? "^" : "") + ".." +
+                       (v.rExTo ? "^" : "") + "\"" + cpToU8((uint32_t)v.rTo) + "\"";
             return std::to_string(v.rFrom) + (v.rExFrom ? "^" : "") + ".." + (v.rExTo ? "^" : "") + std::to_string(v.rTo);
         case VT::Pair: {
             Value val = v.pairVal ? *v.pairVal : Value::nil();
@@ -5654,11 +5657,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         for (auto& a : args) {
             if (a.t != VT::Pair) continue;
             std::vector<std::string> froms, tos;
-            if (a.pairKey && a.pairKey->t == VT::Array && a.pairKey->arr)
-                for (auto& x : *a.pairKey->arr) froms.push_back(x.toStr());
+            // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
+            // descends into them, and a bare Range side flattens to its chars
+            if (a.pairKey && (a.pairKey->t == VT::Array || a.pairKey->t == VT::Range))
+                for (auto& x : a.pairKey->flatten()) froms.push_back(x.toStr());
             else froms = expandTrans(a.s); // string key: char-by-char, with `..` ranges
-            if (a.pairVal && a.pairVal->t == VT::Array && a.pairVal->arr)
-                for (auto& x : *a.pairVal->arr) tos.push_back(x.toStr());
+            if (a.pairVal && (a.pairVal->t == VT::Array || a.pairVal->t == VT::Range))
+                for (auto& x : a.pairVal->flatten()) tos.push_back(x.toStr());
             else if (a.pairVal) tos = expandTrans(a.pairVal->toStr());
             for (size_t i = 0; i < froms.size(); i++)
                 maps.push_back({froms[i], i < tos.size() ? tos[i] : (tos.empty() ? std::string() : tos.back())});
@@ -6270,11 +6275,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "infinite")     return Value::boolean(false);
         if (m == "is-int")       return Value::boolean(!inv.rNum); // fractional ranges aren't integer-bounded
         if (m == "min")
-            return inv.rNum ? Value::number(inv.n)
+            return inv.ofType == "Str" ? Value::str(cpToU8((uint32_t)inv.rFrom))
+                 : inv.rNum ? Value::number(inv.n)
                  : inv.rFrom <= -9000000000000000000LL ? Value::number(-INFINITY)
                  : Value::integer(inv.rFrom);
         if (m == "max")
-            return inv.rNum ? Value::number(inv.im)
+            return inv.ofType == "Str" ? Value::str(cpToU8((uint32_t)inv.rTo))
+                 : inv.rNum ? Value::number(inv.im)
                  : inv.rTo >= 9000000000000000000LL ? Value::number(INFINITY)
                  : Value::integer(inv.rTo);
         if (m == "bounds") {
