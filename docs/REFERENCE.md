@@ -944,96 +944,90 @@ while writing this sheet:
 
 ## Appendix A — all built-in subroutines
 
-The 184 subroutines registered by `Interpreter::registerBuiltins()`
+The 188 subroutines registered by `Interpreter::registerBuiltins()`
 (`src/Builtins.cpp`), alphabetically:
 
 ```
-!!! ... ??? EVAL Slip VAR WHAT __format__ __radix abs acosec acosech acotan
-acotanh append asec asech atan2 await bag bail-out bail_out cache callsame
-callwith ceiling chars chdir chmod chr chrs cis classify close cmp-ok cosec
-cosech cotan cotanh cross dd defined diag die dies-ok dir does-ok done done-
-testing done_testing eager elems emit end eval-dies-ok eval-lives-ok exit exp
-expmod fail fails-like first flat floor flunk get getc gist grep hash index is
-is-approx is-deeply is-prime isa-ok isnt item join keys kv lastcall lazy lc
-leave like lines list lives-ok log log10 log2 make make-temp-dir make-temp-
-file map max min minmax mix mkdir nextsame nextwith nok not note ok open ord
-ords pass plan pop prepend print printf proceed produce prompt push put
-quietly react reduce reverse rindex rmdir round roundrobin run samewith say
-sec sech set shell shift sign sink skip skip-rest sleep sleep-till sleep-timer
-slip slurp snip so sort splice split sprintf spurt sqrt srand start subtest
-succeed sum supply take tc throws-like times todo truncate uc unimatch uniname
-uninames uniprop unival univals unlike unlink unpolar unshift use-ok val
-values warn whenever words zip
+!!! ... ??? EVAL RUN-MAIN Slip VAR WHAT __format__ __qx__ __radix abs acosec
+acosech acotan acotanh append asec asech atan2 await bag bail-out bail_out
+cache callsame callwith ceiling chars chdir chmod chr chrs cis classify close
+cmp-ok cosec cosech cotan cotanh cross dd defined diag die dies-ok dir does-ok
+done done-testing done_testing eager elems emit end eval-dies-ok eval-lives-ok
+exit exp expmod fail fails-like first flat floor flunk get getc gist grep hash
+index is is-approx is-deeply is-prime isa-ok isnt item join keys kv lastcall
+lazy lc leave like lines list lives-ok log log10 log2 make make-temp-dir
+make-temp-file map max min minmax mix mkdir nextsame nextwith nok not note ok
+open ord ords pass plan pop prepend print printf proceed produce prompt push
+put quietly react reduce reverse rindex rmdir roots round roundrobin run
+samemark samewith say sec sech set shell shift sign sink skip skip-rest sleep
+sleep-till sleep-timer slip slurp snip so sort splice split sprintf spurt sqrt
+srand start subtest succeed sum supply take tc throws-like times todo truncate
+uc unimatch uniname uninames uniprop unival univals unlike unlink unpolar
+unshift use-ok val values warn whenever words zip
 ```
-
-(Test-suite subroutines — `plan`, `ok`, `is`, `like`, `dies-ok`, `subtest`, … —
-are built in so Roast `.t` files run without external modules. Aliases such as
-`done_testing`/`bail_out` mirror their hyphenated forms; `__format__`/`__radix`
-are internal helpers. `!!!` / `???` / `...` are the stub operators — die / warn /
-"not-yet-implemented".)
 
 ## Appendix B — all methods
 
-The 566 method names dispatched in `Interpreter::methodCall()`
+The 571 method names dispatched in `Interpreter::methodCall()`
 (`src/Builtins.cpp`), alphabetically. Names in `TitleCase` are coercion/type
 methods (`.Int`, `.Str`, `.Bag`, `.NFC`); `UPPER-CASE` are introspection/protocol
 methods (`.WHAT`, `.AT-POS`, `.BIND-POS`); the rest are ordinary methods.
 
 ```
 . .. ACCEPTS ASSIGN-KEY ASSIGN-POS AT-KEY AT-POS Array BIND-KEY BIND-POS Bag
-BagHash Baggy Bool Bridge Capture Channel Complex DEFINITE DELETE-KEY DELETE-
-POS DISTROnames DUMP Date DateTime EVAL EXISTS-KEY EXISTS-POS Failure FatRat
-HOW Hash IO Instant Int KERNELnames List Map Mix MixHash Mixy NFC NFD NFKC
-NFKD Num Numeric Pair Range Rat Real SPEC STORE Seq Set SetHash Setty Slip Str
-Stringy Supply THREAD UInt VAR VMnames WHAT WHERE WHICH WHO ^name abs absolute
-accept accessed acos acosec acosech acosh acot acotan acotanh acoth acquire
-acsc acsch act add add_method after all allocate allof antipair antipairs any
-anyof api-matcher append archname are arg arity asec asech asin asinh assuming
-ast at atan atan2 atanh attributes auth auth-matcher authority backend base
-base-repeating basename batch before bits bless bool-only bounds break broken
-bytes cache can cancel cancelled candidates canonpath caps categorize
-categorize-list cause ceiling changed chars child chmod chomp chop chr chrs
-cis classify classify-list cleanup clear clone close close-stdin closed
-codename codes comb combinations command compiler condition config conj
+BagHash Baggy Bool Bridge Capture Channel Complex DEFINITE DELETE-KEY
+DELETE-POS DISTROnames DUMP Date DateTime EVAL EXISTS-KEY EXISTS-POS Failure
+FatRat HOW Hash IO Instant Int KERNELnames List Map Mix MixHash Mixy NFC NFD
+NFKC NFKD Num Numeric Pair Range Rat Real SPEC STORE Seq Set SetHash Setty
+Slip Str Stringy Supply THREAD UInt VAR VMnames WHAT WHERE WHICH WHO WHY ^name
+abs absolute accept accessed acos acosec acosech acosh acot acotan acotanh
+acoth acquire acsc acsch act add add_method after all allocate allof antipair
+antipairs any anyof api-matcher append archname are arg arity asec asech asin
+asinh assuming ast at atan atan2 atanh attributes auth auth-matcher authority
+backend base base-repeating basename batch before bits bless bool-only bounds
+break broken bytes cache can cancel cancelled candidates canonpath caps
+categorize categorize-list cause ceiling changed chars child chmod chomp chop
+chr chrs cis classify classify-list cleanup clear clone close close-stdin
+closed codename codes comb combinations command compiler condition config conj
 contains contents cos cosec cosech cosh cot cotan cotanh coth count count-only
-cpu-arch cpu-cores created csc csch cue d day day-fraction day-of-month day-
-of-week day-of-year daycount days-in-month dd-mm-yyyy decode deepmap default
-defined delayed denominator desc dir dirname do does done dow duckmap e eager
-earlier elems emit empty encode encoding end endian ends-with enums eof err
-exception excludes-max excludes-min exists exitcode exp expmod extension f
-fail fc find_method finish first first-index flat flatmap flip floor fmt
-formatter from from-list from-posix get getc getline gist grab grabpairs grep
-grep-index handled has_accessor hash head hh-mm-ss hour hyper id im in in-
-timezone indent index indices infinite int-bounds interval invert is-absolute
-is-deterministic is-initial-thread is-int is-lazy is-leap-year is-
-monotonically-increasing is-prime is-relative is-win isNaN is_dispatcher isa
-iso88591 item iterator join julian-date keep kept key keyof keys kill kv kxxv
-l lang-version last-date-in-month later latin1 lazy lc level lines list live
-loads local lock log log10 log2 lookup lsb made magnitude map match max
-maxpairs merge message methods migrate min minmax minpairs minute mkdir mm-dd-
-yyyy mode modified modified-julian-date month mro msb multi name named narrow
-new new-from-pairs nl-in nl-out nodemap none norm not note now nude numerator
-of offset on-close on-demand one open optional ord ords orig out package pair
-pairs pairup parameterize parameters params parent parents parse parse-base
-parsefile parts path path-sep perl permutations pick pickpairs pid plus polar
-poll polymod pop posix postmatch pred prematch prepend preserving print printf
-produce protect protect-or-queue-on-recursion pull-one push push-all push-at-
-least push-exactly push-until-lazy put quit r race raku rand re read read-bits
-read-ubits readchars readonly reals receive recv reduce release repeated
-resolve result resume rethrow returns reverse rindex rmdir role_typecheck_list
-roles roll roots rotate rotor round run rw rwx rx s samecase say schedule-on
-sec sech second self send shape shift short-name sibling sign signal signature
-sin sinh sink sink-all skip skip-at-least skip-at-least-pull-one skip-one
-slurp slurp-rest slurpy snip snitch so sort splice split sprintf spurt sqrt
-squish stable start starts-with status stderr stdout subbuf subbuf-rw subparse
-subst subst-mutate substr substr-eq substr-rw succ sum t tail take tan tanh
-tap tc tclc then throw timezone to today toggle total trans tree trim trim-
-leading trim-trailing truncate truncate-to truncated-to try-acquire
-try_acquire type uc unimatch uniname uninames uniprop uniprops unique unival
-univals unlink unlock unpolar unshift unwrap utc value values version version-
-matcher volume vow w wait week week-number week-year weekday-of-month what
-whatever whole-second windows1252 wordcase words wrap write write-bits write-
-ubits wx x year yyyy-mm-dd z zip
+cpu-arch cpu-cores created csc csch cue d day day-fraction day-of-month
+day-of-week day-of-year daycount days-in-month dd-mm-yyyy decode deepmap
+default defined delayed denominator desc dir dirname do does done dow duckmap
+dynamic e eager earlier elems emit empty encode encoding end endian ends-with
+enums eof err exception excludes-max excludes-min exists exitcode exp expmod
+extension f fail fc find_method finish first first-index flat flatmap flip
+floor fmt formatter from from-list from-posix get getc getline gist grab
+grabpairs grep grep-index handled has_accessor hash head hh-mm-ss hour hyper
+id im in in-timezone indent index indices infinite int-bounds interval invert
+is-absolute is-deterministic is-initial-thread is-int is-lazy is-leap-year
+is-monotonically-increasing is-prime is-relative is-win isNaN is_dispatcher
+isa iso88591 item iterator join julian-date keep kept key keyof keys kill kv
+kxxv l lang-version last-date-in-month later latin1 lazy lc level lines list
+live loads local lock log log10 log2 lookup lsb made magnitude map match max
+maxpairs merge message methods migrate min minmax minpairs minute mkdir
+mm-dd-yyyy mode modified modified-julian-date month mro msb multi name named
+narrow new new-from-pairs nl-in nl-out nodemap none norm not note now nude
+numerator of offset on-close on-demand one open optional ord ords orig out
+package pair pairs pairup parameterize parameters params parent parents parse
+parse-base parsefile parts path path-sep perl permutations pick pickpairs pid
+plus polar poll polymod pop posix postmatch pred prematch prepend preserving
+print printf produce protect protect-or-queue-on-recursion pull-one push
+push-all push-at-least push-exactly push-until-lazy put quit r race raku rand
+re read read-bits read-ubits readchars readonly reals receive recv reduce
+release repeated resolve restore result resume rethrow returns reverse rindex
+rmdir role_typecheck_list roles roll roots rotate rotor round run rw rwx rx s
+samecase samemark say schedule-on sec sech second self send shape shift
+short-name shortname sibling sign signal signature sin sinh sink sink-all skip
+skip-at-least skip-at-least-pull-one skip-one slurp slurp-rest slurpy snip
+snitch so sort splice split sprintf spurt sqrt squish stable start starts-with
+status stderr stdout subbuf subbuf-rw subparse subst subst-mutate substr
+substr-eq substr-rw succ sum t tail take tan tanh tap tc tclc then throw
+timezone to today toggle total trans tree trim trim-leading trim-trailing
+truncate truncate-to truncated-to try-acquire try_acquire type uc unimatch
+uniname uninames uniprop uniprops unique unival univals unlink unlock unpolar
+unshift unwrap utc value values version version-matcher volume vow w wait week
+week-number week-year weekday-of-month what whatever whole-second windows1252
+wordcase words wrap write write-bits write-ubits wx x year yyyy-mm-dd z zip
 ```
 
 ---

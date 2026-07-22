@@ -31,7 +31,7 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~90% of all declared Roast tests pass** (194,497 / 216,066); on the
+**Headline: ~90% of all declared Roast tests pass** (194,496 / 216,066); on the
 stricter file bar, ~38% of files fully pass (583 / 1,462). The per-file breakdown
 comes first below, then the per-test figures.
 
@@ -56,7 +56,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**194,497 of ~216,066 declared tests — 90%**. "Declared" means every test the
+**194,496 of ~216,066 declared tests — 90%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -65,9 +65,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 194,497 / 199,587 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 194,497 / 212,641 (~91%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 194,497 / 216,066 (90%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 194,496 / 199,587 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 194,496 / 212,641 (~91%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 194,496 / 216,066 (90%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 90% is the per-test analog of the ~38% file coverage. Two caveats on scope:
 
@@ -116,7 +116,7 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | S26 | Documentation (POD) | 6 | 19 | 0 | 2 | 407/444 | 92% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
 | S29 | Builtins & context | 7 | 6 | 0 | 1 | 399/411 | 97% |
-| S32 | Standard types (str/list/num/…) | 104 | 132 | 1 | 26 | 42769/43810 | 98% |
+| S32 | Standard types (str/list/num/…) | 104 | 132 | 1 | 26 | 42768/43810 | 98% |
 | integration | Cross-feature programs | 46 | 55 | 0 | 18 | 920/1034 | 89% |
 | 6.c | v6.c language snapshot | 3 | 11 | 0 | 4 | 307/600 | 51% |
 | 6.d | v6.d language snapshot | 14 | 4 | 0 | 0 | 20260/20310 | 100% |
@@ -161,6 +161,6 @@ overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
 
 _Snapshot: 583 / 1,462 files fully passing (~39% coverage); 701 partial,
-167 no-TAP, 11 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 194,497 / 199,587 (see
+167 no-TAP, 11 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 194,496 / 199,587 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._
