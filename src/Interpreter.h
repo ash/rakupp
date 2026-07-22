@@ -280,6 +280,7 @@ public:
     std::unordered_map<const void*, bool> ffState_; // per-site `ff`/`fff` flip-flop latch
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
+    Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
     void typeCheckBind(const Param& p, const Value& v); // lone-candidate bind: throw X::TypeCheck::Binding on mismatch
     std::string symRefName(SymbolicRef* sr); // effective name of a multi-segment symbolic ref
     [[noreturn]] void throwTyped(const std::string& type,
@@ -303,7 +304,7 @@ public:
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
     bool suppressLoopFirst_ = false; // set while running a loop body so execBlock skips FIRST
     Value evalString(const std::string& src, bool mainlinePH = false); // EVAL
-    void loadModule(const std::string& name);  // `use Foo::Bar` -> compile lib file into global scope
+    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true);  // `use Foo::Bar` -> compile lib file into global scope
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     Value regexMatch(const std::string& subject, const std::string& pattern); // sets $/ $0..
@@ -355,6 +356,8 @@ public:
     // without a Lock is the user's race, as in Rakudo. Default false ⇒ the GIL path is
     // byte-for-byte unchanged.
     bool parallelMode_ = false;
+    int loadingModuleDepth_ = 0; // >0 while a `use`d module file executes (export surfacing)
+    bool moduleDoImport_ = true; // false while a `need`ed module loads (no symbol import)
     std::mutex sharedMut_;
     // Worker threads must carry a big stack: the tree-walker recurses deeply and the
     // macOS default for non-main pthreads is 512 KB — a recursive Raku sub inside

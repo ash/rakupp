@@ -2108,7 +2108,7 @@ static const std::vector<std::string>& rakuRepoPrefixes() {
     return repos;
 }
 
-void Interpreter::loadModule(const std::string& name) {
+void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport) {
     if (loadedModules_.count(name)) return;
     noteSymbolMutation("module load (use/need)");
     loadedModules_.insert(name);
@@ -2152,6 +2152,7 @@ void Interpreter::loadModule(const std::string& name) {
         auto publish = [&] {
             for (auto& kv : moduleEnv->vars) {
                 const std::string& k = kv.first;
+                if (k == "&EXPORT") continue; // per-module export protocol sub — never republished
                 if (k.size() > 1 && k[0] == '&') {
                     std::string bare = k.substr(1);
                     if (!exported.count(bare) && builtins_.count(bare)) continue; // withhold shadower
@@ -2163,6 +2164,8 @@ void Interpreter::loadModule(const std::string& name) {
         // using an unimplemented primitive, e.g. Lock) is non-fatal: warn and keep
         // going so the importing program can still run paths that don't need it —
         // and still publish whatever the module managed to define before dying.
+        loadingModuleDepth_++;
+        bool savedDoImport = moduleDoImport_; moduleDoImport_ = doImport;
         try {
             hoistSubs(prog->stmts);
             for (auto& st : prog->stmts) {
@@ -2172,14 +2175,34 @@ void Interpreter::loadModule(const std::string& name) {
             }
         }
         catch (RakuError& e) {
+            loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
             publish();
             tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish;
             std::cerr << "===WARNING=== Module " << name << " failed during load: " << e.message << "\n";
             return;
         }
-        catch (...) { tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; throw; }
+        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; throw; }
+        loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
         publish();
         tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish;
+        // `sub EXPORT(*@_)` protocol: call it with the use-statement's <...>
+        // args; its returned Map ('&name' => &code, ...) defines the imports
+        // in the USING scope.
+        {
+            auto it = moduleEnv->vars.find("&EXPORT");
+            if (doImport && it != moduleEnv->vars.end() && it->second.t == VT::Code) {
+                ValueList eargs;
+                for (auto& s : importArgs) eargs.push_back(Value::str(s));
+                try {
+                    Value res = callCallable(it->second, eargs);
+                    if (res.t == VT::Hash && res.hash)
+                        for (auto& kv : *res.hash) tctx_.cur->define(kv.first, kv.second);
+                } catch (RakuError& e) {
+                    std::cerr << "===WARNING=== Module " << name
+                              << " EXPORT failed: " << e.message << "\n";
+                }
+            }
+        }
     };
 
     std::string rel = name;
@@ -2688,7 +2711,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (path.empty() && u->argExpr) path = eval(u->argExpr.get()).toStr();
                 if (!path.empty()) libPaths_.insert(libPaths_.begin(), path);
             }
-            else if (!u->module.empty()) loadModule(u->module);
+            else if (!u->module.empty()) loadModule(u->module, u->importArgs, !u->isNeed);
             return Value::any();
         }
         case NK::Block: {
@@ -2962,6 +2985,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     else qual = tctx_.pkgPrefix + sym;
                     noteSymbolMutation("package-qualified global (our)");
                     global_->define(qual, kv.second);
+                }
+                // During a `use` load, `is export` subs of a braced module also
+                // surface BARE to the importer (same-file code still sees only
+                // the qualified names, like Rakudo).
+                if (loadingModuleDepth_ > 0 && moduleDoImport_) {
+                    std::function<void(const std::vector<StmtPtr>&)> surface =
+                        [&](const std::vector<StmtPtr>& body) {
+                        for (auto& st : body) {
+                            if (st->kind == NK::SubDecl) {
+                                auto* sd = static_cast<SubDecl*>(st.get());
+                                if (sd->isExport && !sd->name.empty()) {
+                                    auto it = pkgEnv->vars.find("&" + sd->name);
+                                    if (it != pkgEnv->vars.end())
+                                        tctx_.cur->define(it->first, it->second);
+                                }
+                            }
+                        }
+                    };
+                    surface(cd->body);
                 }
                 tctx_.pkgPrefix = savedPrefix;
                 return Value::any();
@@ -12628,6 +12670,7 @@ Value Interpreter::eval(Expr* e) {
             auto* t = static_cast<Ternary*>(e);
             return boolify(eval(t->cond.get())) ? eval(t->then.get()) : eval(t->els.get());
         }
+        case NK::NqpOp: return evalNqpOp(static_cast<NqpOp*>(e));
         case NK::Range: {
             auto* r = static_cast<RangeExpr*>(e);
             Value from = eval(r->from.get());

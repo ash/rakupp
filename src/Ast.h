@@ -10,7 +10,7 @@ enum class NK {
     // expressions
     IntLit, NumLit, StrLit, InterpStr, BoolLit, VarExpr, ListExpr,
     Assign, Binary, Unary, Call, MethodCall, Index, Ternary, Range,
-    Pair, BlockExpr, ArrayLit, HashLit, NameTerm, RegexLit, SubstLit, ChainExpr, SymbolicRef, AllomorphLit,
+    Pair, BlockExpr, ArrayLit, HashLit, NameTerm, RegexLit, SubstLit, ChainExpr, SymbolicRef, AllomorphLit, NqpOp,
     // statements
     ExprStmt, VarDecl, SubDecl, IfStmt, WhileStmt, ForStmt, LoopStmt,
     Block, ReturnStmt, LastStmt, NextStmt, RedoStmt, UseStmt, EmptyStmt,
@@ -168,6 +168,32 @@ struct Ternary : Expr {
     Ternary(): Expr(NK::Ternary) {}
 };
 
+// nqp:: compatibility subset (see docs/dev/MODULE-FINDINGS.md #4b). These nodes
+// exist ONLY when the parser saw `use nqp` and met an nqp::op call — programs
+// that never use nqp build no such node and pay nothing anywhere.
+enum class NqpOpc : uint16_t {
+    // lazy forms (args evaluated by the op itself)
+    Stmts, While, Until, IfNull,
+    // int ops (int64 semantics, no bignum promotion)
+    IseqI, IsneI, IsltI, IsleI, IsgeI, IsgtI, AddI, SubI, MulI, BitandI,
+    // string ops
+    Ordat, Eqat, Substr, Chars, Concat, Join, Index, Chr,
+    StrFromCodes, StrToCodes, FindNotCClass, IsCClass,
+    // list ops
+    List, ListI, ListS, Elems, Atpos, AtposI, Bindpos, BindposI,
+    Push, PushI, PushS, PopS, ShiftI, Splice,
+    // hash ops
+    Hash, Bindkey,
+    // object/meta ops
+    Create, Istype, Getattr, Bindattr, P6BindAttrInvRes, P6ScalarWithValue,
+    Null, IsNanOrInf,
+};
+struct NqpOp : Expr {
+    NqpOpc op;
+    std::vector<ExprPtr> args;
+    explicit NqpOp(NqpOpc o): Expr(NK::NqpOp), op(o) {}
+};
+
 struct RangeExpr : Expr {
     ExprPtr from, to;
     bool exFrom = false, exTo = false;
@@ -288,6 +314,7 @@ struct ClassDecl : Stmt {
     bool isStubDecl = false;
     std::string pod; // `#|` leading declarator pod (.WHY)       // body was a bare `...` — a forward declaration, redeclarable
     bool parameterized = false;    // role R[T] — parameterizations coexist by name
+    std::string ver, auth, api;    // name adverbs: class Foo:ver<1.2>:auth<zef:x>:api<2>
     bool isPackage = false;        // package / module: body runs in a namespace
     std::vector<StmtPtr> body;     // package/module body statements
     ClassDecl(): Stmt(NK::ClassDecl) {}
@@ -353,8 +380,10 @@ struct RedoStmt : Stmt { std::string target; RedoStmt(): Stmt(NK::RedoStmt) {} }
 struct UseStmt : Stmt {
     std::string module;
     std::string arg; // first string argument, e.g. `use lib 'lib'`
+    std::vector<std::string> importArgs; // `use Mod <tag !flag>` — passed to sub EXPORT
     ExprPtr argExpr; // computed argument, e.g. `use lib $?FILE.IO.parent`
     bool isNo = false; // `no strict` / `no worries` — the negated pragma form
+    bool isNeed = false; // `need Mod` — compiles/loads but imports NOTHING
     UseStmt(): Stmt(NK::UseStmt) {}
 };
 

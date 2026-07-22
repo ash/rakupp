@@ -23,12 +23,28 @@ ECOSYSTEM-TOP50.md.
    Fixed (adverbs parsed + recorded on ClassDecl: ver/auth/api — the fields
    phase-1 resolution needs anyway). Also exposed that the Tier-3 harness
    must count module PARSE warnings as PARTIAL, not LOAD.
-4b. **JSON::Fast needs an nqp:: subset** (next leg): parses + partially loads
-   now, dies at `nqp::list_i`. Full inventory (~50 distinct ops): hot ones
-   iseq_i/if/push_s/stmts/add_i/bindpos/ordat/istype/sub_i/eqat/substr/
-   bindpos_i/while/elems/chars…; NB nqp::if/while/until/unless/stmts are
-   LAZY macros — parser rewrites to native constructs, not builtins; the
-   ~40 leaf ops (int math, str, list_i/_s, cclass) are builtin work.
+4b. **nqp:: compatibility subset** — LANDED 2026-07-23. A gated `use nqp`
+   flag (Parser::useNqp_) turns nqp::op(...) into dedicated NqpOp AST nodes;
+   nqp::if/unless become native Ternaries, nqp::while/until/stmts/ifnull are
+   lazy NqpOps, ~45 leaf ops (int/str/list/hash/attr/cclass) are eager.
+   nqp::const::* fold to IntLits at parse time. ZERO-COST when unused: no
+   `use nqp` → the branch is never entered, no node exists, runtime is byte-
+   identical (verified). Getting JSON::Fast to actually RUN also required:
+   package name adverbs (#4), `is repr("…")` recognized+skipped, braced-
+   module `is export` surfacing to the importer, the `sub EXPORT(*@_)`
+   protocol (returns a Map of &name=>&code imports), hyphenated qualified
+   names (`M::from-json` was lexed as `M::from` `-` `json`), and useNqp_
+   propagation into string-interpolation sub-parses.
+4c. **JSON::Fast now runs its real parser** but has residual nqp-op edge bugs
+   (2026-07-23): `\u0041` escape decode ("invalid hexadecimal char") and a
+   value-path off-by-something on the qualified entry — likely native `str`/
+   `int` typed locals interacting with our ops, or an ordat/substr boundary.
+   Next module leg: trace from-json on `[1,2]` + `"x\u0041"` and fix the
+   specific ops; the machinery is all in place.
+KNOWN TRADEOFF: recognizing+skipping `is repr("…")` means a repr-changing
+   class redeclaration no longer throws X::TooLateForREPR (S32-exceptions/
+   misc.t:69, −1). Accepted — loading every `is repr()` module is worth far
+   more than one niche too-late-repr diagnostic.
 5. **rakupp `substr` on long strings is O(position)**: 20k one-char substrs
    near position 4M took 116 s (5.8 ms each) — codepoint scanning from the
    string start each call. Makes naive char-walking parsers quadratic; needs

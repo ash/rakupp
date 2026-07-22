@@ -72,6 +72,9 @@ private:
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
     int anonStateN_ = 0;          // unique ids for bare-`$` anonymous state vars
+    bool useNqp_ = false;         // saw `use nqp` — enables the nqp:: op subset
+    static bool nqpConstValue(const std::string& name, long long& out);
+    ExprPtr makeNqpOp(const std::string& op, std::vector<ExprPtr>& args);
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
     // Lexical scoping for user-declared operators: every registration is logged
     // and parseBlock rolls back to its entry mark, so `sub postfix:<!!>` inside

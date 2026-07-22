@@ -9671,4 +9671,253 @@ void Interpreter::registerBuiltins() {
     };
 }
 
+
+// ---- the `use nqp` compatibility subset ------------------------------------
+// Reached only through NK::NqpOp nodes, which exist only in units that said
+// `use nqp` — every other program pays nothing for any of this.
+// Docs: docs/dev/MODULE-FINDINGS.md #4b. Int ops are plain int64; string ops
+// are codepoint-indexed; comparisons return Int 1/0 (nqp truthiness).
+Value Interpreter::evalNqpOp(NqpOp* n) {
+    using O = NqpOpc;
+    auto& a = n->args;
+    // lazy forms first: they control their own argument evaluation
+    switch (n->op) {
+        case O::Stmts: {
+            Value last = Value::nil();
+            for (auto& e : a) last = eval(e.get());
+            return last;
+        }
+        case O::While:
+        case O::Until: {
+            if (a.size() < 2) return Value::nil();
+            long long guard = 0;
+            while (boolify(eval(a[0].get())) == (n->op == O::While)) {
+                for (size_t i = 1; i < a.size(); i++) eval(a[i].get());
+                if (++guard > 1000000000LL) break; // runaway backstop
+            }
+            return Value::nil();
+        }
+        case O::IfNull: {
+            Value v = eval(a[0].get());
+            if (v.t == VT::Nil || v.t == VT::Any) return a.size() > 1 ? eval(a[1].get()) : Value::nil();
+            return v;
+        }
+        default: break;
+    }
+    ValueList v;
+    v.reserve(a.size());
+    for (auto& e : a) v.push_back(eval(e.get()));
+    auto I = [&](size_t i) -> long long { return i < v.size() ? v[i].toInt() : 0; };
+    auto S = [&](size_t i) -> std::string { return i < v.size() ? v[i].toStr() : std::string(); };
+    auto cclassHas = [](long long mask, uint32_t cp) -> bool {
+        // masks follow Parser::nqpConstValue; only the classes real modules use
+        const std::string cat = uniGeneralCategory(cp);
+        bool digit = cat == "Nd";
+        bool alpha = !cat.empty() && cat[0] == 'L';
+        bool space = cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' ||
+                     cat == "Zs" || cat == "Zl" || cat == "Zp";
+        if ((mask & 8) && digit) return true;                      // NUMERIC
+        if ((mask & 4) && alpha) return true;                      // ALPHABETIC
+        if ((mask & 32) && space) return true;                     // WHITESPACE
+        if ((mask & 2048) && (digit || alpha)) return true;        // ALPHANUMERIC
+        if ((mask & 8192) && (digit || alpha || cp == '_')) return true; // WORD
+        if ((mask & 4096) && (cp == '\n' || cp == '\r')) return true;    // NEWLINE
+        if ((mask & 16) && ((cp >= '0' && cp <= '9') || (cp >= 'a' && cp <= 'f') ||
+                            (cp >= 'A' && cp <= 'F'))) return true;      // HEXADECIMAL
+        return false;
+    };
+    switch (n->op) {
+        case O::IseqI: return Value::integer(I(0) == I(1));
+        case O::IsneI: return Value::integer(I(0) != I(1));
+        case O::IsltI: return Value::integer(I(0) <  I(1));
+        case O::IsleI: return Value::integer(I(0) <= I(1));
+        case O::IsgeI: return Value::integer(I(0) >= I(1));
+        case O::IsgtI: return Value::integer(I(0) >  I(1));
+        case O::AddI:  return Value::integer(I(0) + I(1));
+        case O::SubI:  return Value::integer(I(0) - I(1));
+        case O::MulI:  return Value::integer(I(0) * I(1));
+        case O::BitandI: return Value::integer(I(0) & I(1));
+        case O::Ordat: {
+            auto cps = utf8cp(S(0));
+            long long i = I(1);
+            return Value::integer(i >= 0 && i < (long long)cps.size() ? (long long)cps[i] : -1);
+        }
+        case O::Eqat: {
+            auto h = utf8cp(S(0)), nd = utf8cp(S(1));
+            long long at = I(2);
+            if (at < 0 || at + (long long)nd.size() > (long long)h.size()) return Value::integer(0);
+            for (size_t k = 0; k < nd.size(); k++)
+                if (h[at + k] != nd[k]) return Value::integer(0);
+            return Value::integer(1);
+        }
+        case O::Substr: {
+            auto cps = utf8cp(S(0));
+            long long from = I(1);
+            long long len = v.size() > 2 ? I(2) : (long long)cps.size() - from;
+            if (from < 0) from = 0;
+            if (from > (long long)cps.size()) from = cps.size();
+            if (len < 0 || from + len > (long long)cps.size()) len = cps.size() - from;
+            std::string out;
+            for (long long k = from; k < from + len; k++) out += cpToU8(cps[k]);
+            return Value::str(out);
+        }
+        case O::Chars: return Value::integer((long long)utf8cp(S(0)).size());
+        case O::Concat: return Value::str(S(0) + S(1));
+        case O::Join: {
+            std::string sep = S(0), out;
+            if (v.size() > 1 && v[1].t == VT::Array && v[1].arr) {
+                bool first = true;
+                for (auto& e : *v[1].arr) { if (!first) out += sep; out += e.toStr(); first = false; }
+            }
+            return Value::str(out);
+        }
+        case O::Index: {
+            auto h = utf8cp(S(0)), nd = utf8cp(S(1));
+            long long from = v.size() > 2 ? I(2) : 0;
+            if (from < 0) from = 0;
+            if (nd.empty()) return Value::integer(from <= (long long)h.size() ? from : -1);
+            for (long long at = from; at + (long long)nd.size() <= (long long)h.size(); at++) {
+                bool ok = true;
+                for (size_t k = 0; k < nd.size() && ok; k++) ok = h[at + k] == nd[k];
+                if (ok) return Value::integer(at);
+            }
+            return Value::integer(-1);
+        }
+        case O::Chr: return Value::str(cpToU8((uint32_t)I(0)));
+        case O::StrFromCodes: {
+            std::string out;
+            if (!v.empty() && v[0].t == VT::Array && v[0].arr)
+                for (auto& e : *v[0].arr) out += cpToU8((uint32_t)e.toInt());
+            return Value::str(out);
+        }
+        case O::StrToCodes: {
+            // (str, NORMALIZE_* const, target-list) — fills target, returns it
+            auto cps = utf8cp(S(0));
+            long long nm = I(1); // our const values: 1 NFC, 2 NFD, 3 NFKC, 4 NFKD
+            int mode = nm == 1 ? 1 : nm == 2 ? 0 : nm == 3 ? 3 : nm == 4 ? 2 : -1;
+            if (mode >= 0) cps = uniNormalize(cps, mode);
+            Value target = v.size() > 2 ? v[2] : Value::array();
+            if (target.t != VT::Array || !target.arr) target = Value::array();
+            target.arr->clear();
+            for (auto cp : cps) target.arr->push_back(Value::integer((long long)cp));
+            return target;
+        }
+        case O::FindNotCClass: {
+            auto cps = utf8cp(S(1));
+            long long mask = I(0), start = I(2), len = I(3);
+            long long end = std::min<long long>(start + len, (long long)cps.size());
+            for (long long k = std::max<long long>(start, 0); k < end; k++)
+                if (!cclassHas(mask, cps[k])) return Value::integer(k);
+            return Value::integer(end);
+        }
+        case O::IsCClass: {
+            auto cps = utf8cp(S(1));
+            long long i = I(2);
+            return Value::integer(i >= 0 && i < (long long)cps.size() &&
+                                  cclassHas(I(0), cps[i]) ? 1 : 0);
+        }
+        case O::List: case O::ListI: case O::ListS: {
+            Value out = Value::array();
+            for (auto& x : v) out.arr->push_back(x);
+            return out;
+        }
+        case O::Elems:
+            return Value::integer(v[0].t == VT::Array && v[0].arr ? (long long)v[0].arr->size()
+                                 : v[0].t == VT::Hash && v[0].hash ? (long long)v[0].hash->size() : 0);
+        case O::Atpos: case O::AtposI: {
+            long long i = I(1);
+            if (v[0].t == VT::Array && v[0].arr && i >= 0 && i < (long long)v[0].arr->size())
+                return (*v[0].arr)[i];
+            return n->op == O::AtposI ? Value::integer(0) : Value::nil();
+        }
+        case O::Bindpos: case O::BindposI: {
+            if (v[0].t == VT::Array && v[0].arr) {
+                long long i = I(1);
+                while ((long long)v[0].arr->size() <= i) v[0].arr->push_back(Value::nil());
+                (*v[0].arr)[i] = v[2];
+            }
+            return v.size() > 2 ? v[2] : Value::nil();
+        }
+        case O::Push: case O::PushI: case O::PushS:
+            if (v[0].t == VT::Array && v[0].arr) v[0].arr->push_back(v[1]);
+            return v[1];
+        case O::PopS: {
+            if (v[0].t == VT::Array && v[0].arr && !v[0].arr->empty()) {
+                Value r = v[0].arr->back(); v[0].arr->pop_back(); return r;
+            }
+            return Value::nil();
+        }
+        case O::ShiftI: {
+            if (v[0].t == VT::Array && v[0].arr && !v[0].arr->empty()) {
+                Value r = v[0].arr->front(); v[0].arr->erase(v[0].arr->begin()); return r;
+            }
+            return Value::integer(0);
+        }
+        case O::Splice: {
+            // nqp::splice(target, source, offset, count) — replace in place
+            if (v[0].t == VT::Array && v[0].arr) {
+                long long off = I(2), cnt = I(3);
+                auto& t = *v[0].arr;
+                if (off < 0) off = 0;
+                if (off > (long long)t.size()) off = t.size();
+                if (cnt < 0 || off + cnt > (long long)t.size()) cnt = t.size() - off;
+                t.erase(t.begin() + off, t.begin() + off + cnt);
+                if (v[1].t == VT::Array && v[1].arr)
+                    t.insert(t.begin() + off, v[1].arr->begin(), v[1].arr->end());
+            }
+            return v[0];
+        }
+        case O::Hash: {
+            Value h = Value::makeHash();
+            for (size_t k = 0; k + 1 < v.size(); k += 2) (*h.hash)[v[k].toStr()] = v[k + 1];
+            return h;
+        }
+        case O::Bindkey:
+            if (v[0].t == VT::Hash && v[0].hash) (*v[0].hash)[S(1)] = v[2];
+            return v.size() > 2 ? v[2] : Value::nil();
+        case O::Create: {
+            std::string tn = v[0].t == VT::Type ? v[0].s : v[0].typeName();
+            if (tn == "Map" || tn == "Hash" || tn == "IterationMap") return Value::makeHash();
+            if (tn == "List") { Value r = Value::array(); r.isList = true; return r; }
+            return Value::array(); // IterationBuffer / NFD / Uni / … — a plain buffer
+        }
+        case O::Istype: {
+            std::string tn = v[1].t == VT::Type ? v[1].s : v[1].typeName();
+            return Value::integer(rtTypeMatch(v[0], tn) ? 1 : 0);
+        }
+        case O::Getattr: {
+            const std::string& nm = S(2);
+            // '$!reified' / '$!storage' name the container's own backing store
+            if (v[0].t == VT::Array || v[0].t == VT::Hash) return v[0];
+            if (v[0].t == VT::Object && v[0].obj) {
+                std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
+                auto it = v[0].obj->attrs.find(bare);
+                if (it != v[0].obj->attrs.end()) return it->second;
+            }
+            return Value::nil();
+        }
+        case O::Bindattr: case O::P6BindAttrInvRes: {
+            const std::string& nm = S(2);
+            if ((v[0].t == VT::Array && v[3].t == VT::Array && v[0].arr && v[3].arr)) {
+                *v[0].arr = *v[3].arr;             // rebind the backing buffer
+            } else if (v[0].t == VT::Hash && v[3].t == VT::Hash && v[0].hash && v[3].hash) {
+                *v[0].hash = *v[3].hash;
+            } else if (v[0].t == VT::Object && v[0].obj) {
+                std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
+                v[0].obj->attrs[bare] = v[3];
+            }
+            return n->op == O::P6BindAttrInvRes ? v[0] : v[3];
+        }
+        case O::P6ScalarWithValue:
+            return v.size() > 1 ? v[1] : Value::nil(); // container wrap is a no-op for us
+        case O::Null: return Value::nil();
+        case O::IsNanOrInf: {
+            double d = v.empty() ? 0 : v[0].toNum();
+            return Value::integer(std::isnan(d) || std::isinf(d) ? 1 : 0);
+        }
+        default: break;
+    }
+    throw RakuError{Value::str("nqp"), "nqp op not implemented in this build"};
+}
+
 } // namespace rakupp

@@ -245,6 +245,7 @@ static int utf8Len(unsigned char b); // fwd (defined below)
 static bool isLetterCP(uint32_t cp); // fwd
 static bool isIdentMarkCP(uint32_t cp); // fwd
 static bool isIdentCont(char c);     // fwd
+static bool isIdentStart(char c);    // fwd
 
 uint32_t Lexer::codepointHere() const {
     if (pos_ >= src_.size()) return 0;
@@ -291,6 +292,13 @@ bool Lexer::tryReadSuperscript(std::string& digits) {
 void Lexer::consumeIdentChars(std::string& name) {
     for (;;) {
         if (isIdentCont(peek())) { name += advance(); continue; }
+        // embedded hyphen/apostrophe between identifier chars: `from-json`,
+        // `isn't` — a `-`/`'` continues the name only when a LETTER/underscore
+        // follows (NOT a digit: `elems-1` is `elems - 1`, and `a - b` stays
+        // separate). Mirrors the main identifier lexer; `::` segments need it.
+        if ((peek() == '-' || peek() == '\'') && isIdentStart(peek(1))) {
+            name += advance(); name += advance(); continue;
+        }
         if (unicodeLetterHere() || ((unsigned char)peek() >= 0x80 && isIdentMarkCP(codepointHere()))) {
             int n = utf8Len((unsigned char)peek());
             for (int i = 0; i < n && !eof(); i++) name += advance();

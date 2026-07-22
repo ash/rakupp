@@ -2976,6 +2976,16 @@ ExprPtr Parser::parsePrimary() {
                 advance(); advance(); // : and the smiley letter
                 return std::make_unique<NameTerm>(name);
             }
+            // `use nqp` compatibility subset: nqp::const::X resolves to an
+            // IntLit at parse time; nqp::op(...) becomes a dedicated NqpOp
+            // node (or native lazy constructs) below. Programs without
+            // `use nqp` never enter this branch — zero cost elsewhere.
+            if (useNqp_ && name.size() > 5 && name.compare(0, 5, "nqp::") == 0) {
+                if (name.compare(0, 12, "nqp::const::") == 0) {
+                    if (long long cv; nqpConstValue(name.substr(12), cv))
+                        return std::make_unique<IntLit>(cv);
+                }
+            }
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 advance();
                 ExprPtr invocant;
@@ -2987,6 +2997,9 @@ ExprPtr Parser::parsePrimary() {
                     mc->args = std::move(callArgs);
                     return mc;
                 }
+                if (useNqp_ && name.size() > 5 && name.compare(0, 5, "nqp::") == 0)
+                    if (ExprPtr n = makeNqpOp(name.substr(5), callArgs))
+                        return n;
                 auto c = std::make_unique<Call>();
                 c->name = name;
                 c->args = std::move(callArgs);
@@ -3120,6 +3133,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     // (and custom infix/prefix/circumfix) just as top-level code does.
     p.userInfix_ = userInfix_;
     p.userPrefix_ = userPrefix_;
+    p.useNqp_ = useNqp_; // `"{ nqp::chr($o) }"` in a `use nqp` unit sees the subset
     p.userPostfix_ = userPostfix_;
     p.userCircumfix_ = userCircumfix_;
     p.userPostcircumfix_ = userPostcircumfix_;
@@ -4234,6 +4248,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         bool isDoes = isIdent("does");
         advance();
         if (!isDoes && isIdent("export")) { advance(); continue; } // trait, not a parent class
+        // `is repr("VMHash")` — a VM-representation trait, not a parent class.
+        // Recognize and skip (the arg too); our values pick their own storage.
+        if (!isDoes && isIdent("repr")) {
+            advance();
+            if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+            continue;
+        }
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             std::string t = advance().text;
             if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }
@@ -4790,6 +4811,10 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto u = std::make_unique<UseStmt>();
             u->isNo = (kw == "no");
+            u->isNeed = (kw == "need");
+            if (!u->isNo && isKind(Tok::Ident) &&
+                (cur().text == "nqp" || cur().text == "MONKEY-GUTS" || cur().text == "MONKEY"))
+                useNqp_ = true; // enable the nqp:: op subset for the rest of the unit
             if (isKind(Tok::VersionLit)) { // `use v6;` / `use v6.d;` / `use v6.e.PREVIEW;`
                 { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
                   // swallow any dotted tail the version lexer didn't take (.PREVIEW)
@@ -4807,6 +4832,14 @@ StmtPtr Parser::parseStatementImpl() {
             } else {
                 // capture first string argument, e.g. `use lib 'lib'`
                 while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) {
+                    if (isKind(Tok::QwList)) { // `use Mod <immutable !pretty>` — EXPORT args
+                        std::string ws = cur().text, w;
+                        for (char c : ws) {
+                            if (c == ' ' || c == '\t') { if (!w.empty()) u->importArgs.push_back(w); w.clear(); }
+                            else w += c;
+                        }
+                        if (!w.empty()) u->importArgs.push_back(w);
+                    }
                     if ((isKind(Tok::StrLit) || isKind(Tok::StrInterp)) && u->arg.empty()) u->arg = cur().text;
                     advance();
                 }
@@ -5152,6 +5185,82 @@ void Parser::enforceStmtSep() {
     const Token& pv = toks_[pos_ - 1];
     if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line == pv.line)
         throw ParseError("Two terms in a row (missing semicolon?)", cur().line);
+}
+
+
+// ---- nqp:: compatibility subset (docs/dev/MODULE-FINDINGS.md #4b) ----------
+// Constants resolve to plain IntLits at parse time; values follow MoarVM's
+// tables and are only consumed by our own nqp ops, so self-consistency is
+// what matters.
+bool Parser::nqpConstValue(const std::string& name, long long& out) {
+    static const std::map<std::string, long long> k = {
+        {"CCLASS_UPPERCASE", 1},   {"CCLASS_LOWERCASE", 2},
+        {"CCLASS_ALPHABETIC", 4},  {"CCLASS_NUMERIC", 8},
+        {"CCLASS_HEXADECIMAL", 16},{"CCLASS_WHITESPACE", 32},
+        {"CCLASS_PRINTING", 64},   {"CCLASS_BLANK", 256},
+        {"CCLASS_CONTROL", 512},   {"CCLASS_PUNCTUATION", 1024},
+        {"CCLASS_ALPHANUMERIC", 2048}, {"CCLASS_NEWLINE", 4096},
+        {"CCLASS_WORD", 8192},
+        {"NORMALIZE_NONE", 0}, {"NORMALIZE_NFC", 1}, {"NORMALIZE_NFD", 2},
+        {"NORMALIZE_NFKC", 3}, {"NORMALIZE_NFKD", 4},
+    };
+    auto it = k.find(name);
+    if (it == k.end()) return false;
+    out = it->second;
+    return true;
+}
+
+// Turn `nqp::op(args)` into its AST: nqp::if/unless become native Ternaries
+// (lazy by construction); the loop/sequence forms become NqpOp nodes whose
+// evaluator controls its own argument evaluation; leaf ops become eager NqpOp
+// nodes. Unknown ops return null and stay ordinary Calls (loud runtime error).
+ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
+    auto nilTerm = [] { return std::make_unique<NameTerm>("Nil"); };
+    if (op == "if" && (args.size() == 2 || args.size() == 3)) {
+        auto t = std::make_unique<Ternary>();
+        t->cond = std::move(args[0]);
+        t->then = std::move(args[1]);
+        t->els  = args.size() == 3 ? std::move(args[2]) : ExprPtr(nilTerm());
+        return t;
+    }
+    if (op == "unless" && (args.size() == 2 || args.size() == 3)) {
+        auto t = std::make_unique<Ternary>();
+        t->cond = std::move(args[0]);
+        t->then = args.size() == 3 ? std::move(args[2]) : ExprPtr(nilTerm());
+        t->els  = std::move(args[1]);
+        return t;
+    }
+    static const std::map<std::string, NqpOpc> k = {
+        {"stmts", NqpOpc::Stmts}, {"while", NqpOpc::While},
+        {"until", NqpOpc::Until}, {"ifnull", NqpOpc::IfNull},
+        {"iseq_i", NqpOpc::IseqI}, {"isne_i", NqpOpc::IsneI},
+        {"islt_i", NqpOpc::IsltI}, {"isle_i", NqpOpc::IsleI},
+        {"isge_i", NqpOpc::IsgeI}, {"isgt_i", NqpOpc::IsgtI},
+        {"add_i", NqpOpc::AddI},   {"sub_i", NqpOpc::SubI},
+        {"mul_i", NqpOpc::MulI},   {"bitand_i", NqpOpc::BitandI},
+        {"ordat", NqpOpc::Ordat},  {"eqat", NqpOpc::Eqat},
+        {"substr", NqpOpc::Substr},{"chars", NqpOpc::Chars},
+        {"concat", NqpOpc::Concat},{"join", NqpOpc::Join},
+        {"index", NqpOpc::Index},  {"chr", NqpOpc::Chr},
+        {"strfromcodes", NqpOpc::StrFromCodes}, {"strtocodes", NqpOpc::StrToCodes},
+        {"findnotcclass", NqpOpc::FindNotCClass}, {"iscclass", NqpOpc::IsCClass},
+        {"list", NqpOpc::List}, {"list_i", NqpOpc::ListI}, {"list_s", NqpOpc::ListS},
+        {"elems", NqpOpc::Elems}, {"atpos", NqpOpc::Atpos}, {"atpos_i", NqpOpc::AtposI},
+        {"bindpos", NqpOpc::Bindpos}, {"bindpos_i", NqpOpc::BindposI},
+        {"push", NqpOpc::Push}, {"push_i", NqpOpc::PushI}, {"push_s", NqpOpc::PushS},
+        {"pop_s", NqpOpc::PopS}, {"shift_i", NqpOpc::ShiftI}, {"splice", NqpOpc::Splice},
+        {"hash", NqpOpc::Hash}, {"bindkey", NqpOpc::Bindkey},
+        {"create", NqpOpc::Create}, {"istype", NqpOpc::Istype},
+        {"getattr", NqpOpc::Getattr}, {"bindattr", NqpOpc::Bindattr},
+        {"p6bindattrinvres", NqpOpc::P6BindAttrInvRes},
+        {"p6scalarwithvalue", NqpOpc::P6ScalarWithValue},
+        {"null", NqpOpc::Null}, {"isnanorinf", NqpOpc::IsNanOrInf},
+    };
+    auto it = k.find(op);
+    if (it == k.end()) return nullptr;
+    auto n = std::make_unique<NqpOp>(it->second);
+    n->args = std::move(args);
+    return n;
 }
 
 } // namespace rakupp
