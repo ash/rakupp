@@ -7583,8 +7583,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
-    throw RakuError{Value::typeObj("X::Method::NotFound"),
-                    "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'"};
+    throwTyped("X::Method::NotFound",
+               {{"method", m}, {"typename", inv.typeName()}},
+               "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
 }
 
 // ---------------- named builtins ----------------

@@ -4420,6 +4420,9 @@ StmtPtr Parser::parseIf(bool isUnless) {
     }
     if (isIdent("else")) {
         advance();
+        if (isIdent("if")) // C-style `else if` — Raku spells it elsif
+            throw ParseError("Please use 'elsif' instead of 'else if'",
+                             cur().line, "X::Syntax::Malformed::Elsif", {});
         if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->elseVar = (sl ? "*" : "") + advance().text; } // else -> $x / -> *@x
         s->elseBlock = parseBlock();
     }
@@ -4784,12 +4787,21 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             if (isKind(Tok::LParen)) {
                 advance();
+                // `loop ()` (no spec) and a trailing `;` after incr are malformed
+                if (isKind(Tok::RParen))
+                    throw ParseError("Malformed loop spec: missing semicolons",
+                                     cur().line, "X::Syntax::Malformed",
+                                     {{"what", "loop spec (expected 3 parts separated by semicolon)"}});
                 auto ls = std::make_unique<LoopStmt>();
                 if (!isKind(Tok::Semicolon)) ls->init = parseExpression();
                 expectKind(Tok::Semicolon, ";");
                 if (!isKind(Tok::Semicolon)) ls->cond = parseExpression();
                 expectKind(Tok::Semicolon, ";");
                 if (!isKind(Tok::RParen)) ls->incr = parseExpression();
+                if (isKind(Tok::Semicolon))
+                    throw ParseError("Malformed loop spec: too many semicolons",
+                                     cur().line, "X::Syntax::Malformed",
+                                     {{"what", "loop spec: unexpected trailing semicolon"}});
                 expectKind(Tok::RParen, ")");
                 ls->body = parseBlock();
                 return ls;

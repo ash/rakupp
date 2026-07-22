@@ -2957,8 +2957,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (!cd->parent.empty()) {
                 // a type may not inherit from / compose itself:  class A is A / role A does A
                 if (cd->parent == cd->name && !cd->name.empty())
-                    throw RakuError{Value::typeObj(cd->isRole ? "X::InvalidType" : "X::Inheritance::SelfInherit"),
-                        std::string(cd->isRole ? "Role" : "Class") + " '" + cd->name + "' cannot inherit from / compose itself"};
+                    throwTyped(cd->isRole ? "X::InvalidType" : "X::Inheritance::SelfInherit",
+                        {{"name", cd->name}},
+                        std::string(cd->isRole ? "Role" : "Class") + " '" + cd->name + "' cannot inherit from / compose itself");
                 auto it = classes_.find(cd->parent);
                 // `does X` where X is a class or a concrete core type: only
                 // roles compose (built-in role names like Positional stay fine)
@@ -5400,9 +5401,17 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
 
 // Enforce a routine's declared nominal return type on its result value.
 Value Interpreter::checkRetType(const Callable& c, Value v) {
-    if (c.retType.empty() || !isDefined(v)) return v;
+    if (c.retType.empty()) return v;
     static const std::set<std::string> kRet = {
         "Int", "Num", "Rat", "Complex", "Str", "Bool", "Junction"};
+    // a return type that names NOTHING known is an undeclared symbol
+    // (checked before the definedness bail: it fires even for empty bodies)
+    if (!kRet.count(c.retType) && !classes_.count(c.retType) &&
+        !subsets_.count(c.retType) && !isKnownTypeName(c.retType))
+        throwTyped("X::Undeclared",
+                   {{"what", "Type"}, {"symbol", c.retType}},
+                   "Type '" + c.retType + "' is not declared");
+    if (!isDefined(v)) return v;
     if (kRet.count(c.retType) && !rtTypeMatch(v, c.retType) &&
         !(c.retType == "Int" && v.t == VT::Bool))
         throwTypedV("X::TypeCheck::Return",
