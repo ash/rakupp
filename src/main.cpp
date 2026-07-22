@@ -510,6 +510,25 @@ int main(int argc, char** argv) {
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }
 #endif // Windows: GetModuleFileNameW is already absolute; _fullpath would ANSI-mangle the UTF-8
 
+    // A single-dash spelling of a known long option (`-exe`, `-cpp`, `-lint`, …)
+    // is a common typo for the `--` form. These names are unambiguous — none is
+    // a valid short-option cluster (`-exe` is NOT `-e xe`) — so accept them with
+    // a gentle note. Real short options (-e, -c, -I, -o, -n, -p, -h, -V, -q)
+    // are left exactly as they are.
+    static std::string s_normArg1;
+    if (argc >= 2 && argv[1][0] == '-' && argv[1][1] != '-' && argv[1][1] != '\0') {
+        static const std::set<std::string> kLongNames = {
+            "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
+            "ast", "dump-ast", "doc", "help", "version",
+        };
+        std::string bare = argv[1] + 1;
+        if (kLongNames.count(bare)) {
+            std::cerr << "note: treating '" << argv[1] << "' as '--" << bare << "'\n";
+            s_normArg1 = "--" + bare;
+            argv[1] = &s_normArg1[0];
+        }
+    }
+
     // --help / -h : print usage and exit.  --version / -V : print the version.
     if (argc >= 2) {
         std::string a1 = argv[1];
