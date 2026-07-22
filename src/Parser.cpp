@@ -4339,10 +4339,12 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         }
         if (isIdent("method") || isIdent("submethod")) {
             bool sub = isIdent("submethod");
+            int ln = cur().line;
             advance();
             auto s = parseSub(false);
             static_cast<SubDecl*>(s.get())->isMethod = true;
             static_cast<SubDecl*>(s.get())->isSubmethod = sub;
+            if (s->line == 0) s->line = ln; // diagnostics (undeclared-attr location)
             cd->methods.push_back(std::unique_ptr<SubDecl>(static_cast<SubDecl*>(s.release())));
             continue;
         }

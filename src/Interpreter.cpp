@@ -2024,7 +2024,20 @@ int Interpreter::run(Program& prog) {
             // RAKU_EXCEPTIONS_HANDLER=JSON serializes an uncaught exception as JSON
             if (envStr("RAKU_EXCEPTIONS_HANDLER") == "JSON" && e.payload.t == VT::Object && e.payload.obj)
                 std::cerr << exceptionToJson(e.payload);
-            else std::cerr << e.message << "\n";
+            else {
+                // a compile-time (X::Comp-style) exception carries filename+line
+                // attrs — print it with Rakudo's ===SORRY!=== banner and location
+                std::string cf, cl;
+                if (e.payload.t == VT::Object && e.payload.obj) {
+                    auto& at = e.payload.obj->attrs;
+                    auto fi = at.find("filename"), li = at.find("line");
+                    if (fi != at.end() && li != at.end()) { cf = fi->second.toStr(); cl = li->second.toStr(); }
+                }
+                if (!cf.empty())
+                    std::cerr << "===SORRY!=== Error while compiling " << cf << "\n"
+                              << e.message << "\nat " << cf << ":" << cl << "\n";
+                else std::cerr << e.message << "\n";
+            }
             code = 1;
             crashed = true;
         }
@@ -3188,10 +3201,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             for (auto& at : cc->attrs)
                                 if (at.name == bare) { known = true; break; }
                         if (!known)
+                            // filename+line mark it a compile-time (X::Comp) error —
+                            // the top-level printer adds the ===SORRY!=== banner
                             throwTyped("X::Attribute::Undeclared",
                                 {{"symbol", ar}, {"package-name", clsName},
                                  {"package-kind", cd->isGrammar ? "grammar" : "class"},
-                                 {"what", "attribute"}},
+                                 {"what", "attribute"},
+                                 {"line", std::to_string(md->line)},
+                                 {"filename", srcFileAbs_.empty() ? srcFile_ : srcFileAbs_}},
                                 "Attribute " + ar + " not declared in " +
                                 (cd->isGrammar ? "grammar " : "class ") + clsName);
                     }
