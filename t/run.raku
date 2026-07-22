@@ -149,8 +149,11 @@ sub start-server(Str $script, Int $port) {
     False;
 }
 # `|| true` so a no-match pkill (or a server that already exited) can't fail the
-# suite. Leaking a server between sections is harmless — the ports differ.
-sub stop-server(Str $script) { try shell("pkill -f '$script' 2>/dev/null || true"); }
+# suite. NB pkill -f takes a REGEX and the full path contains `raku++` — an
+# invalid pattern that matches nothing, so servers leaked and piled up across
+# runs (a zombie on a colliding port answered INCR with a stale count). Kill by
+# basename instead.
+sub stop-server(Str $script) { try shell("pkill -f '{$script.IO.basename}' 2>/dev/null || true"); }
 
 sub recv-all($sock --> Str) {              # read until the peer closes
     my $r = '';

@@ -5716,8 +5716,10 @@ Value* Interpreter::lvalue(Expr* e) {
             Value init = typedDefault(ve->declType, sigil);
             if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
                 init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
-            if (!ve->containerIs.empty() && sigil == '%') // my %h is Set — an empty Setty
+            if (!ve->containerIs.empty() && sigil == '%') { // my %h is Set — an empty Setty
                 init = makeBaggy({}, ve->containerIs);
+                init.ofType = ve->containerOf; // `is Bag[Int]` keys on Int
+            }
             if (ve->declDefault) { // `is default(v)`: initial AND reset value
                 Value dv = eval(ve->declDefault.get());
                 if (sigil == '@' || sigil == '%') // container stays empty; v is the ELEMENT default
@@ -5827,6 +5829,11 @@ Value* Interpreter::lvalue(Expr* e) {
             return node;
         }
         if (idx->isHash) {
+            // autovivifying an undefined Set/Bag/Mix through a subscript dies too
+            if (base->t == VT::Type &&
+                (base->s == "Set" || base->s == "Bag" || base->s == "Mix"))
+                throw RakuError{Value::typeObj("X::Assignment::RO"),
+                    "Cannot modify an immutable " + base->s};
             // Set/Bag/Mix are immutable — element assignment dies (the *Hash variants mutate)
             if (base->t == VT::Hash &&
                 (base->hashKind == "Set" || base->hashKind == "Bag" || base->hashKind == "Mix"))
@@ -6424,8 +6431,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             std::string keepType = lv->ofType; // typed container: `my Int %h` keeps Int
-            if (lv->t == VT::Hash && setty.count(lv->hashKind)) // my %h is Set = 1,2,3
-                *lv = makeBaggy(rhs.flatten(), lv->hashKind);
+            if (lv->t == VT::Hash && setty.count(lv->hashKind)) { // my %h is Set = 1,2,3
+                // Set/Bag/Mix are immutable — only the initial (empty) fill assigns
+                if (lv->hash && !lv->hash->empty() &&
+                    (lv->hashKind == "Set" || lv->hashKind == "Bag" || lv->hashKind == "Mix"))
+                    throw RakuError{Value::typeObj("X::Assignment::RO"),
+                        "Cannot modify an immutable " + lv->hashKind + " (" + lv->gist() + ")"};
+                std::string keyT = lv->ofType;
+                Value nh = makeBaggy(rhs.flatten(), lv->hashKind);
+                if (!keyT.empty() && nh.hash) // parameterized: keys must match `is Bag[Int]`
+                    for (auto& kv : *nh.hash) {
+                        Value orig = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+                        if (!typeOrSubsetMatches(orig, keyT))
+                            throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+                                "Type check failed for " + lv->hashKind + " key; expected " +
+                                keyT + " but got " + orig.gist()};
+                    }
+                *lv = nh;
+                lv->ofType = keyT;
+            }
             else {
                 Value nv = coerceHash(rhs);
                 if (lv->t == VT::Hash && lv->hash && nv.hash && lv->hash != nv.hash) {
@@ -10093,6 +10117,22 @@ Value Interpreter::evalUnary(Unary* u) {
         }
         *lv = newv;
         if (anyRwLinks_) rwWriteThrough(u->operand.get()); // ++/-- on a linked rw param
+        // BagHash/SetHash/MixHash element ++/--: a weight reaching 0 (or below)
+        // removes the key entirely (`%h<a>--` deletes a 1-weighted item)
+        if (u->operand->kind == NK::Index && newv.toNum() <= 0.0) {
+            auto* ix = static_cast<Index*>(u->operand.get());
+            if (ix->isHash) {
+                Value* base = nullptr;
+                try { base = lvalue(ix->base.get()); } catch (RakuError&) {}
+                if (base && base->t == VT::Hash && base->hash &&
+                    (base->hashKind == "BagHash" || base->hashKind == "SetHash" ||
+                     base->hashKind == "MixHash")) {
+                    bool drop = base->hashKind == "MixHash" ? newv.toNum() == 0.0
+                                                            : true;
+                    if (drop) base->hash->erase(eval(ix->index.get()).toStr());
+                }
+            }
+        }
         return u->postfix ? oldv : newv;
     }
     Value v = eval(u->operand.get());

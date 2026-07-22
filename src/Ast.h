@@ -68,6 +68,7 @@ struct VarExpr : Expr {
     std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
     ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
     std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
+    std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
     ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
 };

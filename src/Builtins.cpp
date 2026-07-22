@@ -1056,6 +1056,8 @@ static bool deepEq(const Value& a, const Value& b) {
         return a.fatRat == b.fatRat &&
                a.ratN && b.ratN && a.ratD && b.ratD &&
                BigInt::cmp(*a.ratN, *b.ratN) == 0 && BigInt::cmp(*a.ratD, *b.ratD) == 0;
+    if (a.t == VT::Num && b.t == VT::Num && std::isnan(a.n) && std::isnan(b.n))
+        return true; // structural: NaN eqv NaN (numeric == would say false)
     return valueEq(a, b);
 }
 
@@ -1244,6 +1246,22 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
         }
         if (v.t == VT::Pair) {
             Value w = v.pairVal ? *v.pairVal : Value::integer(0);
+            if (!isSet) { // a Bag/Mix weight must coerce to a real number
+                if ((w.t == VT::Complex && w.im != 0.0) ||
+                    (w.t == VT::Num && !std::isfinite(w.n)))
+                    throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
+                        "Cannot convert " + w.gist() + " to " + (isMix ? "Real" : "Int")};
+                if (w.t == VT::Str && !w.isAllomorph()) {
+                    const char* p = w.s.c_str();
+                    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+                    char* end = nullptr;
+                    if (*p) std::strtod(p, &end);
+                    while (end && (*end == ' ' || *end == '\t' || *end == '\n')) end++;
+                    if (*p && (end == p || *end))
+                        throw RakuError{Value::typeObj("X::Str::Numeric"),
+                            "Cannot convert string to number: " + w.s};
+                }
+            }
             if (isMix && w.t != VT::Int && w.isNumeric()) { // fractional weight
                 auto it = h.hash->find(v.s);
                 auto keep = it != h.hash->end() && it->second.pairKey ? it->second.pairKey : v.pairKey;
@@ -1327,6 +1345,14 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
 }
 
 // ---------------- method dispatch ----------------
+// quanthash value types: Set weighs on Bool, Bag on UInt, Mix on Real
+static const char* quantValueType(const std::string& kind) {
+    if (kind == "Set" || kind == "SetHash") return "Bool";
+    if (kind == "Bag" || kind == "BagHash") return "UInt";
+    if (kind == "Mix" || kind == "MixHash") return "Real";
+    return nullptr;
+}
+
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
@@ -1827,8 +1853,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         ValueList items;
         for (auto& a : args) {
             if (a.t == VT::Range && a.rTo >= 9000000000000000000LL)
-                throw RakuError{Value::typeObj("X::Cannot::Lazy"),
-                                "Cannot create a " + inv.s + " from a lazy list"};
+                throwTyped("X::Cannot::Lazy", {{"what", inv.s}},
+                           "Cannot create a " + inv.s + " from a lazy list");
             if (a.t == VT::Array || a.t == VT::Range) for (auto& x : a.flatten()) items.push_back(x);
             else items.push_back(a);
         }
@@ -1844,10 +1870,32 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // single-arg rule: one iterable arg contributes its elements (an itemized
         // `$[...]` resists and stays whole); with several args each arg is ONE
         // element (`Set.new(@a, [3,4])` has two elements)
+        ValueList pos; // bare `a => "b"` is a NAMED arg — .new swallows it silently
+        for (auto& a : args) if (!a.namedArg) pos.push_back(a);
         ValueList items;
-        if (args.size() == 1 && !args[0].itemized) { for (auto& x : toList(args[0])) items.push_back(x); }
-        else for (auto& a : args) items.push_back(a);
-        return makeBaggy(items, inv.s, /*pairsAsElements=*/true);
+        for (auto& a : pos)
+            if (a.t == VT::Range && a.rTo >= 9000000000000000000LL)
+                throwTyped("X::Cannot::Lazy", {{"what", inv.s}},
+                           "Cannot create a " + inv.s + " from a lazy list");
+        // a quanthash arg is ONE element (Bag.new(set <a b c>) has 1 elem);
+        // a plain Hash still iterates its pairs under the single-arg rule
+        bool wholeQuant = pos.size() == 1 && pos[0].t == VT::Hash && quantValueType(pos[0].hashKind);
+        if (pos.size() == 1 && !pos[0].itemized && !wholeQuant) {
+            for (auto& x : toList(pos[0])) items.push_back(x);
+        }
+        else for (auto& a : pos) items.push_back(a);
+        Value out = makeBaggy(items, inv.s, /*pairsAsElements=*/true);
+        if (!inv.ofType.empty() && out.hash) { // Set[Str].new(...) enforces the key type
+            for (auto& kv : *out.hash) {
+                Value orig = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+                if (!typeOrSubsetMatches(orig, inv.ofType))
+                    throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+                        "Type check failed for " + inv.s + " key; expected " +
+                        inv.ofType + " but got " + orig.gist()};
+            }
+            out.ofType = inv.ofType;
+        }
+        return out;
     }
     if (inv.t == VT::Hash && inv.hashKind == "StrDistance") {
         auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second : Value::str(""); };
@@ -4248,6 +4296,8 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // `.of` on a typed container: `my Int @a` / `my Int %h` → Int (Mu when untyped).
     // For Hash[V,K]/Array[T] the value/element type is the first parameter component.
     if (m == "of" && (inv.t == VT::Array || inv.t == VT::Hash)) {
+        // a quanthash's ofType is its KEY parameter; .of is the fixed value type
+        if (inv.t == VT::Hash) if (const char* vt = quantValueType(inv.hashKind)) return Value::typeObj(vt);
         if (inv.ofType.empty()) return Value::typeObj("Mu");
         std::string ot = inv.ofType; auto c = ot.find(','); if (c != std::string::npos) ot = ot.substr(0, c);
         return Value::typeObj(ot);
@@ -4353,8 +4403,31 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
 
     // Set/Bag/Mix coercions and queries
-    if (m == "Set" || m == "SetHash" || m == "Bag" || m == "BagHash" || m == "Mix" || m == "MixHash")
-        return makeBaggy(toList(inv), m);
+    if (m == "Set" || m == "SetHash" || m == "Bag" || m == "BagHash" || m == "Mix" || m == "MixHash") {
+        if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL)
+            throwTyped("X::Cannot::Lazy", {{"what", m}}, "Cannot " + m + " a lazy list");
+        // the coercer flattens one level, but only through a bare LIST:
+        // (@a, %h).Bag takes @a's elements and %h's pairs. A real Array's
+        // elements are itemized ([4,[5,6]].Bag keeps [5,6] whole — ».Bag nodal)
+        ValueList items;
+        bool oneLevel = inv.t == VT::Array && inv.isList;
+        for (auto& x : toList(inv)) {
+            if (!oneLevel) { items.push_back(x); continue; }
+            if (x.t == VT::Array && x.arr && !x.itemized) {
+                for (auto& e : *x.arr) items.push_back(e);
+            }
+            else if (x.t == VT::Hash && x.hash && !x.itemized &&
+                     (x.hashKind.empty() || x.hashKind == "Map" || quantValueType(x.hashKind))) {
+                for (auto& kv : *x.hash) {
+                    Value p = Value::pair(kv.first, kv.second);
+                    p.pairKey = kv.second.pairKey;
+                    items.push_back(p);
+                }
+            }
+            else items.push_back(x);
+        }
+        return makeBaggy(items, m);
+    }
     if (inv.t == VT::Hash && !inv.hashKind.empty()) {
         bool isSet = inv.hashKind.find("Set") == 0;
         if (m == "default") return isSet ? Value::boolean(false) : Value::integer(0);
@@ -4773,15 +4846,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "package" && inv.t == VT::Code && inv.code)
         return Value::typeObj(inv.code->pkg.empty() ? "GLOBAL" : inv.code->pkg);
-    if (m == "of" && inv.t == VT::Type) // array[int].of / Array[Str].of
+    if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
+        if (const char* vt = quantValueType(inv.s)) return Value::typeObj(vt); // Bag.of is UInt
         return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
+    }
     if (m == "new" && inv.t == VT::Array) { // @a.new: fresh empty array of the same type
         Value out = Value::array();
         out.ofType = inv.ofType;
         return out;
     }
     if (m == "keyof") { // key type of an Associative (unparameterized: Mu / Str(Any))
-        if (inv.t == VT::Hash && !inv.hashKind.empty()) return Value::typeObj("Mu"); // quanthashes key on Mu
+        if (inv.t == VT::Hash && !inv.hashKind.empty()) // quanthash: its key parameter (unparameterized: Mu)
+            return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
         if (inv.t == VT::Type) {
             static const std::set<std::string> qh = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             if (qh.count(inv.s)) // Mix[Str].keyof is Str; unparameterized quanthashes key on Mu
@@ -5574,6 +5650,37 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::str(r);
     }
     if (m == "index" || m == "rindex") {
+        // splatted multi-needle: index($s, "a", "o", :i) — several positional
+        // STRING args are all needles (a numeric-looking string is a start pos)
+        {
+            size_t nPos = 0; bool allStrNeedles = true;
+            for (auto& av : args) {
+                if (av.t == VT::Pair) continue;
+                nPos++;
+                if (nPos == 1) continue;
+                bool strNum = false;
+                if (av.t == VT::Str && !av.s.empty()) {
+                    char* end = nullptr;
+                    std::strtod(av.s.c_str(), &end);
+                    strNum = end && *end == 0;
+                }
+                if (av.t != VT::Str || strNum) { allStrNeedles = false; break; }
+            }
+            if (nPos >= 2 && allStrNeedles) {
+                Value best; bool have = false;
+                for (auto& nd : args) {
+                    if (nd.t == VT::Pair) continue;
+                    ValueList sub{nd};
+                    for (auto& av : args) if (av.t == VT::Pair) sub.push_back(av);
+                    Value r = methodCall(inv, m, sub);
+                    if (r.t == VT::Int &&
+                        (!have || (m == "index" ? r.i < best.i : r.i > best.i))) {
+                        best = r; have = true;
+                    }
+                }
+                return have ? best : Value::nil();
+            }
+        }
         // a LIST of needles: the best (leftmost for index, rightmost for
         // rindex) position across all of them
         if (!args.empty() && (args[0].t == VT::Array || args[0].t == VT::Range)) {
@@ -5605,10 +5712,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             // only a NEGATIVE (or int64-overflowing) start is out of range; a
             // moderate position past the end just yields no match (Nil), matching
             // Rakudo (`index("Hello","l",10)` is Nil, but `…,-1` / `…,1e35` throw)
-            if (fd < 0 || fd > 9.2e18)
-                throw RakuError{Value::typeObj("X::OutOfRange"),
+            if (fd < 0 || fd > 9.2e18) {
+                // fails-like wants a RETURNED Failure whose typed exception
+                // carries the offending value in .got
+                Value f = Value::makeHash(); f.hashKind = "Failure";
+                (*f.hash)["exception"] = makeTypedEx("X::OutOfRange",
+                    {{"got", args[1]}, {"what", Value::str("start argument to " + m)},
+                     {"range", Value::str("0.." + std::to_string(n))}},
                     "start argument to " + m + " out of range. Is: " + args[1].gist() +
-                    "; should be in 0.." + std::to_string(n)};
+                    "; should be in 0.." + std::to_string(n));
+                return f;
+            }
             from = args[1].toInt();
             if (m == "rindex" && from > n) from = n; // rindex clamps the rightmost start
         }
@@ -6998,25 +7112,44 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "sort") {
+            // :k sorts the INDICES of the elements instead of the elements
+            bool wantK = false;
+            for (auto& av : args)
+                if (av.t == VT::Pair && av.namedArg && av.s == "k")
+                    wantK = !av.pairVal || av.pairVal->truthy();
+            std::vector<size_t> order(items.size());
+            for (size_t i = 0; i < order.size(); i++) order[i] = i;
             if (!args.empty() && args[0].t == VT::Code) {
                 Value blk = args[0];
                 size_t arity = blk.code->params && !blk.code->params->empty()
                     ? blk.code->params->size()
                     : (blk.code->placeholders.empty() ? (size_t)blk.code->whateverArity : blk.code->placeholders.size());
+                // a 0-arity comparator ((1..10).sort(&rand)) has no candidate
+                if (arity == 0 && blk.code->params && blk.code->hadSig)
+                    throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
+                        "Uncallable 0-arity comparator for sort"};
                 if (arity >= 2) {
-                    std::stable_sort(items.begin(), items.end(), [&](const Value& x, const Value& y) {
-                        return callCallable(blk, {x, y}).toInt() < 0;
+                    std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+                        return callCallable(blk, {items[x], items[y]}).toInt() < 0;
                     });
                 } else {
-                    std::stable_sort(items.begin(), items.end(), [&](const Value& x, const Value& y) {
-                        Value kx = callCallable(blk, {x}); Value ky = callCallable(blk, {y});
+                    std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+                        Value kx = callCallable(blk, {items[x]}); Value ky = callCallable(blk, {items[y]});
                         return valueCmp(kx, ky) < 0;
                     });
                 }
             } else {
-                std::stable_sort(items.begin(), items.end(), [](const Value& x, const Value& y) { return valueCmp(x, y) < 0; });
+                std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+                    const Value& xa = items[x]; const Value& yb = items[y];
+                    bool nx = xa.t == VT::Num && std::isnan(xa.n), ny = yb.t == VT::Num && std::isnan(yb.n);
+                    if (nx || ny) return !nx && ny; // NaN sorts after everything
+                    return valueCmp(xa, yb) < 0;
+                });
             }
-            return Value::list(items);
+            ValueList out;
+            out.reserve(order.size());
+            for (size_t i : order) out.push_back(wantK ? Value::integer((long long)i) : items[i]);
+            return Value::list(out);
         }
         if (m == "tree") {
             // .tree — a nested view of the list. No arg: identity (already nested).
@@ -8073,7 +8206,11 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(c);
     };
     B["isa-ok"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::string want = a.size() > 1 ? (a[1].t == VT::Type ? a[1].s : a[1].toStr()) : "";
+        // the "type" argument may be a type object, a type NAME string, or any
+        // other value — a plain value stands for its own type (isa-ok 3, 3)
+        std::string want = a.size() > 1
+            ? (a[1].t == VT::Type ? a[1].s : a[1].t == VT::Str ? a[1].toStr() : a[1].typeName())
+            : "";
         std::string got = a.empty() ? "Any" : a[0].typeName();
         // the real .isa knows allomorphs and user-class chains — consult it first
         if (a.size() > 1) {
@@ -9035,14 +9172,29 @@ void Interpreter::registerBuiltins() {
     };
     B["sort"] = [](Interpreter& I, ValueList& a) -> Value {
         // `sort {comparator}, @list` / `sort &by, @list`: a leading Code is the
-        // comparator/key extractor, not an element — delegate to List.sort
-        if (!a.empty() && a[0].t == VT::Code) {
-            Value cmp = a[0];
-            ValueList items; for (size_t i = 1; i < a.size(); i++) { ValueList l = toList(a[i]); items.insert(items.end(), l.begin(), l.end()); }
-            Value lst = Value::list(items);
-            ValueList ma{cmp}; return I.methodCall(lst, "sort", ma);
+        // comparator/key extractor, not an element. `:by(&f)` names it; other
+        // adverbs (:k) are forwarded. All such forms delegate to List.sort.
+        Value cmp; bool haveCmp = false;
+        ValueList named, pos;
+        for (auto& v : a) {
+            if (v.t == VT::Pair && v.namedArg) {
+                if (v.s == "by" && v.pairVal) { cmp = *v.pairVal; haveCmp = true; }
+                else named.push_back(v);
+            }
+            else pos.push_back(v);
         }
-        ValueList items; for (auto& v : a) { ValueList l = toList(v); items.insert(items.end(), l.begin(), l.end()); }
+        if (!haveCmp && !pos.empty() && pos[0].t == VT::Code) {
+            cmp = pos[0]; haveCmp = true;
+            pos.erase(pos.begin());
+        }
+        ValueList items; for (auto& v : pos) { ValueList l = toList(v); items.insert(items.end(), l.begin(), l.end()); }
+        if (haveCmp || !named.empty()) {
+            Value lst = Value::list(items);
+            ValueList ma;
+            if (haveCmp) ma.push_back(cmp);
+            for (auto& nv : named) ma.push_back(nv);
+            return I.methodCall(lst, "sort", ma);
+        }
         std::stable_sort(items.begin(), items.end(), [](const Value& x, const Value& y) { return valueCmp(x, y) < 0; });
         return Value::array(items);
     };
@@ -9477,7 +9629,17 @@ void Interpreter::registerBuiltins() {
             if ((a.t == VT::Array || a.t == VT::Range) && !a.itemized) {
                 ValueList sub = a.flatten();
                 out.insert(out.end(), sub.begin(), sub.end());
-            } else out.push_back(a);
+            }
+            else if (a.t == VT::Hash && !a.itemized && a.hash &&
+                     (a.hashKind.empty() || a.hashKind == "Map")) {
+                // a plain Hash contributes its pairs (a quanthash stays ONE element)
+                for (auto& kv : *a.hash) {
+                    Value p = Value::pair(kv.first, kv.second);
+                    p.pairKey = kv.second.pairKey;
+                    out.push_back(p);
+                }
+            }
+            else out.push_back(a);
         }
         return out;
     };

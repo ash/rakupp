@@ -1364,8 +1364,15 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             static const std::set<std::string> containers = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash", "List"};
-            if (wasIs && containers.count(cur().text)) lastContainerIs_ = cur().text; // my %h is Set / my @a is List
+            bool wasContainer = wasIs && containers.count(cur().text);
+            if (wasContainer) lastContainerIs_ = cur().text; // my %h is Set / my @a is List
             advance(); // trait name / type
+            if (wasContainer && isKind(Tok::LBracket)) { // is Bag[Int] — key-type parameter
+                advance();
+                if (isKind(Tok::Ident)) { lastContainerOf_ = cur().text; advance(); }
+                while (!isKind(Tok::RBracket) && !isKind(Tok::End)) advance();
+                if (isKind(Tok::RBracket)) advance();
+            }
         }
         if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
         if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
@@ -1541,9 +1548,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // Hash[valueType,keyType] — an object hash with no explicit value type
         // is Hash[Mu, KeyType]: its missing-key default is Mu, not Any
         if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Mu" : ve->declType) + "," + keyType;
-        lastContainerIs_.clear();
+        lastContainerIs_.clear(); lastContainerOf_.clear();
         skipTraits(scope != "has", &ve->declDefault);
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
+        if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
         // `my $a is default(42) where * == 42` — constraint parsed, not yet enforced
         if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN + 1); }
         return ve;
