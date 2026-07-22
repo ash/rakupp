@@ -4533,6 +4533,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.isNumeric() || inv.t == VT::Str) {
         double x = inv.toNum();
         if (m == "cis") return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
+        if (m == "roots") { // $x.roots($n) — same as roots($x, $n)
+            auto it = builtins_.find("roots");
+            if (it != builtins_.end()) { ValueList ra{inv, a0()}; return it->second(*this, ra); }
+        }
         if (m == "roots") { // the n n-th roots, as Complexes around the circle
             long long n = args.empty() ? 1 : a0().toInt();
             Value out = Value::array(); out.isList = true;
@@ -8204,17 +8208,67 @@ void Interpreter::registerBuiltins() {
         return I.evalString(code.toStr(), /*mainlinePH=*/true);
     };
     B["RUN-MAIN"] = [](Interpreter& I, ValueList& a) -> Value {
-        // RUN-MAIN(&main, $return): parse the LIVE @*ARGS with the CLI rules
-        // (--opt named, rest positional) and invoke the callable, as a script
-        // entry would. Usage/no-match semantics stay with the auto-invoke path.
+        // RUN-MAIN(&main, $return): parse the LIVE @*ARGS per the CLI rules
+        // main-refactored.t adjudicates: --name / --name=v / -n=v are named
+        // (repeats collect into an array; values are val()-allomorphed;
+        // `--` ends option parsing; --/name negates). In the DEFAULT mode an
+        // option after the first positional is a plain positional; with
+        // %*SUB-MAIN-OPTS<named-anywhere> options bind anywhere.
         if (a.empty() || a[0].t != VT::Code) return Value::any();
+        auto dynFind = [&](const char* n) -> Value* {
+            if (Value* p = I.tctx_.cur->find(n)) return p;
+            for (auto it = I.tctx_.dynStack.rbegin(); it != I.tctx_.dynStack.rend(); ++it)
+                if (*it) if (Value* p = (*it)->find(n)) return p;
+            return nullptr;
+        };
         std::vector<std::string> argv;
-        Value* av = I.tctx_.cur->find("@*ARGS");
-        if (!av) for (auto it = I.tctx_.dynStack.rbegin(); it != I.tctx_.dynStack.rend() && !av; ++it)
-            if (*it) av = (*it)->find("@*ARGS");
-        if (av && av->t == VT::Array && av->arr)
-            for (auto& x : *av->arr) argv.push_back(x.toStr());
-        ValueList margs = rtMainArgs(argv);
+        if (Value* av = dynFind("@*ARGS"))
+            if (av->t == VT::Array && av->arr)
+                for (auto& x : *av->arr) argv.push_back(x.toStr());
+        bool namedAnywhere = false;
+        if (Value* smo = dynFind("%*SUB-MAIN-OPTS"))
+            if (smo->t == VT::Hash && smo->hash) {
+                auto it = smo->hash->find("named-anywhere");
+                namedAnywhere = it != smo->hash->end() && it->second.truthy();
+            }
+        auto valify = [&](const std::string& s) -> Value {
+            auto it = I.builtins_.find("val");
+            if (it != I.builtins_.end()) { ValueList va{Value::str(s)}; return it->second(I, va); }
+            return Value::str(s);
+        };
+        ValueList pos;
+        std::vector<std::pair<std::string, ValueList>> named; // insertion order
+        bool noMoreNamed = false;
+        for (auto& s : argv) {
+            if (!noMoreNamed && s == "--") { noMoreNamed = true; continue; }
+            bool isOpt = !noMoreNamed && s.size() > 1 && s[0] == '-' &&
+                         !(s.size() == 2 && s[1] == '-');
+            if (isOpt) {
+                std::string body = s[1] == '-' ? s.substr(2) : s.substr(1);
+                bool neg = !body.empty() && body[0] == '/';
+                if (neg) body = body.substr(1);
+                auto eq = body.find('=');
+                std::string k = eq == std::string::npos ? body : body.substr(0, eq);
+                Value v = eq == std::string::npos ? Value::boolean(!neg)
+                                                  : valify(body.substr(eq + 1));
+                auto slot = std::find_if(named.begin(), named.end(),
+                                         [&](auto& kv) { return kv.first == k; });
+                if (slot == named.end()) named.push_back({k, {v}});
+                else slot->second.push_back(v);
+                continue;
+            }
+            pos.push_back(Value::str(s));
+            if (!namedAnywhere) noMoreNamed = true;
+        }
+        ValueList margs = std::move(pos);
+        for (auto& kv : named) {
+            Value v;
+            if (kv.second.size() == 1) v = kv.second[0];
+            else { v = Value::array(); *v.arr = kv.second; }
+            Value p = Value::pair(kv.first, v);
+            p.namedArg = true;
+            margs.push_back(std::move(p));
+        }
         return I.callCallable(a[0], std::move(margs));
     };
     B["samemark"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -8569,6 +8623,27 @@ void Interpreter::registerBuiltins() {
         return Value::complex(r * std::cos(th), r * std::sin(th));
     };
     B["sqrt"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSqrt(I, a.empty() ? Value::integer(0) : a[0]); };
+    B["roots"] = [](Interpreter& I, ValueList& a) -> Value {
+        // roots($x, $n): the $n n-th complex roots of $x (principal first,
+        // stepping by 2π/n). n < 1 or NaN input yields a single NaN.
+        Value out = Value::array(); out.isList = true;
+        double re, im;
+        Value x = a.empty() ? Value::integer(0) : a[0];
+        if (x.t == VT::Complex) { re = x.n; im = x.im; }
+        else { re = x.toNum(); im = 0.0; }
+        long long n = a.size() > 1 ? a[1].toInt() : 1;
+        if (n < 1 || std::isnan(re) || std::isnan(im)) {
+            out.arr->push_back(Value::complex(std::nan(""), std::nan("")));
+            return out;
+        }
+        double mag = std::pow(std::hypot(re, im), 1.0 / (double)n);
+        double ang = std::atan2(im, re) / (double)n;
+        for (long long k = 0; k < n; k++) {
+            double th = ang + 2.0 * M_PI * (double)k / (double)n;
+            out.arr->push_back(Value::complex(mag * std::cos(th), mag * std::sin(th)));
+        }
+        return out;
+    };
     B["floor"] = [](Interpreter& I, ValueList& a) -> Value { return rtBFloor(I, a.empty() ? Value::integer(0) : a[0]); };
     B["ceiling"] = [](Interpreter& I, ValueList& a) -> Value { return rtBCeiling(I, a.empty() ? Value::integer(0) : a[0]); };
     B["round"] = [](Interpreter& I, ValueList& a) -> Value { // delegate so a scale arg (round($x, 0.1)) and NaN/Inf are honoured
