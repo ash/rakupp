@@ -2742,6 +2742,7 @@ ExprPtr Parser::parsePrimary() {
                 return call;
             }
             if (name == "do" || name == "try" || name == "gather" || name == "quietly" ||
+                name == "once" ||
                 name == "BEGIN" || name == "ENTER") {
                 advance();
                 auto u = std::make_unique<Unary>();

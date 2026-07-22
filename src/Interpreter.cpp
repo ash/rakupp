@@ -9936,6 +9936,18 @@ Value Interpreter::evalUnary(Unary* u) {
             return Value::nil();
         }
     }
+    if (u->op == "once") {
+        // run once per enclosing-routine INSTANCE (a fresh closure clone
+        // re-runs it); later hits return the cached first value
+        Env* se = tctx_.curStateEnv;
+        std::string key = "!once!" + std::to_string((uintptr_t)u);
+        if (se) { auto it = se->vars.find(key); if (it != se->vars.end()) return it->second; }
+        Value r = u->operand->kind == NK::BlockExpr
+            ? callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {})
+            : eval(u->operand.get());
+        if (se) se->vars[key] = r;
+        return r;
+    }
     if (u->op == "quietly") { // suppress warn() output within the block
         quietDepth_++;
         try {
@@ -12276,7 +12288,8 @@ Value Interpreter::eval(Expr* e) {
                 mc->inv->kind == NK::VarExpr) {
                 auto* ivar = static_cast<VarExpr*>(mc->inv.get());
                 if (ivar->name.size() > 1 && ivar->name[0] == '$' &&
-                    (std::isalpha((unsigned char)ivar->name[1]) || ivar->name[1] == '_')) {
+                    (std::isalpha((unsigned char)ivar->name[1]) || ivar->name[1] == '_' ||
+                     ivar->name[1] == '*')) { // $*dynamic vars answer .VAR.dynamic
                     Value sc = Value::makeHash(); sc.hashKind = "Scalar";
                     (*sc.hash)["name"] = Value::str(ivar->name);
                     Value dv = Value::any();

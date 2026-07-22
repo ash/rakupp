@@ -1584,6 +1584,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "Scalar" && inv.hash &&
         m != "^name" && m != "WHAT" && m != "WHICH" && m != "raku" && m != "perl") {
         if (m == "name")    { auto it = inv.hash->find("name");    return it != inv.hash->end() ? it->second : Value::any(); }
+        if (m == "dynamic") { // a $*twigil variable is dynamic
+            auto it = inv.hash->find("name");
+            std::string n = it != inv.hash->end() ? it->second.toStr() : "";
+            return Value::boolean(n.size() > 1 && n[1] == '*');
+        }
         if (m == "default") { auto it = inv.hash->find("default"); return it != inv.hash->end() ? it->second : Value::any(); }
         if (m == "of")      { auto it = inv.hash->find("default"); return (it != inv.hash->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu"); }
         auto vi = inv.hash->find("value");
@@ -8197,6 +8202,20 @@ void Interpreter::registerBuiltins() {
         // the string is X::ControlFlow, not a silent unwind of the whole program
         // evalString itself converts escaping control flow (routine-aware)
         return I.evalString(code.toStr(), /*mainlinePH=*/true);
+    };
+    B["RUN-MAIN"] = [](Interpreter& I, ValueList& a) -> Value {
+        // RUN-MAIN(&main, $return): parse the LIVE @*ARGS with the CLI rules
+        // (--opt named, rest positional) and invoke the callable, as a script
+        // entry would. Usage/no-match semantics stay with the auto-invoke path.
+        if (a.empty() || a[0].t != VT::Code) return Value::any();
+        std::vector<std::string> argv;
+        Value* av = I.tctx_.cur->find("@*ARGS");
+        if (!av) for (auto it = I.tctx_.dynStack.rbegin(); it != I.tctx_.dynStack.rend() && !av; ++it)
+            if (*it) av = (*it)->find("@*ARGS");
+        if (av && av->t == VT::Array && av->arr)
+            for (auto& x : *av->arr) argv.push_back(x.toStr());
+        ValueList margs = rtMainArgs(argv);
+        return I.callCallable(a[0], std::move(margs));
     };
     B["samemark"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return a.empty() ? Value::any() : a[0];
