@@ -7,12 +7,16 @@ v2.0.0 goal.
 
 ## Goal (measurable, like the 90% line)
 
-> **rakupp runs the top-50 ecosystem modules**, tiered:
-> - **Tier 1 (top 10): the module's own test suite passes ≥95%** under rakupp,
+> **rakupp runs the top-N ecosystem modules**, tiered:
+> - **Tier 1: the module's own test suite passes ≥95%** under rakupp,
 >   differentially checked against Rakudo running the same suite;
-> - **Tier 2 (top 25): loads + a curated usage script matches Rakudo** byte-
->   for-byte;
-> - **Tier 3 (top 50): `use` loads clean** and exports resolve.
+> - **Tier 2: loads + a curated usage script matches Rakudo** byte-for-byte;
+> - **Tier 3: `use` loads clean** and exports resolve.
+>
+> **N is deliberately open**: we start with the top 50 by reverse-dependency
+> count as the working set, and fix the final N (and the tier boundaries)
+> after the first baseline shows how the terrain actually slopes — 50 may
+> well be too small.
 >
 > Stretch flagship: **`zef` itself runs under rakupp** — rakupp installing its
 > own modules is the 2.0 headline demo.
@@ -112,22 +116,38 @@ pointer), with libffi as the likely engine. Explicitly time-boxed: if it
 threatens the schedule, v2.0.0 ships with NativeCall modules documented as
 Tier-N/A and the FFI lands in 2.1.
 
-## Performance note (carry the perf discipline over)
+## Performance — an explicit campaign goal, not a note
 
-No Rakudo precomp for us — but battery timing must be tracked from day one:
-big grammar-heavy modules (Cro, JSON::Fast is actually nqp-free but hot)
-compile from source on every run. If module load time becomes the pain, the
-answer is **our own source-hash-keyed AST cache** (serialize the parsed
-Program), which is also the first step toward incremental tooling. Measure
-before building it.
+**rakupp's speed must not go down** as module machinery lands. Two distinct
+commitments:
+
+1. **No regressions on what we have.** The kernel/opt benchmarks and the
+   YAMLish real-world figure join the per-leg gates for this campaign
+   (`tools/perf-guard.raku` / quick interleaved A/B on touched paths) — the
+   90% campaign's ~8% YAMLish accretion taught us this cost creeps in
+   silently. Resolution-path additions (version selection, dist-JSON reads)
+   must stay off the hot path: resolve once per `use`, cache per process.
+2. **Module load time is a first-class metric.** The battery harness records
+   per-module load and suite wall-clock under both engines from day one;
+   MODULES.md publishes them. Grammar-heavy dists (Cro) compile from source
+   on every run — our fast parse may well beat Rakudo's precomp-cache *hit*,
+   and certainly its cold path; measure, don't assume.
+
+**Our own precomp** (a source-hash-keyed serialized-AST cache per compunit,
+Rakudo-precomp-like in role but format-ours) is a *considered* item: worth
+building only if the day-one measurements say module load is a real pain at
+battery scale. If built, it doubles as the seed of incremental tooling. The
+decision point is after the Tier-3 baseline — with numbers, not vibes.
 
 ## Working agreements (inherited from the 90% campaign)
 
 - Zero-regression gates: full Roast + corpus differential + battery, per leg.
 - Every gate-caught or user-reported bug gets a `t/regression/` case.
 - Divergences vs Rakudo logged (spec-divergences memory / CORPUS-DIFF style
-  triage docs); "module does something Rakudo-illegal" is a finding too —
-  file upstream issues where the module is at fault.
+  triage docs). "The module itself is buggy / Rakudo-illegal" is a finding
+  too — recorded in **our own triage files only** (a MODULE-FINDINGS.md in
+  the battery repo). **We do not submit bug reports to module authors**;
+  everything stays in-repo, for us.
 - Docs numbers synced per leg: MODULES.md joins ROAST.md/FEATURES.md in the
   doc-sync discipline.
 
