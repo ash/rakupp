@@ -86,6 +86,85 @@ If an `nqp::` op **outside** the implemented subset appears, it is left as an
 ordinary call and fails loudly at runtime (`Undefined routine`) rather than
 silently misbehaving. The subset grows by measured demand, never by guessing.
 
+### In code
+
+The whole mechanism is three small pieces. First, in the parser, once a term has
+been read as a package-qualified call named `nqp::…` — which the *normal* parser
+does, no special casing — the guarded branch reroutes it (condensed from
+`src/Parser.cpp`):
+
+```cpp
+// term already lexed as the qualified name `nqp::add_i`, args in callArgs.
+// useNqp_ is false unless this unit said `use nqp` — so a normal program
+// never takes any of these branches.
+if (useNqp_ && name.compare(0, 5, "nqp::") == 0) {
+    // nqp::const::CCLASS_NUMERIC  ->  the literal 8, folded here at parse time
+    if (name.compare(0, 12, "nqp::const::") == 0) {
+        long long cv;
+        if (nqpConstValue(name.substr(12), cv))
+            return std::make_unique<IntLit>(cv);
+    }
+    // nqp::op(...)  ->  a dedicated NqpOp node (nqp::if/unless become a
+    // native Ternary instead — makeNqpOp returns that). Anything not in the
+    // subset returns null and stays an ordinary Call that dies at runtime.
+    if (ExprPtr n = makeNqpOp(name.substr(5), callArgs))
+        return n;
+}
+```
+
+The node itself is deliberately tiny — an opcode and its argument expressions
+(`src/Ast.h`):
+
+```cpp
+enum class NqpOpc : uint16_t { Stmts, While, Until, IseqI, AddI, Substr, /* … */ };
+
+struct NqpOp : Expr {
+    NqpOpc op;
+    std::vector<ExprPtr> args;
+    explicit NqpOp(NqpOpc o): Expr(NK::NqpOp), op(o) {}
+};
+```
+
+Finally the evaluator. The main `eval` switch gains exactly one arm, reached
+only when an `NqpOp` node exists — which only happens under `use nqp`:
+
+```cpp
+case NK::NqpOp: return evalNqpOp(static_cast<NqpOp*>(e));
+```
+
+`evalNqpOp` handles the lazy control ops *before* touching their arguments, then
+evaluates the rest eagerly (condensed from `src/Builtins.cpp`):
+
+```cpp
+Value Interpreter::evalNqpOp(NqpOp* n) {
+    auto& a = n->args;
+    switch (n->op) {                       // lazy forms drive their own args
+        case NqpOpc::While:                // nqp::while(cond, body…)
+            while (boolify(eval(a[0].get())))
+                for (size_t i = 1; i < a.size(); i++) eval(a[i].get());
+            return Value::nil();
+        // … Until / Stmts / IfNull likewise …
+        default: break;
+    }
+    ValueList v;                           // everything else: eval args once,
+    for (auto& e : a) v.push_back(eval(e.get()));   // then do the primitive
+    auto I = [&](size_t i){ return v[i].toInt(); };
+    switch (n->op) {
+        case NqpOpc::AddI:  return Value::integer(I(0) + I(1));  // int64, no bignum
+        case NqpOpc::IseqI: return Value::integer(I(0) == I(1));
+        case NqpOpc::Substr: /* codepoint-indexed slice over v[0].toStr() */;
+        // … ~40 more leaf ops …
+        default: throw RakuError{Value::str("nqp"), "op not in this build's subset"};
+    }
+}
+```
+
+So `nqp::add_i($a, $b)` under `use nqp` is: parse as a qualified call → recognize
+→ build `NqpOp{AddI, [$a, $b]}` → at runtime, evaluate both args and return their
+int64 sum. Without `use nqp`, none of it happens: the same source stays a call to
+an undefined routine, and `evalNqpOp` is never linked into any code path the run
+reaches.
+
 ## What's covered
 
 Around 50 ops, chosen from the actual inventory of the modules in the
