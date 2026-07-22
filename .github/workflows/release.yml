@@ -1,10 +1,11 @@
 name: build & release
 
-# Builds rakupp on all three target platforms and, when a v* tag is pushed,
+# Builds rakupp on every target platform and, when a v* tag is pushed,
 # attaches the packaged binaries to a GitHub Release.
 #   - macOS   : universal binary (arm64 + x86_64), Apple Clang
 #   - Linux   : x86_64, GCC, statically linked libstdc++/libgcc for portability
 #   - Windows : x64, native MSVC
+#   - OpenBSD : x86_64, base clang/libc++ (packaged by the openbsd job below)
 # The `wasm` job additionally attaches the Raku.js WebAssembly build (playground
 # bundle + ready-to-open browser showcases) so users don't need Emscripten.
 # On push/PR to main it just builds + smoke-tests (no release), so portability
@@ -342,14 +343,19 @@ jobs:
       - name: Smoke test
         run: build/rakupp tools/smoke.raku
 
-  # OpenBSD portability gate. GitHub has no native BSD runner, so vmactions boots
-  # a real OpenBSD guest under QEMU inside the Ubuntu runner and runs the build
-  # in it. OpenBSD's base `c++` is clang + libc++ (no libstdc++), so no static
+  # OpenBSD target. GitHub has no native BSD runner, so vmactions boots a real
+  # OpenBSD guest under QEMU inside the Ubuntu runner and runs the build in it.
+  # OpenBSD's base `c++` is clang + libc++ (no libstdc++), so no static
   # portability flags here. The one non-obvious trap: OpenBSD's default login-
   # class `datasize` limit is low enough that an -O3 C++ compile can be killed
   # for exhausting memory — `ulimit -d` lifts it before configuring.
-  openbsd-portability:
-    name: openbsd (build + smoke)
+  #
+  # This job also PACKAGES the build (amd64 install layout) so OpenBSD is a
+  # downloadable release asset like the other platforms. The tarball is produced
+  # inside the guest, then copied back to the host workspace (vmactions copyback)
+  # for upload / release attachment on tags.
+  openbsd:
+    name: openbsd (build + smoke + package)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -374,3 +380,30 @@ jobs:
             # --exe end-to-end: compiles generated C++ with the base clang toolchain
             build/rakupp --exe tools/smoke.raku -o smoke-native
             ./smoke-native
+            # Package the --exe-capable install layout (bin/ + lib/ + include/).
+            cmake --install build --prefix dist/rakupp
+            # --exe FROM THE INSTALLED LAYOUT — the shape users download.
+            dist/rakupp/bin/rakupp --exe -e 'say 6 * 7' -o dist-native
+            test "$(./dist-native)" = "42"
+            cp README.md LICENSE dist/rakupp/ 2>/dev/null || true
+            pkg=rakupp-openbsd-x86_64.tar.gz
+            tar -C dist -czf "$pkg" rakupp
+            # OpenBSD base `sha256 -q` prints the bare hash; format it as
+            # "<hash>  <file>" to match the coreutils-style .sha256 sidecars.
+            printf '%s  %s\n' "$(sha256 -q "$pkg")" "$pkg" > "$pkg.sha256"
+            ls -l "$pkg" "$pkg.sha256"
+
+      # Files created in the guest workspace are copied back to the host by
+      # vmactions (copyback), so they're here for upload / release attach.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rakupp-openbsd-x86_64
+          path: rakupp-openbsd-x86_64.tar.gz*
+          if-no-files-found: error
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: rakupp-openbsd-x86_64.tar.gz*

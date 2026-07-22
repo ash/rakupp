@@ -5,6 +5,12 @@ methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
 ## Unreleased
 
+- **OpenBSD is now a packaged release target** (`rakupp-openbsd-x86_64.tar.gz`).
+  OpenBSD (amd64, base clang/libc++) had been a build+smoke portability gate
+  since PR #3, but its binary was never packaged or attached to a Release; the
+  release job now installs, dist-layout `--exe`-smokes, tars, and attaches it
+  alongside the macOS/Linux/Windows assets. First appears in the next tag.
+
 Post-1.0 fixes, all Roast-gated (194,496 → 194,506; 584 files fully pass):
 
 - **Hyper compound assignment**: `@a <<+=>> n` applies the base op elementwise
