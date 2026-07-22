@@ -3764,6 +3764,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             auto di = declPod_.find(cur().line);
             if (di == declPod_.end() && pos_ > 0) di = declPod_.find(toks_[pos_ - 1].line);
             if (di != declPod_.end()) p.pod = di->second;
+            if (p.pod.empty()) p.pod = leadingPodFor(cur().line); // `#|` above the param
         }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
@@ -3834,6 +3835,9 @@ std::vector<Param> Parser::parsePointyParams() {
 StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
     // 'sub' already consumed by caller
     auto s = std::make_unique<SubDecl>();
+    s->pod = leadingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line); // `#|` above the decl
+    if (s->pod.empty()) // trailing `#=` run on/below the decl line
+        s->pod = trailingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line);
     s->isMulti = isMulti;
     s->isProto = isProto;
     std::string declInfix; // set when this is an `infix:<…>` declaration (for precedence traits)
@@ -4119,6 +4123,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         ~DepthGuard() { d--; }
     } classDepthGuard(classDepth_);
     auto cd = std::make_unique<ClassDecl>();
+    cd->pod = leadingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line); // `#|` above the decl
+    if (cd->pod.empty()) // trailing `#=` run on/below the decl line
+        cd->pod = trailingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line);
     cd->isRole = isRole;
     cd->isGrammar = isGrammar;
     cd->isPackage = isPackage;

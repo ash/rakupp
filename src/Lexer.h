@@ -25,6 +25,7 @@ private:
     int line_ = 1;
 public:
     std::map<int, std::string> declPod_; // `#= text` trailing declarator pod, by line
+    std::map<int, std::string> leadPod_; // `#| text` leading declarator pod, by line
 private:
     int col_ = 1;
 

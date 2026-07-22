@@ -2678,6 +2678,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code->body = &sd->body;
                 c.code->closure = tctx_.cur;
                 c.code->retType = sd->retType;
+                c.code->pod = sd->pod;
                 {   // `sub f { @_ }` — an @_/%_ reference implies a slurpy signature
                     std::set<std::string> ph2;
                     for (auto& s2 : sd->body) collectPHStmt(s2.get(), ph2);
@@ -2840,6 +2841,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code->name = md->name;
                     code.code->params = &md->params;
                     code.code->retType = md->retType;
+                code.code->pod = md->pod;
+                    code.code->pod = md->pod;
                     code.code->body = &md->body;
                     code.code->closure = tctx_.cur;
                     code.code->isMethod = true;
@@ -2935,6 +2938,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             std::string clsName = cd->name.empty()
                 ? "<anon|" + std::to_string(++anonTypeCounter_) + ">" : cd->name;
             ci->name = clsName;
+            ci->pod = cd->pod;
             if (!cd->parent.empty()) {
                 // a type may not inherit from / compose itself:  class A is A / role A does A
                 if (cd->parent == cd->name && !cd->name.empty())

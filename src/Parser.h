@@ -36,6 +36,32 @@ private:
     std::vector<Token> toks_;
 public:
     std::map<int, std::string> declPod_; // `#= text` by line (from the Lexer)
+    std::map<int, std::string> leadPod_; // `#| text` by line (from the Lexer)
+    // join the run of #= lines starting AT or just below `line`, "" if none
+    std::string trailingPodFor(int line) const {
+        std::string out;
+        for (int l : {line, line + 1}) {
+            if (!out.empty()) break;
+            for (int k = l; ; k++) {
+                auto it = declPod_.find(k);
+                if (it == declPod_.end()) break;
+                out = out.empty() ? it->second : out + " " + it->second;
+            }
+        }
+        return out;
+    }
+    // join the run of #| lines ENDING just above `line` (blank-free), "" if none
+    std::string leadingPodFor(int line) const {
+        std::string out;
+        int l = line - 1;
+        while (true) {
+            auto it = leadPod_.find(l);
+            if (it == leadPod_.end()) break;
+            out = out.empty() ? it->second : it->second + " " + out;
+            l--;
+        }
+        return out;
+    }
 private:
     size_t pos_ = 0;
     std::map<std::string, int> userInfix_;   // user infix name → left binding power (from is tighter/looser/equiv)

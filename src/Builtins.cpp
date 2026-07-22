@@ -1330,6 +1330,19 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    if (m == "WHY") {
+        // declarator pod: `#| text` above a sub/method/class answers .WHY
+        if (inv.t == VT::Code && inv.code && !inv.code->pod.empty())
+            return Value::str(inv.code->pod);
+        if (inv.t == VT::Type) {
+            auto it = classes_.find(inv.s);
+            if (it != classes_.end() && !it->second->pod.empty())
+                return Value::str(it->second->pod);
+        }
+        if (inv.t == VT::Object && inv.obj && inv.obj->cls && !inv.obj->cls->pod.empty())
+            return Value::str(inv.obj->cls->pod);
+        return Value::nil();
+    }
     if (m == "pairup" && (inv.t == VT::Any || inv.t == VT::Type || inv.t == VT::Nil)) {
         Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; // :U invocant
     }

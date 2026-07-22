@@ -88,6 +88,7 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         std::string pod = lexer.podData();
         Parser parser(std::move(tokens));
         parser.declPod_ = lexer.declPod_; // `#=` param descriptions (drives $*USAGE)
+        parser.leadPod_ = lexer.leadPod_; // `#|` leading declarator pod (.WHY)
         Program prog = parser.parseProgram();
         Interpreter interp;
         interp.setArgs(std::move(args));

@@ -53,6 +53,7 @@ struct Callable {
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
+    std::string pod;                                  // `#|` leading declarator pod (.WHY)
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
     std::vector<const Param*> primedParams;           // params left unbound by the priming (point into the AST)
 };
@@ -230,6 +231,7 @@ struct ClassInfo {
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     bool isGrammar = false;
     bool isRole = false;
+    std::string pod; // `#|` declarator pod (.WHY)
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
     std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented
     std::set<std::string> doneRoles; // names of roles this class/role composes (for ~~ / .does)

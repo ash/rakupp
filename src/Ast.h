@@ -253,6 +253,7 @@ struct SubDecl : Stmt {
     bool isExport = false; // `is export` — visible to importers of the enclosing module
     bool isOur = false;    // `our sub` — also installed in the package/global scope (visible to sibling blocks)
     std::string retType;   // `of Num` / `returns Int` / `--> T` return type (for .returns/.of)
+    std::string pod;       // `#|` leading declarator pod (.WHY)
     bool isNative = false;    // `is native` — a C FFI call
     std::string nativeLib;    // `is native('lib')` — "" ⇒ the default namespace (libc etc.)
     std::string nativeSym;    // `is symbol('name')` — "" ⇒ the sub's own name
@@ -283,7 +284,8 @@ struct ClassDecl : Stmt {
     bool parentIsDoes = false; // the first inheritance target came from `does` (composition), not `is`
     bool isGrammar = false;
     bool isAugment = false;        // augment class Foo { … } — merge methods into an existing type
-    bool isStubDecl = false;       // body was a bare `...` — a forward declaration, redeclarable
+    bool isStubDecl = false;
+    std::string pod; // `#|` leading declarator pod (.WHY)       // body was a bare `...` — a forward declaration, redeclarable
     bool parameterized = false;    // role R[T] — parameterizations coexist by name
     bool isPackage = false;        // package / module: body runs in a namespace
     std::vector<StmtPtr> body;     // package/module body statements
