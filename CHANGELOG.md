@@ -3,6 +3,33 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## Unreleased
+
+Post-1.0 fixes, all Roast-gated (194,496 → 194,506; 584 files fully pass):
+
+- **Hyper compound assignment**: `@a <<+=>> n` applies the base op elementwise
+  and mutates in place (all spellings; advent2009-day06.t now fully passes).
+- **Undeclared-attribute errors print the `===SORRY!===` compile banner** with
+  `file:line` (the exception carries filename/line, X::Comp style).
+- **Default `.new` binds declared public attributes only** — stray named args
+  no longer enter the attribute store; plain `.name` is no longer universal
+  (a user instance without one dies X::Method::NotFound); attributive
+  `:$!attr` / `:$.attr` parameters (BUILD/TWEAK style) are actually
+  implemented, including `:$!x = default` initialization.
+- **New lint rule `new-arg-matches-no-attribute`**: warns when a literal named
+  argument to a locally-declared class's `.new` matches no public attribute
+  (the default constructor silently ignores it). Zero false positives across
+  the 1,900-file corpus; three true catches.
+- **Corpus round-2 batch**: glued `-ne'…'`/`-npe'…'` one-liner flags; typed
+  scalars reject undefined values (`my Int $i = $undef` dies); big-part
+  Rat→Num converts with a single correct rounding; bare `$` is a true
+  anonymous state variable (`say ++$` numbers lines); substitution
+  replacements decode qq escapes (`s/$/\n/`).
+- **Match numification follows the Str ladder** (`+$0` of digits is Int).
+- Corpus differential: **1,532 / 1,812 exact matches (84.5%)** on the
+  reorganized corpus (rounds 2–4 in
+  [docs/dev/CORPUS-DIFF.md](docs/dev/CORPUS-DIFF.md)).
+
 ## v1.0.0 — 2026-07-22
 
 Everything since v0.9.1 (2026-07-20), 65 commits — the "90% campaign": many
