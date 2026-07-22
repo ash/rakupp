@@ -2,6 +2,8 @@
 #include "Ast.h"
 #include <algorithm>
 #include <cctype>
+#include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -133,6 +135,7 @@ struct Linter {
     std::vector<Scope> scopes;
     bool dynamicNames = false; // EVAL / symbolic refs seen → suppress "unused" rules
     int curLine = 0;           // line of the statement currently being walked (fallback)
+    std::map<std::string, ClassDecl*> classes; // in-file class/role decls, for .new arg checks
 
     int lineOf(Node* n) const { return n && n->line ? n->line : curLine; }
 
@@ -301,6 +304,7 @@ struct Linter {
             }
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
+                checkNewArgs(m);
                 walkExpr(m->inv.get());
                 if (m->methodExpr) walkExpr(m->methodExpr.get());
                 for (auto& a : m->args) walkExpr(a.get());
@@ -578,6 +582,66 @@ struct Linter {
         }
     }
 
+    // The default `.new` binds named args to PUBLIC attributes and silently
+    // ignores the rest — a typo'd attribute name is invisible at runtime.
+    // Warn when a literal named arg to `LocalClass.new(...)` matches no public
+    // attribute. Fires only when construction is fully understood from this
+    // file: the class and its whole in-file ancestry declare no custom
+    // new/BUILD/TWEAK (any of which may consume arbitrary nameds), and every
+    // parent/role is itself declared in this file.
+    bool defaultNewAttrs(ClassDecl* c, std::set<std::string>& attrs, int depth = 0) {
+        if (!c || depth > 8) return false;
+        for (auto& m : c->methods)
+            if (m->name == "new" || m->name == "BUILD" || m->name == "TWEAK") return false;
+        for (auto& a : c->attrs) if (a.pub) attrs.insert(a.name);
+        std::vector<std::string> supers;
+        if (!c->parent.empty()) supers.push_back(c->parent);
+        for (auto& p : c->extraParents) supers.push_back(p);
+        for (auto& r : c->roles) supers.push_back(r);
+        for (auto& s : supers) {
+            auto it = classes.find(s);
+            if (it == classes.end()) return false; // unknown ancestry — stand down
+            if (!defaultNewAttrs(it->second, attrs, depth + 1)) return false;
+        }
+        return true;
+    }
+
+    void checkNewArgs(MethodCall* m) {
+        if (m->method != "new" || m->methodExpr || m->meta || m->hyper || m->bang) return;
+        // the invocant must be a bare type name — a NameTerm (`Cafe.new`), or
+        // in some contexts a VarExpr / zero-arg Call
+        std::string cls;
+        if (m->inv && m->inv->kind == NK::NameTerm) {
+            auto* n = static_cast<NameTerm*>(m->inv.get());
+            if (n->ofType.empty()) cls = n->name;
+        } else if (m->inv && m->inv->kind == NK::VarExpr) {
+            auto* v = static_cast<VarExpr*>(m->inv.get());
+            if (!v->declare) cls = v->name;
+        } else if (m->inv && m->inv->kind == NK::Call) {
+            auto* c = static_cast<Call*>(m->inv.get());
+            if (!c->callee && c->args.empty()) cls = c->name;
+        }
+        if (cls.empty() || !std::isupper((unsigned char)cls[0])) return;
+        auto it = classes.find(cls);
+        if (it == classes.end() || it->second->isRole) return;
+        std::set<std::string> attrs;
+        if (!defaultNewAttrs(it->second, attrs)) return;
+        for (auto& a : m->args) {
+            if (!a || a->kind != NK::Pair) continue;
+            auto* p = static_cast<PairExpr*>(a.get());
+            if (p->keyExpr || p->quotedKey || p->key.empty()) continue;
+            if (!attrs.count(p->key)) {
+                std::string have;
+                for (auto& s : attrs) { if (!have.empty()) have += " "; have += s; }
+                warn(lineOf(p), "new-arg-matches-no-attribute",
+                     "named argument '" + p->key + "' to " + cls +
+                         ".new matches no public attribute" +
+                         (have.empty() ? "" : " (has: " + have + ")") +
+                         " — the default constructor silently ignores it");
+            }
+        }
+    }
+
     void redundantReturn(std::vector<StmtPtr>& body) {
         if (body.empty()) return;
         Stmt* last = body.back().get();
@@ -592,6 +656,18 @@ struct Linter {
 
 std::vector<LintFinding> lintProgram(Program& prog) {
     Linter L;
+    // prepass: register in-file class/role declarations (top level and nested
+    // in package bodies) so `.new` named-arg checks can see them regardless of
+    // declaration-vs-use order
+    std::function<void(std::vector<StmtPtr>&)> collect = [&](std::vector<StmtPtr>& stmts) {
+        for (auto& s : stmts)
+            if (s->kind == NK::ClassDecl) {
+                auto* c = static_cast<ClassDecl*>(s.get());
+                L.classes.emplace(c->name, c); // first declaration wins
+                collect(c->body);
+            }
+    };
+    collect(prog.stmts);
     L.scopes.push_back({}); // unit scope
     L.walkStmts(prog.stmts);
     L.popScope();

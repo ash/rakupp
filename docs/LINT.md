@@ -44,6 +44,7 @@ only breaks the build on the high-confidence findings.
 | `self-assignment` | warning | `$x = $x` — assigning a variable to itself, usually a typo for a nearby name. |
 | `constant-condition` | warning | An `if`/`unless` whose condition is a literal (`if False`, `unless 0`, `if True`), so the branch is dead or unconditional. |
 | `numeric-cmp-of-string` | warning | A numeric comparison (`==` `!=` `<` `<=` `>` `>=`) with a non-numeric string literal, e.g. `$s == "yes"` — almost certainly meant `eq`/`lt`/`gt`. |
+| `new-arg-matches-no-attribute` | warning | A literal named argument to `LocalClass.new(...)` that matches no public attribute — the default constructor binds nameds to public attributes and **silently ignores** the rest, so a typo'd name (`name => …` for `has $.na`) is invisible at runtime. Fires only when construction is fully understood from the file: the class and its whole in-file ancestry (parents *and* roles) declare no custom `new`/`BUILD`/`TWEAK`, and every ancestor is itself declared in the file. Private-only attributes count as no match (they are not settable from the default `new` either). |
 | `unused-parameter` | note | A signature parameter that the body never uses. Advisory, because uniform callback/dispatch signatures and interface conformance routinely carry parameters a given routine ignores. Skips slurpies, the invocant, and `$_`. |
 | `redundant-return` | note | An explicit `return` as the final statement of a routine — a block already yields its last expression. |
 
