@@ -1,3 +1,19 @@
+# Corpus differential — Round 3 (2026-07-22, same day, after the fix batch)
+
+**1509 / 1789 exact matches (84.3%)** — 19 files fixed over Round 2's 1490, zero
+regressed. Fixed clusters: glued `-ne'…'`/`-npe'…'` one-liners (with the
+`perl6`/`raku` shim restored in the harness for `.sh` wrappers), typed-scalar
+assignment of undefined values (the "prompt at EOF" cluster's real cause),
+big-part Rat→Num single-rounding, the bare-`$` anonymous state variable
+(`say ++$` line numbering), and qq escapes in substitution replacements
+(`s/$/\n/`). Roast moved 194,501 → 194,506 across gates cb1–cb3 (type.t +2,
+classify +1, weird-errors +1). Verdicts: `corpus-diff/rp-verdicts4.tsv`;
+**MATCH = 1509** is now the regression metric. The cluster table below is
+otherwise unchanged — grammar/Match residue remains the top target.
+
+
+---
+
 # Corpus differential — Round 2 (2026-07-22, v1.0.0 + hp1)
 
 Re-run of the full harness against the corpus's committed Rakudo v2026.06
