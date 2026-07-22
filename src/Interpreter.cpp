@@ -1653,8 +1653,14 @@ static bool sinkPure(Expr* e, std::string& spell, std::string& kindw) {
         }
         case NK::VarExpr: {
             auto* ve = static_cast<VarExpr*>(e);
-            if (ve->declare) return false; // `my $b;` declares, no useless use
             const std::string& n = ve->name;
+            // a bare `$` term (parsed as an anonymous state var) is useless in
+            // sink position even though it technically declares
+            if (n.rfind("$anon--state--", 0) == 0) {
+                spell = "unnamed $ variable"; kindw = "";
+                return true;
+            }
+            if (ve->declare) return false; // `my $b;` declares, no useless use
             if (n.empty() || (n[0] != '$' && n[0] != '@' && n[0] != '%')) return false;
             if (n.size() == 1) { spell = "unnamed " + n + " variable"; kindw = ""; return true; }
             char tw = n[1]; // no twigilled/special vars: $*DYN may throw, $_ / $/ / $! are set by context
@@ -6511,17 +6517,35 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         else {
             // typed container: enforce the constraint on assignment for the core
-            // nominal types (`my Int $i = $str` throws X::TypeCheck::Assignment)
-            if (a->op == "=" && a->target->kind == NK::VarExpr && isDefined(rhs)) {
+            // nominal types (`my Int $i = $str` throws X::TypeCheck::Assignment).
+            // UNDEFINED values are checked too: the matching type object (`= Int`)
+            // is fine, but a supertype's — `= Any`, the classic un-checked
+            // `prompt` result at EOF — fails like Rakudo. Nil takes the reset
+            // branch above; a Failure soaks into any container.
+            if (a->op == "=" && a->target->kind == NK::VarExpr &&
+                !(rhs.t == VT::Hash && rhs.hashKind == "Failure")) {
                 static const std::set<std::string> kChecked = {
                     "Int", "Num", "Rat", "Complex", "Str", "Bool",
+                };
+                auto undefOk = [&](const std::string& want) {
+                    // an undefined value carries its TYPE; it must still be the
+                    // declared type or a subtype (Int matches Int; Any does not)
+                    std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
+                    if (tn == want) return true;
+                    if (want == "Int" && tn == "IntStr") return true;
+                    if (want == "Num" && tn == "NumStr") return true;
+                    if (want == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
+                    if (want == "Str" && (tn == "IntStr" || tn == "NumStr" ||
+                                          tn == "RatStr" || tn == "ComplexStr")) return true;
+                    return false;
                 };
                 const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
                 for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
                     auto di = en->varDefault.find(nm);
                     if (di != en->varDefault.end()) {
                         if (di->second.t == VT::Type && kChecked.count(di->second.s) &&
-                            !rtTypeMatch(rhs, di->second.s) &&
+                            (isDefined(rhs) ? !rtTypeMatch(rhs, di->second.s)
+                                            : !undefOk(di->second.s)) &&
                             !(di->second.s == "Int" && rhs.t == VT::Bool)) // Bool is an Int subtype
                             throwTypedV("X::TypeCheck::Assignment",
                                 {{"got", rhs},
@@ -6529,7 +6553,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                  {"symbol", Value::str(nm)}},
                                 "Type check failed in assignment to " + nm +
                                 "; expected " + di->second.s + " but got " + rhs.typeName() +
-                                " (" + rhs.gist() + ")");
+                                (isDefined(rhs) ? " (" + rhs.gist() + ")"
+                                                : " " + rhs.gist())); // undef gist has its own parens
                         break;
                     }
                     if (en->vars.count(nm)) break;
@@ -8193,7 +8218,23 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
         // Substitute $/, $0.., $<name> tokens in a non-code replacement.
         std::string r; const std::string& s = repl;
         for (size_t i = 0; i < s.size(); i++) {
-            if (s[i] == '\\' && i + 1 < s.size()) { r += s[i + 1]; i++; continue; }
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                // the replacement side is qq-ish: decode the standard escapes
+                // (s/$/\n/ appends a NEWLINE, not the letter n)
+                char c = s[i + 1]; i++;
+                switch (c) {
+                    case 'n': r += '\n'; break;
+                    case 't': r += '\t'; break;
+                    case 'r': r += '\r'; break;
+                    case '0': r += '\0'; break;
+                    case 'e': r += '\x1b'; break;
+                    case 'a': r += '\a'; break;
+                    case 'f': r += '\f'; break;
+                    case 'b': r += '\b'; break;
+                    default:  r += c;    break;
+                }
+                continue;
+            }
             if (s[i] == '$' && i + 1 < s.size()) {
                 if (s[i + 1] == '/') { r += mv.toStr(); i++; continue; }
                 if (std::isdigit((unsigned char)s[i + 1])) {
@@ -8558,7 +8599,23 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     auto interp = [&](const std::string& s, const Value& mv) -> std::string {
         std::string r;
         for (size_t i = 0; i < s.size(); i++) {
-            if (s[i] == '\\' && i + 1 < s.size()) { r += s[i + 1]; i++; continue; }
+            if (s[i] == '\\' && i + 1 < s.size()) {
+                // the replacement side is qq-ish: decode the standard escapes
+                // (s/$/\n/ appends a NEWLINE, not the letter n)
+                char c = s[i + 1]; i++;
+                switch (c) {
+                    case 'n': r += '\n'; break;
+                    case 't': r += '\t'; break;
+                    case 'r': r += '\r'; break;
+                    case '0': r += '\0'; break;
+                    case 'e': r += '\x1b'; break;
+                    case 'a': r += '\a'; break;
+                    case 'f': r += '\f'; break;
+                    case 'b': r += '\b'; break;
+                    default:  r += c;    break;
+                }
+                continue;
+            }
             if (s[i] == '$' && i + 1 < s.size() && std::isdigit((unsigned char)s[i + 1])) {
                 size_t j = i + 1; std::string num; while (j < s.size() && std::isdigit((unsigned char)s[j])) num += s[j++];
                 long idx = std::stol(num); if (mv.arr && idx < (long)mv.arr->size()) r += (*mv.arr)[idx].toStr();

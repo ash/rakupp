@@ -71,6 +71,7 @@ private:
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
+    int anonStateN_ = 0;          // unique ids for bare-`$` anonymous state vars
     std::map<std::string, std::string> userCircumfix_, userPostcircumfix_; // open-bracket -> close-bracket
     // Lexical scoping for user-declared operators: every registration is logged
     // and parseBlock rolls back to its entry mark, so `sub postfix:<!!>` inside

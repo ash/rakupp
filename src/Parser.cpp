@@ -2210,6 +2210,19 @@ ExprPtr Parser::parsePrimary() {
                 u->op = "ctx$"; u->operand = parsePrimary();
                 return u;
             }
+            // bare `$` as a TERM is an anonymous STATE variable — each textual
+            // occurrence is its own persistent slot (`say ++$ ~ ". " ~ $_`
+            // numbers lines; two `$`s in one expression are independent).
+            // NOT when a glued `<` follows: `$<name>` is the $/<name> capture
+            // (the postfix pass rewrites the bare-$ VarExpr to $/)
+            if (cur().text == "$" &&
+                !(peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore)) {
+                int ln = cur().line; advance();
+                auto e = std::make_unique<VarExpr>("$anon--state--" + std::to_string(anonStateN_++));
+                e->declare = true; e->declScope = "state";
+                e->line = ln;
+                return e;
+            }
             int ln = cur().line; auto e = std::make_unique<VarExpr>(stripPseudoPkg(advance().text)); e->line = ln; return e;
         }
         case Tok::LParen: {

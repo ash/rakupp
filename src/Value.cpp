@@ -162,19 +162,29 @@ double Value::toNum() const {
                      : ratN->sign > 0 ? std::numeric_limits<double>::infinity()
                                       : -std::numeric_limits<double>::infinity();
             if (ratN && ratD) {
-                double dn = ratN->toDouble(), dd = ratD->toDouble();
-                if (std::isinf(dn) || std::isinf(dd)) {
-                    // both sides overflow a double (FatRat with huge parts): divide
-                    // the leading digits and scale by the ten-power difference —
-                    // inf/inf would be NaN, and n/inf would wrongly give 0.
+                // both parts exactly representable → one division, one rounding
+                auto dblExact = [](const BigInt& b) {
+                    return b.mag.size() <= 1 ||
+                           (b.fitsLL() && std::llabs(b.toLL()) <= (1LL << 53));
+                };
+                if (!(dblExact(*ratN) && dblExact(*ratD))) {
+                    // wide parts: separate BigInt→double conversions round TWICE
+                    // and drift in the last bits (1e26-digit division printed
+                    // …37 where Rakudo has …33). Long-divide to 19 significant
+                    // decimal digits and let strtod do the single, correct
+                    // rounding. Also covers FatRats too big for double (the
+                    // old inf/inf special case).
                     std::string sn = ratN->abs().toString(), sd = ratD->abs().toString();
-                    double mn = std::stod(sn.substr(0, 17)), md = std::stod(sd.substr(0, 17));
-                    double mag = ((double)sn.size() - (double)std::min<size_t>(sn.size(), 17)) -
-                                 ((double)sd.size() - (double)std::min<size_t>(sd.size(), 17));
-                    double r = (mn / md) * std::pow(10.0, mag);
-                    return ratN->sign < 0 ? -r : r;
+                    long long scale = 19 - ((long long)sn.size() - (long long)sd.size());
+                    BigInt num = ratN->abs(), den = ratD->abs(), q, r;
+                    if (scale > 0) num = num * BigInt(10).pow(scale);
+                    else if (scale < 0) den = den * BigInt(10).pow(-scale);
+                    BigInt::divmod(num, den, q, r);
+                    std::string lit = q.toString() + "e" + std::to_string(-scale);
+                    double d = std::strtod(lit.c_str(), nullptr);
+                    return ratN->sign < 0 ? -d : d;
                 }
-                return dn / dd;
+                return ratN->toDouble() / ratD->toDouble();
             }
             return 0.0;
         case VT::Str:  { try { return std::stod(s); } catch (...) { return 0.0; } }

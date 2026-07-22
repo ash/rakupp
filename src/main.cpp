@@ -780,11 +780,21 @@ int main(int argc, char** argv) {
     while (!rest.empty()) {
         const std::string& a = rest[0];
         if (a.size() < 2 || a[0] != '-' || a[1] == '-') break;
-        if (a.find_first_not_of("npe", 1) != std::string::npos) break; // not a pure n/p/e combo
-        bool hasE = a.find('e') != std::string::npos;
-        if (a.find('n') != std::string::npos) optN = true;
-        if (a.find('p') != std::string::npos) optP = true;
-        if (hasE) { rest[0] = "-e"; break; }   // let the -e handling below take the code
+        // scan the flag cluster left-to-right: -n / -p / -np, and 'e' ENDS the
+        // cluster with everything after it glued as the code (-ne'say $_' — the
+        // shell strips the quotes, so the whole thing is one argv entry)
+        size_t j = 1;
+        bool sawN = false, sawP = false, sawE = false;
+        while (j < a.size() && (a[j] == 'n' || a[j] == 'p' || a[j] == 'e')) {
+            if (a[j] == 'n') sawN = true;
+            else if (a[j] == 'p') sawP = true;
+            else { sawE = true; j++; break; }
+            j++;
+        }
+        if (!(sawN || sawP || sawE)) break;
+        if (!sawE && j < a.size()) break;      // -nfoo — not a flag cluster at all
+        optN |= sawN; optP |= sawP;
+        if (sawE) { rest[0] = "-e" + a.substr(j); break; } // glued code (or empty → next arg)
         rest.erase(rest.begin());              // pure -n / -p / -np : consume and continue
     }
     size_t nrest = rest.size();
