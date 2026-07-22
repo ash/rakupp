@@ -1,7 +1,7 @@
 # The measured ecosystem top-50 (working set for v2.0.0)
 
 Reverse-dependency ranking over the **Raku Ecosystem Archive** (Raku/REA
-META.json, fetched 2026-07-22; 14,764 dist-versions, 7,481 distinct dists,
+META.json, fetched 2026-07-22; 14,764 dist-versions, ~2,505 distinct dists,
 latest version per dist by release-date). `run` = distinct dists that
 runtime-`depends` on it; `all` adds build-/test-depends. Pins are the
 newest release **≥60 days old** (≤ 2026-05-23). The `Rakudo` pseudo-entry
