@@ -1105,7 +1105,10 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // word-key hash subscript: %h<key>  (and $<name>/@<name>/%<name> capture sugar for $/<name>)
             // On a numeric literal (`1<2`) this can only be a mistyped comparison —
             // infix `<` requires whitespace before it (S03), so it's a parse error.
-            if (base->kind == NK::IntLit || base->kind == NK::NumLit)
+            if ((base->kind == NK::IntLit || base->kind == NK::NumLit) &&
+                // `1<2` is a mistyped comparison (S03: whitespace required);
+                // `5<c>` parses as a hash subscript that dies at runtime
+                (peek().kind == Tok::IntLit || peek().kind == Tok::NumLit))
                 error("Whitespace required before < operator");
             advance();
             std::vector<std::string> words = readAngleWords(">");
@@ -1953,6 +1956,18 @@ ExprPtr Parser::parsePrimary() {
     // signature literal `:($a, $b?)` — a first-class Signature term. Exotic
     // forms our signature parser can't express yet (`:(\SELF: …)`) fall back
     // to an opaque empty Signature so the surrounding file still parses.
+    // `:(|)` — the lexer fuses `(|)` into the set-union op token; here it is a
+    // signature literal holding one anonymous capture parameter
+    if (isOp(":") && peek().kind == Tok::Op && peek().text == "(|)" && !peek().spaceBefore) {
+        advance(); advance(); // : (|)
+        auto be = std::make_unique<BlockExpr>();
+        Param cp; cp.sigil = '|'; cp.slurpy = true;
+        be->params.push_back(std::move(cp));
+        auto u = std::make_unique<Unary>();
+        u->op = "siglit";
+        u->operand = std::move(be);
+        return u;
+    }
     if (isOp(":") && peek().kind == Tok::LParen && !peek().spaceBefore) {
         size_t save = pos_;
         advance(); advance(); // : (
@@ -2906,9 +2921,26 @@ ExprPtr Parser::parsePrimary() {
                       return nat.count(peek().text) > 0; }())) {
                 advance(); // [
                 std::string params;
-                while (!isKind(Tok::RBracket) && !isKind(Tok::End)) {
-                    if (isKind(Tok::Ident)) { if (!params.empty()) params += ","; params += advance().text; }
-                    else advance(); // skip commas / smileys / whitespace tokens
+                int tpd = 1; // nesting: Baz[Foo[Int], Bar[Int]]
+                while (tpd > 0 && !isKind(Tok::End)) {
+                    if (isKind(Tok::LBracket)) { tpd++; params += "["; advance(); continue; }
+                    if (isKind(Tok::RBracket)) {
+                        tpd--;
+                        if (tpd == 0) break;
+                        params += "]"; advance(); continue;
+                    }
+                    if (isKind(Tok::Ident)) {
+                        if (!params.empty() &&
+                            (std::isalnum((unsigned char)params.back()) || params.back() == ']'))
+                            params += ",";
+                        params += advance().text;
+                        // package-qualified segment: Foo::Bar
+                        while (isOp("::") && peek().kind == Tok::Ident) {
+                            advance(); params += "::" + advance().text;
+                        }
+                        continue;
+                    }
+                    advance(); // commas / smileys — the comma is re-added implicitly
                 }
                 expectKind(Tok::RBracket, "]");
                 auto nt = std::make_unique<NameTerm>(name);
@@ -3525,6 +3557,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 continue;
             }
             if (isKind(Tok::Ident)) p.type = advance().text; // optional inner type constraint
+            // nested alias layers: :x(:y(:z($a))) — every key answers
+            int aliasDepth = 0;
+            while (isOp(":") && peek().kind == Tok::Ident && peek(2).kind == Tok::LParen) {
+                advance(); // :
+                p.aliasKeys.push_back(advance().text);
+                advance(); // (
+                aliasDepth++;
+            }
             p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
             if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
             else error("expected variable in named-parameter alias");
@@ -3533,6 +3573,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 throw ParseError("Name " + p.namedKey + " used for more than one named parameter",
                                  cur().line, "X::Signature::NameClash", {{"name", p.namedKey}});
             p.named = true;
+            for (; aliasDepth > 0; aliasDepth--)
+                if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             if (matchOp("?")) p.optional = true;
             else if (matchOp("!")) p.required = true;

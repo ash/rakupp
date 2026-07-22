@@ -1593,6 +1593,13 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 return Value::str("Perl6::Metamodel::ClassHOW"); // Rakudo's full metaclass name
             return Value::str(inv.typeName());
         }
+        if (mm == "shortname") { // type name without its package qualifier
+            std::string n = inv.typeName();
+            size_t base = n.find('[');            // keep any [parametrization]
+            size_t cut = n.rfind("::", base == std::string::npos ? std::string::npos : base);
+            if (cut != std::string::npos) n = n.substr(cut + 2);
+            return Value::str(n);
+        }
         if (mm == "WHAT") return Value::typeObj(inv.typeName());
         // `X.^parameterize(T)` yields the parameterized type `X[T]` (same as `X[T]`)
         if (mm == "parameterize") {

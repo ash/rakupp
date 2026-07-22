@@ -191,6 +191,7 @@ struct Param {
     ExprPtr defaultVal; // may be null
     std::string namedKey; // external name for `:name($var)` (else = var name)
     bool aliasBoth = false; // `:name(:$var)` — BOTH the alias and the var name bind
+    std::vector<std::string> aliasKeys; // nested aliases `:x(:y(:z($a)))` — every layer's key answers
     std::string pod;      // `#= description` trailing declarator pod (drives $*USAGE)
     char slurpyKind = 0;  // 'f'=*@ (flatten), 'n'=**@ (no-flatten), '1'=+@ (single-arg rule)
     bool named = false;

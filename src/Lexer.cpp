@@ -846,10 +846,17 @@ bool Lexer::tryQuoteForm(Token& out) {
         int dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
         if (p + dlen <= src_.size()) {
             std::string D = src_.substr(p, dlen);
+            // PAIRED delimiters close with their partner (open+1), not the same
+            // codepoint: 「…」 『…』 〈…〉 《…》 (the U+3008..U+300F family)
+            std::string DC = D;
+            if (dlen == 3 && (unsigned char)D[0] == 0xE3 && (unsigned char)D[1] == 0x80 &&
+                ((unsigned char)D[2] == 0x8C || (unsigned char)D[2] == 0x8E ||
+                 (unsigned char)D[2] == 0x88 || (unsigned char)D[2] == 0x8A))
+                DC[2] = (char)((unsigned char)D[2] + 1);
             while (pos_ < p) advance();
             for (int k = 0; k < dlen; k++) advance(); // opening delimiter
             std::string raw;
-            while (!eof() && src_.compare(pos_, dlen, D) != 0) {
+            while (!eof() && src_.compare(pos_, dlen, DC) != 0) {
                 if (peek() == '\\') {
                     raw += advance();
                     if (!eof() && src_.compare(pos_, dlen, D) == 0) { for (int k = 0; k < dlen; k++) raw += advance(); }
@@ -1643,6 +1650,28 @@ std::vector<Token> Lexer::tokenize() {
             while (!eof() && !((unsigned char)peek() == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA3))
                 raw += advance();
             if (!eof()) { advance(); advance(); advance(); } // ｣
+            Token ct = make(Tok::StrLit, raw);
+            ct.spaceBefore = spaced;
+            out.push_back(ct);
+            continue;
+        }
+        // CJK bracket raw quotes: 「…」 (U+300C/D) and 『…』 (U+300E/F) — all share
+        // the E3 80 prefix with close = open+1; they NEST (Rakudo bracket quotes)
+        if (!inAngle && (unsigned char)c == 0xE3 && (unsigned char)peek(1) == 0x80 &&
+            ((unsigned char)peek(2) == 0x8C || (unsigned char)peek(2) == 0x8E)) {
+            unsigned char ob = (unsigned char)peek(2), cb = ob + 1;
+            advance(); advance(); advance(); // opener
+            std::string raw;
+            int cjkd = 1;
+            while (!eof()) {
+                if ((unsigned char)peek() == 0xE3 && (unsigned char)peek(1) == 0x80) {
+                    unsigned char b2 = (unsigned char)peek(2);
+                    if (b2 == ob) cjkd++;
+                    else if (b2 == cb) { if (--cjkd == 0) break; }
+                }
+                raw += advance();
+            }
+            if (!eof()) { advance(); advance(); advance(); } // closer
             Token ct = make(Tok::StrLit, raw);
             ct.spaceBefore = spaced;
             out.push_back(ct);

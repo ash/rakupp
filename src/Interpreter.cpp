@@ -3912,6 +3912,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         if (p.slurpy) { if (p.sigil == '%') hasNamedSlurpy = true; continue; }
         if (!p.named) continue;
         if (!p.namedKey.empty()) explicitNamed.insert(p.namedKey);
+        for (auto& ak : p.aliasKeys) explicitNamed.insert(ak); // nested alias layers
         if (p.namedKey.empty() || p.aliasBoth) {
             // strip sigil AND any twigil: `:$!bar` answers `bar => …`
             std::string key = p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')
@@ -4002,6 +4003,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             auto it = named.find(bareName);
             if (it == named.end() && p.aliasBoth && p.name.size() > 1)
                 it = named.find(p.name.substr(1)); // :a(:$b) also answers b => …
+            for (auto& ak : p.aliasKeys)          // :x(:y(:z($a))): y/z answer too
+                if (it == named.end()) it = named.find(ak);
             if (it != named.end()) {
                 // a bare `:j` (Bool True) cannot bind a %- or @-sigil named param
                 if ((p.sigil == '%' || p.sigil == '@') && it->second.t == VT::Bool)
