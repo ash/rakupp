@@ -4294,6 +4294,12 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             }
             continue;
         }
+        if (isIdent("trusts")) { // `trusts Foo;` — parsed; access is unenforced anyway
+            advance();
+            while (isKind(Tok::Ident) || isOp("::")) advance();
+            matchKind(Tok::Semicolon);
+            continue;
+        }
         if (isIdent("method") || isIdent("submethod")) {
             bool sub = isIdent("submethod");
             advance();

@@ -1330,6 +1330,9 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    if (m == "pairup" && (inv.t == VT::Any || inv.t == VT::Type || inv.t == VT::Nil)) {
+        Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; // :U invocant
+    }
     // a binary buffer has no string semantics: .Str is an error (use .decode)
     if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
         m == "Str")
@@ -5649,6 +5652,31 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         long nsub = 0;
         return Value::str(substSelect(s, from, replArg, args, nsub, /*literal=*/true));
     }
+    if (m == "samemark" && !args.empty()) {
+        // copy the combining marks of the pattern's clusters onto the invocant's
+        // base characters, cluster by cluster (last pattern cluster repeats)
+        auto clusters = [](const std::string& s) {
+            std::vector<std::pair<uint32_t, std::vector<uint32_t>>> out;
+            for (uint32_t cp : uniNormalize(utf8cp(s), 0)) { // NFD
+                std::string gc = uniGeneralCategory(cp);
+                if (!out.empty() && (gc == "Mn" || gc == "Mc" || gc == "Me"))
+                    out.back().second.push_back(cp);
+                else out.push_back({cp, {}});
+            }
+            return out;
+        };
+        auto sc = clusters(inv.toStr()), pc = clusters(args[0].toStr());
+        if (pc.empty()) return Value::str(inv.toStr());
+        std::vector<uint32_t> res;
+        for (size_t i = 0; i < sc.size(); i++) {
+            res.push_back(sc[i].first);
+            auto& marks = pc[std::min(i, pc.size() - 1)].second;
+            res.insert(res.end(), marks.begin(), marks.end());
+        }
+        std::string outs;
+        for (uint32_t cp : uniNormalize(res, 1)) outs += cpToUtf8(cp); // NFC
+        return Value::str(outs);
+    }
     if (m == "trans") { // $s.trans(@from => @to) / .trans('abc' => 'xyz') / .trans('a..c' => 'A..C')
         std::string s = inv.toStr();
         // a string arg is taken char-by-char, but `X..Y` denotes an inclusive codepoint range
@@ -6508,6 +6536,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 return *into;
             }
             return h;
+        }
+        if (m == "pairup") { // consecutive elements become Pairs (odd tail: X::Pairup::OddNumber)
+            ValueList items = inv.t == VT::Array && inv.arr ? *inv.arr : ValueList{};
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            for (size_t i = 0; i + 1 < items.size(); i += 2)
+                out.arr->push_back(Value::pair(items[i].toStr(), items[i + 1]));
+            if (items.size() % 2)
+                throw RakuError{Value::typeObj("X::Pairup::OddNumber"),
+                    "Odd number of elements found where hash initializer expected"};
+            return out;
         }
         if (m == "rotor" || m == "batch") { // chunk into sublists of a fixed size
             for (auto& a : args)
@@ -8159,6 +8197,11 @@ void Interpreter::registerBuiltins() {
         // the string is X::ControlFlow, not a silent unwind of the whole program
         // evalString itself converts escaping control flow (routine-aware)
         return I.evalString(code.toStr(), /*mainlinePH=*/true);
+    };
+    B["samemark"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return a.empty() ? Value::any() : a[0];
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "samemark", rest);
     };
     B["exit"] = [](Interpreter&, ValueList& a) -> Value {
         throw ExitEx{(int)(a.empty() ? 0 : a[0].toInt())};
