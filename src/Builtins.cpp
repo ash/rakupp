@@ -5567,6 +5567,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         return Value::str(r);
     }
     if (m == "index" || m == "rindex") {
+        // a LIST of needles: the best (leftmost for index, rightmost for
+        // rindex) position across all of them
+        if (!args.empty() && (args[0].t == VT::Array || args[0].t == VT::Range)) {
+            Value best; bool have = false;
+            for (auto& nd : args[0].flatten()) {
+                ValueList sub{nd};
+                for (size_t i = 1; i < args.size(); i++) sub.push_back(args[i]);
+                Value r = methodCall(inv, m, sub);
+                if (r.t == VT::Int &&
+                    (!have || (m == "index" ? r.i < best.i : r.i > best.i))) {
+                    best = r; have = true;
+                }
+            }
+            return have ? best : Value::nil();
+        }
         // positions are in characters, not bytes; the optional 2nd arg is the
         // start (index) / rightmost-allowed start (rindex) position.
         // `:i`/`:ignorecase` case-folds both sides before comparing.

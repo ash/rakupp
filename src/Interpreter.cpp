@@ -647,7 +647,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         double endVal = (infinite || endCode) ? 0 : r.toNum();
         Value out = Value::array(); out.isList = true; out.s = "Seq"; // (1...5).WHAT is (Seq)
         for (auto& s : seed) out.arr->push_back(s);
-        if (out.arr->empty()) return out;
+        if (out.arr->empty() && !hasGen) return out; // `{ } ... *` seeds from the closure itself
         // String sequence: "a"..."e" climbs via strSucc, "E"..."A" descends via strPred.
         if (!hasGen && !infinite && r.t == VT::Str && seed.back().t == VT::Str) {
             std::string end = r.s, cur = seed.back().s;
@@ -713,16 +713,29 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             else if (!gen.code->placeholders.empty())   arity = (long long)gen.code->placeholders.size();
             else if (gen.code->params && !gen.code->params->empty()) arity = (long long)gen.code->params->size();
         }
-        // An infinite sequence (`… … *`) is LAZY: keep only the seed materialised and
-        // attach a generator that computes one more element on demand.
-        if (infinite) {
+        // An infinite sequence (`… … *`) is LAZY — and so is a GENERATOR
+        // sequence with a literal endpoint (`1, {-$_} ... 3`): it stops only on
+        // an EXACT endpoint match, which may never come (Rakudo semantics),
+        // so it must not materialise eagerly.
+        if (infinite || (hasGen && !endCode)) {
+            // seed already at the endpoint: the sequence is just the seed
+            if (!infinite && !seed.empty() && seed.back().isNumeric() &&
+                seed.back().toNum() == endVal) {
+                if (exclusive) out.arr->pop_back();
+                return out;
+            }
             auto st = std::make_shared<LazySeqState>();
-            st->infinite = true; // unbounded: list assignment must keep it lazy, not drain it
             Interpreter* self = this;
+            bool boundedGen = !infinite;
+            st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
-                              succSeed, succDesc, ratioV, exactRatio](ValueList& cache) -> bool {
-                if (cache.empty()) return false;
-                double lastV = cache.back().toNum();
+                              succSeed, succDesc, ratioV, exactRatio,
+                              boundedGen, endVal, exclusive](ValueList& cache) -> bool {
+                if (cache.empty() && !hasGen) return false;
+                if (boundedGen && !cache.empty() && cache.back().isNumeric() &&
+                    cache.back().toNum() == endVal) return false; // endpoint reached
+                if (boundedGen && cache.size() >= 1000000) return false; // runaway cap (endpoint never matched)
+                double lastV = cache.empty() ? 0 : cache.back().toNum();
                 Value next;
                 if (hasGen) {
                     ValueList args; size_t n = cache.size();
@@ -730,6 +743,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     // `last` inside the generator terminates the sequence
                     try { next = self->callCallable(gen, args); }
                     catch (const LastEx&) { return false; }
+                    if (boundedGen && exclusive && next.isNumeric() && next.toNum() == endVal)
+                        return false; // ...^ drops the endpoint element
                 } else if (succSeed) { // 'a' ... * : step by succ/pred
                     const Value& lastE = cache.back();
                     if (lastE.t == VT::Str) {
@@ -771,7 +786,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         const size_t CAP = 1000000;
         bool dirKnown = !hasGen; // for a closure gen the travel direction is learned
         while (out.arr->size() < CAP) {
-            double lastV = out.arr->back().toNum();
+            double lastV = out.arr->empty() ? 0 : out.arr->back().toNum(); // empty seed: gen makes elem 1
             // Non-gen numeric sequences can pre-check the endpoint; a closure gen
             // must generate first (its direction — and thus overshoot test — is
             // only known once we see the next value).
