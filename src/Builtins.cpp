@@ -5889,7 +5889,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "lines" && inv.hashKind == "IO") {
         std::ifstream in(inv.toStr()); Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (!in) throwFailedOpen(inv.toStr());
-        std::string line; while (std::getline(in, line)) out.arr->push_back(Value::str(line));
+        std::string line;
+        while (std::getline(in, line)) { // strip \r\n too (Windows/HTTP text)
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            out.arr->push_back(Value::str(line));
+        }
         return out;
     }
 
@@ -6498,7 +6502,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "lines") {
         std::istringstream is(inv.toStr()); std::string w; Value out = Value::array();
         out.isList = true; out.s = "Seq";
-        while (std::getline(is, w)) out.arr->push_back(Value::str(w));
+        // `\r\n` (and a lone trailing `\r`) is a line terminator too — Raku's
+        // .lines strips it, so an HTTP response's `$resp.lines[0]` has no \r
+        while (std::getline(is, w)) {
+            if (!w.empty() && w.back() == '\r') w.pop_back();
+            out.arr->push_back(Value::str(w));
+        }
         return out;
     }
     if (m == "comb") {
