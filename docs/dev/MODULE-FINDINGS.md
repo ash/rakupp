@@ -83,7 +83,16 @@ KNOWN TRADEOFF: recognizing+skipping `is repr("…")` means a repr-changing
 Load count (Tier-3) held at 38/50 both-engines after the JSON::Fast leg —
 loading was never JSON::Fast's problem, *functioning* was. Tier-2 measures
 whether the advertised API works (battery `tier2/run.sh`, STDOUT diff vs
-Rakudo). First 10-module probe: **4 MATCH, 6 DIFF**.
+Rakudo). First 10-module probe: 4 MATCH, 6 DIFF. **Wide run (all 50, 2026-07-23):
+19 MATCH, 9 CONFIRMED rakupp bugs, 22 inconclusive (out-of-set deps missing in
+the isolated battery, or thin probes).** The 9 confirmed bugs are the actionable
+next-leg list: XML `from-xml` (root name empty), URI + Cro::Core `.host` (empty),
+MIME::Base64 + Base64 base64 encoding (both wrong — likely one shared
+Blob/.encode root cause), URI::Encode not percent-encoding, Color hex parse
+(returns black), HTTP::Status message lookup (empty), LibraryMake get-vars
+(native). NOTE several MATCHes are thin (`.^name`/`.defined` load-smoke) — the
+real functional matches are JSON::Fast, File::Temp, Terminal::ANSIColor,
+JSON::Tiny, YAMLish, UUID, OO::Monitors. Battery: scans/TIER2-WIDE.md.
 
 - MATCH: **JSON::Fast** (keystone, both directions), Terminal::ANSIColor,
   File::Temp, Method::Also.
