@@ -501,3 +501,93 @@ grep-index, first-index) — same name-gating as the pointy-block-arg rule, so
 a general `name * 2` stays multiplication. Verified: mc.raku prints ~3.1416;
 S32-list/first.t goes no-TAP(parse error)→16 ok; whatever/map/grep.t
 unchanged. Rides the next batch's full gate.
+
+## Batch 11 — probe triage: five parse/dispatch fixes, two stale probes
+
+Fresh triage showed ALL 22 remaining Tier-2 DIFFs have rk=[] (Rakudo dies in
+the battery sandbox); of those, 8 were also rakupp failures. Fixes, each
+verified against the failing module:
+
+1. **`if/elsif EXPR -> $x is copy {`** — traits on an if-binding are consumed
+   and ignored (our binding var is already a writable copy). HTTP::UserAgent's
+   content-length elsif. (`with` already used the full signature path.)
+2. **`< word list >` shields the rule-body scanner** — HTTP::MediaType's tchar
+   list holds `' # {` as WORDS; the raw `{…}`-capture treated the quote as a
+   string opener and swallowed braces to EOF.
+3. **Alternative regex/subst delimiters** (HTTP::Request's `m:i,pat,`).
+   Docs: any delimiter but whitespace/alphanumerics/':'(adverbs)/'#'(comment).
+   Rakudo probing: bare `m,b,` and `s,b,X,` work, BUT `foo(S,S)` with a
+   declared role S is a CALL — Rakudo disambiguates via declared-symbol
+   lookup, impossible in one-pass lexing (roast subsignature.t + subst.t
+   caught the naive version in the gate). Shipped policy: ADVERBED forms
+   accept any documented-legal punctuation delimiter (`m:i;p;`, `s:g=a=b=`);
+   bare forms add ',' for m/rx only (documented Raku), while bare `s,`/`S,`
+   stay terms/calls — the known scope-sensitive divergence.
+4. **Indented POD** — `    =begin comment … =end comment` inside a sub body is
+   pod at the virtual margin (Text::Utils had one mid-sub); both =begin and
+   =end now accept leading blanks.
+5. **Enum trait arguments** — `enum Sort-type is export(:sort-list) < … >`
+   (Text::Utils): parseEnum consumed `is export` but not the `(…)` argument.
+6. **`!=:=`** lexes as one op (negated container identity), BP_COMPARE; the
+   generic `!op` negation in applyArith does the rest. JSON::Class.
+7. **`$*RAKU.compiler.version` reports Raku++'s OWN version** (v1.0.0, from
+   CMake's PROJECT_VERSION; .release/.id likewise) — rakupp is not Rakudo and
+   does not impersonate its release dates. Consequence, accepted: modules that
+   gate on Rakudo dates (JSON::Class dies for compiler < v2023.12) refuse to
+   load — such Rakudo-specific checks are the module's business, and
+   JSON::Class is blocked on AttrX::Mooish anyway. The LANGUAGE version stays
+   6.x on $*RAKU.version / .lang-version.
+8. **Blob/Buf are not Stringy in dispatch** — a byte buffer no longer binds a
+   `Str` param; `multi sha1(Str)`'s `samewith $str.encode` looped forever when
+   the Blob re-matched Str instead of the blob8 candidate. blob8..blob64/
+   buf8..buf64/utf8/16/32 added to isKnownTypeName (`--> blob32` returns).
+9. **Stale probes fixed** (battery repo): Digest 1.1.0 provides no `Digest`
+   module (Rakudo fails the old probe too) → probe now targets Digest::SHA1;
+   Data::Dump exports `Dump`, not `dump` → flipped to MATCH immediately.
+
+Tier-2: **29/50** (Data::Dump). HTTP::UserAgent and Text::Utils now answer
+their probes correctly (rp right, rk=[] sandbox-only). Honest new target:
+**Digest rk=[20] vs rp=[]** — pure-Raku SHA1 needs element-width typed blobs
+(blob32.new packs 32-bit words, .elems counts words, [$i] reads words; our
+Blob is a plain byte string). JSON::Class additionally needs AttrX::Mooish
+vendored + MOP-level parse work. PDF::Lite needs the PDF dist vendored.
+
+## Batch 11b — typed blobs + the SHA1 pipeline: Digest byte-identical
+
+Digest::SHA1's pure-Raku `sha1("abc")` now returns the exact
+`a9993e364706816aba3e25717850c26c9cd0d89d` (Tier-2 Digest MATCH, probe checks
+the real hex, not just `.elems`). It exercised a whole cluster of general
+fixes:
+
+1. **Element-width typed blobs**: blob16/32/64 (and utf16/32) store
+   little-endian WORDS, ofType = uint16/32/64. New Value helpers blobElemSize/
+   blobElems/blobWordAt/blobList; every blob surface switched from bytes to
+   elements — .new/.allocate (pack LE), .elems/.list/.head/.tail/AT-POS,
+   for-iteration, @$blob contextualizer, `my @a = $blob` (coerceArray),
+   subscript+slice (5 index sites), and Z/X/hyper list-infix. `.Int`/`.Num`
+   of a Blob = its element count (`8 * $msg` = bits). flatten() deliberately
+   LEFT keeping a Blob whole — Rakudo's `flat`/`reduce` don't expand it; only
+   list-context ops (Z/X, listCtx helper) do.
+2. **Radix digit-list `:256[a,b,c]`** = place-value in base (`:256[|@^a]`
+   packs bytes into a word); parser + __radix-list builtin; the `{ :256[…] }`
+   looksHash heuristic now treats `[` like `(`/`<` after a radix int.
+3. **Colon-arg list precedence**: `blob32.new: $H Z+ $M` — a colon method-arg
+   is now parsed as ONE expression down past the list infixes (Z/X are looser
+   than comma) and a top-level comma ListExpr is splatted; `content 'a', $b`
+   still splits. Both public and private (`self!m:`) colon sites.
+4. **`( expr; )`** (trailing semicolon in parens) is the grouped VALUE, not a
+   1-element list — Rakudo: `(5;)` is `5`. (Digest wraps its reduce in
+   `( … ; )`.)
+5. **Native-int array wraparound**: `uint32 @W.push(v)` masks v to 32 bits
+   (Value::natWidthOfType + mask at push) — SHA1's `@W.push: S(...)` needs the
+   overflow. blob32.new already low-masks each word.
+6. **Blob is not Stringy** (batch 11) is what stopped `samewith $str.encode`
+   from looping — the blob8 multi now wins over the Str one.
+
+Stale probes fixed (battery): Digest → Digest::SHA1 (real hex);
+Digest::HMAC → named-arg call (the old positional form fails on Rakudo too).
+
+Tier-2 **30/50**. Honest remaining: Digest::HMAC still DIFFs — SHA1 is now
+correct but HMAC's own blob key/msg XOR padding gives
+`73752fe1…` vs Rakudo `102900b7…` (a separate blob-op bug, batch 12). PDF::Lite
+needs the PDF dist vendored; JSON::Class needs AttrX::Mooish + MOP work.

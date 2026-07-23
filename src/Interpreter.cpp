@@ -1037,6 +1037,11 @@ Value rtArrayVal(const Value& v) {
 
 static Value coerceArray(const Value& v) {
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);
+    // a Blob/Buf assigns to an @-array as its elements (`my uint32 @W = $M`
+    // in Digest::SHA1 — 32-bit words for blob32)
+    if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+        Value r = Value::array(v.blobList()); r.isList = false; return r;
+    }
     if (v.t == VT::Array) {
         if (v.itemized) { // an itemized Array is ONE element: `my @row = @m[0]` is [[...],]
             Value r = Value::array(); r.arr->push_back(v); return r;
@@ -2713,6 +2718,8 @@ bool isKnownTypeName(const std::string& n) {
         "Mu", "Any", "Cool", "Junction", "Whatever", "WhateverCode", "Nil",
         "Int", "UInt", "Num", "Rat", "FatRat", "Complex", "Numeric", "Real", "Bool",
         "Str", "Stringy", "Uni", "Blob", "Buf", "Stringy",
+        "blob8", "buf8", "blob16", "buf16", "blob32", "buf32", "blob64", "buf64",
+        "utf8", "utf16", "utf32",
         "Array", "List", "Seq", "Slip", "Range", "Positional", "Iterable", "Iterator",
         "Hash", "Map", "Associative", "Pair", "Enum", "Bag", "Set", "Mix",
         "BagHash", "SetHash", "MixHash", "Baggy", "Setty", "Mixy", "QuantHash",
@@ -3857,7 +3864,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // intuitive reading; the rare Rakudo one-item quirk is not modeled.)
             if (listv.t == VT::Str && !listv.itemized &&
                 (listv.hashKind == "Blob" || listv.hashKind == "Buf")) {
-                for (unsigned char c : listv.s) items.push_back(Value::integer((long long)c));
+                items = listv.blobList(); // elements (bytes, or LE words for blob16/32/64)
             }
             else if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
             else if (listv.t == VT::Array && listv.arr) items = *listv.arr; // one-level
@@ -4473,7 +4480,17 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Complex: return type == "Complex" || type == "Cool" || type == "Numeric";
         case VT::Rat:  return type == "Rat" || type == "Cool" || type == "Numeric" || type == "Real";
         case VT::Bool: return type == "Bool";
-        case VT::Str:  return type == "Str" || type == "Cool" || type == "Stringy" || type == "str";
+        case VT::Str:
+            // a byte buffer is NOT Stringy: Blob/Buf bind only buffer-typed
+            // params (`multi sha1(Str)` vs `multi sha1(blob8)` — Digest's
+            // `samewith $str.encode` looped forever when Blob re-matched Str)
+            if (arg.hashKind == "Blob" || arg.hashKind == "Buf" || arg.hashKind == "CArray") {
+                static const std::set<std::string> bufTypes = {
+                    "Blob", "Buf", "blob8", "buf8", "blob16", "buf16", "blob32", "buf32",
+                    "blob64", "buf64", "utf8", "utf16", "utf32", "Positional"};
+                return bufTypes.count(type) > 0;
+            }
+            return type == "Str" || type == "Cool" || type == "Stringy" || type == "str";
         case VT::Array: return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
@@ -7350,6 +7367,15 @@ static BigInt bigBitwise(const BigInt& a, const BigInt& b, char which) {
     return out;
 }
 
+// List-context expansion of an operand for a list-infix op (Z/X/hyper/minmax):
+// a Blob/Buf yields its ELEMENTS; everything else flattens as usual. (Distinct
+// from flatten(), which keeps a Blob whole — matching Rakudo's `flat`/`reduce`.)
+static ValueList listCtx(const Value& v) {
+    if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
+        return v.blobList();
+    return v.flatten();
+}
+
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -7470,13 +7496,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
             l.t == VT::Array && l.arr) {
             std::string base = inner.substr(0, inner.size() - 1);
-            ValueList b = r.flatten();
+            ValueList b = listCtx(r);
             if (!b.empty())
                 for (size_t i = 0; i < l.arr->size(); i++)
                     (*l.arr)[i] = applyArith(base, (*l.arr)[i], b[i % b.size()]);
             return l;
         }
-        ValueList a = l.flatten(), b = r.flatten();
+        ValueList a = listCtx(l), b = listCtx(r);
         Value out = Value::array(); out.isList = true;
         size_t n = a.size() > b.size() ? a.size() : b.size();
         if (a.empty() || b.empty()) return out;
@@ -7529,7 +7555,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "Z" || (op.size() > 1 && op[0] == 'Z')) { // zip; Z<op> applies op pairwise
         std::string sub = op.substr(1); // "" -> tuples, "=>" -> pairs, else infix op
-        ValueList a = l.flatten(), b = r.flatten();
+        ValueList a = listCtx(l), b = listCtx(r);
         Value out = Value::array(); out.isList = true;
         for (size_t i = 0; i < a.size() && i < b.size(); i++) {
             if (sub.empty()) { Value t = Value::array({a[i], b[i]}); t.isList = true; out.arr->push_back(t); }
@@ -7540,7 +7566,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "X" || (op.size() > 1 && op[0] == 'X')) { // cross; X<op> applies op
         std::string sub = op.substr(1);
-        ValueList a = l.flatten(), b = r.flatten();
+        ValueList a = listCtx(l), b = listCtx(r);
         Value out = Value::array(); out.isList = true;
         for (auto& x : a) for (auto& y : b) {
             if (sub.empty()) { Value t = Value::array({x, y}); t.isList = true; out.arr->push_back(t); }
@@ -9745,10 +9771,13 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // zip/cross with an inner op (Z&& / Zand / X~) — resolve the inner via applyBinOp
     if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
         std::string sub = op.substr(1);
-        // one-level elements: sublists stay whole ((1,0) X (a,b),(c,d) is 2x2, not 2x4)
+        // one-level elements: sublists stay whole ((1,0) X (a,b),(c,d) is 2x2, not 2x4);
+        // a Blob/Buf spreads to its elements (`$H Z+ $M` in Digest::SHA1)
         auto oneLevel = [](const Value& v) -> ValueList {
             if (v.t == VT::Array && v.arr) return *v.arr;
             if (v.t == VT::Range) return v.flatten();
+            if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
+                return v.blobList();
             return ValueList{v};
         };
         ValueList a = oneLevel(l), bb = oneLevel(r);
@@ -9789,7 +9818,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         if (inner.size() >= 2 && inner.back() == '=' && !eqTailCmp.count(inner) &&
             l.t == VT::Array && l.arr) {
             std::string base = inner.substr(0, inner.size() - 1);
-            ValueList b = r.flatten();
+            ValueList b = listCtx(r);
             if (!b.empty())
                 for (size_t i = 0; i < l.arr->size(); i++)
                     (*l.arr)[i] = applyBinOp(base, (*l.arr)[i], b[i % b.size()]);
@@ -9975,6 +10004,8 @@ Value Interpreter::evalBinary(Binary* b) {
             auto oneLevel = [](const Value& v) -> ValueList {
                 if (v.t == VT::Array && v.arr) return *v.arr;
                 if (v.t == VT::Range) return v.flatten();
+                if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
+                    return v.blobList(); // `$H Z+ $M` in Digest::SHA1
                 return ValueList{v};
             };
             ValueList a = oneLevel(l), bb = oneLevel(r);
@@ -10668,6 +10699,10 @@ Value Interpreter::evalUnary(Unary* u) {
             // itemized arrays stay intact); a Range flattens; a scalar becomes (x,).
             if (v.t == VT::Array && v.arr) { Value a = Value::array(*v.arr); a.isList = true; return a; }
             if (v.t == VT::Range) return Value::array(v.flatten());
+            // `@$blob` lists a Blob/Buf's elements (`flat @$msg, 0x80, …` in Digest)
+            if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+                Value a = Value::array(v.blobList()); a.isList = true; return a;
+            }
             Value a = Value::array(); a.arr->push_back(v); a.isList = true; return a;
         }
         if (u->op == "ctx%") return v.t == VT::Hash ? v : coerceHash(v); // %(...) hash composer
@@ -11610,6 +11645,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         for (auto& it : items) {
             if (it.t == VT::Array && it.arr) rows.push_back(*it.arr);
             else if (it.t == VT::Range) rows.push_back(it.flatten());
+            else if (it.t == VT::Str && (it.hashKind == "Blob" || it.hashKind == "Buf")) rows.push_back(it.blobList());
             else rows.push_back(ValueList{it});
         }
         Value out = Value::array(); out.isList = true;
@@ -11629,6 +11665,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         for (auto& it : items) {
             if (it.t == VT::Array && it.arr) rows.push_back(*it.arr);
             else if (it.t == VT::Range) rows.push_back(it.flatten());
+            else if (it.t == VT::Str && (it.hashKind == "Blob" || it.hashKind == "Buf")) rows.push_back(it.blobList());
             else rows.push_back(ValueList{it});
         }
         Value out = Value::array(); out.isList = true;
@@ -12311,10 +12348,10 @@ Value Interpreter::evalIndex(Index* idx) {
     if (!idx->isHash && (base.t == VT::Array || base.t == VT::Range || base.t == VT::Str)) {
         ValueList src = (base.t == VT::Array && base.arr) ? *base.arr : base.flatten();
         long long n = (long long)src.size();
-        // a Blob/Buf subscript works on bytes: `$b[*-1]` / `$b[0..*-2]` need the
-        // BYTE count as the resolved length (the slice branch reads the bytes)
+        // a Blob/Buf subscript works on ELEMENTS: `$b[*-1]` / `$b[0..*-2]` need
+        // the element count as the resolved length (bytes, or words for blob32)
         if (base.t == VT::Str && (base.hashKind == "Blob" || base.hashKind == "Buf"))
-            n = (long long)base.s.size();
+            n = base.blobElems();
         std::vector<long long> indices;
         bool isSlice = false;
         bool lazyIdx = false; // `@a[lazy 3..5]` truncates at the array end (no defaulting)
@@ -12355,10 +12392,11 @@ Value Interpreter::evalIndex(Index* idx) {
             } else {
                 long long i = iv.toInt();
                 if (base.t == VT::Str) {
-                    if (base.hashKind == "Blob" || base.hashKind == "Buf") { // byte view
-                        if (i < 0) i += (long long)base.s.size();
-                        return (i >= 0 && i < (long long)base.s.size())
-                             ? Value::integer((unsigned char)base.s[i]) : Value::any();
+                    if (base.hashKind == "Blob" || base.hashKind == "Buf") { // element view
+                        long long bn = base.blobElems();
+                        if (i < 0) i += bn;
+                        return (i >= 0 && i < bn)
+                             ? Value::integer(base.blobWordAt(i)) : Value::any();
                     }
                     // a Str is a one-item list: "ab"[0] is "ab"
                     if (i == 0) return base;
@@ -12402,10 +12440,10 @@ Value Interpreter::evalIndex(Index* idx) {
             // not the one-item-list view a plain Str gets
             if (base.t == VT::Str && (base.hashKind == "Blob" || base.hashKind == "Buf")) {
                 Value out = Value::array(); out.isList = true;
-                long long bn = (long long)base.s.size();
+                long long bn = base.blobElems();
                 for (long long k : indices) {
                     if (k < 0) k += bn;
-                    if (k >= 0 && k < bn) out.arr->push_back(Value::integer((unsigned char)base.s[k]));
+                    if (k >= 0 && k < bn) out.arr->push_back(Value::integer(base.blobWordAt(k)));
                 }
                 return out;
             }

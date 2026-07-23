@@ -476,8 +476,16 @@ void Lexer::skipWhitespaceAndComments() {
             while (!eof() && peek() != '\n') advance();
             continue;
         }
-        // POD handling: directives begin with '=' at column 1
-        if (atLineStart && c == '=' && isIdentStart(peek(1))) {
+        // POD handling: directives begin with '=' at the start of a line —
+        // possibly INDENTED (Raku's virtual margin): `    =begin comment`
+        // inside a sub body is pod too (Text::Utils)
+        bool podAtMargin = atLineStart;
+        if (!podAtMargin && c == '=' && isIdentStart(peek(1))) {
+            size_t k = pos_;
+            while (k > 0 && src_[k - 1] != '\n' && (src_[k - 1] == ' ' || src_[k - 1] == '\t')) k--;
+            podAtMargin = (k == 0 || src_[k - 1] == '\n');
+        }
+        if (podAtMargin && c == '=' && isIdentStart(peek(1))) {
             // read the directive word
             size_t save = pos_;
             std::string word;
@@ -498,7 +506,13 @@ void Lexer::skipWhitespaceAndComments() {
                 // skip until the matching =end <name> (nested =begin/=end of other names are skipped over)
                 for (;;) {
                     if (eof()) break;
-                    if (col_ == 1 && peek() == '=' ) {
+                    if (col_ == 1 && (peek() == ' ' || peek() == '\t')) {
+                        // an INDENTED =end matches too — step over the margin
+                        size_t k = pos_;
+                        while (k < src_.size() && (src_[k] == ' ' || src_[k] == '\t')) k++;
+                        if (k < src_.size() && src_[k] == '=') while (peek() != '=') advance();
+                    }
+                    if (peek() == '=') { // loop top is always a (margin-stripped) line start
                         size_t s2 = pos_;
                         advance();
                         std::string w2;
@@ -950,10 +964,26 @@ bool Lexer::tryQuoteForm(Token& out) {
         case '[': close = ']'; break;
         case '<': close = '>'; break;
         case '/': case '|': case '!': close = d; bracket = false; break;
+        case ',': // comma delimiter: bare `m,pat,` is documented Raku; bare
+            // `s,`/`S,` stays a term/call — Rakudo disambiguates those via
+            // declared-symbol lookup (`foo(S,S)` passes type args, roast
+            // subsignature.t), which a one-pass lexer cannot do. With
+            // adverbs (`s:s,foo,bar,`) the form is unambiguous.
+            if (!(isRegex || ((isSubst || isTrans) && !adverbs.empty()))) return false;
+            close = d; bracket = false; break;
         case '\'': case '"': // q'…' / q:to'END' — quote or heredoc terminator in quotes
             if (isSubst || isTrans) return false; // s'…' isn't a substitution delimiter here
             close = d; bracket = false; break;
-        default: return false;
+        default:
+            // ADVERBED regex/subst forms take ANY documented-legal delimiter:
+            // everything but whitespace, alphanumerics, ':' (adverb clash) and
+            // '#' (comment) — `m:i;pat;`, `s:g=a=b=`, … . Bare forms keep the
+            // conservative set above: without Rakudo's declared-symbol lookup
+            // the lexer cannot tell `S%pat%` from `S % $x` (infix %).
+            if ((isRegex || isSubst || isTrans) && !adverbs.empty() &&
+                (unsigned char)d < 0x80 && std::ispunct((unsigned char)d) &&
+                d != ':' && d != '#') { close = d; bracket = false; break; }
+            return false;
     }
     // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
     // assignment form s[pat] = repl. If neither follows, this is really a call like
@@ -1389,6 +1419,16 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
             body += advance(); continue;
         }
         if (q) { if (ch == q) q = 0; body += advance(); continue; }
+        // `< word list >` (space after `<` = the enumerated-alternation form):
+        // every char inside is a literal WORD member — a quote/brace/bracket
+        // must not engage the scanners (HTTP::MediaType's tchar list holds
+        // ' ` # { characters as words)
+        if (sd == 0 && ch == '<' && (peek(1) == ' ' || peek(1) == '\t')) {
+            int ad = 0;
+            do { char c2 = peek(); if (c2 == '<') ad++; else if (c2 == '>') ad--; body += advance(); }
+            while (!eof() && ad > 0);
+            continue;
+        }
         // quotes open only OUTSIDE [ ] — inside a char class a quote character is
         // a MEMBER (<-["]> = "anything but a double quote"), not a string opener;
         // braces are inert inside [ ] either way, so nothing needs shielding there
@@ -1575,6 +1615,7 @@ Token Lexer::lexOperator() {
         "==>", "<==", // feed operators (before == / <=)
         "!!!", "???", "...^", "...", "^..^", "..^", "^..",
         "!===", // negated value identity (before !== / ===)
+        "!=:=", // negated container identity (before != / =:=) — JSON::Class
         "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",
         // bitwise/boolean (numeric +&/+|/+^, string ~&/~|/~^, boolean ?&/?|/?^) before single + ? ~.
         // NB: the shift forms +</+>/~</~> are deliberately omitted — `<`/`>` collide with

@@ -740,13 +740,11 @@ static Value makeInfArray(long long start) {
 static ValueList toList(const Value& v) {
     if (v.t == VT::Array && v.arr) return *v.arr;
     if (v.t == VT::Range) return v.flatten();
-    // a Blob/Buf lists as its BYTES (`$blob.rotor(3, :partial)` in Base64) —
-    // mirrors the `for`-iteration rule in the interpreter (itemized stays one item)
-    if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
-        ValueList out;
-        for (unsigned char c : v.s) out.push_back(Value::integer((long long)c));
-        return out;
-    }
+    // a Blob/Buf lists as its ELEMENTS (`$blob.rotor(3, :partial)` in Base64;
+    // 32-bit words for blob32) — mirrors the `for`-iteration rule in the
+    // interpreter (itemized stays one item)
+    if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
+        return v.blobList();
     if (v.t == VT::Hash && v.hash) {
         ValueList out;
         for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; out.push_back(std::move(p)); }
@@ -2166,21 +2164,34 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return o;
     }
-    // Buf/Blob.new(byte, byte, …) — a byte buffer, stored as a Str of those bytes.
+    // Buf/Blob.new(elem, elem, …) — a byte buffer, stored as a Str of bytes.
+    // blob16/32/64 (and utf16/32) pack each element as a little-endian word;
+    // ofType carries the element type (Digest's blob32 word arithmetic).
     if (inv.t == VT::Type && (inv.s == "buf8" || inv.s == "blob8" || inv.s == "utf8" ||
                               inv.s == "buf16" || inv.s == "blob16" || inv.s == "utf16" ||
                               inv.s == "buf32" || inv.s == "blob32" || inv.s == "utf32" ||
                               inv.s == "buf64" || inv.s == "blob64") &&
         (m == "new" || m == "allocate")) {
-        // byte-buffer views share the Blob representation (8-bit semantics)
+        int w = inv.s.find("16") != std::string::npos ? 2
+              : inv.s.find("32") != std::string::npos ? 4
+              : inv.s.find("64") != std::string::npos ? 8 : 1;
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
             if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) add(e); }
             else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) bytes += v.s; // copy an existing buffer's bytes
-            else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
+            else {
+                unsigned long long x = (unsigned long long)v.toInt();
+                for (int k = 0; k < w; k++) bytes += (char)(unsigned char)((x >> (8 * k)) & 0xFF);
+            }
         };
-        for (auto& a : args) add(a);
-        Value b = Value::str(bytes); b.hashKind = inv.s.rfind("buf", 0) == 0 ? "Buf" : "Blob"; return b; // buf* is mutable
+        if (m == "allocate") {
+            long long n2 = args.empty() ? 0 : args[0].toInt();
+            bytes.assign((size_t)(n2 * w), '\0');
+        }
+        else for (auto& a : args) add(a);
+        Value b = Value::str(bytes); b.hashKind = inv.s.rfind("buf", 0) == 0 ? "Buf" : "Blob"; // buf* is mutable
+        if (w > 1) b.ofType = "uint" + std::to_string(w * 8);
+        return b;
     }
     if (inv.t == VT::Type &&
         (inv.s == "Set" || inv.s == "SetHash" || inv.s == "Bag" || inv.s == "BagHash" ||
@@ -2555,11 +2566,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "name") return Value::str(nm);
-        if (m == "version" || m == "lang-version") { Value v = Value::str(isComp ? "6.d" : langVer); v.hashKind = "Version"; return v; }
+        // the COMPILER's version is OUR release version (v1.0.0 — from CMake's
+        // PROJECT_VERSION), not a Rakudo release date: rakupp is not Rakudo,
+        // and modules that gate on Rakudo dates (JSON::Class's `>= v2023.12`)
+        // are honestly told so. The LANGUAGE version stays 6.x.
+#ifndef RAKUPP_VERSION
+#define RAKUPP_VERSION "0.0.0"
+#endif
+        if (m == "version" || m == "lang-version") { Value v = Value::str(isComp && m == "version" ? RAKUPP_VERSION : langVer); v.hashKind = "Version"; return v; }
         if (m == "auth" || m == "authority") return Value::str("The Raku Community");
         if (m == "desc") return Value::str("Raku++ — a C++ Raku interpreter");
         if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob
-        if (m == "id" || m == "release") return Value::str("2026.07");
+        if (m == "id" || m == "release") return Value::str(RAKUPP_VERSION);
         if (m == "codename") return Value::str("Raku++");
         if (m == "gist" || m == "Str" || m == "raku" || m == "perl") return Value::str(nm + " (" + (isComp ? "6.d" : langVer) + ")");
     }
@@ -4669,19 +4687,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // a Blob/Buf (Str-tagged internally) is Positional over its BYTES, not a scalar
     if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
+        long long bn = inv.blobElems();
         if (m == "list" || m == "List" || m == "Array" || m == "values" ||
             m == "Seq" || m == "flat" || m == "eager" || m == "cache") {
             Value out = Value::array(); out.isList = (m != "Array");
-            for (unsigned char c : inv.s) out.arr->push_back(Value::integer(c));
+            *out.arr = inv.blobList();
             return out;
         }
-        if (m == "elems") return Value::integer((long long)inv.s.size());
-        if (m == "head") return inv.s.empty() ? Value::any() : Value::integer((unsigned char)inv.s[0]);
-        if (m == "tail") return inv.s.empty() ? Value::any() : Value::integer((unsigned char)inv.s.back());
+        if (m == "elems") return Value::integer(bn);
+        if (m == "head") return bn == 0 ? Value::any() : Value::integer(inv.blobWordAt(0));
+        if (m == "tail") return bn == 0 ? Value::any() : Value::integer(inv.blobWordAt(bn - 1));
         if (m == "AT-POS" && !args.empty()) {
-            long long i = args[0].toInt(), n = (long long)inv.s.size();
-            if (i < 0) i += n;
-            return (i >= 0 && i < n) ? Value::integer((unsigned char)inv.s[i]) : Value::any();
+            long long i = args[0].toInt();
+            if (i < 0) i += bn;
+            return (i >= 0 && i < bn) ? Value::integer(inv.blobWordAt(i)) : Value::any();
         }
     }
     // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
@@ -8050,8 +8069,19 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                         "Cannot " + m + " a fixed-dimension array"};
             }
             if (m == "push" || m == "unshift" || m == "append" || m == "prepend") for (auto& a : args) natCheck(a);
+            // a native-int element array (`uint32 @W`) wraps each stored value to
+            // its bit width (SHA1's `@W.push: S(...)` relies on uint32 overflow)
+            auto natMask = [&](Value v) -> Value {
+                bool sign; int bits = Value::natWidthOfType(inv.ofType, sign);
+                if (bits > 0 && bits < 64 && (v.t == VT::Int || v.t == VT::Bool)) {
+                    unsigned long long u = (unsigned long long)v.toInt() & ((1ULL << bits) - 1);
+                    long long x = (sign && (u & (1ULL << (bits - 1)))) ? (long long)u - (long long)(1ULL << bits) : (long long)u;
+                    return Value::integer(x);
+                }
+                return v;
+            };
             // push/unshift add each argument as one element; append/prepend flatten
-            if (m == "push") { for (auto& a : args) inv.arr->push_back(a); return inv; } // returns the array (shared storage)
+            if (m == "push") { for (auto& a : args) inv.arr->push_back(natMask(a)); return inv; } // returns the array (shared storage)
             // append/prepend follow the single-argument rule: a lone Positional arg is
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
@@ -9914,6 +9944,19 @@ void Interpreter::registerBuiltins() {
         return Value::str(joinValues(items, sep));
     };
     // :16("2e") radix conversion — the value's digits parsed in the given base.
+    // :256[a, b, c] — place-value digits in the given base; slips/arrays
+    // in the list flatten (`:256[|@^a]`)
+    B["__radix-list"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) return Value::integer(0);
+        long long base = a[0].toInt();
+        long long val = 0;
+        for (size_t k = 1; k < a.size(); k++) {
+            if (a[k].t == VT::Array && a[k].arr)
+                for (auto& e : *a[k].arr) val = val * base + e.toInt();
+            else val = val * base + a[k].toInt();
+        }
+        return Value::integer(val);
+    };
     B["__radix"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::integer(0);
         int base = (int)a[0].toInt();

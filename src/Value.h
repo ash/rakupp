@@ -197,6 +197,30 @@ struct Value {
 
     // expand a Range/Array into a flat list of values
     ValueList flatten() const;
+
+    // Typed Blob/Buf support: blob16/32/64 (and utf16/32) store little-endian
+    // words in the byte string; ofType ("uint16"/"uint32"/…) carries the width.
+    int blobElemSize() const {                 // bytes per element (1 for plain Blob)
+        if (ofType == "uint16" || ofType == "int16") return 2;
+        if (ofType == "uint32" || ofType == "int32") return 4;
+        if (ofType == "uint64" || ofType == "int64") return 8;
+        return 1;
+    }
+    long long blobElems() const { int w = blobElemSize(); return (long long)(s.size() / w); }
+    long long blobWordAt(long long idx) const; // one element, LE-decoded (idx pre-checked)
+    ValueList blobList() const;                // every element as an Int
+
+    // native-int element width for a typed array/hash `ofType` (uint32/int8/…):
+    // returns bits (>0) and sets `sign`, or 0 for a non-native element type.
+    static int natWidthOfType(const std::string& ofType, bool& sign) {
+        std::string bt = ofType.substr(0, ofType.find(','));
+        sign = bt.compare(0, 4, "uint") != 0 && bt != "byte";
+        if (bt == "int8" || bt == "uint8" || bt == "byte") return 8;
+        if (bt == "int16" || bt == "uint16") return 16;
+        if (bt == "int32" || bt == "uint32") return 32;
+        if (bt == "int64" || bt == "uint64") return 64;
+        return 0;
+    }
 };
 
 bool valueEq(const Value& a, const Value& b);   // numeric/str smart equality

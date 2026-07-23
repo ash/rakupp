@@ -133,7 +133,7 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "==>") { in.valid = true; in.lbp = BP_OR; return in; } // forward feed (left-assoc: data flows L→R)
         if (o == "<==") { in.valid = true; in.lbp = BP_OR; in.rightAssoc = true; return in; } // backward feed (right-assoc: the far-right source flows leftward)
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||
-            o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "===" || o == "!==" || o == "!===" ||
+            o == "<=>" || o == "~~" || o == "!~~" || o == "=:=" || o == "!=:=" || o == "===" || o == "!==" || o == "!===" ||
             o == "=~=" || o == "≅") { in.valid = true; in.lbp = BP_COMPARE; return in; }
         if (o == "&&") { in.valid = true; in.lbp = BP_ANDAND; return in; }
         if (o == "||" || o == "//" || o == "^^") { in.valid = true; in.lbp = BP_OROR; return in; }
@@ -1195,9 +1195,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 // colon listop args on a PRIVATE call too:  self!client-setup: { … }, :$enc
                 // (IO::Socket::Async::SSL) — mirrors the public `.method: args` form
                 advance(); // :
-                do {
-                    mc->args.push_back(parseExpr(BP_COMMA + 1));
-                } while (matchKind(Tok::Comma) && startsTermToken(cur()));
+                // A colon-arg list is parsed as ONE expression down past the
+                // list infixes (Z/X, looser than comma), then a top-level comma
+                // ListExpr is splatted into the positional args. This captures
+                // `blob32.new: $H Z+ $M` (a single zip whose result is the args)
+                // while `.content: 'text/plain', $body` still splits on comma.
+                {
+                    ExprPtr argExpr = parseExpr(BP_ZIP - 1);
+                    if (argExpr && argExpr->kind == NK::ListExpr) {
+                        for (auto& it : static_cast<ListExpr*>(argExpr.get())->items)
+                            mc->args.push_back(std::move(it));
+                    } else if (argExpr) {
+                        mc->args.push_back(std::move(argExpr));
+                    }
+                }
             }
             base = std::move(mc);
             continue;
@@ -1353,9 +1364,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 // also blocks / pointy blocks:  @x.map: { ... } / @x.map: -> $a { ... }
                 // and declarator args:  @a.push: my \p = ...
                 advance(); // :
-                do {
-                    mc->args.push_back(parseExpr(BP_COMMA + 1));
-                } while (matchKind(Tok::Comma) && startsTermToken(cur()));
+                // A colon-arg list is parsed as ONE expression down past the
+                // list infixes (Z/X, looser than comma), then a top-level comma
+                // ListExpr is splatted into the positional args. This captures
+                // `blob32.new: $H Z+ $M` (a single zip whose result is the args)
+                // while `.content: 'text/plain', $body` still splits on comma.
+                {
+                    ExprPtr argExpr = parseExpr(BP_ZIP - 1);
+                    if (argExpr && argExpr->kind == NK::ListExpr) {
+                        for (auto& it : static_cast<ListExpr*>(argExpr.get())->items)
+                            mc->args.push_back(std::move(it));
+                    } else if (argExpr) {
+                        mc->args.push_back(std::move(argExpr));
+                    }
+                }
             }
             base = std::move(mc);
         } else if ((isOp("++") || isOp("--")) && !cur().spaceBefore) {
@@ -1808,6 +1830,28 @@ ExprPtr Parser::parseColonPair() {
         c->name = "__radix";
         c->args.push_back(std::make_unique<IntLit>(base));
         c->args.push_back(std::move(arg));
+        return c;
+    }
+    // radix with a digit LIST: :256[a, b, c] is ((a·256)+b)·256+c — place
+    // values in the given base (`:256[|@^a]` packs bytes into a word in
+    // Digest::SHA1)
+    if (isKind(Tok::IntLit) && peek().kind == Tok::LBracket && !peek().spaceBefore) {
+        int base = std::atoi(cur().text.c_str());
+        if (base < 2)
+            throw ParseError("Radix " + std::to_string(base) + " out of range",
+                             cur().line, "X::Syntax::Number::RadixOutOfRange",
+                             {{"radix", std::to_string(base)}});
+        advance(); advance(); // radix and '['
+        auto c = std::make_unique<Call>();
+        c->name = "__radix-list";
+        c->args.push_back(std::make_unique<IntLit>(base));
+        if (!isKind(Tok::RBracket))
+            for (;;) {
+                c->args.push_back(parseExpr(BP_ASSIGN));
+                if (isKind(Tok::Comma)) { advance(); continue; }
+                break;
+            }
+        expectKind(Tok::RBracket, "]");
         return c;
     }
     if (isKind(Tok::Ident) || isKind(Tok::IntLit)) {
@@ -2434,6 +2478,9 @@ ExprPtr Parser::parsePrimary() {
                     lst->items.push_back(parseExpression());
                 }
                 expectKind(Tok::RParen, ")");
+                // a lone segment with a TRAILING `;` (`( expr; )`) is just the
+                // grouped value, not a 1-element list — Rakudo: `(5;)` is 5
+                if (lst->items.size() == 1) return std::move(lst->items[0]);
                 return lst;
             }
             expectKind(Tok::RParen, ")");
@@ -2576,10 +2623,11 @@ ExprPtr Parser::parsePrimary() {
             else if (a.kind == Tok::Op && a.text == ":" &&
                      (b.kind == Tok::Ident || b.kind == Tok::IntLit || b.kind == Tok::Var ||
                       (b.kind == Tok::Op && b.text == "!")) &&
-                     // `:16(...)` / `:16<...>` is a RADIX literal, not a colon-pair —
-                     // so `{ :16($_) }` is a CODE block, not a hash
+                     // `:16(...)` / `:16<...>` / `:256[...]` is a RADIX literal,
+                     // not a colon-pair — so `{ :16($_) }` / `{ :256[|@^a] }` is
+                     // a CODE block, not a hash
                      !(b.kind == Tok::IntLit &&
-                       (peek(3).kind == Tok::LParen ||
+                       (peek(3).kind == Tok::LParen || peek(3).kind == Tok::LBracket ||
                         (peek(3).kind == Tok::Op && peek(3).text == "<"))))
                 isHash = true; // starts with a colon-pair: :name / :1n / :$v / :!flag
             else if (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
@@ -4287,7 +4335,18 @@ StmtPtr Parser::parseEnum() {
     auto ed = std::make_unique<EnumDecl>();
     if (isKind(Tok::Ident)) ed->name = advance().text;
     if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) advance(); }
-    while (isIdent("is")) { advance(); if (isKind(Tok::Ident) || isKind(Tok::Var)) advance(); }
+    while (isIdent("is")) {
+        advance();
+        if (isKind(Tok::Ident) || isKind(Tok::Var)) {
+            advance();
+            // trait argument: `is export(:sort-list)` (Text::Utils)
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                int d = 0;
+                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                while (d > 0 && !isKind(Tok::End));
+            }
+        }
+    }
     if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace))
         ed->values = parseExpr(BP_ASSIGN);
     return ed;
@@ -4683,7 +4742,13 @@ StmtPtr Parser::parseIf(bool isUnless) {
     s->isUnless = isUnless;
     ExprPtr cond;
     { bool sv = stmtCond_; stmtCond_ = true; cond = parseExpression(); stmtCond_ = sv; }
-    if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->thenVar = (sl ? "*" : "") + advance().text; }
+    // `if EXPR -> $x is copy { }` — traits on the binding are consumed and
+    // ignored: our binding var is a plain writable copy already, which is
+    // exactly what `is copy` asks for (HTTP::UserAgent's content-length elsif)
+    auto skipBindTraits = [this] {
+        while (isIdent("is") && peek(1).kind == Tok::Ident) { advance(); advance(); }
+    };
+    if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->thenVar = (sl ? "*" : "") + advance().text; skipBindTraits(); }
     auto blk = parseBlock();
     s->branches.emplace_back(std::move(cond), std::move(blk));
     s->branchVars.push_back(s->thenVar);
@@ -4696,7 +4761,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
         ExprPtr c;
         { bool sv = stmtCond_; stmtCond_ = true; c = parseExpression(); stmtCond_ = sv; }
         std::string bv;
-        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) bv = (sl ? "*" : "") + advance().text; } // elsif EXPR -> $x / -> *@x
+        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) bv = (sl ? "*" : "") + advance().text; skipBindTraits(); } // elsif EXPR -> $x is copy / -> *@x
         auto b = parseBlock();
         s->branches.emplace_back(std::move(c), std::move(b));
         s->branchVars.push_back(bv);
@@ -5246,8 +5311,8 @@ StmtPtr Parser::parseStatementImpl() {
             (a.kind == Tok::Op && a.text == ":" &&
              (b.kind == Tok::Ident || b.kind == Tok::Var || b.kind == Tok::IntLit ||
               (b.kind == Tok::Op && b.text == "!")) &&
-             !(b.kind == Tok::IntLit && // `:16(...)`/`:16<...>` is a radix literal
-               (peek(3).kind == Tok::LParen ||
+             !(b.kind == Tok::IntLit && // `:16(...)`/`:16<...>`/`:256[...]` is a radix literal
+               (peek(3).kind == Tok::LParen || peek(3).kind == Tok::LBracket ||
                 (peek(3).kind == Tok::Op && peek(3).text == "<")))) ||
             (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
              (b.kind == Tok::RBrace || b.kind == Tok::Comma));

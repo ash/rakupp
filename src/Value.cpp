@@ -111,6 +111,10 @@ long long Value::toInt() const {
             return (long long)n;
         case VT::Rat:  { if (!ratN || !ratD || ratD->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN, *ratD, q, r); return q.toLL(); }
         case VT::Str:  { try {
+            // a Blob/Buf numifies to its ELEMENT COUNT (Rakudo: `8 * $msg` is
+            // bits, `blob32 $M where $M == 16` counts words), never by parsing
+            // its bytes as text
+            if (hashKind == "Blob" || hashKind == "Buf") return blobElems();
             size_t pos = 0;
             long long v = std::stoll(s, &pos);
             // the string is a wider numeric literal ("3.14", "1.23E4", "1/3"):
@@ -187,7 +191,9 @@ double Value::toNum() const {
                 return ratN->toDouble() / ratD->toDouble();
             }
             return 0.0;
-        case VT::Str:  { try { return std::stod(s); } catch (...) { return 0.0; } }
+        case VT::Str:
+            if (hashKind == "Blob" || hashKind == "Buf") return (double)blobElems(); // element count, like .Int
+            { try { return std::stod(s); } catch (...) { return 0.0; } }
         case VT::Match: { try { return std::stod(s); } catch (...) { return 0.0; } }
         default: return (double)toInt();
     }
@@ -479,6 +485,22 @@ std::string Value::typeName() const {
     return "Any";
 }
 
+
+long long Value::blobWordAt(long long idx) const {
+    int w = blobElemSize();
+    unsigned long long v = 0;
+    size_t base = (size_t)idx * w;
+    for (int k = 0; k < w; k++) v |= (unsigned long long)(unsigned char)s[base + k] << (8 * k);
+    return (long long)v;
+}
+
+ValueList Value::blobList() const {
+    ValueList out;
+    long long n = blobElems();
+    out.reserve((size_t)n);
+    for (long long i = 0; i < n; i++) out.push_back(Value::integer(blobWordAt(i)));
+    return out;
+}
 
 ValueList Value::flatten() const {
     ValueList out;
