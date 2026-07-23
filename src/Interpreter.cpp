@@ -2029,7 +2029,7 @@ int Interpreter::run(Program& prog) {
                 }
                 continue;
             }
-            exec(s);
+            exec(s, /*sink=*/true); // every top-level statement is in sink context (Rakudo)
         }
         // auto-invoke MAIN with command-line arguments, if defined
         if (Value* mainSub = tctx_.cur->find("&MAIN")) {
@@ -2700,6 +2700,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // sink context: an assignment's result is discarded, so don't copy it
             if (sink && e->kind == NK::Assign) return evalAssign(static_cast<Assign*>(e), true);
             Value r = eval(e);
+            // Rakudo sink semantics: a discarded FRESH object with a user-defined
+            // `sink` method has it invoked (HTTP::Status registers each instance in
+            // a table via `method sink { @codes[$!code] = self }`, created as bare
+            // `HTTP::Status.new: …` statements). Restricted to a method-call result:
+            // a value read back through a variable or an `is rw` routine is a
+            // container, and MoarVM does not descend a container to sink its
+            // contents (S04-statements/sink.t). The `VT::Object` test short-circuits
+            // for the common non-object result, so only sunk objects pay the probe.
+            if (sink && e->kind == NK::MethodCall &&
+                r.t == VT::Object && r.obj && r.obj->cls &&
+                r.obj->cls->findMethod("sink"))
+                methodCall(r, "sink", ValueList{});
             // Rakudo sink semantics: a Proc from a bare `run`/`shell` statement that
             // failed and is discarded (never stored or inspected) throws when sunk.
             if (e->kind == NK::Call && r.t == VT::Hash && r.hashKind == "Proc") {
@@ -2766,7 +2778,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return Value::makeHash();
             auto scope = std::make_shared<Env>();
             scope->parent = tctx_.cur;
-            return execBlock(b, scope);
+            return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
         }
         case NK::SubDecl: {
             auto* sd = static_cast<SubDecl*>(s);
@@ -5487,6 +5499,17 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (c.body) runEnterPhasers(*c.body);
         if (c.body) {
             size_t nst = c.body->size();
+            // The statement whose value becomes the routine result — trailing
+            // phasers / CATCH blocks don't count; everything before it runs in
+            // sink context, so a discarded object with a `sink` method has it
+            // called (Rakudo semantics). One reverse scan, ~free for short bodies.
+            size_t lastReal = nst;
+            for (size_t k = nst; k-- > 0; ) {
+                auto* s = (*c.body)[k].get();
+                if (isBlockPhaser(s)) continue;
+                if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
+                lastReal = k; break;
+            }
             for (size_t i = 0; i < nst; i++) {
                 auto* s = (*c.body)[i].get();
                 if (isBlockPhaser(s)) continue;
@@ -5500,7 +5523,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     auto* r = static_cast<ReturnStmt*>(s);
                     last = r->value ? eval(r->value.get()) : Value::any();
                 } else
-                    last = exec(s);
+                    last = exec(s, i != lastReal); // non-final statements sink
                 if (tctx_.returning) { // cooperative return reached this routine
                     if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
                     break; // a bare block propagates the flag to its routine

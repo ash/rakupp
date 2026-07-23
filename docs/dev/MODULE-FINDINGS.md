@@ -169,3 +169,31 @@ t/regression/package-then-role-coexist.raku.
 Cro::Core now loads past the redeclaration + `$!authority` composition; remaining
 Cro layer: `Cro::Uri::GenericActions.new` (a grammar-actions class nested in a
 package -- next onion layer, deferred).
+
+## Module fix batch 4 (2026-07-23) — statement-level sink semantics
+
+Surfaced by HTTP::Status, which builds its code->message table by creating each
+status as a BARE statement (`HTTP::Status.new: 404, 'Not Found'`) whose
+`method sink { @codes[$!code] = self }` registers it. rakupp never ran statements
+in sink context, so the table stayed empty and `get_http_status_msg(404)`
+returned 'Unknown' instead of 'Not Found'.
+
+Three linked fixes (Rakudo sink semantics):
+- every TOP-LEVEL statement now runs in sink context (was the default false);
+- a discarded FRESH object (a method-call result) with a user-defined `sink`
+  method has it invoked. Restricted to method-call results: a value read back
+  through a variable or an `is rw` routine is a container, and MoarVM does not
+  descend a container to sink its contents (S04-statements/sink.t line 43, a
+  `#?rakudo.jvm todo` backend-divergent case) -- the restriction keeps that at
+  5/5 while still firing on `Foo.new`;
+- non-final statements of a routine body and the final value of a SUNK bare
+  block now sink too (execBlock already did this; the callable-body loop and the
+  bare-block exec case did not forward sink).
+
+Gate sink2 194,550 (the only delta vs 194,551 is the known
+socket-accept-and-working-threads.t flapper -- pre-sink binary gives 14/15/14 on
+the same test), suite 95, perf unchanged (2.0s hot loop, was 2.05s). Regression:
+t/regression/sink-context-method.raku.
+
+Known residual divergence: a plain (non-rw) sub returning a fresh object, sunk,
+does not fire sink (we only fire on method-call results) -- rare; documented.
