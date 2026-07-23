@@ -3730,7 +3730,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
             }
             ValueList items;
-            if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
+            // a Blob/Buf iterates its BYTES (as Int) — `for $data -> $b1,$b2?,$b3?`
+            // is how MIME::Base64 & friends read the buffer. Only an explicitly
+            // itemized `$(…)` blob stays one element. (rakupp lacks assign-time
+            // itemization, so `for $my-scalar-blob` iterates too — the common,
+            // intuitive reading; the rare Rakudo one-item quirk is not modeled.)
+            if (listv.t == VT::Str && !listv.itemized &&
+                (listv.hashKind == "Blob" || listv.hashKind == "Buf")) {
+                for (unsigned char c : listv.s) items.push_back(Value::integer((long long)c));
+            }
+            else if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
             else if (listv.t == VT::Array && listv.arr) items = *listv.arr; // one-level
             else if (listv.t == VT::Range) items = listv.flatten();
             else if (listv.t == VT::Hash && listv.hash &&
@@ -4271,7 +4280,8 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
          type == "Numeric" || type == "Real"))
         return arg.s.find('.') == std::string::npos || (type != "Int" && type != "UInt");
     // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params and its own name
-    if (arg.isAllomorph() && (type == "Str" || type == "Stringy" || type == arg.typeName()))
+    if (arg.isAllomorph() && (type == "Str" || type == "str" || type == "Stringy" ||
+                              type == "Cool" || type == arg.typeName()))
         return true;
     // a tagged built-in value (IO::Path, Version, Duration, Promise, …) matches
     // its own reported type — hashKind is empty for plain values, so this
@@ -4603,6 +4613,14 @@ bool Interpreter::exprHasWhateverLit(const Expr* e) {
 }
 
 bool Interpreter::boolify(const Value& v) {
+    // a Regex in boolean context matches the current topic `$_`
+    // (`?$rx` / `if $rx` == `$_ ~~ $rx`) — URI::Encode leans on this to test
+    // each char against an unreserved-set pattern.
+    if (v.t == VT::Regex) {
+        if (Value* topic = tctx_.cur ? tctx_.cur->find("$_") : nullptr)
+            return regexMatch(topic->toStr(), v.s).truthy();
+        return false;
+    }
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         if (Value* b = v.obj->cls->findMethod("Bool"))
             return invokeMethod(*b, v, {}).truthy();

@@ -2511,7 +2511,12 @@ ExprPtr Parser::parsePrimary() {
                 isHash = true;
             else if (a.kind == Tok::Op && a.text == ":" &&
                      (b.kind == Tok::Ident || b.kind == Tok::IntLit || b.kind == Tok::Var ||
-                      (b.kind == Tok::Op && b.text == "!")))
+                      (b.kind == Tok::Op && b.text == "!")) &&
+                     // `:16(...)` / `:16<...>` is a RADIX literal, not a colon-pair —
+                     // so `{ :16($_) }` is a CODE block, not a hash
+                     !(b.kind == Tok::IntLit &&
+                       (peek(3).kind == Tok::LParen ||
+                        (peek(3).kind == Tok::Op && peek(3).text == "<"))))
                 isHash = true; // starts with a colon-pair: :name / :1n / :$v / :!flag
             else if (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
                      (b.kind == Tok::RBrace || b.kind == Tok::Comma))
@@ -5063,7 +5068,10 @@ StmtPtr Parser::parseStatementImpl() {
             // colon-pair: :name / :$var / :1n / :!flag  (mirror parsePrimary's isHash)
             (a.kind == Tok::Op && a.text == ":" &&
              (b.kind == Tok::Ident || b.kind == Tok::Var || b.kind == Tok::IntLit ||
-              (b.kind == Tok::Op && b.text == "!"))) ||
+              (b.kind == Tok::Op && b.text == "!")) &&
+             !(b.kind == Tok::IntLit && // `:16(...)`/`:16<...>` is a radix literal
+               (peek(3).kind == Tok::LParen ||
+                (peek(3).kind == Tok::Op && peek(3).text == "<")))) ||
             (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
              (b.kind == Tok::RBrace || b.kind == Tok::Comma));
         if (!looksHash) {

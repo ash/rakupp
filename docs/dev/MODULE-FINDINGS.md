@@ -107,3 +107,26 @@ JSON::Tiny, YAMLish, UUID, OO::Monitors. Battery: scans/TIER2-WIDE.md.
       nothing.
   11. **File::Find `find(dir=>".")`** → empty vs a real result.
   12. **HTTP::Status `get_http_status_msg(404)`** → empty (want "Not Found").
+
+
+## Module fix batch 1 (2026-07-23) — 4 general fixes, +3 modules
+
+Gate mb1 194,513 (allomorphic.t +2), suite 92, zero regressions. Tier-2 19→22.
+Regression: t/regression/module-fixes-batch-1.raku.
+
+- **7 (FIXED) MIME::Base64** — two bugs: (a) a Blob/Buf iterates its BYTES in
+  `for` (was one item; `for $data -> $b1,$b2?,$b3?` reads the buffer), keyed on
+  not-explicitly-itemized; (b) an allomorph (`<8>` IntStr) binds to a native
+  `str` param and `str @` array via its Str side (typeMatchesArg + the native-
+  array push check). MINOR residual: the bound value keeps the allomorph rather
+  than coercing to plain str (stringifies correctly, so modules work).
+- **15 (FIXED) URI::Encode** — a Regex in boolean context (`if $rx`) now
+  matches the current `$_` (`?$rx` == `$_ ~~ $rx`); was always-truthy.
+- **34 (FIXED) Color** — `{ :16($_) }` parsed as a HASH literal; `:16(...)` /
+  `:16<...>` is a RADIX literal (16 is no pair key), so the block is CODE. Fixed
+  the hash-vs-block heuristic at both sites (statement + expression).
+
+Still open (6): XML `from-xml` root name, URI + Cro::Core `.host` (shared URI
+grammar/accessor issue — 2 modules per fix), HTTP::Status `@codes` table,
+Base64 (rank 31; exotic `.rotor`/`LAST`/`state`-phaser one-liner), LibraryMake
+(native).

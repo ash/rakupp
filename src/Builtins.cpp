@@ -7573,7 +7573,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 bool isNat = bt == "str" || bt == "byte" || bt.compare(0, 3, "int") == 0 ||
                              bt.compare(0, 4, "uint") == 0 || bt.compare(0, 3, "num") == 0;
                 if (!isNat) return; // boxed-type arrays keep their existing behaviour
-                bool ok = bt == "str" ? v.t == VT::Str
+                bool ok = bt == "str" ? (v.t == VT::Str || v.isAllomorph()) // an allomorph's Str side
                         : bt.compare(0, 3, "num") == 0 ? v.isNumeric()
                         : (v.t == VT::Int || v.t == VT::Bool);
                 if (!ok) throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
