@@ -33,6 +33,13 @@
 using ssize_t = long long;
 #endif
 
+// --- socket shutdown(2) how-flags: POSIX names onto Winsock ---
+#ifndef SHUT_RD
+#define SHUT_RD   SD_RECEIVE
+#define SHUT_WR   SD_SEND
+#define SHUT_RDWR SD_BOTH
+#endif
+
 // --- dynamic loading: <dlfcn.h> -> LoadLibrary/GetProcAddress ---
 #define RTLD_LAZY   0
 #define RTLD_GLOBAL 0
