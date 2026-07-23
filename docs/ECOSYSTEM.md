@@ -19,6 +19,7 @@ it. There is one implementation behind every surface.
 | **Raku.js** | `../src` compiled to WebAssembly (Emscripten) — Raku in the browser, no server. Additive: nothing in `../src` is modified. | (part of rakupp, [`rakujs/`](../rakujs/README.md)) | `rakujs.{js,wasm}` |
 | **raku.online** | The public playground built on Raku.js — editor, output pane, share/open links, an embeddable widget (`raku.js`). | [ash/raku.online](https://github.com/ash/raku.online) | [raku.online](https://raku.online/) |
 | **raku-spec** | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku-spec](https://github.com/ash/raku-spec) | [spec.raku.online](https://spec.raku.online/) |
+| **raku-tour** | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec; GitHub Pages CI builds it with the latest **release** binary. | [ash/raku-tour](https://github.com/ash/raku-tour) | [tour.raku.online](https://tour.raku.online/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
@@ -31,6 +32,7 @@ graph TD
     WASM["Raku.js<br/>rakujs.{js,wasm}"]
     ONLINE["raku.online<br/>playground + raku.js widget"]
     SPEC["spec.raku.online<br/>feature spec, live examples"]
+    TOUR["tour.raku.online<br/>interactive lessons"]
     CORPUS["raku-corpus<br/>real-world programs"]
     BREW["Homebrew tap<br/>ash/rakupp"]
     REL["GitHub Release<br/>binaries + wasm zip"]
@@ -39,9 +41,11 @@ graph TD
     SRC -->|rakujs/build.sh<br/>Emscripten| WASM
     WASM -->|copied into www/| ONLINE
     ONLINE -->|raku.js engine<br/>embedded cross-origin| SPEC
+    ONLINE -->|raku.js engine<br/>embedded cross-origin| TOUR
     NATIVE -->|rakupp build.raku<br/>--verify generator| SPEC
     NATIVE -->|differential run| CORPUS
     SRC -->|tag → release.yml CI| REL
+    REL -->|Pages CI: build + verify<br/>with release binary| TOUR
     REL -->|bump url + sha256| BREW
 ```
 
@@ -51,11 +55,11 @@ Two things are worth internalising because they drive the release runbook:
   version out of [`../CMakeLists.txt`](../CMakeLists.txt)
   (`project(RakuPP VERSION …)`) and bakes it into the WebAssembly build. Bump the
   version there *before* rebuilding wasm and every surface reports it correctly.
-- **spec.raku.online hosts no engine of its own.** Its runnable examples load
-  raku.online's `raku.js`, which `importScripts` the same `rakujs.{js,wasm}`. So
-  **the spec automatically inherits a new interpreter the moment raku.online is
-  redeployed** — updating the spec is then only about the *content* (new feature
-  pages), not the engine.
+- **Neither spec.raku.online nor tour.raku.online hosts an engine of its own.**
+  Their runnable examples load raku.online's `raku.js`, which `importScripts`
+  the same `rakujs.{js,wasm}`. So **both sites automatically inherit a new
+  interpreter the moment raku.online is redeployed** — updating them is then
+  only about the *content* (new feature pages / lessons), not the engine.
 
 ---
 
@@ -164,6 +168,18 @@ release newly supports.
    `out/` to the server.
 3. **Commit and push** the `raku-spec` repo.
 
+**tour.raku.online** ([ash/raku-tour](https://github.com/ash/raku-tour)) needs no
+server step at all: its GitHub Pages workflow installs the **latest release
+binary**, re-verifies every lesson, and deploys. It runs on every push — after a
+release with no content change, trigger it once so the lessons re-verify against
+the new interpreter:
+
+```sh
+gh workflow run 'build & deploy' -R ash/raku-tour
+```
+
+(The in-browser engine updates with raku.online, same as the spec.)
+
 ### D. Differential-check against raku-corpus
 
 Optional but recommended: run the new binary over
@@ -181,6 +197,7 @@ deploy — nothing to publish, just a signal before (or right after) tagging.
 | example programs (`examples/`) | rebuild wasm so `examples.js` regenerates (**B.2**), redeploy raku.online (**B**) |
 | the playground UI (`rakujs/playground/`) | copy the changed file into `raku.online/www/` and redeploy (**B.3–4**) |
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
+| a tour lesson | push `ash/raku-tour` — its Pages CI verifies every example and deploys (**C**) |
 | stat numbers (Roast) | refresh the docs per the doc-sync checklist (**A.4**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
-| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**) |
+| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); re-trigger the tour's Pages workflow so its lessons re-verify on the new binary (**C**) |
