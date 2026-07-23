@@ -3839,6 +3839,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
             scope->define("$_", topic);
             if (!g->var.empty()) scope->define(g->var, topic);
+            // `do with (EXPR) { $^a … }` — a placeholder block receives the topic as
+            // its argument (mirrors the statement-modifier form above; Base64 pads via
+            // `do with (3 - ($c.key+1) % 3) { $^a == 3 ?? 0 !! $^a }`)
+            if (g->body) {
+                auto ph = computePlaceholders(g->body->stmts);
+                if (ph.size() == 1) scope->define(ph[0], topic);
+            }
             // `given`/`with` is an expression: it evaluates to the value of the matched
             // `when`/`default` block (delivered via BreakGivenEx), or, if nothing matches,
             // the value of the block's last statement.
@@ -4078,7 +4085,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     std::set<std::string> explicitNamed;
     bool hasNamedSlurpy = false;
     for (auto& p : params) {
-        if (p.slurpy) { if (p.sigil == '%') hasNamedSlurpy = true; continue; }
+        // a `|c` capture (slurpy, '\\' sigil) absorbs unclaimed nameds like *%h does
+        if (p.slurpy) { if (p.sigil == '%' || p.sigil == '\\') hasNamedSlurpy = true; continue; }
         if (!p.named) continue;
         if (!p.namedKey.empty()) explicitNamed.insert(p.namedKey);
         for (auto& ak : p.aliasKeys) explicitNamed.insert(ak); // nested alias layers
@@ -4153,6 +4161,15 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         for (; pi < positional.size(); pi++) a.arr->push_back(positional[pi]);
                     }
                 }
+                // a `|c` capture also carries the UNCLAIMED named args (as
+                // namedArg pairs), so `samewith(|c)` re-passes them — Base64's
+                // adverb multis peel one named per round and forward the rest
+                if (p.sigil == '\\' && !p.name.empty())
+                    for (auto& kv : named)
+                        if (!explicitNamed.count(kv.first)) {
+                            Value na = Value::pair(kv.first, kv.second); na.namedArg = true;
+                            a.arr->push_back(std::move(na));
+                        }
                 env->define(p.name, a);
                 // capture sub-signature `|c($x, :$y!)` — unpack the slurped
                 // positionals AND the call's named args into the inner params
@@ -4506,13 +4523,35 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     // value, or the type object / default when absent).
     for (auto& p : params) {
         if (!p.named) continue;
-        std::string key = !p.namedKey.empty() ? p.namedKey
-                        : (p.name.size() > 1 ? p.name.substr(1) : p.name); // strip the sigil
+        // every name this param answers to: the primary key, nested alias keys,
+        // and the variable's own name for `:$x` / `:buf(:$bin)` (aliasBoth) forms
+        std::vector<std::string> keys;
+        if (!p.namedKey.empty()) keys.push_back(p.namedKey);
+        for (auto& ak : p.aliasKeys) keys.push_back(ak);
+        if (p.namedKey.empty() || p.aliasBoth)
+            keys.push_back(p.name.size() > 1 ? p.name.substr(1) : p.name); // strip the sigil
         bool supplied = false; Value sval;
-        for (auto& a : args)
-            if (isNamedArg(a) && a.s == key) { supplied = true; sval = a.pairVal ? *a.pairVal : Value::boolean(true); break; }
+        for (auto& a : args) {
+            if (!isNamedArg(a)) continue;
+            for (auto& key : keys)
+                if (a.s == key) { supplied = true; sval = a.pairVal ? *a.pairVal : Value::boolean(true); break; }
+            if (supplied) break;
+        }
         if (p.required && !supplied) return -1;
-        if (supplied) score += 2;
+        if (supplied) {
+            // a supplied named must TYPE-match its declared constraint, or the
+            // candidate is out — `(Bool:D :$pad!)` does not bind `:pad('')`
+            // (Base64's pad-rewrite chain relies on this to terminate)
+            if (p.sigil == '$' && !p.type.empty() && !typeMatchesArg(sval, p.type)) return -1;
+            if (p.defConstraint == 1 && !isDefined(sval)) return -1;
+            if (p.defConstraint == 2 && isDefined(sval)) return -1;
+            // Rakudo's candidate sort treats a candidate REQUIRING a named as narrower
+            // than one that doesn't, ahead of positional-type comparison — Base64's
+            // `:$pad!`/`:$uri!`/`:$str!` adverb multis (each `(Bool:D :$x!, |c)`) must
+            // beat the positionally-typed `(Str:D $s, |c)` when their named is passed.
+            // A large fixed boost approximates that lexicographic rule.
+            score += p.required ? 16 : 2;
+        }
         if (p.whereExpr) {
             Value v = supplied ? sval
                     : p.defaultVal ? eval(p.defaultVal.get())
@@ -5201,6 +5240,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     Value* topicWB = topicWriteback_; topicWriteback_ = nullptr; // one-shot, consumed here
     const std::vector<Value*>* rwSlots = pendingRwSlots_; pendingRwSlots_ = nullptr; // one-shot too
     bool noAT = noAutothread_; noAutothread_ = false; // one-shot too (Junction.THREAD)
+    int lpc = loopPhaserCtl_; loopPhaserCtl_ = 0; // one-shot: loop-phaser control from an iterating driver (map)
     bool implicitTopic_local = false;
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
     if (codeVal.t == VT::Code && codeVal.code && codeVal.code->isNative) return callNative(*codeVal.code, args);
@@ -5496,7 +5536,17 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.body) for (auto& s : *c.body)
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
     try {
-        if (c.body) runEnterPhasers(*c.body);
+        // Loop-phaser control from an iterating driver (.map over a block with
+        // FIRST/NEXT/LAST): FIRST fires only on the first iteration (and must not
+        // be re-run as an ENTER-alike), NEXT after each body, LAST after the final
+        // one — all in THIS invocation's env, so block params ($c) are visible.
+        if (c.body && lpc) {
+            bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true;
+            runEnterPhasers(*c.body); // ENTER only; FIRST suppressed
+            suppressLoopFirst_ = savedSF;
+            if (lpc & 1) runFirstPhasers(*c.body);
+        }
+        else if (c.body) runEnterPhasers(*c.body);
         if (c.body) {
             size_t nst = c.body->size();
             // The statement whose value becomes the routine result — trailing
@@ -5528,6 +5578,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
                     break; // a bare block propagates the flag to its routine
                 }
+            }
+            if (lpc && !tctx_.returning) { // driver-run loop phasers, in this invocation's env
+                if (lpc & 4) runNextPhasers(*c.body, env);
+                if (lpc & 2) runLastPhasers(*c.body);
             }
         }
     } catch (ReturnEx& r) {
@@ -8056,6 +8110,44 @@ static std::string quoteMetaRx(const std::string& s) {
     return out;
 }
 
+// Interpolate @array variables into a regex as a first-match alternation of the
+// elements' literal (quotemeta'd) text, LONGEST-FIRST — `/@alpha/` matches any
+// element, as in Rakudo (LTM over literal alternatives == longest-first || here).
+// Base64 decodes via `$str.comb(/@alpha/)`. Left untouched: `@<name>` list
+// captures, escaped `\@`, '…' literal spans, and unknown/empty arrays.
+std::string Interpreter::rxInterpArrays(const std::string& pat) {
+    if (pat.find('@') == std::string::npos || !tctx_.cur) return pat;
+    std::string out;
+    bool inSq = false; // inside '…': a literal span — no interpolation
+    for (size_t i = 0; i < pat.size(); i++) {
+        if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
+        if (pat[i] == '\'') { inSq = !inSq; out += pat[i]; continue; }
+        if (inSq) { out += pat[i]; continue; }
+        if (pat[i] == '@' && i + 1 < pat.size() &&
+            (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
+            size_t j = i + 1;
+            while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                   (pat[j] == '-' && j + 1 < pat.size() && std::isalpha((unsigned char)pat[j + 1])))) j++;
+            Value* v = tctx_.cur->find("@" + pat.substr(i + 1, j - i - 1));
+            if (v && v->t == VT::Array && v->arr && !v->arr->empty()) {
+                std::vector<std::string> els;
+                for (auto& e : *v->arr) els.push_back(e.toStr());
+                std::stable_sort(els.begin(), els.end(),
+                    [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+                out += "[ ";
+                for (size_t k = 0; k < els.size(); k++) {
+                    if (k) out += " || ";
+                    out += quoteMetaRx(els[k]);
+                }
+                out += " ]";
+                i = j - 1; continue;
+            }
+        }
+        out += pat[i];
+    }
+    return out;
+}
+
 Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern) {
     std::string pat = pattern;
     bool global = false;
@@ -8135,6 +8227,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         }
         pat = out;
     }
+    pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
     Regex re(pat);
     if (!re.obsolete().empty())
         throw RakuError{Value::typeObj("X::Obsolete"),
@@ -8626,6 +8719,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             ip += realPat[i];
         }
         realPat = ip;
+        realPat = rxInterpArrays(realPat); // `/@alpha/` — element alternation (comb path)
     }
     // `\w**{$n}` / `**{1..3}` runtime-bounded quantifier: wire the range hook so
     // the bounds are evaluated at match time (without it they default to 0..*).

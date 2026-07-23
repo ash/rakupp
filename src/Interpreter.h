@@ -203,6 +203,12 @@ public:
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
     bool noAutothread_ = false;
+    // one-shot: loop-phaser control for the next callCallable, set by an
+    // iterating driver (.map over a block with FIRST/NEXT/LAST). Bits:
+    // 1 = this call is the first iteration (run FIRST), 2 = the last (run LAST),
+    // 4 = run NEXT after the body. Phasers run in the invocation env so block
+    // params are visible (Base64's LAST reads its $c).
+    int loopPhaserCtl_ = 0;
     // depth of live CATCH handlers: .resume outside any handler dies catchably
     // (a bare ResumeEx with nothing to absorb it would reach std::terminate)
     int catchDepth_ = 0;
@@ -309,6 +315,7 @@ public:
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     Value regexMatch(const std::string& subject, const std::string& pattern); // sets $/ $0..
+    std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation
     Value regexSubst(const std::string& subject, const std::string& pattern,
                      const std::string& repl, std::string& out, bool& changed);
     // .subst / s/// with occurrence-selection adverbs (:g/:x/:nth/:p/:c) and the

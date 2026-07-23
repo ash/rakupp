@@ -218,3 +218,51 @@ Three fixes let XML load and `from-xml` parse byte-identically (returns 'a' for
 
 Gate xml1 194,551 (only delta is the socket flapper recovering 14->15), suite 96,
 zero regressions. Regression: t/regression/xml-triad-backref-indirect-coerce.raku.
+
+## Module fix batch 6 (2026-07-23) — Base64 end-to-end: six general fixes
+
+Base64 (rank 31) now encodes AND decodes byte-identically to Rakudo across all
+pad cases, the :uri alphabet, and round-trips. Its dense one-liner style
+surfaced six general gaps:
+
+1. **`do with (EXPR) { $^a }`** — the statement-form with-block now hands the
+   topic to a single-placeholder block (the modifier form already did).
+2. **FIRST/NEXT/LAST in .map blocks** — loop phasers now fire with loop
+   semantics when a block is driven by .map: FIRST once (was: per call, as an
+   ENTER-alike), NEXT after each body, LAST after the final one, all in the
+   invocation env so block params are visible (Base64's LAST reads its $c).
+   One-shot `loopPhaserCtl_` set by the driver, consumed by callCallableRaw;
+   zero cost when the block has no loop phasers (single body scan in map).
+3. **Blob/Buf listy methods** — `.rotor`/`.batch`/`.pairs`/… expand a Blob to
+   its BYTES (toList + the two scalar-as-one-element-list wrap sites); `for`
+   iteration was fixed in batch 1, method paths were not.
+4. **Multi dispatch, three scoring fixes**: (a) a candidate whose REQUIRED
+   named is supplied now beats a positionally-typed rival (+16; Rakudo's sort
+   treats requiring-a-named as narrower, ahead of positional types) — Base64's
+   `:$pad!`/`:$uri!`/`:$str!` adverb multis rely on it; (b) a supplied named
+   must TYPE-match its constraint or the candidate is out (`Bool:D :$pad!`
+   does not bind `:pad('')` — the pad-rewrite chain relies on this to
+   terminate); (c) alias keys count as supplied (`:buf(:$bin)!` satisfied by
+   `:bin`).
+5. **`|c` captures and nameds** — a capture now ABSORBS unclaimed named args
+   (no more "Unexpected named argument" when a |c is present) and CARRIES them
+   as namedArg pairs, so `samewith(|c)` re-passes them. Previously nameds were
+   silently dropped from captures.
+6. **`/@array/` regex interpolation** — an array in a regex matches its
+   elements as a longest-first literal alternation (LTM over literals), wired
+   at three compile sites (regexMatch `~~`, substSelect, and the
+   comb/split/contains path). Base64 decodes via `$str.comb(/@alpha/)`.
+
+Gate b64 **194,606 (+55)** — big honest wins in S05 regex files (litvar +8,
+exhaustive +4, utf8-c8 +36, spurt +22). S06-currying/named.t 26->6 and
+slurpy.t -2 are NOT functional regressions: those tests passed VACUOUSLY
+before (the capture dropped the primed named -> .assuming primed nothing ->
+the unchanged sig text happened to equal rakupp's lossy rendering of the
+expected signature literal; the primed CALL then died). Now the capture
+carries the named, priming works (the call succeeds), and the tests fail
+honestly against rakupp's lossy .signature.raku introspection — a separate,
+pre-existing gap, logged as a fix candidate (assuming-result signatures should
+keep primed nameds with defaults; signature literals should render defaults).
+
+Suite 97, perf: hot loop unchanged, multi-dispatch microbench slightly faster.
+Regression: t/regression/base64-sextet.raku. Tier-2: 25/50.

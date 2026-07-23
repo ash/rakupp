@@ -740,6 +740,13 @@ static Value makeInfArray(long long start) {
 static ValueList toList(const Value& v) {
     if (v.t == VT::Array && v.arr) return *v.arr;
     if (v.t == VT::Range) return v.flatten();
+    // a Blob/Buf lists as its BYTES (`$blob.rotor(3, :partial)` in Base64) —
+    // mirrors the `for`-iteration rule in the interpreter (itemized stays one item)
+    if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+        ValueList out;
+        for (unsigned char c : v.s) out.push_back(Value::integer((long long)c));
+        return out;
+    }
     if (v.t == VT::Hash && v.hash) {
         ValueList out;
         for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; out.push_back(std::move(p)); }
@@ -5772,7 +5779,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if ((m == "match" || m == "subst" || m == "comb" || m == "split" || m == "contains" || m == "subst-mutate")
         && rxIdx >= 0) {
         std::string subj = inv.toStr();
-        const std::string& pat = args[rxIdx].s;
+        // `/@alpha/` — array elements as a longest-first literal alternation
+        // (Base64 decodes via `$str.comb(/@alpha/)`); match/subst interpolate later
+        std::string pat = rxInterpArrays(args[rxIdx].s);
         // the replacement is the first positional (non-Pair) arg that isn't the regex
         Value* replArg = nullptr;
         for (size_t i = 0; i < args.size(); i++)
@@ -6281,7 +6290,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
          m == "flat" || m == "reduce" || m == "grep-index" || m == "first-index" || m == "Supply" ||
          m == "head" || m == "tail" || m == "skip" || m == "elems" || m == "end" ||
          m == "keys" || m == "values" || m == "kv" || m == "pairs" || m == "batch" || m == "rotor")) {
-        Value one = Value::array(); one.arr->push_back(inv); one.isList = true;
+        // toList keeps the scalar as one item, but a Blob/Buf expands to its
+        // BYTES (`$blob.rotor(3, :partial)` in Base64 chunks byte-wise)
+        Value one = Value::array(); *one.arr = toList(inv); one.isList = true;
         return methodCall(one, m, args, rwArgs);
     }
 
@@ -7290,10 +7301,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 // (e.g. `%h.kv.map(-> $k, $v {…})` or `{ $^a … $^b }`).
                 size_t ar = codeArity(args[0]);
                 bool aliasable = ar == 1 && inv.t == VT::Array && inv.arr && items.size() == inv.arr->size();
+                // Does the block carry loop phasers (FIRST/NEXT/LAST)? One scan;
+                // if so, hand callCallableRaw per-iteration control so they fire
+                // with loop semantics in the block's own env (Base64's encoder
+                // computes its padding in a LAST that reads the block param).
+                bool loopPh = false;
+                if (args[0].code && args[0].code->body)
+                    for (auto& s : *args[0].code->body)
+                        if (s->kind == NK::Block) {
+                            const std::string& ph = static_cast<Block*>(s.get())->phaser;
+                            if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") { loopPh = true; break; }
+                        }
                 for (size_t i = 0; i < items.size(); i += ar) {
                     ValueList ca;
                     for (size_t k = 0; k < ar && i + k < items.size(); k++) ca.push_back(items[i + k]);
                     if (aliasable) topicWriteback_ = &(*inv.arr)[i]; // $_ mutations alias the element
+                    if (loopPh)
+                        loopPhaserCtl_ = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
                     Value r;
                     try { r = callCallable(args[0], ca); }
                     catch (LastEx&) { topicWriteback_ = nullptr; break; }   // `last` in the block ends the map
@@ -7705,7 +7729,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             "classify", "categorize", "rotor", "batch",
         };
         if (listCool.count(m)) {
-            Value l = Value::array({inv}); l.isList = true;
+            // toList keeps a plain scalar as one item but expands a Blob/Buf to
+            // its bytes (`$blob.rotor(3, :partial)` in Base64 chunks byte-wise)
+            Value l = Value::array(); *l.arr = toList(inv); l.isList = true;
             return methodCall(l, m, std::move(args), rwArgs);
         }
     }
