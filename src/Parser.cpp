@@ -5175,6 +5175,12 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts) {
             }
             stubbed.erase(std::remove(stubbed.begin(), stubbed.end(), cd->name),
                           stubbed.end());
+            // A bare `package`/`module` is a WEAK namespace declaration: it only
+            // opens the name to hold `our`-scoped symbols and may coexist with a
+            // later `class`/`role`/`grammar` of the same name that refines it
+            // (Cro::ResourceIdentifier does exactly this). Don't count it, and
+            // don't let it trip the redeclaration check for the real type below.
+            if (cd->isPackage) continue;
             if (types[cd->name]++)
                 throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
                                  "X::Redeclaration", {{"symbol", cd->name}});

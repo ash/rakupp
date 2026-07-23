@@ -154,3 +154,18 @@ inside `unit class URI`, bare `Path` must resolve to the imported `URI::Path`
 (`URI::Path.new` already works fully-qualified; only the short name misses).
 Cro::Core remainder: `package Foo {}` then `role Foo {}` same-name coexistence
 (rakupp reports redeclaration -> role never loads -> `$!authority` uncomposed).
+
+## Module fix batch 3 (2026-07-23) — package/role same-name coexistence
+
+Surfaced by Cro::ResourceIdentifier (`package Cro::ResourceIdentifier { our sub
+… }` then `role Cro::ResourceIdentifier { … }`). A bare `package`/`module` is a
+WEAK namespace declaration -- it only opens the name for `our`-scoped symbols and
+may coexist with a later class/role/grammar of the same name that refines it. The
+parser's redeclaration check now skips `isPackage` decls (a genuine class/class
+or role/role clash still errors). Gate pkg1 194,551 (unchanged; no Roast test
+exercises it), suite 94, zero regressions. Regression:
+t/regression/package-then-role-coexist.raku.
+
+Cro::Core now loads past the redeclaration + `$!authority` composition; remaining
+Cro layer: `Cro::Uri::GenericActions.new` (a grammar-actions class nested in a
+package -- next onion layer, deferred).
