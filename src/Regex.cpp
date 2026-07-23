@@ -589,7 +589,12 @@ Regex::NodePtr Regex::parseAtom() {
                 sr->ruleCapture = !dotless; // <.name> is a non-capturing call
                 std::string nm = name;
                 auto eq = nm.find('=');
-                if (eq != std::string::npos) { sr->ruleAlias = nm.substr(0, eq); nm = nm.substr(eq + 1); } // <alias=rule>
+                if (eq != std::string::npos) {
+                    sr->ruleAlias = nm.substr(0, eq); nm = nm.substr(eq + 1); // <alias=rule>
+                    // <alias=.rule> — the dot only suppresses the RULE-NAME capture;
+                    // the alias still captures (Cro::MediaType: `<attribute=.token>`)
+                    if (!nm.empty() && nm[0] == '.') nm = nm.substr(1);
+                }
                 // parameterised call <name($x, '')> — peel off the argument list
                 auto lp = nm.find('(');
                 if (lp != std::string::npos && nm.back() == ')') {
@@ -792,6 +797,29 @@ void Regex::parseClassBodyMember(Node* node) {
                     for (size_t s = 0; s <= body.size(); ) { size_t cm = body.find(',', s); toks.push_back(body.substr(s, cm == std::string::npos ? std::string::npos : cm - s)); if (cm == std::string::npos) break; s = cm + 1; }
                 } else if (le != 'c') {
                     std::string d; while (!eof() && std::isalnum((unsigned char)peek())) d += pat_[pos_++]; toks.push_back(d);
+                }
+                // an escaped RANGE endpoint: `\x21..\xFF` (Cro::HTTP header
+                // field-content) / `\x21..z` — consume `..` and the second endpoint
+                if (toks.size() == 1 && le != 'c' && peek() == '.' && peek(1) == '.') {
+                    uint32_t lo = (uint32_t)std::strtol(toks[0].c_str(), nullptr, le == 'x' ? 16 : 8);
+                    pos_ += 2;
+                    while (std::isspace((unsigned char)peek())) pos_++;
+                    int32_t hi = -1;
+                    if (peek() == '\\') {
+                        pos_++; char e2 = (char)std::tolower((unsigned char)peek()); pos_++;
+                        if (e2 == 'x' || e2 == 'o') {
+                            std::string d;
+                            if (peek() == '[') { pos_++; while (!eof() && peek() != ']') d += pat_[pos_++]; if (peek() == ']') pos_++; }
+                            else while (!eof() && std::isalnum((unsigned char)peek())) d += pat_[pos_++];
+                            hi = (int32_t)std::strtol(d.c_str(), nullptr, e2 == 'x' ? 16 : 8);
+                        }
+                    } else if (!eof()) hi = (int32_t)(unsigned char)pat_[pos_++];
+                    if (hi >= 0) {
+                        if (lo < 0x80 && hi < 0x80) node->ranges.push_back({(unsigned char)lo, (unsigned char)hi});
+                        else node->cpRanges.push_back({lo, (uint32_t)hi});
+                        if (neg) node->negate = !node->negate;
+                        continue;
+                    }
                 }
                 for (auto& tk : toks) {
                     size_t a = tk.find_first_not_of(" \t"), b = tk.find_last_not_of(" \t");
@@ -1818,11 +1846,14 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     auto record = [&](long end, const std::vector<std::pair<long,long>>& caps,
                       const std::map<std::string, std::pair<long,long>>& named,
                       std::shared_ptr<const ChildMap> kids,
-                      std::shared_ptr<const std::set<std::string>> listNames) -> bool {
+                      std::shared_ptr<const std::set<std::string>> listNames,
+                      std::shared_ptr<const std::set<int>> listCaps = nullptr,
+                      std::shared_ptr<const std::map<int, std::vector<std::pair<long,long>>>> capReps = nullptr) -> bool {
         if (capKey.empty()) return k(end);
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = end;
         pn.caps = caps; pn.named = named; pn.kids = std::move(kids);
         pn.listNames = std::move(listNames);
+        pn.listCaps = std::move(listCaps); pn.capReps = std::move(capReps);
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
         st.named[capKey] = {pos, end};
         st.children[capKey].push_back(std::move(pn)); // collate repeated captures into a list
@@ -1853,7 +1884,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                 const MemoEntry& me = mit->second;
                 candDeclEnd_ = me.declEnd;
                 candLitPrefix_ = me.litPrefix;
-                return record(me.end, me.caps, me.named, me.kids, me.listNames);
+                return record(me.end, me.caps, me.named, me.kids, me.listNames, me.listCaps, me.capReps);
             }
         }
         std::map<std::string, std::string> bound;
@@ -1870,11 +1901,14 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                                          ? st.hooks->saveState() : nullptr;
         MemoEntry me;
         me.listNames = re->listNamesPtr();
+        me.listCaps = re->listCapsPtr();
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
             me.matched = true; me.end = end;
             me.declEnd = (sub.firstCode >= 0 ? sub.firstCode : end);
             me.litPrefix = (sub.litPrefix >= 0 ? sub.litPrefix - pos : 0);
             me.caps = sub.caps; me.named = sub.named;
+            if (!sub.capReps.empty())
+                me.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(std::move(sub.capReps));
             // the frame is committed (ratchet) — freeze its subtree without copying
             me.kids = sub.children.empty() ? nullptr
                     : std::make_shared<const ChildMap>(std::move(sub.children));
@@ -1886,13 +1920,13 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             if (!me.matched) return false;
             candDeclEnd_ = me.declEnd;
             candLitPrefix_ = me.litPrefix;
-            return record(me.end, me.caps, me.named, me.kids, me.listNames);
+            return record(me.end, me.caps, me.named, me.kids, me.listNames, me.listCaps, me.capReps);
         }
         auto& slot = (memo_[mkey] = std::move(me));
         if (!slot.matched) return false;
         candDeclEnd_ = slot.declEnd;
         candLitPrefix_ = slot.litPrefix;
-        return record(slot.end, slot.caps, slot.named, slot.kids, slot.listNames);
+        return record(slot.end, slot.caps, slot.named, slot.kids, slot.listNames, slot.listCaps, slot.capReps);
     }
 
     // non-ratchet `regex`: thread `k` through so the caller can backtrack into the callee
@@ -1917,7 +1951,9 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // stays live — freeze a COPY of the subtree for this completion
         return finish(record(end, sub.caps, sub.named,
                              sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children),
-                             re->listNamesPtr()));
+                             re->listNamesPtr(), re->listCapsPtr(),
+                             sub.capReps.empty() ? nullptr
+                               : std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps)));
     });
     if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
     scope_.pop_back();

@@ -55,6 +55,11 @@ struct ParseNode {
     // list-valued regardless of occurrence count (Rakudo: even 0 or 1 gives an Array).
     // Shared from the rule's compiled Regex; null = none.
     std::shared_ptr<const std::set<std::string>> listNames;
+    // positional captures under a repetition quantifier (`(...)+` → $0 is an Array
+    // of every occurrence, as in Rakudo): which indices are list-valued, and the
+    // per-iteration spans. Shared/frozen like kids; null = none.
+    std::shared_ptr<const std::set<int>> listCaps;
+    std::shared_ptr<const std::map<int, std::vector<std::pair<long, long>>>> capReps;
 };
 
 // Result of a regex match against a subject string (byte offsets).
@@ -173,6 +178,7 @@ private:
     size_t pos_ = 0;
     int ncaps_ = 0;
     std::set<int> listCaps_;             // positional capture indices under a repetition quantifier
+    mutable std::shared_ptr<const std::set<int>> listCapsFrozen_; // lazily frozen copy for ParseNode sharing
     std::shared_ptr<std::set<std::string>> listNames_; // subrule capture keys under a repetition quantifier
     std::shared_ptr<std::set<std::string>> hashNames_; // `%<name>=…` hash-valued capture keys
     void collectListNames(const Node* n); // walk a quantified atom, gathering capturing subrule keys
@@ -231,6 +237,12 @@ public:
     // Subrule capture keys under a repetition quantifier (null = none) — shared
     // into ParseNode/RxMatch so Match building can honour Rakudo's list arity.
     std::shared_ptr<const std::set<std::string>> listNamesPtr() const { return listNames_; }
+    // the rule's list-valued positional capture indices, frozen on first request
+    std::shared_ptr<const std::set<int>> listCapsPtr() const {
+        if (!listCapsFrozen_ && !listCaps_.empty())
+            listCapsFrozen_ = std::make_shared<const std::set<int>>(listCaps_);
+        return listCapsFrozen_;
+    }
     // Fast path for a rule whose whole body is a single character matcher (e.g.
     // `token space { <[\ \t]> }`): returns true if this regex is exactly that.
     bool rootIsSingleChar() const;
@@ -278,6 +290,8 @@ public:
         std::map<std::string, std::pair<long, long>> named;
         std::shared_ptr<const ChildMap> kids; // frozen once; replays share, never copy
         std::shared_ptr<const std::set<std::string>> listNames; // the rule's quantified capture keys
+        std::shared_ptr<const std::set<int>> listCaps; // list-valued positional capture indices
+        std::shared_ptr<const std::map<int, std::vector<std::pair<long, long>>>> capReps; // their per-iteration spans
     };
     long candDeclEnd_ = -1; // set by matchSubMeta after a candidate match: its declarative-prefix end (for proto LTM)
     long candLitPrefix_ = 0; // set alongside candDeclEnd_: leading-literal length (LTM specificity)

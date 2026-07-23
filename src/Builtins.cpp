@@ -3902,6 +3902,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // a grammar INSTANCE (`Grammar.new`) parses just like the type object
         if ((m == "parse" || m == "subparse" || m == "parsefile") && (ci->isGrammar || ci->findRule("TOP")))
             return methodCall(Value::typeObj(ci->name), m, args, rwArgs);
+        // `self.bless(...)` / `$obj.new(...)` on an INSTANCE builds a fresh object
+        // of its class (Cro::Uri's add(): `(self ?? $!create !! Cro::Uri).bless(|%parts)`)
+        if (m == "bless" || m == "new")
+            return methodCall(Value::typeObj(ci->name), m, std::move(args), rwArgs);
         const ClassAttr* at = ci->findAttr(m);
         if (at && at->pub) {
             auto it = inv.obj->attrs.find(m);

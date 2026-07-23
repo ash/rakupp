@@ -1078,6 +1078,12 @@ static Value coerceHash(const Value& v) {
     for (size_t i = 0; i < items.size(); i++) {
         if (items[i].t == VT::Pair) {
             (*h.hash)[items[i].s] = items[i].pairVal ? *items[i].pairVal : Value::any();
+        } else if (items[i].t == VT::Hash && items[i].hash && items[i].hashKind.empty() &&
+                   !items[i].itemized) {
+            // a plain (non-itemized) Hash in the list MERGES its pairs
+            // (`%( $<authority>.ast, path => … )` in Cro::Uri) — it is not a key.
+            // An ITEMIZED $hashitem stays whole (S02 assigning-refs).
+            for (auto& kv : *items[i].hash) (*h.hash)[kv.first] = kv.second;
         } else if (i + 1 < items.size()) {
             (*h.hash)[items[i].toStr()] = items[i + 1];
             i++;
@@ -9239,7 +9245,22 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // so `$<child>.made` is available to a parent's action.
     std::function<Value(const ParseNode&)> build = [&](const ParseNode& pn) -> Value {
         Value mv = Value::matchVal(input.substr(pn.from, pn.to - pn.from), pn.from, pn.to);
-        for (auto& c : pn.caps) {
+        for (size_t ci = 0; ci < pn.caps.size(); ci++) {
+            // a positional capture under a repetition quantifier is an ARRAY of
+            // every occurrence (`(...)+` → @$0), as in Rakudo — Cro::Uri's pchars
+            // action concatenates `@$0` chunks to rebuild a path segment
+            if (pn.listCaps && pn.listCaps->count((int)ci)) {
+                Value lst = Value::array(); lst.isList = true;
+                if (pn.capReps) {
+                    auto it = pn.capReps->find((int)ci);
+                    if (it != pn.capReps->end())
+                        for (auto& o : it->second)
+                            lst.arr->push_back(Value::matchVal(input.substr(o.first, o.second - o.first), o.first, o.second));
+                }
+                mv.arrRef().push_back(std::move(lst));
+                continue;
+            }
+            auto& c = pn.caps[ci];
             if (c.first < 0) mv.arrRef().push_back(Value::nil());
             else mv.arrRef().push_back(Value::matchVal(input.substr(c.first, c.second - c.first), c.first, c.second));
         }
@@ -12600,9 +12621,29 @@ Value Interpreter::eval(Expr* e) {
                 if (it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "|") {
                     Value v = eval(static_cast<Unary*>(it.get())->operand.get());
                     if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
+                    // |%hash (or a Hash-valued expr like `|$<authority>.ast`)
+                    // slips its PAIRS — Cro builds `%parts = scheme => …, |$<hier-part>.ast`
+                    if (v.t == VT::Hash && v.hash &&
+                        (v.hashKind.empty() || v.hashKind == "Map")) {
+                        for (auto& kv : *v.hash) {
+                            Value p = Value::pair(kv.first, kv.second);
+                            p.pairKey = kv.second.pairKey;
+                            items.push_back(std::move(p));
+                        }
+                        continue;
+                    }
                     items.push_back(v); continue;
                 }
-                items.push_back(evalValueOf(it.get())); // a bare /pat/ list element stays a Regex object
+                {
+                    Value v = evalValueOf(it.get()); // a bare /pat/ list element stays a Regex object
+                    // a $-scalar element is ITEMIZED: `%h = ($hashitem,)` must not
+                    // merge the hash's pairs (it is one item, not a pair source)
+                    if (v.t == VT::Hash && it->kind == NK::VarExpr &&
+                        !static_cast<VarExpr*>(it.get())->name.empty() &&
+                        static_cast<VarExpr*>(it.get())->name[0] == '$')
+                        v.itemized = true;
+                    items.push_back(std::move(v));
+                }
             }
             Value lout = listToArray(items);
             lout.isList = true; // a comma list — parenned or bare — is a List, .WHAT (List)

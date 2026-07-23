@@ -1186,6 +1186,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             mc->method = advance().text;
             mc->bang = true; // private call: only valid with a self in scope
             if (isKind(Tok::LParen)) { advance(); mc->args = parseCallArgs(); }
+            else if (isOp(":") && (startsTermToken(peek()) ||
+                     (peek().kind == Tok::Ident && (peek().text == "my" || peek().text == "our" || peek().text == "state")))) {
+                // colon listop args on a PRIVATE call too:  self!client-setup: { … }, :$enc
+                // (IO::Socket::Async::SSL) — mirrors the public `.method: args` form
+                advance(); // :
+                do {
+                    mc->args.push_back(parseExpr(BP_COMMA + 1));
+                } while (matchKind(Tok::Comma) && startsTermToken(cur()));
+            }
             base = std::move(mc);
             continue;
         } else if (isOp(".")) {
@@ -4193,6 +4202,9 @@ StmtPtr Parser::parseSubset() {
     auto sd = std::make_unique<SubsetDecl>();
     if (isKind(Tok::Ident)) sd->name = advance().text;
     if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) sd->baseType = advance().text; }
+    // traits may sit between the base type and the where clause:
+    // `subset CookieName of Str is export where /…/` (Cro::HTTP::Cookie)
+    while (isIdent("is")) { advance(); if (isKind(Tok::Ident)) advance(); }
     if (isIdent("where")) { advance(); sd->where = parseExpr(BP_ASSIGN); }
     return sd;
 }
@@ -4525,7 +4537,10 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             cd->methods.push_back(std::unique_ptr<SubDecl>(static_cast<SubDecl*>(s.release())));
             continue;
         }
-        if (isIdent("sub")) { advance(); parseSub(false); continue; } // static sub: parsed, not yet wired
+        // class-body sub: lands in cd->body so it defines into the body scope the
+        // methods close over (Cro::Uri's `sub remove-dot-segments` is called from
+        // `method add`); was parsed-and-DISCARDED before
+        if (isIdent("sub")) { advance(); cd->body.push_back(parseSub(false)); continue; }
         // grammar rules: [proto|multi] token|rule|regex NAME { <pattern> }
         {
             bool wasProtoMulti = false;

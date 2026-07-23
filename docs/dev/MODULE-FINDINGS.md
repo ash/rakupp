@@ -304,3 +304,45 @@ Six general fixes:
    verified against Rakudo), and `R//`-family routed through applyBinOp so
    short-circuit ops reverse correctly. LibraryMake: `%vars{$k} [R//]= %*ENV{$k}`.
    LibraryMake's "native" label was a red herring -- its `is native` lives in POD.
+
+
+## Module fix batch 8 (2026-07-24) — the Cro family cluster
+
+**Cro::Core is byte-identical** (Tier-2 28/50): the full functional sweep — URI
+parsing (scheme/host/port/path/query/fragment, userinfo, percent-encoded paths),
+RFC 3986 relative resolution (dot segments, query-only, network-path refs), and
+Cro::MediaType — matches Rakudo output exactly. **Cro::HTTP works under rakupp**:
+Request/Response construction, header validation, byte-perfect serialization,
+content-type parsing. (The Tier-2 Cro::HTTP probe still shows DIFF only because
+RAKUDO cannot compile Cro::HTTP in the battery sandbox — native OpenSSL — while
+rakupp answers correctly; rakupp's only remaining warning is inside
+IO::Socket::Async::SSL (`whenever` scoping), which needs native TLS anyway.)
+
+Eight general fixes (gate cro2 **194,627 (+6)**, sole delta
+integration/lexicals-and-attributes.t 2->8 unlocked; suite 99; perf flat incl. a
+grammar-heavy bench; regression: t/regression/cro-family-cluster.raku):
+
+1. `|%hash` in a LIST slips its pairs (`%parts = scheme => …, |$<hier-part>.ast`).
+2. `self.bless(...)`/`$obj.new(...)` on an INSTANCE builds a fresh object of its
+   class (Cro's `(self ?? $!create !! Cro::Uri).bless(|%parts)`).
+3. `<alias=.rule>`: the dot suppresses only the rule-name capture; the alias
+   still captures (was: ruleName kept the dot -> matched nothing).
+4. Positional captures under a quantifier in GRAMMAR rules are Arrays of every
+   occurrence in the action's $/ (`(...)+` -> @$0): ParseNode/MemoEntry now
+   carry capReps + listCaps through record/memo/replay, and the action-side
+   Match builder emits per-iteration lists. (Both repro variants were broken;
+   one "worked" only because $0's span happened to cover the whole run.)
+5. `%( $hash, pair )` merges the hash (was: STRINGIFIED it into a key);
+   itemized `$hashitem` stays whole (S02 assigning-refs guard, caught by the
+   first gate and fixed via ListExpr marking $-var hash elements itemized).
+6. A `sub` in a class body is callable from methods — the class-body parser
+   parsed-and-DISCARDED it (same family as batch 7's dropped UseStmt);
+   Cro::Uri's `sub remove-dot-segments` is called from `method add`.
+7. `subset X of Str is export where /…/` — traits between the base type and
+   `where` (Cro::HTTP::Cookie).
+8. Private-method colon listop `self!client-setup: { … }, :$enc`
+   (IO::Socket::Async::SSL), and `\x21..\xFF` hex-escape RANGES in char
+   classes (Cro::HTTP header field-content validation).
+
+Remaining Cro gap: native TLS (OpenSSL FFI) for live client/server connections —
+out of interpreter scope; everything pure-Raku in the family now runs.
