@@ -49,10 +49,21 @@ ECOSYSTEM-TOP50.md.
    literal is returned) — parse-false is `{ $pos = $pos+5 }` with `--> False`.
    Gate: definite-return.t 7→10, misc2 restored. Regression
    t/regression/nqp-json-fast-support.raku.
-4d. **JSON::Fast `to-json` still recurses** (2026-07-23): "Too many levels of
-   recursion" — its `jsonify` type-dispatch loops under rakupp (nested helper
-   subs over `str @out` with a multi/given type switch). Separate leg; the
-   read direction (what most consumers need) is done.
+4d. **JSON::Fast `to-json` WORKS** — RESOLVED 2026-07-23, byte-identical to
+   Rakudo (compact, pretty, sorted-keys, escapes, full round-trip, stable
+   re-emit). Three more general fixes: (a) `nqp::istype([…], Seq)` is now
+   False — an Array is not a Seq (a Seq is `.s=="Seq"`); jsonify tested Seq
+   before Positional and looped forever on `jsonify(.cache)`; a real lazy
+   `.map` still reports Seq. (b) a plain `my` declared inside a conditional
+   BRANCH (Ternary then/else, nqp::if/while/stmts arg) hoists to the enclosing
+   block so a SIBLING branch sees it (JSON declares `my int $codepoint` in the
+   `\u` branch, assigns it from the `\n` branch) — narrowly scoped: `state`
+   excluded, statement-flow `my` untouched (a broad version cratered state.t
+   2/25 and gather; the narrow one is clean). (c) a bare `nqp::op` with NO
+   parens is a zero-arg call (`nqp::list_i`, `nqp::null`) — was lexed as a
+   bareword, so `$escapees := nqp::list_i` wasn't a list and its bindpos_i
+   table stayed empty. **JSON::Fast is DONE.** Gate mf9 194,510, clean.
+   Regression t/regression/nqp-scope-and-list.raku.
 KNOWN TRADEOFF: recognizing+skipping `is repr("…")` means a repr-changing
    class redeclaration no longer throws X::TooLateForREPR (S32-exceptions/
    misc.t:69, −1). Accepted — loading every `is repr()` module is worth far

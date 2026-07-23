@@ -273,6 +273,7 @@ public:
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
+    void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env); // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
     struct SubsetInfo { std::string base; const Expr* where = nullptr; };

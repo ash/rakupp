@@ -2985,6 +2985,13 @@ ExprPtr Parser::parsePrimary() {
                     if (long long cv; nqpConstValue(name.substr(12), cv))
                         return std::make_unique<IntLit>(cv);
                 }
+                // a bare `nqp::op` with NO argument list is a zero-arg op call
+                // (`nqp::list_i`, `nqp::null`). Only when no `(` follows; the
+                // parenthesized form is handled below.
+                if (!(isKind(Tok::LParen) && !cur().spaceBefore)) {
+                    std::vector<ExprPtr> none;
+                    if (ExprPtr n = makeNqpOp(name.substr(5), none)) return n;
+                }
             }
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 advance();

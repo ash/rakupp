@@ -1185,6 +1185,49 @@ void Interpreter::setMatchVar(Value v) {
     }
 }
 
+// Raku `my`/`state` declarations are visible throughout their enclosing block,
+// even when the declaration is textually inside one branch of a ternary/if/nqp
+// op and referenced from a sibling branch (JSON::Fast declares `my int $codepoint`
+// in its `\u` branch and assigns it from the `\n` branch). Pre-declare such vars
+// in the block env so a sibling reference resolves. We descend through EXPRESSION
+// nodes only — never into a nested Block/BlockExpr/SubDecl body, which owns its
+// own scope. Zero-cost for blocks with no expression-buried declarations.
+void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env) {
+    // Narrow by design: only a plain `my` declared INSIDE a conditional branch
+    // (a Ternary then/else, or an nqp::if/while/stmts arg) needs hoisting for a
+    // SIBLING branch to see it. `state` is excluded (its persistence machinery
+    // owns scoping), and a `my` in normal statement flow is left alone (hoisting
+    // it would disturb loop/gather per-iteration freshness — that cost the
+    // state/gather regressions). `cond` = we're inside such a branch.
+    std::function<void(const Expr*, bool)> walkE = [&](const Expr* e, bool cond) {
+        if (!e) return;
+        switch (e->kind) {
+            case NK::VarExpr: {
+                auto* v = static_cast<const VarExpr*>(e);
+                if (cond && v->declare && v->declScope == "my" &&
+                    !v->name.empty() && !env->vars.count(v->name))
+                    env->vars[v->name] = typedDefault(v->declType, v->name[0]);
+                if (v->declDefault) walkE(v->declDefault.get(), cond);
+                break;
+            }
+            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); walkE(t->cond.get(), cond); walkE(t->then.get(), true); walkE(t->els.get(), true); break; }
+            case NK::NqpOp:   { for (auto& x : static_cast<const NqpOp*>(e)->args) walkE(x.get(), true); break; }
+            case NK::Binary:  { auto* b = static_cast<const Binary*>(e); walkE(b->lhs.get(), cond); walkE(b->rhs.get(), cond); break; }
+            case NK::Unary:   walkE(static_cast<const Unary*>(e)->operand.get(), cond); break;
+            case NK::Assign:  { auto* a = static_cast<const Assign*>(e); walkE(a->target.get(), cond); walkE(a->value.get(), cond); break; }
+            case NK::Call:    { auto* c = static_cast<const Call*>(e); if (c->callee) walkE(c->callee.get(), cond); for (auto& x : c->args) walkE(x.get(), cond); break; }
+            case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); walkE(m->inv.get(), cond); for (auto& x : m->args) walkE(x.get(), cond); break; }
+            case NK::Index:   { auto* i = static_cast<const Index*>(e); walkE(i->base.get(), cond); walkE(i->index.get(), cond); break; }
+            case NK::ListExpr:{ for (auto& x : static_cast<const ListExpr*>(e)->items) walkE(x.get(), cond); break; }
+            case NK::ChainExpr: { for (auto& x : static_cast<const ChainExpr*>(e)->operands) walkE(x.get(), cond); break; }
+            // Block / BlockExpr / lambda bodies own their scope — do NOT descend.
+            default: break;
+        }
+    };
+    for (auto& s : stmts)
+        if (s->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(s.get())->e.get(), false);
+}
+
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
@@ -2486,6 +2529,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     for (auto& s : b->stmts)
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
     hasNestedSub = hoistSubs(b->stmts);
+    hoistExprDecls(b->stmts, blockEnv); // `my` buried in ternary/nqp branches → block scope
     runEnterPhasers(b->stmts);
     // Run the block's CATCH handler; returns true if `.resume` was called (so the
     // block should carry on after the throwing statement).
@@ -4907,7 +4951,12 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
         case VT::Complex: return type == "Complex" || type == "Numeric";
         case VT::Str:     return type == "Str" || type == "Stringy";
         case VT::Bool:    return type == "Bool";
-        case VT::Array:   return type == "Array" || type == "List" || type == "Positional" || type == "Seq" || type == "Iterable";
+        case VT::Array:
+            // a Seq is an Array tagged `.s == "Seq"`; a plain Array/List is NOT a
+            // Seq (JSON::Fast's jsonify tests `istype($_, Seq)` before Positional
+            // — a false match sends it into an infinite `jsonify(.cache)` loop)
+            if (type == "Seq") return v.s == "Seq";
+            return type == "Array" || type == "List" || type == "Positional" || type == "Iterable";
         case VT::Hash:    return type == "Hash" || type == "Associative" || type == "Map";
         case VT::Code:    return type == "Code" || type == "Callable" || type == "Routine" || type == "Block";
         case VT::Object:
@@ -5403,6 +5452,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     } fguard{tctx_, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
     if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
+    if (c.body) hoistExprDecls(*c.body, tctx_.cur.get()); // `my` buried in ternary/nqp branches → routine scope
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
     Block* catchBlk = nullptr;
     if (c.body) for (auto& s : *c.body)
