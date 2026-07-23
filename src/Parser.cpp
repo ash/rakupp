@@ -3658,6 +3658,21 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // colon ends it; nothing binds, move on to the real parameters
             if (isOp(":")) { advance(); continue; }
         }
+        // indirect/symbolic type constraint:  ::(EXPR) $p  (XML::Node uses
+        // `method reparent(::(q<XML::Element>) $parent)`). The type is computed at
+        // runtime, which we don't constrain against here — parse the `::(…)` and
+        // leave the parameter unconstrained so it binds. The `~~ ::(EXPR)` and
+        // `::(EXPR).method` expression forms already resolve at runtime.
+        if (isOp("::") && peek().kind == Tok::LParen) {
+            advance(); advance();               // :: (
+            int depth = 1;
+            while (depth > 0 && !isKind(Tok::End)) {
+                if (isKind(Tok::LParen)) depth++;
+                else if (isKind(Tok::RParen)) depth--;
+                if (depth == 0) { advance(); break; }
+                advance();
+            }
+        }
         // type-capture parameter:  ::T $x  /  ::T  /  ::Grammar:U :$named
         // Capture the type-variable name (+ optional smiley) and fall through to
         // the shared var/named/default handling so it can type a following param.
@@ -4343,6 +4358,16 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 if (isOp(":") && (peek().kind == Tok::Ident)) { advance(); advance(); } // :D / :U / :_ smiley
                 if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
             }
+            // coercion-type attribute: `has IO::Path() $.filename` / `has Int(Cool) $.n`.
+            // The declared type is the coercion TARGET; an assigned value is coerced
+            // to it on construction. Consume the `(…)` and flag the attribute.
+            bool attrCoerce = false;
+            if (!attrType.empty() && isKind(Tok::LParen) && !cur().spaceBefore) {
+                advance(); // (
+                if (isKind(Tok::Ident)) advance(); // (Cool) source type — not enforced
+                matchKind(Tok::RParen);
+                attrCoerce = true;
+            }
             if (attrType.empty() && isKind(Tok::LParen)) {
                 // parenthesized attribute list: `has ( $.this, $.that, );`
                 advance();
@@ -4371,6 +4396,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 std::string vn = advance().text;
                 AttrDecl a;
                 a.type = attrType;
+                a.coerce = attrCoerce;
                 a.sigil = vn[0];
                 size_t idx = 1;
                 if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }

@@ -295,6 +295,7 @@ struct AttrDecl {
     bool pub = true;    // has $.x (public accessor) vs has $!x (private)
     bool rw = false;    // `is rw` — public accessor is writable
     std::string type;   // declared type name (`has Int $.x`), "" = none (Mu)
+    bool coerce = false; // coercion-type attribute: `has IO::Path() $.filename`
     std::vector<std::string> handles; // `handles <m1 m2>` — delegate these methods to the attr
     ExprPtr def;        // optional default
 };

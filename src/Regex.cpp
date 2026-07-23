@@ -301,7 +301,16 @@ Regex::NodePtr Regex::parseAtom() {
             g->kids.push_back(std::move(child));
             return g;
         }
-        pos_ = save; // not a named capture
+        // `$<name>` with no `=` is a BACKREFERENCE to the named capture: match its
+        // already-captured text literally, WITHOUT creating a new capture. XML close
+        // tags rely on this — `token element { '<' <name> … '</' $<name> '>' }` — and
+        // without it `<name>` would be captured twice (the tag name doubled).
+        if (c == '$' && !name.empty()) {
+            auto vm = std::make_unique<Node>();
+            vm->k = K::VarMatch; vm->lit = "$<" + name + ">";
+            return vm;
+        }
+        pos_ = save; // not a named capture (e.g. @<name>/%<name> without =)
     }
     if (c == '(') {
         pos_++;
@@ -1189,6 +1198,17 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             return ok ? k(pos) : false;
         }
         case K::VarMatch: { // `$var` in a pattern — match the variable's current Str value literally
+            // `$<name>` named backreference: match the in-flight named capture's text
+            // literally (no new capture). Used by XML close-tag matching.
+            if (n->lit.size() > 3 && n->lit[1] == '<' && n->lit.back() == '>') {
+                std::string nm = n->lit.substr(2, n->lit.size() - 3);
+                auto it = st.named.find(nm);
+                if (it == st.named.end() || it->second.first < 0) return false;
+                long cb = it->second.first, ce = it->second.second, clen = ce - cb;
+                if (clen < 0 || pos + clen > (long)st.s.size()) return false;
+                if (st.s.compare(pos, clen, st.s, cb, clen) != 0) return false;
+                return k(pos + clen);
+            }
             // `$0`/`$1` backreference: the IN-FLIGHT capture of this same match
             // (`(.) $0*` matches a run of the captured character)
             if (n->lit.size() > 1 && std::isdigit((unsigned char)n->lit[1])) {

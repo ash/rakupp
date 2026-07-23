@@ -197,3 +197,24 @@ t/regression/sink-context-method.raku.
 
 Known residual divergence: a plain (non-rw) sub returning a fresh object, sunk,
 does not fire sink (we only fire on method-call results) -- rare; documented.
+
+## Module fix batch 5 (2026-07-23) — XML: named backref + indirect-type param + coercion attr
+
+Three fixes let XML load and `from-xml` parse byte-identically (returns 'a' for
+`from-xml("<a><b>hi</b></a>").root.name`, was 'a a'):
+- **`$<name>` named backreference** (regex engine): in match position `$<name>`
+  is a backreference to the named capture -- match its captured text literally,
+  create NO new capture. rakupp was consuming only `$` (var="$") and re-parsing
+  `<name>` as a fresh capture, so XML's close-tag rule
+  `'</' $<name> '>'` captured the tag name twice. General regex fix.
+- **`::(EXPR)` indirect type as a PARAMETER constraint** (parser): the expr forms
+  (`~~ ::(EXPR)`, `::(EXPR).meth`) already resolved; the param form
+  `method reparent(::(q<XML::Element>) $parent)` did not parse. Now parsed;
+  left unconstrained (the type is dynamic).
+- **coercion-type attribute** `has IO::Path() $.filename` (parser + AttrDecl.coerce):
+  parsed and declared (was 'Attribute $!filename not declared'). NOTE: the
+  coercion itself is not yet applied -- an assigned value keeps its own type
+  (filename stays Str, not IO::Path); XML doesn't use filename so it's cosmetic.
+
+Gate xml1 194,551 (only delta is the socket flapper recovering 14->15), suite 96,
+zero regressions. Regression: t/regression/xml-triad-backref-indirect-coerce.raku.
