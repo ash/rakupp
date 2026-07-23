@@ -310,6 +310,10 @@ bool Parser::startsListopArg(const Token& t) const {
             return false;
         }
         case Tok::Op:
+            // a pointy block is a listop argument (`get -> { content … }` in a Cro
+            // route block) — but NOT in a statement condition, where `->` binds the
+            // statement's own block (`for @a -> $x { }`)
+            if (t.text == "->" || t.text == "<->") return !stmtCond_;
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `say 0, ++$x`
@@ -1523,6 +1527,17 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                     while (d > 0 && !isKind(Tok::End));
                 }
                 if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
+            }
+            // named destructuring element `:@positional` / `:$x` / `:%h` — binds
+            // the RHS hash's value under the bare key name (Cro::HTTP::Router:
+            // `my (:@positional, :@named) := $sig.params.classify: {…}`)
+            if (isOp(":") && peek().kind == Tok::Var) {
+                advance();
+                auto ve = std::make_unique<VarExpr>(advance().text);
+                ve->declare = true; ve->declScope = scope; ve->namedBind = true;
+                list->items.push_back(std::move(ve));
+                if (!matchKind(Tok::Comma)) break;
+                continue;
             }
             // a literal element in a destructuring declaration (`my ($a, "foo")`)
             // binds nothing — an anonymous slot stands in
@@ -2885,8 +2900,11 @@ ExprPtr Parser::parsePrimary() {
                 call->args.push_back(std::move(be));
                 return call;
             }
-            if (name == "my" || name == "our" || name == "state" ||
-                name == "has" || name == "constant") {
+            if ((name == "my" || name == "our" || name == "state" ||
+                 name == "has" || name == "constant") &&
+                // `state => header-init` is a PAIR with key "state" (Cro::HTTP2),
+                // not a declaration — a `=>` after the keyword means pair
+                peek().kind != Tok::FatArrow) {
                 advance();
                 // `my class Foo {…}` / `my role …` as an expression — evaluates to the type
                 if (isIdent("class") || isIdent("role") || isIdent("grammar") ||
@@ -4508,6 +4526,10 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             matchKind(Tok::Semicolon);
             continue;
         }
+        // `only method new(...)` — the explicit non-multi declarator (the default);
+        // consume it and parse the routine as usual (Cro::HTTP::Server)
+        if (isIdent("only") && (peek().text == "method" || peek().text == "submethod" || peek().text == "sub"))
+            advance();
         if (isIdent("method") || isIdent("submethod")) {
             bool sub = isIdent("submethod");
             int ln = cur().line;

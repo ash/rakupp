@@ -2195,11 +2195,20 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // while an importer's bare `run(...)` reaches the built-in.
         auto moduleEnv = std::make_shared<Env>(); moduleEnv->parent = global_;
         std::set<std::string> exported;
-        for (auto& st : prog->stmts)
-            if (st->kind == NK::SubDecl) {
-                auto* sd = static_cast<SubDecl*>(st.get());
-                if (sd->isExport && !sd->name.empty()) exported.insert(sd->name);
+        // `is export` subs may sit inside a BRACED module/package body
+        // (Cro::HTTP::Router exports `get`/`post`/… from `module … { }`) —
+        // recurse so a builtin-colliding name like `get` still publishes
+        std::function<void(const std::vector<StmtPtr>&)> scanExports =
+            [&](const std::vector<StmtPtr>& stmts) {
+            for (auto& st : stmts) {
+                if (st->kind == NK::SubDecl) {
+                    auto* sd = static_cast<SubDecl*>(st.get());
+                    if (sd->isExport && !sd->name.empty()) exported.insert(sd->name);
+                } else if (st->kind == NK::ClassDecl)
+                    scanExports(static_cast<ClassDecl*>(st.get())->body);
             }
+        };
+        scanExports(prog->stmts);
         tctx_.cur = moduleEnv;
         auto savedPkg = curPkgEnv_; curPkgEnv_ = moduleEnv; // `our sub` in the module installs here, not main's global
         auto publish = [&] {
@@ -3062,7 +3071,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 pkgEnv->parent = tctx_.cur;
                 auto saved = tctx_.cur; tctx_.cur = pkgEnv;
                 auto savedPkg = curPkgEnv_; curPkgEnv_ = pkgEnv; // `our` inside the package installs here (published qualified)
-                for (auto& st : cd->body) exec(st.get());
+                hoistSubs(cd->body); // forward refs: Cro::HTTP::Router calls router-plugin-register long before its definition
+                // classes/roles register FIRST (Rakudo declares types at compile
+                // time): `our $p = router-plugin-register('link')` at the top of
+                // Cro::HTTP::Router news a PluginKey declared 1400 lines later
+                for (auto& st : cd->body)
+                    if (st->kind == NK::ClassDecl && !static_cast<ClassDecl*>(st.get())->isAugment)
+                        exec(st.get());
+                for (auto& st : cd->body)
+                    if (!(st->kind == NK::ClassDecl && !static_cast<ClassDecl*>(st.get())->isAugment))
+                        exec(st.get());
                 tctx_.cur = saved; curPkgEnv_ = savedPkg;
                 // Only `our`-declared sigil vars are visible by qualified name; `my` stays lexical.
                 std::set<std::string> ourVars;
@@ -3124,6 +3142,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         {{"name", cd->name}},
                         std::string(cd->isRole ? "Role" : "Class") + " '" + cd->name + "' cannot inherit from / compose itself");
                 auto it = classes_.find(cd->parent);
+                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
+                    it = classes_.find(tctx_.pkgPrefix + cd->parent); // sibling nested type
+                if (it == classes_.end()) it = classes_.find(resolveClassAlias(cd->parent));
                 // `does X` where X is a class or a concrete core type: only
                 // roles compose (built-in role names like Positional stay fine)
                 if (cd->parentIsDoes) {
@@ -3151,6 +3172,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     throw RakuError{Value::typeObj("X::Inheritance::SelfInherit"),
                         "Class '" + cd->name + "' cannot inherit from itself"};
                 auto it = classes_.find(pn);
+                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
+                    it = classes_.find(tctx_.pkgPrefix + pn);
+                if (it == classes_.end()) it = classes_.find(resolveClassAlias(pn));
                 if (it != classes_.end()) ci->extraParents.push_back(it->second);
                 else if (!isKnownTypeName(pn))
                     throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
@@ -3190,7 +3214,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             std::vector<ClassInfo*> composedRoles;
             if (ci->parent && ci->parent->isRole) composedRoles.push_back(ci->parent.get());
             for (auto& p : ci->extraParents) if (p && p->isRole) composedRoles.push_back(p.get());
-            for (auto& rn : cd->roles) { auto it = classes_.find(rn); if (it != classes_.end() && it->second->isRole) composedRoles.push_back(it->second.get()); }
+            for (auto& rn : cd->roles) {
+                auto it = classes_.find(rn);
+                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
+                    it = classes_.find(tctx_.pkgPrefix + rn);
+                if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
+                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
+                    it = classes_.find(tctx_.pkgPrefix + rn); // `does Handler` where the role is a sibling nested type
+                if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
+                if (it != classes_.end() && it->second->isRole) composedRoles.push_back(it->second.get());
+            }
             // conflict detection: the same method (same signature for multis)
             // provided — as a real implementation — by two different roles must be
             // resolved by the class's own method (diamonds share the Callable, so
@@ -3503,6 +3536,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 std::string savedPrefix = tctx_.pkgPrefix;
                 tctx_.pkgPrefix = clsName + "::";
                 tctx_.cur = bodyEnv;
+                hoistSubs(cd->body); // class-body subs visible to earlier body statements too
                 try { for (auto& st : cd->body) exec(st.get()); }
                 catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
                 tctx_.cur = saved;
@@ -4987,7 +5021,9 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
     if (base.t == VT::Object && base.obj) {
         for (ClassInfo* ci = base.obj->cls.get(); ci; ci = ci->parent.get())
             for (auto& at : ci->attrs)
-                if (at.name == name && !(at.pub && at.rw)) // private or public read-only
+                // public @./%. attrs assign through the accessor without `is rw`
+                if (at.name == name &&
+                    !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
                     throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable '" + name + "'"};
         return base.obj->attrs[name];
@@ -5976,6 +6012,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     } else env->define("@_", Value::array(args));
     auto saved = tctx_.cur;
     tctx_.cur = env;
+    // a method frame is a dynamic-scope boundary like a sub frame: push the
+    // CALLER's env so `$*CRO-ROUTE-SET`-style dynamics set in a calling sub stay
+    // visible through method calls (Cro's route -> definition-complete -> plugin)
+    tctx_.dynStack.push_back(saved ? saved.get() : global_.get());
+    struct DynGuard { ExecContext& t; ~DynGuard() { t.dynStack.pop_back(); } } dynG{tctx_};
     // callsame/nextsame scope: this activation sees only frames pushed FOR it
     // (ownFrame) — never the caller's (a frameless bottom method must not
     // re-enter its caller's chain; that was an infinite nextsame loop)
@@ -6248,7 +6289,12 @@ Value* Interpreter::lvalue(Expr* e) {
             if (!mc->bang)
                 for (ClassInfo* ci = base->obj->cls.get(); ci; ci = ci->parent.get())
                     for (auto& at : ci->attrs)
-                        if (at.name == mc->method && !(at.pub && at.rw))
+                        // a public @./%. attr is assignable through its accessor even
+                        // without `is rw` (list-assign replaces the container's
+                        // contents — Cro: `.body-parsers = @!body-parsers`); only
+                        // $-attrs need the rw trait
+                        if (at.name == mc->method &&
+                            !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
                             throw RakuError{Value::typeObj("X::Assignment::RO"),
                                 "Cannot modify an immutable '" + mc->method + "'"};
             return &base->obj->attrs[mc->method];
@@ -6316,6 +6362,33 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
 
+    // named destructuring: `my (:@positional, :@named) := %h` — each element
+    // binds the RHS hash's value under its bare name (Cro::HTTP::Router
+    // classifies signature params this way)
+    if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::ListExpr) {
+        auto* lst0 = static_cast<ListExpr*>(a->target.get());
+        bool anyNamed = false;
+        for (auto& it : lst0->items)
+            if (it->kind == NK::VarExpr && static_cast<VarExpr*>(it.get())->namedBind) { anyNamed = true; break; }
+        if (anyNamed) {
+            Value rhs = eval(a->value.get());
+            for (auto& it : lst0->items) {
+                if (it->kind != NK::VarExpr) continue;
+                auto* ve = static_cast<VarExpr*>(it.get());
+                std::string bare = ve->name.size() > 1 ? ve->name.substr(1) : ve->name;
+                Value v = Value::any();
+                if (rhs.t == VT::Hash && rhs.hash) {
+                    auto hit = rhs.hash->find(bare);
+                    if (hit != rhs.hash->end()) v = hit->second;
+                }
+                Value* lv = lvalue(it.get());
+                if (ve->name[0] == '@') *lv = coerceArray(v);
+                else if (ve->name[0] == '%') *lv = coerceHash(v);
+                else *lv = v;
+            }
+            return sink ? Value::any() : rhs;
+        }
+    }
     if (a->op == "=" && a->target->kind == NK::ListExpr) {
         auto* lst = static_cast<ListExpr*>(a->target.get());
         Value rhs = eval(a->value.get());

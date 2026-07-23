@@ -1322,9 +1322,39 @@ static Value makeSignature(const Callable* c) {
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
         (*pv.hash)["name"] = Value::str(p.name.empty() ? std::string(1, p.sigil) : p.name);
         (*pv.hash)["type"] = Value::str(p.type);
+        // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router);
+        // an unconstrained param is Any
+        (*pv.hash)["type-obj"] = Value::typeObj(p.type.empty() ? "Any" : p.type);
         (*pv.hash)["named"] = Value::boolean(p.named);
-        (*pv.hash)["optional"] = Value::boolean(p.optional);
+        (*pv.hash)["optional"] = Value::boolean(p.optional || p.defaultVal != nullptr);
         (*pv.hash)["slurpy"] = Value::boolean(p.slurpy);
+        // `.constraints`: a literal parameter ('greet' in `get -> 'greet', $n {}`)
+        // answers its literal value; otherwise Mu (matches Rakudo's use in Cro)
+        {   // literal constraint value — static context, so decode the common
+            // literal node kinds directly (StrLit/IntLit); anything else -> Mu
+            Value cv = Value::typeObj("Mu");
+            if (p.litVal) {
+                Expr* le = p.litVal.get();
+                if (le->kind == NK::StrLit) cv = Value::str(static_cast<StrLit*>(le)->v);
+                else if (le->kind == NK::IntLit) cv = Value::integer(static_cast<IntLit*>(le)->v);
+                else if (le->kind == NK::NumLit) cv = Value::number(static_cast<NumLit*>(le)->v);
+                else if (le->kind == NK::BoolLit) cv = Value::boolean(static_cast<BoolLit*>(le)->v);
+            }
+            (*pv.hash)["constraints"] = std::move(cv);
+        }
+        {   // `.named_names`: every name this named parameter answers to
+            Value nn = Value::array(); nn.isList = true;
+            if (p.named) {
+                if (!p.namedKey.empty()) nn.arr->push_back(Value::str(p.namedKey));
+                for (auto& ak : p.aliasKeys) nn.arr->push_back(Value::str(ak));
+                if (p.namedKey.empty() || p.aliasBoth) {
+                    std::string bare = p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')
+                                     ? p.name.substr(2) : (p.name.size() > 1 ? p.name.substr(1) : p.name);
+                    nn.arr->push_back(Value::str(bare));
+                }
+            }
+            (*pv.hash)["named_names"] = nn;
+        }
         params.arr->push_back(pv);
     }
     (*s.hash)["params"] = params;
@@ -1759,8 +1789,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // a Parameter's introspection (.name/.type/.named/.optional/.slurpy)
     if (inv.t == VT::Hash && inv.hashKind == "Parameter") {
-        if ((m == "name" || m == "type" || m == "named" || m == "optional" || m == "slurpy") && inv.hash->count(m))
+        if ((m == "name" || m == "named" || m == "optional" || m == "slurpy" ||
+             m == "constraints" || m == "named_names") && inv.hash->count(m))
             return (*inv.hash)[m];
+        // `.type` answers the TYPE OBJECT (Cro's router compares `=:= Str`);
+        // the plain string form stays under the "type" key for legacy callers
+        if (m == "type" && inv.hash->count("type-obj")) return (*inv.hash)["type-obj"];
+        if (m == "type" && inv.hash->count(m)) return (*inv.hash)[m];
+        if (m == "positional") return Value::boolean(!(*inv.hash)["named"].truthy() && !(*inv.hash)["slurpy"].truthy());
+        if (m == "sigil") { const std::string& n = (*inv.hash)["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
     }
     // a Capture's .list is its POSITIONAL args, .hash/.Map its NAMED (Pair) args
     if (inv.t == VT::Array && inv.hashKind == "Capture" && (m == "list" || m == "hash" || m == "Map")) {

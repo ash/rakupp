@@ -346,3 +346,43 @@ grammar-heavy bench; regression: t/regression/cro-family-cluster.raku):
 
 Remaining Cro gap: native TLS (OpenSSL FFI) for live client/server connections —
 out of interpreter scope; everything pure-Raku in the family now runs.
+
+## Module fix batch 9 (2026-07-24) — toward a LIVE Cro server: seven layers
+
+Driving an actual `route {} + Cro::HTTP::Server` app under rakupp surfaced a
+fresh onion (none of it TLS-related). Fixed, in order encountered:
+
+1. **Braced-module exports vs builtins**: `is export` subs inside `module … { }`
+   were invisible to the export scan (top-level-only), so a name colliding with
+   a builtin (`get`!) was withheld — the Router's `get` fell through to the
+   STDIN-reading builtin and HUNG. The scan now recurses into class/module
+   bodies.
+2. **Pointy block as a listop argument** (`get -> { content … }`): `->` added to
+   startsListopArg, guarded off in statement conditions (`for @a -> $x {}`).
+3. **Dynamic vars now cross METHOD frames**: invokeMethod pushes the caller env
+   onto dynStack like callCallableRaw does — `my $*CRO-ROUTE-SET` in `route`
+   is now visible inside methods/plugins it calls (contextual.t +12).
+4. **Public @./%. attrs assign through their accessor without `is rw`**
+   (`.body-parsers = @!body-parsers`); $-attrs still require the trait.
+5. **`only method` declarator**; **`state => v` is a pair** not a declaration;
+   **`my (:@a, :@b) := %h` named destructuring** (namedBind on VarExpr).
+6. **Module-body forward references**: hoistSubs + classes-register-first
+   two-pass exec for braced package bodies (Router calls
+   router-plugin-register/PluginKey 1400 lines before their definitions).
+7. **Parameter introspection**: `.constraints` (literal params like 'greet'),
+   `.type` returns a TYPE OBJECT (`=:= Str` comparisons), `.named_names`,
+   `.positional`, `.sigil`.
+
+Gate cro3 **194,658 (+31)**: contextual.t +12, pairs.t +9, clone +4,
+introspection +2, attributes +2, advent2009-day21 parses (+1). Three honest -1
+trade-offs, each an error-expected pedantry case now more permissive:
+pointy.t 19 (`{YOU_ARE_HERE}` gating), S09 decl.t (shaped-attr out-of-bounds
+check through accessor), construction.t 11 (auto-constructor array
+writability). Suite 100. Regression: t/regression/cro-live-cluster.raku.
+
+**Live-server status**: route blocks build, handlers register, plugin config
+flows, Server loads. The NEXT blocker is `Variable '$split' is not declared`
+from Cro.compose's `++state $split` — the shape resists 5 isolated repro
+attempts (state in for-Z-loop in method with colon-call slices all pass), so
+it needs in-situ debugging next session. After that: the EVAL'd route-matcher
+regex and the reactive (supply/whenever) pipeline are untested territory.

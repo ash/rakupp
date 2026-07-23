@@ -70,6 +70,7 @@ struct VarExpr : Expr {
     std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
     std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
     ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
+    bool namedBind = false;      // `my (:@a, :@b) := %h` — binds the RHS hash's value by bare name
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
 };
 
