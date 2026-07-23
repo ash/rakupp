@@ -504,9 +504,13 @@ unchanged. Rides the next batch's full gate.
 
 ## Batch 11 — probe triage: five parse/dispatch fixes, two stale probes
 
-Fresh triage showed ALL 22 remaining Tier-2 DIFFs have rk=[] (Rakudo dies in
-the battery sandbox); of those, 8 were also rakupp failures. Fixes, each
-verified against the failing module:
+Fresh triage showed ALL 22 remaining Tier-2 DIFFs have rk=[]. IMPORTANT (see
+the batch-11c correction below): rk=[] is NOT a mere "sandbox" artifact —
+Rakudo fails these for real reasons (unvendored transitive deps, native libs,
+stale probes), and rakupp's non-empty output is UNVERIFIED (produced by
+silently ignoring missing `use`). Of the 22, 8 were also outright rakupp
+failures; those are the ones the fixes below address, each verified against
+the failing module:
 
 1. **`if/elsif EXPR -> $x is copy {`** — traits on an if-binding are consumed
    and ignored (our binding var is already a writable copy). HTTP::UserAgent's
@@ -545,8 +549,10 @@ verified against the failing module:
    module (Rakudo fails the old probe too) → probe now targets Digest::SHA1;
    Data::Dump exports `Dump`, not `dump` → flipped to MATCH immediately.
 
-Tier-2: **29/50** (Data::Dump). HTTP::UserAgent and Text::Utils now answer
-their probes correctly (rp right, rk=[] sandbox-only). Honest new target:
+Tier-2: **29/50** (Data::Dump). HTTP::UserAgent and Text::Utils now PARSE and
+answer their probes with plausible output, but rk=[] is Rakudo failing on a
+missing dep (Encode) / the module itself — NOT verified-correct (see
+batch-11c). Honest new target:
 **Digest rk=[20] vs rp=[]** — pure-Raku SHA1 needs element-width typed blobs
 (blob32.new packs 32-bit words, .elems counts words, [$i] reads words; our
 Blob is a plain byte string). JSON::Class additionally needs AttrX::Mooish
@@ -591,3 +597,48 @@ Tier-2 **30/50**. Honest remaining: Digest::HMAC still DIFFs — SHA1 is now
 correct but HMAC's own blob key/msg XOR padding gives
 `73752fe1…` vs Rakudo `102900b7…` (a separate blob-op bug, batch 12). PDF::Lite
 needs the PDF dist vendored; JSON::Class needs AttrX::Mooish + MOP work.
+
+## Batch 11c — CORRECTION: the DIFFs are not "rakupp-correct, Rakudo-sandbox-fails"
+
+Earlier entries claimed the rk=[] DIFFs were Rakudo dying "in the sandbox"
+while rakupp "produces correct output." **That was wrong and unverified.** On
+2026-07-23 each rp-non-empty / rk-empty probe was re-run under REAL unsandboxed
+Rakudo (same vendored dists, comma-form RAKULIB). Rakudo fails for concrete,
+legitimate reasons; rakupp only "succeeds" by silently ignoring missing
+modules (`use ignored`), so its output was never compared to a real reference.
+
+Real causes, by module:
+- **Missing transitive dep, not vendored in the battery** — Rakudo correctly
+  refuses to compile: HTTP::UserAgent→Encode, Config→Hash::Merge→IO::Glob→
+  IO::Path::XDG→Log, Sparrow6→Hash::Merge, Test::META→AttrX::Mooish,
+  Test::Output→Trap, Date::Calendar::Strftime→Date::Names→Abbreviations.
+  rakupp ignores ALL of these and prints an answer anyway.
+- **Stale/wrong probe** — the probe calls a routine the module doesn't export;
+  Rakudo errors at compile, rakupp swallows it: Shell::Command, Terminal::ANSI
+  (`&color` undeclared), File::Find (probe runs against a nonexistent `lib`
+  dir — Rakudo throws, rakupp returns True by being too lenient).
+- **Native library** — Math::Libgsl::Constants (gsl_version symbol),
+  Digest::SHA256::Native (compute_sha256): neither engine can run without the
+  C lib built.
+- **Module-internal failure on current Rakudo** — OpenSSL / IO::Socket::SSL:
+  `No such method 'slurp' for invocant of type 'Slip'` inside the old
+  OpenSSL::NativeLib; rakupp is lenient where Rakudo is strict.
+
+Proof the leniency masks bugs: vendoring `Encode` let HTTP::UserAgent's load
+COMPLETE under rakupp — which then exposed a real `No such method 'new'` that
+the broken partial-load had hidden. So the pre-correction "rp=[HTTP::UserAgent]"
+was an artifact, not a correct answer.
+
+**Verified truth: 30/50 are genuine byte-identical** (harness MATCH = both
+engines non-empty AND equal). The other 20 are NOT rakupp wins; they are
+mostly battery-completeness gaps plus a few stale probes and rakupp
+leniency-masks-bug cases.
+
+Honest path forward for the DIFFs (started, not finished): vendor the missing
+pure-Raku deps so BOTH engines compile, then compare for real. Fetched into
+dists/ (NOT yet wired into harness/tier3-modules.tsv, so the sandbox run is
+unchanged): Hash::Merge 2.0.0, Encode 0.0.4, Trap 0.0.5, AttrX::Mooish 1.0.10.
+Config still needs IO::Glob+IO::Path::XDG+Log; Date::Names needs Abbreviations.
+Also worth doing: make rakupp's "could not find module" a HARD error under a
+strict flag, so these masked failures surface instead of producing phantom
+output.
