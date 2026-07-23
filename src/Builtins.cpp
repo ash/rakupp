@@ -1390,6 +1390,8 @@ static const char* quantValueType(const std::string& kind) {
     return nullptr;
 }
 
+static Value makeAsyncSocket(int fd); // defined with the supply-wiring block below
+
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     // package-relative short name: a bare `Frog` type invocant answers as its
     // qualified nested class (`Forest::Frog`) when no real class claims the
@@ -1399,7 +1401,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (ai != classAliases_.end()) inv.s = ai->second;
     }
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
-    if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
     if (m == "WHY") {
         // declarator pod: `#| text` above a sub/method/class answers .WHY
         if (inv.t == VT::Code && inv.code && !inv.code->pod.empty())
@@ -1786,6 +1788,55 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "arity") return inv.hash->count("arity") ? (*inv.hash)["arity"] : Value::integer(0);
         if (m == "count") return inv.hash->count("count") ? (*inv.hash)["count"] : Value::integer(0);
         if (m == "params" || m == "parameters") { Value p = inv.hash->count("params") ? (*inv.hash)["params"] : Value::array(); p.isList = true; return p; }
+        if (m == "ACCEPTS") {
+            // would this capture bind? — arity window, literal constraints,
+            // positional types, required nameds (Cro's router bind-check)
+            if (args.empty()) return Value::boolean(false);
+            const Value& cap = args[0];
+            ValueList pos; std::map<std::string, Value> named;
+            if (cap.t == VT::Array && cap.arr)
+                for (auto& e : *cap.arr) {
+                    if (e.t == VT::Pair) named[e.s] = e.pairVal ? *e.pairVal : Value::any();
+                    else pos.push_back(e);
+                }
+            long long arity = inv.hash->count("arity") ? (*inv.hash)["arity"].toInt() : 0;
+            double cnt = inv.hash->count("count") ? (*inv.hash)["count"].toNum() : 0;
+            if ((long long)pos.size() < arity) return Value::boolean(false);
+            if (std::isfinite(cnt) && (double)pos.size() > cnt) return Value::boolean(false);
+            size_t pi2 = 0;
+            bool ok = true;
+            if (inv.hash->count("params") && (*inv.hash)["params"].arr)
+                for (auto& pv : *(*inv.hash)["params"].arr) {
+                    if (pv.t != VT::Hash) continue;
+                    auto& ph = *pv.hash;
+                    bool isNamed = ph.count("named") && ph["named"].truthy();
+                    bool isSlurpy = ph.count("slurpy") && ph["slurpy"].truthy();
+                    if (isSlurpy) continue;
+                    if (isNamed) {
+                        bool opt = ph.count("optional") && ph["optional"].truthy();
+                        if (!opt) {
+                            std::string key;
+                            if (ph.count("named_names") && ph["named_names"].arr && !ph["named_names"].arr->empty())
+                                key = (*ph["named_names"].arr)[0].toStr();
+                            else if (ph.count("name") && ph["name"].s.size() > 1)
+                                key = ph["name"].s.substr(1);
+                            if (!key.empty() && !named.count(key)) { ok = false; break; }
+                        }
+                        continue;
+                    }
+                    if (pi2 >= pos.size()) break; // optional tail
+                    const Value& a2 = pos[pi2++];
+                    if (ph.count("constraints") && !(ph["constraints"].t == VT::Type && ph["constraints"].s == "Mu")) {
+                        const Value& cv = ph["constraints"];
+                        bool eq = (a2.isNumeric() && cv.isNumeric()) ? a2.toNum() == cv.toNum()
+                                                                     : a2.toStr() == cv.toStr();
+                        if (!eq) { ok = false; break; }
+                    }
+                    if (ph.count("type") && !ph["type"].s.empty() &&
+                        !typeOrSubsetMatches(a2, ph["type"].s)) { ok = false; break; }
+                }
+            return Value::boolean(ok);
+        }
     }
     // a Parameter's introspection (.name/.type/.named/.optional/.slurpy)
     if (inv.t == VT::Hash && inv.hashKind == "Parameter") {
@@ -1800,6 +1851,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "sigil") { const std::string& n = (*inv.hash)["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
     }
     // a Capture's .list is its POSITIONAL args, .hash/.Map its NAMED (Pair) args
+    // Capture.new(:list(...), :hash(...)) — build the \(…)-style capture value
+    if (inv.t == VT::Type && inv.s == "Capture" && m == "new") {
+        Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
+        for (auto& a : args) {
+            if (a.t != VT::Pair || !a.pairVal) continue;
+            if (a.s == "list") {
+                const Value& lv = *a.pairVal;
+                if (lv.t == VT::Array && lv.arr) for (auto& e : *lv.arr) c.arr->push_back(e);
+                else if (lv.t == VT::Range) for (auto& e : lv.flatten()) c.arr->push_back(e);
+                else if (lv.t != VT::Nil && lv.t != VT::Any) c.arr->push_back(lv);
+            }
+            else if (a.s == "hash") {
+                const Value& hv = *a.pairVal;
+                if (hv.t == VT::Hash && hv.hash)
+                    for (auto& kv : *hv.hash) c.arr->push_back(Value::pair(kv.first, kv.second));
+            }
+        }
+        return c;
+    }
     if (inv.t == VT::Array && inv.hashKind == "Capture" && (m == "list" || m == "hash" || m == "Map")) {
         if (m == "list") {
             Value o = Value::array(); o.isList = true;
@@ -1864,6 +1934,221 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash)["fd"] = Value::integer(fd);
         return s;
+    }
+    // CArray[T].new(vals…) — a packed native array (NativeCall). Stored as raw
+    // bytes in .s (like Blob); callNative passes a pointer to the bytes.
+    if (inv.t == VT::Type && (inv.s == "CArray" || inv.s.rfind("CArray[", 0) == 0)) {
+        std::string et = inv.s.rfind("CArray[", 0) == 0 ? inv.s.substr(7, inv.s.size() - 8)
+                                                        : inv.ofType; // parameter lives in ofType
+        int esz = (et == "int8" || et == "uint8" || et == "byte") ? 1
+                : (et == "int16" || et == "uint16") ? 2
+                : (et == "int64" || et == "uint64" || et == "long" || et == "num64") ? 8
+                : (et == "num32") ? 4 : 4; // int32/uint32/int default
+        if (m == "new") {
+            std::string bytes;
+            for (auto& a : flattenArgs(args)) {
+                if (et == "num32") { float f = (float)a.toNum(); bytes.append((const char*)&f, 4); }
+                else if (et == "num64") { double d = a.toNum(); bytes.append((const char*)&d, 8); }
+                else { long long x = a.toInt(); bytes.append((const char*)&x, esz); }
+            }
+            Value c = Value::str(bytes); c.hashKind = "CArray";
+            c.enumName = et; // remember the element type
+            return c;
+        }
+        if (m == "allocate") {
+            size_t n = args.empty() ? 0 : (size_t)args[0].toInt();
+            Value c = Value::str(std::string(n * esz, '\0')); c.hashKind = "CArray";
+            c.enumName = et;
+            return c;
+        }
+    }
+    if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "elems") {
+        const std::string& et = inv.enumName;
+        int esz = (et == "int8" || et == "uint8" || et == "byte") ? 1
+                : (et == "int16" || et == "uint16") ? 2
+                : (et == "int64" || et == "uint64" || et == "long" || et == "num64") ? 8 : 4;
+        return Value::integer((long long)(inv.s.size() / esz));
+    }
+    // Encoding::Registry / streaming decoder — the Rakudo encoding API that
+    // Cro's HTTP parsers drive. The decoder is a stateful byte buffer with
+    // line-separator-aware consumption; our strings are byte strings, so
+    // iso-8859-1/ascii/utf-8 all pass bytes through unchanged.
+    if (inv.t == VT::Type && inv.s == "Encoding::Registry" && (m == "find" || m == "register")) {
+        static std::map<std::string, Value> userEncodings; // fc name → registered Encoding
+        auto fc = [](std::string s) { for (auto& c : s) c = (char)std::tolower((unsigned char)c); return s; };
+        if (m == "register") {
+            // pull name + alternative-names off the given Encoding-doing object
+            if (!args.empty()) {
+                Value& enc = args[0];
+                try { userEncodings[fc(methodCall(enc, "name", {}).toStr())] = enc; } catch (...) {}
+                try {
+                    Value alts = methodCall(enc, "alternative-names", {});
+                    if (alts.t == VT::Array && alts.arr)
+                        for (auto& a : *alts.arr) userEncodings[fc(a.toStr())] = enc;
+                } catch (...) {}
+            }
+            return Value::nil();
+        }
+        std::string name = args.empty() ? "utf-8" : args[0].toStr();
+        std::string key = fc(name);
+        auto uit = userEncodings.find(key);
+        if (uit != userEncodings.end()) return uit->second;
+        static const std::set<std::string> known = {
+            "utf8", "utf-8", "ascii", "iso-8859-1", "latin-1", "latin1",
+            "utf16", "utf-16", "utf16le", "utf-16le", "utf16-le", "utf-16-le",
+            "utf16be", "utf-16be", "utf16-be", "utf-16-be",
+            "windows932", "windows-932", "windows1251", "windows-1251",
+            "windows1252", "windows-1252"};
+        if (!known.count(key))
+            throwTyped("X::Encoding::Unknown", {{"name", name}},
+                       "Unknown string encoding '" + name + "'");
+        Value e = Value::makeHash(); e.hashKind = "Encoding";
+        (*e.hash)["name"] = Value::str(name);
+        return e;
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Encoding") {
+        if (m == "name") return (*inv.hash)["name"];
+        if (m == "decoder") {
+            Value d = Value::makeHash(); d.hashKind = "Decoder";
+            (*d.hash)["buffer"] = Value::str("");
+            Value seps = Value::array(); seps.arr->push_back(Value::str("\n"));
+            (*d.hash)["seps"] = seps;
+            return d;
+        }
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Decoder") {
+        Value& buf = (*inv.hash)["buffer"];
+        if (m == "add-bytes") { if (!args.empty()) buf.s += args[0].s; return inv; }
+        if (m == "set-line-separators") {
+            Value seps = Value::array();
+            for (auto& a : flattenArgs(args)) seps.arr->push_back(Value::str(a.toStr()));
+            (*inv.hash)["seps"] = seps;
+            return inv;
+        }
+        if (m == "consume-line-chars") {
+            bool chomp = false, eof = false;
+            for (auto& a : args) if (a.t == VT::Pair) {
+                bool on = !a.pairVal || a.pairVal->truthy();
+                if (a.s == "chomp") chomp = on;
+                else if (a.s == "eof") eof = on;
+            }
+            size_t best = std::string::npos, bestLen = 0;
+            if (inv.hash->count("seps"))
+                for (auto& sep : *(*inv.hash)["seps"].arr) {
+                    const std::string ss = sep.toStr();
+                    if (ss.empty()) continue;
+                    size_t pos = buf.s.find(ss);
+                    if (pos == std::string::npos) continue;
+                    // earliest match wins; on a tie the longer separator wins
+                    if (pos < best || (pos == best && ss.size() > bestLen)) { best = pos; bestLen = ss.size(); }
+                }
+            if (best == std::string::npos) {
+                if (eof && !buf.s.empty()) { std::string all = buf.s; buf.s.clear(); return Value::str(all); }
+                return Value::typeObj("Str"); // no complete line yet
+            }
+            std::string line = buf.s.substr(0, chomp ? best : best + bestLen);
+            buf.s.erase(0, best + bestLen);
+            return Value::str(line);
+        }
+        if (m == "bytes-available") return Value::integer((long long)buf.s.size());
+        if (m == "consume-exactly-bytes") {
+            size_t n = args.empty() ? 0 : (size_t)args[0].toInt();
+            if (buf.s.size() < n) return Value::typeObj("Blob");
+            Value b = Value::str(buf.s.substr(0, n)); b.hashKind = "Blob";
+            buf.s.erase(0, n);
+            return b;
+        }
+        if (m == "consume-all-chars" || m == "consume-available-chars") {
+            std::string all = buf.s; buf.s.clear(); return Value::str(all);
+        }
+        if (m == "consume-all-bytes" || m == "consume-available-bytes") {
+            Value b = Value::str(buf.s); b.hashKind = "Blob"; buf.s.clear(); return b;
+        }
+        if (m == "is-empty") return Value::boolean(buf.s.empty());
+    }
+    // IO::Socket::Async — the async TCP surface Cro drives. listen() returns a
+    // Supply that binds/accepts when tapped (see tapSupply); connect() returns a
+    // kept Promise of a connected socket.
+    if (inv.t == VT::Type && inv.s == "IO::Socket::Async") {
+        if (m == "listen") {
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash)["kind"] = Value::str("async-listen");
+            (*s.hash)["host"] = args.size() > 0 ? Value::str(args[0].toStr()) : Value::str("localhost");
+            (*s.hash)["port"] = args.size() > 1 ? Value::integer(args[1].toInt()) : Value::integer(0);
+            return s;
+        }
+        if (m == "connect") {
+            std::string host = args.size() > 0 ? args[0].toStr() : "localhost";
+            int port = args.size() > 1 ? (int)args[1].toInt() : 0;
+            int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            auto ps = std::make_shared<PromiseState>();
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.ext = ps;
+            if (fd < 0) {
+                ps->done = true; ps->broken = true; ps->causeMsg = "Cannot create socket";
+                (*p.hash)["status"] = Value::str("Broken");
+                return p;
+            }
+            sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port);
+            std::string rh = (host == "localhost") ? "127.0.0.1" : host;
+            addr.sin_addr.s_addr = inet_addr(rh.c_str());
+            if (addr.sin_addr.s_addr == INADDR_NONE) {
+                if (hostent* he = gethostbyname(rh.c_str())) memcpy(&addr.sin_addr, he->h_addr, he->h_length);
+            }
+            bool parked = gilPark();
+            int rc = ::connect(fd, (sockaddr*)&addr, sizeof(addr));
+            gilUnpark(parked);
+            if (rc < 0) {
+                ::close(fd);
+                ps->done = true; ps->broken = true;
+                ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Cannot connect to " + host + ":" + std::to_string(port);
+                (*p.hash)["status"] = Value::str("Broken");
+                return p;
+            }
+            ps->done = true; ps->result = makeAsyncSocket(fd);
+            (*p.hash)["status"] = Value::str("Kept");
+            (*p.hash)["result"] = ps->result;
+            return p;
+        }
+    }
+    // A connected async socket: .Supply taps a read worker; write/print are
+    // synchronous sends answered with a kept Promise (Cro awaits them via
+    // `whenever $socket.write(…) {}`).
+    if (inv.t == VT::Hash && inv.hashKind == "AsyncSocket") {
+        int fd = inv.hash->count("fd") ? (int)(*inv.hash)["fd"].toInt() : -1;
+        if (m == "Supply") {
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash)["kind"] = Value::str("async-read");
+            (*s.hash)["socket"] = inv;
+            bool bin = false;
+            for (auto& a : args) if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal || a.pairVal->truthy();
+            (*s.hash)["bin"] = Value::boolean(bin);
+            return s;
+        }
+        if (m == "write" || m == "print" || m == "put" || m == "say") {
+            std::string data = args.empty() ? "" : args[0].toStr();
+            if (m == "put" || m == "say") data += "\n";
+            auto ps = std::make_shared<PromiseState>();
+            Value p = Value::makeHash(); p.hashKind = "Promise"; p.ext = ps;
+            ssize_t off = 0; bool ok = fd >= 0;
+            while (ok && off < (ssize_t)data.size()) {
+                // no gilPark: send on a local socket won't block meaningfully,
+                // and parking would clobber a caller already parked on this
+                // thread's one-slot park context
+                ssize_t n = ::send(fd, data.data() + off, data.size() - off, 0);
+                if (n <= 0) { ok = false; break; }
+                off += n;
+            }
+            ps->done = true;
+            if (ok) { ps->result = Value::integer((long long)data.size()); (*p.hash)["status"] = Value::str("Kept"); (*p.hash)["result"] = ps->result; }
+            else { ps->broken = true; ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Socket write failed"; (*p.hash)["status"] = Value::str("Broken"); }
+            return p;
+        }
+        if (m == "close") { if (fd >= 0) { ::shutdown(fd, SHUT_WR); } return Value::boolean(true); }
+        if (m == "native-descriptor") return Value::integer(fd);
+        if (m == "socket-host" || m == "socket-port" || m == "peer-host" || m == "peer-port") {
+            auto it = inv.hash->find(m);
+            return it != inv.hash->end() ? it->second : Value::any();
+        }
     }
     // CompUnit::DependencySpecification.new(:short-name<Foo>, …) — a module dependency
     // descriptor. Requires a Str short-name; the version/auth/api matchers default True.
@@ -2556,12 +2841,38 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "kill" || m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
+        // on-demand (block-holding) supply: .tap wires it for real; everything
+        // else drains it eagerly (legacy value semantics) and continues below.
+        // Inside a react block the legacy eager tap is kept (its whenever/done
+        // bookkeeping predates the tap stack).
+        if (inv.hash->count("block")) {
+            if (m == "live") return Value::boolean(false);
+            if (m == "Supply") return inv;
+            if ((m == "tap" || m == "act") && (reactStack_.empty() || !tctx_.tapStack.empty())) {
+                Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+                Value done, quit;
+                for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+                    if (a.s == "emit") emit = *a.pairVal;
+                    else if (a.s == "done") done = *a.pairVal;
+                    else if (a.s == "quit") quit = *a.pairVal;
+                }
+                return tapSupply(inv, emit, done, quit);
+            }
+            inv = drainSupplyBlock(inv);
+        }
         bool listy = inv.hash->count("values");
         auto vals = [&]() -> ValueList { return listy ? *(*inv.hash)["values"].arr : ValueList{}; };
         auto mkSupply = [&](ValueList v) { Value s = Value::makeHash(); s.hashKind = "Supply"; Value a = Value::array(); *a.arr = std::move(v); (*s.hash)["values"] = a; return s; };
         if (m == "live") return Value::boolean(inv.hash->count("supplier") > 0);
         if (m == "Supply") return inv;
         if (m == "on-close") { // callback fires when the tapping supply/react block ends
+            // inside a REAL supply activation the callback belongs to that
+            // activation's tap: it runs when the tap closes (e.g. via `done`)
+            if (!args.empty() && !tctx_.tapStack.empty() && tctx_.tapStack.back()->tap) {
+                auto& th = tctx_.tapStack.back()->tap;
+                std::lock_guard<std::mutex> lk(th->m);
+                if (!th->closed) { th->closePhasers.push_back(args[0]); return inv; }
+            }
             if (!args.empty() && !supplyCloseStack_.empty()) supplyCloseStack_.back().push_back(args[0]);
             return inv;
         }
@@ -2757,8 +3068,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "done" || m == "close" || m == "quit" || m == "wait") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
-        // .close removes the tap from its source: mark it closed so emit skips it
-        if (m == "close") { if (inv.hash) (*inv.hash)["closed"] = Value::boolean(true); return Value::boolean(true); }
+        // .close removes the tap from its source: mark it closed so emit skips it;
+        // a wired tap (on-demand supply / async socket) also tears down its
+        // inner taps, CLOSE phasers, and I/O workers via the TapHandle.
+        if (m == "close") {
+            if (inv.hash) (*inv.hash)["closed"] = Value::boolean(true);
+            if (inv.ext && inv.hash && inv.hash->count("wired") && (*inv.hash)["wired"].truthy())
+                closeTapHandle(std::static_pointer_cast<TapHandle>(inv.ext));
+            return Value::boolean(true);
+        }
         if (m == "emit" || m == "done" || m == "quit") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Attribute") {
@@ -3929,7 +4247,17 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
         auto ci = inv.obj->cls;
-        if (ci->findMethod(m)) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
+        if (Value* um0 = ci->findMethod(m)) {
+            // a role's STUB method (`method body-serializer-selector() { ... }`)
+            // is satisfied by the class's public attribute of the same name —
+            // the accessor must win over executing the stub
+            bool stubOverAttr = um0->t == VT::Code && um0->code && um0->code->isStub;
+            if (stubOverAttr) {
+                const ClassAttr* at0 = ci->findAttr(m);
+                stubOverAttr = at0 && at0->pub;
+            }
+            if (!stubOverAttr) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
+        }
         if (m == "clone") { // shallow copy, with :name(val) attribute overrides
             Value nv = inv; auto ni = std::make_shared<ObjectData>();
             ni->cls = inv.obj->cls; ni->attrs = inv.obj->attrs;
@@ -4266,6 +4594,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (m == "defined") return Value::boolean(defined(inv));
     if (m == "DEFINITE") return Value::boolean(defined(inv)); // defined instance vs type/undef
+    // Mu.return: return the invocant from the enclosing routine
+    // (Cro's serializer selectors: `.return if .is-applicable(...)`)
+    if (m == "return") throw ReturnEx{inv};
+    if (m == "return-rw") throw ReturnEx{inv};
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
         std::string mn = args.empty() ? "" : args[0].toStr();
         Value out = Value::array(); out.isList = true;
@@ -4273,6 +4605,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (inv.t == VT::Object && inv.obj) ci = inv.obj->cls.get();
         else if (inv.t == VT::Type) { auto it = classes_.find(resolveClassAlias(inv.s)); if (it != classes_.end()) ci = it->second.get(); }
         if (ci) if (Value* um = ci->findMethod(mn)) out.arr->push_back(*um);
+        // a public attribute's auto-generated accessor answers .can too
+        // (Cro's router gates on `$handler.can('method')` for `has $.method`)
+        if (ci && out.arr->empty()) {
+            for (ClassInfo* c2 = ci; c2; c2 = c2->parent.get()) {
+                const ClassAttr* at = c2->findAttr(mn);
+                if (at && at->pub) {
+                    Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
+                    stub.code->name = mn; stub.code->isMethod = true;
+                    std::string mnc = mn;
+                    stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                        if (a.empty()) return Value::any();
+                        ValueList rest(a.begin() + 1, a.end());
+                        return I.methodCall(a[0], mnc, std::move(rest));
+                    };
+                    out.arr->push_back(stub);
+                    break;
+                }
+            }
+        }
         // BUILT-IN methods answer .can too: every class news/blesses/gists, and a
         // grammar parses (IETF::RFC_Grammar gates on `$g.can('parse')`). A stub
         // callable that dispatches for real if someone actually invokes it.
@@ -7855,6 +8206,291 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
 }
 
+// ---------------- real supply wiring (on-demand supplies, async sockets) ----
+// The tap-driven model that a live Cro server needs: `supply {…}` returns an
+// on-demand Supply holding its block; tapping it runs the block with `emit`
+// routed to the tap's callback and `whenever` wiring inner taps that stay live
+// after the block returns (I/O workers push through them later). The legacy
+// eager semantics survive as drainSupplyBlock for value-context consumers.
+
+// A phaser block inside a supply/whenever body, as a callable closing over the
+// body's definition scope (the phaser may run when the body never has).
+static Value supplyPhaserCode(const Block* b, std::shared_ptr<Env> closure) {
+    Value v; v.t = VT::Code; v.code = std::make_shared<Callable>();
+    v.code->body = &b->stmts; v.code->isBlock = true; v.code->closure = std::move(closure);
+    return v;
+}
+// Collect LAST/QUIT/CLOSE phasers from a block's top-level statements.
+static void scanSupplyPhasers(const Value& blk, std::vector<Value>* lastP,
+                              std::vector<Value>* quitP, std::vector<Value>* closeP) {
+    if (blk.t != VT::Code || !blk.code || !blk.code->body) return;
+    for (auto& s : *blk.code->body) {
+        if (s->kind != NK::Block) continue;
+        auto* b = static_cast<Block*>(s.get());
+        if (lastP  && b->phaser == "LAST")  lastP->push_back(supplyPhaserCode(b, blk.code->closure));
+        if (quitP  && b->phaser == "QUIT")  quitP->push_back(supplyPhaserCode(b, blk.code->closure));
+        if (closeP && b->phaser == "CLOSE") closeP->push_back(supplyPhaserCode(b, blk.code->closure));
+    }
+}
+// A callable that runs `fn` with `ctx` re-established as the active supply
+// activation — used for whenever bodies and done/quit hooks that fire later
+// (possibly from an I/O worker thread holding the GIL).
+static Value ctxCallable(std::shared_ptr<SupplyTapCtx> ctx,
+                         std::function<Value(Interpreter&, ValueList&)> fn) {
+    Value v; v.t = VT::Code; v.code = std::make_shared<Callable>();
+    v.code->builtin = [ctx, fn](Interpreter& I, ValueList& a) -> Value {
+        I.tctx_.tapStack.push_back(ctx);
+        struct G { std::vector<std::shared_ptr<SupplyTapCtx>>& s; ~G() { s.pop_back(); } } g{I.tctx_.tapStack};
+        return fn(I, a);
+    };
+    return v;
+}
+
+void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
+    if (!ctx || ctx->doneFired || ctx->done) return;
+    if (!ctx->blockDone || ctx->pending > 0) return;
+    ctx->doneFired = true;
+    if (ctx->doneCb.t == VT::Code) { ValueList na; try { callCallable(ctx->doneCb, na); } catch (...) {} }
+    closeTapHandle(ctx->tap);
+}
+
+void Interpreter::closeTapHandle(const std::shared_ptr<TapHandle>& h) {
+    if (!h) return;
+    std::vector<std::function<void()>> closers;
+    std::vector<Value> phasers;
+    {
+        std::lock_guard<std::mutex> lk(h->m);
+        if (h->closed) return;
+        h->closed = true;
+        closers.swap(h->closers);
+        phasers.swap(h->closePhasers);
+    }
+    for (auto& f : closers) { try { f(); } catch (...) {} }
+    for (auto& p : phasers) if (p.t == VT::Code) { ValueList na; try { callCallable(p, na); } catch (...) {} }
+}
+
+Value Interpreter::drainSupplyBlock(const Value& s) {
+    // Legacy eager semantics: run the block now, collecting emits; a die becomes
+    // the supply's QUIT reason. Emits route to the collector via the tap stack.
+    Value blk = (s.t == VT::Hash && s.hash->count("block")) ? (*s.hash)["block"] : Value::nil();
+    ValueList vals; bool quit = false; Value quitReason; std::string quitMsg;
+    auto ctx = std::make_shared<SupplyTapCtx>();
+    ctx->collect = &vals;
+    tctx_.tapStack.push_back(ctx);
+    supplyCloseStack_.emplace_back();
+    try {
+        if (blk.t == VT::Code) { ValueList na; callCallable(blk, na); }
+    }
+    catch (RakuError& e) { quit = true; quitReason = exceptionFor(e); quitMsg = e.message; }
+    catch (...) { tctx_.tapStack.pop_back(); supplyCloseStack_.pop_back(); throw; }
+    tctx_.tapStack.pop_back();
+    ctx->collect = nullptr; // vals is about to go out of scope with this frame
+    {
+        auto closers = std::move(supplyCloseStack_.back());
+        supplyCloseStack_.pop_back();
+        for (auto& cb : closers) if (cb.t == VT::Code) { try { ValueList na; callCallable(cb, na); } catch (...) {} }
+    }
+    Value out = Value::makeHash(); out.hashKind = "Supply";
+    Value v = Value::array(); *v.arr = std::move(vals); (*out.hash)["values"] = v;
+    if (quit) { (*out.hash)["quit-reason"] = quitReason; (*out.hash)["quit-message"] = Value::str(quitMsg); }
+    return out;
+}
+
+// Build an IO::Socket::Async connection value around a connected fd.
+static Value makeAsyncSocket(int fd) {
+    Value s = Value::makeHash(); s.hashKind = "AsyncSocket";
+    (*s.hash)["fd"] = Value::integer(fd);
+    sockaddr_in a{}; socklen_t alen = sizeof(a);
+    if (::getsockname(fd, (sockaddr*)&a, &alen) == 0) {
+        (*s.hash)["socket-host"] = Value::str(inet_ntoa(a.sin_addr));
+        (*s.hash)["socket-port"] = Value::integer(ntohs(a.sin_port));
+    }
+    alen = sizeof(a);
+    if (::getpeername(fd, (sockaddr*)&a, &alen) == 0) {
+        (*s.hash)["peer-host"] = Value::str(inet_ntoa(a.sin_addr));
+        (*s.hash)["peer-port"] = Value::integer(ntohs(a.sin_port));
+    }
+    return s;
+}
+
+Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb) {
+    if (!(s.t == VT::Hash && s.hashKind == "Supply" && s.hash)) {
+        Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+    }
+    auto& h = *s.hash;
+    // 1) on-demand block: run it now; whenevers inside wire inner taps that may
+    //    outlive this call (fed by I/O workers).
+    if (h.count("block")) {
+        Value blk = h.at("block");
+        auto handle = std::make_shared<TapHandle>();
+        auto ctx = std::make_shared<SupplyTapCtx>();
+        ctx->emitCb = emitCb; ctx->doneCb = doneCb; ctx->quitCb = quitCb; ctx->tap = handle;
+        std::vector<Value> quitP;
+        scanSupplyPhasers(blk, nullptr, &quitP, &handle->closePhasers);
+        tctx_.tapStack.push_back(ctx);
+        noCycleBreak_++;
+        struct CBGuard { int& n; ~CBGuard() { n--; } } cbGuard{noCycleBreak_};
+        try {
+            if (blk.t == VT::Code) { ValueList na; callCallable(blk, na); }
+            tctx_.tapStack.pop_back();
+            // the block returned: with no live inner taps the supply is done
+            ctx->blockDone = true;
+            maybeFinishSupply(ctx);
+        }
+        catch (RakuError& e) {
+            tctx_.tapStack.pop_back();
+            Value ex = exceptionFor(e);
+            bool handled = false;
+            for (auto& q : quitP) { ValueList one{ex}; try { callCallable(q, one); handled = true; } catch (...) {} }
+            if (!handled && quitCb.t == VT::Code) { ValueList one{ex}; try { callCallable(quitCb, one); handled = true; } catch (...) {} }
+            closeTapHandle(handle);
+            if (!handled) throw;
+        }
+        catch (...) { tctx_.tapStack.pop_back(); closeTapHandle(handle); throw; }
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+        (*t.hash)["wired"] = Value::boolean(true);
+        return t;
+    }
+    // 2) live Supplier-backed supply: register a tap record; emit/done/quit fan out later
+    if (h.count("supplier")) {
+        Value tapRec = Value::makeHash();
+        (*tapRec.hash)["emit"] = emitCb; (*tapRec.hash)["done"] = doneCb; (*tapRec.hash)["quit"] = quitCb;
+        if (h.count("chain")) {
+            Value chain = Value::array();
+            for (auto& step : *h.at("chain").arr) {
+                Value s2 = Value::makeHash(); *s2.hash = *step.hash;
+                (*s2.hash)["state"] = Value::makeHash();
+                chain.arr->push_back(s2);
+            }
+            (*tapRec.hash)["chain"] = chain;
+        }
+        Value sup = h.at("supplier");
+        if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
+        // already-done supplier: fire done immediately so wiring completes
+        if (sup.t == VT::Hash && sup.hash->count("done_state") && (*sup.hash)["done_state"].truthy() &&
+            doneCb.t == VT::Code) { ValueList na; try { callCallable(doneCb, na); } catch (...) {} }
+        tapRec.hashKind = "Tap";
+        return tapRec;
+    }
+    // 3) async listen: bind now, accept on a worker; each connection is emitted
+    //    (under the GIL) through emitCb.
+    if (h.count("kind") && h.at("kind").toStr() == "async-listen") {
+        std::string host = h.count("host") ? h.at("host").toStr() : "localhost";
+        int port = h.count("port") ? (int)h.at("port").toInt() : 0;
+        int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (lfd < 0) throw RakuError{Value::typeObj("X::IO"), "Cannot create socket"};
+        int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
+        sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons((uint16_t)port);
+        if (host.empty() || host == "0.0.0.0") addr.sin_addr.s_addr = INADDR_ANY;
+        else {
+            std::string rh = (host == "localhost") ? "127.0.0.1" : host;
+            addr.sin_addr.s_addr = inet_addr(rh.c_str());
+            if (addr.sin_addr.s_addr == INADDR_NONE) {
+                if (hostent* he = gethostbyname(rh.c_str())) memcpy(&addr.sin_addr, he->h_addr, he->h_length);
+            }
+        }
+        if (::bind(lfd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(lfd, 128) < 0) {
+            ::close(lfd);
+            throw RakuError{Value::typeObj("X::IO"), "Cannot listen on " + host + ":" + std::to_string(port)};
+        }
+        engageGil();
+        auto handle = std::make_shared<TapHandle>();
+        handle->closers.push_back([lfd] { ::shutdown(lfd, SHUT_RDWR); ::close(lfd); });
+        liveWorkers_++;
+        reapFinishedWorkers();
+        auto fin = std::make_shared<std::atomic<bool>>(false);
+        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        Interpreter* self = this;
+        workers_.push_back({BigStackThread([self, lfd, emitCb, handle, fin, spawnScope]() mutable {
+            t_isWorker = true;
+            for (;;) {
+                int cfd = ::accept(lfd, nullptr, nullptr);       // GIL not held
+                if (cfd < 0) break;                              // closed / shutdown
+                self->gil_.lock();
+                ExecContext wctx; self->loadCtx(wctx);           // fresh registers
+                tctx_.cur = spawnScope;
+                tctx_.dynStack.push_back(spawnScope.get());
+                Value sock = makeAsyncSocket(cfd);
+                if (emitCb.t == VT::Code) {
+                    ValueList one{sock};
+                    try { self->callCallable(emitCb, one); }
+                    catch (RakuError& e) { fprintf(stderr, "===WARNING=== async accept handler died: %s\n", e.message.c_str()); }
+                    catch (...) {}
+                }
+                self->gilYieldNotify();
+            }
+            self->liveWorkers_--;
+            fin->store(true, std::memory_order_release);
+        }), fin});
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+        (*t.hash)["wired"] = Value::boolean(true);
+        return t;
+    }
+    // 4) async read: a worker recv()s and emits Blob chunks; EOF fires done.
+    if (h.count("kind") && h.at("kind").toStr() == "async-read") {
+        Value sock = h.at("socket");
+        int fd = (sock.t == VT::Hash && sock.hash->count("fd")) ? (int)(*sock.hash)["fd"].toInt() : -1;
+        engageGil();
+        auto handle = std::make_shared<TapHandle>();
+        handle->closers.push_back([fd] { if (fd >= 0) ::shutdown(fd, SHUT_RD); });
+        liveWorkers_++;
+        reapFinishedWorkers();
+        auto fin = std::make_shared<std::atomic<bool>>(false);
+        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        bool bin = h.count("bin") && h.at("bin").truthy();
+        Interpreter* self = this;
+        workers_.push_back({BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin]() mutable {
+            t_isWorker = true;
+            std::vector<char> buf(65536);
+            for (;;) {
+                ssize_t n = fd >= 0 ? ::recv(fd, buf.data(), buf.size(), 0) : -1;   // GIL not held
+                if (n <= 0) break;
+                self->gil_.lock();
+                ExecContext wctx; self->loadCtx(wctx);
+                tctx_.cur = spawnScope;
+                tctx_.dynStack.push_back(spawnScope.get());
+                Value chunk = Value::str(std::string(buf.data(), (size_t)n));
+                if (bin) chunk.hashKind = "Blob";
+                if (emitCb.t == VT::Code) {
+                    ValueList one{chunk};
+                    try { self->callCallable(emitCb, one); }
+                    catch (RakuError& e) { fprintf(stderr, "===WARNING=== async read handler died: %s\n", e.message.c_str()); }
+                    catch (...) {}
+                }
+                self->gilYieldNotify();
+            }
+            self->gil_.lock();
+            ExecContext wctx; self->loadCtx(wctx);
+            tctx_.cur = spawnScope;
+            tctx_.dynStack.push_back(spawnScope.get());
+            if (doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+            self->gilYieldNotify();
+            if (fd >= 0) ::close(fd);   // the read worker owns the fd's lifetime
+            self->liveWorkers_--;
+            fin->store(true, std::memory_order_release);
+        }), fin});
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+        (*t.hash)["wired"] = Value::boolean(true);
+        return t;
+    }
+    // 5) values-backed: eager push-through, then done (or quit)
+    if (h.count("values")) {
+        if (emitCb.t == VT::Code) for (auto& v : *h.at("values").arr) {
+            ValueList one{v};
+            try { callCallable(emitCb, one); }
+            catch (NextEx&) {}
+            catch (LastEx&) { break; }
+        }
+        if (h.count("quit-reason")) {
+            if (quitCb.t == VT::Code) { ValueList one{h.at("quit-reason")}; callCallable(quitCb, one); }
+            else throw RakuError{h.at("quit-reason"),
+                                 h.count("quit-message") ? h.at("quit-message").toStr() : "Supply quit"};
+        }
+        else if (doneCb.t == VT::Code) { ValueList na; callCallable(doneCb, na); }
+    }
+    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+}
+
 // ---------------- named builtins ----------------
 // Test helpers: pull a `:todo`/`:skip` directive and the description out of trailing args.
 static std::string testDirective(const ValueList& a) {
@@ -9367,6 +10003,70 @@ void Interpreter::registerBuiltins() {
         return Value::nil();
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
+        // Inside an on-demand supply activation (real tap or eager drain): wire a
+        // real inner tap. The body runs (now or later, from an I/O worker) with
+        // this activation re-established, so its emits reach the downstream tap.
+        if (!I.tctx_.tapStack.empty() && a.size() >= 2 && a.back().t == VT::Code) {
+            auto ctx = I.tctx_.tapStack.back();
+            Value src = a[0], blk = a.back();
+            // whenever over a Promise/plain value: run the block once with its
+            // result — a real (worker-backed) Promise is awaited first, with
+            // the GIL released so the worker can run
+            if (!(src.t == VT::Hash && src.hashKind == "Supply")) {
+                Value rv = src;
+                bool broken = false;
+                if (src.t == VT::Hash && src.hashKind == "Promise") {
+                    if (src.ext) {
+                        auto ps = std::static_pointer_cast<PromiseState>(src.ext);
+                        I.awaitPromise(ps);
+                        if (ps->broken) {
+                            broken = true;
+                            fprintf(stderr, "===WARNING=== whenever: awaited promise broken: %s\n",
+                                    ps->causeMsg.c_str());
+                        }
+                        else rv = ps->result;
+                    }
+                    else if (src.hash->count("result")) rv = (*src.hash)["result"];
+                }
+                if (!broken) {
+                    ValueList one{rv};
+                    try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
+                }
+                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+            }
+            std::vector<Value> lastP, quitP;
+            scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
+            Value emitW = ctxCallable(ctx, [blk](Interpreter& I2, ValueList& args) -> Value {
+                try { ValueList one = args; return I2.callCallable(blk, one); }
+                catch (NextEx&) {} catch (LastEx&) {}
+                return Value::any();
+            });
+            // every inner tap holds the supply open until its done fires; the
+            // done hook runs LAST phasers, then releases this activation's hold
+            ctx->pending++;
+            Value doneW = ctxCallable(ctx, [lastP, ctx](Interpreter& I2, ValueList&) -> Value {
+                for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                ctx->pending--;
+                I2.maybeFinishSupply(ctx);
+                return Value::any();
+            });
+            Value quitW;
+            if (!quitP.empty())
+                quitW = ctxCallable(ctx, [quitP](Interpreter& I2, ValueList& args) -> Value {
+                    for (auto& p : quitP) { ValueList one = args; try { I2.callCallable(p, one); } catch (...) {} }
+                    return Value::any();
+                });
+            Value tapV = I.tapSupply(src, emitW, doneW, quitW);
+            // closing the outer tap closes this inner one
+            if (ctx->tap && tapV.t == VT::Hash && tapV.ext &&
+                tapV.hash->count("wired") && (*tapV.hash)["wired"].truthy()) {
+                auto ih = std::static_pointer_cast<TapHandle>(tapV.ext);
+                Interpreter* ip = &I;
+                std::lock_guard<std::mutex> lk(ctx->tap->m);
+                if (!ctx->tap->closed) ctx->tap->closers.push_back([ip, ih] { ip->closeTapHandle(ih); });
+            }
+            return tapV;
+        }
         // a `done` in an earlier whenever closes the react — later whenevers don't run
         if (!I.reactStack_.empty()) {
             auto ctx = I.reactStack_.back();
@@ -9422,6 +10122,17 @@ void Interpreter::registerBuiltins() {
     };
     B["sleep-till"] = [](Interpreter&, ValueList&) -> Value { return Value::boolean(true); };
     B["done"] = [](Interpreter& I, ValueList&) -> Value {
+        // `done` inside an on-demand supply activation ends its stream: fire the
+        // downstream done callback and close the activation's inner taps.
+        if (!I.tctx_.tapStack.empty()) {
+            auto ctx = I.tctx_.tapStack.back();
+            ctx->done = true;
+            if (!ctx->collect) {
+                if (ctx->doneCb.t == VT::Code) { ValueList na; try { I.callCallable(ctx->doneCb, na); } catch (...) {} }
+                I.closeTapHandle(ctx->tap);
+            }
+            return Value::boolean(true);
+        }
         // `done` inside a react block closes its loop.
         if (!I.reactStack_.empty()) {
             auto ctx = I.reactStack_.back();
@@ -9430,29 +10141,28 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(true);
     };
     B["supply"] = [](Interpreter& I, ValueList& a) -> Value {
-        // supply { emit ...; done } : run the block now, collecting emitted values.
-        // A die inside the block becomes the supply's QUIT reason (delivered to a
-        // tap's quit callback), not an escaping exception.
-        ValueList vals; bool quit = false; Value quitReason; std::string quitMsg;
-        I.tctx_.supplyStack.push_back(&vals);
-        I.supplyCloseStack_.emplace_back();
-        try {
-            if (!a.empty() && a.back().t == VT::Code) I.callCallable(a.back(), {});
-        }
-        catch (RakuError& e) { quit = true; quitReason = I.exceptionFor(e); quitMsg = e.message; }
-        catch (...) { I.tctx_.supplyStack.pop_back(); I.supplyCloseStack_.pop_back(); throw; } // loop-control still pops our &vals
-        I.tctx_.supplyStack.pop_back();
-        {   // the block is finished: its whenever taps close — run on-close callbacks
-            auto closers = std::move(I.supplyCloseStack_.back());
-            I.supplyCloseStack_.pop_back();
-            for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
-        }
-        Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = std::move(vals); (*s.hash)["values"] = v;
-        if (quit) { (*s.hash)["quit-reason"] = quitReason; (*s.hash)["quit-message"] = Value::str(quitMsg); }
+        // supply { … } is ON-DEMAND: the block runs when the supply is tapped
+        // (tapSupply), with emit routed to the tap. Value-context consumers
+        // (.list, for, await) drain it eagerly via drainSupplyBlock — the same
+        // values the old eager model produced, just computed at consumption.
+        Value s = Value::makeHash(); s.hashKind = "Supply";
+        (*s.hash)["block"] = (!a.empty() && a.back().t == VT::Code) ? a.back() : Value::nil();
         return s;
     };
     B["emit"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (!I.tctx_.supplyStack.empty()) I.tctx_.supplyStack.back()->push_back(a.empty() ? Value::any() : a[0]);
+        Value v = a.empty() ? Value::any() : a[0];
+        if (std::getenv("RAKUPP_TAP_TRACE"))
+            fprintf(stderr, "[emit] depth=%zu kind=%s collect=%d cb=%d\n", I.tctx_.tapStack.size(),
+                    v.typeName().c_str(),
+                    I.tctx_.tapStack.empty() ? -1 : (int)!!I.tctx_.tapStack.back()->collect,
+                    I.tctx_.tapStack.empty() ? -1 : (int)(I.tctx_.tapStack.back()->emitCb.t == VT::Code));
+        if (!I.tctx_.tapStack.empty()) {
+            auto ctx = I.tctx_.tapStack.back();
+            if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
+            if (ctx->emitCb.t == VT::Code) { ValueList one{v}; I.callCallable(ctx->emitCb, one); }
+            return Value::boolean(true);
+        }
+        if (!I.tctx_.supplyStack.empty()) I.tctx_.supplyStack.back()->push_back(v);
         return Value::boolean(true);
     };
     // printf/sprintf take **@args — a list/array argument flattens into the values,
@@ -9710,6 +10420,17 @@ void Interpreter::registerBuiltins() {
         I.yieldToWorker();
         return p;
     };
+    // NativeCall helpers: size of a native type; cglobal is a stub (0)
+    B["nativesizeof"] = [](Interpreter&, ValueList& a) -> Value {
+        std::string t = a.empty() ? "" : a[0].t == VT::Type ? a[0].s : a[0].toStr();
+        long long sz = (t == "int8" || t == "uint8" || t == "byte" || t == "bool") ? 1
+                     : (t == "int16" || t == "uint16") ? 2
+                     : (t == "int64" || t == "uint64" || t == "long" || t == "longlong" ||
+                        t == "num64" || t == "size_t" || t == "ssize_t" || t == "Pointer") ? 8
+                     : (t == "num32" || t == "int32" || t == "uint32" || t == "int" || t == "uint") ? 4 : 8;
+        return Value::integer(sz);
+    };
+    B["cglobal"] = [](Interpreter&, ValueList&) -> Value { return Value::integer(0); };
     B["await"] = [](Interpreter& I, ValueList& a) -> Value {
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {

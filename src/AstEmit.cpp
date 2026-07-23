@@ -129,7 +129,7 @@ struct Emit {
     // ---- Block -> `static std::unique_ptr<Block> bN()` ----
     std::string block(const Block* bl) {
         std::ostringstream b;
-        b << "  auto n = std::make_unique<Block>();\n  n->isCatch=" << B(bl->isCatch) << "; n->phaser=" << S(bl->phaser) << ";\n";
+        b << "  auto n = std::make_unique<Block>();\n  n->isCatch=" << B(bl->isCatch) << "; n->phaser=" << S(bl->phaser) << "; n->stmtForm=" << B(bl->stmtForm) << ";\n";
         stmtVec(bl->stmts, "stmts", b);
         b << "  return n;\n";
         return fn("b", "std::unique_ptr<Block>", b.str());

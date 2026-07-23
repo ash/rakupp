@@ -47,6 +47,7 @@ struct ParseNode;
 using ChildMap = std::map<std::string, std::vector<ParseNode>>;
 struct ParseNode {
     std::string name;
+    std::string actualRule; // proto entry: the winning `name:sym<…>` candidate (else empty)
     long from = 0, to = 0;
     std::vector<std::pair<long, long>> caps;              // positional captures ($0,$1,…)
     std::map<std::string, std::pair<long, long>> named;   // named-capture spans ($<x>)

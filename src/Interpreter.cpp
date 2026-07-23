@@ -1103,6 +1103,9 @@ thread_local int Interpreter::threadDepth_ = 0;
 // the live interpreter's class registry, for free-function smartmatch on user
 // type objects (applyArith has no Interpreter&); the newest instance wins
 static std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* g_matchClasses = nullptr;
+// subset check for free-function ~~ (`5 ~~ Five`): returns true and sets `out`
+// when the RHS names a live subset; the newest interpreter instance wins
+std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
 
 void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
                     const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
@@ -1110,6 +1113,11 @@ void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
 Interpreter::Interpreter() {
     g_matchClasses = &classes_;
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
+    g_subsetCheck = [this](const std::string& name, const Value& v, bool& out) {
+        if (!subsets_.count(name)) return false;
+        out = subsetMatches(name, v);
+        return true;
+    };
     initInstant_ = std::chrono::duration<double>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     defaultScheduler_ = Value::makeHash(); defaultScheduler_.hashKind = "Scheduler";
@@ -1277,6 +1285,10 @@ void Interpreter::applySubTraits(SubDecl* sd) {
 // and is referenced nowhere else (use_count 1 ⇒ it did not escape via return or
 // assignment). A torn-down non-escaped frame has no surviving `state` to preserve.
 void Interpreter::breakSelfClosures(Env* env) {
+    // Wiring an on-demand supply block: its env OUTLIVES the frame (whenever
+    // taps fire later, from I/O workers) — a nested `my sub`'s closure must
+    // survive, so the frame-death heuristic is suspended.
+    if (noCycleBreak_ > 0) return;
     for (auto& kv : env->vars) {
         Value& v = kv.second;
         if (v.t == VT::Code && v.code && v.code.use_count() == 1 &&
@@ -1296,6 +1308,7 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.gatherStack = std::move(tctx_.gatherStack);
     c.gatherLimits = std::move(tctx_.gatherLimits);
     c.supplyStack = std::move(tctx_.supplyStack);
+    c.tapStack    = std::move(tctx_.tapStack);
     c.makeTargets = std::move(tctx_.makeTargets);
     c.pkgPrefix   = std::move(tctx_.pkgPrefix);
 }
@@ -1308,6 +1321,7 @@ void Interpreter::loadCtx(ExecContext& c) {
     tctx_.gatherStack  = std::move(c.gatherStack);
     tctx_.gatherLimits = std::move(c.gatherLimits);
     tctx_.supplyStack  = std::move(c.supplyStack);
+    tctx_.tapStack     = std::move(c.tapStack);
     tctx_.makeTargets  = std::move(c.makeTargets);
     tctx_.pkgPrefix    = std::move(c.pkgPrefix);
 }
@@ -1944,7 +1958,10 @@ int Interpreter::run(Program& prog) {
         }
         mainline.push_back(s.get());
     }
-    auto runPhaser = [&](Block* b) { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); };
+    auto runPhaser = [&](Block* b) {
+        if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
+        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
+    };
     // END phasers run in REVERSE source order, on any exit path.
     auto runEnds = [&]() {
         for (auto it = endP.rbegin(); it != endP.rend(); ++it) {
@@ -2474,7 +2491,7 @@ static bool isBlockPhaser(Stmt* s) {
     if (s->kind != NK::Block) return false;
     const std::string& p = static_cast<Block*>(s)->phaser;
     return p == "ENTER" || p == "LEAVE" || p == "KEEP" || p == "UNDO" || p == "FIRST" ||
-           p == "NEXT" || p == "LAST";
+           p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE";
 }
 void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope) {
     // NEXT phasers run in REVERSE declaration order (like LEAVE)
@@ -2795,6 +2812,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // composer, not a block (EVAL('{}') is {}, not Any)
             if (b->stmts.empty() && b->phaser.empty() && !b->isCatch)
                 return Value::makeHash();
+            // statement-form phaser (`INIT my $x = …`): the declaration belongs
+            // to the ENCLOSING scope — run without a child env
+            if (b->stmtForm && !b->phaser.empty())
+                return execBlock(b, tctx_.cur, sink);
             auto scope = std::make_shared<Env>();
             scope->parent = tctx_.cur;
             return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
@@ -2869,6 +2890,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (!st) return false;
                         if (st->kind == NK::ReturnStmt)
                             return static_cast<const ReturnStmt*>(st)->value != nullptr;
+                        // `42.return` — the method form of returning a value is
+                        // forbidden by a literal `-->` constraint too
+                        if (st->kind == NK::ExprStmt) {
+                            const Expr* e2 = static_cast<const ExprStmt*>(st)->e.get();
+                            if (e2 && e2->kind == NK::MethodCall &&
+                                static_cast<const MethodCall*>(e2)->method == "return")
+                                return true;
+                        }
                         if (st->kind == NK::Block) {
                             for (auto& b : static_cast<const Block*>(st)->stmts)
                                 if (hasRetVal(b.get())) return true;
@@ -4136,7 +4165,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         for (auto& p : params)
             if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
                 p.isRw || p.isCopy || p.defaultVal || p.subSig || p.litVal ||
-                p.whereExpr || p.defConstraint || p.coerce) { simple = false; break; }
+                p.whereExpr || p.defConstraint || p.coerce ||
+                (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) // attributive: writes through to self
+                { simple = false; break; }
         if (simple)
             for (auto& a : args) if (isNamedArg(a)) { simple = false; break; }
         if (simple) {
@@ -4336,6 +4367,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
             if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;
             env->define(p.name, v);
+            // POSITIONAL attributive param `method set-body($!body)`: the bound
+            // value writes through to the invocant's attribute (Cro's
+            // MessageWithBody sets bodies this way)
+            if (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')) {
+                if (Value* sp = env->find("self"))
+                    if (sp->t == VT::Object && sp->obj) {
+                        Value av = v;
+                        if (p.name[0] == '@') av = coerceArray(av);
+                        else if (p.name[0] == '%') av = coerceHash(av);
+                        sp->obj->attrs[p.name.substr(2)] = std::move(av);
+                    }
+            }
         } else if (p.subSig) {
             bindParams(*p.subSig, positional, env); // no arg → bind inner to (), fills defaults
         } else if (p.defaultVal) {
@@ -4473,9 +4516,12 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         bool ok = false;
         try {
             Value cv = eval(const_cast<Expr*>(si.where));
-            if (cv.t == VT::Code && cv.code) cv = callCallable(cv, ValueList{v});
-            else if (cv.t == VT::Regex) cv = regexMatch(v.toStr(), cv.s);
-            ok = boolify(cv);
+            // `where EXPR` is a smartmatch: a Code/WhateverCode is called with
+            // the value; anything else (a type, a junction like
+            // `Cro::Message | Cro::Connection`) is smartmatched — NOT boolified
+            if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{v}));
+            else if (cv.t == VT::Regex) ok = boolify(regexMatch(v.toStr(), cv.s));
+            else ok = boolify(applyBinOp("~~", v, cv));
         } catch (...) { tctx_.cur = saved; return false; }
         tctx_.cur = saved;
         return ok;
@@ -4580,6 +4626,17 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // `Int &x` constrains the routine's RETURN type — not modeled; accept
             // any Code so dispatch proceeds (return-type dispatch logged as a gap)
             if (pos[i].t != VT::Code) return -1;
+        }
+        else if (p->sigil == '&') {
+            // a bare `&task` param requires a Callable — a type object or plain
+            // value must not bind (Log::Timeline's log($parent,&task) vs
+            // log(&task,*%data) dispatch depends on this)
+            if (pos[i].t != VT::Code) return -1;
+        }
+        else if (p->coerce && !p->type.empty()) {
+            // coercion type `Str(Cool)`: any coercible argument matches — the
+            // coercion itself happens at binding (append-header('CL', $int))
+            score++;
         }
         else if ((p->sigil == '@' || p->sigil == '%') && !p->type.empty() &&
                  p->type != "Any" && p->type != "Mu" && p->type != "Positional" &&
@@ -5303,7 +5360,11 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
         Value& v = args[i];
         std::string pt = (prm && i < prm->size()) ? (*prm)[i].type : "";
         bool fp = ncIsFloatType(pt) || (pt.empty() && (v.t == VT::Num || v.t == VT::Rat));
-        if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { // Str → char*
+        if (v.t == VT::Str && v.hashKind == "CArray") { // CArray → pointer to packed bytes
+            keep.push_back(v.s);
+            g.push_back((long)(intptr_t)keep.back().data());
+            anyGP = true;
+        } else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { // Str → char*
             keep.push_back(v.toStr());
             g.push_back((long)(intptr_t)keep.back().c_str());
             anyGP = true;
@@ -5991,7 +6052,17 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         return c.builtin(*this, a2);
     }
     auto env = std::make_shared<Env>();
-    env->parent = c.closure ? c.closure : global_;
+    // `state` vars in a method body (or a for-body executed inline within it)
+    // live in the method's own persistent env, spliced into the lookup chain —
+    // exactly like callClosure. Without this, curStateEnv stays the CALLER's:
+    // writes land in a foreign frame's stateEnv that the method's chain never
+    // sees (Cro.compose's `++state $split` → "Variable '$split' is not
+    // declared" when called from inside Cro::HTTP::Server.new).
+    std::call_once(c.stateInit, [&] {
+        c.stateEnv = std::make_shared<Env>();
+        c.stateEnv->parent = c.closure ? c.closure : global_;
+    });
+    env->parent = c.stateEnv;
     env->define("self", self);
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/true);
@@ -6012,6 +6083,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     } else env->define("@_", Value::array(args));
     auto saved = tctx_.cur;
     tctx_.cur = env;
+    // state declarations in this method's body must write to ITS stateEnv (the
+    // one spliced into env->parent above), not the caller's; RAII restores on
+    // every exit path
+    Env* savedStateEnv = tctx_.curStateEnv;
+    tctx_.curStateEnv = c.stateEnv.get();
+    struct StateGuard { ExecContext& t; Env* s; ~StateGuard() { t.curStateEnv = s; } } stG{tctx_, savedStateEnv};
     // a method frame is a dynamic-scope boundary like a sub frame: push the
     // CALLER's env so `$*CRO-ROUTE-SET`-style dynamics set in a calling sub stay
     // visible through method calls (Cro's route -> definition-complete -> plugin)
@@ -8108,6 +8185,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 res = v >= lo && (r.rExTo ? v < hi : v <= hi);
             }
         } else if (r.t == VT::Type) {
+            // a subset name on the RHS: base-chain + where-clause check
+            // (`5 ~~ Five`, `$conn ~~ ConnectionOrMessage` in Cro)
+            if (g_subsetCheck) {
+                bool sres = false;
+                if (g_subsetCheck(r.s, l, sres))
+                    return Value::boolean(op == "~~" ? sres : !sres);
+            }
             res = (l.typeName() == r.s) || r.s == "Any" || r.s == "Mu" ||
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
@@ -8305,7 +8389,23 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
     return out;
 }
 
-Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern) {
+Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern,
+                              const Value* rxVal) {
+    // wired mode: an anonymous `regex {…}` value — its code blocks and
+    // assertions execute for real, in a per-match child of the scope the
+    // regex closed over (`:my`/`$cap` persist across blocks within a match)
+    bool wired = rxVal && rxVal->t == VT::Regex && !rxVal->hashKind.empty() && rxVal->ext;
+    std::shared_ptr<Env> savedCurWired;
+    if (wired) {
+        savedCurWired = tctx_.cur;
+        auto matchEnv = std::make_shared<Env>();
+        matchEnv->parent = std::static_pointer_cast<Env>(rxVal->ext);
+        tctx_.cur = matchEnv;
+    }
+    struct WiredGuard {
+        Interpreter* I; std::shared_ptr<Env> saved; bool active;
+        ~WiredGuard() { if (active) I->tctx_.cur = std::move(saved); }
+    } wiredGuard{this, savedCurWired, wired};
     std::string pat = pattern;
     bool global = false;
     for (const char* adv : {":g ", ":global "}) // :g / :global adverb
@@ -8367,7 +8467,9 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // Interpolate $scalar variables into the pattern as their literal (quotemeta'd)
     // value — `/$x/` matches the contents of $x. Leaves $0.. backrefs, $<name>,
     // special vars, escaped \$, and the end-anchor $ untouched.
-    if (pat.find('$') != std::string::npos && tctx_.cur) {
+    // (wired mode: no textual interpolation — $vars inside code blocks belong
+    // to the code, and pattern atoms resolve at match time via the str hook)
+    if (!wired && pat.find('$') != std::string::npos && tctx_.cur) {
         std::string out;
         bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
         for (size_t i = 0; i < pat.size(); i++) {
@@ -8384,8 +8486,11 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         }
         pat = out;
     }
-    pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
-    Regex re(pat);
+    if (!wired) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
+    // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
+    std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
+                                 : rxVal->hashKind == "rule" ? "sr" : "") : "";
+    Regex re(pat, reFlags);
     if (!re.obsolete().empty())
         throw RakuError{Value::typeObj("X::Obsolete"),
             "Unsupported use of " + re.obsolete() + "; this Perl 5 metacharacter is gone in Raku"};
@@ -8527,6 +8632,31 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 if (v.rTo >= (long long)1e15) hi = -1;
                 return {lo, hi};
             }
+            long n = v.toInt(); return {n, n};
+        };
+        wantHooks = true;
+    }
+    if (wired) {
+        // full hooks: every block runs (make-blocks capture the ast), assertions
+        // evaluate for real, all in the wired match scope
+        rmHooks.run = [this, &inlineMade](const std::string& code, long, long,
+                                          const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) {
+            if (code.find("make") != std::string::npos) {
+                Value tgt; tctx_.makeTargets.push_back(&tgt);
+                try { evalString(code); } catch (...) {}
+                tctx_.makeTargets.pop_back();
+                if (tgt.pairVal) inlineMade = tgt.pairVal;
+            }
+            else { try { evalString(code); } catch (...) {} }
+        };
+        rmHooks.assertPass = [this](const std::string& code, long, long,
+                                    const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
+            try { return evalString(code).truthy(); } catch (...) { return false; }
+        };
+        if (!rmHooks.range) rmHooks.range = [this](const std::string& code, const GrammarHooks::NamedMap&,
+                                                   const GrammarHooks::ParamMap&) -> std::pair<long, long> {
+            Value v; try { v = evalString(code); } catch (...) {}
+            if (v.t == VT::Range) return {(long)v.rFrom, (long)(v.rExTo ? v.rTo - 1 : v.rTo)};
             long n = v.toInt(); return {n, n};
         };
         wantHooks = true;
@@ -9370,10 +9500,24 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // body actually contains the block: a parent and its only child share the
         // span (`token TOP { <number> {make …} }`), and the make is the parent's.
         auto mc = pendingMakeCode->find({pn.from, pn.to});
+        if (std::getenv("RAKUPP_DEBUG_MAKE"))
+            fprintf(stderr, "[make] node=%s span=%ld..%ld queued=%s\n", pn.name.c_str(), pn.from, pn.to,
+                    mc != pendingMakeCode->end() && !mc->second.empty() ? mc->second.front().c_str() : "(none)");
         if (mc != pendingMakeCode->end() && !mc->second.empty()) {
-            const std::string* rulePat = g ? g->findRule(pn.name) : nullptr;
-            if (rulePat && rulePat->find(mc->second.front()) == std::string::npos)
-                mc = pendingMakeCode->end();
+            const std::string* rulePat = g ? g->findRule(
+                pn.actualRule.empty() ? pn.name : pn.actualRule) : nullptr;
+            if (rulePat && rulePat->find(mc->second.front()) == std::string::npos) {
+                // a proto's tree node keeps the PROTO name while the make block
+                // lives in the winning `name:sym<…>` candidate — accept it if
+                // any candidate's pattern contains the code
+                bool inCandidate = false;
+                std::string prefix = pn.name + ":";
+                for (const ClassInfo* ci = g; ci && !inCandidate; ci = ci->parent.get())
+                    for (auto& rk : ci->rules)
+                        if (rk.first.rfind(prefix, 0) == 0 &&
+                            rk.second.find(mc->second.front()) != std::string::npos) { inCandidate = true; break; }
+                if (!inCandidate) mc = pendingMakeCode->end();
+            }
         }
         if (mc != pendingMakeCode->end() && !mc->second.empty()) {
             std::string code = mc->second.front();
@@ -9389,7 +9533,11 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         }
         auto pm = pendingMakes->find({pn.from, pn.to});
         if (pm != pendingMakes->end() && !mv.pairVal) mv.pairVal = std::make_shared<Value>(pm->second);
-        runAction(pn.name, mv); // an action-class method (if any) can still override
+        // an action-class method (if any) can still override; a proto node
+        // dispatches to the winning candidate's method (`x:sym<y>`), falling
+        // back to a method named after the proto itself
+        if (!pn.actualRule.empty() && pn.actualRule != pn.name) runAction(pn.actualRule, mv);
+        runAction(pn.name, mv);
         return mv;
     };
 
@@ -9404,14 +9552,19 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         auto savedScope = tctx_.cur;
         tctx_.cur = matchScope;
         matched = gm.parse(input, startRule, subparse, tree, endPos);
+        if (!matched) {
+            tctx_.cur = savedScope;
+            setMatchVar(Value::nil()); return Value::nil();
+        }
+        // build with the match scope still current: a deferred `{ make … }`
+        // may read the rule's `:my` vars (Cro's route matcher makes `$cap`)
+        Value mv;
+        try { mv = build(tree); }
+        catch (...) { tctx_.cur = savedScope; throw; }
         tctx_.cur = savedScope;
+        setMatchVar(mv);
+        return mv;
     }
-    if (!matched) {
-        setMatchVar(Value::nil()); return Value::nil();
-    }
-    Value mv = build(tree);
-    setMatchVar(mv);
-    return mv;
 }
 
 // Instant/Duration algebra: Instant−Instant→Duration, Instant±Duration→Instant,
@@ -9987,11 +10140,19 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // `X ~~ Y` topicalizes: $_ is bound to X while Y is evaluated (so `$x ~~ .so` works)
         Value lTopic = eval(b->lhs.get());
-        Value savedTopic = tctx_.cur->vars.count("$_") ? tctx_.cur->vars["$_"] : Value::any();
+        // $_ may live in an OUTER scope (a when-block's topic while we evaluate an
+        // if-condition): restore must then ERASE our local shadow, not leave a
+        // stray `$_ = Any` that hides the outer topic for the rest of the scope
+        bool hadLocalTopic = tctx_.cur->vars.count("$_") > 0;
+        Value savedTopic = hadLocalTopic ? tctx_.cur->vars["$_"] : Value::any();
         tctx_.cur->define("$_", lTopic);
+        auto restoreTopic = [&] {
+            if (hadLocalTopic) tctx_.cur->vars["$_"] = savedTopic;
+            else tctx_.cur->vars.erase("$_");
+        };
         Value r;
-        try { r = eval(b->rhs.get()); } catch (...) { tctx_.cur->vars["$_"] = savedTopic; throw; }
-        tctx_.cur->vars["$_"] = savedTopic;
+        try { r = eval(b->rhs.get()); } catch (...) { restoreTopic(); throw; }
+        restoreTopic();
         // `$path.IO ~~ :e` (and :d/:f/:r/:w/:x/:s/:z/:l) — a filetest adverb: call
         // the matching method on the path and compare to the adverb's boolean.
         if (r.t == VT::Pair && lTopic.hashKind == "IO" && !r.s.empty()) {
@@ -10019,7 +10180,7 @@ Value Interpreter::evalBinary(Binary* b) {
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (r.t == VT::Regex) {
-            Value m = regexMatch(lTopic.toStr(), r.s);
+            Value m = regexMatch(lTopic.toStr(), r.s, &r);
             if (op == "~~") return m.truthy() ? m : Value::nil();
             return Value::boolean(!m.truthy());
         }
@@ -12322,6 +12483,14 @@ Value Interpreter::eval(Expr* e) {
         }
         case NK::RegexLit: {
             auto* rl = static_cast<RegexLit*>(e);
+            // an anonymous `regex {…}`/`token {…}`/`rule {…}` term: a Regex
+            // value that runs its code blocks in the scope it closed over
+            if (!rl->declKind.empty()) {
+                Value v = Value::regex(rl->pattern);
+                v.hashKind = rl->declKind;
+                v.ext = std::static_pointer_cast<void>(tctx_.cur);
+                return v;
+            }
             // rx// is always the Regex object; bare /…/ and m// match against $_
             if (rl->isRx) return Value::regex(rl->pattern);
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
@@ -13065,6 +13234,36 @@ Value Interpreter::eval(Expr* e) {
                         jr.arr->push_back(methodCall(inv, mc->method, a2));
                     }
                     return jr;
+                }
+            }
+            // `.?meth` — Nil when the invocant has no such method. There is no
+            // unified can() over the builtin surface, so dispatch and convert
+            // only the NotFound raised for THIS method on THIS invocant; a
+            // NotFound thrown deeper inside a real method still propagates.
+            if (mc->maybe) {
+                try {
+                    Value res = methodCall(inv, mc->meta ? "^" + mc->method : mc->method, args, &mc->args);
+                    if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = res; }
+                    return res;
+                }
+                catch (RakuError& err) {
+                    const Value& p = err.payload;
+                    bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
+                                    (p.t == VT::Object && p.obj && p.obj->cls &&
+                                     p.obj->cls->name == "X::Method::NotFound");
+                    if (notFound) {
+                        std::string mname, tname;
+                        if (p.t == VT::Object && p.obj) {
+                            auto mit = p.obj->attrs.find("method");
+                            auto tit = p.obj->attrs.find("typename");
+                            if (mit != p.obj->attrs.end()) mname = mit->second.toStr();
+                            if (tit != p.obj->attrs.end()) tname = tit->second.toStr();
+                        }
+                        if ((mname.empty() || mname == mc->method) &&
+                            (tname.empty() || tname == inv.typeName()))
+                            return Value::nil();
+                    }
+                    throw;
                 }
             }
             Value res = methodCall(inv, mc->meta ? "^" + mc->method : mc->method, args, &mc->args);

@@ -2705,6 +2705,20 @@ ExprPtr Parser::parsePrimary() {
             std::string name = t.text;
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
+            // anonymous `regex {…}` / `token {…}` / `rule {…}` in term position:
+            // a first-class Regex value that closes over the current scope
+            // (Cro's route matcher is `EVAL 'regex { … }'`)
+            if ((name == "regex" || name == "token" || name == "rule") &&
+                (peek(1).kind == Tok::RegexLit ||
+                 (peek(1).kind == Tok::Ident && peek(1).text.empty() &&
+                  peek(2).kind == Tok::RegexLit))) {
+                advance();                                        // the declarator keyword
+                if (isKind(Tok::Ident) && cur().text.empty()) advance(); // lexer's empty name slot
+                auto rl = std::make_unique<RegexLit>(advance().text);
+                rl->declKind = name;
+                rl->isRx = true;
+                return rl;
+            }
             if (name == "self" && peek().kind != Tok::FatArrow) {
                 advance(); // `self => v` stays an autoquoted pair key
                 return std::make_unique<SelfTerm>();
@@ -3123,6 +3137,19 @@ ExprPtr Parser::parsePrimary() {
             // (a general `name *` stays multiplication)
             if (!listopOk && cur().kind == Tok::Op && cur().text == "*" &&
                 (name == "so" || name == "not")) listopOk = true;
+            // `map *², @a` (lexed `* ** 2`) / `grep * > 5, @a` — a leading
+            // Whatever curries through ANY infix for the higher-order list
+            // builtins; gated by name so a general `name * 2` stays
+            // multiplication on the call's result
+            if (!listopOk && cur().kind == Tok::Op && cur().text == "*" &&
+                peek().kind == Tok::Op) {
+                static const std::set<std::string> whateverListops = {
+                    "map", "grep", "first", "sort", "reduce", "produce",
+                    "min", "max", "sum", "classify", "categorize",
+                    "grep-index", "first-index",
+                };
+                if (whateverListops.count(name)) listopOk = true;
+            }
             if (listopOk && cur().kind == Tok::Op &&
                 (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|" || cur().text == "!!") &&
                 peek(1).spaceBefore)
@@ -3282,7 +3309,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     // interpolation-feature prefix from quoting adverbs (q:c / Q:s / qq:!s):
     // "\x02feats\x02" — s=scalars a=arrays h=hashes f=&calls c={blocks} b=backslashes
     std::string raw = rawIn;
-    bool fS = true, fA = true, fH = true, fC = true, fB = true;
+    bool fS = true, fA = true, fH = true, fC = true, fB = true, fF = true;
     if (!raw.empty() && raw[0] == '\x02') {
         size_t fend = raw.find('\x02', 1);
         if (fend != std::string::npos) {
@@ -3293,6 +3320,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             fH = feats.find('h') != std::string::npos;
             fC = feats.find('c') != std::string::npos;
             fB = feats.find('b') != std::string::npos;
+            fF = feats.find('f') != std::string::npos;
         }
     }
     auto result = std::make_unique<InterpStr>();
@@ -3301,6 +3329,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
         if (!lit.empty()) { result->parts.push_back(std::make_unique<StrLit>(lit)); lit.clear(); }
     };
     auto isIdentCont = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
+    (void)fF;
 
     size_t i = 0, n = raw.size();
     while (i < n) {
@@ -3445,6 +3474,32 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { lit += var; }
             i = j;
             continue;
+        }
+        // `&name(args)` — a routine CALL interpolates (only with the parens):
+        // Cro's route compiler builds "'&encode(@constraints[0])'" strings
+        if (fF && c == '&' && i + 1 < n &&
+            (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_')) {
+            size_t j = i + 1;
+            std::string fname;
+            while (j < n && (isIdentCont(raw[j]) || (unsigned char)raw[j] >= 0x80)) fname += raw[j++];
+            while (j + 1 < n && (raw[j] == '-' || raw[j] == '\'') && std::isalnum((unsigned char)raw[j + 1])) {
+                fname += raw[j++];
+                while (j < n && isIdentCont(raw[j])) fname += raw[j++];
+            }
+            if (j < n && raw[j] == '(') {
+                int depth = 1; size_t k2 = j + 1; std::string argsrc;
+                while (k2 < n && depth > 0) {
+                    if (raw[k2] == '(') depth++;
+                    else if (raw[k2] == ')') { depth--; if (depth == 0) break; }
+                    argsrc += raw[k2]; k2++;
+                }
+                flush();
+                try { result->parts.push_back(parseEmbeddedExpr(fname + "(" + argsrc + ")")); }
+                catch (...) {}
+                i = k2 + 1;
+                continue;
+            }
+            // bare &name without parens: stays literal text
         }
         if (((c == '$' && fS) || (c == '@' && fA) || (c == '%' && fH)) &&
             (i + 1 < n) && (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
@@ -4929,6 +4984,16 @@ StmtPtr Parser::parseStatementImpl() {
             auto nr = std::make_unique<NamedRegexDecl>();
             nr->kind = knd;
             if (isKind(Tok::Ident) || isKind(Tok::Var)) nr->name = advance().text; // name
+            if (nr->name.empty() && isKind(Tok::RegexLit)) {
+                // anonymous `regex {…}` at statement level (e.g. as an EVAL's
+                // last statement): a first-class Regex VALUE, not a declaration
+                auto rl = std::make_unique<RegexLit>(advance().text);
+                rl->declKind = knd;
+                rl->isRx = true;
+                auto es = std::make_unique<ExprStmt>();
+                es->e = std::move(rl);
+                return es;
+            }
             if (isKind(Tok::RegexLit)) nr->pattern = advance().text; // lexer captured the body as a RegexLit
             else { // fallback: skip a brace body we couldn't capture
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
@@ -5160,12 +5225,12 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "BEGIN" || kw == "END" || kw == "INIT" || kw == "CHECK" ||
             kw == "ENTER" || kw == "LEAVE" || kw == "FIRST" || kw == "NEXT" ||
             kw == "LAST" || kw == "KEEP" || kw == "UNDO" || kw == "PRE" ||
-            kw == "POST" || kw == "DOC") {
+            kw == "POST" || kw == "DOC" || kw == "QUIT" || kw == "CLOSE") {
             advance();
             auto b = std::make_unique<Block>();
             b->phaser = kw; // run-timing handled by the interpreter
             if (isKind(Tok::LBrace)) { auto blk = parseBlock(); b->stmts = std::move(blk->stmts); }
-            else b->stmts.push_back(parseStatement()); // PHASER statement; — same, just a 1-statement block
+            else { b->stmts.push_back(parseStatement()); b->stmtForm = true; } // PHASER statement; — declarations belong to the enclosing scope
             return b;
         }
     }

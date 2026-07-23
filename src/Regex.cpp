@@ -1978,6 +1978,7 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
         auto it = st.children.find("\x01proto");
         if (!ok || it == st.children.end() || it->second.empty()) return false;
         out = it->second.back();
+        out.actualRule = out.name; // preserve the winning candidate for actions/makes
         out.name = top; out.from = 0; out.to = endPos;
         endOut = endPos;
         return true;

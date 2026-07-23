@@ -97,6 +97,31 @@ extern thread_local bool t_isWorker;     // true only on `start`/async worker th
 extern thread_local Value t_threadSelf;   // the Thread instance running this worker (empty on main)
 extern thread_local unsigned t_safePtCtr; // loop iterations since this worker last yielded the GIL
 
+// A real (wired) tap of an on-demand `supply {…}` block. `closers` tear down
+// inner taps / listening sockets; `closePhasers` are the block's CLOSE blocks.
+// Shared by the Tap value (Value::ext) and every inner-tap wrapper.
+struct TapHandle {
+    std::mutex m;
+    bool closed = false;
+    std::vector<std::function<void()>> closers;
+    std::vector<Value> closePhasers;
+};
+// One activation of an on-demand supply block (pushed on tctx_.tapStack while
+// the block or one of its whenever-blocks runs). `emit` routes to emitCb — or
+// appends to `collect` in eager-drain mode (the legacy synchronous semantics).
+struct SupplyTapCtx {
+    Value emitCb, doneCb, quitCb;   // downstream callbacks (may be empty)
+    ValueList* collect = nullptr;   // eager drain: emits append here instead
+    std::shared_ptr<TapHandle> tap;
+    bool done = false;              // explicit `done` ran
+    // implicit completion: the supply is done when its block has returned AND
+    // every inner whenever-tap has signalled done (a listener's tap never does,
+    // keeping that supply live)
+    int pending = 0;                // inner taps not yet done
+    bool blockDone = false;         // the supply block returned
+    bool doneFired = false;         // downstream done already delivered
+};
+
 // Per-thread execution "registers": the state that belongs to a single thread
 // of Raku execution — its current lexical scope, the dynamic-variable ($*foo)
 // caller chain, recursion depth, and the gather/supply/make collectors that are
@@ -114,6 +139,7 @@ struct ExecContext {
     std::vector<std::shared_ptr<ValueList>> gatherStack;
     std::vector<size_t> gatherLimits; // per-gather take cap (0 = unlimited); a take past it throws StopGatherEx
     std::vector<ValueList*> supplyStack;
+    std::vector<std::shared_ptr<SupplyTapCtx>> tapStack; // active on-demand supply activations
     std::vector<Value*> makeTargets;
     std::string pkgPrefix;
     // Cooperative `return`: when a return executes with NO callable boundary
@@ -314,7 +340,10 @@ public:
     void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true);  // `use Foo::Bar` -> compile lib file into global scope
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
-    Value regexMatch(const std::string& subject, const std::string& pattern); // sets $/ $0..
+    // sets $/ $0..; rxVal (an anonymous `regex {…}` value) engages wired mode:
+    // code blocks/assertions run for real, in the regex's closed-over scope
+    Value regexMatch(const std::string& subject, const std::string& pattern,
+                     const Value* rxVal = nullptr);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation
     Value regexSubst(const std::string& subject, const std::string& pattern,
                      const std::string& repl, std::string& out, bool& changed);
@@ -491,6 +520,16 @@ public:
     Value spawnPromise(Value code, Value threadVal = Value());
     Value cueJob(Value code, double delaySecs, double everySecs, long long times,
                  Value stopF, Value catchF); // $*SCHEDULER.cue — returns a Cancellation
+    // Real (wired) tap of a Supply value: on-demand blocks run with emits routed
+    // downstream; live Suppliers register a tap record; async-socket supplies
+    // spawn their I/O worker. Returns a Tap value (ext = TapHandle when wired).
+    Value tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb);
+    // Legacy eager semantics: run an on-demand supply block now, collecting its
+    // emits into a values-backed Supply (what `supply {…}` used to return).
+    Value drainSupplyBlock(const Value& s);
+    void closeTapHandle(const std::shared_ptr<TapHandle>& h); // run closers + CLOSE phasers once
+    void maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx); // fire done when block returned + no live inner taps
+    int noCycleBreak_ = 0; // >0: breakSelfClosures suspended (supply-block wiring; env outlives frame)
     std::atomic<long> cuedLoads_{0}; // outstanding cued jobs ($*SCHEDULER.loads)
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done

@@ -386,3 +386,118 @@ from Cro.compose's `++state $split` — the shape resists 5 isolated repro
 attempts (state in for-Z-loop in method with colon-call slices all pass), so
 it needs in-situ debugging next session. After that: the EVAL'd route-matcher
 regex and the reactive (supply/whenever) pipeline are untested territory.
+## Batch 10 — the live Cro server WORKS (supply/whenever pipeline + IO::Socket::Async)
+
+`/tmp/cro-live.raku` (canonical hello-world: route + Cro::HTTP::Server + real
+TCP client in one process) now runs end-to-end on pristine vendored dists:
+`server started` → `HTTP/1.1 200 OK` → `body: Hello, Andrew!` → clean stop.
+Sixteen general fixes, in dependency order:
+
+1. **`state` in methods finally has a home**: invokeMethod now creates the
+   per-Code stateEnv and splices it into the env chain + sets curStateEnv,
+   exactly like callClosure. Before, a method's `state` var landed in the
+   CALLER's state env — mainline calls worked by accident (global_), nested
+   calls lost the var (Cro.compose's `++state $split`, the batch-9 blocker;
+   t5 probe showed one counter shared across four classes).
+2. **`.?` maybe-call**: parser set mc->maybe, interpreter never read it. Now
+   converts this-invocant/this-method X::Method::NotFound to Nil.
+3. **subset `where` smartmatches** (applyBinOp `~~`) instead of boolifying —
+   `where Cro::Message | Cro::Connection` (junction of types) works; and
+   **infix `~~ SubsetName`** consults subsetMatches via a g_subsetCheck hook.
+4. **`X ~~ Y` restores an OUTER `$_` correctly**: when $_ lived in a parent
+   scope the restore left a shadowing `$_ = Any` in the current env — inside
+   a `when` block this wiped the topic for the rest of the block
+   (ConnectionManager's BUILD lost `$!transformer` this way).
+5. **On-demand `supply {…}`** : the block is stored, not eagerly run; `.tap`
+   wires it for real (tapSupply): emit routes to the tap's callback, nested
+   `whenever` opens inner taps that stay live after the block returns, `done`
+   closes the activation, CLOSE/QUIT/LAST phasers parse (QUIT/CLOSE added to
+   the phaser keyword set + isBlockPhaser) and fire at the right moments,
+   implicit completion fires done when the block returned and no inner tap is
+   still live (pending counter). Value-context consumers drain eagerly
+   (drainSupplyBlock) — legacy semantics preserved; react keeps its old path.
+   `Supply.on-close` registers on the live tap when one is active.
+6. **IO::Socket::Async**: .listen(host,port) → a Supply that binds/accepts on
+   tap (accept worker thread, GIL-parked in accept); connection sockets carry
+   .Supply(:bin) (read-worker; EOF fires done and closes the fd), .write/.print
+   (kept Promise), .close (SHUT_WR), peer/socket host+port. .connect → kept
+   Promise of a connected socket. whenever-over-Promise awaits real
+   (PromiseState-backed) promises with the GIL released.
+7. **Supply-block env survives its frame**: breakSelfClosures suspended while
+   wiring (noCycleBreak_) — a `my sub` in a supply block is callable when an
+   I/O worker fires the whenever later (RequestParser's fresh-message).
+8. **`INIT my $x = …` statement-form phasers** run in the ENCLOSING scope
+   (Block.stmtForm) — Cro::TCP::NoDelay's `INIT my $is-win` pattern.
+9. **CArray[T].new/allocate/.elems + nativesizeof + cglobal stub**, and
+   callNative passes CArray as a pointer to its packed bytes (nodelay()'s
+   setsockopt path — which on Rakudo actually sets IP_TOS, since PROTO_TCP
+   is an undeclared bareword that stringifies; we now do the same dance).
+10. **Encoding::Registry.find/.register + streaming decoder** (add-bytes,
+    set-line-separators, consume-line-chars(:chomp/:eof), bytes-available,
+    consume-exactly-bytes, consume-all-chars/-bytes, is-empty); find throws
+    X::Encoding::Unknown for unknown names (registry.t 29→35).
+11. **Bare `&callable` params require Code** in dispatch — Log::Timeline's
+    log($parent,&task) vs log(&task,*%data) picked the wrong multi and called
+    .count on the parent.
+12. **Anonymous `regex {…}`/`token {…}`/`rule {…}`** are first-class Regex
+    VALUES closing over their scope (expression AND statement position — the
+    latter is what `EVAL 'regex {…}'` produces). Matching them runs code
+    blocks/`<?{…}>` assertions/`:my` decls for REAL in a per-match child of
+    the closed-over scope (regexMatch wired mode; no textual $-interpolation).
+    That plus `~~` already returning Match = Cro's EVAL'd route matcher works.
+13. **Grammar deferred `{ make … }` fixes**: build() runs while the match
+    scope is still current (`:my` vars visible — the route matcher's `$cap`);
+    proto-token nodes carry the winning candidate (ParseNode.actualRule) so
+    the candidate's make-code and `x:sym<y>` ACTION METHOD both fire
+    (Cro::Uri::HTTP.parse-request-target's request-target:sym<origin-form>).
+14. **`"&encode($x)"` call interpolation** in qq-strings (the route compiler
+    builds its matcher source this way); bare `&name` without parens stays
+    literal.
+15. **Dispatch/OO fixes**: coercion params (`Str(Cool) $v`) no longer type-
+    reject at scoring (append-header('Content-length', $int) multi); a role's
+    STUB method defers to the class's same-named public attr accessor
+    (MessageWithBody's body-serializer-selector stub vs Response's attr);
+    positional attributive params (`method set-body($!body)`) write through
+    to the invocant (excluded from bindParams' fast path); `.can` answers
+    public attr accessors ($handler.can('method')); Capture.new(:list,:hash);
+    Signature.ACCEPTS(Capture) (arity window + literal constraints + types +
+    required nameds); Mu.return/.return-rw (cooperative return of invocant),
+    with `-->` literal constraints statically rejecting `.return` in the body.
+16. **Roast repair follow-ups** in the same batch: Supply.on-close via live
+    tap (syntax.t 41→42), Encoding registry typed errors (registry.t 29→35),
+    `.return` vs literal constraint (misc2.t back to 203).
+
+Gate cro5 **194,745 (+87)**: fully-pass 587 (-2, both accounted: registry.t
+went full-29/29 → partial-35/37 while passing SIX more tests, and
+socket-accept-and-working-threads.t is the known 15↔14 flapper); no-TAP -1,
+timeouts -1. Per-file wins:
+S05-metasyntax/regex.t 3→41, attribute-params.t 10→17, subset-6c +4,
+nonblocking-await.t noTAP→11, defer-next.t full, advent2012-day10 +3.
+Perf: mandel/fib/loop/hash/method-call unchanged (method-heavy slightly
+faster). Battery: 28/50 byte-identical (unchanged; remaining DIFFs are
+Rakudo-sandbox failures). NOTE: the tier2 battery is driven by
+`raku tier2/run.raku` — `sh tier2/run.sh` has an unexported-`R` bug and
+reports rp=[] for everything.
+
+**Known divergence (accepted for now)**: state vars in an inline-executed
+for-body inside a routine persist across CALLS of the routine (Rakudo clones
+the body block per call, resetting them). Same pre-existing behavior as subs;
+bites only a compose() that takes the `$split` branch on a second call.
+
+**Next**: Cro::HTTP::Client (needs .then on promises + Connector pipeline),
+Supplier::Preserving buffering, content-length'd request bodies through
+RawBodyParser, `whenever`-outside-react parse (IO::Socket::Async::SSL,
+Log::Timeline::Output::Socket), nqp::bitor_i (CBOR::Simple).
+
+### Batch 10 addendum — Whatever-curry as listop argument
+
+From the Using Raku book's Monte Carlo solution (`sqrt([+] map *², @point)`):
+a leading `*` currying through an infix was only accepted as a listop argument
+for ranges/`.method`/word-infixes — `map *², @a` (lexed `* ** 2`) was a parse
+error, and `map *+2, @a` silently misparsed as `map(*, +2)`. Now a leading `*`
+followed by any Op curries for the higher-order list builtins (map, grep,
+first, sort, reduce, produce, min, max, sum, classify, categorize,
+grep-index, first-index) — same name-gating as the pointy-block-arg rule, so
+a general `name * 2` stays multiplication. Verified: mc.raku prints ~3.1416;
+S32-list/first.t goes no-TAP(parse error)→16 ok; whatever/map/grep.t
+unchanged. Rides the next batch's full gate.
