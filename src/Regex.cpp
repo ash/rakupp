@@ -364,29 +364,88 @@ Regex::NodePtr Regex::parseAtom() {
         // char class, possibly composed: `[..]`, `-[..]`, `+[..]`, `<+alpha>`, `<+[A]+alpha>`.
         // (A bare `<-name>` is the negated-subrule branch further down, not this.)
         if (peek() == '[' || ((peek() == '+' || peek() == '-') && peek(1) == '[') ||
-            (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.'))) {
+            (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.' || peek(1) == ':'))) {
             node->negate = false;
             bool first = true;
+            // USER-token parts (`<[\-+.] +uri-alpha +digit>` in the RFC 3986 grammar)
+            // can't fold into class flags — collect them and build a composite:
+            //   [ <!minus1> <!-subtracted-bracket> [ base-class | <plus1> | <plus2> ] ]
+            std::vector<std::string> plusSubs, minusSubs;
+            std::unique_ptr<Node> negBracket; // `- [..]` after the first member: a subtraction
             for (;;) {
                 while (peek() == ' ' || peek() == '\t') pos_++; // blanks between members / before '>'
                 if (!(peek() == '[' || peek() == '+' || peek() == '-')) break;
                 char op = '+';
                 if (peek() == '+') { pos_++; op = '+'; }
                 else if (peek() == '-') { pos_++; op = '-'; }
-                if (peek() == '[') { pos_++; if (op == '-' && first) node->negate = true; parseClassBodyMember(node.get()); }
-                else { // +rule / -rule member
+                while (peek() == ' ' || peek() == '\t') pos_++; // `<+tok - [x]>` — blanks after the op
+                if (peek() == '[') {
+                    pos_++;
+                    if (op == '-' && first) { node->negate = true; parseClassBodyMember(node.get()); }
+                    else if (op == '-') { // `<+unenc-pchar - [:]>` — subtracted bracket
+                        if (!negBracket) { negBracket = std::make_unique<Node>(); negBracket->k = K::Class; negBracket->icase = curIcase_; }
+                        parseClassBodyMember(negBracket.get());
+                    }
+                    else parseClassBodyMember(node.get());
+                }
+                else { // +rule / -rule member (builtin, unicode property, or USER token)
                     if (peek() == '.') pos_++;
-                    std::string nm; while (!eof() && peek() != '>' && peek() != '+' && peek() != '-' && peek() != '[') nm += pat_[pos_++];
+                    // a '-' directly between ident chars is part of a KEBAB-CASE name
+                    // (`+uri-alpha`); a standalone '-' (spaced, or before '[') is the
+                    // subtraction operator
+                    std::string nm;
+                    while (!eof()) {
+                        char pc = peek();
+                        if (pc == '>' || pc == '+' || pc == '[') break;
+                        if (pc == '-') {
+                            char nx = peek(1);
+                            bool prevIdent = !nm.empty() &&
+                                (std::isalnum((unsigned char)nm.back()) || nm.back() == '_');
+                            if (!prevIdent || !(std::isalnum((unsigned char)nx) || nx == '_')) break;
+                        }
+                        nm += pat_[pos_++];
+                    }
                     size_t a = nm.find_first_not_of(" \t"), b = nm.find_last_not_of(" \t");
                     if (a != std::string::npos) nm = nm.substr(a, b - a + 1);
-                    if (op == '+') node->classFlags += ruleFlag(nm);
-                    else node->negClassFlags += ruleFlag(nm); // `-rule` difference
+                    std::string fl = ruleFlag(nm);
+                    // unicode-property part (`+:N +:S` in uri-alphanum): approximate
+                    // the common ones; unsupported ones drop (ASCII-liberal is fine)
+                    if (fl.empty() && !nm.empty() && nm[0] == ':') {
+                        if (nm == ":N" || nm == ":Nd" || nm == ":No" || nm == ":Nl") fl = "d";
+                        else if (nm[1] == 'L') fl = "a";
+                    }
+                    if (!fl.empty()) { if (op == '+') node->classFlags += fl; else node->negClassFlags += fl; }
+                    else if (!nm.empty() && nm[0] != ':')
+                        (op == '+' ? plusSubs : minusSubs).push_back(nm); // user-defined token part
                 }
                 first = false;
                 if (eof()) break;
             }
             if (peek() == '>') pos_++;
-            return node;
+            if (plusSubs.empty() && minusSubs.empty() && !negBracket) return node; // plain class (fast path)
+            auto mkSub = [&](const std::string& rn) {
+                auto s = std::make_unique<Node>();
+                s->k = K::Subrule; s->ruleName = rn; s->ruleCapture = false;
+                return s;
+            };
+            auto mkNegLook = [&](std::unique_ptr<Node> inner) {
+                auto look = std::make_unique<Node>();
+                look->k = K::Look; look->negate = true; look->behind = false;
+                look->kids.push_back(std::move(inner));
+                return look;
+            };
+            auto seq = std::make_unique<Node>(); seq->k = K::Seq;
+            for (auto& ms : minusSubs) seq->kids.push_back(mkNegLook(mkSub(ms)));
+            if (negBracket) seq->kids.push_back(mkNegLook(std::move(negBracket)));
+            bool haveBase = node->negate || !node->ranges.empty() || !node->cpRanges.empty() || !node->classFlags.empty();
+            if (plusSubs.empty()) seq->kids.push_back(std::move(node));
+            else {
+                auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true;
+                if (haveBase) altN->kids.push_back(std::move(node));
+                for (auto& ps : plusSubs) altN->kids.push_back(mkSub(ps));
+                seq->kids.push_back(std::move(altN));
+            }
+            return seq;
         }
         else if (peek() == '-' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '.' || peek(1) == '_')) {
             // <-name> — negated subrule char class: one char NOT matched by rule `name`.

@@ -330,6 +330,17 @@ public:
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions);
 
     std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
+    // Package-relative SHORT names: registering a qualified class `URI::Path`
+    // aliases its tail `Path` -> `URI::Path` (first wins; a real class of the
+    // short name always beats the alias). Approximates Rakudo's package-stash
+    // lookup (inside `unit class URI`, bare `Path` finds `URI::Path`) in our
+    // flat class-table model. Consulted ONLY on a classes_ miss.
+    std::unordered_map<std::string, std::string> classAliases_;
+    const std::string& resolveClassAlias(const std::string& n) {
+        if (classes_.count(n)) return n;
+        auto it = classAliases_.find(n);
+        return it != classAliases_.end() ? it->second : n;
+    }
     // `augment class Int {…}` on a built-in type: extra methods keyed by type name.
     // methodCall consults this for native values whose type has been augmented.
     std::unordered_map<std::string, std::unordered_map<std::string, Value>> builtinExt_;

@@ -1098,8 +1098,12 @@ thread_local int Interpreter::threadDepth_ = 0;
 // type objects (applyArith has no Interpreter&); the newest instance wins
 static std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* g_matchClasses = nullptr;
 
+void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
+                    const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
+
 Interpreter::Interpreter() {
     g_matchClasses = &classes_;
+    rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
     initInstant_ = std::chrono::duration<double>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     defaultScheduler_ = Value::makeHash(); defaultScheduler_.hashKind = "Scheduler";
@@ -2995,7 +2999,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                     tbl[md->name] = code;
                 };
+                // resolve package-relative short names: `augment class B` inside
+                // `augment class A { … }` finds the nested A::B via prefix/alias
                 auto existing = classes_.find(cd->name);
+                if (existing == classes_.end() && !tctx_.pkgPrefix.empty())
+                    existing = classes_.find(tctx_.pkgPrefix + cd->name);
+                if (existing == classes_.end())
+                    existing = classes_.find(resolveClassAlias(cd->name));
                 if (existing != classes_.end()) {
                     // augment a user-declared type — merge into its ClassInfo
                     ClassInfo* ci = existing->second.get();
@@ -3020,7 +3030,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& md : cd->methods) addTo(builtinExt_[cd->name], md.get());
                     noteSymbolMutation("augment (built-in type)");
                 }
-                for (auto& st : cd->body) exec(st.get()); // nested decls, if any
+                { // nested decls, if any — under this package's prefix so an inner
+                  // `augment class B` resolves the nested A::B
+                    std::string savedPrefix = tctx_.pkgPrefix;
+                    tctx_.pkgPrefix = cd->name + "::";
+                    try { for (auto& st : cd->body) exec(st.get()); }
+                    catch (...) { tctx_.pkgPrefix = savedPrefix; throw; }
+                    tctx_.pkgPrefix = savedPrefix;
+                }
                 return Value::typeObj(cd->name);
             }
             if (cd->isPackage) {
@@ -3084,8 +3101,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto ci = std::make_shared<ClassInfo>();
             // anonymous `role {…}` / `class {…}` literals get a synthesized name so
             // they can be registered, mixed in (`does`/`but`), and introspected.
+            // an unqualified class nested in a class/package body registers under
+            // its QUALIFIED name (`class GenericActions` inside `class Cro::Uri`
+            // is Cro::Uri::GenericActions, as in Rakudo); the tail alias keeps the
+            // short name resolvable
             std::string clsName = cd->name.empty()
-                ? "<anon|" + std::to_string(++anonTypeCounter_) + ">" : cd->name;
+                ? "<anon|" + std::to_string(++anonTypeCounter_) + ">"
+                : (!tctx_.pkgPrefix.empty() && cd->name.find("::") == std::string::npos
+                    ? tctx_.pkgPrefix + cd->name : cd->name);
             ci->name = clsName;
             ci->pod = cd->pod;
             if (!cd->parent.empty()) {
@@ -3453,15 +3476,31 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             noteSymbolMutation("class/role/grammar declaration");
             classes_[clsName] = ci;
-            if (!cd->name.empty()) tctx_.cur->define(cd->name, Value::typeObj(cd->name));
+            // a qualified name also answers to its TAIL where no real class claims
+            // it: `use URI::Path` inside `unit class URI` lets bare `Path` resolve
+            // (Rakudo finds it in the URI:: package stash; we alias globally)
+            if (size_t sep = clsName.rfind("::"); sep != std::string::npos) {
+                std::string tail = clsName.substr(sep + 2);
+                // never shadow a BUILT-IN type: `class X::Roast::Channel` must not
+                // make bare `Channel` mean the exception class
+                if (!tail.empty() && !isKnownTypeName(tail) &&
+                    !classes_.count(tail) && !classAliases_.count(tail))
+                    classAliases_[tail] = clsName;
+            }
+            if (!cd->name.empty()) tctx_.cur->define(cd->name, Value::typeObj(clsName));
             // run the body statements in the body scope: nested classes/enums and
-            // static subs register; `my` lexicals land where the methods see them
+            // static subs register; `my` lexicals land where the methods see them.
+            // The package prefix covers the body so a nested `class GenericActions`
+            // registers as Cro::Uri::GenericActions (Rakudo nesting semantics).
             {
                 auto saved = tctx_.cur;
+                std::string savedPrefix = tctx_.pkgPrefix;
+                tctx_.pkgPrefix = clsName + "::";
                 tctx_.cur = bodyEnv;
                 try { for (auto& st : cd->body) exec(st.get()); }
-                catch (...) { tctx_.cur = saved; throw; }
+                catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
                 tctx_.cur = saved;
+                tctx_.pkgPrefix = savedPrefix;
             }
             // evaluate to the type object, so `my class Foo {…}` / anon `role {…}` work as expressions
             return Value::typeObj(clsName);
@@ -4304,6 +4343,23 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
 }
 
 // Does an argument satisfy a parameter type-constraint name?
+// Package-relative short-name view for the type matchers (free/static functions):
+// set by the Interpreter so `has Path $.path` accepts a URI::Path object when
+// `Path` is an alias. Null in the compiled-runtime path (no aliasing there).
+static const std::unordered_map<std::string, std::string>* s_classAliases = nullptr;
+static const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* s_classesForAlias = nullptr;
+void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
+                    const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c) {
+    s_classAliases = a; s_classesForAlias = c;
+}
+// resolve a type-constraint name through the alias table — only when no REAL
+// class claims the short name (a later genuine `class Path` wins over the alias)
+static const std::string& aliasType(const std::string& type) {
+    if (!s_classAliases || (s_classesForAlias && s_classesForAlias->count(type))) return type;
+    auto it = s_classAliases->find(type);
+    return it != s_classAliases->end() ? it->second : type;
+}
+
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
     // an enum VALUE as a parameter type (`multi f(\b, int $i, LittleEndian)`)
@@ -4344,15 +4400,21 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Regex: return type == "Regex";
         case VT::Match: return type == "Match";
         case VT::Range: return type == "Range" || type == "Iterable";
-        case VT::Object:
+        case VT::Object: {
             for (ClassInfo* ci = arg.obj ? arg.obj->cls.get() : nullptr; ci; ci = ci->parent.get()) {
                 if (ci->name == type || ci->nativeParent == type) return true;
                 if (ci->doneRoles.count(type)) return true; // composed roles count as types
                 for (auto& p : ci->extraParents) if (p && p->name == type) return true;
             }
+            // package-relative short name: a `Path`-typed param accepts URI::Path
+            const std::string& q = aliasType(type);
+            if (&q != &type)
+                for (ClassInfo* ci = arg.obj ? arg.obj->cls.get() : nullptr; ci; ci = ci->parent.get())
+                    if (ci->name == q || ci->doneRoles.count(q)) return true;
             // a subclass of a built-in (`class F is DateTime`) matches the built-in
             if (arg.obj && arg.obj->hasBoxed) return typeMatchesArg(arg.obj->boxed, type);
             return false;
+        }
         default: return true; // Nil/Any/Type/unknown subset/enum: lenient
     }
 }
@@ -5036,10 +5098,16 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
             return type == "Array" || type == "List" || type == "Positional" || type == "Iterable";
         case VT::Hash:    return type == "Hash" || type == "Associative" || type == "Map";
         case VT::Code:    return type == "Code" || type == "Callable" || type == "Routine" || type == "Block";
-        case VT::Object:
+        case VT::Object: {
             for (ClassInfo* c = v.obj && v.obj->cls ? v.obj->cls.get() : nullptr; c; c = c->parent.get())
                 if (c->name == type) return true;
+            // package-relative short name: `has Path $.path` accepts URI::Path
+            const std::string& q = aliasType(type);
+            if (&q != &type)
+                for (ClassInfo* c = v.obj && v.obj->cls ? v.obj->cls.get() : nullptr; c; c = c->parent.get())
+                    if (c->name == q) return true;
             return false;
+        }
         default: return false;
     }
 }
@@ -6779,6 +6847,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
 
     // compound assignment
+    // bracketed metaop assignment `A [op]= B`: A = A op B. Unlike plain `Rop=`
+    // (which reverses roles INCLUDING the target), the bracketed form keeps the
+    // LEFT target — `%vars{$k} [R//]= %*ENV{$k}` writes %vars (LibraryMake).
+    if (a->op.size() > 3 && a->op[0] == '[' && a->op.back() == '=') {
+        std::string base = a->op.substr(1, a->op.find(']') - 1);
+        Value* lv = lvalue(a->target.get());
+        Value r = eval(a->value.get());
+        *lv = applyBinOp(base, *lv, r);
+        return sink ? Value::any() : *lv;
+    }
     if (a->op.size() > 2 && a->op[0] == 'R' && a->op.back() == '=' &&
         !std::isalnum((unsigned char)a->op[1])) {
         // `A Rop= B` is `B op= A` — the R meta reverses roles including the target
@@ -9688,9 +9766,10 @@ Value Interpreter::evalBinary(Binary* b) {
         return Value::boolean(op[0] == '!' ? !same : same);
     }
     if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1])) {
-        // reverse metaoperator: `a R/ b` computes `b / a`
+        // reverse metaoperator: `a R/ b` computes `b / a` — applyBinOp (not
+        // applyArith) so the short-circuit family works too (`R//` in LibraryMake)
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
-        return applyArith(op.substr(1), r, l);
+        return applyBinOp(op.substr(1), r, l);
     }
     if (op == "~") {
         // string concat coerces via .Str; honour a user-defined `method Str`/`gist`
@@ -12509,7 +12588,9 @@ Value Interpreter::eval(Expr* e) {
             if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
             auto it = builtins_.find(n);
             if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
-            return Value::typeObj(n);
+            // package-relative short name: bare `Path` answers `URI::Path` when no
+            // class/var/builtin claims it (see classAliases_)
+            return Value::typeObj(resolveClassAlias(n));
         }
         case NK::ListExpr: {
             auto* l = static_cast<ListExpr*>(e);

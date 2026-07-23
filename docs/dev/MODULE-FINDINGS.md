@@ -266,3 +266,41 @@ keep primed nameds with defaults; signature literals should render defaults).
 
 Suite 97, perf: hot loop unchanged, multi-dispatch microbench slightly faster.
 Regression: t/regression/base64-sextet.raku. Tier-2: 25/50.
+
+
+## Module fix batch 7 (2026-07-24) — package-relative names + friends: URI and LibraryMake work
+
+Tier-2 26->27 (URI, LibraryMake now byte-identical; Cro::Core loads fully, its
+grammar-ACTIONS layer is the one remaining gap -> host=(Any)). Gate pkgrel2
+**194,621 (+15)**: charset +5 (class composition), namespaced +6 (nested
+naming), rx +2, our/pseudo-6e/longest-alternative +1 each, S03-metaops/misc.t
+now parses (+1). Suite 98, perf slightly better (1.16->1.08 hot loop).
+Regression: t/regression/package-relative-names.raku.
+
+Six general fixes:
+1. **Package-relative short names** (classAliases_): a qualified class also
+   answers to its TAIL when no real class claims it (`use URI::Path` -> bare
+   `Path`), guarded so a BUILT-IN name is never shadowed (`X::Roast::Channel`
+   must not hijack `Channel`). Wired: NameTerm eval, methodCall Type-invocant
+   entry, rtTypeMatch/typeMatchesArg (attr+param constraints), augment lookup.
+2. **Nested classes register QUALIFIED** (`class GenericActions` inside
+   `class Cro::Uri` is Cro::Uri::GenericActions, ^name included, as Rakudo);
+   tctx_.pkgPrefix now covers class/augment bodies; the tail alias keeps short
+   references working. Healed the first-gate regressions (augment-supersede,
+   lexical.t, channel/basic) via the builtin-guard + alias-aware methodCall.
+3. **`use X` inside a class body** loads at declaration — the class-body parser
+   WHITELISTED statement kinds and silently discarded UseStmt; URI.rakumod puts
+   its `use IETF::RFC_Grammar` lines after `unit class URI`.
+4. **.can() reports built-ins**: new/bless/gist/... on any class, parse/subparse
+   on grammars (stub callables that dispatch for real if invoked); alias-aware.
+   IETF::RFC_Grammar gates its constructor on `.can('parse')`.
+5. **Char-class composition with USER tokens** (`<[\-+.] +uri-alpha +digit>`,
+   `<+unenc-pchar - [:]>`): user-named parts become subrule alternation with
+   lookahead-reject subtraction; kebab-case names no longer split at '-' (was
+   parsed as `+uri` MINUS builtin alpha -- the whole RFC 3986 grammar failure);
+   `+:N/+:S` property parts approximated; blanks allowed after +/- ops.
+6. **Bracketed infix + metaop assignment**: `A [op] B`, `A [op]= B` (left
+   target, unlike plain `Rop=` which reverses roles including the target — both
+   verified against Rakudo), and `R//`-family routed through applyBinOp so
+   short-circuit ops reverse correctly. LibraryMake: `%vars{$k} [R//]= %*ENV{$k}`.
+   LibraryMake's "native" label was a red herring -- its `is native` lives in POD.

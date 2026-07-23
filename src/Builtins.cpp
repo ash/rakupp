@@ -1361,6 +1361,13 @@ static const char* quantValueType(const std::string& kind) {
 }
 
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    // package-relative short name: a bare `Frog` type invocant answers as its
+    // qualified nested class (`Forest::Frog`) when no real class claims the
+    // short name — covers `.new`, `.= new` on typed decls, and user methods
+    if (inv.t == VT::Type && !inv.s.empty() && !classes_.count(inv.s)) {
+        auto ai = classAliases_.find(inv.s);
+        if (ai != classAliases_.end()) inv.s = ai->second;
+    }
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
     if (m == "WHY") {
@@ -3623,6 +3630,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 Value* um = ci->findMethod(mn);
                 Value out = Value::array(); out.isList = true;
                 if (um) out.arr->push_back(*um);
+                // BUILT-IN methods answer .can too: every class news/blesses/gists,
+                // and a grammar parses (IETF::RFC_Grammar gates on `.can('parse')`)
+                if (out.arr->empty()) {
+                    static const std::set<std::string> universal = {
+                        "new", "bless", "gist", "Str", "raku", "perl", "so", "defined",
+                        "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
+                    if (universal.count(mn) || (ci->isGrammar && (mn == "parse" || mn == "subparse"))) {
+                        Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
+                        stub.code->name = mn; stub.code->isMethod = true;
+                        std::string mnc = mn;
+                        stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                            if (a.empty()) return Value::any();
+                            ValueList rest(a.begin() + 1, a.end());
+                            return I.methodCall(a[0], mnc, std::move(rest));
+                        };
+                        out.arr->push_back(stub);
+                    }
+                }
                 return out;
             }
             if (m == "methods") {
@@ -4205,8 +4230,27 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         Value out = Value::array(); out.isList = true;
         ClassInfo* ci = nullptr;
         if (inv.t == VT::Object && inv.obj) ci = inv.obj->cls.get();
-        else if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) ci = it->second.get(); }
+        else if (inv.t == VT::Type) { auto it = classes_.find(resolveClassAlias(inv.s)); if (it != classes_.end()) ci = it->second.get(); }
         if (ci) if (Value* um = ci->findMethod(mn)) out.arr->push_back(*um);
+        // BUILT-IN methods answer .can too: every class news/blesses/gists, and a
+        // grammar parses (IETF::RFC_Grammar gates on `$g.can('parse')`). A stub
+        // callable that dispatches for real if someone actually invokes it.
+        if (ci && out.arr->empty()) {
+            static const std::set<std::string> universal = {
+                "new", "bless", "gist", "Str", "raku", "perl", "so", "defined",
+                "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
+            if (universal.count(mn) || (ci->isGrammar && (mn == "parse" || mn == "subparse"))) {
+                Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
+                stub.code->name = mn; stub.code->isMethod = true;
+                std::string mnc = mn;
+                stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                    if (a.empty()) return Value::any();
+                    ValueList rest(a.begin() + 1, a.end());
+                    return I.methodCall(a[0], mnc, std::move(rest));
+                };
+                out.arr->push_back(stub);
+            }
+        }
         return out;
     }
     if (inv.t == VT::Type && (m == "raku" || m == "perl")) return Value::str(inv.s); // Int.raku -> "Int" (no parens)

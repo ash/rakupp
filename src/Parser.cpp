@@ -422,6 +422,46 @@ ExprPtr Parser::parseExpr(int minbp) {
                 continue;
             }
         }
+        // bracketed infix: `A [op] B` (any infix may be enclosed in square
+        // brackets) and the metaop-assignment form `A [op]= B` — LibraryMake:
+        // `%vars{$k} [R//]= %*ENV{$k}`. Content must be exactly an operator
+        // (optionally R-prefixed) then `]`; anything else backtracks untouched.
+        if (cur().kind == Tok::LBracket && cur().spaceBefore) {
+            size_t save = pos_;
+            advance(); // [
+            std::string rPfx;
+            if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && !peek().spaceBefore) {
+                rPfx = "R"; advance();
+            }
+            bool made = false;
+            if (cur().kind == Tok::Op && cur().text != "=" && peek().kind == Tok::RBracket) {
+                InfixInfo base = classifyInfix(cur());
+                if (base.valid) {
+                    std::string baseOp = advance().text;
+                    advance(); // ]
+                    bool assignForm = isOp("=") && !cur().spaceBefore;
+                    if (assignForm && BP_ASSIGN >= minbp) {
+                        advance(); // =
+                        auto as = std::make_unique<Assign>();
+                        as->op = "[" + rPfx + baseOp + "]=";
+                        as->target = std::move(lhs);
+                        as->value = parseExpr(BP_ASSIGN);
+                        lhs = std::move(as);
+                        made = true;
+                    }
+                    else if (!assignForm && base.lbp >= minbp) {
+                        auto bin = std::make_unique<Binary>();
+                        bin->op = rPfx + baseOp;
+                        bin->lhs = std::move(lhs);
+                        bin->rhs = parseExpr(base.lbp + 1);
+                        lhs = std::move(bin);
+                        made = true;
+                    }
+                }
+            }
+            if (made) continue;
+            pos_ = save; // not a bracketed infix — leave for other handlers
+        }
         // Space-separated colon-pairs form a list: `%( :a{1} :b{2} :c(3) )`.
         // Only continue when we're already building a pair/list (so an adverb like
         // `f() :flag` is not mistaken for a new list element).
@@ -4537,7 +4577,8 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         if (bareStub) cd->isStubDecl = true; // `class A { ... }` — a redeclarable forward decl
         if (st && !bareStub &&
             (st->kind == NK::ClassDecl || st->kind == NK::EnumDecl || st->kind == NK::SubDecl ||
-             st->kind == NK::VarDecl || st->kind == NK::ExprStmt))
+             st->kind == NK::VarDecl || st->kind == NK::ExprStmt ||
+             st->kind == NK::UseStmt)) // `use X` inside a class body loads at declaration (URI does this after `unit class URI`)
             cd->body.push_back(std::move(st));
     }
     if (braced) expectKind(Tok::RBrace, "}");
