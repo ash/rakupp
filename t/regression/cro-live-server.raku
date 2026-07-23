@@ -12,8 +12,8 @@
 use Cro::HTTP::Router;
 use Cro::HTTP::Server;
 
-if ::('Cro::HTTP::Server') ~~ Failure {
-    say 'PASS';     # Cro dists not vendored here — nothing to exercise
+unless try ::('Cro::HTTP::Server').can('start') {
+    say 'PASS';     # Cro dists not vendored here (CI) — nothing to exercise
     exit 0;
 }
 
