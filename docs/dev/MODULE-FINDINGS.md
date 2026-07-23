@@ -76,3 +76,25 @@ KNOWN TRADEOFF: recognizing+skipping `is repr("…")` means a repr-changing
 6. **rakupp RUN-MAIN doesn't val()-allomorph NAMED args**: `Int :$top` with
    `--top=10` dies X::TypeCheck::Binding (positionals are allomorphed;
    nameds arrive as plain Str).
+
+
+## Tier-2 functional baseline (2026-07-23)
+
+Load count (Tier-3) held at 38/50 both-engines after the JSON::Fast leg —
+loading was never JSON::Fast's problem, *functioning* was. Tier-2 measures
+whether the advertised API works (battery `tier2/run.sh`, STDOUT diff vs
+Rakudo). First 10-module probe: **4 MATCH, 6 DIFF**.
+
+- MATCH: **JSON::Fast** (keystone, both directions), Terminal::ANSIColor,
+  File::Temp, Method::Also.
+- DIFF — the next module-leg targets, each a rakupp functional bug:
+  7. **MIME::Base64.encode-str("hello")** → `AA==` (want `aGVsbG8=`) — encodes
+     the wrong bytes (likely `.encode`/Blob handling in encode-str).
+  8. **URI::Encode `uri_encode_component("a b")`** → `a b` (want `a%20b`) — no
+     percent-encoding happening.
+  9. **URI.new(...).host** → empty (want the host) — the URI grammar isn't
+     populating accessors.
+  10. **Data::Dump `dump([1,2])`** → empty — the exported `dump` produces
+      nothing.
+  11. **File::Find `find(dir=>".")`** → empty vs a real result.
+  12. **HTTP::Status `get_http_status_msg(404)`** → empty (want "Not Found").
