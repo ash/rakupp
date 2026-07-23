@@ -130,3 +130,27 @@ Still open (6): XML `from-xml` root name, URI + Cro::Core `.host` (shared URI
 grammar/accessor issue — 2 modules per fix), HTTP::Status `@codes` table,
 Base64 (rank 31; exotic `.rotor`/`LAST`/`state`-phaser one-liner), LibraryMake
 (native).
+
+## Module fix batch 2 (2026-07-23) — explicit method invocants
+
+Surfaced by URI (URI.rakumod `method parse(URI:D: Str() $str, ...)`, URI/Query
+`method ASSIGN-POS(URI::Query:D: $i, Pair $p)`). Three linked fixes; gate inv1
+194,551 (+38 over batch 1 — whole S12 files that died partway now run:
+methods/chaining 2->15, class/inheritance 8->20, construction 6->11), suite 93,
+zero regressions. Regression: t/regression/invocant-coercion-and-smiley.raku.
+
+- **PARSE** an invocant colon after a bare/qualified type (`URI: Str()`,
+  `Query:D: $i`) was misread as a named-alias (`:Str(...)`) or `:$named` marker.
+  A named alias/marker colon is TIGHT against its key/var; an invocant colon has
+  a SPACE after it -- `!peek().spaceBefore` disambiguates (two Parser sites).
+- **BIND (the big one)** an explicit invocant param was consuming a POSITIONAL
+  argument in bindParams instead of binding to `self`, so `method m($self: $x)`
+  called `.m(21)` left `$x` empty ($self ate 21). Now an invocant binds to the
+  env's `self` and consumes no positional. Pre-existing; hit every explicit
+  invocant with following params.
+
+URI remainder (findings still open): short-name package-relative type lookup --
+inside `unit class URI`, bare `Path` must resolve to the imported `URI::Path`
+(`URI::Path.new` already works fully-qualified; only the short name misses).
+Cro::Core remainder: `package Foo {}` then `role Foo {}` same-name coexistence
+(rakupp reports redeclaration -> role never loads -> `$!authority` uncomposed).

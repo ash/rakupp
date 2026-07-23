@@ -3701,7 +3701,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // named alias following a type constraint:  Int:D :key($plan)  /
         // Pair :value((Str:D :key($desc), :value(&tests)))  (nested sub-signature)
         bool aliasBound = false;
-        if (!named && isOp(":") && peek().kind == Tok::Ident && peek(2).kind == Tok::LParen) {
+        // A named-alias colon is TIGHT against its key (`Int :key($x)`); an
+        // invocant colon after a bare type has a SPACE after it (`URI: Str() $s`)
+        // — the `!peek().spaceBefore` guard keeps the latter out of this branch
+        // so it falls through to the invocant marker below.
+        if (!named && isOp(":") && !peek().spaceBefore &&
+            peek().kind == Tok::Ident && peek(2).kind == Tok::LParen) {
             advance(); // :
             p.namedKey = advance().text;
             advance(); // (
@@ -3718,7 +3723,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             p.named = true; named = true; aliasBound = true;
         }
-        if (!named && isOp(":") && peek().kind == Tok::Var) { advance(); named = true; } // Type :$named
+        // `Type :$named` — the colon is TIGHT against the var; an invocant colon
+        // after a smiley (`Query:D: $i`) has a SPACE after it, so `!peek().spaceBefore`
+        // keeps it out of here and lets the invocant marker below claim it.
+        if (!named && isOp(":") && !peek().spaceBefore && peek().kind == Tok::Var) { advance(); named = true; } // Type :$named
         if (aliasBound) { // name (or nested sub-sig) already bound by the alias above
         } else if (matchOp("\\")) { // typed sigilless capture:  Iterator:D \iter
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;

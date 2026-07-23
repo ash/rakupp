@@ -4086,6 +4086,14 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     };
     size_t pi = 0;
     for (auto& p : params) {
+        // An explicit invocant (`$self:` / `Type:D:`) binds to `self` (already in
+        // the method env) and does NOT consume a positional argument — the dispatch
+        // matched it. Consuming one here would shift every following parameter.
+        if (p.invocant) {
+            if (!p.name.empty())
+                if (Value* sp = env->find("self")) env->define(p.name, *sp);
+            continue;
+        }
         std::string bareName = !p.namedKey.empty() ? p.namedKey
                              : (p.name.size() > 1 ? p.name.substr(1) : p.name);
         // attributive param `:$!attr` / `:$.attr` (BUILD/TWEAK style): the named
