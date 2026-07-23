@@ -14,8 +14,8 @@
 - Both an **interpreter and a compiler**: the same binary tree-walks a script
   or compiles it to a standalone native executable.
 - Measured against **[Roast](https://github.com/Raku/roast)**, the official
-  Raku specification suite: **~88% of all declared tests pass**
-  (189,102 / 214,384); **~38% of files fully pass** (558 / 1,462).
+  Raku specification suite: **~90% of all declared tests pass**
+  (194,506 / 216,066); **~39% of files fully pass** (584 / 1,462).
   Definitions and caveats: [ROAST.md](ROAST.md), [COUNTING.md](COUNTING.md).
 
 ## Language

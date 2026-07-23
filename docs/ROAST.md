@@ -32,7 +32,7 @@ The exact definition of every figure below — and how the harness computes it �
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
 **Headline: ~90% of all declared Roast tests pass** (194,506 / 216,066); on the
-stricter file bar, ~38% of files fully pass (584 / 1,462). The per-file breakdown
+stricter file bar, ~39% of files fully pass (584 / 1,462). The per-file breakdown
 comes first below, then the per-test figures.
 
 Full suite — **1,462 files**:
@@ -48,7 +48,7 @@ Full suite — **1,462 files**:
 harness with unkillable children and are measured separately; they count above as
 one partial and one timeout. See [docs/ROAST-GAPS.md](dev/ROAST-GAPS.md).)
 
-**Coverage ≈ 38% of files.** That is the number to quote. About a sixth of the suite
+**Coverage ≈ 39% of files.** That is the number to quote. About a sixth of the suite
 produces no TAP at all — those files hit a parse error or an unimplemented
 construct and abort before any assertion runs — so they are entirely unmeasured
 territory, not "passing" and not "failing."
@@ -69,7 +69,7 @@ three denominators, widest-to-strictest:
 | tests **planned** (files that emitted a plan) | 194,506 / 212,641 (~91%) | + tests lost when a file aborts mid-plan |
 | **all declared** tests | 194,506 / 216,066 (90%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
-The 90% is the per-test analog of the ~38% file coverage. Two caveats on scope:
+The 90% is the per-test analog of the ~39% file coverage. Two caveats on scope:
 
 1. **~3.4k of the denominator comes from no-TAP files** (101 of them, read from
    source); 5 more no-TAP files use a dynamic `plan *` / `done-testing` and are
@@ -82,7 +82,7 @@ The 90% is the per-test analog of the ~38% file coverage. Two caveats on scope:
    the pre-existing bugs it exposes (see [dev/REVIEW-1.0.md](dev/REVIEW-1.0.md)),
    at which point these numbers are re-measured honestly.
 
-Coverage is the ~38% of files; per-test correctness across the whole suite is the
+Coverage is the ~39% of files; per-test correctness across the whole suite is the
 90%. They are different measurements, quoted for different purposes.
 
 ## By synopsis
