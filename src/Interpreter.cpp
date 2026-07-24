@@ -5626,6 +5626,12 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             else       { rwI.push_back(v.toInt()); g.push_back((long)(intptr_t)&rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr}); }
         }
         else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
+        else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
+            // a Buf/blob8 is a mutable native buffer: pass its bytes and copy back
+            // after the call (BIO_read/SSL_read/recv fill it in place).
+            keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data());
+            if (v.hashKind == "Buf") cabacks.push_back({i, keep.size() - 1});
+        }
         else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { keep.push_back(v.toStr()); g.push_back((long)(intptr_t)keep.back().c_str()); }
         else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) g.push_back((long)v.obj->attrs["__native_ptr"].toInt());
         else if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") && v.hash->count("addr"))
@@ -5667,7 +5673,9 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // fill buffers), so write the possibly-changed bytes back to the caller.
     for (auto& cb : cabacks) {
         if (!rwArgs || cb.arg >= rwArgs->size()) continue;
-        try { if (Value* lv = lvalue((*rwArgs)[cb.arg].get())) if (lv->t == VT::Str && lv->hashKind == "CArray") lv->s = keep[cb.keep]; } catch (RakuError&) {}
+        try { if (Value* lv = lvalue((*rwArgs)[cb.arg].get()))
+                  if (lv->t == VT::Str && (lv->hashKind == "CArray" || lv->hashKind == "Buf")) lv->s = keep[cb.keep];
+        } catch (RakuError&) {}
     }
 
     if (rt.empty() || rt == "void" || rt == "Nil") return Value::nil();

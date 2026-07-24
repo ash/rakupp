@@ -4448,6 +4448,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                                 dv = Value::integer(0);
                             else if (at.type.rfind("num", 0) == 0) dv = Value::number(0);
                             else if (at.type == "str") dv = Value::str("");
+                            // a named type defaults to its TYPE OBJECT, not Any, so
+                            // `has T $.x; … $!x .= new` works (T.new) — Rakudo semantics.
+                            else if (std::isupper((unsigned char)at.type[0])) dv = Value::typeObj(at.type);
                         }
                         if (!at.containerIs.empty() && at.sigil == '%')
                             dv = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
