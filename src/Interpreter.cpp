@@ -593,7 +593,7 @@ ValueList rtMainArgs(const std::vector<std::string>& argv) {
             if (rest.rfind("/", 0) == 0) margs.push_back(named(rest.substr(1), Value::boolean(false)));
             else {
                 auto eq = rest.find('=');
-                if (eq != std::string::npos) margs.push_back(named(rest.substr(0, eq), Value::str(rest.substr(eq + 1))));
+                if (eq != std::string::npos) margs.push_back(named(rest.substr(0, eq), allomorph(rest.substr(eq + 1))));
                 else margs.push_back(named(rest, Value::boolean(true)));
             }
         } else {
@@ -5596,10 +5596,16 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     if (!lib.empty()) {
         // try the name as-is, then platform-decorated forms
         const std::string& l = lib;
+        std::string dlerr;
         for (const std::string& cand : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"}) {
             if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
+            if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
+                std::string es = e;
+                if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
+            }
         }
-        if (!handle) throw RakuError{Value::typeObj("X::Libc"), "Cannot load native library '" + lib + "'"};
+        if (!handle) throw RakuError{Value::typeObj("X::Libc"),
+            "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
     }
     void* sym = dlsym(handle, c.nativeSym.c_str());
     if (!sym) {
@@ -5739,9 +5745,16 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
 Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const std::string& type) {
     void* handle = RTLD_DEFAULT;
     if (!lib.empty()) {
-        for (const std::string& cand : {lib, "lib" + lib + ".dylib", "lib" + lib + ".so", lib + ".dylib", lib + ".so"})
+        std::string dlerr;
+        for (const std::string& cand : {lib, "lib" + lib + ".dylib", "lib" + lib + ".so", lib + ".dylib", lib + ".so"}) {
             if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
-        if (!handle) throw RakuError{Value::typeObj("X::Libc"), "Cannot load native library '" + lib + "'"};
+            if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
+                std::string es = e;
+                if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
+            }
+        }
+        if (!handle) throw RakuError{Value::typeObj("X::Libc"),
+            "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
     }
     void* addr = dlsym(handle, sym.c_str());
     if (!addr) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + sym + "'"};

@@ -145,7 +145,6 @@ course. Build it with `rakujs/build.sh`; details in
 - **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
 - **[ASYNC.md](docs/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[NETWORKING.md](docs/NETWORKING.md)** — talking over the network: async TCP clients and servers, HTTP, graceful shutdown with `signal`, and HTTPS/TLS via `IO::Socket::Async::SSL`.
-- **[HTTPS.md](docs/HTTPS.md)** — the story of getting one real HTTPS request working: the chain of general bugs from "OpenSSL won't load" to `HTTP/1.1 200 OK` over TLS.
 - **[METAPROGRAMMING.md](docs/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
 - **[NQP.md](docs/NQP.md)** — the `use nqp` compatibility subset: what it covers, how it compiles (no NQP grammar involved), and why it costs nothing when unused. Lets ecosystem modules like JSON::Fast run.
 
@@ -163,6 +162,7 @@ course. Build it with `rakujs/build.sh`; details in
 - **[MEMORY.md](docs/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
 - **[LINT.md](docs/LINT.md)** — the `--lint` static analyzer: the rules it applies, warnings vs. notes, exit codes, and why it stays conservative on Raku's dynamic constructs.
 - **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
+- **[HTTPS.md](docs/HTTPS.md)** — the story of getting one real HTTPS request working: the chain of general bugs from "OpenSSL won't load" to `HTTP/1.1 200 OK` over TLS, and the NativeCall surface it exercised.
 - **[DOGFOODING.md](docs/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
 - **[ECOSYSTEM.md](docs/ECOSYSTEM.md)** — the projects built on this interpreter (Raku.js, raku.online, tour.raku.online, spec.raku.online, raku-corpus), how they connect, and the release runbook for rebuilding wasm and redeploying the sites after a new version.
 

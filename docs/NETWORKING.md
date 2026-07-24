@@ -107,6 +107,19 @@ With the `IO::Socket::Async::SSL` module installed (and its OpenSSL bindings
 resolvable — see the note below), Raku++ performs a real TLS handshake through
 the system OpenSSL and streams the decrypted response like any other socket.
 
+> **Before this runs, your `rakupp` and your OpenSSL must be the same
+> architecture.** `IO::Socket::Async::SSL` `dlopen`s the system `libssl`, and a
+> binary can only load a library of its own arch. On macOS the common setup is an
+> **arm64** `rakupp` (Apple Silicon default) but an **x86_64** OpenSSL (Intel
+> Homebrew, at `/usr/local/opt/openssl@3`, which is what a stock Rakudo/zef
+> installs). That mismatch fails at load with *"Cannot load native library
+> '…/libssl.dylib' (… incompatible architecture …)"*, and then `.connect` reports
+> *"No such method"* because the module never loaded. Fix it by matching the two:
+> run an x86_64 `rakupp` against the x86_64 OpenSSL —
+> `cmake -S . -B build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 && cmake --build build-x64`,
+> then `./build-x64/rakupp your-program.raku` — or install an arm64 OpenSSL
+> (`/opt/homebrew`) and use the arm64 build. See [COMPILERS.md](COMPILERS.md).
+
 ```raku
 use IO::Socket::Async::SSL;
 
@@ -125,12 +138,8 @@ say $response.decode('latin-1').lines[0];    # HTTP/1.1 200 OK
 
 Notes and current limits:
 
-- **Architecture must match the OpenSSL library.** `IO::Socket::Async::SSL`
-  `dlopen`s the system `libssl`; the interpreter and that library must be the
-  same architecture. If you built an arm64 `rakupp` but only an x86_64 OpenSSL is
-  installed (or vice-versa) the load fails with *"Cannot load native library
-  '…/libssl.dylib'"* — build a matching `rakupp` (e.g. an x86_64 build to use an
-  x86_64 Homebrew OpenSSL).
+- **Architecture must match the OpenSSL library** — see the callout above; this is
+  the most common reason the example fails on a fresh macOS checkout.
 - **`:insecure` skips certificate verification.** The certificate-verifying path
   (hostname / chain validation, i.e. without `:insecure`) is not yet complete, so
   use `:insecure` for now and treat the transport as encrypted-but-unauthenticated.
