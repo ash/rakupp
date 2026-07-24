@@ -31,7 +31,14 @@ writing the `examples/` programs) live in [TRIAGE.md](TRIAGE.md).
 2. **Borderline-slow files.** 12 files emit clean TAP standalone but were
    no-TAP under the harness (`gb18030/gb2312/shiftjis-encode-decode.t`,
    `substr-rw.t`, `advent2009-day21.t`, …) — they straddle the 10 s timeout
-   under full-suite load.
+   under full-suite load. `S15-nfg/concat-stable.t` is a distinct case: it is
+   *correct* (every assertion passes when it finishes) but genuinely O(n³) here
+   because `Array.shift` is O(n) — a front-erase of a ~250-byte `Value` vector —
+   so its O(n²) per-split-point concat loop over ~1300-grapheme Wikipedia texts
+   runs ~90 s. The NFG string ops themselves are fast (~2 s total); only `shift`
+   is the bottleneck. Closing it needs an amortized-O(1) `shift` (a front-offset
+   or deque-backed array store) — a core-representation change deferred to keep
+   the v1.1 Unicode work low-risk. It is the sole non-passing S15 file.
 3. **Two files wedge the harness itself** (their killed child becomes
    uninterruptible): `S04-statements/try.t` (uncaught `ResumeEx` hangs during
    teardown — the `.resume` control flow needs real support) and

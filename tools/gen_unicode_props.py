@@ -4,7 +4,8 @@
 # Re-run: python3 tools/gen_unicode_props.py
 import re
 
-FILES = ["tools/ucd/DerivedCoreProperties-17.0.0.txt", "tools/ucd/PropList-17.0.0.txt"]
+FILES = ["tools/ucd/DerivedCoreProperties-17.0.0.txt", "tools/ucd/PropList-17.0.0.txt",
+         "tools/ucd/emoji-data-17.0.0.txt"]
 VER = "17.0.0"
 
 props = {}   # normalized-name -> list of (lo, hi)
@@ -20,6 +21,27 @@ for path in FILES:
         hi = int(m.group(2), 16) if m.group(2) else lo
         norm = re.sub(r'[^a-z0-9]', '', m.group(3).lower())
         props.setdefault(norm, []).append((lo, hi))
+
+# Full_Composition_Exclusion is the only binary flag we take from DerivedNormalizationProps
+# (the file's other rows carry a value field, e.g. NFC_QC; No — those are enum, not binary).
+for line in open("tools/ucd/DerivedNormalizationProps-17.0.0.txt"):
+    line = line.split('#', 1)[0].strip()
+    if not line:
+        continue
+    parts = [p.strip() for p in line.split(';')]
+    # 2-field rows are pure binary properties; the value-bearing ones (NFC_QC; N …) are enum
+    if len(parts) != 2 or parts[1] not in ('Full_Composition_Exclusion', 'Changes_When_NFKC_Casefolded'):
+        continue
+    lo, _, hi = parts[0].partition('..')
+    lo = int(lo, 16); hi = int(hi, 16) if hi else lo
+    props.setdefault(re.sub(r'[^a-z0-9]', '', parts[1].lower()), []).append((lo, hi))
+
+# Bidi_Mirrored is UnicodeData.txt field 9 == 'Y' (not in the derived files above).
+for line in open("tools/ucd/UnicodeData-17.0.0.txt"):
+    f = line.rstrip('\n').split(';')
+    if len(f) > 9 and f[9] == 'Y':
+        cp = int(f[0], 16)
+        props.setdefault('bidimirrored', []).append((cp, cp))
 
 names = sorted(props)
 idx = {n: i for i, n in enumerate(names)}

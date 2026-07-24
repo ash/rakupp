@@ -31,17 +31,20 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~90% of all declared Roast tests pass** (194,506 / 216,066); on the
-stricter file bar, ~39% of files fully pass (584 / 1,462). The per-file breakdown
-comes first below, then the per-test figures.
+**Headline: ~90% of all declared Roast tests pass** (194,901 / 216,222); on the
+stricter file bar, ~41% of files fully pass (598 / 1,462). The per-file breakdown
+comes first below, then the per-test figures. (S15 — Unicode / strings / NFG —
+is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
+complete `uniprop` coverage landed for v1.1; its lone non-passing file is a
+performance timeout, not a correctness gap. See [ROAST-GAPS](dev/ROAST-GAPS.md).)
 
 Full suite — **1,462 files**:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **576** | **39%** |
-| Partially passing | 671 | 46% |
-| No TAP output | 212 | 15% |
+| **Fully passing** | **598** | **41%** |
+| Partially passing | 695 | 48% |
+| No TAP output | 158 | 11% |
 | Timeouts | 11 | 0.8% |
 
 (Two files — `S04-statements/try.t`, `S12-construction/destruction.t` — hang the
@@ -56,7 +59,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**194,506 of ~216,066 declared tests — 90%**. "Declared" means every test the
+**194,901 of ~216,222 declared tests — 90%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -65,9 +68,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 194,506 / 199,588 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 194,506 / 212,641 (~91%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 194,506 / 216,066 (90%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 194,901 / 199,872 (~98%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 194,901 / 212,964 (~92%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 194,901 / 216,222 (90%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 90% is the per-test analog of the ~39% file coverage. Two caveats on scope:
 
@@ -95,30 +98,30 @@ while many of its files still don't run at all — read it alongside No-TAP.
 | Section | Theme | Full | Part | Time | No-TAP | Assertions | % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | S01 | Overview | 14 | 0 | 0 | 0 | 89/89 | 100% |
-| S02 | Literals, types, magicals | 54 | 74 | 0 | 19 | 4500/5042 | 89% |
-| S03 | Operators | 47 | 58 | 3 | 17 | 21651/22328 | 97% |
-| S04 | Blocks, statements, phasers | 30 | 40 | 0 | 6 | 1088/1328 | 82% |
-| S05 | Regexes & grammars | 34 | 56 | 0 | 8 | 5386/6045 | 89% |
-| S06 | Subroutines & signatures | 20 | 54 | 0 | 20 | 1200/1550 | 77% |
+| S02 | Literals, types, magicals | 54 | 74 | 0 | 19 | 4447/4939 | 90% |
+| S03 | Operators | 47 | 60 | 3 | 15 | 21679/22361 | 97% |
+| S04 | Blocks, statements, phasers | 30 | 40 | 0 | 6 | 1091/1336 | 82% |
+| S05 | Regexes & grammars | 34 | 56 | 0 | 8 | 5453/6107 | 89% |
+| S06 | Subroutines & signatures | 20 | 55 | 0 | 19 | 1271/1642 | 77% |
 | S07 | Iterators | 2 | 4 | 0 | 0 | 225/268 | 84% |
-| S09 | Data structures | 2 | 20 | 0 | 0 | 906/1111 | 82% |
-| S10 | Packages | 2 | 5 | 0 | 2 | 34/72 | 47% |
+| S09 | Data structures | 2 | 20 | 0 | 0 | 905/1111 | 81% |
+| S10 | Packages | 2 | 5 | 0 | 2 | 39/75 | 52% |
 | S11 | Modules | 8 | 10 | 0 | 4 | 56/87 | 64% |
-| S12 | Objects & classes | 26 | 59 | 0 | 15 | 969/1206 | 80% |
+| S12 | Objects & classes | 27 | 59 | 0 | 14 | 1059/1289 | 82% |
 | S13 | Overloading | 4 | 2 | 0 | 1 | 50/52 | 96% |
 | S14 | Roles | 7 | 15 | 0 | 3 | 208/259 | 80% |
-| S15 | Unicode / strings / NFG | 75 | 5 | 1 | 0 | 91682/91750 | 100% |
+| S15 | Unicode / strings / NFG | 80 | 0 | 1 | 0 | 91752/91752 | 100% |
 | S16 | I/O | 17 | 15 | 0 | 5 | 415/552 | 75% |
-| S17 | Concurrency (supply/promise/async) | 36 | 47 | 5 | 11 | 817/1009 | 81% |
+| S17 | Concurrency (supply/promise/async) | 37 | 47 | 4 | 11 | 830/1030 | 81% |
 | S19 | Command-line | 6 | 1 | 0 | 1 | 22/24 | 92% |
 | S22 | Package format | 0 | 1 | 0 | 0 | 3/3 | 100% |
-| S24 | Testing | 11 | 6 | 0 | 0 | 87/134 | 65% |
-| S26 | Documentation (POD) | 6 | 19 | 0 | 2 | 407/444 | 92% |
+| S24 | Testing | 11 | 6 | 0 | 0 | 88/134 | 66% |
+| S26 | Documentation (POD) | 7 | 18 | 0 | 2 | 408/444 | 92% |
 | S28 | Special variables | 3 | 0 | 0 | 0 | 9/9 | 100% |
-| S29 | Builtins & context | 7 | 6 | 0 | 1 | 399/411 | 97% |
-| S32 | Standard types (str/list/num/…) | 104 | 132 | 1 | 26 | 42769/43810 | 98% |
-| integration | Cross-feature programs | 47 | 54 | 0 | 18 | 922/1035 | 89% |
-| 6.c | v6.c language snapshot | 3 | 11 | 0 | 4 | 307/600 | 51% |
+| S29 | Builtins & context | 7 | 5 | 1 | 1 | 359/370 | 97% |
+| S32 | Standard types (str/list/num/…) | 108 | 130 | 1 | 24 | 42880/43903 | 98% |
+| integration | Cross-feature programs | 49 | 55 | 0 | 15 | 947/1066 | 89% |
+| 6.c | v6.c language snapshot | 3 | 11 | 0 | 4 | 311/600 | 52% |
 | 6.d | v6.d language snapshot | 14 | 4 | 0 | 0 | 20260/20310 | 100% |
 | APPENDICES | — | 2 | 2 | 1 | 1 | 33/48 | 69% |
 | MISC / t | — | 3 | 0 | 0 | 3 | 12/12 | 100% |
@@ -160,7 +163,7 @@ the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
 
-_Snapshot: 584 / 1,462 files fully passing (~39% coverage); 700 partial,
-167 no-TAP, 11 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 194,506 / 199,588 (see
+_Snapshot: 598 / 1,462 files fully passing (~41% coverage); 695 partial,
+158 no-TAP, 11 timeout (the scheduler/io timing files flap between pass and timeout under runner load). Reached-assertion pass rate 194,901 / 199,872 (see
 caveat above — not a coverage figure). S05-substitution is a fully-passing
 subchapter (67222.t, match.t, subst.t)._

@@ -17,8 +17,9 @@ for line in open(SRC):
     if not m:
         continue
     lo, hi, name = int(m.group(1), 16), int(m.group(2), 16), m.group(3).strip()
-    norm = re.sub(r'[^a-z0-9]', '', name.lower())  # loose match: lowercase, drop separators
-    blocks.append((lo, hi, norm))
+    # store the PROPER block name ("Basic Latin") — uniprop('Block') needs it verbatim;
+    # the regex <:InBlock> matcher normalizes case/separators at compare time.
+    blocks.append((lo, hi, name))
 blocks.sort()
 
 with open("src/unicode_blocks_gen.cpp", "w") as f:
@@ -27,8 +28,8 @@ with open("src/unicode_blocks_gen.cpp", "w") as f:
     f.write("namespace rakupp {{ namespace ucd {{\n".format())
     f.write("struct BlockEnt { uint32_t lo, hi; const char* name; };\n")
     f.write("extern const BlockEnt BLOCKS[] = {\n")
-    for lo, hi, norm in blocks:
-        f.write(f'  {{0x{lo:X},0x{hi:X},"{norm}"}},\n')
+    for lo, hi, name in blocks:
+        f.write(f'  {{0x{lo:X},0x{hi:X},"{name}"}},\n')
     f.write("};\n")
     f.write(f"extern const size_t BLOCKS_N = {len(blocks)};\n")
     f.write("}} // namespace rakupp::ucd\n")

@@ -32,7 +32,7 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../rakujs/)**) |
 | **Startup** | ~2 ms cold |
-| **Correctness target** | the Roast suite — ~90% of all individual tests pass; ~39% of files fully pass |
+| **Correctness target** | the Roast suite — ~90% of all individual tests pass; ~41% of files fully pass |
 | **Not** | a Rakudo fork, a transpiler-to-something-else, or feature-complete |
 
 ## Goals & philosophy
@@ -139,13 +139,13 @@ same language.
 
 The same progress measured at three granularities:
 
-- **All declared tests: ~90%** (194,506 / ~216,066) — the headline per-test figure.
+- **All declared tests: ~90%** (194,901 / ~216,222) — the headline per-test figure.
   It counts every test the suite declares, including those in files that abort
   before running (their `plan N` is read from source, all failing), so parse-error
   files can't hide.
-- **Files fully passing: ~39%** (584 / 1,462) — the stricter bar; a file counts
+- **Files fully passing: ~41%** (598 / 1,462) — the stricter bar; a file counts
   only if *every* assertion in it passes.
-- **Tests that ran: ~97%** (194,506 / 199,588) — of just the assertions files
+- **Tests that ran: ~97%** (194,901 / 199,872) — of just the assertions files
   actually emitted; useful for tracking regressions, but it ignores the ~25k tests
   in aborting files, so it flatters.
 

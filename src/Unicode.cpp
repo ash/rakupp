@@ -34,6 +34,83 @@ struct ScriptEnt { uint32_t lo, hi; const char* name; };
 extern const ScriptEnt SCRIPTS[]; extern const size_t SCRIPTS_N; // Scripts.txt
 struct BidiEnt { uint32_t lo, hi; const char* bc; };
 extern const BidiEnt BIDI[]; extern const size_t BIDI_N; // DerivedBidiClass.txt
+// case tables (unicode_case_gen.cpp): SIMPLE are (cp,mapped) pairs; FULL/FOLD are (cp,m0,m1,m2) quads
+extern const uint32_t SUPPER[]; extern const size_t SUPPER_N;
+extern const uint32_t SLOWER[]; extern const size_t SLOWER_N;
+extern const uint32_t STITLE[]; extern const size_t STITLE_N;
+extern const uint32_t FUPPER[]; extern const size_t FUPPER_N;
+extern const uint32_t FLOWER[]; extern const size_t FLOWER_N;
+extern const uint32_t FTITLE[]; extern const size_t FTITLE_N;
+extern const uint32_t FOLDF[];  extern const size_t FOLDF_N;
+// enum-property range tables (unicode_props2_gen.cpp)
+#define ENUMPROP(N) extern const char* const N##_VALUES[]; extern const size_t N##_VALUES_N; \
+                    extern const uint32_t N##_RANGES[]; extern const size_t N##_RANGES_N;
+ENUMPROP(AGE) ENUMPROP(LB) ENUMPROP(WB) ENUMPROP(SB) ENUMPROP(GCB) ENUMPROP(EAW)
+ENUMPROP(HST) ENUMPROP(DT) ENUMPROP(NT) ENUMPROP(JT) ENUMPROP(JG)
+#undef ENUMPROP
+extern const uint32_t BIDIMIRROR[]; extern const size_t BIDIMIRROR_N;
+}
+
+// binary-search a per-property range table (lo,hi,valueIdx triples sorted by lo).
+static std::string enumLookup(const uint32_t* r, size_t n3, const char* const* vals,
+                              uint32_t cp, const char* dflt) {
+    size_t lo = 0, hi = n3 / 3;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t s = r[mid * 3], e = r[mid * 3 + 1];
+        if (cp < s) hi = mid; else if (cp > e) lo = mid + 1; else return vals[r[mid * 3 + 2]]; }
+    return dflt;
+}
+std::string uniEnumProp(const std::string& prop, uint32_t cp) {
+    // normalize the property name (case/underscore-insensitive)
+    std::string p; for (char c : prop) if (std::isalnum((unsigned char)c)) p += (char)std::tolower((unsigned char)c);
+    #define TRY(N, dflt, ...) { static const char* ks[] = {__VA_ARGS__}; for (auto* k : ks) if (p == k) \
+        return enumLookup(ucd::N##_RANGES, ucd::N##_RANGES_N, ucd::N##_VALUES, cp, dflt); }
+    TRY(AGE, "Unassigned", "age")
+    TRY(LB, "XX", "linebreak", "lb")
+    TRY(WB, "Other", "wordbreak", "wb")
+    TRY(SB, "Other", "sentencebreak", "sb")
+    TRY(GCB, "Other", "graphemeclusterbreak", "gcb")
+    TRY(EAW, "N", "eastasianwidth", "ea")
+    TRY(HST, "NA", "hangulsyllabletype", "hst")
+    TRY(DT, "None", "decompositiontype", "dt")
+    TRY(NT, "None", "numerictype", "nt")
+    TRY(JT, "U", "joiningtype", "jt")
+    TRY(JG, "No_Joining_Group", "joininggroup", "jg")
+    #undef TRY
+    return "";
+}
+int32_t uniBidiMirror(uint32_t cp) {
+    size_t lo = 0, hi = ucd::BIDIMIRROR_N / 2;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = ucd::BIDIMIRROR[mid * 2];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return (int32_t)ucd::BIDIMIRROR[mid * 2 + 1]; }
+    return -1;
+}
+
+// binary-search a SIMPLE (cp,mapped) table; returns mapped cp or the input unchanged.
+static uint32_t caseSimple(const uint32_t* t, size_t n, uint32_t cp) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = t[mid * 2];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return t[mid * 2 + 1]; }
+    return cp;
+}
+// binary-search a FULL (cp,m0,m1,m2) table; appends its 1..3 codepoints, returns true if found.
+static bool caseFull(const uint32_t* t, size_t n, uint32_t cp, std::vector<uint32_t>& out) {
+    size_t lo = 0, hi = n;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = t[mid * 4];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1;
+        else { for (int j = 1; j <= 3; j++) if (t[mid * 4 + j]) out.push_back(t[mid * 4 + j]); return true; } }
+    return false;
+}
+uint32_t uniSimpleUpper(uint32_t cp) { return caseSimple(ucd::SUPPER, ucd::SUPPER_N, cp); }
+uint32_t uniSimpleLower(uint32_t cp) { return caseSimple(ucd::SLOWER, ucd::SLOWER_N, cp); }
+uint32_t uniSimpleTitle(uint32_t cp) { uint32_t t = caseSimple(ucd::STITLE, ucd::STITLE_N, cp); return t == cp ? uniSimpleUpper(cp) : t; }
+std::vector<uint32_t> uniCaseMap(uint32_t cp, int kind) {
+    std::vector<uint32_t> out;
+    switch (kind) {
+        case 0: if (caseFull(ucd::FLOWER, ucd::FLOWER_N, cp, out)) return out; out.push_back(uniSimpleLower(cp)); return out;
+        case 1: if (caseFull(ucd::FUPPER, ucd::FUPPER_N, cp, out)) return out; out.push_back(uniSimpleUpper(cp)); return out;
+        case 2: if (caseFull(ucd::FTITLE, ucd::FTITLE_N, cp, out)) return out; out.push_back(uniSimpleTitle(cp)); return out;
+        default: if (caseFull(ucd::FOLDF, ucd::FOLDF_N, cp, out)) return out; out.push_back(cp); return out;
+    }
 }
 
 // Bidi_Class of cp ("L", "EN", "WS", …); default "L" in the assigned ranges' gaps.
@@ -65,6 +142,13 @@ static int uniBinProp(uint32_t cp, const std::string& norm) {
     while (lo < hi) { size_t mid = (lo + hi) / 2;
         if (cp < v[mid].first) hi = mid; else if (cp > v[mid].second) lo = mid + 1; else return 1; }
     return 0;
+}
+
+// Strict binary-property test for uniprop(): 1/0 if `prop` is a known binary
+// property, -1 if it is not one (so the caller does NOT fall back to a lenient match).
+int uniBinaryProp(uint32_t cp, const std::string& prop) {
+    std::string norm; for (char c : prop) if (std::isalnum((unsigned char)c)) norm += (char)std::tolower((unsigned char)c);
+    return uniBinProp(cp, norm);
 }
 
 // `<:InBlockName>` block property: normalized (lowercase, alnum-only) name of the
@@ -292,6 +376,55 @@ std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
         prev = cur;
     }
     return starts;
+}
+
+// Byte offset of the end of the grapheme cluster beginning at UTF-8 byte `pos`
+// (which must be a codepoint boundary). Walks forward applying the UAX #29
+// pairwise rules — O(cluster length), the regex engine's grapheme-atom stride.
+size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len) {
+    auto dec = [&](size_t p, uint32_t& cp) -> size_t { // -> byte length
+        unsigned char c0 = (unsigned char)s[p];
+        int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+        if (p + clen > len) clen = 1;
+        cp = clen == 1 ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
+        for (int i = 1; i < clen; i++) cp = (cp << 6) | ((unsigned char)s[p + i] & 0x3F);
+        return (size_t)clen;
+    };
+    if (pos >= len) return pos;
+    uint32_t cp; size_t p = pos + dec(pos, cp);
+    int prev = gbProp(cp);
+    bool pictSeq = (prev == GB_ExtPict);
+    int riRun = (prev == GB_RI) ? 1 : 0;
+    int incbState = (incbProp(cp) == 2) ? 1 : 0;
+    while (p < len) {
+        uint32_t c2; size_t clen = dec(p, c2);
+        int cur = gbProp(c2), ip = incbProp(c2);
+        bool brk;
+        if (prev == GB_CR && cur == GB_LF) brk = false;
+        else if (prev == GB_Control || prev == GB_CR || prev == GB_LF) brk = true;
+        else if (cur == GB_Control || cur == GB_CR || cur == GB_LF) brk = true;
+        else if (prev == GB_L && (cur == GB_L || cur == GB_V || cur == GB_LV || cur == GB_LVT)) brk = false;
+        else if ((prev == GB_LV || prev == GB_V) && (cur == GB_V || cur == GB_T)) brk = false;
+        else if ((prev == GB_LVT || prev == GB_T) && cur == GB_T) brk = false;
+        else if (cur == GB_Extend || cur == GB_ZWJ) brk = false;
+        else if (cur == GB_SpacingMark) brk = false;
+        else if (prev == GB_Prepend) brk = false;
+        else if (incbState == 2 && ip == 2) brk = false;
+        else if (pictSeq && prev == GB_ZWJ && cur == GB_ExtPict) brk = false;
+        else if (prev == GB_RI && cur == GB_RI && (riRun % 2 == 1)) brk = false;
+        else brk = true;
+        if (brk) break;
+        p += clen;
+        riRun = (cur == GB_RI) ? riRun + 1 : 0;
+        if (cur == GB_ExtPict) pictSeq = true;
+        else if (pictSeq && (cur == GB_Extend || cur == GB_ZWJ)) pictSeq = true;
+        else pictSeq = false;
+        if (ip == 2) incbState = 1;
+        else if (incbState >= 1 && ip == 1) incbState = 2;
+        else if (!(incbState >= 1 && ip == 3)) incbState = 0;
+        prev = cur;
+    }
+    return p;
 }
 
 size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {

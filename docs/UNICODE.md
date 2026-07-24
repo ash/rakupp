@@ -103,7 +103,10 @@ say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
   control-character aliases from `NameAliases.txt`; out-of-range/unassigned
   codepoints answer `<unassigned>`.
 - `unival`/`univals` — numeric values as exact `Rat`s (`"½".unival` is the Rat `0.5`, `"↉".unival` is `0`).
-- `uniprop` — general category, script.
+- `uniprop`/`uniprops` — general category, Script, Block, Age, Line_Break,
+  Word_Break, East_Asian_Width, Numeric_Type, Joining_Type, the case-mapping and
+  Bidi_Mirroring_Glyph properties, and strict binary properties (Emoji,
+  Full_Composition_Exclusion, …) — see `S15-unicode-information/uniprop.t`.
 - Regex property classes: `<:Lu>`, `<:Latin>`, `<:Script<Greek>>`,
   `<:bc<L>>` (bidi class), `<:InBasicLatin>` (blocks), and the binary
   properties from `PropList.txt`/`DerivedCoreProperties.txt`
@@ -126,8 +129,10 @@ say "abcБВГ".subst(/<:Cyrillic>+/, ""); # abc     (script class in a regex)
 
 ### 5. Case and encodings
 
-- `.uc`/`.lc`/`.tc`/`.fc` with the common expansions (`ß.uc` is `SS`) —
-  see gaps below for final sigma and the folding tail.
+- `.uc`/`.lc`/`.tc`/`.fc` from the complete UCD tables, including 1:N expansions
+  (`ß.uc` is `SS`, `ﬀ.uc` is `FF`, `ﬆ.fc` is `st`) and NFG-aware placement of a
+  grapheme's combining marks around an expanding base — see gaps for the
+  context-sensitive (final-sigma) tail.
 - `.encode`/`.decode` for utf8 (plus the gb2312/gb18030/shiftjis legacy
   encodings exercised by Roast), `Buf`/`Blob` round-trips.
 
@@ -149,7 +154,9 @@ live in `tools/ucd/` so regeneration is reproducible and offline:
 | `tools/gen_unicode_gb.py` | `src/unicode_gb_gen.cpp` | GraphemeBreakProperty, emoji-data, DerivedCoreProperties (InCB) | **17.0** |
 | `tools/gen_unicode_norm.py` | `src/unicode_norm_gen.cpp` | UnicodeData, DerivedNormalizationProps | **17.0** |
 | `tools/gen_unicode_coll.py` | `src/unicode_coll_gen.cpp` | allkeys.txt (DUCET) | **17.0** |
-| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties, Scripts, Blocks, DerivedBidiClass | **17.0** |
+| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties (+ emoji-data, DerivedNormalizationProps, UnicodeData Bidi_Mirrored), Scripts, Blocks (proper names), DerivedBidiClass | **17.0** |
+| **`tools/gen_unicode_case.raku`** (Raku) | `src/unicode_case_gen.cpp` | UnicodeData (simple), SpecialCasing (full 1:N), CaseFolding | **17.0** |
+| **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, BidiMirroring | **17.0** |
 
 Every table is pinned at **Unicode 17.0** — the version Roast's generated test
 files (GraphemeBreakTest, emoji-test, CollationTest) assert against. The
@@ -162,26 +169,23 @@ names) are algorithmic and synthesized in C++ rather than stored.
 
 ## Known gaps
 
-Stated plainly, per the failing Roast tail (~139 assertions in S15; the
-S32-str collation suite is clean):
+S15 (Unicode / strings / NFG) is at **100% of assertions** as of v1.1 — full
+UCD case mapping, grapheme-level NFG regex, and complete `uniprop` coverage all
+landed. What remains is a short tail, mostly outside S15:
 
-- **Property-name long tail** — the common forms all work (`<:Lu>`,
-  `<:Script<Greek>>`, `uniprop($c, "Script")`, `unimatch($c, "Lu")`), but the
-  full alias/property matrix does not. `unimatch` misses **long aliases**
-  (`unimatch("A", "Letter")` for `L`) and **script names**
-  (`unimatch("A", "Latin")`), and `uniprop($c, "<BooleanProp>")` returns the
-  general category instead of the property value
-  (`uniprop("A", "Alphabetic")` → `Lu`). This is the largest bucket —
-  `unimatch-general.t` (117/224) and `S15-nfg/regex.t` (3/13).
-- **Case folding tail** — `"ß".fc` does not fold to `ss`, and `.lc` does not
-  produce final sigma (`"ΟΔΥΣΣΕΥΣ".lc` should end in `ς`); `:ignorecase` /
-  `:ignoremark` on `contains`/`starts-with`/`index` handle ASCII but miss
-  some non-ASCII foldings (`"FOÖ"`). `samemark` is not implemented.
+- **Context-sensitive case mappings** — the language-neutral 1:1 and 1:N
+  mappings are complete, but the *conditional* SpecialCasing rules are skipped,
+  so `.lc` does not yet produce Greek **final sigma** (`"ΟΔΥΣΣΕΥΣ".lc` ends in
+  `σ`, should be `ς`). Language-tailored (`lt`/`tr`/`az`) rules are likewise
+  language-neutral. (Non-conditional folding is complete: `"ß".fc` → `ss`,
+  `"ﬆ".fc` → `st`.)
+- **`:ignorecase` / `:ignoremark`** on `contains`/`starts-with`/`index` handle
+  ASCII but miss some non-ASCII foldings (`"FOÖ"`); `samemark` is not implemented.
 - **`.collate` / `.sort`** do not route through the UCA yet — only the
-  `unicmp`/`coll` infixes do (`.collate` isn't a method at all).
-- **NFG synthetic-codepoint corners** — `case-change.t` (55/72),
-  `concatenation.t` and `crlf-encoding.t` still lose tests (e.g. case-changing
-  a string does not re-segment every synthetic cluster); `concat-stable.t`
-  currently times out.
-- **No locale tailorings** (CLDR) for collation, as noted above.
-- `Uni.t` has a small tail (13/15) around `Uni` list semantics.
+  `unicmp`/`coll` infixes do (`.collate` isn't a method at all). No locale
+  tailorings (CLDR) for collation.
+- **`S15-nfg/concat-stable.t` times out** — a *performance* limit, not a
+  correctness one: its O(n²) concat loop meets an O(n) `Array.shift`, so it runs
+  ~90 s over the harness's 10 s budget. Every assertion in it passes when it
+  finishes. Closing it needs an amortized-O(1) `shift` (see
+  [ROAST-GAPS](dev/ROAST-GAPS.md)).

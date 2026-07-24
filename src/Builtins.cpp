@@ -622,52 +622,42 @@ static std::string cpToUtf8(uint32_t cp) {
     else { r += (char)(0xF0 | (cp >> 18)); r += (char)(0x80 | ((cp >> 12) & 0x3f)); r += (char)(0x80 | ((cp >> 6) & 0x3f)); r += (char)(0x80 | (cp & 0x3f)); }
     return r;
 }
-static uint32_t toLowerCp(uint32_t c) {
-    if (c >= 'A' && c <= 'Z') return c + 32;
-    if ((c >= 0xC0 && c <= 0xD6) || (c >= 0xD8 && c <= 0xDE)) return c + 32; // Latin-1
-    if (c >= 0x100 && c <= 0x17e && (c % 2 == 0)) return c + 1;              // Latin Ext-A
-    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 32;               // Greek
-    return c;
-}
-static uint32_t toUpperCp(uint32_t c) {
-    if (c >= 'a' && c <= 'z') return c - 32;
-    if ((c >= 0xE0 && c <= 0xF6) || (c >= 0xF8 && c <= 0xFE)) return c - 32;
-    if (c >= 0x101 && c <= 0x17f && (c % 2 == 1)) return c - 1;
-    if (c >= 0x3B1 && c <= 0x3C9 && c != 0x3C2) return c - 32;
-    return c;
-}
-// Full (multi-codepoint) uppercase mappings from SpecialCasing.txt — common subset.
-// Most codepoints uppercase 1:1, but a few expand (e.g. ß -> "SS").
-static std::string upperCase1(uint32_t c) {
-    switch (c) {
-        case 0x00DF: return "SS";                          // ß LATIN SMALL LETTER SHARP S
-        case 0xFB00: return "FF";  case 0xFB01: return "FI";   // ﬀ ﬁ
-        case 0xFB02: return "FL";  case 0xFB03: return "FFI";  // ﬂ ﬃ
-        case 0xFB04: return "FFL"; case 0xFB05: return "ST";   // ﬄ ﬅ
-        case 0xFB06: return "ST";                          // ﬆ
-        case 0x0390: return "\xCE\x99\xCC\x88\xCC\x81"; // ΐ -> Ι + combining diaeresis + acute
-        case 0x03B0: return "\xCE\xA5\xCC\x88\xCC\x81"; // ΰ -> Υ + combining diaeresis + acute
-        case 0x0149: return "\xCA\xBCN";                    // ŉ -> ʼN
-        case 0x01F0: return "J\xCC\x8C";                    // ǰ -> J + combining caron
-        case 0x1E96: return "H\xCC\xB1";                    // ẖ -> H + combining macron below
-        case 0x1E97: return "T\xCC\x88";                    // ẗ -> T + combining diaeresis
-        case 0x1E98: return "W\xCC\x8A";                    // ẘ -> W + combining ring above
-        case 0x1E99: return "Y\xCC\x8A";                    // ẙ -> Y + combining ring above
-        case 0x1E9A: return "A\xCA\xBE";                    // ẚ -> A + modifier right half ring
-        case 0x1FE4: return "\xCE\xA1\xCC\x93";           // ῤ -> Ρ + combining comma above
-    }
-    return cpToUtf8(toUpperCp(c));
-}
-static std::string mapCase(const std::string& s, bool upper, int tcMode) {
-    // tcMode: 0=none, 1=titlecase first only, 2=titlecase first + lowercase rest
+// Simple (1:1) case mappings from the full UnicodeData tables.
+static uint32_t toLowerCp(uint32_t c) { return uniSimpleLower(c); }
+static uint32_t toUpperCp(uint32_t c) { return uniSimpleUpper(c); }
+static uint32_t toTitleCp(uint32_t c) { return uniSimpleTitle(c); }
+// Grapheme-level case change (NFG-aware), driven by the full Unicode case
+// tables. `kind`: 0=lc, 1=uc, 3=fc (fold). `tcMode`: 0 = map every grapheme
+// with `kind`; 1 = titlecase the first grapheme only (rest unchanged); 2 =
+// titlecase first, lowercase the rest (.tclc).
+//
+// Within a grapheme cluster the base may expand (ﬀ→FF, ǰ→J+◌̌): the FIRST
+// resulting codepoint takes the cluster's position, the cluster's own combining
+// marks follow it, and any remaining expansion codepoints trail after — so
+// "ﬀ+◌̣".uc is F, ◌̣, F (the combiner stays with the first F). The whole result
+// is then NFC-normalised back to NFG.
+static std::string mapCase(const std::string& s, int kind, int tcMode) {
     auto cps = utf8cp(s);
-    std::string r;
-    for (size_t i = 0; i < cps.size(); i++) {
-        uint32_t c = cps[i];
-        if (tcMode) r += cpToUtf8((i == 0) ? toUpperCp(c) : (tcMode == 2 ? toLowerCp(c) : c));
-        else if (upper) r += upperCase1(c);                // may expand (ß -> SS)
-        else r += cpToUtf8(toLowerCp(c));
+    if (cps.empty()) return s;
+    auto starts = uniGraphemeStarts(cps);
+    std::vector<uint32_t> out;
+    out.reserve(cps.size());
+    for (size_t gi = 0; gi < starts.size(); gi++) {
+        size_t b = starts[gi], e = (gi + 1 < starts.size()) ? starts[gi + 1] : cps.size();
+        int k;                                   // -1 = leave this grapheme unchanged
+        if (tcMode) k = (gi == 0) ? 2 : (tcMode == 2 ? 0 : -1);
+        else        k = kind;
+        std::vector<uint32_t> tail;
+        for (size_t i = b; i < e; i++) {
+            if (k < 0) { out.push_back(cps[i]); continue; }
+            auto m = uniCaseMap(cps[i], k);
+            out.push_back(m[0]);
+            for (size_t j = 1; j < m.size(); j++) tail.push_back(m[j]);
+        }
+        for (uint32_t t : tail) out.push_back(t);
     }
+    std::string r; r.reserve(s.size());
+    for (uint32_t c : out) r += cpToUtf8(c);
     return nfcNormalize(r); // a case change is NFG-normalised (Ι+◌̈ composes to Ϊ)
 }
 static long long cpCount(const std::string& s) { return (long long)utf8cp(s).size(); }
@@ -3327,7 +3317,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "list" || m == "List" || m == "values" || m == "Seq" || m == "cache") { Value out = Value::array(); out.isList = true; if (inv.arr) out.arr = inv.arr; return out; }
         if (m == "codes" || m == "elems") return Value::integer(inv.arr ? (long long)inv.arr->size() : 0);
-        if (m == "Str" || m == "gist" || m == "Stringy") {
+        if (m == "gist" || m == "raku" || m == "perl") {
+            // .gist  -> "Uni:0x<0044 0307 0323>"  (original codepoint order, not NFC)
+            // .raku  -> "Uni.new(0x0044, 0x0307, 0x0323)"
+            char buf[16];
+            std::string body;
+            if (inv.arr) for (size_t i = 0; i < inv.arr->size(); i++) {
+                if (i) body += (m == "gist") ? " " : ", ";
+                snprintf(buf, sizeof buf, (m == "gist") ? "%04X" : "0x%04X",
+                         (unsigned)(*inv.arr)[i].toInt());
+                body += buf;
+            }
+            return Value::str(m == "gist" ? inv.s + ":0x<" + body + ">"
+                                          : inv.s + ".new(" + body + ")");
+        }
+        if (m == "Str" || m == "Stringy") {
             // Raku Strs are NFG (NFC-normalized under the hood): canonically
             // equivalent codepoint orders must yield the SAME Str, so normalize
             // on the way from Uni to Str (mass-equality.t).
@@ -5959,6 +5963,44 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             return Value::str(out);
         }
+        // utf-16 / utf-32: read fixed-width code units, form codepoints (with
+        // surrogate pairing for utf-16), then re-encode as our UTF-8 NFG string.
+        if (norm.rfind("utf16", 0) == 0 || norm.rfind("utf32", 0) == 0) {
+            const unsigned char* p = (const unsigned char*)inv.s.data();
+            size_t n = inv.s.size();
+            bool utf32 = norm.rfind("utf32", 0) == 0;
+            bool be = norm.size() > 5 && norm.substr(5) == "be";
+            size_t w = utf32 ? 4 : 2;
+            size_t i = 0;
+            // a leading BOM in the plain (endianness-unspecified) form picks endianness
+            if (norm == "utf16" || norm == "utf32") {
+                if (n >= w) {
+                    unsigned long u0 = 0, uN = 0;
+                    for (size_t k = 0; k < w; k++) { u0 = (u0 << 8) | p[k]; uN |= (unsigned long)p[k] << (8 * k); }
+                    if (u0 == 0xFEFF) { be = true;  i = w; }        // BE BOM
+                    else if (uN == 0xFEFF) { be = false; i = w; }   // LE BOM
+                    // no BOM: default to little-endian (matches buf16/buf32 packing)
+                }
+            }
+            auto unit = [&](size_t off) -> unsigned long {
+                unsigned long u = 0;
+                if (be) for (size_t k = 0; k < w; k++) u = (u << 8) | p[off + k];
+                else    for (size_t k = 0; k < w; k++) u |= (unsigned long)p[off + k] << (8 * k);
+                return u;
+            };
+            std::string out;
+            while (i + w <= n) {
+                unsigned long u = unit(i); i += w;
+                uint32_t cp;
+                if (!utf32 && u >= 0xD800 && u <= 0xDBFF && i + w <= n) { // high surrogate
+                    unsigned long lo = unit(i);
+                    if (lo >= 0xDC00 && lo <= 0xDFFF) { cp = 0x10000 + ((uint32_t)(u - 0xD800) << 10) + (uint32_t)(lo - 0xDC00); i += w; }
+                    else cp = (uint32_t)u;
+                } else cp = (uint32_t)u;
+                out += cpToUtf8(cp);
+            }
+            return Value::str(nfcNormalize(out));
+        }
         return Value::str(inv.s); // utf8: bytes are the string
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
@@ -6014,9 +6056,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (m == "uniprop" || m == "uniprops") {
         // one property of one codepoint; .uniprops maps every codepoint.
         // String-valued properties answer strings, numeric ones numbers, and
-        // any other name is treated as a BINARY property via the same matcher
-        // the regex <:Prop> engine uses.
+        // any other name is treated as a BINARY property (strict — an unknown
+        // name is False, never a lenient match).
+        if (inv.t == VT::Type) // uniprop needs a Cool (Str/Int), not a type object
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call " + m + " with a type object"};
         std::string prop = args.empty() ? "General_Category" : args[0].toStr();
+        auto caseMapStr = [](uint32_t cp, int kind) -> Value { // full mapping as a Str
+            std::string s; for (uint32_t c : uniCaseMap(cp, kind)) s += cpToUtf8(c); return Value::str(s);
+        };
+        auto simpleMapStr = [](uint32_t cp, uint32_t mapped) -> Value { return Value::str(cpToUtf8(mapped)); };
         auto one = [&](uint32_t cp) -> Value {
             if (prop == "General_Category" || prop == "gc") return Value::str(uniGeneralCategory(cp));
             if (prop == "Script" || prop == "sc") return Value::str(uniScript(cp));
@@ -6030,12 +6078,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (!uniNumValue(cp, nu, de)) return Value::number(std::nan(""));
                 return de == 1 ? Value::integer(nu) : Value::ratZ(BigInt(nu), BigInt(de));
             }
-            if (prop == "Numeric_Type" || prop == "nt") {
-                long long nu, de;
-                if (!uniNumValue(cp, nu, de)) return Value::str("None");
-                return Value::str(uniGeneralCategory(cp) == "Nd" ? "Decimal" : "Numeric");
+            // full case mappings answer a Str, simple ones a single-codepoint Str
+            if (prop == "Uppercase_Mapping" || prop == "uc") return caseMapStr(cp, 1);
+            if (prop == "Lowercase_Mapping" || prop == "lc") return caseMapStr(cp, 0);
+            if (prop == "Titlecase_Mapping" || prop == "tc") return caseMapStr(cp, 2);
+            if (prop == "Case_Folding" || prop == "cf")       return caseMapStr(cp, 3);
+            if (prop == "Simple_Uppercase_Mapping" || prop == "suc") return simpleMapStr(cp, uniSimpleUpper(cp));
+            if (prop == "Simple_Lowercase_Mapping" || prop == "slc") return simpleMapStr(cp, uniSimpleLower(cp));
+            if (prop == "Simple_Titlecase_Mapping" || prop == "stc") return simpleMapStr(cp, uniSimpleTitle(cp));
+            if (prop == "Bidi_Mirroring_Glyph" || prop == "bmg") {
+                int32_t m2 = uniBidiMirror(cp); return Value::str(m2 < 0 ? "" : cpToUtf8((uint32_t)m2));
             }
-            return Value::boolean(uniMatchesProp(cp, prop));
+            if (prop == "ISO_Comment" || prop == "isc") return Value::str(""); // empty since Unicode 5.2
+            // enumerated properties (Age, Line_Break, East_Asian_Width, Numeric_Type, …)
+            std::string ev = uniEnumProp(prop, cp);
+            if (!ev.empty()) return Value::str(ev);
+            // otherwise a binary property — strict (unknown names are False, not a lenient match)
+            int b = uniBinaryProp(cp, prop);
+            return Value::boolean(b == 1);
         };
         std::vector<uint32_t> cps;
         if (inv.t == VT::Int || inv.t == VT::Bool) cps.push_back((uint32_t)inv.toInt());
@@ -6059,10 +6119,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         for (uint32_t cp : cps) out.arr->push_back(uv(cp));
         return out;
     }
-    if (m == "uc") return Value::str(mapCase(inv.toStr(), true, 0));
-    if (m == "lc") return Value::str(mapCase(inv.toStr(), false, 0));
-    if (m == "tc") return Value::str(mapCase(inv.toStr(), false, 1));
-    if (m == "tclc") return Value::str(mapCase(inv.toStr(), false, 2));
+    if (m == "uc") return Value::str(mapCase(inv.toStr(), 1, 0));
+    if (m == "lc") return Value::str(mapCase(inv.toStr(), 0, 0));
+    if (m == "tc") return Value::str(mapCase(inv.toStr(), 0, 1));
+    if (m == "tclc") return Value::str(mapCase(inv.toStr(), 0, 2));
     if (m == "indent" && !args.empty()) { // add (negative: remove) indentation, AFTER existing leading whitespace
         long long amt = args[0].toInt();
         auto isWs = [](uint32_t c) {
@@ -6098,7 +6158,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return Value::str(r);
     }
-    if (m == "fc") return Value::str(mapCase(inv.toStr(), false, 0));
+    if (m == "fc") return Value::str(mapCase(inv.toStr(), 3, 0));
     if (m == "samecase") { // copy the case pattern of the arg, position by position (last char repeats)
         auto src = utf8cp(inv.toStr());
         auto pat = utf8cp(args.empty() ? "" : args[0].toStr());
@@ -8579,8 +8639,8 @@ Value rtBSay(Interpreter& I, const Value& v)   { std::string out = I.gistOf(v); 
 Value rtBPrint(Interpreter& I, const Value& v) { return I.ioEmit(I.strOf(v), "$*OUT", false); }
 Value rtBPut(Interpreter& I, const Value& v)   { std::string out = I.strOf(v); out += "\n"; return I.ioEmit(out, "$*OUT", false); }
 Value rtBNote(Interpreter& I, const Value& v)  { std::string out = I.gistOf(v); out += "\n"; return I.ioEmit(out, "$*ERR", true); }
-Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), true, 0)); }
-Value rtBLc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), false, 0)); }
+Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 1, 0)); }
+Value rtBLc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 0, 0)); }
 Value rtBChars(Interpreter&, const Value& v) { return Value::integer(graphemeCount(v.toStr())); }
 Value rtBSqrt(Interpreter& I, const Value& v) {
     if (v.t == VT::Complex) { auto r = std::sqrt(std::complex<double>(v.n, v.im)); return Value::complex(r.real(), r.imag()); }
@@ -9900,7 +9960,7 @@ void Interpreter::registerBuiltins() {
     };
     B["uc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBUc(I, a[0]); };
     B["lc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBLc(I, a[0]); };
-    B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), false, 1)); };
+    B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), 0, 1)); };
     // `so *` / `not *` curry like operators do (Rakudo: (so *).^name is WhateverCode)
     auto boolCurry = [](bool negate, const Value& w) -> Value {
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();

@@ -11501,6 +11501,10 @@ Value Interpreter::evalCall(Call* c) {
         // `DateTime($instant)` / `Date($str)` coercion routines == .new
         if ((c->name == "DateTime" || c->name == "Date") && !args.empty())
             return methodCall(Value::typeObj(c->name), "new", args);
+        // `Uni(97)` / `NFC(...)` etc. coercion routines build a Uni from codepoints
+        if ((c->name == "Uni" || c->name == "NFC" || c->name == "NFD" ||
+             c->name == "NFKC" || c->name == "NFKD"))
+            return methodCall(Value::typeObj(c->name), "new", args);
         static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
         if (coerce.count(c->name)) {
             if (args.empty())

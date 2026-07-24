@@ -821,13 +821,31 @@ void Regex::parseClassBodyMember(Node* node) {
                         continue;
                     }
                 }
+                // Collect the escape's codepoints, then split into GRAPHEMES: a single
+                // `\c[A, COMBINING…]` names one multi-codepoint grapheme (one class member),
+                // whereas `\c[FF, LF]` names two separate graphemes (two members).
+                std::vector<uint32_t> cps;
                 for (auto& tk : toks) {
                     size_t a = tk.find_first_not_of(" \t"), b = tk.find_last_not_of(" \t");
                     if (a == std::string::npos) continue;
                     std::string t = tk.substr(a, b - a + 1);
                     int32_t cp = le == 'x' ? (int32_t)std::strtol(t.c_str(), nullptr, 16)
                                : le == 'o' ? (int32_t)std::strtol(t.c_str(), nullptr, 8) : namedCp(t);
-                    if (cp >= 0) node->cpRanges.push_back({(uint32_t)cp, (uint32_t)cp});
+                    if (cp >= 0) cps.push_back((uint32_t)cp);
+                }
+                auto enc1 = [](uint32_t cp) -> std::string {
+                    std::string o;
+                    if (cp < 0x80) o += (char)cp;
+                    else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+                    else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+                    else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+                    return o;
+                };
+                auto starts = cps.empty() ? std::vector<size_t>{} : uniGraphemeStarts(cps);
+                for (size_t gi = 0; gi < starts.size(); gi++) {
+                    size_t gb = starts[gi], ge = (gi + 1 < starts.size()) ? starts[gi + 1] : cps.size();
+                    if (ge - gb == 1) node->cpRanges.push_back({cps[gb], cps[gb]}); // single-cp grapheme
+                    else { std::string mem; for (size_t j = gb; j < ge; j++) mem += enc1(cps[j]); node->clusterMembers.push_back(mem); }
                 }
                 if (neg) node->negate = !node->negate;
             }
@@ -1163,25 +1181,33 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         }
         case K::Any: {
             if (pos >= len) return false;
-            unsigned char c0 = (unsigned char)st.s[pos]; // `.` matches one whole codepoint, not one byte
-            int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
-            if (pos + clen > len) clen = 1;
-            return k(pos + clen);
+            unsigned char c0 = (unsigned char)st.s[pos]; // `.` matches one whole GRAPHEME (NFG), not one codepoint
+            if (c0 >= 0x80 && c0 < 0xC0) return false;   // mid-codepoint continuation byte
+            return k((long)uniClusterEndUtf8(st.s, pos, len));
         }
         case K::Class:
             if (pos >= len) return false;
-            if (!n->cpRanges.empty()) { // codepoint char class (chars/escapes beyond 0xFF, negated named/hex)
+            if (!n->cpRanges.empty() || !n->clusterMembers.empty()) { // codepoint / grapheme char class
                 unsigned char c0 = (unsigned char)st.s[pos];
                 if (c0 >= 0x80 && c0 < 0xC0) return false;
                 int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
                 uint32_t cp = (c0 < 0x80 || clen == 1) ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
                 for (int i = 1; i < clen && pos + i < (long)len; i++) cp = (cp << 6) | ((unsigned char)st.s[pos + i] & 0x3F);
+                // NFG: a class member is a whole grapheme. A multi-codepoint input grapheme
+                // matches only a multi-cp member with the exact same codepoints; a single-cp
+                // grapheme matches the codepoint ranges.
+                long gEnd = (long)uniClusterEndUtf8(st.s, pos, len);
+                bool single = (gEnd == pos + clen);
                 bool in = false;
-                for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
-                if (!in) for (auto& r : n->ranges) if (cp >= r.first && cp <= r.second) { in = true; break; } // mixed class
+                for (auto& mem : n->clusterMembers)                 // whole-grapheme members
+                    if ((long)mem.size() == gEnd - pos && st.s.compare(pos, mem.size(), mem) == 0) { in = true; break; }
+                if (!in && single) {
+                    for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
+                    if (!in) for (auto& r : n->ranges) if (cp >= r.first && cp <= r.second) { in = true; break; } // mixed class
+                }
                 if (n->negate) in = !in;
                 if (!in) return false;
-                return k(pos + clen);
+                return k(gEnd);
             }
             if (!n->uprop.empty()) { // Unicode property class: decode one codepoint
                 unsigned char c0 = (unsigned char)st.s[pos];
@@ -1192,7 +1218,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 bool m = uniMatchesProp(cp, n->uprop);
                 if (n->negate) m = !m;
                 if (!m) return false;
-                return k(pos + clen);
+                return k((long)uniClusterEndUtf8(st.s, pos, len)); // NFG: consume the whole grapheme
             }
             // The byteset table covers bytes 0x00–0xFF only; a multibyte codepoint
             // must be tested and consumed whole, or a negated class like <-[x]>
@@ -1222,9 +1248,15 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (!in) for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
                     if (!in) for (char f : n->classFlags)    if (flagHitCp(f, cp)) { in = true; break; }
                     if (in)  for (char f : n->negClassFlags) if (flagHitCp(f, cp)) { in = false; break; }
+                    // enumerated (range) members are whole-grapheme; property/flag members
+                    // test the base and consume the cluster. A multi-codepoint grapheme can
+                    // only satisfy a range member when negated.
+                    long gEnd = (long)uniClusterEndUtf8(st.s, pos, len);
+                    bool hasFlag = !n->classFlags.empty() || !n->negClassFlags.empty();
+                    if (!hasFlag && gEnd != pos + clen) in = false; // multi-cp grapheme vs a pure range class
                     if (n->negate) in = !in;
                     if (!in) return false;
-                    return k(pos + clen);
+                    return k(gEnd);
                 }
             }
             if (!classMatch(n, st.s[pos])) return false;
