@@ -8412,6 +8412,148 @@ static Value makeAsyncSocket(int fd) {
     return s;
 }
 
+// ---- signal(SIGINT, …) : OS signals delivered as a Supply --------------------
+// Self-pipe trick: the async-signal-safe handler just writes the signum to a
+// pipe; a single dispatcher worker reads the pipe and fans each signal out to
+// the registered taps, running their whenever block under the GIL. This needs
+// no per-signal thread and stays robust with worker threads around.
+struct SignalTapRec {
+    Value emit, done;                     // whenever block + done callback
+    std::shared_ptr<ReactCtx> react;      // react ctx (so `done` closes it), or null
+    std::shared_ptr<TapHandle> handle;    // closed => skip
+};
+static int g_sigPipe[2] = {-1, -1};
+static std::mutex g_sigTapMutex;
+static std::multimap<int, std::shared_ptr<SignalTapRec>> g_sigTaps;
+static std::set<int> g_sigInstalled;      // signals whose handler is installed
+static void rakuppSignalHandler(int sig) {
+    if (g_sigPipe[1] >= 0) { unsigned char c = (unsigned char)sig; ssize_t r = ::write(g_sigPipe[1], &c, 1); (void)r; }
+}
+
+// Signal number → its enum name ("SIGINT"), or "" if unknown.
+static std::string signalNameOfNumber(int sig);
+// Build the Signal enum value passed to a whenever block ($_ / $sig).
+static Value makeSignalEnumValue(int sig) {
+    std::string name = signalNameOfNumber(sig);
+    Value v = name.empty() ? Value::integer(sig) : Value::enumVal(name, sig);
+    v.enumType = "Signal";
+    return v;
+}
+// Map a Signal-enum name to its OS number (per-platform via <csignal>).
+int signalNumberOfName(const std::string& n) {
+    static const std::map<std::string, int> m = {
+        {"SIGHUP", SIGHUP}, {"SIGINT", SIGINT}, {"SIGQUIT", SIGQUIT},
+        {"SIGILL", SIGILL}, {"SIGTRAP", SIGTRAP}, {"SIGABRT", SIGABRT},
+        {"SIGFPE", SIGFPE}, {"SIGKILL", SIGKILL}, {"SIGBUS", SIGBUS},
+        {"SIGSEGV", SIGSEGV}, {"SIGSYS", SIGSYS}, {"SIGPIPE", SIGPIPE},
+        {"SIGALRM", SIGALRM}, {"SIGTERM", SIGTERM}, {"SIGURG", SIGURG},
+        {"SIGSTOP", SIGSTOP}, {"SIGTSTP", SIGTSTP}, {"SIGCONT", SIGCONT},
+        {"SIGCHLD", SIGCHLD}, {"SIGTTIN", SIGTTIN}, {"SIGTTOU", SIGTTOU},
+        {"SIGUSR1", SIGUSR1}, {"SIGUSR2", SIGUSR2}, {"SIGWINCH", SIGWINCH},
+    };
+    auto it = m.find(n);
+    return it != m.end() ? it->second : -1;
+}
+static std::string signalNameOfNumber(int sig) {
+    static const char* names[] = {
+        "SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGABRT","SIGFPE",
+        "SIGKILL","SIGBUS","SIGSEGV","SIGSYS","SIGPIPE","SIGALRM","SIGTERM",
+        "SIGURG","SIGSTOP","SIGTSTP","SIGCONT","SIGCHLD","SIGTTIN","SIGTTOU",
+        "SIGUSR1","SIGUSR2","SIGWINCH",
+    };
+    for (const char* n : names) if (signalNumberOfName(n) == sig) return n;
+    return "";
+}
+// A signal value passed to `signal()`: the Signal type-object (`SIGINT`, s=name),
+// an Int-backed enum value, or a plain integer.
+static int signalNumberOf(const Value& v) {
+    if (v.t == VT::Type) return signalNumberOfName(v.s);
+    if (v.t == VT::Int && !v.enumName.empty()) { int n = signalNumberOfName(v.enumName); if (n > 0) return n; }
+    if (v.isNumeric()) return (int)v.toInt();
+    return -1;
+}
+
+Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value doneCb,
+                             std::shared_ptr<ReactCtx> reactCtx) {
+    engageGil();
+    auto handle = std::make_shared<TapHandle>();
+    auto rec = std::make_shared<SignalTapRec>();
+    rec->emit = emitCb; rec->done = doneCb; rec->react = reactCtx; rec->handle = handle;
+
+    // Lazily create the self-pipe + dispatcher worker exactly once.
+    static std::once_flag pipeOnce;
+    Interpreter* self = this;
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    std::call_once(pipeOnce, [&] {
+        if (::pipe(g_sigPipe) != 0) { g_sigPipe[0] = g_sigPipe[1] = -1; return; }
+        liveWorkers_++;
+        reapFinishedWorkers();
+        auto fin = std::make_shared<std::atomic<bool>>(false);
+        workers_.push_back({BigStackThread([self, spawnScope, fin]() mutable {
+            t_isWorker = true;
+            for (;;) {
+                unsigned char c;
+                ssize_t n = ::read(g_sigPipe[0], &c, 1);        // GIL not held
+                if (n <= 0) break;
+                int sig = c;
+                std::vector<std::shared_ptr<SignalTapRec>> taps;
+                {
+                    std::lock_guard<std::mutex> lk(g_sigTapMutex);
+                    auto range = g_sigTaps.equal_range(sig);
+                    for (auto it = range.first; it != range.second; ++it) taps.push_back(it->second);
+                }
+                if (taps.empty()) continue;
+                self->gil_.lock();
+                ExecContext wctx; self->loadCtx(wctx);
+                tctx_.cur = spawnScope;
+                tctx_.dynStack.push_back(spawnScope.get());
+                for (auto& t : taps) {
+                    if (t->handle && t->handle->closed) continue;
+                    // push the react ctx so a `done` inside the block closes it
+                    if (t->react) self->reactStack_.push_back(t->react);
+                    if (t->emit.t == VT::Code) {
+                        Value sv = makeSignalEnumValue(sig);
+                        ValueList one{sv};
+                        try { self->callCallable(t->emit, one); }
+                        catch (RakuError& e) { fprintf(stderr, "===WARNING=== signal handler died: %s\n", e.message.c_str()); }
+                        catch (...) {}
+                    }
+                    if (t->react) self->reactStack_.pop_back();
+                }
+                self->gilYieldNotify();
+            }
+            self->liveWorkers_--;
+            fin->store(true, std::memory_order_release);
+        }), fin});
+    });
+
+    // Register the tap and install a handler for each signal (once each).
+    {
+        std::lock_guard<std::mutex> lk(g_sigTapMutex);
+        for (int sig : sigs) {
+            g_sigTaps.insert({sig, rec});
+            if (g_sigInstalled.insert(sig).second) {
+                struct sigaction sa{}; sa.sa_handler = rakuppSignalHandler;
+                sigemptyset(&sa.sa_mask); sa.sa_flags = SA_RESTART;
+                ::sigaction(sig, &sa, nullptr);
+            }
+        }
+    }
+    // closing the tap unregisters it (the handler stays; the dispatcher skips it)
+    std::vector<int> sigsCopy = sigs;
+    handle->closers.push_back([rec, sigsCopy] {
+        std::lock_guard<std::mutex> lk(g_sigTapMutex);
+        for (int sig : sigsCopy) {
+            auto range = g_sigTaps.equal_range(sig);
+            for (auto it = range.first; it != range.second; )
+                it = (it->second == rec) ? g_sigTaps.erase(it) : std::next(it);
+        }
+    });
+    Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+    (*t.hash)["wired"] = Value::boolean(true);
+    return t;
+}
+
 Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb) {
     if (!(s.t == VT::Hash && s.hashKind == "Supply" && s.hash)) {
         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -8473,6 +8615,14 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
     }
     // 3) async listen: bind now, accept on a worker; each connection is emitted
     //    (under the GIL) through emitCb.
+    // signal Supply tapped inside a `supply {…}` block (no react ctx — the
+    // block's own `done`/tapStack drives closure)
+    if (h.count("kind") && h.at("kind").toStr() == "signal") {
+        std::vector<int> sigs;
+        if (h.count("signals") && h.at("signals").arr)
+            for (auto& n : *h.at("signals").arr) sigs.push_back((int)n.toInt());
+        return tapSignal(sigs, emitCb, doneCb, nullptr);
+    }
     if (h.count("kind") && h.at("kind").toStr() == "async-listen") {
         std::string host = h.count("host") ? h.at("host").toStr() : "localhost";
         int port = h.count("port") ? (int)h.at("port").toInt() : 0;
@@ -10188,6 +10338,27 @@ void Interpreter::registerBuiltins() {
         // whenever SUPPLY { BLOCK }: tap the supply, running BLOCK for each emitted value
         if (a.size() >= 2 && a.back().t == VT::Code) {
             Value s = a[0], blk = a.back();
+            // whenever signal(SIGINT) { … } in a react: wire the OS-signal tap,
+            // counting it as a live react source so the loop waits until `done`.
+            if (s.t == VT::Hash && s.hashKind == "Supply" &&
+                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "signal") {
+                std::vector<int> sigs;
+                if (s.hash->count("signals") && (*s.hash)["signals"].arr)
+                    for (auto& n : *(*s.hash)["signals"].arr) sigs.push_back((int)n.toInt());
+                std::shared_ptr<ReactCtx> ctx;
+                if (!I.reactStack_.empty()) {
+                    ctx = I.reactStack_.back();
+                    std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++;
+                }
+                Value emitW; emitW.t = VT::Code; emitW.code = std::make_shared<Callable>();
+                Value blkCopy = blk;
+                emitW.code->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
+                    ValueList one = args;
+                    try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {}
+                    return Value::any();
+                };
+                return I.tapSignal(sigs, emitW, Value::nil(), ctx);
+            }
             if (s.t == VT::Hash && s.hashKind == "Supply") {
                 if (s.hash->count("supplier")) {
                     // live supply: register a tap; count it as a react source so the
@@ -10227,6 +10398,17 @@ void Interpreter::registerBuiltins() {
     B["sleep"] = [](Interpreter& I, ValueList& a) -> Value {
         I.sleepYield(a.empty() ? 0 : a[0].toNum());  // GIL-released + capped (see sleepYield)
         return Value::any(); // sleep returns Nil
+    };
+    // signal(SIGINT, …) — a Supply that emits the Signal enum value each time the
+    // process receives one of the named OS signals. Standard Ctrl-C shutdown:
+    // `react { whenever signal(SIGINT) { $server.stop; done } }`.
+    B["signal"] = [](Interpreter&, ValueList& a) -> Value {
+        Value s = Value::makeHash(); s.hashKind = "Supply";
+        (*s.hash)["kind"] = Value::str("signal");
+        Value sigs = Value::array();
+        for (auto& v : a) { int n = signalNumberOf(v); if (n > 0) sigs.arr->push_back(Value::integer(n)); }
+        (*s.hash)["signals"] = sigs;
+        return s;
     };
     B["sleep-timer"] = [](Interpreter& I, ValueList& a) -> Value {
         I.sleepYield(a.empty() ? 0 : a[0].toNum());

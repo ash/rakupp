@@ -921,6 +921,12 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);
     if (n == "PromiseStatus::Broken"  || n == "Broken")  return Value::enumVal("Broken", 1);
     if (n == "PromiseStatus::Kept"    || n == "Kept")    return Value::enumVal("Kept", 2);
+    // Signal enum members (SIGINT, SIGTERM, …) — value is the OS signal number
+    if (n.rfind("SIG", 0) == 0 || n.rfind("Signal::SIG", 0) == 0) {
+        std::string bare = n.rfind("Signal::", 0) == 0 ? n.substr(8) : n;
+        int num = signalNumberOfName(bare);
+        if (num > 0) { Value v = Value::enumVal(bare, num); v.enumType = "Signal"; return v; }
+    }
     return Value::typeObj(n);
 }
 
@@ -12859,6 +12865,11 @@ Value Interpreter::eval(Expr* e) {
             if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);
             if (n == "PromiseStatus::Broken"  || n == "Broken")  return Value::enumVal("Broken", 1);
             if (n == "PromiseStatus::Kept"    || n == "Kept")    return Value::enumVal("Kept", 2);
+            if (n.rfind("SIG", 0) == 0 || n.rfind("Signal::SIG", 0) == 0) {
+                std::string bare = n.rfind("Signal::", 0) == 0 ? n.substr(8) : n;
+                int num = signalNumberOfName(bare);
+                if (num > 0) { Value v = Value::enumVal(bare, num); v.enumType = "Signal"; return v; }
+            }
             // enum Endian <NativeEndian LittleEndian BigEndian> (byte order of Blob reads/writes)
             if (n == "Endian::NativeEndian" || n == "NativeEndian" ||
                 n == "Endian::LittleEndian" || n == "LittleEndian" ||

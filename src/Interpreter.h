@@ -23,6 +23,7 @@ namespace rakupp {
 
 double randDouble(); // uniform random in [0,1)
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
+int signalNumberOfName(const std::string& n); // Signal-enum name → OS number ("SIGINT"→2), -1 if unknown
 void srandSeed(long long s); // reseed the RNG (srand)
 
 #if defined(_WIN32)
@@ -524,6 +525,12 @@ public:
     // downstream; live Suppliers register a tap record; async-socket supplies
     // spawn their I/O worker. Returns a Tap value (ext = TapHandle when wired).
     Value tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb);
+    // Wire a `signal(SIGINT,…)` Supply: install a handler (self-pipe trick),
+    // register the tap, and lazily spawn the dispatcher worker that runs the
+    // whenever block under the GIL when a signal arrives. reactCtx (may be null)
+    // is pushed on the worker's reactStack_ so a `done` in the block closes it.
+    Value tapSignal(const std::vector<int>& sigs, Value emitCb, Value doneCb,
+                    std::shared_ptr<ReactCtx> reactCtx);
     // Legacy eager semantics: run an on-demand supply block now, collecting its
     // emits into a values-backed Supply (what `supply {…}` used to return).
     Value drainSupplyBlock(const Value& s);
