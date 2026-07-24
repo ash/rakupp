@@ -2928,14 +2928,22 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (t.hash->count("closed") && (*t.hash)["closed"].truthy()) continue; // head/first already finished
                 bool complete = false;
                 ValueList outs = applyTapChain(t, v, complete);
-                if (t.hash->count("emit") && (*t.hash)["emit"].t == VT::Code)
+                if (t.hash->count("emit") && (*t.hash)["emit"].t == VT::Code) {
+                    // push the tap's react ctx so `done` inside the whenever block
+                    // closes the enclosing react (the block runs here, on whatever
+                    // thread emitted — reactStack_ is thread-local, so it wasn't set)
+                    std::shared_ptr<ReactCtx> rctx = t.ext ? std::static_pointer_cast<ReactCtx>(t.ext) : nullptr;
                     for (auto& o : outs) {
                         ValueList one{o};
+                        if (rctx) reactStack_.push_back(rctx);
                         // `next` in a whenever skips this value; `last` closes the tap
-                        try { callCallable((*t.hash)["emit"], one); }
-                        catch (NextEx&) {}
-                        catch (LastEx&) { (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
+                        try { callCallable((*t.hash)["emit"], one); if (rctx) reactStack_.pop_back(); }
+                        catch (NextEx&) { if (rctx) reactStack_.pop_back(); }
+                        catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
+                        catch (...) { if (rctx) reactStack_.pop_back(); throw; }
+                        if (rctx && rctx->closed) break; // `done` inside the block ended the react
                     }
+                }
                 if (complete) { // head(n)/first done → fire the tap's done and release a react source
                     (*t.hash)["closed"] = Value::boolean(true);
                     if (t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
@@ -8836,6 +8844,41 @@ static int signalNumberOf(const Value& v) {
     return -1;
 }
 
+// `whenever Promise.in(N) { … }` in a react: fire the block ONCE after a real N-second
+// delay, as a live react source — a worker sleeps (GIL released, so sibling whenevers'
+// I/O runs meanwhile), then runs the block and drops the source. Without this the
+// timer resolved immediately (a timeout fired at t=0, defeating the guard).
+Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx) {
+    engageGil();
+    if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
+    liveWorkers_++;
+    reapFinishedWorkers();
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    if (secs < 0) secs = 0;
+    if (secs > 35) secs = 35; // bounded like sleepYield, so a stray huge timer can't hang the process
+    workers_.push_back({BigStackThread([self, secs, blk, ctx, fin, spawnScope]() mutable {
+        t_isWorker = true;
+        std::this_thread::sleep_for(std::chrono::duration<double>(secs)); // GIL not held
+        self->gil_.lock();
+        ExecContext wctx; self->loadCtx(wctx);
+        tctx_.cur = spawnScope;
+        tctx_.dynStack.push_back(spawnScope.get());
+        if (ctx) self->reactStack_.push_back(ctx);
+        if (!(ctx && ctx->closed)) {
+            ValueList none;
+            try { self->callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (...) {}
+        }
+        if (ctx) self->reactStack_.pop_back();
+        if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+        self->gilYieldNotify();
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin});
+    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+}
+
 Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value doneCb,
                              std::shared_ptr<ReactCtx> reactCtx) {
     engageGil();
@@ -10795,6 +10838,14 @@ void Interpreter::registerBuiltins() {
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
                 ValueList ta{blk}; return I.methodCall(s, "tap", ta); // from-list: eager
+            }
+            // whenever Promise.in(N) { … } — a timer: fire once after the real delay
+            // as a react source, so it doesn't defeat a timeout guard by firing at t=0.
+            if (s.t == VT::Hash && s.hashKind == "Promise" &&
+                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "timer") {
+                double secs = s.hash->count("seconds") ? (*s.hash)["seconds"].toNum() : 0;
+                std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                return I.spawnTimerWhenever(secs, blk, ctx);
             }
             // whenever over a Promise/plain value: run the block once with it
             ValueList one{s}; return I.callCallable(blk, one);
