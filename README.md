@@ -144,6 +144,8 @@ course. Build it with `rakujs/build.sh`; details in
 - **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
 - **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
 - **[ASYNC.md](docs/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
+- **[NETWORKING.md](docs/NETWORKING.md)** — talking over the network: async TCP clients and servers, HTTP, graceful shutdown with `signal`, and HTTPS/TLS via `IO::Socket::Async::SSL`.
+- **[HTTPS.md](docs/HTTPS.md)** — the story of getting one real HTTPS request working: the chain of general bugs from "OpenSSL won't load" to `HTTP/1.1 200 OK` over TLS.
 - **[METAPROGRAMMING.md](docs/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
 - **[NQP.md](docs/NQP.md)** — the `use nqp` compatibility subset: what it covers, how it compiles (no NQP grammar involved), and why it costs nothing when unused. Lets ecosystem modules like JSON::Fast run.
 
