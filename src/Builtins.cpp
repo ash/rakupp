@@ -2751,7 +2751,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 if (parallelMode_) { auto st = std::make_shared<SemaphoreState>(); st->count = n; v.ext = st; }
             }
             else {
-                v.hashKind = "Lock";
+                // Lock::Async keeps its own type identity (so a `Lock::Async $!l`
+                // container accepts it) but shares Lock's method implementations
+                // under the cooperative GIL.
+                v.hashKind = (inv.s == "Lock::Async") ? "Lock::Async" : "Lock";
                 if (parallelMode_) v.ext = std::make_shared<LockState>();
             }
             return v;
@@ -3692,7 +3695,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return h;
         }
     }
-    if (inv.t == VT::Hash && inv.hashKind == "Lock") {
+    if (inv.t == VT::Hash && (inv.hashKind == "Lock" || inv.hashKind == "Lock::Async")) {
         auto st = inv.ext ? std::static_pointer_cast<LockState>(inv.ext) : nullptr;
         if (m == "protect" || m == "protect-or-queue-on-recursion") {
             if (args.empty() || args[0].t != VT::Code) return args.empty() ? Value::any() : args[0];
@@ -4587,24 +4590,29 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
                 for (auto it = chain.rbegin(); it != chain.rend(); ++it)
                     for (auto& at : (*it)->attrs) {
-                        Value dv = at.hasDefVal ? at.defVal
-                                 : at.def ? eval(const_cast<Expr*>(at.def))
-                                          : (at.sigil == '@' ? Value::array()
-                                             : at.sigil == '%' ? Value::makeHash() : Value::any());
-                        // native-typed scalars default to their zero, not Any:
-                        // `has atomicint $.n` starts at 0 so `$!n⚛++` yields 0, 1, …
-                        if (!at.hasDefVal && !at.def && at.sigil == '$' && !at.type.empty()) {
+                        // The value the slot holds when it has no explicit default.
+                        // A native-typed scalar takes its zero (`has atomicint $.n`
+                        // starts at 0); a named type takes its TYPE OBJECT (not Any),
+                        // so a `.= new` default reads that type object as its invocant
+                        // (`has T $.x .= new` == `$!x = T.new`) — Rakudo semantics.
+                        Value seed = at.sigil == '@' ? Value::array()
+                                   : at.sigil == '%' ? Value::makeHash() : Value::any();
+                        if (at.sigil == '$' && !at.type.empty()) {
                             if (at.type == "atomicint" || at.type == "byte" ||
                                 at.type.rfind("int", 0) == 0 || at.type.rfind("uint", 0) == 0)
-                                dv = Value::integer(0);
-                            else if (at.type.rfind("num", 0) == 0) dv = Value::number(0);
-                            else if (at.type == "str") dv = Value::str("");
-                            // a named type defaults to its TYPE OBJECT, not Any, so
-                            // `has T $.x; … $!x .= new` works (T.new) — Rakudo semantics.
-                            else if (std::isupper((unsigned char)at.type[0])) dv = Value::typeObj(at.type);
+                                seed = Value::integer(0);
+                            else if (at.type.rfind("num", 0) == 0) seed = Value::number(0);
+                            else if (at.type == "str") seed = Value::str("");
+                            else if (std::isupper((unsigned char)at.type[0])) seed = Value::typeObj(at.type);
                         }
                         if (!at.containerIs.empty() && at.sigil == '%')
-                            dv = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
+                            seed = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
+                        // Pre-seed the slot so a self-referential default (`.= new`,
+                        // or one reading $!this-attr) sees the seed, not an unset Any.
+                        od->attrs[at.name] = seed;
+                        Value dv = at.hasDefVal ? at.defVal
+                                 : at.def ? eval(const_cast<Expr*>(at.def))
+                                          : seed;
                         od->attrs[at.name] = dv;
                     }
                 // the default constructor binds nameds to declared PUBLIC attributes

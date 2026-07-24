@@ -4646,10 +4646,27 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     if (isKind(Tok::Ident) || isKind(Tok::Var)) advance();
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
                 }
-                if (matchOp("=") || matchOp(".=")) {
+                bool dotEq = false, hasDefault = true;
+                if (matchOp("=")) { }
+                else if (matchOp(".=")) dotEq = true;
+                else if (isOp(".") && peek().kind == Tok::Op && peek().text == "=") { advance(); advance(); dotEq = true; }
+                else hasDefault = false;
+                if (hasDefault) {
                     size_t defStart = pos_;
-                    a.def = parseExpr(BP_ASSIGN);
-                    checkVirtualCallInDefault(defStart);
+                    if (dotEq) {
+                        // `has T $x .= meth(args)` desugars to a default of
+                        // `$!x.meth(args)` — the attr is seeded to T's type object at
+                        // construction, and .meth (usually .new) coerces it. Build the
+                        // method call so it actually runs (was dropped before).
+                        auto mc = std::make_unique<MethodCall>();
+                        mc->inv = std::make_unique<VarExpr>("$!" + a.name);
+                        if (isKind(Tok::Ident) || isKind(Tok::Var)) mc->method = advance().text;
+                        if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); }
+                        a.def = std::move(mc);
+                    } else {
+                        a.def = parseExpr(BP_ASSIGN);
+                        checkVirtualCallInDefault(defStart);
+                    }
                 }
                 // a newline may end the declaration (`has $.cl = { … }` with no
                 // ';'): don't skip INTO the next class-body statement hunting one

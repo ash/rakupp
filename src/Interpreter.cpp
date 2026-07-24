@@ -11960,6 +11960,17 @@ Value Interpreter::evalCall(Call* c) {
     // type-object coercion call: Any(x) / Mu(x) / Cool(x) is the value itself
     if ((c->name == "Any" || c->name == "Mu" || c->name == "Cool") && c->args.size() == 1)
         return eval(c->args[0].get());
+    // General type-coercion call `T(x)`: a known type used as a routine coerces its
+    // sole argument through the argument's `.T` method (Raku's coercion protocol) —
+    // e.g. Promise(supply {…}) == $supply.Promise, Supply($chan) == $chan.Supply.
+    // Only reached after the specialized coercers above, so it just upgrades former
+    // "Undefined routine" errors into real coercions (or a clearer "No such method").
+    if (!args.empty() && isKnownTypeName(c->name)) {
+        Value a0 = args[0];
+        if (a0.t == VT::Object && a0.obj && a0.obj->cls && a0.obj->cls->doesRole(c->name))
+            return a0; // already a T — identity
+        return methodCall(a0, c->name, ValueList{});
+    }
     throw RakuError{Value::str("Undefined routine &" + c->name),
                     "Undefined routine '" + c->name + "'"};
 }
