@@ -2975,6 +2975,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             // is closed immediately instead of leaving its react source live forever.
             (*inv.hash)["done_state"] = Value::boolean(true);
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
+                if (t.t == VT::Hash && t.hash->count("closed") && (*t.hash)["closed"].truthy()) continue; // already done (head/first)
                 if (t.t == VT::Hash && t.hash->count("done") && (*t.hash)["done"].t == VT::Code) { ValueList none; callCallable((*t.hash)["done"], none); }
                 if (t.ext) { auto ctx = std::static_pointer_cast<ReactCtx>(t.ext); std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
             }
@@ -4340,9 +4341,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             }
             // rakupp composes types eagerly, so .^compose is a no-op returning the
             // type (modules call it after add_method/add_attribute to finalize).
-            if (m == "compose" || m == "compose_repr" || m == "publish_method_cache" ||
-                m == "publish_type_cache" || m == "compose_attributes" || m == "set_rw" ||
-                m == "invalidate_method_caches" || m == "publish_boolification_spec")
+            // These bare metamodel names must NOT shadow a user method of the same
+            // name — `Cro.compose(...)` is a real method, not a MOP finalize call.
+            if ((m == "compose" || m == "compose_repr" || m == "publish_method_cache" ||
+                 m == "publish_type_cache" || m == "compose_attributes" || m == "set_rw" ||
+                 m == "invalidate_method_caches" || m == "publish_boolification_spec") &&
+                !(ci && ci->findMethod(m)))
                 return inv;
             if (m == "set_name" || m == "set_shortname") { if (!args.empty()) ci->name = args[0].toStr(); return inv; }
             if (m == "ver")  return ci->ver.empty()  ? Value::any() : ([&]{ Value v = Value::str(ci->ver);  v.hashKind = "Version"; return v; }());
