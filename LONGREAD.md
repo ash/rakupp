@@ -1,8 +1,8 @@
 # Raku++: The Long Read
 
-*How a from-scratch Raku compiler in C++ went from an empty directory to ~85% of
-the official test suite — plus a native code generator, a self-hosting toolchain,
-and a browser playground — in about three weeks.*
+*How a from-scratch Raku compiler in C++ went from an empty directory to 90% of
+the official test suite — and 100% of its Unicode tests — plus a native code
+generator, a self-hosting toolchain, and a browser playground — in about three weeks.*
 
 This is the long version of the story. The short version lives in the
 [announcement](https://andrewshitov.com/2026/07/13/raku-the-fastest-raku-compiler/);
@@ -100,27 +100,40 @@ do," and conflating them flatters you.
 
 **File coverage** — *how many whole Roast files pass every assertion* — is the
 harsh one. One stray failure in a 200-assertion file zeroes the whole file. This
-number sat around 17% early on and is ~36% now (**523 of 1,462 files**). It is a
+number sat around 17% early on and is ~41% now (**598 of 1,462 files**). It is a
 coverage figure: how much of the suite is *completely* conquered.
 
 **Per-test rate** — *of every individual test the suite declares, how many pass* —
-is the fair one for "correctness on what runs." This is the headline: **~85%**,
-or roughly **181,000 of ~213,000** declared tests.
+is the fair one for "correctness on what runs." This is the headline: **90%**,
+or roughly **194,900 of ~216,200** declared tests. One whole synopsis — S15,
+Unicode — is at **100%** of its assertions.
 
 The subtlety we documented in [docs/COUNTING.md](docs/COUNTING.md) is that the
 denominator is not fixed. "Declared" means every test any file *tries* to run,
 including files that abort before emitting a single result — we recover their
 planned count from the source and count all of it as failing. The better the
 compiler gets, the more files run far enough to *declare* more tests, so the
-denominator **grows with coverage**. Our passing count reads as ~85% against the
+denominator **grows with coverage**. Our passing count reads as 90% against the
 all-declared denominator — the strictest of the three the harness prints.
 We chose to headline the number that is, if anything, slightly *un*flattering. In
 the docs the rule is fixed: report raw numbers, quote both figures, never boast.
 
-The per-test rate itself climbed in visible steps. On **9 July** the honest
-all-declared figure was about 57%. Unicode collation (below) moved it to ~80.6%.
-`sprintf` corner cases took it to 80.8%. The course and challenge rounds carried
-it to ~82%, and the hyper-operator and parse-fail campaigns (mid-July) to ~85%.
+The per-test rate climbed in visible steps — though the earliest ones are not
+strictly comparable, because the *metric itself* was still being defined. Through
+the first week the strict all-declared denominator did not yet exist; progress was
+tracked by whole files (**185 passing on 2 July, ~300 by 9 July**) and by a
+narrower "of what runs" rate (~69%). The all-declared figure we now headline
+begins on **9 July at ~57%** — but against a wide ~231k denominator; when that
+denominator was redefined the next day the *same* standing read ~73%, so part of
+that first jump is a re-baseline, not progress (the same caveat annotates the
+[dashboard](https://spec.raku.online/dashboard/) chart). From there the gains were
+real: Unicode normalization and UCA collation (below) carried it to ~80.6%,
+`sprintf` corner cases to 80.8%, and the 1.0-campaign standing to **~82% by 11
+July**. The set-operator, typed-diagnostic, and parse-fail campaigns took it to
+~85% (mid-July) and ~88% by 20 July; **v1.0.0 (22 July) crossed 90%**
+(194,496 / 216,066, 576 files). Two days later **v1.1.0 closed S15 — Unicode — to
+100% of its assertions**, and the complete case tables lifted the whole suite to
+**598 files** and **194,901 / 216,222**.
 
 ---
 
