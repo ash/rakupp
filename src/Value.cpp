@@ -83,6 +83,13 @@ bool Value::truthy() const {
                 return it == hash->end() || it->second.toInt() == 0;
             }
             if (hashKind == "Failure") return false; // a Failure boolifies False (soft failure)
+            // A Promise boolifies True only once it is Kept/Broken (a Planned
+            // promise is False) — IO::Socket::Async::SSL's handshake pump relies
+            // on `elsif $!connected-promise` being false while still negotiating.
+            if (hashKind == "Promise" && hash) {
+                auto it = hash->find("status");
+                if (it != hash->end()) return it->second.toStr() != "Planned";
+            }
             return (hashKind == "Raku" || hashKind == "Compiler") // object-like: always defined/true
                             || (hash && !hash->empty());
         case VT::Range: return true;

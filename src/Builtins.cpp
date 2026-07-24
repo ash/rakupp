@@ -3055,6 +3055,23 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // else drains it eagerly (legacy value semantics) and continues below.
         // Inside a react block the legacy eager tap is kept (its whenever/done
         // bookkeeping predates the tap stack).
+        // Kind-based live supplies (async socket read, OS signals, listen) are
+        // driven by tapSupply, which spawns the I/O worker — `.tap` on them must
+        // route there, not fall through to the from-list/eager path (which would
+        // silently return an empty Tap and never start the worker).
+        if ((m == "tap" || m == "act") && inv.hash->count("kind")) {
+            std::string k = inv.hash->at("kind").toStr();
+            if (k == "async-read" || k == "async-listen" || k == "signal") {
+                Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+                Value done, quit;
+                for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+                    if (a.s == "emit") emit = *a.pairVal;
+                    else if (a.s == "done") done = *a.pairVal;
+                    else if (a.s == "quit") quit = *a.pairVal;
+                }
+                return tapSupply(inv, emit, done, quit);
+            }
+        }
         if (inv.hash->count("block")) {
             if (m == "live") return Value::boolean(false);
             if (m == "Supply") return inv;
@@ -3602,12 +3619,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "protect" || m == "protect-or-queue-on-recursion") {
             if (args.empty() || args[0].t != VT::Code) return args.empty() ? Value::any() : args[0];
             if (st) { // real mutual exclusion, released even if the block throws
-                std::lock_guard<std::recursive_mutex> lk(st->m);
+                // Acquire with the GIL RELEASED when contended: a worker that holds
+                // the GIL and blocks here would otherwise deadlock the lock's holder
+                // (which needs the GIL to run its protected block and release).
+                if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); }
+                std::lock_guard<std::recursive_mutex> lk(st->m, std::adopt_lock);
                 return callCallable(args[0], {});
             }
             return callCallable(args[0], {});
         }
-        if (m == "lock" || m == "acquire") { if (st) st->m.lock(); return Value::boolean(true); }
+        if (m == "lock" || m == "acquire") { if (st) { if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); } } return Value::boolean(true); }
         if (m == "unlock" || m == "release") { if (st) st->m.unlock(); return Value::boolean(true); }
         if (m == "condition") { Value v = Value::makeHash(); v.hashKind = "Lock"; return v; }
     }
