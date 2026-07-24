@@ -1962,6 +1962,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // a Capture's .list is its POSITIONAL args, .hash/.Map its NAMED (Pair) args
     // Capture.new(:list(...), :hash(...)) — build the \(…)-style capture value
+    // Attribute.new(:name<$!x>, :type(Int), :package(Foo)) — build an Attribute
+    // meta-object (for .^add_attribute and dynamic class construction).
+    if (inv.t == VT::Type && inv.s == "Attribute" && m == "new") {
+        Value at = Value::makeHash(); at.hashKind = "Attribute";
+        (*at.hash)["name"] = Value::str(""); (*at.hash)["type"] = Value::typeObj("Mu");
+        (*at.hash)["readonly"] = Value::boolean(true); (*at.hash)["has_accessor"] = Value::boolean(false);
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {
+            if (a.s == "name") (*at.hash)["name"] = *a.pairVal;
+            else if (a.s == "type" || a.s == "of") (*at.hash)["type"] = *a.pairVal;
+            else if (a.s == "rw") (*at.hash)["readonly"] = Value::boolean(!a.pairVal->truthy());
+            else if (a.s == "has_accessor") (*at.hash)["has_accessor"] = *a.pairVal;
+            else if (a.s == "package") (*at.hash)["package"] = *a.pairVal;
+        }
+        return at;
+    }
     if (inv.t == VT::Type && inv.s == "Capture" && m == "new") {
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
         for (auto& a : args) {
@@ -3355,6 +3370,29 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "has_accessor") return h.count("has_accessor") ? h["has_accessor"] : Value::boolean(false);
         if (m == "gist" || m == "Str") return h.count("name") ? h["name"] : Value::str("");
         if (m == "defined" || m == "Bool") return Value::boolean(true);
+        // read/write the attribute's value on an instance through the meta-object —
+        // the core MOP operations marshallers (JSON::Marshal etc.) drive.
+        if ((m == "get_value" || m == "set_value") && !args.empty()) {
+            std::string an = h.count("name") ? h["name"].toStr() : "";
+            char sigil = an.empty() ? '$' : an[0];
+            while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
+            Value obj = args[0];
+            if (obj.t == VT::Object && obj.obj) {
+                if (m == "set_value" && args.size() > 1) {
+                    Value v = args[1];
+                    if (sigil == '@' && v.t == VT::Range) { Value a = Value::array(); *a.arr = v.flatten(); a.isList = true; v = a; }
+                    obj.obj->attrs[an] = v;
+                    return v;
+                }
+                auto it = obj.obj->attrs.find(an);
+                if (it != obj.obj->attrs.end()) return it->second;
+                // uninitialised: the attribute's declared default kind
+                return sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash() : Value::any();
+            }
+            return Value::any();
+        }
+        if (m == "container_descriptor" || m == "container") return inv; // enough for `.of`/rw queries
+        if (m == "package" || m == "declaring_package") return h.count("package") ? h["package"] : Value::typeObj("Mu");
     }
     if (inv.t == VT::Hash && inv.hashKind == "Failure") {
         Value ex = inv.hash->count("exception") ? (*inv.hash)["exception"] : Value::typeObj("Exception");
@@ -4280,9 +4318,61 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 Value* um = ci->findMethod(mn);
                 return um ? *um : Value::nil();
             }
+            if (m == "declares_method") { // locally declared (not inherited)?
+                std::string mn = args.empty() ? "" : args[0].toStr();
+                auto it = ci->methods.find(mn);
+                return it != ci->methods.end() ? it->second : Value::boolean(false);
+            }
+            if (m == "find_method_qualified" && args.size() >= 2) { // ($type, $name)
+                std::string tn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+                std::string mn = args[1].toStr();
+                auto tit = classes_.find(tn);
+                if (tit != classes_.end()) { auto mit = tit->second->methods.find(mn); if (mit != tit->second->methods.end()) return mit->second; }
+                Value* um = ci->findMethod(mn);
+                return um ? *um : Value::nil();
+            }
             if (m == "add_method") { // .^add_method($name, $code)
                 if (args.size() >= 2) { noteSymbolMutation("runtime .^add_method"); ci->methods[args[0].toStr()] = args[1]; }
                 return args.size() >= 2 ? args[1] : Value::nil();
+            }
+            // rakupp composes types eagerly, so .^compose is a no-op returning the
+            // type (modules call it after add_method/add_attribute to finalize).
+            if (m == "compose" || m == "compose_repr" || m == "publish_method_cache" ||
+                m == "publish_type_cache" || m == "compose_attributes" || m == "set_rw" ||
+                m == "invalidate_method_caches" || m == "publish_boolification_spec")
+                return inv;
+            if (m == "set_name" || m == "set_shortname") { if (!args.empty()) ci->name = args[0].toStr(); return inv; }
+            if (m == "ver")  return ci->ver.empty()  ? Value::any() : ([&]{ Value v = Value::str(ci->ver);  v.hashKind = "Version"; return v; }());
+            if (m == "auth") return Value::str(ci->auth);
+            if (m == "api")  return ci->api.empty() ? Value::any() : Value::str(ci->api);
+            if (m == "attribute_table") { // Hash: '$!name' => Attribute
+                Value out = Value::makeHash();
+                for (auto& a : ci->attrs) {
+                    Value at = Value::makeHash(); at.hashKind = "Attribute";
+                    std::string an = std::string(1, a.sigil) + "!" + a.name;
+                    (*at.hash)["name"] = Value::str(an);
+                    (*at.hash)["type"] = Value::typeObj(a.type.empty() ? "Mu" : a.type);
+                    (*at.hash)["readonly"] = Value::boolean(!a.rw);
+                    (*at.hash)["has_accessor"] = Value::boolean(a.pub);
+                    (*out.hash)[an] = at;
+                }
+                return out;
+            }
+            if (m == "add_attribute" && !args.empty()) { // .^add_attribute(Attribute.new(...))
+                Value av = args[0];
+                if (av.t == VT::Hash && av.hashKind == "Attribute" && av.hash) {
+                    ClassAttr a;
+                    std::string an = av.hash->count("name") ? (*av.hash)["name"].toStr() : "";
+                    a.sigil = an.empty() ? '$' : an[0];
+                    while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
+                    a.name = an;
+                    a.type = av.hash->count("type") && (*av.hash)["type"].t == VT::Type ? (*av.hash)["type"].s : "";
+                    a.rw = av.hash->count("readonly") ? !(*av.hash)["readonly"].truthy() : false;
+                    a.pub = av.hash->count("has_accessor") ? (*av.hash)["has_accessor"].truthy() : false;
+                    noteSymbolMutation("runtime .^add_attribute");
+                    ci->attrs.push_back(a);
+                }
+                return av;
             }
             if (m == "can") {
                 std::string mn = args.empty() ? "" : args[0].toStr();

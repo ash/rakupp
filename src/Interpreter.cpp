@@ -3433,6 +3433,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             ci->isGrammar = cd->isGrammar;
             ci->isRole = cd->isRole;
             ci->repr = cd->repr;
+            ci->ver = cd->ver; ci->auth = cd->auth; ci->api = cd->api;
             // the class/role BODY scope: body lexicals (`my $lex = ...`) live here,
             // and methods/attr-defaults close over it
             auto bodyEnv = std::make_shared<Env>();
