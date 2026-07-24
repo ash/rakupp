@@ -10746,6 +10746,29 @@ void Interpreter::registerBuiltins() {
                 };
                 return I.tapSignal(sigs, emitW, Value::nil(), ctx);
             }
+            // whenever $socket.Supply { … } — an async-read/async-listen stream in a
+            // react: count it as a live source so the block waits for data, and
+            // decrement when the stream ends (connection close) so the react exits.
+            if (s.t == VT::Hash && s.hashKind == "Supply" && s.hash->count("kind")) {
+                std::string k = (*s.hash)["kind"].toStr();
+                if (k == "async-read" || k == "async-listen") {
+                    std::shared_ptr<ReactCtx> ctx;
+                    if (!I.reactStack_.empty()) {
+                        ctx = I.reactStack_.back();
+                        std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++;
+                    }
+                    Value doneW;
+                    if (ctx) {
+                        std::weak_ptr<ReactCtx> wctx = ctx;
+                        doneW.t = VT::Code; doneW.code = std::make_shared<Callable>();
+                        doneW.code->builtin = [wctx](Interpreter&, ValueList&) -> Value {
+                            if (auto c = wctx.lock()) { std::lock_guard<std::mutex> lk(c->m); if (c->liveSources > 0) c->liveSources--; c->cv.notify_all(); }
+                            return Value::any();
+                        };
+                    }
+                    return I.tapSupply(s, blk, doneW, Value::nil());
+                }
+            }
             if (s.t == VT::Hash && s.hashKind == "Supply") {
                 if (s.hash->count("supplier")) {
                     // live supply: register a tap; count it as a react source so the
