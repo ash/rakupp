@@ -1114,6 +1114,7 @@ static Value coerceHash(const Value& v) {
 
 // Per-thread execution registers. One instance per real thread; the GIL still
 // serialises who runs. See the declaration in Interpreter.h.
+static Interpreter* g_cbInterp = nullptr; // NativeCall callback trampoline target
 thread_local ExecContext Interpreter::tctx_;
 // Per-thread call-stack state (step 3a — see header).
 thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStack_;
@@ -1131,6 +1132,7 @@ void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
                     const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
 
 Interpreter::Interpreter() {
+    g_cbInterp = this; // NativeCall callback trampolines dispatch through here
     g_matchClasses = &classes_;
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
     g_subsetCheck = [this](const std::string& name, const Value& v, bool& out) {
@@ -3430,6 +3432,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
             ci->isGrammar = cd->isGrammar;
             ci->isRole = cd->isRole;
+            ci->repr = cd->repr;
             // the class/role BODY scope: body lexicals (`my $lex = ...`) live here,
             // and methods/attr-defaults close over it
             auto bodyEnv = std::make_shared<Env>();
@@ -5480,6 +5483,50 @@ Value Interpreter::ncReadElem(long long addr, const std::string& ofType, long lo
     }
     return Value::integer(val);
 }
+// Write one native scalar `val` at addr[index] of type ofType.
+void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long long index, const Value& val) {
+    if (!addr) return;
+    bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt); if (w == 0) w = 8;
+    char* base = (char*)(intptr_t)addr + index * w;
+    if (isFlt) {
+        if (w == 4) { float x = (float)val.toNum(); std::memcpy(base, &x, 4); }
+        else        { double x = val.toNum();       std::memcpy(base, &x, 8); }
+        return;
+    }
+    long long v = val.t == VT::Object || val.t == VT::Hash ? Interpreter::ncRawAddr(val)
+                : val.t == VT::Str ? (long long)(intptr_t)val.s.c_str() : val.toInt();
+    switch (w) {
+        case 1: { int8_t  x = (int8_t)v;  std::memcpy(base, &x, 1); break; }
+        case 2: { int16_t x = (int16_t)v; std::memcpy(base, &x, 2); break; }
+        case 4: { int32_t x = (int32_t)v; std::memcpy(base, &x, 4); break; }
+        default:{ std::memcpy(base, &v, 8); break; }
+    }
+}
+// C struct layout for a `repr('CStruct')` class: byte offset of `field` (with its
+// type), plus the total padded struct size. Natural alignment (align == size,
+// capped at 8); non-scalar fields (Str/Pointer/CArray/CStruct) are pointer-sized.
+long long Interpreter::ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type) {
+    long long off = 0;
+    for (auto& a : ci->attrs) {
+        bool sgn, isF; int w = ncScalarWidth(a.type, sgn, isF); if (w == 0) w = 8;
+        off = (off + w - 1) / w * w;
+        std::string an = a.name; if (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%')) an = an.substr(1);
+        if (!an.empty() && (an[0]=='!'||an[0]=='.')) an = an.substr(1);
+        if (an == field) { type = a.type.empty() ? "int64" : a.type; return off; }
+        off += w;
+    }
+    return -1;
+}
+long long Interpreter::ncStructSize(ClassInfo* ci) {
+    long long off = 0, maxA = 1;
+    for (auto& a : ci->attrs) {
+        bool sgn, isF; int w = ncScalarWidth(a.type, sgn, isF); if (w == 0) w = 8;
+        if (w > maxA) maxA = w;
+        off = (off + w - 1) / w * w; off += w;
+    }
+    return off ? (off + maxA - 1) / maxA * maxA : 0;
+}
+
 // Extract a raw native address from any native-pointer value (0 if none).
 long long Interpreter::ncRawAddr(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) return v.obj->attrs.at("__native_ptr").toInt();
@@ -5487,6 +5534,45 @@ long long Interpreter::ncRawAddr(const Value& v) {
     if (v.t == VT::Int) return v.i;
     return 0;
 }
+
+// ---- NativeCall callbacks --------------------------------------------------
+// A Raku Callable passed to a native function is marshalled to a C function
+// pointer via a fixed pool of trampolines. The C library calls the trampoline
+// (with C-ABI integer/pointer args), which routes back into the interpreter.
+// Synchronous callbacks (qsort/bsearch, invoked during the native call while the
+// GIL is held) work; async ones (stored by C, fired later from another thread)
+// are not supported. Pointer/int args reach the callback as Int addresses.
+// (g_cbInterp is defined up near the other file-scope interpreter state so the
+// constructor can set it.)
+static std::vector<Value> g_cbSlots;   // slot → Raku Callable (never shrinks)
+
+long Interpreter::runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5) {
+    if (slot < 0 || slot >= (int)g_cbSlots.size()) return 0;
+    Value cb = g_cbSlots[slot];
+    if (cb.t != VT::Code) return 0;
+    long raw[6] = {a0, a1, a2, a3, a4, a5};
+    size_t arity = (cb.code && cb.code->params) ? cb.code->params->size() : 2;
+    if (arity > 6) arity = 6;
+    ValueList as;
+    for (size_t i = 0; i < arity; i++) {
+        std::string pt = (cb.code && cb.code->params && i < cb.code->params->size()) ? (*cb.code->params)[i].type : "";
+        if (pt == "Pointer" || pt.rfind("Pointer[", 0) == 0) as.push_back(ncMakePointer(pt, (void*)(intptr_t)raw[i]));
+        else if (pt == "num" || pt == "num64" || pt == "num32") { double d; std::memcpy(&d, &raw[i], 8); as.push_back(Value::number(d)); }
+        else as.push_back(Value::integer(raw[i]));
+    }
+    Value r;
+    try { r = callCallable(cb, as); } catch (...) { return 0; }
+    return (long)r.toInt();
+}
+
+template<int N> static long cbTramp(long a, long b, long c, long d, long e, long f) {
+    return g_cbInterp ? g_cbInterp->runCallback(N, a, b, c, d, e, f) : 0;
+}
+template<int... Is> static void cbFill(void** t, std::integer_sequence<int, Is...>) {
+    ((t[Is] = (void*)&cbTramp<Is>), ...);
+}
+static void* g_cbTable[64];
+static bool g_cbTableInit = [] { cbFill(g_cbTable, std::make_integer_sequence<int, 64>{}); return true; }();
 
 // NativeCall (`is native`): resolve the C symbol via dlsym and call it. Arguments
 // and the return are classified by their *declared* type — integer/pointer
@@ -5526,6 +5612,8 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     std::deque<double> rwD;
     struct RwBack { size_t arg; const long* i; const double* d; };
     std::vector<RwBack> rwbacks;
+    struct CABack { size_t arg; size_t keep; }; // byte-backed CArray → copy bytes back
+    std::vector<CABack> cabacks;
 
     for (size_t i = 0; i < args.size(); i++) {
         Value& v = args[i];
@@ -5537,11 +5625,17 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             if (isFlt) { rwD.push_back(v.toNum()); g.push_back((long)(intptr_t)&rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back()}); }
             else       { rwI.push_back(v.toInt()); g.push_back((long)(intptr_t)&rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr}); }
         }
-        else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data()); }
+        else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
         else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { keep.push_back(v.toStr()); g.push_back((long)(intptr_t)keep.back().c_str()); }
         else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) g.push_back((long)v.obj->attrs["__native_ptr"].toInt());
         else if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") && v.hash->count("addr"))
             g.push_back((long)(*v.hash)["addr"].toInt()); // live Pointer / CArray handle
+        else if (v.t == VT::Code) { // Raku callback → C function pointer (trampoline)
+            int slot = -1;
+            for (size_t s = 0; s < g_cbSlots.size(); s++) if (g_cbSlots[s].code == v.code) { slot = (int)s; break; }
+            if (slot < 0 && g_cbSlots.size() < 64) { slot = (int)g_cbSlots.size(); g_cbSlots.push_back(v); }
+            g.push_back(slot >= 0 ? (long)(intptr_t)g_cbTable[slot] : 0);
+        }
         else if (fp) f.push_back(v.toNum());
         else         g.push_back(v.toInt());
     }
@@ -5568,6 +5662,12 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                 if (nb) wrapNative(*lv, nb, ns);
             }
         } catch (RakuError&) {}
+    }
+    // CArray copy-back: a native function may mutate the array in place (qsort,
+    // fill buffers), so write the possibly-changed bytes back to the caller.
+    for (auto& cb : cabacks) {
+        if (!rwArgs || cb.arg >= rwArgs->size()) continue;
+        try { if (Value* lv = lvalue((*rwArgs)[cb.arg].get())) if (lv->t == VT::Str && lv->hashKind == "CArray") lv->s = keep[cb.keep]; } catch (RakuError&) {}
     }
 
     if (rt.empty() || rt == "void" || rt == "Nil") return Value::nil();
@@ -6667,6 +6767,25 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
 }
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
+
+    // NativeCall CStruct field write: `$s.field = v` writes native memory at the
+    // field's offset (there is no Value container to hand back as an lvalue).
+    if (a->op == "=" && a->target->kind == NK::MethodCall) {
+        auto* mc = static_cast<MethodCall*>(a->target.get());
+        if (mc->args.empty() && !mc->meta && !mc->hyper && mc->inv->kind == NK::VarExpr) {
+            Value inv = eval(mc->inv.get());
+            if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
+                (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct") &&
+                inv.obj->attrs.count("__native_ptr") && !inv.obj->cls->findMethod(mc->method)) {
+                std::string type; long long off = ncFieldOffset(inv.obj->cls.get(), mc->method, type);
+                if (off >= 0) {
+                    Value rhs = eval(a->value.get());
+                    ncWriteElem(inv.obj->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
+                    return sink ? Value::any() : rhs;
+                }
+            }
+        }
+    }
 
     // named destructuring: `my (:@positional, :@named) := %h` — each element
     // binds the RHS hash's value under its bare name (Cro::HTTP::Router

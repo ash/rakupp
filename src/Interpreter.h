@@ -254,8 +254,12 @@ public:
     Value ncMakePointer(const std::string& type, void* p);   // Pointer / Pointer[T]
     Value ncMakeLiveCArray(const std::string& type, void* p);// CArray[T] over native memory
     static Value ncReadElem(long long addr, const std::string& ofType, long long index); // read one native element
+    static void ncWriteElem(long long addr, const std::string& ofType, long long index, const Value& val);
+    static long long ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type); // CStruct field byte offset
+    static long long ncStructSize(ClassInfo* ci);   // CStruct total padded size
     static long long ncRawAddr(const Value& v); // extract a raw pointer from a native value (0 if none)
     Value cglobal(const std::string& lib, const std::string& sym, const std::string& type); // C global variable
+    long runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5); // NativeCall callback dispatch
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
     // chain has finished (head/first reached its limit) so `done` should fire.

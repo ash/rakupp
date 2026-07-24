@@ -257,6 +257,7 @@ struct ClassInfo {
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     bool isGrammar = false;
     bool isRole = false;
+    std::string repr; // `is repr("CStruct")` — NativeCall native memory layout
     std::string pod; // `#|` declarator pod (.WHY)
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
     std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented

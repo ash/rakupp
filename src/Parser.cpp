@@ -4496,11 +4496,16 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         bool isDoes = isIdent("does");
         advance();
         if (!isDoes && isIdent("export")) { advance(); continue; } // trait, not a parent class
-        // `is repr("VMHash")` — a VM-representation trait, not a parent class.
-        // Recognize and skip (the arg too); our values pick their own storage.
+        // `is repr("CStruct")` — a VM-representation trait, not a parent class.
+        // Capture the name (drives NativeCall struct layout); most reprs our
+        // values pick their own storage for and simply ignore.
         if (!isDoes && isIdent("repr")) {
             advance();
-            if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+            if (isKind(Tok::LParen)) {
+                advance();
+                if (isKind(Tok::StrLit) || isKind(Tok::StrInterp) || isKind(Tok::Ident)) cd->repr = cur().text;
+                int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+            }
             continue;
         }
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {

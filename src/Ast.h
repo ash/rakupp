@@ -328,6 +328,7 @@ struct ClassDecl : Stmt {
     std::string pod; // `#|` leading declarator pod (.WHY)       // body was a bare `...` — a forward declaration, redeclarable
     bool parameterized = false;    // role R[T] — parameterizations coexist by name
     std::string ver, auth, api;    // name adverbs: class Foo:ver<1.2>:auth<zef:x>:api<2>
+    std::string repr;              // `is repr("CStruct")` — native memory layout (NativeCall)
     bool isPackage = false;        // package / module: body runs in a namespace
     std::vector<StmtPtr> body;     // package/module body statements
     ClassDecl(): Stmt(NK::ClassDecl) {}

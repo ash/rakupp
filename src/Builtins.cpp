@@ -2047,6 +2047,33 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // CArray[T].new(vals…) — a packed native array (NativeCall). Stored as raw
     // bytes in .s (like Blob); callNative passes a pointer to the bytes.
+    // NativeCall CStruct field read: `$s.field` on a native-backed struct reads
+    // native memory at the field's computed offset. (Writes go through the
+    // assignment path.) Only for a repr('CStruct') class the accessor doesn't
+    // otherwise define a real method for.
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
+        (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct") &&
+        inv.obj->attrs.count("__native_ptr") && !inv.obj->cls->findMethod(m)) {
+        std::string type; long long off = Interpreter::ncFieldOffset(inv.obj->cls.get(), m, type);
+        if (off >= 0) {
+            long long base = inv.obj->attrs["__native_ptr"].toInt();
+            long long fa = base + off;
+            // scalar field: read directly; pointer/Str/class field: read the 8-byte
+            // pointer and box it appropriately.
+            std::string bt = type.substr(0, type.find('['));
+            if (bt == "Str") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return Value::str(p ? std::string((const char*)(intptr_t)p) : ""); }
+            if (bt == "Pointer") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return ncMakePointer(type, (void*)(intptr_t)p); }
+            if (bt == "CArray")  { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return ncMakeLiveCArray(type, (void*)(intptr_t)p); }
+            auto cit = classes_.find(type);
+            if (cit != classes_.end()) { // nested CStruct/CPointer field → box the pointer
+                long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
+                Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
+                o.obj->cls = cit->second; o.obj->attrs["__native_ptr"] = Value::integer(p);
+                return o;
+            }
+            return Interpreter::ncReadElem(fa, type, 0);
+        }
+    }
     // NativeCall Pointer[T]: `Pointer.new($addr)` / `Pointer[int32].new(...)`.
     if (inv.t == VT::Type && (inv.s == "Pointer" || inv.s.rfind("Pointer[", 0) == 0) &&
         (m == "new" || m == "allocate")) {
@@ -4316,6 +4343,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                     "Cannot look up attributes in a " + inv.s + " type object"};
             }
             if (m == "new" || m == "bless") {
+                // NativeCall CStruct: allocate zeroed native memory and set fields
+                // from named args, so the instance can be passed to / read from C.
+                if (ci->repr == "CStruct" || ci->repr == "CPPStruct") {
+                    long long size = Interpreter::ncStructSize(ci.get());
+                    void* mem = calloc(1, size ? (size_t)size : 1);
+                    auto od = std::make_shared<ObjectData>();
+                    od->cls = ci;
+                    od->attrs["__native_ptr"] = Value::integer((long long)(intptr_t)mem);
+                    od->attrs["__cstruct_owned"] = Value::boolean(true);
+                    Value self = Value::object(od);
+                    for (auto& arg : args) if (arg.t == VT::Pair && arg.pairVal) {
+                        std::string type; long long off = Interpreter::ncFieldOffset(ci.get(), arg.s, type);
+                        if (off >= 0) Interpreter::ncWriteElem((long long)(intptr_t)mem + off, type, 0, *arg.pairVal);
+                    }
+                    if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
+                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+                    return self;
+                }
                 // A class subclassing a native container (`class A is Array`): the
                 // instance is an object backed by a native Array/Hash (via ObjectData.boxed),
                 // so it indexes/pushes natively while .WHAT answers the user type.
