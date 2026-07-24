@@ -477,6 +477,9 @@ std::string Value::typeName() const {
             if (hashKind == "Capture") return "Capture"; // \(…) literal
             return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : "List";
         case VT::Hash:  if (hashKind == "Pod" && hash && hash->count("podclass")) return hash->at("podclass").s;
+                        // a connected async socket is an IO::Socket::Async (Rakudo's
+                        // type); the internal "AsyncSocket" kind only drives dispatch.
+                        if (hashKind == "AsyncSocket") return "IO::Socket::Async";
                         return hashKind.empty() ? "Hash" : hashKind; // the TYPE name (gist is via toStr)
         case VT::Code:  return code && code->isWhateverCode ? "WhateverCode"
                              : code && code->isMethod ? "Method" : code && code->isBlock ? "Block" : "Sub";
