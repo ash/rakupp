@@ -248,7 +248,14 @@ public:
     // fired when that block finishes (our model's "tap closed" moment)
     std::vector<std::vector<Value>> supplyCloseStack_;
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false, bool arityCheck = false); // no wrap layer
-    Value callNative(Callable& c, ValueList& args); // `is native` C FFI
+    Value callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs = nullptr); // `is native` C FFI
+    // NativeCall pointer helpers: a live Pointer / CArray return holds a raw
+    // address whose deref/element access reads native memory.
+    Value ncMakePointer(const std::string& type, void* p);   // Pointer / Pointer[T]
+    Value ncMakeLiveCArray(const std::string& type, void* p);// CArray[T] over native memory
+    static Value ncReadElem(long long addr, const std::string& ofType, long long index); // read one native element
+    static long long ncRawAddr(const Value& v); // extract a raw pointer from a native value (0 if none)
+    Value cglobal(const std::string& lib, const std::string& sym, const std::string& type); // C global variable
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
     // chain has finished (head/first reached its limit) so `done` should fire.

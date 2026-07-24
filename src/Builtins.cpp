@@ -2047,6 +2047,30 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // CArray[T].new(vals…) — a packed native array (NativeCall). Stored as raw
     // bytes in .s (like Blob); callNative passes a pointer to the bytes.
+    // NativeCall Pointer[T]: `Pointer.new($addr)` / `Pointer[int32].new(...)`.
+    if (inv.t == VT::Type && (inv.s == "Pointer" || inv.s.rfind("Pointer[", 0) == 0) &&
+        (m == "new" || m == "allocate")) {
+        std::string et = inv.s.rfind("Pointer[", 0) == 0 ? inv.s.substr(8, inv.s.size() - 9) : inv.ofType;
+        void* p = args.empty() ? nullptr : (void*)(intptr_t)ncRawAddr(args[0]);
+        return ncMakePointer(et.empty() ? "Pointer" : "Pointer[" + et + "]", p);
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Pointer") {
+        long long addr = inv.hash->count("addr") ? (*inv.hash)["addr"].toInt() : 0;
+        std::string of = inv.hash->count("of") ? (*inv.hash)["of"].toStr() : "";
+        if (m == "Int" || m == "Numeric") return Value::integer(addr);
+        if (m == "defined" || m == "Bool" || m == "so") return Value::boolean(addr != 0);
+        if (m == "gist" || m == "Str" || m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") + "<" + std::to_string(addr) + ">");
+        if (m == "deref") return ncReadElem(addr, of, 0);
+        if (m == "of") return Value::typeObj(of.empty() ? "Pointer" : of);
+    }
+    // live CArray[T] over native memory (returned by a native call): element read
+    if (inv.t == VT::Hash && inv.hashKind == "CArray" && inv.hash->count("addr")) {
+        long long addr = (*inv.hash)["addr"].toInt();
+        std::string of = inv.hash->count("of") ? (*inv.hash)["of"].toStr() : "int64";
+        if (m == "AT-POS" || m == "[]") return ncReadElem(addr, of, args.empty() ? 0 : args[0].toInt());
+        if (m == "Numeric" || m == "Int") return Value::integer(addr);
+        if (m == "defined" || m == "Bool") return Value::boolean(addr != 0);
+    }
     if (inv.t == VT::Type && (inv.s == "CArray" || inv.s.rfind("CArray[", 0) == 0)) {
         std::string et = inv.s.rfind("CArray[", 0) == 0 ? inv.s.substr(7, inv.s.size() - 8)
                                                         : inv.ofType; // parameter lives in ofType
@@ -10986,7 +11010,36 @@ void Interpreter::registerBuiltins() {
                      : (t == "num32" || t == "int32" || t == "uint32" || t == "int" || t == "uint") ? 4 : 8;
         return Value::integer(sz);
     };
-    B["cglobal"] = [](Interpreter&, ValueList&) -> Value { return Value::integer(0); };
+    // parameterized native type name: `CArray[uint8]` is Type{s="CArray",
+    // ofType="uint8"} — rebuild the "Name[elem]" string the FFI helpers expect.
+    auto ncTypeName = [](const Value& v) -> std::string {
+        if (v.t != VT::Type) return v.toStr();
+        return (!v.ofType.empty() && v.s.find('[') == std::string::npos) ? v.s + "[" + v.ofType + "]" : v.s;
+    };
+    B["cglobal"] = [ncTypeName](Interpreter& I, ValueList& a) -> Value {
+        std::string lib  = a.size() > 0 ? (a[0].t == VT::Type ? a[0].s : a[0].toStr()) : "";
+        std::string sym  = a.size() > 1 ? a[1].toStr() : "";
+        std::string type = a.size() > 2 ? ncTypeName(a[2]) : "Pointer";
+        return I.cglobal(lib, sym, type);
+    };
+    // nativecast(TargetType, $value): reinterpret a native pointer/handle as another
+    // native type (Pointer, CArray[T], or a CStruct/CPointer class).
+    B["nativecast"] = [ncTypeName](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::any();
+        std::string t = ncTypeName(a[0]);
+        long long addr = Interpreter::ncRawAddr(a[1]);
+        if (t == "Pointer" || t.rfind("Pointer[", 0) == 0) return I.ncMakePointer(t, (void*)(intptr_t)addr);
+        if (t == "CArray"  || t.rfind("CArray[", 0)  == 0) return I.ncMakeLiveCArray(t, (void*)(intptr_t)addr);
+        if (t == "Str") return Value::str(addr ? std::string((const char*)(intptr_t)addr) : "");
+        // a CStruct/CPointer class: box the address as an object of that class
+        auto it = I.classes_.find(t);
+        if (it != I.classes_.end()) {
+            Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
+            o.obj->cls = it->second; o.obj->attrs["__native_ptr"] = Value::integer(addr);
+            return o;
+        }
+        return Value::integer(addr);
+    };
     B["await"] = [](Interpreter& I, ValueList& a) -> Value {
         // resolve a Promise, running any pending Proc::Async work (with the timeout from an anyof timer)
         std::function<Value(Value&)> resolve = [&](Value& p) -> Value {

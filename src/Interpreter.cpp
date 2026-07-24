@@ -5413,31 +5413,89 @@ static bool ncIsFloatType(const std::string& t) {
            t == "Rat" || t == "Real" || t == "double" || t == "Numeric";
 }
 
-// One dispatch switch, arities 0..8: R = C return type, AT = C arg type, SRC = the
-// arg array (`g` longs or `f` doubles), OUT = the result variable. The C++ compiler
-// emits the correct ABI for each typed function-pointer cast — no assembly needed.
-#define NC_DISPATCH(R, AT, SRC, OUT) switch (n) { \
-    case 0: OUT = ((R(*)())sym)(); break; \
-    case 1: OUT = ((R(*)(AT))sym)(SRC[0]); break; \
-    case 2: OUT = ((R(*)(AT,AT))sym)(SRC[0],SRC[1]); break; \
-    case 3: OUT = ((R(*)(AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2]); break; \
-    case 4: OUT = ((R(*)(AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3]); break; \
-    case 5: OUT = ((R(*)(AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4]); break; \
-    case 6: OUT = ((R(*)(AT,AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4],SRC[5]); break; \
-    case 7: OUT = ((R(*)(AT,AT,AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4],SRC[5],SRC[6]); break; \
-    case 8: OUT = ((R(*)(AT,AT,AT,AT,AT,AT,AT,AT))sym)(SRC[0],SRC[1],SRC[2],SRC[3],SRC[4],SRC[5],SRC[6],SRC[7]); break; \
-    default: throw RakuError{Value::typeObj("X::NYI"), "NativeCall: too many arguments (max 8)"}; \
+// Over-wide fixed signatures for the FFI call. On the SysV-AMD64 and AArch64
+// ABIs the integer and float register banks are independent and a callee simply
+// ignores the argument registers it doesn't declare, so ONE 8-int + 8-float
+// signature dispatches every call whose arguments fit in registers — including
+// MIXED int/float, which the old per-arity dispatch rejected. Unused slots are
+// padded with zero; args reorder into their bank in declaration order, which is
+// exactly how the callee reads them.
+typedef long   (*NcFnI)(long,long,long,long,long,long,long,long,
+                        double,double,double,double,double,double,double,double);
+typedef double (*NcFnD)(long,long,long,long,long,long,long,long,
+                        double,double,double,double,double,double,double,double);
+// native scalar type → byte width and signedness (for is-rw copy-back, cglobal,
+// Pointer.deref). 0 ⇒ not a plain native scalar.
+static int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
+    isFloat = false; sign = true;
+    if (t == "num32") { isFloat = true; return 4; }
+    if (t == "num" || t == "num64" || t == "Num") { isFloat = true; return 8; }
+    if (t == "int8"  || t == "char")   { return 1; }
+    if (t == "uint8" || t == "byte")   { sign = false; return 1; }
+    if (t == "int16")  return 2;
+    if (t == "uint16") { sign = false; return 2; }
+    if (t == "int32" || t == "long32") return 4;
+    if (t == "uint32") { sign = false; return 4; }
+    if (t == "int" || t == "int64" || t == "long" || t == "longlong" || t == "ssize_t" || t == "Int") return 8;
+    if (t == "uint" || t == "uint64" || t == "ulong" || t == "ulonglong" || t == "size_t" || t == "bool" || t == "Bool") { sign = false; return 8; }
+    return 0;
+}
+
+// element type inside `Pointer[T]` / `CArray[T]` ("" for a bare Pointer)
+static std::string ncElemType(const std::string& t) {
+    size_t b = t.find('[');
+    return b == std::string::npos ? "" : t.substr(b + 1, t.size() - b - 2);
+}
+// A live Pointer holds { addr, of } — deref reads native memory of type `of`.
+Value Interpreter::ncMakePointer(const std::string& type, void* p) {
+    Value v = Value::makeHash(); v.hashKind = "Pointer";
+    (*v.hash)["addr"] = Value::integer((long long)(intptr_t)p);
+    (*v.hash)["of"]   = Value::str(ncElemType(type));
+    return v;
+}
+// A live CArray[T] holds { addr, of } — element access reads native memory.
+Value Interpreter::ncMakeLiveCArray(const std::string& type, void* p) {
+    Value v = Value::makeHash(); v.hashKind = "CArray";
+    (*v.hash)["addr"] = Value::integer((long long)(intptr_t)p);
+    std::string of = ncElemType(type);
+    (*v.hash)["of"]   = Value::str(of.empty() ? "int64" : of);
+    return v;
+}
+// Read one native element at addr[index] as the given native type.
+Value Interpreter::ncReadElem(long long addr, const std::string& ofType, long long index) {
+    if (!addr) return Value::any();
+    bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt);
+    if (w == 0) w = 8; // pointer-sized default (Pointer[T], opaque)
+    const char* base = (const char*)(intptr_t)addr + index * w;
+    if (isFlt) {
+        if (w == 4) { float x; std::memcpy(&x, base, 4); return Value::number((double)x); }
+        double x; std::memcpy(&x, base, 8); return Value::number(x);
+    }
+    long long val = 0;
+    switch (w) {
+        case 1: { if (sgn) { int8_t x; std::memcpy(&x, base, 1); val = x; } else { uint8_t x; std::memcpy(&x, base, 1); val = x; } break; }
+        case 2: { if (sgn) { int16_t x; std::memcpy(&x, base, 2); val = x; } else { uint16_t x; std::memcpy(&x, base, 2); val = x; } break; }
+        case 4: { if (sgn) { int32_t x; std::memcpy(&x, base, 4); val = x; } else { uint32_t x; std::memcpy(&x, base, 4); val = x; } break; }
+        default:{ std::memcpy(&val, base, 8); break; }
+    }
+    return Value::integer(val);
+}
+// Extract a raw native address from any native-pointer value (0 if none).
+long long Interpreter::ncRawAddr(const Value& v) {
+    if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) return v.obj->attrs.at("__native_ptr").toInt();
+    if (v.t == VT::Hash && v.hash) { auto it = v.hash->find("addr"); if (it != v.hash->end()) return it->second.toInt(); }
+    if (v.t == VT::Int) return v.i;
+    return 0;
 }
 
 // NativeCall (`is native`): resolve the C symbol via dlsym and call it. Arguments
 // and the return are classified by their *declared* type — integer/pointer
-// (`Str`→`char*`, the `int*`/`uint*`/`size_t`/`bool`/`Pointer` family → 64-bit) or
-// floating-point (`num`/`num32`/`num64`) — so e.g. `sqrt(4)` correctly coerces its
-// `Int` argument to a `double`. A call must be uniform (all integer/pointer *or*
-// all floating-point) args; the return may be either. This covers all of libc's
-// integer functions and the whole `<math.h>` surface. Not supported (they need
-// libffi): mixed int/float arguments, C structs, `CArray`, and callbacks.
-Value Interpreter::callNative(Callable& c, ValueList& args) {
+// (`Str`→`char*`, the `int*`/`uint*`/`size_t`/`bool`/`Pointer`/CArray/CStruct
+// family → 64-bit) or floating-point (`num`/`num32`/`num64`). Mixed int+float
+// args, `is rw` out-params (marshalled as `T*` with copy-back), and CStruct/
+// CPointer/CArray/Pointer returns are handled. Not supported: by-value C structs,
+// callbacks, and calls needing more than 8 integer or 8 float register args.
+Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs) {
     void* handle = RTLD_DEFAULT;
     // `is native(&sub)`: call the sub now to get the library path (a full path or
     // bare name). Its result is cached on the Callable so we resolve it once.
@@ -5461,45 +5519,69 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
 
     const std::vector<Param>* prm = c.params;
     std::vector<std::string> keep; keep.reserve(args.size()); // keep Str buffers alive across the call
-    std::vector<long>   g;  // integer/pointer args
-    std::vector<double> f;  // floating-point args
-    bool anyFP = false, anyGP = false;
+    std::vector<long>   g;  // integer/pointer args, in declaration order
+    std::vector<double> f;  // float args, in declaration order
+    // is-rw out-params: backing slots (stable addresses via deque) + copy-back list
+    std::deque<long>   rwI;
+    std::deque<double> rwD;
+    struct RwBack { size_t arg; const long* i; const double* d; };
+    std::vector<RwBack> rwbacks;
+
     for (size_t i = 0; i < args.size(); i++) {
         Value& v = args[i];
-        std::string pt = (prm && i < prm->size()) ? (*prm)[i].type : "";
-        bool fp = ncIsFloatType(pt) || (pt.empty() && (v.t == VT::Num || v.t == VT::Rat));
-        if (v.t == VT::Str && v.hashKind == "CArray") { // CArray → pointer to packed bytes
-            keep.push_back(v.s);
-            g.push_back((long)(intptr_t)keep.back().data());
-            anyGP = true;
-        } else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { // Str → char*
-            keep.push_back(v.toStr());
-            g.push_back((long)(intptr_t)keep.back().c_str());
-            anyGP = true;
-        } else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) {
-            // a CStruct/CPointer handle returned by an earlier native call — pass
-            // the raw pointer back (round-trips SSL_CTX, BIO, … between calls)
-            g.push_back((long)v.obj->attrs["__native_ptr"].toInt()); anyGP = true;
-        } else if (fp) { f.push_back(v.toNum()); anyFP = true; }
-        else          { g.push_back(v.toInt()); anyGP = true; }
+        const Param* p = (prm && i < prm->size()) ? &(*prm)[i] : nullptr;
+        std::string pt = p ? p->type : "";
+        bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
+        bool fp = isFlt || (pt.empty() && (v.t == VT::Num || v.t == VT::Rat));
+        if (p && p->isRw && w) { // `is rw` scalar → pass a pointer to a backing slot
+            if (isFlt) { rwD.push_back(v.toNum()); g.push_back((long)(intptr_t)&rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back()}); }
+            else       { rwI.push_back(v.toInt()); g.push_back((long)(intptr_t)&rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr}); }
+        }
+        else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data()); }
+        else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { keep.push_back(v.toStr()); g.push_back((long)(intptr_t)keep.back().c_str()); }
+        else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) g.push_back((long)v.obj->attrs["__native_ptr"].toInt());
+        else if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") && v.hash->count("addr"))
+            g.push_back((long)(*v.hash)["addr"].toInt()); // live Pointer / CArray handle
+        else if (fp) f.push_back(v.toNum());
+        else         g.push_back(v.toInt());
     }
-    if (anyFP && anyGP)
-        throw RakuError{Value::typeObj("X::NYI"), "NativeCall: mixed integer and floating-point arguments need libffi"};
+    if (g.size() > 8 || f.size() > 8)
+        throw RakuError{Value::typeObj("X::NYI"), "NativeCall: too many register arguments (max 8 integer + 8 float)"};
+
+    long G[8] = {0}; for (size_t k = 0; k < g.size(); k++) G[k] = g[k];
+    double D[8] = {0}; for (size_t k = 0; k < f.size(); k++) D[k] = f[k];
 
     const std::string& rt = c.retType;
     bool retFP = ncIsFloatType(rt);
-    size_t n = args.size();
     long ri = 0; double rd = 0;
-    if (anyFP) { if (retFP) NC_DISPATCH(double, double, f, rd) else NC_DISPATCH(long, double, f, ri) }
-    else       { if (retFP) NC_DISPATCH(double, long,   g, rd) else NC_DISPATCH(long, long,   g, ri) }
+    if (retFP) rd = ((NcFnD)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+    else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+
+    // is-rw copy-back: write each out-param's slot to the caller's lvalue
+    for (auto& rb : rwbacks) {
+        if (!rwArgs || rb.arg >= rwArgs->size()) continue;
+        Value nv = rb.i ? Value::integer(*rb.i) : Value::number(*rb.d);
+        try {
+            if (Value* lv = lvalue((*rwArgs)[rb.arg].get())) {
+                int nb = lv->natBits; bool ns = lv->natSigned;
+                *lv = nv;
+                if (nb) wrapNative(*lv, nb, ns);
+            }
+        } catch (RakuError&) {}
+    }
 
     if (rt.empty() || rt == "void" || rt == "Nil") return Value::nil();
     if (rt == "Str") return Value::str(ri ? std::string((const char*)(intptr_t)ri) : "");
     if (retFP) return Value::number(rd);
     if (rt == "bool" || rt == "Bool") return Value::boolean(ri != 0);
-    // CStruct/CPointer return: if the declared return type names a class (not a
-    // native scalar), box the pointer as an object of that class so it satisfies
-    // the type check and round-trips into later native calls (SSL_CTX_new → SSL_new).
+    // Pointer / CArray return: box the raw pointer in a live-pointer value whose
+    // element/deref access reads native memory (see ncMakeLivePointer/CArray).
+    if (rt == "Pointer" || rt.rfind("Pointer[", 0) == 0)
+        return ncMakePointer(rt, (void*)(intptr_t)ri);
+    if (rt == "CArray" || rt.rfind("CArray[", 0) == 0)
+        return ncMakeLiveCArray(rt, (void*)(intptr_t)ri);
+    // CStruct/CPointer return: box the pointer as an object of the return class so
+    // it satisfies the type check and round-trips into later native calls.
     if (!rt.empty() && (std::isupper((unsigned char)rt[0]) || rt.find("::") != std::string::npos)) {
         std::shared_ptr<ClassInfo> ci;
         auto it = classes_.find(rt);
@@ -5516,7 +5598,25 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
     }
     return Value::integer(ri);
 }
-#undef NC_DISPATCH
+
+// cglobal(lib, symbol, Type): resolve a C global variable's address via dlsym and
+// read its current value per the declared type (Pointer types return a live
+// Pointer; scalar types return the value).
+Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const std::string& type) {
+    void* handle = RTLD_DEFAULT;
+    if (!lib.empty()) {
+        for (const std::string& cand : {lib, "lib" + lib + ".dylib", "lib" + lib + ".so", lib + ".dylib", lib + ".so"})
+            if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
+        if (!handle) throw RakuError{Value::typeObj("X::Libc"), "Cannot load native library '" + lib + "'"};
+    }
+    void* addr = dlsym(handle, sym.c_str());
+    if (!addr) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + sym + "'"};
+    if (type == "Pointer" || type.rfind("Pointer[", 0) == 0) {
+        void* p = *(void**)addr; // the global holds a pointer
+        return ncMakePointer(type, p);
+    }
+    return ncReadElem((long long)(intptr_t)addr, type, 0);
+}
 
 // run `let` restorations for the current env — only on UNSUCCESSFUL exits
 static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
@@ -5543,7 +5643,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     int lpc = loopPhaserCtl_; loopPhaserCtl_ = 0; // one-shot: loop-phaser control from an iterating driver (map)
     bool implicitTopic_local = false;
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
-    if (codeVal.t == VT::Code && codeVal.code && codeVal.code->isNative) return callNative(*codeVal.code, args);
+    if (codeVal.t == VT::Code && codeVal.code && codeVal.code->isNative) return callNative(*codeVal.code, args, rwArgs);
     if (codeVal.t == VT::Hash && codeVal.hashKind == "Format") {
         std::string fmt = codeVal.hash && codeVal.hash->count("fmt") ? (*codeVal.hash)["fmt"].toStr() : "";
         return Value::str(doSprintf(fmt, args));
@@ -11956,6 +12056,22 @@ Value Interpreter::evalIndex(Index* idx) {
     // Indexing an unhandled Failure propagates it (`@a[-1][0]` keeps the Failure
     // from the out-of-range outer index rather than reading through it).
     if (base.t == VT::Hash && base.hashKind == "Failure") return base;
+    // NativeCall CArray / Pointer element read (`$carray[$i]`): byte-backed
+    // (CArray.new/allocate stores packed bytes) or a live native pointer.
+    if (!idx->isHash && idx->index && !idx->multiDim) {
+        if (base.t == VT::Str && base.hashKind == "CArray") {
+            long long i = eval(idx->index.get()).toInt();
+            std::string et = base.enumName.empty() ? "int64" : base.enumName;
+            bool sgn, isFlt; int w = ncScalarWidth(et, sgn, isFlt); if (!w) w = 8;
+            if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
+            return ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+        }
+        if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") && base.hash->count("addr")) {
+            long long i = eval(idx->index.get()).toInt();
+            std::string of = base.hash->count("of") ? (*base.hash)["of"].toStr() : "int64";
+            return ncReadElem((*base.hash)["addr"].toInt(), of, i);
+        }
+    }
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
     if (base.t == VT::Type && !idx->isHash && idx->index) {
         Value p = eval(idx->index.get());
