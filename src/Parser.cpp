@@ -4115,7 +4115,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
     s->isMulti = isMulti;
     s->isProto = isProto;
     std::string declInfix; // set when this is an `infix:<…>` declaration (for precedence traits)
-    if (isOp("!")) advance(); // private method `method !name` — stored under its bare name
+    if (isOp("!")) { advance(); s->isPrivate = true; } // private method `method !name` — self!name only
     if (isKind(Tok::Ident)) s->name = advance().text;
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
     // trait handler declaration: sub trait_mod:<is>(…) — name keeps the angle form

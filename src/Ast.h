@@ -286,6 +286,7 @@ struct SubDecl : Stmt {
     bool hadSig = false;  // explicit `(...)` signature (even empty) — placeholders then illegal
     bool isMethod = false;
     bool isSubmethod = false;
+    bool isPrivate = false; // `method !name` — private method, called only via self!name
     std::vector<ExprPtr> immediateArgs; // `sub f($n) {…}(1)` — declare, then call at once
     bool immediateCall = false;
     bool isExport = false; // `is export` — visible to importers of the enclosing module

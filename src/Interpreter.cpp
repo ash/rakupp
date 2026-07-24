@@ -3600,8 +3600,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                 (cd->isGrammar ? "grammar " : "class ") + clsName);
                     }
                 if (md->params.empty()) code.code->placeholders = computePlaceholders(md->body);
+                // a private method (`method !name`) lives under a distinct `!`-prefixed
+                // key so it coexists with a public `.name` of the same name (they are
+                // separate methods in Raku; `self!name` vs `self.name`). Only self!name
+                // dispatch and .^private_methods look here.
+                code.code->isPrivateMethod = md->isPrivate;
+                const std::string key = md->isPrivate ? "!" + md->name : md->name;
                 if (md->isMulti) {
-                    auto it = ci->methods.find(md->name);
+                    auto it = ci->methods.find(key);
                     if (it != ci->methods.end() && it->second.code && it->second.code->isMultiDispatcher) {
                         // an own candidate overrides a same-signature candidate
                         // composed from a role (never another own candidate)
@@ -3615,10 +3621,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         Value disp; disp.t = VT::Code; disp.code = std::make_shared<Callable>();
                         disp.code->name = md->name; disp.code->isMultiDispatcher = true;
                         disp.code->candidates.push_back(code);
-                        ci->methods[md->name] = disp;
+                        ci->methods[key] = disp;
                     }
                 } else {
-                    ci->methods[md->name] = code;
+                    ci->methods[key] = code;
                 }
             }
             // aggregate role requirements (composed roles already carry the ones
@@ -3636,8 +3642,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (cd->isRole)
                 for (auto& md : cd->methods)
                     if (stmtIsStub(md->body)) {
-                        ci->requiredMethods.insert(md->name);
-                        if (md->isMulti) ci->requiredMultiSigs[md->name].push_back(sigKeyParams(&md->params));
+                        // private stubs are keyed `!name` to match how they're stored
+                        // and dispatched, so a private impl (also `!name`) satisfies them
+                        std::string rqKey = md->isPrivate ? "!" + md->name : md->name;
+                        ci->requiredMethods.insert(rqKey);
+                        if (md->isMulti) ci->requiredMultiSigs[rqKey].push_back(sigKeyParams(&md->params));
                     }
             // role composition check: a non-role class that composes a role must
             // implement every method the role requires — via its own methods, a
@@ -3645,7 +3654,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // or an attribute `handles` delegation. Roles compose freely.
             if (!cd->isRole) {
                 std::set<std::string> classOwn;
-                for (auto& md : cd->methods) classOwn.insert(md->name);
+                for (auto& md : cd->methods) classOwn.insert(md->isPrivate ? "!" + md->name : md->name);
                 // conflicts first: two roles provided the same real implementation
                 for (const std::string& cn : conflicted)
                     if (!classOwn.count(cn)) {
@@ -13839,7 +13848,9 @@ Value Interpreter::eval(Expr* e) {
             // NotFound thrown deeper inside a real method still propagates.
             if (mc->maybe) {
                 try {
-                    Value res = methodCall(inv, mc->meta ? "^" + mc->method : mc->method, args, &mc->args);
+                    Value res = methodCall(inv,
+                        mc->bang ? "!" + mc->method : mc->meta ? "^" + mc->method : mc->method,
+                        args, &mc->args);
                     if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = res; }
                     return res;
                 }
@@ -13863,7 +13874,9 @@ Value Interpreter::eval(Expr* e) {
                     throw;
                 }
             }
-            Value res = methodCall(inv, mc->meta ? "^" + mc->method : mc->method, args, &mc->args);
+            Value res = methodCall(inv,
+                mc->bang ? "!" + mc->method : mc->meta ? "^" + mc->method : mc->method,
+                args, &mc->args);
             if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = res; }
             return res;
         }
