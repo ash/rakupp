@@ -10,11 +10,12 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v1.0.0** (2026-07-22). Measured per individual
-test, **90% of Roast passes** — 194,506 of
-~216,066 tests the suite declares, counting the tests in files that abort before
+**Status:** current release **v1.1.0** (2026-07-24) — *100% Unicode (S15)*:
+full UCD case mapping, grapheme-level NFG regex, and complete `uniprop`
+coverage. Measured per individual test, **90% of Roast passes** — 194,901 of
+~216,222 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
-**584 / 1,462 files fully pass (~39%)** — a file counts only if *every* assertion
+**598 / 1,462 files fully pass (~41%)** — a file counts only if *every* assertion
 in it passes. Early-stage, growing test-first. See [the highlights](docs/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/GUIDE.md) for the complete picture,
@@ -99,6 +100,21 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 (default coordinates under a GIL). Full option and environment-variable reference:
 [the guide](docs/GUIDE.md#command-line-options).
 
+## Modules
+
+Raku++ runs modules from the ecosystem — it reads the **same store [zef](https://github.com/ugexe/zef)
+populates**, so a module you `zef install` (via Rakudo) is picked up by `use`
+with no extra setup:
+
+```raku
+use JSON::Fast;                             # installed with `zef install JSON::Fast`
+say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
+```
+
+It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
+paths). A missing or broken `use` is a **warning, not a fatal error** — the rest
+of your program keeps running. Full guide: **[MODULES.md](docs/MODULES.md)**.
+
 ## Run Raku in the browser — Raku.js
 
 ▶ **Try it live: [raku.online](https://raku.online/)** · **Learn it interactively: [tour.raku.online](https://tour.raku.online/)**
@@ -123,6 +139,7 @@ course. Build it with `rakujs/build.sh`; details in
 ### Language reference
 
 - **[FEATURES.md](docs/FEATURES.md)** — inventory of supported language features, by theme.
+- **[MODULES.md](docs/MODULES.md)** — working with modules: how `use` finds modules installed by zef, the search-path order, and writing your own.
 - **[REFERENCE.md](docs/REFERENCE.md)** — exhaustive lookup sheet: every operator, built-in subroutine, and method, each with a verified example.
 - **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
 - **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
