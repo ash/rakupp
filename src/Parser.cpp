@@ -403,6 +403,19 @@ ExprPtr Parser::parseExpr(int minbp) {
             lhs = std::move(call);
             continue;
         }
+        // reverse comma metaop: `a R, b` == the list `(b, a)`. (zef's plugin-probe
+        // loop: `next() R, DEBUG(...)` — run DEBUG, then next.)
+        if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Comma &&
+            !peek().spaceBefore && BP_COMMA >= minbp) {
+            advance(); // R
+            advance(); // ,
+            ExprPtr rhs = parseExpr(BP_COMMA + 1);
+            auto list = std::make_unique<ListExpr>();
+            list->items.push_back(std::move(rhs));
+            list->items.push_back(std::move(lhs));
+            lhs = std::move(list);
+            continue;
+        }
         // reverse metaoperator `a R/ b` == `b / a` (R immediately before an infix op)
         if (cur().kind == Tok::Ident && cur().text == "R" && peek().kind == Tok::Op && !peek().spaceBefore) {
             InfixInfo base = classifyInfix(peek());
@@ -3903,9 +3916,20 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 if (!matchKind(Tok::RParen)) error("expected ')' in nested sub-signature");
                 p.name = ""; p.sigil = '$';
             } else {
+                // nested alias layers after a type: `Bool :h(:help($))` — every key
+                // answers (zef's MAIN uses this). Mirrors the untyped path above.
+                int aliasDepth = 0;
+                while (isOp(":") && peek().kind == Tok::Ident && peek(2).kind == Tok::LParen) {
+                    advance(); // :
+                    p.aliasKeys.push_back(advance().text);
+                    advance(); // (
+                    aliasDepth++;
+                }
                 p.aliasBoth = matchOp(":"); // :name(:$var) answers BOTH names
                 if (isKind(Tok::Var)) { p.name = cur().text; p.sigil = cur().text[0]; advance(); }
                 else error("expected variable in named-parameter alias");
+                for (; aliasDepth > 0; aliasDepth--)
+                    if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             }
             if (!matchKind(Tok::RParen)) error("expected ')' in named-parameter alias");
             p.named = true; named = true; aliasBound = true;
