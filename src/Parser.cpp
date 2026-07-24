@@ -1357,10 +1357,15 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 mc->methodExpr = std::make_unique<VarExpr>(advance().text);
             } else if (cur().kind == Tok::Ident) {
                 mc->method = advance().text;
-                // qualified `Any::elems` — method lookup takes the last segment
+                // qualified `$obj.Class::method` — dispatch to Class's method (a
+                // deliberate reach past the invocant's own override, e.g.
+                // `self.Parent::meth` from within an override). Keep the class part
+                // so the lookup targets it; the bare last segment is the method name.
                 auto q = mc->method.rfind("::");
-                if (q != std::string::npos && q + 2 < mc->method.size())
+                if (q != std::string::npos && q + 2 < mc->method.size()) {
+                    mc->methodQual = mc->method.substr(0, q);
                     mc->method = mc->method.substr(q + 2);
+                }
             } else if (cur().kind == Tok::StrLit) {
                 mc->method = advance().text; indirectName = true;   // ."literal-name"()
             } else if (cur().kind == Tok::StrInterp) {

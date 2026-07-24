@@ -1566,6 +1566,84 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (m == "installed") {
                 Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
             }
+            if (m == "install") {
+                // $cur.install($dist, :$force) — write the CURI layout under `prefix`
+                // (sources/<sha>, short/<sha1(name)>/<dist-id>, dist/<dist-id> JSON,
+                // resources/, bin/). rakupp reads exactly this to resolve `use`.
+                Value dist = args.empty() ? Value::any() : args[0];
+                bool force = false;
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.s == "force") force = a.pairVal && a.pairVal->truthy();
+                Value metaV = methodCall(dist, "meta", ValueList{});
+                if (metaV.t != VT::Hash || !metaV.hash)
+                    throw RakuError{Value::typeObj("X::AdHoc"), "install: distribution has no meta"};
+                auto& meta = *metaV.hash;
+                auto mstr = [&](const char* k) -> std::string {
+                    auto it = meta.find(k); return it != meta.end() ? it->second.toStr() : "";
+                };
+                std::string name = mstr("name");
+                std::string ver  = meta.count("version") ? meta["version"].toStr() : mstr("ver");
+                std::string auth = mstr("auth");
+                std::string api  = mstr("api");
+                std::string distId = sha1hex(name + "\0" + ver + "\0" + auth + "\0" + api);
+                std::string distRoot = methodCall(dist, "IO", ValueList{}).toStr();
+                auto mkdirp = [](const std::string& p) {
+                    std::string acc;
+                    for (size_t i = 0; i <= p.size(); i++) {
+                        if (i == p.size() || p[i] == '/') { if (acc.size() > 1) ::mkdir(acc.c_str(), 0777); }
+                        if (i < p.size()) acc += p[i];
+                    }
+                };
+                auto slurp = [](const std::string& path) -> std::string {
+                    std::ifstream in(path, std::ios::binary);
+                    std::ostringstream ss; ss << in.rdbuf(); return ss.str();
+                };
+                // already installed? (a short entry for a provided module under this dist-id)
+                Value provV = meta.count("provides") ? meta["provides"] : Value::makeHash();
+                if (!force && provV.t == VT::Hash && provV.hash && !provV.hash->empty()) {
+                    std::string firstMod = provV.hash->begin()->first;
+                    std::string sentinel = prefix + "/short/" + sha1hex(firstMod) + "/" + distId;
+                    if (std::ifstream(sentinel).good())
+                        throw RakuError{Value::typeObj("X::AdHoc"),
+                            name + ":ver<" + ver + ">:auth<" + auth + "> is already installed"};
+                }
+                mkdirp(prefix + "/sources"); mkdirp(prefix + "/short"); mkdirp(prefix + "/dist");
+                Value filesOut = Value::makeHash();
+                if (provV.t == VT::Hash && provV.hash)
+                    for (auto& kv : *provV.hash) {
+                        std::string mod = kv.first, srcRel;
+                        // provides value is either the source path, or {path => {file,…}}
+                        if (kv.second.t == VT::Hash && kv.second.hash && !kv.second.hash->empty())
+                            srcRel = kv.second.hash->begin()->first;
+                        else srcRel = kv.second.toStr();
+                        std::string content = slurp(distRoot + "/" + srcRel);
+                        std::string srcSha = sha1hex(content);
+                        { std::ofstream o(prefix + "/sources/" + srcSha, std::ios::binary); o << content; }
+                        std::string sdir = prefix + "/short/" + sha1hex(mod);
+                        mkdirp(sdir);
+                        std::ofstream o(sdir + "/" + distId);
+                        o << ver << "\n" << auth << "\n" << api << "\n" << srcSha << "\n" << distId << "\n";
+                        (*filesOut.hash)[srcRel] = Value::str(srcSha);
+                    }
+                // resources/ and bin/ — zef injects these into meta<files> (rel-path => src)
+                if (meta.count("files") && meta["files"].t == VT::Hash && meta["files"].hash) {
+                    mkdirp(prefix + "/resources"); mkdirp(prefix + "/bin");
+                    for (auto& kv : *meta["files"].hash) {
+                        std::string rel = kv.first, src = kv.second.toStr();
+                        std::string content = slurp(src.empty() ? distRoot + "/" + rel : src);
+                        std::string sha = sha1hex(content);
+                        std::string sub = rel.rfind("bin/", 0) == 0 ? "/bin/" : "/resources/";
+                        { std::ofstream o(prefix + sub + sha, std::ios::binary); o << content; }
+                        (*filesOut.hash)[rel] = Value::str(sha);
+                    }
+                }
+                // dist/<id> — the meta index (list-installed reads it; buildResourceMap
+                // scans it for `resources/…` → the on-disk resource copy).
+                Value distMeta = metaV; distMeta.hash = std::make_shared<std::map<std::string, Value>>(meta);
+                (*distMeta.hash)["files"] = filesOut;
+                { std::ofstream o(prefix + "/dist/" + distId); o << jsonEncode(distMeta); }
+                return Value::boolean(true);
+            }
         }
     }
     if (m == "WHY") {

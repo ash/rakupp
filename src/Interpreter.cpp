@@ -69,7 +69,7 @@ double randDouble() {
 }
 
 // SHA-1 (uppercase hex) — used to resolve module names against a Rakudo CURI `short/` index.
-static std::string sha1hex(const std::string& msg) {
+std::string sha1hex(const std::string& msg) {
     uint32_t h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
     std::string m = msg;
     uint64_t ml = (uint64_t)m.size() * 8;
@@ -8884,6 +8884,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // NaN ~~ NaN is True even though NaN == NaN is False ('NaN' ~~ NaN coerces
             // the string to NaN); ACCEPTS special-cases NaN.
             if (!res && r.t == VT::Num && std::isnan(r.n) && std::isnan(l.toNum())) res = true;
+        } else if (r.t == VT::Nil) {
+            // `$x ~~ Nil` — Nil.ACCEPTS is true only for Nil ITSELF; a defined but
+            // empty hash/list/string does NOT match Nil (valueEq would say it does).
+            res = (l.t == VT::Nil);
         } else {
             res = valueEq(l, r);
         }
@@ -13677,6 +13681,19 @@ Value Interpreter::eval(Expr* e) {
                     return callCallable(mv, ca);
                 }
                 mc->method = mv.toStr(); // resolved here so write- routing below sees it
+            }
+            // qualified `$obj.Class::method` — dispatch to Class's method directly,
+            // reaching past the invocant's own override (e.g. `self.Parent::meth`
+            // called from within an override, as in zef's `self.Zef::Distribution::meta`).
+            if (!mc->methodQual.empty() && !mc->meta) {
+                auto cit = classes_.find(mc->methodQual);
+                if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(mc->methodQual));
+                if (cit != classes_.end() && cit->second->findMethod(mc->method)) {
+                    ValueList ma = evalArgs(mc->args);
+                    return invokeMethodChain(mc->method, cit->second.get(), inv, ma, &mc->args);
+                }
+                // an unknown qualifier (e.g. a built-in type like `Any::elems`) falls
+                // through to ordinary dispatch on the bare method name.
             }
             // $/.make(v) attaches the ast to the MATCH ITSELF (not a copy)
             if (inv.t == VT::Match && !mc->meta && mc->method == "make") {

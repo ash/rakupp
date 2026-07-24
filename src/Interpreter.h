@@ -46,6 +46,8 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
                           const ValueList* fill = nullptr);
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
+// SHA-1 as UPPERCASE hex (Interpreter.cpp) — the CURI short-index / content-id scheme.
+std::string sha1hex(const std::string& msg);
 
 struct Env {
     std::unordered_map<std::string, Value> vars;

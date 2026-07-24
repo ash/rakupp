@@ -145,6 +145,7 @@ struct Call : Expr { // sub call by name: foo(args)  or  foo args
 struct MethodCall : Expr {
     ExprPtr inv;
     std::string method;
+    std::string methodQual; // `$obj.Class::method` — dispatch to Class's method, past any override
     ExprPtr methodExpr; // indirect call $obj."$name"() — method name computed at runtime
     std::vector<ExprPtr> args;
     bool maybe = false; // .?
