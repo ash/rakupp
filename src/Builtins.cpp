@@ -3069,12 +3069,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
     }
     if (inv.t == VT::Type && (inv.s == "Supplier" || inv.s == "Supplier::Preserving")) {
-        if (m == "new" || m == "preserving") { Value s = Value::makeHash(); s.hashKind = "Supplier"; (*s.hash)["taps"] = Value::array(); return s; }
+        if (m == "new" || m == "preserving") {
+            Value s = Value::makeHash(); s.hashKind = "Supplier"; (*s.hash)["taps"] = Value::array();
+            // Supplier::Preserving buffers every emit and replays the buffer to any
+            // tap that connects later (Cro emits the request into $!in before the
+            // async connect pipeline taps it).
+            if (inv.s == "Supplier::Preserving" || m == "preserving") {
+                (*s.hash)["preserving"] = Value::boolean(true);
+                (*s.hash)["buffer"] = Value::array();
+            }
+            return s;
+        }
     }
     // Supplier: a live push source. Its Supply shares the taps list; emit/done fan out to them.
     if (inv.t == VT::Hash && inv.hashKind == "Supplier") {
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash)["supplier"] = inv; return s; } // live (no "values")
         if (m == "emit") { Value v = args.empty() ? Value::any() : args[0];
+            if (inv.hash->count("preserving") && (*inv.hash)["preserving"].truthy() && inv.hash->count("buffer"))
+                (*inv.hash)["buffer"].arr->push_back(v); // replayed to late taps
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
                 if (t.t != VT::Hash) continue;
                 if (t.hash->count("closed") && (*t.hash)["closed"].truthy()) continue; // head/first already finished
@@ -3223,6 +3235,35 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "kill" || m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
+        // Supply.Promise: a Promise kept with the LAST value the Supply emits when it
+        // is done (broken if it quits). Drives the supply via tapSupply. Cro coerces
+        // `Promise(supply {…})` here (body parsers).
+        if (m == "Promise") {
+            Value p = Value::makeHash(); p.hashKind = "Promise";
+            auto ps = std::make_shared<PromiseState>();
+            p.ext = ps;
+            (*p.hash)["status"] = Value::str("Planned");
+            auto ph = p.hash;
+            auto last = std::make_shared<Value>(Value::any());
+            auto settle = [ps, ph](bool broke, Value v) {
+                std::vector<std::function<void()>> fire;
+                { std::lock_guard<std::mutex> lk(ps->m);
+                  if (ps->done) return;
+                  ps->done = true; if (broke) { ps->broken = true; ps->cause = v; ps->causeMsg = v.toStr(); } else ps->result = v;
+                  fire.swap(ps->thens); ps->cv.notify_all(); }
+                (*ph)["status"] = Value::str(broke ? "Broken" : "Kept");
+                if (!broke) (*ph)["result"] = v;
+                for (auto& f : fire) f();
+            };
+            Value emitCb; emitCb.t = VT::Code; emitCb.code = std::make_shared<Callable>();
+            emitCb.code->builtin = [last](Interpreter&, ValueList& a) -> Value { if (!a.empty()) *last = a[0]; return Value::any(); };
+            Value doneCb; doneCb.t = VT::Code; doneCb.code = std::make_shared<Callable>();
+            doneCb.code->builtin = [settle, last](Interpreter&, ValueList&) -> Value { settle(false, *last); return Value::any(); };
+            Value quitCb; quitCb.t = VT::Code; quitCb.code = std::make_shared<Callable>();
+            quitCb.code->builtin = [settle](Interpreter&, ValueList& a) -> Value { settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any(); };
+            tapSupply(inv, emitCb, doneCb, quitCb);
+            return p;
+        }
         // on-demand (block-holding) supply: .tap wires it for real; everything
         // else drains it eagerly (legacy value semantics) and continues below.
         // Inside a react block the legacy eager tap is kept (its whenever/done
@@ -8859,6 +8900,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return methodCall(bv, m, std::move(args), rwArgs);
         }
     }
+    // `.emit` / `.take` inside a supply/react block (or gather) act on the topic:
+    // `.emit` == `emit $_`, `.take` == `take $_`. Cro emits its response with
+    // `.emit; done;`. Only a fallback — `.done` is NOT routed (it is a real method
+    // on Supplier/Channel/Promise, and Cro uses the `done` statement, not `.done`).
+    if ((m == "emit" || m == "take") &&
+        (!tctx_.tapStack.empty() || !reactStack_.empty() || !tctx_.gatherStack.empty())) {
+        auto it = builtins_.find(m);
+        if (it != builtins_.end()) { ValueList a2{inv}; return it->second(*this, a2); }
+    }
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
     if (std::getenv("RAKUPP_TRACE"))
@@ -9109,6 +9159,43 @@ static int signalNumberOf(const Value& v) {
 // delay, as a live react source — a worker sleeps (GIL released, so sibling whenevers'
 // I/O runs meanwhile), then runs the block and drops the source. Without this the
 // timer resolved immediately (a timeout fired at t=0, defeating the guard).
+// `whenever Promise.in(N)` inside a supply {} block: a real timer. Holds the
+// supply open (pending) and fires the block after N seconds — unless the supply
+// closes first, in which case the worker cancels early (so it can't delay exit).
+Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx) {
+    engageGil();
+    ctx->pending++;
+    liveWorkers_++;
+    reapFinishedWorkers();
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    if (secs < 0) secs = 0;
+    Value fireW = ctxCallable(ctx, [blk, ctx](Interpreter& I2, ValueList&) -> Value {
+        if (!ctx->done && !ctx->doneFired) { ValueList none; try { I2.callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} }
+        ctx->pending--;
+        I2.maybeFinishSupply(ctx);
+        return Value::any();
+    });
+    workers_.push_back({BigStackThread([self, secs, fireW, fin, spawnScope, ctx]() mutable {
+        t_isWorker = true;
+        double slept = 0;
+        while (slept < secs && !ctx->done && !ctx->doneFired) { // GIL not held; cancellable
+            std::this_thread::sleep_for(std::chrono::duration<double>(0.05));
+            slept += 0.05;
+        }
+        self->gil_.lock();
+        ExecContext wctx; self->loadCtx(wctx);
+        self->tctx_.cur = spawnScope;
+        self->tctx_.dynStack.push_back(spawnScope.get());
+        ValueList none; try { self->callCallable(fireW, none); } catch (...) {}
+        self->gilYieldNotify();
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin});
+    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+}
+
 Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx) {
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
@@ -9292,6 +9379,18 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         }
         Value sup = h.at("supplier");
         if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
+        // Supplier::Preserving: replay every buffered value to this fresh tap (through
+        // its own transform chain), so a tap that connects after the emits still sees
+        // them (Cro's request-into-$!in-before-connect pattern).
+        if (sup.t == VT::Hash && sup.hash->count("preserving") && (*sup.hash)["preserving"].truthy() &&
+            sup.hash->count("buffer") && emitCb.t == VT::Code) {
+            for (auto& bv : *(*sup.hash)["buffer"].arr) {
+                bool complete = false;
+                ValueList outs = applyTapChain(tapRec, bv, complete);
+                for (auto& o : outs) { ValueList one{o}; try { callCallable(emitCb, one); } catch (NextEx&) {} catch (LastEx&) { complete = true; break; } }
+                if (complete) break;
+            }
+        }
         // already-done supplier: fire done immediately so wiring completes
         if (sup.t == VT::Hash && sup.hash->count("done_state") && (*sup.hash)["done_state"].truthy() &&
             doneCb.t == VT::Code) { ValueList na; try { callCallable(doneCb, na); } catch (...) {} }
@@ -10971,29 +11070,53 @@ void Interpreter::registerBuiltins() {
         if (!I.tctx_.tapStack.empty() && a.size() >= 2 && a.back().t == VT::Code) {
             auto ctx = I.tctx_.tapStack.back();
             Value src = a[0], blk = a.back();
-            // whenever over a Promise/plain value: run the block once with its
-            // result — a real (worker-backed) Promise is awaited first, with
-            // the GIL released so the worker can run
+            // whenever Promise.in(N)/at(T) in a supply block: a real timer (was
+            // firing immediately — Cro's connection/headers timeouts rely on it).
+            if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash->count("kind") &&
+                (*src.hash)["kind"].toStr() == "timer") {
+                double secs = src.hash->count("seconds") ? (*src.hash)["seconds"].toNum() : 0;
+                return I.spawnSupplyTimer(secs, blk, ctx);
+            }
+            // whenever over a Promise: register an ASYNC one-shot — the block runs
+            // once, with the promise's RESULT, when the promise settles. Must NOT
+            // block the supply-block setup: an unkept Promise stays dormant (Cro's
+            // ResponseParser has `whenever $cancellation` that is normally never
+            // kept — awaiting it synchronously hung the whole response pipeline).
+            if (src.t == VT::Hash && src.hashKind == "Promise" && src.ext) {
+                auto ps = std::static_pointer_cast<PromiseState>(src.ext);
+                std::vector<Value> lastP, quitP;
+                scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
+                // a promise is a live source until it settles: hold the supply open
+                // (so the block that ends after registering it doesn't finish early),
+                // and release the hold once it fires.
+                ctx->pending++;
+                // fire under the supply activation so the body's emits reach downstream
+                Value fireW = ctxCallable(ctx, [blk, lastP, quitP, ps, ctx](Interpreter& I2, ValueList&) -> Value {
+                    if (ps->broken) {
+                        Value ex = ps->cause.t == VT::Nil ? Value::str(ps->causeMsg) : ps->cause;
+                        for (auto& q : quitP) { ValueList one{ex}; try { I2.callCallable(q, one); } catch (...) {} }
+                    } else {
+                        ValueList one{ ps->result };
+                        try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
+                        for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                    }
+                    ctx->pending--;
+                    I2.maybeFinishSupply(ctx);
+                    return Value::any();
+                });
+                Interpreter* self = &I;
+                std::function<void()> run = [self, fireW]() { ValueList na; try { self->callCallable(fireW, na); } catch (...) {} };
+                bool now = false;
+                { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(run); }
+                if (now) run();
+                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+            }
+            // whenever over a plain (non-Supply, non-Promise) value: run once with it
             if (!(src.t == VT::Hash && src.hashKind == "Supply")) {
                 Value rv = src;
-                bool broken = false;
-                if (src.t == VT::Hash && src.hashKind == "Promise") {
-                    if (src.ext) {
-                        auto ps = std::static_pointer_cast<PromiseState>(src.ext);
-                        I.awaitPromise(ps);
-                        if (ps->broken) {
-                            broken = true;
-                            fprintf(stderr, "===WARNING=== whenever: awaited promise broken: %s\n",
-                                    ps->causeMsg.c_str());
-                        }
-                        else rv = ps->result;
-                    }
-                    else if (src.hash->count("result")) rv = (*src.hash)["result"];
-                }
-                if (!broken) {
-                    ValueList one{rv};
-                    try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
-                }
+                if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash->count("result")) rv = (*src.hash)["result"];
+                ValueList one{rv};
+                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
             std::vector<Value> lastP, quitP;
