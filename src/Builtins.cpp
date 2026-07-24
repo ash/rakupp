@@ -11088,6 +11088,19 @@ void Interpreter::registerBuiltins() {
                     // enclosing react blocks until this supplier signals done.
                     Value tapRec = Value::makeHash();
                     (*tapRec.hash)["emit"] = blk;
+                    // Carry the Supply's transform chain (head/grep/map/…) onto the tap,
+                    // each step with its OWN fresh state — same as tapSupply's live branch.
+                    // Without it `whenever $s.Supply.head(1)` never limits and, worse,
+                    // never reports completion, so the enclosing react waits forever.
+                    if (s.hash->count("chain")) {
+                        Value chain = Value::array();
+                        for (auto& step : *(*s.hash)["chain"].arr) {
+                            Value s2 = Value::makeHash(); *s2.hash = *step.hash;
+                            (*s2.hash)["state"] = Value::makeHash();
+                            chain.arr->push_back(s2);
+                        }
+                        (*tapRec.hash)["chain"] = chain;
+                    }
                     if (!I.reactStack_.empty()) {
                         auto ctx = I.reactStack_.back();
                         tapRec.ext = ctx;
