@@ -2234,6 +2234,40 @@ Value Interpreter::buildResourceMap(const std::string& repo, const std::string& 
     return h;
 }
 
+// Build %?RESOURCES for a module loaded from a SOURCE checkout (`-I <distRoot>`):
+// read <distRoot>/META6.json's `resources` array (bare "name" strings) and map
+// each to an IO::Path at <distRoot>/resources/<name>. Rakudo resolves resources
+// from META6 even when running uninstalled, so `%?RESOURCES<x>.IO` must work from
+// source too (zef's Zef::Config reads its resources/config.json this way).
+Value Interpreter::buildSourceResourceMap(const std::string& distRoot) {
+    Value h = Value::makeHash(); h.hashKind = "";
+    std::ifstream meta(distRoot + "/META6.json");
+    if (!meta) return h;
+    std::ostringstream ss; ss << meta.rdbuf();
+    const std::string j = ss.str();
+    size_t rp = j.find("\"resources\"");
+    if (rp == std::string::npos) return h;
+    size_t lb = j.find('[', rp);
+    if (lb == std::string::npos) return h;
+    size_t rb = j.find(']', lb);
+    if (rb == std::string::npos) return h;
+    // each bare string between [ and ] is a resource name (the `{file,libname}`
+    // native-lib form isn't used by the dists we target, so a string scan suffices)
+    size_t p = lb + 1;
+    while (p < rb) {
+        size_t vs = j.find('"', p);
+        if (vs == std::string::npos || vs >= rb) break;
+        size_t vend = j.find('"', vs + 1);
+        if (vend == std::string::npos || vend > rb) break;
+        std::string nm = j.substr(vs + 1, vend - vs - 1);
+        Value path = Value::str(distRoot + "/resources/" + nm);
+        path.hashKind = "IO"; // IO::Path — supports .IO/.slurp/.Str/.e
+        (*h.hash)[nm] = path;
+        p = vend + 1;
+    }
+    return h;
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport) {
     if (loadedModules_.count(name)) return;
     noteSymbolMutation("module load (use/need)");
@@ -2267,6 +2301,11 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // Test::Util's own `is_run` still resolves `run` (via its module closure),
         // while an importer's bare `run(...)` reaches the built-in.
         auto moduleEnv = std::make_shared<Env>(); moduleEnv->parent = global_;
+        // %?RESOURCES is LEXICAL to the compiling module: bind it in the module env so
+        // subs defined here close over their OWN resources and still resolve them when
+        // called later, after the load-time resourceStack_ entry has been popped.
+        if (!resourceStack_.empty())
+            moduleEnv->define("%?RESOURCES", resourceStack_.back());
         std::set<std::string> exported;
         // `is export` subs may sit inside a BRACED module/package body
         // (Cro::HTTP::Router exports `get`/`post`/… from `module … { }`) —
@@ -2367,6 +2406,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 std::ifstream in(dir + "/" + rel + ext);
                 if (!in) continue;
                 std::ostringstream ss; ss << in.rdbuf();
+                // Bind %?RESOURCES from the source checkout's META6 (the dist root is
+                // `base`; when we matched `base/lib` it's still `base`). Pop after load.
+                resourceStack_.push_back(buildSourceResourceMap(base));
+                struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
                 loadSource(ss.str());
                 return;
             }
@@ -3366,6 +3409,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // stub, never the other way around.
             for (auto& rn : cd->roles) {
                 auto it = classes_.find(rn);
+                // resolve the SAME way as the conflict-detection scan above: an
+                // imported short name (`does Pluggable` where the role is really
+                // `Mod::Pluggable`) needs the pkg-prefix / alias fallback, else its
+                // methods are silently never composed.
+                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
+                    it = classes_.find(tctx_.pkgPrefix + rn);
+                if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
                 {   // only a role (or an unknown/built-in role name) composes;
                     // a class or concrete core type is X::Composition::NotComposable
                     static const std::set<std::string> kConcrete = {
@@ -13062,8 +13112,14 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             if (ve->name == "$=finish") return Value::str(finishData_); // =finish data block
-            if (ve->name == "%?RESOURCES") // dist resource files of the loading module
+            if (ve->name == "%?RESOURCES") { // dist resource files — LEXICAL to the defining module
+                // a module's subs close over the %?RESOURCES bound in their module env,
+                // so it still resolves when the sub is CALLED after the load finished
+                // (the resourceStack_ has been popped by then). Fall back to the stack
+                // for BEGIN-time / mainline uses.
+                if (Value* p = tctx_.cur->find("%?RESOURCES")) return *p;
                 return resourceStack_.empty() ? Value::makeHash() : resourceStack_.back();
+            }
             if (ve->name == "$?LINE") return Value::integer(ve->line);
             if (ve->name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
             // Built-in magic dynamic vars ($*OUT, $*CWD, …). A user binding

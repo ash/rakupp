@@ -603,6 +603,7 @@ public:
     // a stack because module loads nest (a module can `use` another).
     std::vector<Value> resourceStack_;
     Value buildResourceMap(const std::string& repo, const std::string& distId); // dist files → resource Hash
+    Value buildSourceResourceMap(const std::string& distRoot); // source checkout META6 `resources` → resource Hash
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
