@@ -359,6 +359,9 @@ static Value typedDefault(const std::string& type, char sigil) {
             {"uint8",8,false},{"int8",8,true},{"byte",8,false},{"uint16",16,false},{"int16",16,true},
             {"uint32",32,false},{"int32",32,true},{"uint64",64,false},{"int64",64,true}};
         for (auto& t : nts) if (type == t.n) { Value v = Value::integer(0); v.natBits = t.bits; v.natSigned = t.sgn; return v; }
+        // num32 rounds to float32 precision on assignment (num/num64 are already
+        // double, so they need no truncation marker).
+        if (type == "num32") { Value v = Value::number(0); v.natBits = 32; v.natFloat = true; return v; }
         if (type == "num" || type.rfind("num", 0) == 0) return Value::number(0);
         if (type == "int" || type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0) return Value::integer(0);
         if (type == "str") return Value::str("");
@@ -376,8 +379,14 @@ static Value typedDefault(const std::string& type, char sigil) {
     return defaultFor(sigil);
 }
 // Truncate an integer value to a native type's bit width (wraparound), keeping the tag.
-static void wrapNative(Value& v, int bits, bool sign) {
+static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
     if (bits <= 0) return;
+    if (isFloat) { // native float container: num32 rounds to float32 precision
+        if (bits == 32) { float f = (float)v.toNum(); v = Value::number((double)f); }
+        else            v = Value::number(v.toNum());
+        v.natBits = bits; v.natFloat = true;
+        return;
+    }
     long long x = v.toInt();
     if (bits < 64) {
         unsigned long long mask = (1ULL << bits) - 1;
@@ -2189,6 +2198,40 @@ static const std::vector<std::string>& rakuRepoPrefixes() {
     return repos;
 }
 
+// Build the %?RESOURCES hash for an installed distribution: read its dist meta
+// (JSON) and map each `resources/<name>` file entry to an IO::Path pointing at
+// the on-disk `<repo>/resources/<content-id>` copy. The dist `files` map is a
+// flat string→string object, so a targeted scan for `"resources/…":"…"` pairs
+// is enough (the top-level `resources` array holds bare strings, no colon).
+Value Interpreter::buildResourceMap(const std::string& repo, const std::string& distId) {
+    Value h = Value::makeHash(); h.hashKind = "";
+    std::ifstream meta(repo + "/dist/" + distId);
+    if (!meta) return h;
+    std::ostringstream ss; ss << meta.rdbuf();
+    const std::string j = ss.str();
+    // scan for "resources/<key>" : "<value>"
+    size_t p = 0;
+    const std::string tag = "\"resources/";
+    while ((p = j.find(tag, p)) != std::string::npos) {
+        size_t ks = p + tag.size();
+        size_t ke = j.find('"', ks);
+        if (ke == std::string::npos) break;
+        std::string key = j.substr(ks, ke - ks);
+        size_t c = j.find(':', ke);
+        if (c == std::string::npos) { p = ke + 1; continue; }
+        size_t vs = j.find('"', c);
+        if (vs == std::string::npos) break;
+        size_t ve = j.find('"', vs + 1);
+        if (ve == std::string::npos) break;
+        std::string val = j.substr(vs + 1, ve - vs - 1);
+        Value path = Value::str(repo + "/resources/" + val);
+        path.hashKind = "IO"; // IO::Path — supports .slurp/.IO/.Str/.e
+        (*h.hash)[key] = path;
+        p = ve + 1;
+    }
+    return h;
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport) {
     if (loadedModules_.count(name)) return;
     noteSymbolMutation("module load (use/need)");
@@ -2239,6 +2282,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         scanExports(prog->stmts);
         tctx_.cur = moduleEnv;
         auto savedPkg = curPkgEnv_; curPkgEnv_ = moduleEnv; // `our sub` in the module installs here, not main's global
+        // A `unit module Foo;` sets pkgPrefix for the rest of the file so its
+        // `our sub`s publish qualified (Foo::name); save/restore so it can't leak
+        // into the importing program.
+        auto savedModPrefix = tctx_.pkgPrefix; tctx_.pkgPrefix.clear();
         auto publish = [&] {
             for (auto& kv : moduleEnv->vars) {
                 const std::string& k = kv.first;
@@ -2260,21 +2307,31 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             hoistSubs(prog->stmts);
             for (auto& st : prog->stmts) {
                 if (st->kind == NK::SubDecl && !static_cast<SubDecl*>(st.get())->name.empty() &&
-                    !static_cast<SubDecl*>(st.get())->isMethod) { applySubTraits(static_cast<SubDecl*>(st.get())); continue; } // hoisted
+                    !static_cast<SubDecl*>(st.get())->isMethod) {
+                    auto* sd = static_cast<SubDecl*>(st.get());
+                    applySubTraits(sd);
+                    // A leading `unit module Foo;` has now set pkgPrefix, but this
+                    // `our sub` was already defined by hoistSubs (bare) — publish it
+                    // under its qualified name so external `Foo::name()` calls resolve.
+                    if (sd->isOur && !tctx_.pkgPrefix.empty())
+                        if (Value* c = tctx_.cur->find("&" + sd->name))
+                            global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
+                    continue; // hoisted
+                }
                 exec(st.get());
             }
         }
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
             publish();
-            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish;
+            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix;
             std::cerr << "===WARNING=== Module " << name << " failed during load: " << e.message << "\n";
             return;
         }
-        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; throw; }
+        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; throw; }
         loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
         publish();
-        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish;
+        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix;
         // `sub EXPORT(*@_)` protocol: call it with the use-statement's <...>
         // args; its returned Map ('&name' => &code, ...) defines the imports
         // in the USING scope.
@@ -2330,6 +2387,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         std::ifstream src(repo + "/sources/" + lines[3]);
         if (!src) continue;
         std::ostringstream ss; ss << src.rdbuf();
+        // Bind %?RESOURCES for this module (the short-index filename is its dist
+        // id) so BEGIN-time `%?RESOURCES<x>.slurp` resolves. Pop after loading.
+        resourceStack_.push_back(buildResourceMap(repo, entry));
+        struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
         loadSource(ss.str());
         return;
     }
@@ -2859,6 +2920,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     static_cast<ExprStmt*>(sd->body[0].get())->e &&
                     static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
                 if (sd->isNative) { c.code->isNative = true; c.code->nativeLib = sd->nativeLib;
+                                    c.code->nativeLibSub = sd->nativeLibSub;
                                     c.code->nativeSym = sd->nativeSym.empty() ? sd->name : sd->nativeSym; }
                 for (auto& p : *prms) {
                     // a default makes no sense on a slurpy or a required param
@@ -2994,6 +3056,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `our sub` is package-scoped: also install globally so a sibling block
                 // (or an `our &name;` re-declaration) can reach it.
                 if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) curPkgEnv_->define("&" + sd->name, code);
+                // and publish the fully-qualified name (Foo::Bar::name) so callers
+                // outside the module can reach an unexported `our sub` — the only
+                // way OpenSSL::Version::version_num etc. are invoked.
+                if (sd->isOur && !tctx_.pkgPrefix.empty())
+                    global_->define("&" + tctx_.pkgPrefix + sd->name, code);
             }
             if (sd->immediateCall) { // `sub f(...) {...}(args)` — call right away
                 ValueList ia;
@@ -3098,10 +3165,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return Value::typeObj(cd->name);
             }
             if (cd->isPackage) {
-                // file-scoped `unit module Foo;` (empty body): just register the name;
-                // the rest of the file runs in the enclosing scope.
+                // file-scoped `unit module Foo;` (empty body): register the name and
+                // set the package prefix so the rest of the file's `our sub`s / `our`
+                // vars publish under qualified names (Foo::name). The prefix persists
+                // to end-of-compunit; loadModule save/restores it so it can't leak.
                 if (cd->body.empty()) {
-                    if (!cd->name.empty()) tctx_.cur->define(cd->name, Value::typeObj(cd->name));
+                    if (!cd->name.empty()) {
+                        tctx_.cur->define(cd->name, Value::typeObj(cd->name));
+                        tctx_.pkgPrefix += cd->name + "::";
+                        if (curPkgEnv_ == global_) curPkgEnv_ = tctx_.cur; // `our` installs here
+                    }
                     return Value::any();
                 }
                 // braced `module Foo { ... }`: run body in a child scope, then publish
@@ -5211,7 +5284,10 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
         case VT::Rat:     return type == "Rat" || type == "Numeric" || type == "Real";
         case VT::Complex: return type == "Complex" || type == "Numeric";
         case VT::Str:     return type == "Str" || type == "Stringy";
-        case VT::Bool:    return type == "Bool";
+        // Bool is an Int-backed enum, so `True ~~ Int` / nqp::istype(True, Int)
+        // hold (CBOR::Simple classifies Bool via nqp::istype($_, Numeric)).
+        case VT::Bool:    return type == "Bool" || type == "Int" ||
+                                 type == "Numeric" || type == "Real";
         case VT::Array:
             // a Seq is an Array tagged `.s == "Seq"`; a plain Array/List is NOT a
             // Seq (JSON::Fast's jsonify tests `istype($_, Seq)` before Positional
@@ -5363,13 +5439,22 @@ static bool ncIsFloatType(const std::string& t) {
 // libffi): mixed int/float arguments, C structs, `CArray`, and callbacks.
 Value Interpreter::callNative(Callable& c, ValueList& args) {
     void* handle = RTLD_DEFAULT;
-    if (!c.nativeLib.empty()) {
+    // `is native(&sub)`: call the sub now to get the library path (a full path or
+    // bare name). Its result is cached on the Callable so we resolve it once.
+    std::string lib = c.nativeLib;
+    if (lib.empty() && !c.nativeLibSub.empty()) {
+        if (Value* f = tctx_.cur->find("&" + c.nativeLibSub)) {
+            ValueList none; Value r = callCallable(*f, none);
+            lib = r.toStr();
+        }
+    }
+    if (!lib.empty()) {
         // try the name as-is, then platform-decorated forms
-        const std::string& l = c.nativeLib;
+        const std::string& l = lib;
         for (const std::string& cand : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"}) {
             if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
         }
-        if (!handle) throw RakuError{Value::typeObj("X::Libc"), "Cannot load native library '" + c.nativeLib + "'"};
+        if (!handle) throw RakuError{Value::typeObj("X::Libc"), "Cannot load native library '" + lib + "'"};
     }
     void* sym = dlsym(handle, c.nativeSym.c_str());
     if (!sym) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + c.nativeSym + "'"};
@@ -5391,6 +5476,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
             keep.push_back(v.toStr());
             g.push_back((long)(intptr_t)keep.back().c_str());
             anyGP = true;
+        } else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) {
+            // a CStruct/CPointer handle returned by an earlier native call — pass
+            // the raw pointer back (round-trips SSL_CTX, BIO, … between calls)
+            g.push_back((long)v.obj->attrs["__native_ptr"].toInt()); anyGP = true;
         } else if (fp) { f.push_back(v.toNum()); anyFP = true; }
         else          { g.push_back(v.toInt()); anyGP = true; }
     }
@@ -5408,6 +5497,23 @@ Value Interpreter::callNative(Callable& c, ValueList& args) {
     if (rt == "Str") return Value::str(ri ? std::string((const char*)(intptr_t)ri) : "");
     if (retFP) return Value::number(rd);
     if (rt == "bool" || rt == "Bool") return Value::boolean(ri != 0);
+    // CStruct/CPointer return: if the declared return type names a class (not a
+    // native scalar), box the pointer as an object of that class so it satisfies
+    // the type check and round-trips into later native calls (SSL_CTX_new → SSL_new).
+    if (!rt.empty() && (std::isupper((unsigned char)rt[0]) || rt.find("::") != std::string::npos)) {
+        std::shared_ptr<ClassInfo> ci;
+        auto it = classes_.find(rt);
+        if (it != classes_.end()) ci = it->second;
+        else for (auto& kv : classes_) { // match a qualified name ending in ::rt
+            const std::string& nm = kv.first;
+            if (nm.size() > rt.size() + 2 && nm.compare(nm.size() - rt.size() - 2, rt.size() + 2, "::" + rt) == 0) { ci = kv.second; break; }
+        }
+        if (ci) {
+            Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
+            o.obj->cls = ci; o.obj->attrs["__native_ptr"] = Value::integer(ri);
+            return o;
+        }
+    }
     return Value::integer(ri);
 }
 #undef NC_DISPATCH
@@ -6863,7 +6969,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto it = lv->hash->find("STORE");
             if (it != lv->hash->end()) { Value r = callCallable(it->second, { rhs }); return sink ? Value::any() : r; }
         }
-        int nb = lv->natBits; bool ns = lv->natSigned; // native-int container: preserve width & wrap
+        int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
         if (sigil == '@') {
             std::string keepType = lv->ofType; // the container keeps its element type
             // Shaped array assignment (`my @a[2;2] = …`).
@@ -7021,7 +7127,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             *lv = rhs;
         }
-        if (nb) wrapNative(*lv, nb, ns);
+        if (nb) wrapNative(*lv, nb, ns, nf);
         return sink ? Value::any() : *lv;
     }
 
@@ -7062,9 +7168,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (keep) return sink ? Value::any() : cur;
             if (!lv) throw RakuError{Value::str("Cannot assign"), "Target is not assignable"};
             Value rhs = eval(a->value.get());
-            int nb = lv->natBits; bool ns = lv->natSigned;
+            int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
             *lv = rhs;
-            if (nb) wrapNative(*lv, nb, ns);
+            if (nb) wrapNative(*lv, nb, ns, nf);
             return sink ? Value::any() : *lv;
         }
     }
@@ -7084,7 +7190,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return sink ? Value::any() : nv;
         }
     }
-    int nb = lv->natBits; bool ns = lv->natSigned;
+    int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
     if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
         *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
@@ -7125,7 +7231,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             else throw;
         }
     }
-    if (nb) wrapNative(*lv, nb, ns);
+    if (nb) wrapNative(*lv, nb, ns, nf);
     return sink ? Value::any() : *lv;
 }
 
@@ -8228,6 +8334,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
+                  (l.t == VT::Bool && (r.s == "Int" || r.s == "Real")) || // Bool is an Int-backed enum
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));
             // an allomorph (IntStr/RatStr/NumStr) satisfies BOTH its numeric type and Str
@@ -10874,7 +10981,7 @@ Value Interpreter::evalUnary(Unary* u) {
             newv = methodCall(*lv, u->op == "++" ? "succ" : "pred", {});
         } else {
             newv = applyArith(u->op == "++" ? "+" : "-", *lv, Value::integer(1));
-            if (lv->natBits) wrapNative(newv, lv->natBits, lv->natSigned); // native int wraparound
+            if (lv->natBits) wrapNative(newv, lv->natBits, lv->natSigned, lv->natFloat); // native int wraparound
         }
         *lv = newv;
         if (anyRwLinks_) rwWriteThrough(u->operand.get()); // ++/-- on a linked rw param
@@ -12579,6 +12686,8 @@ Value Interpreter::eval(Expr* e) {
                 }
             }
             if (ve->name == "$=finish") return Value::str(finishData_); // =finish data block
+            if (ve->name == "%?RESOURCES") // dist resource files of the loading module
+                return resourceStack_.empty() ? Value::makeHash() : resourceStack_.back();
             if (ve->name == "$?LINE") return Value::integer(ve->line);
             if (ve->name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
             // Built-in magic dynamic vars ($*OUT, $*CWD, …). A user binding
@@ -13137,7 +13246,10 @@ Value Interpreter::eval(Expr* e) {
             if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
                 !mc->meta && mc->method.rfind("write-", 0) == 0) {
                 ValueList wargs = evalArgs(mc->args);
-                if (Value* lv = lvalue(mc->inv.get())) {
+                Value* lv = nullptr;                       // a temporary invocant
+                try { lv = lvalue(mc->inv.get()); }        // (`buf8.new.write-…`) has no
+                catch (RakuError&) {}                      // lvalue — mutate the copy below
+                if (lv) {
                     if (lv->hashKind == "Blob")
                         throw RakuError{Value::typeObj("X::Buf::RO"), "Cannot write to an immutable Blob"};
                     return bufBitOp(*lv, mc->method, wargs);

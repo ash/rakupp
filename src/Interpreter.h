@@ -202,6 +202,11 @@ struct ReactCtx {
     bool closed = false;   // `done`/`last` called
     std::mutex m;
     std::condition_variable cv;
+    // Externally-wired taps (e.g. OS-signal taps) whose teardown isn't driven by
+    // supplyCloseStack_. When the react block ends they must be closed, or their
+    // dispatcher keeps firing the handler after the block is gone (a second
+    // Ctrl-C re-invoking `$server.stop` on an already-stopped service).
+    std::vector<std::shared_ptr<TapHandle>> extTaps;
 };
 
 class Interpreter {
@@ -582,6 +587,10 @@ public:
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     std::string srcFile_;             // source file path as invoked ($*PROGRAM-NAME)
     std::string srcFileAbs_;          // absolute source file path ($?FILE)
+    // %?RESOURCES for the module currently being loaded (dist resource files);
+    // a stack because module loads nest (a module can `use` another).
+    std::vector<Value> resourceStack_;
+    Value buildResourceMap(const std::string& repo, const std::string& distId); // dist files → resource Hash
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)

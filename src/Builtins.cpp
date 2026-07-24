@@ -1380,6 +1380,128 @@ static const char* quantValueType(const std::string& kind) {
 
 static Value makeAsyncSocket(int fd); // defined with the supply-wiring block below
 
+// ---- minimal JSON parser (Rakudo::Internals::JSON.from-json) ----------------
+// Recursive descent producing rakupp Values: object→Hash, array→List, string→
+// Str, number→Int/Num, true/false→Bool, null→Any. Enough for module resource
+// files and META-style data (OpenSSL's libraries.json, dist configs).
+static void jsonSkipWs(const std::string& s, size_t& i) {
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
+}
+static bool jsonParseValue(const std::string& s, size_t& i, Value& out);
+static bool jsonParseString(const std::string& s, size_t& i, std::string& out) {
+    if (i >= s.size() || s[i] != '"') return false;
+    i++;
+    out.clear();
+    while (i < s.size() && s[i] != '"') {
+        char c = s[i++];
+        if (c == '\\' && i < s.size()) {
+            char e = s[i++];
+            switch (e) {
+                case 'n': out += '\n'; break;  case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;  case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;  case '/': out += '/';  break;
+                case '"': out += '"';  break;  case '\\': out += '\\'; break;
+                case 'u': {
+                    if (i + 4 > s.size()) return false;
+                    unsigned cp = std::strtoul(s.substr(i, 4).c_str(), nullptr, 16); i += 4;
+                    // encode the code point as UTF-8 (BMP only; surrogate pairs rare here)
+                    if (cp < 0x80) out += (char)cp;
+                    else if (cp < 0x800) { out += (char)(0xC0|(cp>>6)); out += (char)(0x80|(cp&0x3F)); }
+                    else { out += (char)(0xE0|(cp>>12)); out += (char)(0x80|((cp>>6)&0x3F)); out += (char)(0x80|(cp&0x3F)); }
+                    break;
+                }
+                default: out += e; break;
+            }
+        } else out += c;
+    }
+    if (i >= s.size()) return false;
+    i++; // closing quote
+    return true;
+}
+static bool jsonParseValue(const std::string& s, size_t& i, Value& out) {
+    jsonSkipWs(s, i);
+    if (i >= s.size()) return false;
+    char c = s[i];
+    if (c == '"') { std::string str; if (!jsonParseString(s, i, str)) return false; out = Value::str(str); return true; }
+    if (c == '{') {
+        i++; out = Value::makeHash();
+        jsonSkipWs(s, i);
+        if (i < s.size() && s[i] == '}') { i++; return true; }
+        for (;;) {
+            jsonSkipWs(s, i);
+            std::string key; if (!jsonParseString(s, i, key)) return false;
+            jsonSkipWs(s, i);
+            if (i >= s.size() || s[i] != ':') return false; i++;
+            Value v; if (!jsonParseValue(s, i, v)) return false;
+            (*out.hash)[key] = v;
+            jsonSkipWs(s, i);
+            if (i < s.size() && s[i] == ',') { i++; continue; }
+            if (i < s.size() && s[i] == '}') { i++; return true; }
+            return false;
+        }
+    }
+    if (c == '[') {
+        i++; out = Value::array(); out.isList = true;
+        jsonSkipWs(s, i);
+        if (i < s.size() && s[i] == ']') { i++; return true; }
+        for (;;) {
+            Value v; if (!jsonParseValue(s, i, v)) return false;
+            out.arr->push_back(v);
+            jsonSkipWs(s, i);
+            if (i < s.size() && s[i] == ',') { i++; continue; }
+            if (i < s.size() && s[i] == ']') { i++; return true; }
+            return false;
+        }
+    }
+    if (s.compare(i, 4, "true") == 0)  { i += 4; out = Value::boolean(true);  return true; }
+    if (s.compare(i, 5, "false") == 0) { i += 5; out = Value::boolean(false); return true; }
+    if (s.compare(i, 4, "null") == 0)  { i += 4; out = Value::any();           return true; }
+    // number
+    size_t st = i;
+    if (c == '-' || c == '+') i++;
+    bool isFloat = false;
+    while (i < s.size() && (std::isdigit((unsigned char)s[i]) || s[i]=='.' || s[i]=='e' || s[i]=='E' || s[i]=='+' || s[i]=='-')) {
+        if (s[i]=='.' || s[i]=='e' || s[i]=='E') isFloat = true;
+        i++;
+    }
+    if (i == st) return false;
+    std::string num = s.substr(st, i - st);
+    if (isFloat) out = Value::number(std::strtod(num.c_str(), nullptr));
+    else         out = Value::integer(std::strtoll(num.c_str(), nullptr, 10));
+    return true;
+}
+
+static std::string jsonEncode(const Value& v) {
+    switch (v.t) {
+        case VT::Nil: case VT::Any: case VT::Type: return "null";
+        case VT::Bool: return v.b ? "true" : "false";
+        case VT::Int:  return std::to_string(v.i);
+        case VT::Num: case VT::Rat: { std::ostringstream o; o << v.toNum(); return o.str(); }
+        case VT::Array: {
+            std::string r = "[";
+            if (v.arr) for (size_t k = 0; k < v.arr->size(); k++) { if (k) r += ","; r += jsonEncode((*v.arr)[k]); }
+            return r + "]";
+        }
+        case VT::Hash: {
+            std::string r = "{"; bool first = true;
+            if (v.hash) for (auto& kv : *v.hash) { if (!first) r += ","; first = false; r += "\"" + kv.first + "\":" + jsonEncode(kv.second); }
+            return r + "}";
+        }
+        default: { // string (and anything stringy)
+            std::string r = "\"";
+            for (char c : v.toStr()) {
+                switch (c) {
+                    case '"': r += "\\\""; break; case '\\': r += "\\\\"; break;
+                    case '\n': r += "\\n"; break; case '\t': r += "\\t"; break;
+                    case '\r': r += "\\r"; break;
+                    default: r += c;
+                }
+            }
+            return r + "\"";
+        }
+    }
+}
+
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     // package-relative short name: a bare `Frog` type invocant answers as its
     // qualified nested class (`Forest::Frog`) when no real class claims the
@@ -1961,6 +2083,21 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Cro's HTTP parsers drive. The decoder is a stateful byte buffer with
     // line-separator-aware consumption; our strings are byte strings, so
     // iso-8859-1/ascii/utf-8 all pass bytes through unchanged.
+    // Rakudo::Internals::JSON — the built-in JSON codec several modules use at
+    // load time (OpenSSL::NativeLib reads libraries.json through it).
+    if (inv.t == VT::Type && inv.s == "Rakudo::Internals::JSON") {
+        if (m == "from-json") {
+            std::string j = args.empty() ? "" : args[0].toStr();
+            size_t i = 0; Value out;
+            if (!jsonParseValue(j, i, out))
+                throw RakuError{Value::typeObj("X::AdHoc"), "Invalid JSON"};
+            return out;
+        }
+        if (m == "to-json") {
+            // pretty/spec flags are accepted but ignored (compact output)
+            return Value::str(args.empty() ? "null" : jsonEncode(args[0]));
+        }
+    }
     if (inv.t == VT::Type && inv.s == "Encoding::Registry" && (m == "find" || m == "register")) {
         static std::map<std::string, Value> userEncodings; // fc name → registered Encoding
         auto fc = [](std::string s) { for (auto& c : s) c = (char)std::tolower((unsigned char)c); return s; };
@@ -2002,6 +2139,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value seps = Value::array(); seps.arr->push_back(Value::str("\n"));
             (*d.hash)["seps"] = seps;
             return d;
+        }
+        if (m == "encoder") { // stateless: our strings are already UTF-8 bytes
+            Value e = Value::makeHash(); e.hashKind = "Encoder";
+            (*e.hash)["name"] = (*inv.hash)["name"];
+            return e;
+        }
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Encoder") {
+        // encode-chars(Str) → Blob of the encoded bytes (CBOR::Simple uses utf8,
+        // which is our internal string representation, so bytes pass through).
+        if (m == "encode-chars" || m == "encode") {
+            Value b = Value::str(args.empty() ? std::string() : args[0].toStr());
+            b.hashKind = "Blob";
+            return b;
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Decoder") {
@@ -3155,6 +3306,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "cpu-cores") { unsigned n = std::thread::hardware_concurrency(); return Value::integer(n ? (long long)n : 1); }
         if (m == "archname" || m == "cpu-arch") return Value::str("x86_64");
+        // $*VM.platform-library-name("…/lib/ssl".IO) → "…/lib/libssl.dylib":
+        // prepend `lib` to the basename and append the platform extension. Used
+        // by OpenSSL::NativeLib et al. to build the `is native` library name.
+        if (m == "platform-library-name" && !args.empty()) {
+            std::string p = args[0].toStr();
+            size_t slash = p.find_last_of('/');
+            std::string dir = slash == std::string::npos ? "" : p.substr(0, slash + 1);
+            std::string base = slash == std::string::npos ? p : p.substr(slash + 1);
+#if defined(_WIN32)
+            const char* ext = ".dll"; const char* pre = "";
+#elif defined(__APPLE__)
+            const char* ext = ".dylib"; const char* pre = "lib";
+#else
+            const char* ext = ".so"; const char* pre = "lib";
+#endif
+            // don't double-prefix if it already starts with lib
+            std::string libbase = base.compare(0, 3, "lib") == 0 ? base : pre + base;
+            Value r = Value::str(dir + libbase + ext); r.hashKind = "IO"; return r;
+        }
         return Value::str(name); // lenient: any other Distro/Kernel/VM accessor
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc") { // standard Proc from run()
@@ -8627,6 +8797,13 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                 it = (it->second == rec) ? g_sigTaps.erase(it) : std::next(it);
         }
     });
+    // When wired into a react block, arrange for the tap to be torn down when the
+    // block ends (via `done` or all sources completing) — otherwise the signal
+    // dispatcher keeps this tap live and re-fires the handler on the next signal.
+    if (reactCtx) {
+        std::lock_guard<std::mutex> lk(reactCtx->m);
+        reactCtx->extTaps.push_back(handle);
+    }
     Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
     (*t.hash)["wired"] = Value::boolean(true);
     return t;
@@ -10336,6 +10513,12 @@ void Interpreter::registerBuiltins() {
         catch (...) { I.reactStack_.pop_back(); I.supplyCloseStack_.pop_back(); throw; }
         I.reactStack_.pop_back();
         I.runReactLoop(ctx); // block until every live whenever source is done
+        {   // react is over: tear down externally-wired taps (OS-signal taps) so
+            // their dispatcher stops firing the handler once the block is gone.
+            std::vector<std::shared_ptr<TapHandle>> extTaps;
+            { std::lock_guard<std::mutex> lk(ctx->m); extTaps.swap(ctx->extTaps); }
+            for (auto& h : extTaps) if (h) I.closeTapHandle(h);
+        }
         {   // react is over: its whenever taps close — run on-close callbacks
             auto closers = std::move(I.supplyCloseStack_.back());
             I.supplyCloseStack_.pop_back();
@@ -10884,6 +11067,61 @@ void Interpreter::registerBuiltins() {
 }
 
 
+// ---- nqp buffer read/write helpers -----------------------------------------
+// MoarVM encodes (read|write)(u)int/num's last argument as size|endian: the low
+// two bits pick the byte order (Endian enum — Native 0 / Little 1 / Big 2) and
+// bits 2+ hold a size code, giving 1<<(flag>>2) bytes. See CBOR::Simple's $ne8/
+// $be16/$be32/$be64 flags (nqp::bitor_i(BINARY_SIZE_*, Endian)).
+static const bool g_hostLittle = [] { uint16_t x = 1; return *(uint8_t*)&x == 1; }();
+static inline bool binFlagLittle(int e) { return e == 1 || (e == 0 && g_hostLittle); }
+static inline void decodeBinFlag(long long flag, int& nbytes, int& endian) {
+    endian = (int)(flag & 3);
+    int code = (int)((flag >> 2) & 7);
+    nbytes = 1 << code;                 // 0→1, 1→2, 2→4, 3→8
+}
+// kind: 'u' unsigned int, 'i' signed int, 'n' float/double
+static void nqpBufWrite(std::string& bytes, long long off, const Value& val,
+                        int nbytes, int endian, char kind) {
+    if (off < 0) return;
+    if ((long long)bytes.size() < off + nbytes) bytes.resize(off + nbytes, '\0');
+    unsigned char raw[8] = {0};
+    if (kind == 'n') {
+        if (nbytes == 4) { float f = (float)val.toNum(); std::memcpy(raw, &f, 4); }
+        else            { double d = val.toNum();        std::memcpy(raw, &d, 8); }
+    } else {
+        unsigned long long u = (unsigned long long)val.toInt();
+        std::memcpy(raw, &u, nbytes <= 8 ? nbytes : 8);
+    }
+    for (int i = 0; i < nbytes; i++) {
+        int src = (binFlagLittle(endian) == g_hostLittle) ? i : nbytes - 1 - i;
+        bytes[off + i] = (char)raw[src];
+    }
+}
+static Value nqpBufRead(const std::string& bytes, long long off,
+                        int nbytes, int endian, char kind) {
+    unsigned char raw[8] = {0};
+    for (int i = 0; i < nbytes; i++) {
+        long long p = off + i;
+        if (p < 0 || p >= (long long)bytes.size()) continue;
+        int dst = (binFlagLittle(endian) == g_hostLittle) ? i : nbytes - 1 - i;
+        raw[dst] = (unsigned char)bytes[p];
+    }
+    if (kind == 'n') {
+        if (nbytes == 4) { float f;  std::memcpy(&f, raw, 4); return Value::number((double)f); }
+        double d; std::memcpy(&d, raw, 8); return Value::number(d);
+    }
+    unsigned long long u = 0; std::memcpy(&u, raw, nbytes <= 8 ? nbytes : 8);
+    if (kind == 'i') { // sign-extend from nbytes
+        if (nbytes < 8 && (u & (1ULL << (nbytes * 8 - 1)))) u |= ~((1ULL << (nbytes * 8)) - 1);
+        return Value::integer((long long)u);
+    }
+    if (nbytes == 8 && (u >> 63)) { // uint64 beyond long long
+        BigInt b((long long)(u & 0x7FFFFFFFFFFFFFFFULL));
+        return Value::bigint(b + BigInt(2).pow(63));
+    }
+    return Value::integer((long long)u);
+}
+
 // ---- the `use nqp` compatibility subset ------------------------------------
 // Reached only through NK::NqpOp nodes, which exist only in units that said
 // `use nqp` — every other program pays nothing for any of this.
@@ -10953,6 +11191,75 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             }
             break; // ordinary attr bind — fall through to the eager path
         }
+        // Buffer writes mutate argument 0 in place, so they need its lvalue.
+        case O::WriteUInt: case O::WriteInt: case O::WriteNum: {
+            if (a.size() >= 4) {
+                Value* lv = nullptr;
+                try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
+                long long off  = eval(a[1].get()).toInt();
+                Value     val  = eval(a[2].get());
+                long long flag = eval(a[3].get()).toInt();
+                int nb, en; decodeBinFlag(flag, nb, en);
+                char kind = n->op == O::WriteNum ? 'n' : (n->op == O::WriteInt ? 'i' : 'u');
+                if (lv) {
+                    if (lv->t != VT::Str) { lv->t = VT::Str; lv->s.clear(); }
+                    if (lv->hashKind.empty()) lv->hashKind = "Buf";
+                    nqpBufWrite(lv->s, off, val, nb, en, kind);
+                }
+                return val;
+            }
+            break;
+        }
+        case O::SetElems: { // resize a buf (bytes) or array (elems) in place
+            if (a.size() >= 2) {
+                Value* lv = nullptr;
+                try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
+                long long nn = eval(a[1].get()).toInt();
+                if (nn < 0) nn = 0;
+                if (lv) {
+                    if (lv->t == VT::Str) lv->s.resize(nn * lv->blobElemSize(), '\0');
+                    else if (lv->t == VT::Array && lv->arr) lv->arr->resize(nn, Value::number(0));
+                }
+                return lv ? *lv : Value::nil();
+            }
+            break;
+        }
+        case O::BindposN: { // native-num element store
+            if (a.size() >= 3) {
+                Value* lv = nullptr;
+                try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
+                long long idx = eval(a[1].get()).toInt();
+                Value val = eval(a[2].get());
+                if (lv && lv->t == VT::Array && lv->arr && idx >= 0) {
+                    if ((long long)lv->arr->size() <= idx) lv->arr->resize(idx + 1, Value::number(0));
+                    (*lv->arr)[idx] = Value::number(val.toNum());
+                }
+                return val;
+            }
+            break;
+        }
+        case O::Splice: { // nqp::splice(target, source, offset, count)
+            // Buf/Blob bytes live in Value::s by value (not shared like arrays),
+            // so a byte-buffer splice must mutate through the lvalue. Arrays share
+            // their backing vector, so they fall through to the eager path.
+            Value src0 = a.size() > 0 ? eval(a[0].get()) : Value::nil();
+            if (src0.t == VT::Str) {
+                Value* lv = nullptr;
+                try { lv = lvalue(a[0].get()); } catch (RakuError&) {}
+                Value    src = a.size() > 1 ? eval(a[1].get()) : Value::str("");
+                long long off = a.size() > 2 ? eval(a[2].get()).toInt() : 0;
+                long long cnt = a.size() > 3 ? eval(a[3].get()).toInt() : 0;
+                if (lv) {
+                    std::string& t = lv->s;
+                    if (off < 0) off = 0;
+                    if (off > (long long)t.size()) t.resize(off, '\0');
+                    if (cnt < 0 || off + cnt > (long long)t.size()) cnt = t.size() - off;
+                    t.replace(off, cnt, src.s);
+                }
+                return lv ? *lv : src0;
+            }
+            break; // array splice: eager path (shared backing)
+        }
         default: break;
     }
     ValueList v;
@@ -10997,6 +11304,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::SubI:  return Value::integer(I(0) - I(1));
         case O::MulI:  return Value::integer(I(0) * I(1));
         case O::BitandI: return Value::integer(I(0) & I(1));
+        case O::BitorI:  return Value::integer(I(0) | I(1));
+        case O::BitxorI: return Value::integer(I(0) ^ I(1));
+        case O::BitshiftlI: return Value::integer(I(0) << I(1));
+        case O::BitshiftrI: return Value::integer(I(0) >> I(1)); // arithmetic (signed)
         case O::Ordat: {
             auto cps = utf8cp(S(0));
             long long i = I(1);
@@ -11082,12 +11393,15 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return out;
         }
         case O::Elems:
+            if (v[0].t == VT::Str) return Value::integer(v[0].blobElems()); // Buf/Blob byte count
             return Value::integer(v[0].t == VT::Array && v[0].arr ? (long long)v[0].arr->size()
                                  : v[0].t == VT::Hash && v[0].hash ? (long long)v[0].hash->size() : 0);
         case O::Atpos: case O::AtposI: {
             long long i = I(1);
             if (v[0].t == VT::Array && v[0].arr && i >= 0 && i < (long long)v[0].arr->size())
                 return (*v[0].arr)[i];
+            if (v[0].t == VT::Str && i >= 0 && i < v[0].blobElems())  // Buf/Blob byte
+                return Value::integer(v[0].blobWordAt(i));
             return op == O::AtposI ? Value::integer(0) : Value::nil();
         }
         case O::Bindpos: case O::BindposI: {
@@ -11175,6 +11489,47 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             double d = v.empty() ? 0 : v[0].toNum();
             return Value::integer(std::isnan(d) || std::isinf(d) ? 1 : 0);
         }
+        // num comparisons (NaN != NaN falls out of C++ float semantics)
+        case O::IseqN: return Value::integer(v.size() > 1 && v[0].toNum() == v[1].toNum() ? 1 : 0);
+        case O::IsneN: return Value::integer(v.size() > 1 && v[0].toNum() != v[1].toNum() ? 1 : 0);
+        case O::AtposN: { // native-num element read
+            if (!v.empty() && v[0].t == VT::Array && v[0].arr) {
+                long long idx = I(1);
+                if (idx >= 0 && idx < (long long)v[0].arr->size())
+                    return Value::number((*v[0].arr)[idx].toNum());
+            }
+            return Value::number(0);
+        }
+        // buffer reads: (buf, offset, size|endian-flag)
+        case O::ReadUInt: case O::ReadInt: case O::ReadNum: {
+            if (v.empty() || v[0].t != VT::Str) return Value::integer(0);
+            int nb, en; decodeBinFlag(I(2), nb, en);
+            char kind = op == O::ReadNum ? 'n' : (op == O::ReadInt ? 'i' : 'u');
+            return nqpBufRead(v[0].s, I(1), nb, en, kind);
+        }
+        case O::Slice: { // nqp::slice(buf, from, to) — inclusive byte range → Buf
+            Value out = Value::str(""); out.hashKind = "Buf";
+            if (!v.empty() && v[0].t == VT::Str) {
+                long long from = I(1), to = I(2), len = (long long)v[0].s.size();
+                if (from < 0) from = 0;
+                if (to >= len) to = len - 1;
+                if (to >= from) out.s = v[0].s.substr(from, to - from + 1);
+            }
+            return out;
+        }
+        case O::Decode: // nqp::decode(buf, 'utf8') — bytes → Str (rakupp strings are UTF-8)
+            return Value::str(v.empty() ? std::string() : v[0].s);
+        case O::AddBigI: { // nqp::add_I(a, b, Int) — bignum-safe add
+            if (!v.empty() && (v[0].big || (v.size() > 1 && v[1].big))) {
+                BigInt a = v[0].big ? *v[0].big : BigInt(v[0].toInt());
+                BigInt b = (v.size() > 1) ? (v[1].big ? *v[1].big : BigInt(v[1].toInt())) : BigInt(0);
+                BigInt r = a + b;
+                return r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r);
+            }
+            return Value::integer(I(0) + I(1));
+        }
+        case O::Decont: return v.empty() ? Value::nil() : v[0];        // container strip = identity
+        case O::P6BoxS: return Value::str(v.empty() ? std::string() : v[0].toStr());
         default: break;
     }
     throw RakuError{Value::str("nqp"), "nqp op not implemented in this build"};

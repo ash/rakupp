@@ -178,6 +178,14 @@ enum class NqpOpc : uint16_t {
     Stmts, While, Until, IfNull,
     // int ops (int64 semantics, no bignum promotion)
     IseqI, IsneI, IsltI, IsleI, IsgeI, IsgtI, AddI, SubI, MulI, BitandI,
+    BitorI, BitxorI, BitshiftlI, BitshiftrI,
+    // num ops
+    IseqN, IsneN, AtposN,
+    // buffer read/write (flag = size|endian, MoarVM encoding)
+    ReadUInt, ReadInt, ReadNum, WriteUInt, WriteInt, WriteNum,
+    Slice, Decode, SetElems, BindposN, AddBigI,
+    // identity/box helpers
+    Decont, P6BoxS,
     // string ops
     Ordat, Eqat, Substr, Chars, Concat, Join, Index, Chr,
     StrFromCodes, StrToCodes, FindNotCClass, IsCClass,
@@ -286,6 +294,7 @@ struct SubDecl : Stmt {
     std::string pod;       // `#|` leading declarator pod (.WHY)
     bool isNative = false;    // `is native` — a C FFI call
     std::string nativeLib;    // `is native('lib')` — "" ⇒ the default namespace (libc etc.)
+    std::string nativeLibSub; // `is native(&sub)` — a sub name called at runtime for the lib path
     std::string nativeSym;    // `is symbol('name')` — "" ⇒ the sub's own name
     SubDecl(): Stmt(NK::SubDecl) {}
 };

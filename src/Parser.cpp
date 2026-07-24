@@ -251,6 +251,7 @@ bool Parser::startsTermToken(const Token& t) const {
                 return true;
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
+                   t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `f 0, +^$x`
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `f 0, ++$x`
                    t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
                    t.text == "^" || // prefix `^N` (upto) after a comma: `1, ^10 .Seq` (infix ^ is impossible there)
@@ -316,6 +317,7 @@ bool Parser::startsListopArg(const Token& t) const {
             if (t.text == "->" || t.text == "<->") return !stmtCond_;
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
+                   t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `say +^$x`
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `say 0, ++$x`
                    // `test *..1, …` — a Whatever RANGE endpoint can only be an arg
                    // (infix `*` would need a term after it, and `..` isn't one)
@@ -4199,6 +4201,15 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
             if (peek().kind == Tok::LParen) {
                 advance(); advance(); // native (
                 if (isKind(Tok::StrLit) || isKind(Tok::StrInterp)) s->nativeLib = cur().text;
+                else {
+                    // `is native(&gen-lib)`: a code ref whose call yields the lib
+                    // path (OpenSSL, many NativeCall modules). Capture the sub name.
+                    std::string ref = cur().text;
+                    if (ref == "&" && peek().kind == Tok::Ident) ref = peek().text; // `&` `name`
+                    else if (!ref.empty() && ref[0] == '&') ref = ref.substr(1);    // `&name` one token
+                    if (!ref.empty() && (std::isalpha((unsigned char)ref[0]) || ref[0] == '_'))
+                        s->nativeLibSub = ref;
+                }
                 int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
                 continue;
             }
@@ -4274,11 +4285,13 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
     bool hadBlock = false;
     if (isKind(Tok::LBrace)) {
         hadBlock = true;
-        bool saved = inReactBlock_; inReactBlock_ = false; // whenever in a nested sub is out of scope
+        // A `whenever` inside a nested sub is legal iff the sub is itself
+        // lexically inside a react/supply block — Rakudo's rule is purely
+        // lexical, so propagate inReactBlock_ into the body (a top-level sub
+        // still has it false and so still rejects a stray `whenever`).
         routineDepth_++; // &?ROUTINE is legal inside
         auto blk = parseBlock();
         routineDepth_--;
-        inReactBlock_ = saved;
         s->body = std::move(blk->stmts);
     }
     if (s->retLiteral) { // `--> 1` / `--> True` : the literal IS the return value.
@@ -5482,6 +5495,10 @@ bool Parser::nqpConstValue(const std::string& name, long long& out) {
         {"CCLASS_WORD", 8192},
         {"NORMALIZE_NONE", 0}, {"NORMALIZE_NFC", 1}, {"NORMALIZE_NFD", 2},
         {"NORMALIZE_NFKC", 3}, {"NORMALIZE_NFKD", 4},
+        // buffer read/write flags: low 2 bits = endian (Endian enum:
+        // Native 0 / Little 1 / Big 2), bits 2+ = size code (1<<(flag>>2) bytes).
+        {"BINARY_SIZE_8_BIT", 0},  {"BINARY_SIZE_16_BIT", 4},
+        {"BINARY_SIZE_32_BIT", 8}, {"BINARY_SIZE_64_BIT", 12},
     };
     auto it = k.find(name);
     if (it == k.end()) return false;
@@ -5517,6 +5534,16 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"isge_i", NqpOpc::IsgeI}, {"isgt_i", NqpOpc::IsgtI},
         {"add_i", NqpOpc::AddI},   {"sub_i", NqpOpc::SubI},
         {"mul_i", NqpOpc::MulI},   {"bitand_i", NqpOpc::BitandI},
+        {"bitor_i", NqpOpc::BitorI}, {"bitxor_i", NqpOpc::BitxorI},
+        {"bitshiftl_i", NqpOpc::BitshiftlI}, {"bitshiftr_i", NqpOpc::BitshiftrI},
+        {"iseq_n", NqpOpc::IseqN}, {"isne_n", NqpOpc::IsneN},
+        {"atpos_n", NqpOpc::AtposN}, {"bindpos_n", NqpOpc::BindposN},
+        {"readuint", NqpOpc::ReadUInt}, {"readint", NqpOpc::ReadInt},
+        {"readnum", NqpOpc::ReadNum}, {"writeuint", NqpOpc::WriteUInt},
+        {"writeint", NqpOpc::WriteInt}, {"writenum", NqpOpc::WriteNum},
+        {"slice", NqpOpc::Slice}, {"decode", NqpOpc::Decode},
+        {"setelems", NqpOpc::SetElems}, {"add_I", NqpOpc::AddBigI},
+        {"decont", NqpOpc::Decont}, {"p6box_s", NqpOpc::P6BoxS},
         {"ordat", NqpOpc::Ordat},  {"eqat", NqpOpc::Eqat},
         {"substr", NqpOpc::Substr},{"chars", NqpOpc::Chars},
         {"concat", NqpOpc::Concat},{"join", NqpOpc::Join},

@@ -50,6 +50,7 @@ struct Callable {
     std::vector<Value> wrappers;                      // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
+    std::string nativeLibSub;                        // `is native(&sub)` — sub called at runtime for the lib path
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
@@ -101,6 +102,7 @@ struct Value {
                           // (comma-joined for multiple params, e.g. Hash[Int,Str] -> "Int,Str")
     int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
     bool natSigned = false;
+    bool natFloat = false; // native float container (num32): truncates to float32 on assignment
 
     Value() : t(VT::Any) {}
 
