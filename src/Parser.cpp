@@ -792,7 +792,7 @@ ExprPtr Parser::parsePrefix(bool tight) {
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 advance();
                 u->operand = isKind(Tok::RParen) ? ExprPtr(std::make_unique<ListExpr>())
-                                                 : parseExpression();
+                                                 : applyExprModifiers(parseExpression());
                 // `$(stmt; stmt; expr)` — a statement sequence valued at its last
                 // statement, like `do { … }` (let.t/temp.t idiom)
                 if (isKind(Tok::Semicolon)) {
@@ -4844,6 +4844,63 @@ static std::unique_ptr<Block> wrapStmt(StmtPtr s) {
     auto b = std::make_unique<Block>();
     b->stmts.push_back(std::move(s));
     return b;
+}
+
+// Trailing statement modifiers on an EXPRESSION (inside `@(…)` / `$(…)` etc.):
+// `@(EXPR for LIST)`, `@(EXPR if COND)`, … — chains, wrapping the value so far.
+// Mirrors the desugars the plain-paren path uses (list-comprehension semantics).
+ExprPtr Parser::applyExprModifiers(ExprPtr e) {
+    for (;;) {
+        if (isIdent("if") || isIdent("unless")) {
+            bool neg = cur().text == "unless"; advance();
+            ExprPtr cond = parseExpression();
+            auto tern = std::make_unique<Ternary>();
+            tern->cond = std::move(cond);
+            ExprPtr empty = std::make_unique<NameTerm>("Empty"); // vanishes in list context
+            if (neg) { tern->then = std::move(empty); tern->els = std::move(e); }
+            else     { tern->then = std::move(e); tern->els = std::move(empty); }
+            e = std::move(tern);
+            continue;
+        }
+        if (isIdent("for")) { // (EXPR for LIST) → map({ EXPR }, LIST)
+            advance();
+            ExprPtr list = parseExpression();
+            auto blk = std::make_unique<BlockExpr>();
+            auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+            blk->body.push_back(std::move(es));
+            auto call = std::make_unique<Call>(); call->name = "map";
+            call->args.push_back(std::move(blk));
+            call->args.push_back(std::move(list));
+            e = std::move(call);
+            continue;
+        }
+        if (isIdent("while") || isIdent("until")) {
+            bool untl = cur().text == "until"; advance();
+            auto ws = std::make_unique<WhileStmt>();
+            ws->cond = parseExpression(); ws->isUntil = untl; ws->asExpr = true;
+            ws->body = std::make_unique<Block>();
+            auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+            ws->body->stmts.push_back(std::move(es));
+            auto be = std::make_unique<BlockExpr>(); be->body.push_back(std::move(ws));
+            auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+            e = std::move(u);
+            continue;
+        }
+        if (isIdent("given") && peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
+            advance();
+            auto gs = std::make_unique<GivenStmt>();
+            gs->topic = parseExpression();
+            auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+            gs->body = std::make_unique<Block>();
+            gs->body->stmts.push_back(std::move(es));
+            auto be = std::make_unique<BlockExpr>(); be->body.push_back(std::move(gs));
+            auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+            e = std::move(u);
+            continue;
+        }
+        break;
+    }
+    return e;
 }
 
 StmtPtr Parser::applyModifiers(StmtPtr s) {

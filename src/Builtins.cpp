@@ -9987,14 +9987,23 @@ void Interpreter::registerBuiltins() {
         throw BreakGivenEx{v, !a.empty()};
     };
     B["proceed"] = [](Interpreter&, ValueList&) -> Value { throw ProceedEx{}; };
-    B["dir"] = [](Interpreter&, ValueList& a) -> Value {
+    B["dir"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string path = a.empty() ? "." : a[0].toStr();
+        // a `:test` matcher filters basenames (dir("x", test => /\.raku$/))
+        Value test; bool haveTest = false;
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "test" && x.pairVal) { test = *x.pairVal; haveTest = true; }
+        std::string base = path;
+        while (base.size() > 1 && base.back() == '/') base.pop_back();
         Value out = Value::array();
         if (DIR* d = opendir(path.c_str())) {
             while (struct dirent* e = readdir(d)) {
                 std::string n = e->d_name;
                 if (n == "." || n == "..") continue;
-                out.arr->push_back(Value::str(path + "/" + n));
+                if (haveTest) { ValueList m{Value::str(n)}; if (!I.methodCall(test, "ACCEPTS", m).truthy()) continue; }
+                // dir() yields IO::Path entries (Rakudo semantics) — File::Find,
+                // and any `.d`/`.IO` on the result, need real IO::Path objects.
+                Value p = Value::str(base + "/" + n); p.hashKind = "IO";
+                out.arr->push_back(p);
             }
             closedir(d);
         }

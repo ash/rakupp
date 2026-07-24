@@ -140,6 +140,7 @@ public:
 private:
     StmtPtr parseStatementImpl();
     StmtPtr applyModifiers(StmtPtr s);
+    ExprPtr applyExprModifiers(ExprPtr e); // trailing stmt modifiers inside (…)/@(…)/…
     std::unique_ptr<Block> parseBlock();
     void checkVirtualCallInDefault(size_t defStart); // `has $.x = $.y` is illegal
     static void checkNullRegex(const std::string& pat, int line,
