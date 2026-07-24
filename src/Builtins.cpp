@@ -2854,7 +2854,18 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             q.clear(); keepClosedIfDrained();
             return o;
         }
-        if (m == "Supply") { Value o = Value::array(); *o.arr = q; o.isList = true; return o; }
+        if (m == "Supply") {
+            // A live channel (one carrying its source supplier) re-exposes a live
+            // Supply on the SAME supplier, so `$s.Supply.Channel.Supply` forwards
+            // emits (IO::Socket::Async::SSL's read path). A plain (from-list)
+            // channel yields its queued snapshot as a list-backed Supply.
+            if (inv.hash->count("supplier")) {
+                Value s = Value::makeHash(); s.hashKind = "Supply";
+                (*s.hash)["supplier"] = (*inv.hash)["supplier"];
+                return s;
+            }
+            Value o = Value::array(); *o.arr = q; o.isList = true; return o;
+        }
         if (m == "elems") return Value::integer((long long)q.size());
     }
     // Thread — under the GIL a Thread.start runs its block eagerly, but we bump
@@ -3134,6 +3145,27 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 else if (std::isfinite(limit) && (double)segs.size() > limit) segs.resize((size_t)limit);
             }
             return mkSupply(std::move(segs));
+        }
+        if (m == "Channel" && inv.hash->count("supplier")) {
+            // A live (supplier-backed) Supply → Channel: register a tap on the
+            // supplier that pushes each emitted value into the channel queue, so
+            // both `.receive`/`.poll` (the queue) and `.Supply` (re-expose) see
+            // the live stream. `.Channel` must forward emits, not snapshot.
+            Value c = Value::makeHash(); c.hashKind = "Channel";
+            Value q = Value::array(); auto qarr = q.arr;
+            (*c.hash)["queue"] = q;
+            (*c.hash)["closed"] = Value::boolean(false);
+            (*c.hash)["supplier"] = (*inv.hash)["supplier"];
+            Value tapRec = Value::makeHash();
+            Value emitCb; emitCb.t = VT::Code; emitCb.code = std::make_shared<Callable>();
+            emitCb.code->builtin = [qarr](Interpreter&, ValueList& a) -> Value {
+                if (!a.empty()) qarr->push_back(a[0]);
+                return Value::any();
+            };
+            (*tapRec.hash)["emit"] = emitCb;
+            Value sup = (*inv.hash)["supplier"];
+            if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
+            return c;
         }
         if (m == "Channel") { // drain a (from-list) Supply into a closed Channel
             Value c = Value::makeHash(); c.hashKind = "Channel";
