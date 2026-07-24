@@ -34,15 +34,44 @@ UCD case tables also lifted string-heavy tests suite-wide: the run went from
   surrogate pairing and BOM detection) into NFG strings; `Uni.new(…)` gains
   `.raku`/`.gist` and the `Uni(97)` coercion form.
 
-## Unreleased
+### Ecosystem & concurrency — a live Cro server, byte-for-byte with Rakudo
+
+- **A real Cro HTTP server runs**, verified byte-identical to Rakudo end-to-end
+  (route + `Cro::HTTP::Server` over real sockets/threads). This drove a cluster
+  of general fixes: on-demand `supply {…}`/`whenever`/`tap` wiring with
+  done-propagation and CLOSE/QUIT/LAST phasers; `IO::Socket::Async`
+  (listen/read/write on GIL-parked worker threads); method-frame `state` vars;
+  EVAL'd anonymous `regex {…}` as first-class closures that run their code
+  blocks and assertions; proto-token action dispatch; and coercion-param
+  multi-dispatch.
+- **`signal(SIGINT, …)`** — OS signals delivered as a Supply, so the standard
+  `react { whenever signal(SIGINT) { $server.stop; done } }` shutdown works
+  (self-pipe dispatcher; the Signal enum members resolve to their OS numbers).
+- **`.lines` strips `\r\n`** (not just `\n`), matching Rakudo — an HTTP
+  response's `.lines[0]` no longer keeps a stray `\r` (`S15`-adjacent
+  `S32-str/lines.t` 9 → 13).
+- **Typed blobs** (`blob16/32/64` little-endian words) — element-wise `.elems`/
+  index/list/`for`/`Z`/coerce, `.Int` = element count, plus radix digit-lists
+  `:256[…]`, colon-arg list precedence, `( expr; )` grouping, and native
+  `uint32 @a.push` wraparound. Together these make **pure-Raku `Digest::SHA1`
+  byte-identical** (`sha1("abc")` = `a9993e36…`).
+- **Ecosystem module fixes** (batch 11) unblocked HTTP::UserAgent, Text::Utils,
+  and others: if/elsif binding traits (`-> $x is copy`), alternative regex
+  delimiters, indented POD, enum trait args, `!=:=`, Blob-is-not-Stringy
+  dispatch, `Capture.new`/`Signature.ACCEPTS`, `Mu.return`, and a streaming
+  `Encoding::Registry` decoder. `$*RAKU.compiler.version` now reports Raku++'s
+  own version, not a faked Rakudo date. Tier-2 module battery: **37 / 50**
+  genuinely byte-identical (both engines run and agree).
+
+### Packaging
 
 - **OpenBSD is now a packaged release target** (`rakupp-openbsd-x86_64.tar.gz`).
   OpenBSD (amd64, base clang/libc++) had been a build+smoke portability gate
   since PR #3, but its binary was never packaged or attached to a Release; the
   release job now installs, dist-layout `--exe`-smokes, tars, and attaches it
-  alongside the macOS/Linux/Windows assets. First appears in the next tag.
+  alongside the macOS/Linux/Windows assets.
 
-Post-1.0 fixes, all Roast-gated (194,496 → 194,506; 584 files fully pass):
+### Earlier post-1.0 fixes, all Roast-gated:
 
 - **Hyper compound assignment**: `@a <<+=>> n` applies the base op elementwise
   and mutates in place (all spellings; advent2009-day06.t now fully passes).

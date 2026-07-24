@@ -23,9 +23,9 @@ narrowest:
 | # | Measure | Current | Definition |
 |---|---|---|---|
 | 1 | **Files fully passing** | 598 / 1,462 (**~41%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 194,901 / 199,872 (~98%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 194,901 / 212,964 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 194,901 / 216,222 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 2 | Assertions of **tests that ran** | 194,904 / 199,872 (~98%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 194,904 / 212,964 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 194,904 / 216,222 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~41%)** and **measure 4 (all declared tests, ~90%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -63,9 +63,9 @@ declares its real — often larger, dynamically computed — plan, so the percen
 can dip while absolute passes rise.) Only **5 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 194,901 passes read two ways:
+So our same 194,904 passes read two ways:
 
-- **~90%** against *our* denominator (194,901 / 216,222) — *"of the tests we can
+- **~90%** against *our* denominator (194,904 / 216,222) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
 - Essentially the **same ~90%** against the suite's *full* declared total —

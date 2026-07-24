@@ -247,3 +247,14 @@ parse) — snapshot-binary bisect shows the cost accreted gradually across the
 90%-campaign legs (5.06 s → 5.21 s → 5.50 s on the 10-parse row, Jul 15 → 19 →
 22), spread over the parse/regex hot paths rather than one change; profiling
 shows no single new hotspot. Tracked as a post-1.0 item._
+
+_**v1.1.0 (2026-07-24) re-run** (598 / 1,462 files fully passing): the
+release-gate benchmark pass found **no regression**. All engines produced
+identical output, and every engine-vs-engine ratio held within a hair of the
+1.0.0 snapshot (strcat 14.1× vs 14.4×, hash 5.7× vs 6.0×, loopsum 1.3× vs 1.4×,
+fib Rakudo-1.9× vs 1.8×). Absolute wall-clock ran ~5% higher uniformly, but the
+measurement machine had heavy background load at the time (macOS `photoanalysisd`
+pegged near 85% of a core, load-avg ~3), which inflates every row equally and
+leaves the ratios intact — so the pristine 1.0.0 absolute numbers above are
+retained pending a quiet-machine re-snapshot. The typed-blob / `.lines` /
+`signal()` / module work in v1.1.0 does not touch these kernels' hot paths._

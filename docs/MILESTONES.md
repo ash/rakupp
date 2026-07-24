@@ -78,7 +78,7 @@ A pause in the module work to close S15 (Unicode / strings / NFG) completely.
 - **S15 at 100% of assertions — 91,752 / 91,752**, 80/82 files. (The lone
   holdout, `concat-stable.t`, is a performance timeout, not a correctness gap.)
 - The complete case tables lifted string-heavy tests suite-wide: **576 → 598
-  files fully passing, 194,506 → 194,901 assertions**, no regressions. See
+  files fully passing, 194,506 → 194,904 assertions**, no regressions. See
   [UNICODE.md](UNICODE.md).
 
 ## The road to modules — v2.0 (Jul 22 → ongoing)

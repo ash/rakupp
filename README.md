@@ -12,7 +12,7 @@ the official Raku test suite.
 
 **Status:** current release **v1.1.0** (2026-07-24) — *100% Unicode (S15)*:
 full UCD case mapping, grapheme-level NFG regex, and complete `uniprop`
-coverage. Measured per individual test, **90% of Roast passes** — 194,901 of
+coverage. Measured per individual test, **90% of Roast passes** — 194,904 of
 ~216,222 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
 **598 / 1,462 files fully pass (~41%)** — a file counts only if *every* assertion
