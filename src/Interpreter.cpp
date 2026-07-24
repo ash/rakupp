@@ -5601,6 +5601,18 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         if (!handle) throw RakuError{Value::typeObj("X::Libc"), "Cannot load native library '" + lib + "'"};
     }
     void* sym = dlsym(handle, c.nativeSym.c_str());
+    if (!sym) {
+        // Some libraries expose a renamed symbol behind a compat macro the header
+        // resolves at C compile time but that isn't a real exported symbol (so a
+        // module's `is native` on the old name can't dlsym it). Fall back to the
+        // known aliases — e.g. OpenSSL 3.x's SSL_get_peer_certificate is now only
+        // SSL_get1_peer_certificate.
+        static const std::map<std::string, std::string> aliases = {
+            {"SSL_get_peer_certificate", "SSL_get1_peer_certificate"},
+        };
+        auto it = aliases.find(c.nativeSym);
+        if (it != aliases.end()) sym = dlsym(handle, it->second.c_str());
+    }
     if (!sym) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + c.nativeSym + "'"};
 
     const std::vector<Param>* prm = c.params;
@@ -5702,6 +5714,19 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             Value o; o.t = VT::Object; o.obj = std::make_shared<ObjectData>();
             o.obj->cls = ci; o.obj->attrs["__native_ptr"] = Value::integer(ri);
             return o;
+        }
+    }
+    // Integer return: the value comes back in a 64-bit register but a narrower
+    // return type (int32/uint16/…) only fills the low bits — truncate and
+    // sign/zero-extend to the DECLARED width, or a returned int32 -1 reads back as
+    // 0xFFFFFFFF (4294967295) and `$rc < 0` never holds (BIO_read's would-block).
+    {
+        bool rsgn, rflt; int rw = ncScalarWidth(rt, rsgn, rflt);
+        if (rw > 0 && rw < 8 && !rflt) {
+            unsigned long long mask = (1ULL << (rw * 8)) - 1;
+            unsigned long long u = (unsigned long long)ri & mask;
+            if (rsgn && (u & (1ULL << (rw * 8 - 1)))) ri = (long)(long long)(u | ~mask);
+            else ri = (long)u;
         }
     }
     return Value::integer(ri);
@@ -7881,6 +7906,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return Value::boolean(res);
         }
         Value out = Value::array(); out.enumName = j.enumName;
+        // A negated comparison flips the junction kind (De Morgan): `X != any(…)`
+        // is `!(X == any(…))` = `all(X != …)`. Without this, `0 != 0|1|2` collapses
+        // True instead of False (0 matches one eigenstate) — this broke
+        // OpenSSL's `while ($err != 0|WANT_READ|WANT_WRITE)` drain loop.
+        static const std::set<std::string> negEq = {"!=", "ne", "!==", "!eqv", "!=:="};
+        if (negEq.count(op)) {
+            if (out.enumName == "any") out.enumName = "all";
+            else if (out.enumName == "all") out.enumName = "any";
+        }
         for (auto& e : *j.arr) out.arr->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
         return out;
     }
