@@ -4459,11 +4459,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         else if (adv == "api") cd->api = val;
     }
     if (isRole && isKind(Tok::LBracket)) {
-        // parameterized role: role R[Any $desc] { } — the signature parses (so
-        // the body's braces stay balanced); argument BINDING is not wired yet,
-        // a body referencing the param sees an undeclared variable at runtime
+        // parameterized role: `role R[$x, Bool :$opt = False] { … $x … $opt … }`.
+        // The params are bound when the role is composed (`does R[args]`) — see
+        // the composition code, which stashes the values on the consuming class.
         advance();
-        parseSignature(Tok::RBracket);
+        cd->roleParams = parseSignature(Tok::RBracket);
         matchKind(Tok::RBracket);
         cd->parameterized = true;
     }
@@ -4513,8 +4513,24 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             if (cd->parent.empty()) { cd->parent = t; cd->parentIsDoes = isDoes; }
             else if (isDoes) cd->roles.push_back(t);      // extra `does Role` — composed in
             else cd->extraParents.push_back(t);            // extra `is Class` — multiple inheritance
+            // parameterized composition `does R[args]`: capture the bracket args so
+            // a role's value params (role R[$x]/[%h]/[Bool :$opt]) bind at compose
+            // time and are visible in the role body. (Type args like `does R[Int]`
+            // are captured too, bound to `::T` params.)
+            if (isKind(Tok::LBracket)) {
+                advance(); // [
+                std::vector<ExprPtr> rargs;
+                if (!isKind(Tok::RBracket)) {
+                    ExprPtr e = parseExpression();
+                    if (e && e->kind == NK::ListExpr && !static_cast<ListExpr*>(e.get())->parenned)
+                        for (auto& it : static_cast<ListExpr*>(e.get())->items) rargs.push_back(std::move(it));
+                    else if (e) rargs.push_back(std::move(e));
+                }
+                expectKind(Tok::RBracket, "]");
+                if (!rargs.empty()) cd->roleArgs.push_back({t, std::move(rargs)});
+            }
         }
-        // skip type params / extra
+        // skip any remaining type params / stray brackets
         while (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
     }
     bool braced = isKind(Tok::LBrace);

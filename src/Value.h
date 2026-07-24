@@ -64,6 +64,7 @@ enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, T
 struct ClassInfo;
 struct ObjectData;
 struct Env; // defined in Interpreter.h; ClassInfo keeps its declaration scope for defaults
+struct ClassDecl; // defined in Ast.h; ClassInfo keeps a program-lifetime view for roleParams
 
 struct Value {
     VT t = VT::Any;
@@ -264,6 +265,12 @@ struct ClassInfo {
     std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented
     std::set<std::string> doneRoles; // names of roles this class/role composes (for ~~ / .does)
     std::shared_ptr<Env> declEnv; // scope the type was declared in (for evaluating attr defaults)
+    ClassDecl* decl = nullptr; // the AST declaration (program-lifetime) — carries roleParams for parameterized roles
+    // `role R[$x, %h, Bool :$opt]` composed as `does R[42, %(...), :opt]` — the
+    // role's value/type parameters bound to the composition's arguments (name incl.
+    // sigil → value). Injected into the scope of the class's methods/submethods so
+    // the role body sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
+    std::vector<std::pair<std::string, Value>> roleParamBindings;
 
     // Does this class do a role named `rn` — directly, transitively via a
     // composed role, or through a parent? (A role also "does" itself.)

@@ -3439,6 +3439,39 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto bodyEnv = std::make_shared<Env>();
             bodyEnv->parent = tctx_.cur;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
+            ci->decl = cd;         // program-lifetime AST view (roleParams for parameterized roles)
+            // Parameterized-role value params: bind each composed role's `[...]`
+            // params to this class's `does R[args]` arguments, so the role body
+            // (methods/submethods) sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
+            if (!cd->roleArgs.empty()) {
+                auto tailMatch = [](const std::string& full, const std::string& part) {
+                    if (full == part) return true;
+                    if (full.size() > part.size() && full.compare(full.size() - part.size(), part.size(), part) == 0
+                        && full[full.size() - part.size() - 1] == ':') return true;
+                    if (part.size() > full.size() && part.compare(part.size() - full.size(), full.size(), full) == 0
+                        && part[part.size() - full.size() - 1] == ':') return true;
+                    return false;
+                };
+                for (ClassInfo* role : composedRoles) {
+                    if (!role->decl || role->decl->roleParams.empty()) continue;
+                    const std::vector<ExprPtr>* rargs = nullptr;
+                    for (auto& ra : cd->roleArgs) if (tailMatch(role->name, ra.first)) { rargs = &ra.second; break; }
+                    if (!rargs) continue;
+                    ValueList argv;
+                    for (auto& e : *rargs) {
+                        Value v = eval(e.get());
+                        if (e->kind == NK::Pair) v.namedArg = true; // `does R[:opt]` → named arg
+                        argv.push_back(std::move(v));
+                    }
+                    auto tmp = std::make_shared<Env>();
+                    tmp->parent = ci->declEnv;
+                    try { bindParams(role->decl->roleParams, argv, tmp, /*methodCtx=*/false); }
+                    catch (...) {} // arity/type mismatch: leave unbound rather than abort composition
+                    for (auto& p : role->decl->roleParams)
+                        if (!p.name.empty())
+                            if (Value* v = tmp->find(p.name)) ci->roleParamBindings.push_back({p.name, *v});
+                }
+            }
             {   // a class body takes no arguments — placeholders are compile errors
                 std::string ph = firstBlockPlaceholder(cd->body);
                 if (!ph.empty())
@@ -6440,6 +6473,15 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     });
     env->parent = c.stateEnv;
     env->define("self", self);
+    // Parameterized-role value params (role R[$x]/[%h]): a method/submethod of a
+    // class that composed such a role must see the bound params in its body. Inject
+    // them from the invocant's class MRO (child wins), skipping names the frame will
+    // bind itself (an actual param of the same name shadows). Cheap: the vector is
+    // empty for the overwhelming majority of classes.
+    if (self.t == VT::Object && self.obj && self.obj->cls)
+        for (ClassInfo* k = self.obj->cls.get(); k; k = k->parent.get())
+            for (auto& b : k->roleParamBindings)
+                if (!env->vars.count(b.first)) env->define(b.first, b.second);
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/true);
         if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through

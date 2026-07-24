@@ -329,6 +329,8 @@ struct ClassDecl : Stmt {
     bool parameterized = false;    // role R[T] — parameterizations coexist by name
     std::string ver, auth, api;    // name adverbs: class Foo:ver<1.2>:auth<zef:x>:api<2>
     std::string repr;              // `is repr("CStruct")` — native memory layout (NativeCall)
+    std::vector<Param> roleParams; // `role R[$x, Bool :$opt]` — value/type parameters
+    std::vector<std::pair<std::string, std::vector<ExprPtr>>> roleArgs; // `does R[args]` per composed role
     bool isPackage = false;        // package / module: body runs in a namespace
     std::vector<StmtPtr> body;     // package/module body statements
     ClassDecl(): Stmt(NK::ClassDecl) {}
