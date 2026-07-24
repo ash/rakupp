@@ -1659,6 +1659,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return Value::str(inv.obj->cls->pod);
         return Value::nil();
     }
+    // Any.hash is an empty Hash (Rakudo: `my $x; $x.hash` → {}) — zef reads
+    // `$dist.meta<files>.hash.keys` where <files> may be absent.
+    if (m == "hash" && (inv.t == VT::Any || (inv.t == VT::Type && inv.s == "Any")))
+        return Value::makeHash();
     if (m == "pairup" && (inv.t == VT::Any || inv.t == VT::Type || inv.t == VT::Nil)) {
         Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; // :U invocant
     }

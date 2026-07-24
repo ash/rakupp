@@ -2821,6 +2821,11 @@ ExprPtr Parser::parsePrimary() {
                 advance();
                 auto u = std::make_unique<Unary>();
                 u->op = name;
+                // `next()` / `last()` / `redo()` — the call form IS the control op;
+                // consume the empty parens so they don't become a postfix call on
+                // the op's (cooperative) result (zef: `next() R, DEBUG(...)`).
+                if (name != "return" && name != "return-rw" &&
+                    isKind(Tok::LParen) && peek().kind == Tok::RParen) { advance(); advance(); }
                 bool retTerm = startsTermToken(cur()) && !kBlockKeywords.count(cur().text);
                 // sub/method/do/start blocks are valid expression operands too, as is
                 // an anonymous type literal (`return role {…}`)
@@ -2928,7 +2933,12 @@ ExprPtr Parser::parsePrimary() {
                     u->operand = std::move(be);
                 } else if (isIdent("for") || isIdent("if") || isIdent("unless") || isIdent("while") ||
                            isIdent("until") || isIdent("loop") || isIdent("repeat") || isIdent("given") ||
-                           isIdent("when") || isIdent("with") || isIdent("without")) {
+                           isIdent("when") || isIdent("with") || isIdent("without") ||
+                           // labeled loop: `gather LABEL: for … { next LABEL }` (zef's DEPSPEC:)
+                           (isKind(Tok::Ident) && peek().kind == Tok::Op && peek().text == ":" &&
+                            !peek().spaceBefore && peek(2).kind == Tok::Ident &&
+                            (peek(2).text == "for" || peek(2).text == "while" ||
+                             peek(2).text == "until" || peek(2).text == "loop" || peek(2).text == "repeat"))) {
                     // `gather for … {}` / `do if … {}` — the operand is a whole statement
                     auto be = std::make_unique<BlockExpr>();
                     auto st = parseStatement();
@@ -2954,6 +2964,17 @@ ExprPtr Parser::parsePrimary() {
                 markLoopAsExpr(st.get());
                 be->body.push_back(std::move(st));
                 u->operand = std::move(be);
+                return u;
+            }
+            if (name == "require" && !(peek().kind == Tok::Op &&
+                (peek().text == "=>" || peek().text == "," ))) {
+                // expression-position `require ::($name)` / `require Foo::Bar` —
+                // runtime load yielding the loaded type (`(try require ::($m)) ~~ Nil`
+                // is zef's plugin probe). A bare `require => v` pair stays a pair.
+                advance();
+                auto u = std::make_unique<Unary>();
+                u->op = "require";
+                u->operand = parseExpr(BP_ASSIGN);
                 return u;
             }
             if (name == "start" && peek().kind != Tok::FatArrow) {
@@ -5214,11 +5235,22 @@ StmtPtr Parser::parseStatementImpl() {
             // loadModule() already publishes the module's subs globally, so the
             // import list is accepted syntactically and ignored.
             advance();
-            auto u = std::make_unique<UseStmt>();
-            if (isKind(Tok::Ident)) u->module = advance().text;
-            while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance(); // skip <...> import list
+            if (isKind(Tok::Ident)) {
+                auto u = std::make_unique<UseStmt>();
+                u->module = advance().text;
+                while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) advance(); // skip <...> import list
+                matchKind(Tok::Semicolon);
+                return u;
+            }
+            // dynamic name: `require ::($name)` — evaluate at runtime, load, and
+            // yield the loaded type (zef's plugin loader). Expression form.
+            auto u = std::make_unique<Unary>();
+            u->op = "require";
+            u->operand = parseExpr(BP_ASSIGN);
+            auto es = std::make_unique<ExprStmt>();
+            es->e = std::move(u);
             matchKind(Tok::Semicolon);
-            return u;
+            return es;
         }
         if (kw == "use" || kw == "no" || kw == "need") {
             advance();
@@ -5402,7 +5434,12 @@ StmtPtr Parser::parseStatementImpl() {
             }
             return applyModifiers(std::move(r));
         }
-        if (kw == "last" || kw == "next" || kw == "redo") {
+        if ((kw == "last" || kw == "next" || kw == "redo") &&
+            peek().kind != Tok::LParen) {
+            // `next()` (call form) falls through to EXPRESSION parsing instead:
+            // it composes into a larger expression whose modifiers must gate it —
+            // zef's `next() R, DEBUG(...) if COND` was swallowing everything after
+            // `next` here and skipping unconditionally.
             advance();
             // optional loop label:  `last OUTER`
             std::string tgt;

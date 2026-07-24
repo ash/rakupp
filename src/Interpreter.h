@@ -641,7 +641,10 @@ private:
     std::vector<std::shared_ptr<Program>> keptPrograms_; // keep EVAL'd ASTs alive
     void registerBuiltins();
 
-    Value* lvalue(Expr* e);
+    // asInvocant: we only need this slot to reach INTO the value (an invocant or a
+    // subscript base), not to overwrite it — so a read-only attribute is fine
+    // (`$obj.ro-attr.inner = v` mutates what ro-attr points at; `$obj.ro-attr = v` still dies).
+    Value* lvalue(Expr* e, bool asInvocant = false);
     ValueList evalArgs(const std::vector<ExprPtr>& exprs); // spreads `|@a`
     Value evalAssign(Assign* a, bool sink = false);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)

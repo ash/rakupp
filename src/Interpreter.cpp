@@ -4204,7 +4204,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 catch (ProceedEx&) { return Value::any(); } // `proceed`: try the next when
                 throw BreakGivenEx{bv, true}; // matched `when` exits the given, carrying its value
             }
-            return Value::any();
+            // A `when` that did NOT match evaluates to its smartmatch result — False,
+            // not an undefined value. That matters because a `given` block's value is
+            // its last statement's, so `do given %h { when A {…} when B {…} }` with no
+            // match yields False (and `.?chars` on it is 5, i.e. truthy) — which zef's
+            // license filter relies on. (`if` not taken still yields Empty, as in Rakudo.)
+            return Value::boolean(false);
         }
         case NK::LoopStmt: {
             auto* ls = static_cast<LoopStmt*>(s);
@@ -6656,7 +6661,7 @@ Value Interpreter::evalInterp(InterpStr* s) {
     return Value::str(nfcNormalize(out)); // NFG: combining marks compose across part boundaries
 }
 
-Value* Interpreter::lvalue(Expr* e) {
+Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     if (e->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(e);
         char sigil = ve->name.empty() ? '$' : ve->name[0];
@@ -6747,7 +6752,7 @@ Value* Interpreter::lvalue(Expr* e) {
             callBaseHold = eval(idx->base.get());
             base = &callBaseHold;
         }
-        else base = lvalue(idx->base.get());
+        else base = lvalue(idx->base.get(), /*asInvocant=*/true); // subscript base: reaching in, not overwriting
         // assignment to an adverbed multidim subscript (`%h{a;b;c}:!exists = v`)
         // has no postcircumfix candidate — it dies
         if (idx->multiDim && !idx->adverb.empty())
@@ -6860,7 +6865,8 @@ Value* Interpreter::lvalue(Expr* e) {
                 return &(*dynHandleHold.hash)[mc->method];
             }
         }
-        Value* base = lvalue(mc->inv.get());
+        // the invocant is only a route to the real target — a read-only attr is OK here
+        Value* base = lvalue(mc->inv.get(), /*asInvocant=*/true);
         if (base->t == VT::Hash && (base->hashKind == "FileHandle" || base->hashKind == "Scheduler")) {
             if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
             return &(*base->hash)[mc->method];
@@ -6873,7 +6879,7 @@ Value* Interpreter::lvalue(Expr* e) {
             // Exceptions kept writable: `$obj!attr` (explicit private-access
             // syntax — self/trusts writes), and a name matching NO attribute
             // (a plain method call; `is rw`/`return-rw` lvalue methods rely on it).
-            if (!mc->bang)
+            if (!mc->bang && !asInvocant)
                 for (ClassInfo* ci = base->obj->cls.get(); ci; ci = ci->parent.get())
                     for (auto& at : ci->attrs)
                         // a public @./%. attr is assignable through its accessor even
@@ -11275,6 +11281,25 @@ Value Interpreter::evalUnary(Unary* u) {
             tctx_.cur->define("$!", exceptionFor(e));
             return Value::nil();
         }
+    }
+    if (u->op == "require") {
+        // runtime module load with a computed name: `require ::($name)`.
+        // Yields the loaded module's type object; throws if nothing loadable was
+        // found (so zef's `(try require ::($m)) ~~ Nil` probe sees Nil on failure).
+        Value mv = eval(u->operand.get());
+        std::string name = mv.t == VT::Type ? mv.s : mv.toStr();
+        if (name.empty())
+            throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
+                            "require: empty module name"};
+        loadModule(name, {}, /*doImport=*/true);
+        // success = the name now resolves to a class/module type. (loadedModules_
+        // is registered unconditionally at loadModule entry, so it can't signal
+        // success; requiring the type covers zef's plugins and typical modules,
+        // which define a type of their own name.)
+        if (classes_.count(name) || classes_.count(resolveClassAlias(name)))
+            return Value::typeObj(name);
+        throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
+                        "Could not find " + name + " in the module search path"};
     }
     if (u->op == "once") {
         // run once per enclosing-routine INSTANCE (a fresh closure clone
