@@ -176,6 +176,7 @@ course. Build it with `rakujs/build.sh`; details in
 
 ### The story
 
+- **[MILESTONES.md](docs/MILESTONES.md)** — the dated timeline: the headline moments and numbers, release by release. Start here for the arc at a glance.
 - **[docs/dev/JOURNEY.md](docs/dev/JOURNEY.md)** — a memoir of how this was built: the method and the principles.
 - **[LONGREAD.md](LONGREAD.md)** — the long-form story: the whole arc from empty directory to ~82% of Roast, a native compiler, and a browser playground.
 
