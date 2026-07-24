@@ -1196,7 +1196,24 @@ Interpreter::Interpreter() {
         auto fs = std::make_shared<ClassInfo>();
         fs->name = "CompUnit::Repository::FileSystem"; fs->parent = repoRole;
         classes_["CompUnit::Repository::FileSystem"] = fs;
-        auto od = std::make_shared<ObjectData>(); od->cls = fs;
+        // CompUnit::Repository::Installation — a writable CURI (short/sources/dist/
+        // resources index). rakupp already READS this layout to resolve `use`; the
+        // Installation object lets zef query and INSTALL into it. Backed by a real
+        // on-disk prefix held in the `prefix` attr.
+        auto inst = std::make_shared<ClassInfo>();
+        inst->name = "CompUnit::Repository::Installation"; inst->parent = repoRole;
+        classes_["CompUnit::Repository::Installation"] = inst;
+        // the registry is a bare type object; its methods are handled in methodCall.
+        auto reg = std::make_shared<ClassInfo>();
+        reg->name = "CompUnit::RepositoryRegistry";
+        classes_["CompUnit::RepositoryRegistry"] = reg;
+        // $*REPO is the head of the repo chain — an Installation over ~/.raku, which is
+        // exactly the prefix rakupp resolves `use` from. Methods handled in methodCall.
+        auto od = std::make_shared<ObjectData>(); od->cls = inst;
+        const char* h = getenv("HOME");
+        od->attrs["name"] = Value::str("home");
+        Value pfx = Value::str(std::string(h ? h : "") + "/.raku"); pfx.hashKind = "IO";
+        od->attrs["prefix"] = pfx;
         global_->define("$*REPO", Value::object(od));
     }
     // The slang language-objects ($~MAIN and friends) exist as defined Grammar
@@ -1264,8 +1281,19 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env) {
             default: break;
         }
     };
-    for (auto& s : stmts)
+    for (auto& s : stmts) {
         if (s->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(s.get())->e.get(), false);
+        // `my $x = E if COND` (postfix modifier): $x is declared in THIS scope
+        // regardless of COND — hoist the declaration so a false COND still leaves
+        // $x defined (its own default), matching Rakudo's compile-time declaration.
+        else if (s->kind == NK::IfStmt && static_cast<const IfStmt*>(s.get())->modifier) {
+            auto* is = static_cast<const IfStmt*>(s.get());
+            for (auto& br : is->branches)
+                if (br.second)
+                    for (auto& bs : br.second->stmts)
+                        if (bs->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(bs.get())->e.get(), true);
+        }
+    }
 }
 
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
@@ -3798,6 +3826,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 bool c = boolify(cv);
                 if (is->isUnless) c = !c;
                 if (c) {
+                    // postfix `STMT if COND`: run STMT in the ENCLOSING scope so a `my`
+                    // in it declares there (its declaration was already hoisted).
+                    if (is->modifier) return execBlock(br.second.get(), tctx_.cur);
                     auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                     std::string bv = bi < is->branchVars.size() ? is->branchVars[bi]
                                      : (bi == 0 ? is->thenVar : "");
@@ -13612,6 +13643,29 @@ Value Interpreter::eval(Expr* e) {
             if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
                 Value mv = eval(mc->methodExpr.get());
                 if (mv.t == VT::Code) { // a method object / callable: invoke with the invocant
+                    // `*.&sub` (or a WhateverCode invocant) curries into a WhateverCode
+                    // instead of calling eagerly — otherwise `sub($_)` runs on the bare
+                    // Whatever now (an identity sub then yields Whatever, not a closure).
+                    if (((inv.t == VT::Whatever) ||
+                         (inv.t == VT::Code && inv.code && inv.code->isWhateverCode)) &&
+                        !mc->hyper && exprHasWhateverLit(mc->inv.get())) {
+                        ValueList margs; for (auto& a : mc->args) margs.push_back(eval(a.get()));
+                        Value self = inv, fn = mv;
+                        Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+                        code.code->isWhateverCode = true;
+                        code.code->builtin = [self, fn, margs](Interpreter& I, ValueList& a) -> Value {
+                            Value arg = a.empty() ? Value::any() : a[0];
+                            Value base = arg;
+                            if (self.t != VT::Whatever) {
+                                if (self.t == VT::Code && self.code && self.code->isWhateverCode) base = I.callCallable(self, ValueList{arg});
+                                else base = self;
+                            }
+                            ValueList ca; ca.push_back(base);
+                            for (auto& m : margs) ca.push_back(m);
+                            return I.callCallable(fn, ca);
+                        };
+                        return code;
+                    }
                     ValueList ca; ca.push_back(inv);
                     for (auto& a : mc->args) ca.push_back(eval(a.get()));
                     if (mc->hyper) { // ».$var maps it

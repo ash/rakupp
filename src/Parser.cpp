@@ -4977,6 +4977,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             advance();
             auto is = std::make_unique<IfStmt>();
             is->isUnless = (kw == "unless");
+            is->modifier = true; // postfix form: a `my` in the modified STMT leaks to the enclosing scope
             ExprPtr cond = parseExpression();
             is->branches.emplace_back(std::move(cond), wrapStmt(std::move(s)));
             return applyModifiers(std::move(is)); // chained modifiers: `X if A for B`

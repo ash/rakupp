@@ -362,6 +362,7 @@ struct IfStmt : Stmt {
     std::string elseVar; // `else -> $x { }` binds the last (falsy) condition value
     std::unique_ptr<Block> elseBlock; // may be null
     bool isUnless = false;
+    bool modifier = false; // `STMT if COND` postfix form — a `my` in STMT declares in the ENCLOSING scope
     IfStmt(): Stmt(NK::IfStmt) {}
 };
 

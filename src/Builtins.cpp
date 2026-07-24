@@ -1512,6 +1512,62 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // ---- CompUnit repository machinery (what zef drives to query/install dists) ----
+    {
+        auto homeDir = []() -> std::string { const char* h = getenv("HOME"); return h ? h : ""; };
+        auto mkCURI = [&](const std::string& name, const std::string& prefix) -> Value {
+            auto od = std::make_shared<ObjectData>();
+            od->cls = classes_["CompUnit::Repository::Installation"];
+            od->attrs["name"] = Value::str(name);
+            Value p = Value::str(prefix); p.hashKind = "IO"; // IO::Path
+            od->attrs["prefix"] = p;
+            return Value::object(od);
+        };
+        if (inv.t == VT::Type && inv.s == "CompUnit::RepositoryRegistry") {
+            if (m == "repository-for-name") {
+                std::string nm = args.empty() ? "" : args[0].toStr();
+                // rakupp resolves `use` from ~/.raku, so every writable name maps there;
+                // 'core'/'perl' get the same prefix but hold no CORE dist, so their
+                // candidates come back empty (zef's ignore list ends up empty).
+                return mkCURI(nm, homeDir() + "/.raku");
+            }
+            if (m == "repository-for-spec") {
+                std::string spec = args.empty() ? "" : args[0].toStr();
+                // `inst#/path` / `file#/path` / a bare name; take the path after '#'
+                std::string prefix = homeDir() + "/.raku";
+                auto hash = spec.find('#');
+                if (hash != std::string::npos && hash + 1 < spec.size()) prefix = spec.substr(hash + 1);
+                return mkCURI(spec, prefix);
+            }
+            if (m == "head") return mkCURI("home", homeDir() + "/.raku");
+            if (m == "name-for-repository") return Value::str("home");
+        }
+        if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
+            inv.obj->cls->name == "CompUnit::Repository::Installation") {
+            auto& at = inv.obj->attrs;
+            std::string prefix = at.count("prefix") ? at["prefix"].toStr() : "";
+            std::string name = at.count("name") ? at["name"].toStr() : "";
+            if (m == "prefix") { Value p = Value::str(prefix); p.hashKind = "IO"; return p; }
+            if (m == "name") return Value::str(name);
+            if (m == "id" || m == "short-id") return Value::str(name.empty() ? std::string("inst") : name);
+            if (m == "Str" || m == "gist" || m == "raku") return Value::str("inst#" + prefix);
+            if (m == "path-spec") return Value::str("inst#" + prefix);
+            if (m == "can-install") return Value::boolean(true);
+            if (m == "repo-chain") { // this repo is the whole (single-link) chain
+                Value e = Value::array(); e.isList = true; e.s = "Seq";
+                e.arr->push_back(inv);
+                return e;
+            }
+            if (m == "candidates") {
+                // Phase 1: no dist enumeration yet — an empty candidate list is correct
+                // for 'core' (rakupp has no CORE dist) and keeps zef's ignore list empty.
+                Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
+            }
+            if (m == "installed") {
+                Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
+            }
+        }
+    }
     if (m == "WHY") {
         // declarator pod: `#| text` above a sub/method/class answers .WHY
         if (inv.t == VT::Code && inv.code && !inv.code->pod.empty())
@@ -8727,6 +8783,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
+    if (std::getenv("RAKUPP_TRACE"))
+        std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
+                  << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";
     throwTyped("X::Method::NotFound",
                {{"method", m}, {"typename", inv.typeName()}},
                "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
@@ -11114,10 +11173,16 @@ void Interpreter::registerBuiltins() {
         // `grep`'s list is a +@values slurpy (single-arg rule): ONE Positional arg
         // is iterated; with several args each is one element, so a bare `[]` stays
         // an element instead of flattening away and renumbering :kv/:p indices.
-        if (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Range) && !pos[0].itemized) {
-            if (pos[0].t == VT::Range) for (auto& x : pos[0].flatten()) list.arr->push_back(x);
-            else for (auto& x : *pos[0].arr) list.arr->push_back(x);
-        } else for (auto& x : pos) list.arr->push_back(x);
+        // EXCEPT a Slip, which always flattens into the surrounding list (that's
+        // what `.Slip` is for) — `grep &p, (…).Slip, (…).Slip` merges both.
+        bool singleList = (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Range) && !pos[0].itemized);
+        for (auto& x : pos) {
+            bool isSlip = (x.t == VT::Array && x.arr && x.s == "Slip");
+            if (isSlip || (singleList && (x.t == VT::Array || x.t == VT::Range))) {
+                if (x.t == VT::Range) for (auto& e : x.flatten()) list.arr->push_back(e);
+                else for (auto& e : *x.arr) list.arr->push_back(e);
+            } else list.arr->push_back(x);
+        }
         return I.methodCall(list, "grep", margs); // one implementation
     };
     B["first"] = [](Interpreter& I, ValueList& a) -> Value {
