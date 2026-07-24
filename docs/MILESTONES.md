@@ -97,9 +97,11 @@ zef populates (see [MODULES.md](MODULES.md)); the goal is breadth and depth.
 - Stretch flagship: **zef itself running under rakupp**.
 
 Beyond the interpreter, the same source feeds a small constellation —
-[raku.online](https://raku.online/) (playground), spec.raku.online,
-tour.raku.online, the raku-corpus differential target, a `setup-rakupp` GitHub
-Action, and an OpenBSD release target. The map is in [ECOSYSTEM.md](ECOSYSTEM.md).
+[raku.online](https://raku.online/) (playground),
+[spec.raku.online](https://spec.raku.online/),
+[tour.raku.online](https://tour.raku.online/), the raku-corpus differential
+target, a `setup-rakupp` GitHub Action, and an OpenBSD release target. The map is
+in [ECOSYSTEM.md](ECOSYSTEM.md).
 
 ---
 
