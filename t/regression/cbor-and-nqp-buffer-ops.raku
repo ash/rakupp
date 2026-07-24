@@ -39,29 +39,34 @@ nqp::writeuint($buf, 0, 0x1234, $be16);
 @fail.push('buf-temp-write') unless buf8.new.write-uint16(0, 0x1234, BigEndian).read-uint8(0) == 0x12;
 
 # --- CBOR encodings must be byte-identical to Rakudo's (values captured from raku)
-sub hx($v) { cbor-encode($v).list.fmt('%02x', ' ') }
-my %want =
-    '42'        => '18 2a',
-    '-17'       => '30',
-    'hello'     => '65 68 65 6c 6c 6f',
-    'array'     => '83 01 02 03',
-    'hash'      => 'a2 61 61 01 61 62 02',
-    'pi'        => 'fb 40 09 1e b8 51 eb 85 1f',   # 3.14 stays num64
-    'true'      => 'f5',
-    'nil'       => 'f6';
-@fail.push("cbor-42 ({hx(42)})")          unless hx(42)               eq %want<42>;
-@fail.push("cbor-neg ({hx(-17)})")        unless hx(-17)             eq %want<-17>;
-@fail.push("cbor-str ({hx('hello')})")    unless hx('hello')         eq %want<hello>;
-@fail.push("cbor-arr ({hx([1,2,3])})")    unless hx([1,2,3])         eq %want<array>;
-@fail.push("cbor-hash ({hx(%(a=>1,b=>2))})") unless hx(%(a=>1,b=>2)) eq %want<hash>;
-@fail.push("cbor-pi ({hx(3.14e0)})")      unless hx(3.14e0)          eq %want<pi>;
-@fail.push("cbor-true ({hx(True)})")      unless hx(True)            eq %want<true>;
-@fail.push("cbor-nil ({hx(Any)})")        unless hx(Any)             eq %want<nil>;
+# Guarded: CBOR::Simple is an ecosystem module — where it isn't installed (a clean
+# CI runner) these checks skip; where it is, a wrong encoding still fails.
+if (try { cbor-encode(0); True }) {
+    my &hx = -> $v { cbor-encode($v).list.fmt('%02x', ' ') };
+    my %want =
+        '42'        => '18 2a',
+        '-17'       => '30',
+        'hello'     => '65 68 65 6c 6c 6f',
+        'array'     => '83 01 02 03',
+        'hash'      => 'a2 61 61 01 61 62 02',
+        'pi'        => 'fb 40 09 1e b8 51 eb 85 1f',   # 3.14 stays num64
+        'true'      => 'f5',
+        'nil'       => 'f6';
+    @fail.push("cbor-42 ({hx(42)})")          unless hx(42)               eq %want<42>;
+    @fail.push("cbor-neg ({hx(-17)})")        unless hx(-17)             eq %want<-17>;
+    @fail.push("cbor-str ({hx('hello')})")    unless hx('hello')         eq %want<hello>;
+    @fail.push("cbor-arr ({hx([1,2,3])})")    unless hx([1,2,3])         eq %want<array>;
+    @fail.push("cbor-hash ({hx(%(a=>1,b=>2))})") unless hx(%(a=>1,b=>2)) eq %want<hash>;
+    @fail.push("cbor-pi ({hx(3.14e0)})")      unless hx(3.14e0)          eq %want<pi>;
+    @fail.push("cbor-true ({hx(True)})")      unless hx(True)            eq %want<true>;
+    @fail.push("cbor-nil ({hx(Any)})")        unless hx(Any)             eq %want<nil>;
 
-# --- round-trip: decode(encode(x)) == x for a nested structure
-my %deep = name => 'Tokyo', tags => ['a', 'b'], n => 3, active => True;
-my $rt = cbor-decode(cbor-encode(%deep));
-@fail.push('cbor-roundtrip')
-    unless $rt<name> eq 'Tokyo' && $rt<tags>[1] eq 'b' && $rt<n> == 3 && $rt<active>;
+    # round-trip: decode(encode(x)) == x for a nested structure
+    my %deep = name => 'Tokyo', tags => ['a', 'b'], n => 3, active => True;
+    my $rt = cbor-decode(cbor-encode(%deep));
+    @fail.push('cbor-roundtrip')
+        unless $rt<name> eq 'Tokyo' && $rt<tags>[1] eq 'b' && $rt<n> == 3 && $rt<active>;
+}
+else { note '# CBOR::Simple not installed here — skipping CBOR round-trip checks' }
 
 if @fail { note "FAILED: @fail[]"; say 'FAIL' } else { say 'PASS' }

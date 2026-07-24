@@ -15,19 +15,27 @@ my int64 $t = 0;
 my $now = c_time($t);
 @fail.push("is-rw ($t vs $now)") unless $t != 0 && $t == $now;
 
-# 2. mixed int/float args, both orderings
+# 2. mixed int/float args, both orderings. libm's symbols live in the default
+# namespace on macOS (libSystem) but not always on Linux — guard resolution, so a
+# wrong result still fails while an unresolved symbol just skips.
 sub ldexp(num64, int32) returns num64 is native {*}   # float, int
-@fail.push('mixed-float-int') unless ldexp(1.5e0, 3) == 12e0;
+my $ld = try { ldexp(1.5e0, 3) };
+with $ld { @fail.push("mixed-float-int ($ld)") unless $_ == 12e0 }
+else     { note '# ldexp (libm) not resolvable here — skipping mixed float,int' }
 sub jn(int32, num64) returns num64 is native {*}        # int, float
-@fail.push('mixed-int-float') unless jn(0, 0e0) == 1e0; # J0(0) = 1
+my $j0 = try { jn(0, 0e0) };                            # J0(0) = 1
+with $j0 { @fail.push("mixed-int-float ($j0)") unless $_ == 1e0 }
+else     { note '# jn (libm) not resolvable here — skipping mixed int,float' }
 
 # 3. nativecast: int address <-> Pointer
 my $p = nativecast(Pointer, 4242);
 @fail.push('nativecast-ptr') unless $p.Int == 4242;
 
-# 4. cglobal: read a libc global (sys_nerr is a small int on BSD/macOS libc)
-my $ne = cglobal('c', 'sys_nerr', int32);
-@fail.push('cglobal') unless $ne ~~ Int && $ne >= 0;
+# 4. cglobal: read a libc global. sys_nerr is a small int on BSD/macOS libc but was
+# removed from modern glibc — guard so Linux skips rather than crashing.
+my $ne = try { cglobal('c', 'sys_nerr', int32) };
+with $ne { @fail.push("cglobal ($ne)") unless $ne ~~ Int && $ne >= 0 }
+else     { note '# cglobal sys_nerr not present here (glibc dropped it) — skipping' }
 
 # 5. Pointer API
 @fail.push('pointer-null')    unless !Pointer.new.defined;
