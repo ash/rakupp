@@ -5405,9 +5405,22 @@ StmtPtr Parser::parseStatementImpl() {
         }
         if (kw == "class" || kw == "role" || kw == "monitor" ||
             kw == "grammar" || kw == "module" || kw == "package") {
-            advance(); return parseClass(kw == "role", kw == "grammar",
-                                         kw == "module" || kw == "package",
-                                         false, kw);
+            advance();
+            StmtPtr decl = parseClass(kw == "role", kw == "grammar",
+                                      kw == "module" || kw == "package",
+                                      false, kw);
+            // `class Foo {…}.new(…)` as a statement (zef's config object is exactly
+            // this as a sub's last statement): the type is a TERM with a postfix.
+            // Wrap the decl in `do { … }` (evals to the type object) and apply it.
+            if (isOp(".") && !cur().spaceBefore) {
+                auto be = std::make_unique<BlockExpr>();
+                be->body.push_back(std::move(decl));
+                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+                auto es = std::make_unique<ExprStmt>();
+                es->e = parsePostfix(std::move(u), true);
+                return es;
+            }
+            return decl;
         }
         if (kw == "subset") { advance(); return parseSubset(); }
         if (kw == "enum") { advance(); return parseEnum(); }

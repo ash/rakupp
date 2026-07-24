@@ -11133,6 +11133,8 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
                 Value a = Value::array(v.blobList()); a.isList = true; return a;
             }
+            // `@%h` / `@$hash` lists the hash's Pairs (zef: `for @$node -> $sub-node`)
+            if (v.t == VT::Hash && v.hash) { Value a = hashToPairs(v); a.isList = true; return a; }
             Value a = Value::array(); a.arr->push_back(v); a.isList = true; return a;
         }
         if (u->op == "ctx%") return v.t == VT::Hash ? v : coerceHash(v); // %(...) hash composer
@@ -12311,6 +12313,34 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // a native-container subclass / `but`/`does` mixin instance indexes through its box
     if (base.t == VT::Object && base.obj && base.obj->hasBoxed) base = base.obj->boxed;
+    // An object that implements or delegates (`handles`) AT-KEY/AT-POS is
+    // subscripted through it: `$obj<k>` == `$obj.AT-KEY("k")`, `$obj[i]` ==
+    // `$obj.AT-POS(i)` (zef's config: `class :: { has %.hash handles <AT-KEY …> }`).
+    if (base.t == VT::Object && base.obj && base.obj->cls && !idx->multiDim) {
+        std::function<bool(ClassInfo*, const std::string&)> covers =
+            [&](ClassInfo* c, const std::string& n) -> bool {
+            if (!c) return false;
+            if (c->methods.count(n)) return true;
+            for (auto& a : c->attrs) for (auto& h : a.handles) if (h == n) return true;
+            if (covers(c->parent.get(), n)) return true;
+            for (auto& p : c->extraParents) if (p && covers(p.get(), n)) return true;
+            return false;
+        };
+        std::string method = idx->isHash ? "AT-KEY" : "AT-POS";
+        std::string adv = idx->adverb; if (!adv.empty() && adv[0] == '!') adv = adv.substr(1);
+        if (adv == "exists") method = idx->isHash ? "EXISTS-KEY" : "EXISTS-POS";
+        else if (adv == "delete") method = idx->isHash ? "DELETE-KEY" : "DELETE-POS";
+        else if (!adv.empty()) method = ""; // :k/:v/:kv/:p — leave to the generic path
+        if (!method.empty() && covers(base.obj->cls.get(), method)) {
+            Value k = eval(idx->index.get());
+            if (k.t == VT::Array || k.t == VT::Range) {
+                Value out = Value::array(); out.isList = true;
+                for (auto& kk : k.flatten()) out.arr->push_back(methodCall(base, method, ValueList{kk}));
+                return out;
+            }
+            return methodCall(base, method, ValueList{k});
+        }
+    }
     // subscripting an infinite range (…..Inf) — index its lazy @-array form so
     // nothing materialises the whole range.
     if (base.t == VT::Range && base.rTo >= 9000000000000000000LL && !idx->isHash)
