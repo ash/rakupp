@@ -8422,6 +8422,7 @@ struct SignalTapRec {
     std::shared_ptr<ReactCtx> react;      // react ctx (so `done` closes it), or null
     std::shared_ptr<TapHandle> handle;    // closed => skip
 };
+#if !defined(_WIN32)
 static int g_sigPipe[2] = {-1, -1};
 static std::mutex g_sigTapMutex;
 static std::multimap<int, std::shared_ptr<SignalTapRec>> g_sigTaps;
@@ -8429,6 +8430,7 @@ static std::set<int> g_sigInstalled;      // signals whose handler is installed
 static void rakuppSignalHandler(int sig) {
     if (g_sigPipe[1] >= 0) { unsigned char c = (unsigned char)sig; ssize_t r = ::write(g_sigPipe[1], &c, 1); (void)r; }
 }
+#endif
 
 // Signal number → its enum name ("SIGINT"), or "" if unknown.
 static std::string signalNameOfNumber(int sig);
@@ -8439,29 +8441,95 @@ static Value makeSignalEnumValue(int sig) {
     v.enumType = "Signal";
     return v;
 }
-// Map a Signal-enum name to its OS number (per-platform via <csignal>).
-int signalNumberOfName(const std::string& n) {
+// The Signal-enum names available on THIS platform. Each is `#ifdef`-guarded:
+// Windows' <signal.h> defines only a handful (SIGINT/SIGILL/SIGFPE/SIGSEGV/
+// SIGTERM/SIGABRT/SIGBREAK), so the rest are simply absent there.
+static const std::map<std::string, int>& signalNameMap() {
     static const std::map<std::string, int> m = {
-        {"SIGHUP", SIGHUP}, {"SIGINT", SIGINT}, {"SIGQUIT", SIGQUIT},
-        {"SIGILL", SIGILL}, {"SIGTRAP", SIGTRAP}, {"SIGABRT", SIGABRT},
-        {"SIGFPE", SIGFPE}, {"SIGKILL", SIGKILL}, {"SIGBUS", SIGBUS},
-        {"SIGSEGV", SIGSEGV}, {"SIGSYS", SIGSYS}, {"SIGPIPE", SIGPIPE},
-        {"SIGALRM", SIGALRM}, {"SIGTERM", SIGTERM}, {"SIGURG", SIGURG},
-        {"SIGSTOP", SIGSTOP}, {"SIGTSTP", SIGTSTP}, {"SIGCONT", SIGCONT},
-        {"SIGCHLD", SIGCHLD}, {"SIGTTIN", SIGTTIN}, {"SIGTTOU", SIGTTOU},
-        {"SIGUSR1", SIGUSR1}, {"SIGUSR2", SIGUSR2}, {"SIGWINCH", SIGWINCH},
+#ifdef SIGHUP
+        {"SIGHUP", SIGHUP},
+#endif
+#ifdef SIGINT
+        {"SIGINT", SIGINT},
+#endif
+#ifdef SIGQUIT
+        {"SIGQUIT", SIGQUIT},
+#endif
+#ifdef SIGILL
+        {"SIGILL", SIGILL},
+#endif
+#ifdef SIGTRAP
+        {"SIGTRAP", SIGTRAP},
+#endif
+#ifdef SIGABRT
+        {"SIGABRT", SIGABRT},
+#endif
+#ifdef SIGFPE
+        {"SIGFPE", SIGFPE},
+#endif
+#ifdef SIGKILL
+        {"SIGKILL", SIGKILL},
+#endif
+#ifdef SIGBUS
+        {"SIGBUS", SIGBUS},
+#endif
+#ifdef SIGSEGV
+        {"SIGSEGV", SIGSEGV},
+#endif
+#ifdef SIGSYS
+        {"SIGSYS", SIGSYS},
+#endif
+#ifdef SIGPIPE
+        {"SIGPIPE", SIGPIPE},
+#endif
+#ifdef SIGALRM
+        {"SIGALRM", SIGALRM},
+#endif
+#ifdef SIGTERM
+        {"SIGTERM", SIGTERM},
+#endif
+#ifdef SIGURG
+        {"SIGURG", SIGURG},
+#endif
+#ifdef SIGSTOP
+        {"SIGSTOP", SIGSTOP},
+#endif
+#ifdef SIGTSTP
+        {"SIGTSTP", SIGTSTP},
+#endif
+#ifdef SIGCONT
+        {"SIGCONT", SIGCONT},
+#endif
+#ifdef SIGCHLD
+        {"SIGCHLD", SIGCHLD},
+#endif
+#ifdef SIGTTIN
+        {"SIGTTIN", SIGTTIN},
+#endif
+#ifdef SIGTTOU
+        {"SIGTTOU", SIGTTOU},
+#endif
+#ifdef SIGUSR1
+        {"SIGUSR1", SIGUSR1},
+#endif
+#ifdef SIGUSR2
+        {"SIGUSR2", SIGUSR2},
+#endif
+#ifdef SIGWINCH
+        {"SIGWINCH", SIGWINCH},
+#endif
+#ifdef SIGBREAK
+        {"SIGBREAK", SIGBREAK}, // Windows-only
+#endif
     };
-    auto it = m.find(n);
-    return it != m.end() ? it->second : -1;
+    return m;
+}
+int signalNumberOfName(const std::string& n) {
+    auto it = signalNameMap().find(n);
+    return it != signalNameMap().end() ? it->second : -1;
 }
 static std::string signalNameOfNumber(int sig) {
-    static const char* names[] = {
-        "SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGABRT","SIGFPE",
-        "SIGKILL","SIGBUS","SIGSEGV","SIGSYS","SIGPIPE","SIGALRM","SIGTERM",
-        "SIGURG","SIGSTOP","SIGTSTP","SIGCONT","SIGCHLD","SIGTTIN","SIGTTOU",
-        "SIGUSR1","SIGUSR2","SIGWINCH",
-    };
-    for (const char* n : names) if (signalNumberOfName(n) == sig) return n;
+    for (auto& kv : signalNameMap()) if (kv.second == sig) return kv.first;
     return "";
 }
 // A signal value passed to `signal()`: the Signal type-object (`SIGINT`, s=name),
@@ -8477,6 +8545,16 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                              std::shared_ptr<ReactCtx> reactCtx) {
     engageGil();
     auto handle = std::make_shared<TapHandle>();
+#if defined(_WIN32)
+    // Windows: the POSIX self-pipe + sigaction machinery isn't available, and
+    // <signal.h> exposes only a handful of signals. Return a non-emitting tap
+    // (Ctrl-C falls to the default handler) so `signal()` still type-checks and
+    // programs that merely construct the Supply keep working.
+    (void)sigs; (void)emitCb; (void)doneCb; (void)reactCtx;
+    Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
+    (*t.hash)["wired"] = Value::boolean(true);
+    return t;
+#else
     auto rec = std::make_shared<SignalTapRec>();
     rec->emit = emitCb; rec->done = doneCb; rec->react = reactCtx; rec->handle = handle;
 
@@ -8552,6 +8630,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
     Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
     (*t.hash)["wired"] = Value::boolean(true);
     return t;
+#endif // !_WIN32
 }
 
 Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb) {
