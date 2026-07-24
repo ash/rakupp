@@ -4629,6 +4629,28 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                         if (at && at->pub)
                             od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
                     }
+                // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
+                // on the FINAL slot value, matching Rakudo's X::TypeCheck::Attribute::Default.
+                // Only when the attr actually received a value (an explicit default or a
+                // construction arg); a bare `has T:D $.x` with neither is a compile-time
+                // concern (X::Syntax::Variable::MissingInitializer) we don't model here.
+                for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
+                    for (auto& at : (*cit)->attrs) {
+                        if (!at.defConstraint) continue;
+                        bool gotArg = false;
+                        for (auto& arg : args)
+                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+                        if (!(at.def || at.hasDefVal || gotArg)) continue;
+                        Value cur = od->attrs.count(at.name) ? od->attrs[at.name] : Value::any();
+                        bool defd = defined(cur);
+                        if ((at.defConstraint == 1 && !defd) || (at.defConstraint == 2 && defd))
+                            throwTypedV("X::TypeCheck::Attribute::Default",
+                                        {{"name", Value::str("$!" + at.name)}},
+                                        "Type check failed on attribute '$!" + at.name +
+                                        "'; expected " + at.type +
+                                        (at.defConstraint == 1 ? ":D but got " : ":U but got ") +
+                                        cur.typeName());
+                    }
                 Value self = Value::object(od);
                 // bless does not re-run BUILD-from-new args the same way, but running
                 // BUILD here matches the common `self.bless(:attr(...))` usage.

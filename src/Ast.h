@@ -308,6 +308,7 @@ struct AttrDecl {
     std::string type;   // declared type name (`has Int $.x`), "" = none (Mu)
     bool coerce = false; // coercion-type attribute: `has IO::Path() $.filename`
     std::vector<std::string> handles; // `handles <m1 m2>` — delegate these methods to the attr
+    int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
     ExprPtr def;        // optional default
 };
 

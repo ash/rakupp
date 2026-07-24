@@ -242,6 +242,7 @@ struct ClassAttr {
     Value defVal;              // native codegen: precomputed default value
     bool hasDefVal = false;    // use defVal instead of `def`
     std::vector<std::string> handles; // `has $.b handles <m1 m2>` — methods delegated to this attr
+    int defConstraint = 0; // type smiley on the attr type: 0=none, 1=:D (defined), 2=:U (undefined)
     const void* declId = nullptr;     // identity of the declaring AttrDecl (diamond-composition dedup)
 };
 

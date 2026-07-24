@@ -4595,9 +4595,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             // optional type before the attribute var: `has Int $.x`, `has Int:D $.x`,
             // `has Array[Int] $.x` — consume the type name, any :D/:U/:_ smiley, and [..] params.
             std::string attrType;
+            int attrSmiley = 0; // :D=1, :U=2 (:_ / none = 0)
             if (isKind(Tok::Ident)) {
                 attrType = advance().text; // type name
-                if (isOp(":") && (peek().kind == Tok::Ident)) { advance(); advance(); } // :D / :U / :_ smiley
+                if (isOp(":") && (peek().kind == Tok::Ident)) { // :D / :U / :_ smiley
+                    advance(); std::string sm = advance().text;
+                    if (sm == "D") attrSmiley = 1; else if (sm == "U") attrSmiley = 2;
+                }
                 if (isKind(Tok::LBracket)) { int d = 0; do { if (isKind(Tok::LBracket)) d++; else if (isKind(Tok::RBracket)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
             }
             // coercion-type attribute: `has IO::Path() $.filename` / `has Int(Cool) $.n`.
@@ -4638,6 +4642,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 std::string vn = advance().text;
                 AttrDecl a;
                 a.type = attrType;
+                a.defConstraint = attrSmiley;
                 a.coerce = attrCoerce;
                 a.sigil = vn[0];
                 size_t idx = 1;

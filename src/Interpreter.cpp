@@ -3139,6 +3139,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
                         ca.pub = a.pub; ca.rw = a.rw; ca.def = a.def.get(); ca.type = a.type;
+                        ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
                         ci->attrs.push_back(ca);
                     }
@@ -3503,6 +3504,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.type = a.type;
                 ca.containerIs = a.containerIs;
                 ca.handles = a.handles;
+                ca.defConstraint = a.defConstraint;
                 ca.def = a.def.get();
                 ca.declId = &a;
                 ci->attrs.push_back(ca);
