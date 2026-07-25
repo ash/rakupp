@@ -433,10 +433,9 @@ std::string Value::gist() const {
                 if (hash) for (auto& kv : *hash) {
                     if (!first) body += " "; first = false;
                     if (isSet) body += kv.first;
-                    else if (isMix) body += kv.first + " => " + kv.second.gist();
-                    else { // Bag: elem(count), (1) omitted
+                    else { // Bag AND Mix: elem(weight), a weight of 1 omitted
                         body += kv.first;
-                        if (!(kv.second.t == VT::Int && kv.second.toInt() == 1))
+                        if (!(kv.second.isNumeric() && kv.second.toNum() == 1.0))
                             body += "(" + kv.second.gist() + ")";
                     }
                 }

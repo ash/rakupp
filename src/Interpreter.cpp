@@ -5509,6 +5509,10 @@ Value& rtAttrRef(Value& self, const std::string& name) {
 // Nominal type check for native multi-dispatch.
 bool rtTypeMatch(const Value& v, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu" || type == "Cool") return true;
+    // an allomorph (IntStr/RatStr/NumStr/ComplexStr) IS both of its types:
+    // `my Str $s = <42>` and `my Int $i = <42>` both hold
+    if (v.isAllomorph() && (type == "Str" || type == "Stringy" || type == v.hashKind))
+        return true;
     switch (v.t) {
         case VT::Int:     return type == "Int" || type == "Numeric" || type == "Real";
         case VT::Num:     return type == "Num" || type == "Numeric" || type == "Real";

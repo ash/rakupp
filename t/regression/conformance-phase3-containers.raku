@@ -61,4 +61,23 @@ check($sub.defined, 'True', 'builtin-parent-takes-positional');
 my $ch = Channel.new; $ch.close;
 check((try { $ch.send(1); 'no-throw' }) // $!.message, 'Cannot send a message on a closed channel', 'send-on-closed-wording');
 
+# 5. an allomorph IS both of its types, in an ASSIGNMENT check as well as a
+#    smartmatch — `my Str $s = <42>` holds
+my $is = <42>;
+check($is.^name, 'IntStr', 'allomorph-name');
+my Int $ai = $is; check($ai, '42', 'allomorph-satisfies-Int');
+my Str $as = $is; check($as, '42', 'allomorph-satisfies-Str');
+sub takes-str(Str $x) { $x }
+check(takes-str($is), '42', 'allomorph-binds-to-a-Str-param');
+my $ns = <1e5>;
+my Num $an = $ns; check($an, '1e5', 'numstr-satisfies-Num');
+my Str $an2 = $ns; check($an2, '1e5', 'numstr-satisfies-Str');
+# a plain Int still does NOT satisfy Str
+check((try { my Str $bad = 42; 'no-throw' }) // 'threw', 'threw', 'plain-int-is-not-a-Str');
+
+# 6. Mix gists like Bag — elem(weight), a weight of 1 omitted
+check((butter => 0.22).Mix.gist, 'Mix(butter(0.22))', 'mix-gist-form');
+check((a => 1.0).Mix.gist,       'Mix(a)',            'mix-gist-omits-weight-one');
+check((a => 2).Bag.gist,         'Bag(a(2))',         'bag-gist-unchanged-2');
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }
