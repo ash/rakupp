@@ -2353,16 +2353,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Type && (inv.s == "CArray" || inv.s.rfind("CArray[", 0) == 0)) {
         std::string et = inv.s.rfind("CArray[", 0) == 0 ? inv.s.substr(7, inv.s.size() - 8)
                                                         : inv.ofType; // parameter lives in ofType
-        int esz = (et == "int8" || et == "uint8" || et == "byte") ? 1
-                : (et == "int16" || et == "uint16") ? 2
-                : (et == "int64" || et == "uint64" || et == "long" || et == "num64") ? 8
-                : (et == "num32") ? 4 : 4; // int32/uint32/int default
+        int esz = Interpreter::ncElemSize(et); // pointer element types are 8, not int32
         if (m == "new") {
             std::string bytes;
             for (auto& a : flattenArgs(args)) {
                 if (et == "num32") { float f = (float)a.toNum(); bytes.append((const char*)&f, 4); }
                 else if (et == "num64") { double d = a.toNum(); bytes.append((const char*)&d, 8); }
-                else { long long x = a.toInt(); bytes.append((const char*)&x, esz); }
+                else {
+                    size_t at = bytes.size(); bytes.append((size_t)esz, '\0');
+                    Interpreter::ncWriteElem((long long)(intptr_t)(bytes.data() + at), et, 0, a);
+                }
             }
             Value c = Value::str(bytes); c.hashKind = "CArray";
             c.enumName = et; // remember the element type
@@ -2377,9 +2377,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "elems") {
         const std::string& et = inv.enumName;
-        int esz = (et == "int8" || et == "uint8" || et == "byte") ? 1
-                : (et == "int16" || et == "uint16") ? 2
-                : (et == "int64" || et == "uint64" || et == "long" || et == "num64") ? 8 : 4;
+        int esz = Interpreter::ncElemSize(et);
         return Value::integer((long long)(inv.s.size() / esz));
     }
     // Encoding::Registry / streaming decoder — the Rakudo encoding API that

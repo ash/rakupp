@@ -123,7 +123,7 @@ the system OpenSSL and streams the decrypted response like any other socket.
 ```raku
 use IO::Socket::Async::SSL;
 
-my $conn = await IO::Socket::Async::SSL.connect('example.com', 443, :insecure);
+my $conn = await IO::Socket::Async::SSL.connect('example.com', 443);
 await $conn.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n".encode);
 
 my $response = Buf.new;
@@ -140,9 +140,22 @@ Notes and current limits:
 
 - **Architecture must match the OpenSSL library** — see the callout above; this is
   the most common reason the example fails on a fresh macOS checkout.
-- **`:insecure` skips certificate verification.** The certificate-verifying path
-  (hostname / chain validation, i.e. without `:insecure`) is not yet complete, so
-  use `:insecure` for now and treat the transport as encrypted-but-unauthenticated.
+- **Certificates are verified by default.** The connection above checks the
+  chain against the system trust store and matches the hostname against the
+  certificate's subject alt names, so a self-signed, expired, untrusted-root or
+  wrong-host certificate is refused with
+  `X::IO::Socket::Async::SSL::Verification`:
+
+  ```
+  self-signed.badssl.com    Server certificate verification failed: self signed certificate
+  expired.badssl.com        Server certificate verification failed: certificate has expired
+  untrusted-root.badssl.com Server certificate verification failed: self signed certificate in certificate chain
+  wrong.host.badssl.com     Host wrong.host.badssl.com does not match any subject alt name
+                            on the certificate (*.badssl.com, badssl.com)
+  ```
+
+  Passing `:insecure` skips those checks — then the transport is encrypted but
+  unauthenticated, so only use it against a host you already trust by other means.
 - The plain TLS transport (handshake, encrypted read/write) works end to end; a
   higher-level HTTP client on top of it is a further layer.
 

@@ -260,6 +260,8 @@ public:
     // address whose deref/element access reads native memory.
     Value ncMakePointer(const std::string& type, void* p);   // Pointer / Pointer[T]
     Value ncMakeLiveCArray(const std::string& type, void* p);// CArray[T] over native memory
+    static int ncElemSize(const std::string& ofType); // byte width of a CArray element (pointers are 8)
+    static bool ncIsPointerElem(const std::string& ofType); // element is itself a pointer (Pointer/Str/CArray)
     static Value ncReadElem(long long addr, const std::string& ofType, long long index); // read one native element
     static void ncWriteElem(long long addr, const std::string& ofType, long long index, const Value& val);
     static long long ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type); // CStruct field byte offset

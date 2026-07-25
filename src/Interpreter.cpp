@@ -5692,6 +5692,20 @@ Value Interpreter::ncMakeLiveCArray(const std::string& type, void* p) {
     (*v.hash)["of"]   = Value::str(of.empty() ? "int64" : of);
     return v;
 }
+// Is this CArray element type itself a pointer? `CArray[Pointer]`,
+// `CArray[CArray[uint8]]` (an `unsigned char **`), `CArray[Str]`.
+bool Interpreter::ncIsPointerElem(const std::string& t) {
+    return t == "Pointer" || t == "Str" || t == "CArray" ||
+           t.rfind("Pointer[", 0) == 0 || t.rfind("CArray[", 0) == 0;
+}
+// Byte width of a CArray element. ncScalarWidth answers 0 for anything that
+// isn't a native scalar — those are machine pointers, not the int32 that the
+// old ad-hoc size tables fell back to.
+int Interpreter::ncElemSize(const std::string& t) {
+    bool sgn, isFlt; int w = ncScalarWidth(t, sgn, isFlt);
+    if (w) return w;
+    return (int)sizeof(void*);
+}
 // Read one native element at addr[index] as the given native type.
 Value Interpreter::ncReadElem(long long addr, const std::string& ofType, long long index) {
     if (!addr) return Value::any();
@@ -7253,6 +7267,32 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
     }
     if (a->op == "=" || a->op == ":=") {
+        // `$carray[$i] = v` on a byte-backed CArray writes the element IN PLACE.
+        // The generic lvalue path below replaces any non-Array base with a fresh
+        // Array, which would silently discard the native buffer — and then hand a
+        // native call the element COUNT where it wanted a pointer.
+        if (a->op == "=" && a->target->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            // Only for a plain variable base: the generic path re-resolves the
+            // base itself, so probing anything with side effects (a call, an
+            // index chain) would evaluate it twice.
+            if (!ix->isHash && ix->index && !ix->multiDim && ix->base->kind == NK::VarExpr) {
+                Value* bp = nullptr;
+                try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                if (bp && bp->t == VT::Str && bp->hashKind == "CArray") {
+                    long long i = eval(ix->index.get()).toInt();
+                    Value v = evalValueOf(a->value.get());
+                    const std::string et = bp->enumName.empty() ? "int64" : bp->enumName;
+                    int esz = ncElemSize(et);
+                    if (i >= 0) {
+                        size_t need = (size_t)(i + 1) * (size_t)esz;
+                        if (bp->s.size() < need) bp->s.resize(need, '\0');
+                        ncWriteElem((long long)(intptr_t)bp->s.data(), et, i, v);
+                    }
+                    return v;
+                }
+            }
+        }
         // quanthash element assignment: $sh<k> = False deletes from a SetHash,
         // $bh<k> = 0 deletes from a BagHash/MixHash; true/nonzero (re)sets
         if (a->op == "=" && a->target->kind == NK::Index &&
@@ -12656,17 +12696,45 @@ Value Interpreter::evalIndex(Index* idx) {
     // NativeCall CArray / Pointer element read (`$carray[$i]`): byte-backed
     // (CArray.new/allocate stores packed bytes) or a live native pointer.
     if (!idx->isHash && idx->index && !idx->multiDim) {
+        // a Range/list subscript slices: `$carray[^$n]` is the first $n elements
+        // (how a native out-buffer gets read back into a Buf)
+        if ((base.t == VT::Str && base.hashKind == "CArray") ||
+            (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
+             base.hash->count("addr"))) {
+            Value kv = eval(idx->index.get());
+            if (kv.t == VT::Range || (kv.t == VT::Array && kv.arr)) {
+                bool live = base.t == VT::Hash;
+                std::string et = live ? (base.hash->count("of") ? (*base.hash)["of"].toStr() : "int64")
+                                      : (base.enumName.empty() ? "int64" : base.enumName);
+                long long addr = live ? (*base.hash)["addr"].toInt()
+                                      : (long long)(intptr_t)base.s.data();
+                long long lim = live ? -1 : (long long)(base.s.size() / (size_t)ncElemSize(et));
+                Value out = Value::array(); out.isList = true; out.s = "Seq"; // a slice is a Seq
+                for (auto& e : kv.flatten()) {
+                    long long i = e.toInt();
+                    if (i < 0 || (lim >= 0 && i >= lim)) { out.arr->push_back(Value::any()); continue; }
+                    out.arr->push_back(ncReadElem(addr, et, i));
+                }
+                return out;
+            }
+        }
         if (base.t == VT::Str && base.hashKind == "CArray") {
             long long i = eval(idx->index.get()).toInt();
             std::string et = base.enumName.empty() ? "int64" : base.enumName;
-            bool sgn, isFlt; int w = ncScalarWidth(et, sgn, isFlt); if (!w) w = 8;
+            int w = ncElemSize(et);
             if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
-            return ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+            Value el = ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+            // an element that is ITSELF a pointer stays usable as one, so
+            // `$out[0][^$n]` can read through what a native call wrote there
+            if (ncIsPointerElem(et)) return ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
+            return el;
         }
         if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") && base.hash->count("addr")) {
             long long i = eval(idx->index.get()).toInt();
             std::string of = base.hash->count("of") ? (*base.hash)["of"].toStr() : "int64";
-            return ncReadElem((*base.hash)["addr"].toInt(), of, i);
+            Value el = ncReadElem((*base.hash)["addr"].toInt(), of, i);
+            if (ncIsPointerElem(of)) return ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
+            return el;
         }
     }
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
