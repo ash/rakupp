@@ -7637,8 +7637,23 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         return Value::str(out);
     }
-    if (m == "contains") return Value::boolean(inv.toStr().find(a0().toStr()) != std::string::npos);
-    if (m == "starts-with") { std::string s = inv.toStr(), n = a0().toStr(); return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0); }
+    // `:i`/`:ignorecase` on the string predicates — fold both sides and compare
+    if (m == "contains" || m == "starts-with" || m == "ends-with") {
+        bool icase = false;
+        for (auto& a2 : args)
+            if (a2.t == VT::Pair && (a2.s == "i" || a2.s == "ignorecase"))
+                icase = !a2.pairVal || a2.pairVal->truthy();   // bare `:i` is true
+        auto fold = [](const std::string& in) {
+            auto cps = utf8cp(in); std::string o;
+            for (auto c : cps) o += cpToU8(toLowerCp(c));
+            return o;
+        };
+        std::string s = inv.toStr(), n = a0().toStr();
+        if (icase) { s = fold(s); n = fold(n); }
+        if (m == "contains")    return Value::boolean(s.find(n) != std::string::npos);
+        if (m == "starts-with") return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0);
+        return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0);
+    }
     if (m == "substr-eq") { // does the substring starting at pos equal the needle?
         if (args.empty() || (args[0].t == VT::Type && args.size() < 2))
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
@@ -7668,7 +7683,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         Value a1 = methodCall(sub, "lc", ValueList{}), b1 = methodCall(Value::str(n), "lc", ValueList{});
         return Value::boolean(a1.toStr() == b1.toStr());
     }
-    if (m == "ends-with") { std::string s = inv.toStr(), n = a0().toStr(); return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0); }
+
     if (m == "ord") { auto c = utf8cp(inv.toStr()); return c.empty() ? Value::nil() : Value::integer(c[0]); }
     if (m == "chr") {
         long long cp = inv.big ? LLONG_MAX : inv.toInt(); // BigInt is certainly out of bounds
@@ -7868,13 +7883,29 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // Str.indices($needle, :overlap) — every start position of the substring
     if (m == "indices" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
         std::string s = inv.toStr(), needle = a0().toStr();
-        bool overlap = false;
-        for (auto& a : args) if (a.t == VT::Pair && a.s == "overlap" && a.pairVal && a.pairVal->truthy()) overlap = true;
+        bool overlap = false, icase = false;
+        for (auto& a : args) if (a.t == VT::Pair) {
+            if (a.s == "overlap") overlap = !a.pairVal || a.pairVal->truthy();
+            else if (a.s == "i" || a.s == "ignorecase") icase = !a.pairVal || a.pairVal->truthy();
+        }
+        if (icase) {
+            auto fold = [](const std::string& in) {
+                std::string o; for (auto c : utf8cp(in)) o += cpToU8(toLowerCp(c)); return o;
+            };
+            s = fold(s); needle = fold(needle);
+        }
         Value out = Value::array(); out.isList = true;
+        // the answers are CHARACTER positions, not byte offsets
+        auto charPos = [&](size_t byte) {
+            long long n = 0;
+            for (size_t k = 0; k < byte && k < s.size(); k++)
+                if ((static_cast<unsigned char>(s[k]) & 0xC0) != 0x80) n++;
+            return n;
+        };
         if (!needle.empty())
             for (size_t p = s.find(needle); p != std::string::npos;
                  p = s.find(needle, p + (overlap ? 1 : needle.size())))
-                out.arr->push_back(Value::integer((long long)p));
+                out.arr->push_back(Value::integer(charPos(p)));
         return out;
     }
     // Str.chop($n = 1)
