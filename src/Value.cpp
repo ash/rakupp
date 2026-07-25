@@ -341,6 +341,13 @@ std::string Value::toStr() const {
 
 std::string Value::gist() const {
     if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
+    // an IO::Path gists as the expression that makes one: `"foo/bar".IO`
+    // (.Str stays the bare path)
+    if (t == VT::Str && hashKind == "IO") {
+        std::string q = "\"";
+        for (char c : s) { if (c == '"' || c == '\\') q += '\\'; q += c; }
+        return q + "\".IO";
+    }
     if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf") {
         // a Junction gists with its eigenstates: any(1, 2, 3)
         if (t == VT::Array && arr &&
@@ -358,7 +365,10 @@ std::string Value::gist() const {
     switch (t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "(Any)";
-        case VT::Type: return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
+        case VT::Type:
+            // IO::Spec::Unix gists by its SHORT name, `(Unix)` — Rakudo does
+            if (s.rfind("IO::Spec::", 0) == 0) return "(" + s.substr(10) + ")";
+            return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
         case VT::Array: {
             ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
             std::string out = isList ? "(" : "[";

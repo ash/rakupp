@@ -486,6 +486,15 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                 for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
                 return o + ")";
             }
+            // an IO::Path's .raku is its full constructor, SPEC and CWD included
+            // (its .gist is the short `"foo/bar".IO` form)
+            if (v.hashKind == "IO") {
+                char cbuf[4096];
+                std::string cwd = getcwd(cbuf, sizeof cbuf) ? cbuf : ".";
+                return "IO::Path.new(" + rakuStrLit(v.s) +
+                       ", :SPEC(IO::Spec::" + (v.enumName.empty() ? "Unix" : v.enumName) +
+                       "), :CWD(" + rakuStrLit(cwd) + "))";
+            }
             if (v.hashKind == "CArray") { // a locally-built CArray rebuilds the same way
                 std::string o = "CArray.new("; bool f = true;
                 for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
@@ -2968,6 +2977,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         std::string path = args.empty() ? "" : args[0].toStr();
         rejectNulPath(path);
         Value p = Value::str(path); p.hashKind = "IO"; return p;
+    }
+    // IO::Spec::Unix / ::Win32 — the per-OS path grammar an IO::Path routes
+    // through. A type object with class methods; `.new` answers itself.
+    // IO::Spec::Unix / ::Win32 — only the pieces that were missing; everything
+    // else (curupdir, rootdir, devnull, canonpath, …) already has a handler
+    // further down and must not be shadowed here.
+    if (inv.t == VT::Type && inv.s.rfind("IO::Spec::", 0) == 0) {
+        if (m == "new") return inv;
+        if (m == "dir-sep") return Value::str(inv.s.find("Win32") != std::string::npos ? "\\" : "/");
     }
     // IO::Path flavors: the path value keeps its OS flavor in enumName and
     // routes volume/dirname/basename/cleanup through that IO::Spec
@@ -6780,7 +6798,37 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             std::string s = inv.toStr(); if (!s.empty() && s.back() == '/') s.pop_back();
             return asIO(s + "/" + (args.empty() ? "" : a0().toStr()));
         }
-        if (m == "extension") { std::string b = inv.toStr(); auto sl = b.find_last_of('/'); if (sl != std::string::npos) b = b.substr(sl + 1); auto d = b.find_last_of('.'); return Value::str(d == std::string::npos || d == 0 ? "" : b.substr(d + 1)); }
+        if (m == "extension") {
+            std::string b = inv.toStr();
+            auto sl = b.find_last_of('/'); if (sl != std::string::npos) b = b.substr(sl + 1);
+            // the dot-separated segments — a LEADING dot counts, so ".bashrc"
+            // has extension "bashrc" and "...tar" has "tar"
+            std::vector<std::string> seg;
+            { std::string cur;
+              for (char c : b) { if (c == '.') { seg.push_back(cur); cur.clear(); } else cur += c; }
+              seg.push_back(cur); }
+            long long avail = (long long)seg.size() - 1; if (avail < 0) avail = 0;
+            // `:parts(N)` — exactly N tail segments; `:parts(a..b)` — the LARGEST
+            // count in the range the name actually has. Neither invents parts.
+            long long lo = 1, hi = 1;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "parts" && a.pairVal) {
+                    const Value& p = *a.pairVal;
+                    if (p.t == VT::Range) {
+                        lo = p.rFrom + (p.rExFrom ? 1 : 0);
+                        hi = p.rTo >= 9000000000000000000LL ? avail : p.rTo - (p.rExTo ? 1 : 0);
+                    }
+                    else lo = hi = p.toInt();
+                }
+            long long take = hi < avail ? hi : avail;
+            if (take < lo || take <= 0) return Value::str("");
+            std::string out;
+            for (long long k = (long long)seg.size() - take; k < (long long)seg.size(); k++) {
+                if (!out.empty()) out += ".";
+                out += seg[(size_t)k];
+            }
+            return Value::str(out);
+        }
         if (m == "absolute" || m == "resolve" || m == "canonpath" || m == "cleanup") {
             std::string s = inv.toStr();
             if ((m == "absolute" || m == "resolve") && !s.empty() && s[0] != '/') {
@@ -6789,6 +6837,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             return (m == "canonpath" || m == "cleanup") ? Value::str(s) : asIO(s);
         }
         if (m == "is-absolute") return Value::boolean(!inv.toStr().empty() && inv.toStr()[0] == '/');
+        // the path's OS grammar and the directory it is resolved against
+        if (m == "SPEC") return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? "Unix" : inv.enumName));
+        if (m == "CWD") { char buf[4096]; return Value::str(getcwd(buf, sizeof buf) ? buf : "."); }
         if (m == "is-relative") return Value::boolean(inv.toStr().empty() || inv.toStr()[0] != '/');
         if (m == "contents" || m == "dir") {
             Value out = Value::array(); out.isList = true;
