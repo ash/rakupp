@@ -2365,6 +2365,38 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         return at;
     }
+    // Junction.new("any", (1, 2)) — the constructor spelling of any(1, 2)
+    if (inv.t == VT::Type && inv.s == "Junction" && m == "new") {
+        Value j = Value::array(); j.isList = true;
+        j.enumName = args.empty() ? "any" : args[0].toStr();
+        if (args.size() > 1) for (auto& e : args[1].flatten()) j.arr->push_back(e);
+        return j;
+    }
+    // Format.new("%s|%s") — a reusable sprintf: calling it formats its arguments
+    if (inv.t == VT::Type && (inv.s == "Format" || inv.s == "Formatter") && m == "new") {
+        std::string fmt = args.empty() ? "" : args[0].toStr();
+        // `.arity` is the number of directives the format consumes
+        long long ar = 0;
+        for (size_t k = 0; k + 1 < fmt.size(); k++)
+            if (fmt[k] == '%') { if (fmt[k + 1] == '%') k++; else ar++; }
+        Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+        code.code->name = "Format";
+        code.code->builtin = [fmt](Interpreter& I, ValueList& a) -> Value {
+            ValueList sa; sa.push_back(Value::str(fmt));
+            for (auto& x : a) sa.push_back(x);
+            return I.callBuiltin("sprintf", sa);
+        };
+        Value f = Value::makeHash(); f.hashKind = "Format";
+        (*f.hash)["fmt"] = Value::str(fmt);
+        (*f.hash)["arity"] = Value::integer(ar);
+        (*f.hash)["code"] = code;
+        return f;
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "Format") {
+        if (m == "Str" || m == "gist" || m == "raku") return (*inv.hash)["fmt"];
+        if (m == "arity" || m == "count") return (*inv.hash)["arity"];
+        if (m == "CALL-ME" || m == "()") return methodCall((*inv.hash)["code"], "CALL-ME", args, rwArgs);
+    }
     if (inv.t == VT::Type && inv.s == "Capture" && m == "new") {
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
         for (auto& a : args) {
@@ -11444,6 +11476,22 @@ void Interpreter::registerBuiltins() {
             return f;
         }
         Value p = Value::str(a[0].toStr()); p.hashKind = "IO"; return p; // IO::Path of the new cwd
+    };
+    // indir($path, &code) — run the block with the process directory changed,
+    // then put it back however the block exits
+    B["indir"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::any();
+        std::string to = a[0].toStr();
+        char buf[4096];
+        std::string from = getcwd(buf, sizeof buf) ? buf : ".";
+        if (::chdir(to.c_str()) != 0)
+            throw RakuError{Value::typeObj("X::IO::Chdir"),
+                            "Failed to change the working directory to '" + to + "'"};
+        Value r;
+        try { ValueList none; r = I.callCallable(a[1], none); }
+        catch (...) { ::chdir(from.c_str()); throw; }   // restore on ANY exit
+        ::chdir(from.c_str());
+        return r;
     };
     // (loop-control escaping a dies-ok/lives-ok block is a death — see those below)
     B["cross"] = [](Interpreter& I, ValueList& a) -> Value {
