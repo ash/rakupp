@@ -8205,15 +8205,25 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "minmax") { // list infix: a Range spanning both operands' extremes
         ValueList a = l.flatten(), bb = r.flatten();
-        bool first = true; long long mn = 0, mx = 0;
+        // the endpoints are the extreme ELEMENTS, kept as they are — `"a" minmax
+        // "b"` is "a".."b", not the 0..0 their numification would give
+        bool first = true; Value lo, hi;
         auto see = [&](const Value& v) {
-            long long x = v.toInt();
-            if (first) { mn = mx = x; first = false; }
-            else { if (x < mn) mn = x; if (x > mx) mx = x; }
+            if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) return; // undefined takes no part
+            if (first) { lo = hi = v; first = false; return; }
+            if (applyArith("cmp", v, lo).toInt() < 0) lo = v;
+            if (applyArith("cmp", v, hi).toInt() > 0) hi = v;
         };
         for (auto& v : a) see(v);
         for (auto& v : bb) see(v);
-        return Value::range(mn, mx, false, false);
+        Value rr = Value::range(lo.toInt(), hi.toInt(), false, false);
+        // the resulting Range follows `..`'s endpoint rule, except that two Str
+        // extremes stay Strs ("a" minmax "b" is "a".."b")
+        if (!first) {
+            if (lo.t == VT::Str && hi.t == VT::Str) attachRangeEnds(rr, lo, hi);
+            else setRangeEnds(rr, lo, hi);
+        }
+        return rr;
     }
     // Whatever-currying: `* + 1`, `*.elems == 2`, `2 * *`, etc. yield a WhateverCode.
     // Smartmatch curries on the LEFT — `* ~~ /rx/` and `* !~~ @x` are the matcher
@@ -10458,15 +10468,25 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     }
     if (op == "minmax") { // Range spanning both operands' extremes
         ValueList a = l.flatten(), bb = r.flatten();
-        bool first = true; long long mn = 0, mx = 0;
+        // the endpoints are the extreme ELEMENTS, kept as they are — `"a" minmax
+        // "b"` is "a".."b", not the 0..0 their numification would give
+        bool first = true; Value lo, hi;
         auto see = [&](const Value& v) {
-            long long x = v.toInt();
-            if (first) { mn = mx = x; first = false; }
-            else { if (x < mn) mn = x; if (x > mx) mx = x; }
+            if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) return; // undefined takes no part
+            if (first) { lo = hi = v; first = false; return; }
+            if (applyArith("cmp", v, lo).toInt() < 0) lo = v;
+            if (applyArith("cmp", v, hi).toInt() > 0) hi = v;
         };
         for (auto& v : a) see(v);
         for (auto& v : bb) see(v);
-        return Value::range(mn, mx, false, false);
+        Value rr = Value::range(lo.toInt(), hi.toInt(), false, false);
+        // the resulting Range follows `..`'s endpoint rule, except that two Str
+        // extremes stay Strs ("a" minmax "b" is "a".."b")
+        if (!first) {
+            if (lo.t == VT::Str && hi.t == VT::Str) attachRangeEnds(rr, lo, hi);
+            else setRangeEnds(rr, lo, hi);
+        }
+        return rr;
     }
     // hyper metaop over evaluated lists — also reachable via [>>+<<] reduce
     if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
@@ -14321,12 +14341,14 @@ Value Interpreter::eval(Expr* e) {
                     Value rr = Value::range((long long)std::floor(from.toNum()),
                                             (long long)std::floor(to.toNum()), r->exFrom, r->exTo);
                     rr.rNum = true; rr.n = from.toNum(); rr.im = to.toNum();
+                    setRangeEnds(rr, from, to); // a Rat endpoint stays a Rat
                     return rr;
                 }
             }
             {
                 Value rr = Value::range(from.toInt(), to.toInt(), r->exFrom, r->exTo);
                 if (to.t == VT::Int && to.big) rr.big = to.big; // keep the big bound (pick/roll sample it)
+                setRangeEnds(rr, from, to);
                 return rr;
             }
         }

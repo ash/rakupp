@@ -240,6 +240,38 @@ int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
 std::string strSucc(const std::string& s);             // Raku magic string increment
 std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=false on underflow)
 
+// A Range remembers the endpoint OBJECTS it was written with, so `1/2 .. 1/3`
+// keeps its Rats and `True .. False` its Bools instead of collapsing to the
+// integers it iterates over. Iteration still walks rFrom/rTo (or n/im when
+// fractional); these drive only .min/.max/.bounds and rendering. Parked in the
+// otherwise-unused `ext`, so a plain `1..5` costs nothing extra.
+struct RangeEnds { Value from, to; };
+inline const RangeEnds* rangeEnds(const Value& v) {
+    return v.t == VT::Range && v.ext ? static_cast<const RangeEnds*>(v.ext.get()) : nullptr;
+}
+// Range endpoints render with `.raku` (`Bool::True..Bool::False`, `0.5..<1/3>`),
+// which lives in Builtins.cpp. A raw pointer is zero-initialized before any
+// dynamic init, so installing it from another TU is order-safe.
+using RakuReprFn = std::string (*)(const Value&);
+extern RakuReprFn g_rakuRepr;
+inline void attachRangeEnds(Value& r, Value from, Value to) {
+    r.ext = std::make_shared<RangeEnds>(RangeEnds{std::move(from), std::move(to)});
+}
+// `..` keeps a Real or undefined endpoint as the object it is, but NUMIFIES a
+// Str ("2" becomes 2) or a list (its element count) — so those must not be
+// carried. An Int renders identically either way; carrying it would just cost an
+// allocation on the hot `1..n` path.
+inline void setRangeEnds(Value& r, const Value& from, const Value& to) {
+    auto keep = [](const Value& v) {
+        return v.t == VT::Rat || v.t == VT::Num || v.t == VT::Bool ||
+               v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type; // `1 .. Any`
+    };
+    auto renders = [&](const Value& v) { return keep(v) || v.t == VT::Int; };
+    if (!keep(from) && !keep(to)) return;       // nothing the numeric path gets wrong
+    if (!renders(from) || !renders(to)) return; // the other side must numify anyway
+    attachRangeEnds(r, from, to);
+}
+
 struct ClassAttr {
     std::string name;
     char sigil = '$';

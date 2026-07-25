@@ -435,6 +435,8 @@ static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any &&
 // to `.gist`, which is the human-readable form). Recursive over containers.
 static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 static std::string rakuRepr(const Value& v) { std::set<const void*> seen; return rakuRepr(v, 0, seen); }
+// Value.cpp renders Range endpoints with .raku; hand it this implementation.
+static const bool g_rakuReprInstalled = ((g_rakuRepr = &rakuRepr), true);
 static void rejectNulPath(const std::string& path) {
     if (path.find('\0') != std::string::npos)
         throw RakuError{Value::typeObj("X::IO::Null"),
@@ -7909,6 +7911,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "excludes-max") return Value::boolean(inv.rExTo);
         if (m == "infinite")     return Value::boolean(false);
         if (m == "is-int")       return Value::boolean(!inv.rNum); // fractional ranges aren't integer-bounded
+        // .min/.max/.bounds answer the endpoint OBJECTS when the range kept them
+        // (`(1/2 .. 1/3).min` is a Rat, not the Int it iterates from)
+        const RangeEnds* re = rangeEnds(inv);
+        if (m == "min" && re) return re->from;
+        if (m == "max" && re) return re->to;
         if (m == "min")
             return inv.ofType == "Str" ? Value::str(cpToU8((uint32_t)inv.rFrom))
                  : inv.rNum ? Value::number(inv.n)
@@ -7920,8 +7927,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                  : inv.rTo >= 9000000000000000000LL ? Value::number(INFINITY)
                  : Value::integer(inv.rTo);
         if (m == "bounds") {
-            Value o = inv.rNum ? Value::array({Value::number(inv.n), Value::number(inv.im)})
-                               : Value::array({Value::integer(inv.rFrom), Value::integer(inv.rTo)});
+            Value o = re ? Value::array({re->from, re->to})
+                   : inv.ofType == "Str" ? Value::array({Value::str(cpToU8((uint32_t)inv.rFrom)),
+                                                         Value::str(cpToU8((uint32_t)inv.rTo))})
+                   : inv.rNum ? Value::array({Value::number(inv.n), Value::number(inv.im)})
+                              : Value::array({Value::integer(inv.rFrom), Value::integer(inv.rTo)});
             o.isList = true; return o;
         }
         if (m == "int-bounds") {

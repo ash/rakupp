@@ -21,6 +21,8 @@ static std::string cpToU8(uint32_t cp) {
 
 namespace rakupp {
 
+RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
+
 // Recursion depth backstop for gist()/toStr() over nested containers. A
 // self-referential array/hash (`@a[0] = @a`) would otherwise recurse until it
 // exhausts memory; bail with an ellipsis once absurdly deep. (`.raku` has its own
@@ -380,6 +382,11 @@ std::string Value::gist() const {
             const char* exT = rExTo ? "^" : "";
             if (ofType == "Str")
                 return "\"" + cpToU8((uint32_t)rFrom) + "\"" + exF + ".." + exT + "\"" + cpToU8((uint32_t)rTo) + "\"";
+            // endpoints written as something other than plain Ints render as
+            // themselves: `1/2 .. 1/3` is 0.5..<1/3>, not 0..0
+            if (const RangeEnds* re = rangeEnds(*this))
+                if (g_rakuRepr)
+                    return g_rakuRepr(re->from) + exF + ".." + exT + g_rakuRepr(re->to);
             if (rNum) return Value::number(n).toStr() + exF + ".." + exT + Value::number(im).toStr();
             std::ostringstream os;
             os << rFrom << exF << ".." << exT << rTo;
@@ -527,7 +534,19 @@ ValueList Value::flatten() const {
         // fractional range: step by 1 from `n`, stopping at `im` (exclusive bounds
         // drop an endpoint that lands exactly on it)
         double lo = n + (rExFrom ? 1.0 : 0.0), hi = im;
-        for (double x = lo; rExTo ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
+        // a Rat endpoint yields Rats — stepping by 1 is numerator += denominator,
+        // so `1.5 .. 3.5` is (1.5 2.5 3.5) as Rats and not Nums
+        const RangeEnds* re = rangeEnds(*this);
+        if (re && re->from.t == VT::Rat && re->from.ratN && re->from.ratD &&
+            !re->from.ratD->isZero()) {
+            BigInt num = *re->from.ratN, den = *re->from.ratD;
+            if (rExFrom) num = num + den;
+            for (double x = lo; rExTo ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0) {
+                out.push_back(Value::rat(num, den));
+                num = num + den;
+            }
+        }
+        else for (double x = lo; rExTo ? x < hi - 1e-9 : x <= hi + 1e-9; x += 1.0)
             out.push_back(Value::number(x));
     } else if (t == VT::Range && ofType == "Str") {
         long long lo = rFrom + (rExFrom ? 1 : 0);
