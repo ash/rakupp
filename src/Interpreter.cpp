@@ -11447,6 +11447,7 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (u->op == "siglit") { // :( … ) — a first-class Signature literal
         Value c = eval(u->operand.get()); // the params-only closure
+        if (c.t == VT::Code && c.code) c.code->isSigLiteral = true;
         ValueList none;
         return methodCall(c, "signature", none);
     }

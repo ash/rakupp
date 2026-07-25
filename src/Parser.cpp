@@ -3895,7 +3895,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 std::string trait = advance().text;
                 if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
                 else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
-                    if (trait == "is" && (isIdent("rw") || isIdent("copy"))) { p.isRw = (cur().text == "rw"); p.isCopy = (cur().text == "copy"); }
+                    if (trait == "is" && (isIdent("rw") || isIdent("copy") || isIdent("raw"))) {
+                        p.isRw = cur().text == "rw"; p.isCopy = cur().text == "copy"; p.isRaw = cur().text == "raw";
+                    }
                     advance();
                 }
             }
@@ -4092,7 +4094,11 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             std::string trait = advance().text;
             if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
             else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
-                if (trait == "is" && (isIdent("rw") || isIdent("copy"))) p.isRw = (cur().text == "rw");
+                if (trait == "is" && (isIdent("rw") || isIdent("copy") || isIdent("raw"))) {
+                    p.isRw   = cur().text == "rw";
+                    p.isCopy = cur().text == "copy";
+                    p.isRaw  = cur().text == "raw";
+                }
                 advance(); // the trait word (rw/copy/encoded/…)
                 // a parenthesised trait argument: `is encoded('utf8')` — skip it
                 if (isKind(Tok::LParen)) {

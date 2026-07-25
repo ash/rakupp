@@ -56,6 +56,8 @@ struct Callable {
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
+    bool isSigLiteral = false;                        // built by `:( … )` — a bare Signature, not a routine's
+                                                      // (an unconstrained param is Mu there, Any on a routine)
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
     std::vector<std::shared_ptr<Param>> primedParams; // the residual signature (copies: a primed named param
                                                       // survives with the primed value as its default)

@@ -245,6 +245,7 @@ struct Param {
     bool coerce = false;   // coercion type `Int(Str)` / `Int()`: the bound value is coerced to `type`
     bool isRw = false;     // `is rw` — writes copy back to the caller's lvalue
     bool isCopy = false;   // `is copy` — a fresh mutable copy (vs a readonly plain param)
+    bool isRaw = false;    // `is raw` — bound without a container (introspected by .raw)
     // destructuring sub-signature: `[$a,$b]` / `($a,$b)` / `|c($x)` — the inner
     // params the argument is unpacked into (null when not a destructuring param).
     std::shared_ptr<std::vector<Param>> subSig;

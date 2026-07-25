@@ -1405,12 +1405,52 @@ static Value makeSignature(const Callable* c) {
         const Param& p = *pp;
         if (p.invocant) continue;
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
-        (*pv.hash)["name"] = Value::str(p.name.empty() ? std::string(1, p.sigil) : p.name);
+        // an ANONYMOUS parameter has an empty .name, not its bare sigil
+        (*pv.hash)["name"] = Value::str(p.name.size() > 1 ? p.name : std::string());
+        // `.usage-name` is the name without its sigil/twigil
+        (*pv.hash)["usage-name"] = Value::str(p.name.size() > 1 ? p.name.substr(1) : std::string());
         (*pv.hash)["type"] = Value::str(p.type);
-        // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router);
-        // an unconstrained param is Any
-        (*pv.hash)["type-obj"] = Value::typeObj(p.type.empty() ? "Any" : p.type);
+        // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router).
+        // Unconstrained is Mu; a slurpy/@-sigil param is Positional, %-sigil
+        // Associative, &-sigil Callable — the constraint its sigil implies.
+        // An unconstrained parameter is Any on a ROUTINE and Mu on a bare
+        // `:( … )` literal; the sigil implies its own constraint either way.
+        (*pv.hash)["type-obj"] = Value::typeObj(
+            !p.type.empty() ? p.type
+            : p.sigil == '@' ? "Positional"
+            : p.sigil == '%' ? "Associative"
+            : p.sigil == '&' ? "Callable"
+            : (c && c->isSigLiteral) ? "Mu" : "Any");
+        // trait/shape flags the introspection API exposes one method each for
+        (*pv.hash)["raw"]  = Value::boolean(p.isRaw || (p.sigil == '\\' && !p.slurpy && !p.isCopy));
+        (*pv.hash)["copy"] = Value::boolean(p.isCopy);
+        (*pv.hash)["readonly"] = Value::boolean(!(p.isRw || p.isCopy || p.isRaw ||
+                                                  (p.sigil == '\\' && !p.slurpy)));
+        (*pv.hash)["rw"]   = Value::boolean(p.isRw);
+        (*pv.hash)["capture"] = Value::boolean(p.slurpy && p.slurpyKind == 0 &&
+                                               (p.sigil == '|' || p.sigil == '\\'));
+        (*pv.hash)["invocant"] = Value::boolean(p.invocant);
+        (*pv.hash)["multi-invocant"] = Value::boolean(true); // only `;;` makes it False
+        // `.prefix`/`.suffix`/`.modifier` — how the parameter is SPELLED
+        (*pv.hash)["prefix"] = Value::str(
+            !p.slurpy ? "" : p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+"
+            : (p.sigil == '|' || p.sigil == '\\') ? "|" : "*");
+        (*pv.hash)["suffix"] = Value::str(p.named ? (p.required ? "!" : "")
+                                                  : (p.optional && !p.defaultVal ? "?" : ""));
+        (*pv.hash)["modifier"] = Value::str(p.defConstraint == 1 ? ":D"
+                                          : p.defConstraint == 2 ? ":U" : "");
         (*pv.hash)["named"] = Value::boolean(p.named);
+        // `.default` is a Callable producing the default — undefined when the
+        // parameter has none
+        if (p.defaultVal) {
+            const Expr* de = p.defaultVal.get();
+            Value dc; dc.t = VT::Code; dc.code = std::make_shared<Callable>();
+            dc.code->builtin = [de](Interpreter& I, ValueList&) -> Value {
+                return I.eval(const_cast<Expr*>(de));
+            };
+            (*pv.hash)["default"] = dc;
+        }
+        else (*pv.hash)["default"] = Value::any();
         (*pv.hash)["optional"] = Value::boolean(p.optional || p.defaultVal != nullptr);
         (*pv.hash)["slurpy"] = Value::boolean(p.slurpy);
         // `.constraints`: a literal parameter ('greet' in `get -> 'greet', $n {}`)
@@ -2205,7 +2245,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // a Parameter's introspection (.name/.type/.named/.optional/.slurpy)
     if (inv.t == VT::Hash && inv.hashKind == "Parameter") {
         if ((m == "name" || m == "named" || m == "optional" || m == "slurpy" ||
-             m == "constraints" || m == "named_names") && inv.hash->count(m))
+             m == "constraints" || m == "named_names" || m == "usage-name" ||
+             m == "raw" || m == "copy" || m == "rw" || m == "capture" ||
+             m == "invocant" || m == "multi-invocant" ||
+             m == "prefix" || m == "suffix" || m == "modifier" ||
+             m == "default" || m == "readonly") && inv.hash->count(m))
             return (*inv.hash)[m];
         // `.type` answers the TYPE OBJECT (Cro's router compares `=:= Str`);
         // the plain string form stays under the "type" key for legacy callers
