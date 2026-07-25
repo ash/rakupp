@@ -8479,8 +8479,23 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         if (m == "hyper" || m == "race") { Value o = Value::array(items); o.isList = true; return o; } // parallel -> sequential
         if (m == "is-lazy") return Value::boolean(inv.t == VT::Array && inv.b); // materialised list is not lazy (unless `lazy`-marked)
+        // A RIGHT-associative operator folds from the right: `.reduce(&[**])` is
+        // 2**(3**4), not (2**3)**4. `&[OP]` callables carry their name, which is
+        // the only place the associativity is recorded.
+        auto rightAssoc = [](const Value& f) {
+            if (f.t != VT::Code || !f.code) return false;
+            const std::string& n = f.code->name;
+            if (n.rfind("infix:<", 0) != 0 || n.size() < 9) return false;
+            std::string op = n.substr(7, n.size() - 8);
+            return op == "**" || op == "=>";
+        };
         if (m == "reduce" && !args.empty() && args[0].t == VT::Code) { // fold with a 2-arg op: (1,2,3).reduce(* + *)
             if (items.empty()) return Value::any();
+            if (rightAssoc(args[0])) {
+                Value acc = items.back();
+                for (size_t k = items.size() - 1; k-- > 0; ) acc = callCallable(args[0], {items[k], acc});
+                return acc;
+            }
             Value acc = items[0];
             for (size_t k = 1; k < items.size(); k++) acc = callCallable(args[0], {acc, items[k]});
             return acc;
@@ -8488,16 +8503,30 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "produce" && !args.empty() && args[0].t == VT::Code) { // scan: running reductions
             Value out = Value::array(); out.isList = true;
             if (items.empty()) return out;
+            if (rightAssoc(args[0])) {
+                // the running folds of the SUFFIXES, reported left to right
+                ValueList acc(items.size());
+                acc[items.size() - 1] = items.back();
+                for (size_t k = items.size() - 1; k-- > 0; )
+                    acc[k] = callCallable(args[0], {items[k], acc[k + 1]});
+                for (size_t k = items.size(); k-- > 0; ) out.arr->push_back(acc[k]);
+                return out;
+            }
             Value acc = items[0]; out.arr->push_back(acc);
             for (size_t k = 1; k < items.size(); k++) { acc = callCallable(args[0], {acc, items[k]}); out.arr->push_back(acc); }
             return out;
         }
         if (m == "classify" || m == "categorize") { // group elements by a mapper into a Hash of lists
-            Value* into = nullptr;
-            for (auto& x : args) if (x.t == VT::Pair && x.s == "into" && x.pairVal) into = x.pairVal.get();
+            Value* into = nullptr; Value* asF = nullptr;
+            for (auto& x : args) if (x.t == VT::Pair && x.pairVal) {
+                if (x.s == "into")   into = x.pairVal.get();
+                else if (x.s == "as") asF = x.pairVal.get();  // what gets STORED, vs what is classified BY
+            }
             Value mapper = args.empty() ? Value::nil() : args[0];
             Value h = Value::makeHash();
-            auto add = [&](const std::string& key, const Value& v) {
+            auto add = [&](const std::string& key, const Value& vIn) {
+                // `:as` maps the STORED value; the key still comes from the classifier
+                Value v = asF ? callCallable(*asF, {vIn}) : vIn;
                 auto it = h.hash->find(key);
                 if (it == h.hash->end()) { Value a = Value::array(); a.arr->push_back(v); (*h.hash)[key] = a; }
                 else { if (it->second.t != VT::Array) { Value a = Value::array(); a.arr->push_back(it->second); it->second = a; } it->second.arr->push_back(v); }
