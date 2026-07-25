@@ -40,6 +40,11 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 // Numify a string with Raku-correct result type (Int/Rat/Num), BigInt-aware
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
 Value numifyStr(const std::string& in);
+// numifyStr, but a string that isn't a number THROWS X::Str::Numeric the way
+// Rakudo does in numeric context (`"a" + 1`), instead of silently reading as 0.
+Value numifyStrOrThrow(const std::string& in);
+// The quiet form: a non-numeric string becomes an unthrown Failure (Rakudo's `+"a"`).
+Value numifyStrFailure(const std::string& in);
 // Build a shaped array (`my @a[2;3]` / `Array.new(:shape(2;3))`): a fixed row-major
 // structure, optionally filled from a flat list, tagged with its dimensions.
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,

@@ -2571,6 +2571,19 @@ ExprPtr Parser::parsePrimary() {
                     return u;
                 }
             }
+            // A reduction metaop's operand: the function-call form `[\+](…)` is
+            // bounded by the parens (a comma AFTER the `)` belongs to the enclosing
+            // list); otherwise it is a list-prefix, looser than Z/X and comma.
+            auto reduceOperand = [&]() -> ExprPtr {
+                if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                    advance();
+                    if (isKind(Tok::RParen)) { advance(); return std::make_unique<ListExpr>(); }
+                    ExprPtr e = parseExpression();
+                    expectKind(Tok::RParen, ")");
+                    return e;
+                }
+                return parseExpr(BP_ZIP);
+            };
             // triangular / scan reduce: [\+] [\~] [\*] — yields the list of running
             // partial reductions (1, 1+2, 1+2+3, …) rather than the final value.
             if (peek(1).kind == Tok::Op && peek(1).text == "\\" &&
@@ -2578,7 +2591,7 @@ ExprPtr Parser::parsePrimary() {
                 advance(); advance(); advance(); advance(); // [ \ , ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[\\,]";
-                u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
+                u->operand = reduceOperand();
                 return u;
             }
             if (peek(1).kind == Tok::Op && peek(1).text == "\\" &&
@@ -2598,7 +2611,7 @@ ExprPtr Parser::parsePrimary() {
                     advance(); // ]
                     auto u = std::make_unique<Unary>();
                     u->op = "[\\" + innerOp + "]";
-                    u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
+                    u->operand = reduceOperand();
                     return u;
                 }
             }
@@ -2611,7 +2624,7 @@ ExprPtr Parser::parsePrimary() {
                 advance(); // ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[" + innerOp + "]";
-                u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
+                u->operand = reduceOperand();
                 return u;
             }
             advance();

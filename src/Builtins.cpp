@@ -3635,8 +3635,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "handled") return inv.hash->count("handled") ? (*inv.hash)["handled"] : Value::boolean(false);
         if (m == "self" || m == "Failure") return inv;
         if (m == "throw" || m == "sink") { if (ex.t == VT::Object) throw RakuError{ex, ex.toStr()}; throw RakuError{Value::typeObj("X::AdHoc"), ex.toStr()}; }
-        // delegate message/Str/gist and other queries to the carried exception
-        if (m == "message" || m == "Str" || m == "gist") return methodCall(ex, m, args, rwArgs);
+        // .message reads the diagnostic without detonating; .Str/.gist USE the
+        // value, so an UNHANDLED Failure throws there (Rakudo).
+        if (m == "Str" || m == "gist") {
+            auto h = inv.hash->find("handled");
+            if (h == inv.hash->end() || !h->second.truthy()) {
+                auto mm = inv.hash->find("message");
+                throw RakuError{ex, mm != inv.hash->end() ? mm->second.toStr() : ex.toStr()};
+            }
+        }
+        if (m == "message" || m == "Str" || m == "gist") {
+            auto mm = inv.hash->find("message");
+            if (mm != inv.hash->end()) return mm->second;
+            return methodCall(ex, m, args, rwArgs);
+        }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Pod") {
         auto& h = *inv.hash;
@@ -3664,6 +3676,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         (inv.t == VT::Hash && inv.hashKind == "Kernel")) {
         if (m == "endian") { // all supported targets are little-endian
             Value e = Value::enumVal("LittleEndian", 1); e.enumType = "Endian"; return e;
+        }
+        // $*KERNEL.bits — the process's native pointer width, an Int. (It used to
+        // fall through to the name, so `$*KERNEL.bits == 64` compared "darwin".)
+        if (m == "bits") return Value::integer((long long)(sizeof(void*) * 8));
+        if (m == "hardware" || m == "arch") {
+#if !defined(_WIN32)
+            struct utsname u;
+            if (uname(&u) == 0) return Value::str(u.machine);
+#endif
+            return Value::str("");
         }
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Distro" || inv.hashKind == "Kernel" || inv.hashKind == "VM")) {

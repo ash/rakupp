@@ -70,4 +70,33 @@ tn((1, 2) / (3, 4, 5), 'Rat', 'list-div');
 @fail.push('slurpy-generator') unless (1, 2, sub { [*] @_[*-1], @_ + 1 } ... 720).join(' ') eq '1 2 6 24 120 720';
 @fail.push('fib-generator')    unless (1, 1, { $^a + $^b } ... 34).join(' ') eq '1 1 2 3 5 8 13 21 34';
 
+# A NON-NUMERIC string is an error in numeric context, not a silent 0.
+# `+"a"` is a quiet Failure (Rakudo); USING it throws.
+my $f = +"a";
+@fail.push("plus-failure ({$f.^name})") unless $f.^name eq 'Failure';
+@fail.push('failure-undefined') if $f.defined;
+sub dies(&c) { my $d = False; { c(); CATCH { default { $d = True } } }; $d }
+# NB: the Failure only detonates when the value is USED, so each probe sinks it
+@fail.push('str-add-dies')  unless dies { ("a" + 1).Str };
+@fail.push('str-cmp-dies')  unless dies { ("a" == "b").Str };
+@fail.push('str-lt-dies')   unless dies { ("a" < "b").Str };
+@fail.push('using-failure-dies') unless dies { (+"a").Str };
+# …while the STRING operators and genuine numbers are untouched
+@fail.push('str-eq-ok')  if "a" eq "b";
+@fail.push('str-lt-str') unless "a" lt "b";
+@fail.push('str-cmp-ok') unless ("a" cmp "b") === Order::Less;
+@fail.push('empty-str')  unless ("" + 1) == 1 && (+"") == 0;
+@fail.push('num-str')    unless (+"5") == 5 && ("5" == 5);
+@fail.push('complex-str') unless (+"1+2i").^name eq 'Complex';
+
+# $*KERNEL.bits is an Int (it used to fall through to the kernel NAME)
+@fail.push("kernel-bits ({$*KERNEL.bits})") unless $*KERNEL.bits == 32 || $*KERNEL.bits == 64;
+
+# a reduction metaop's `(…)` call form is bounded by its parens: a comma after
+# the `)` belongs to the enclosing list (this held for [+] but not [\+] / [R-])
+sub firstarg($a, $b) { $a }
+@fail.push('tri-reduce-parens') unless firstarg([\+](1..4), 'desc').List eqv (1, 3, 6, 10);
+@fail.push('tri-reduce-type')   unless ([\+] 1, 2, 3).^name eq 'Seq';
+@fail.push('plain-reduce')      unless [+](1..4) == 10;
+
 if @fail { note "FAILED: @fail[]"; say 'FAIL' } else { say 'PASS' }

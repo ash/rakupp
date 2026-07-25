@@ -310,6 +310,34 @@ Value numifyStr(const std::string& in) {
     return Value::any(); // not numeric -> undefined (so .defined is False)
 }
 
+// Numeric coercion of a string: a non-numeric one yields a FAILURE carrying
+// X::Str::Numeric — an unthrown exception, exactly like Rakudo. `+"a"` is quiet
+// (`.defined` is False), but USING the value (say/arithmetic) throws.
+Value numifyStrFailure(const std::string& in) {
+    Value v = numifyStr(in);
+    if (v.t != VT::Any && v.t != VT::Nil) return v; // Complex counts: numifyStr's failure signal is undefined
+    std::string t = in;
+    if (t.size() > 40) t = t.substr(0, 40) + "...";
+    bool anyDigit = false;
+    for (unsigned char c : in) if (std::isdigit(c)) { anyDigit = true; break; }
+    std::string msg = anyDigit
+        ? "Cannot convert string to number: trailing characters after number in '" + t + "'"
+        : "Cannot convert string to number: base-10 number must begin with valid digits or '.' in '" + t + "'";
+    Value f = Value::makeHash(); f.hashKind = "Failure";
+    (*f.hash)["exception"] = Value::typeObj("X::Str::Numeric");
+    (*f.hash)["message"] = Value::str(msg);
+    return f;
+}
+// …and the throwing form, for contexts that must produce a number NOW
+// (an arithmetic operand: `"a" + 1` dies).
+Value numifyStrOrThrow(const std::string& in) {
+    Value v = numifyStr(in);
+    if (v.t != VT::Any && v.t != VT::Nil) return v;
+    Value f = numifyStrFailure(in);
+    throw RakuError{Value::typeObj("X::Str::Numeric"),
+                    f.hash->count("message") ? (*f.hash)["message"].toStr() : "Cannot convert string to number"};
+}
+
 static Value defaultFor(char sigil) {
     if (sigil == '@') return Value::array();
     if (sigil == '%') return Value::makeHash();
@@ -8350,11 +8378,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // falls through to the existing (Num) path unchanged.
     if ((l.t == VT::Str || r.t == VT::Str || l.t == VT::Array || r.t == VT::Array) && !isSetOpStr(op) &&
         (op == "+" || op == "-" || op == "*" || op == "/" || op == "**" ||
-         op == "%" || op == "%%" || op == "div" || op == "mod" || op == "gcd" || op == "lcm")) {
+         op == "%" || op == "%%" || op == "div" || op == "mod" || op == "gcd" || op == "lcm" ||
+         // NUMERIC comparisons coerce too (`"a" == "b"` dies); the string ops
+         // eq/ne/lt/le/gt/ge and the generic cmp/leg are deliberately absent.
+         op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" ||
+         op == "<=>" || op == "=~=")) {
         // …and a LIST numifies to its ELEMENT COUNT, exactly: `(1,2) + (3,4,5)` is
         // Int 5, not Num (a junction is NOT a list here — it autothreads elsewhere).
         auto exactify = [&](const Value& v, Value& out) -> bool {
-            if (v.t == VT::Str && !v.isAllomorph()) { Value t = numifyStr(v.toStr()); if (isExact(t)) { out = t; return true; } }
+            if (v.t == VT::Str && !v.isAllomorph()) {
+                // a NON-numeric string is an error here, not a silent 0 (Rakudo)
+                Value t = numifyStrOrThrow(v.toStr());
+                if (isExact(t)) { out = t; return true; }
+            }
             else if (v.t == VT::Array && v.arr && v.enumName.empty()) { out = Value::integer((long long)v.arr->size()); return true; }
             return false;
         };
@@ -11559,7 +11595,8 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
         if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN), *v.ratD); r.fatRat = v.fatRat; return r; }
         if (v.t == VT::Str || v.t == VT::Match) {
-            Value n = numifyStr(v.t == VT::Str ? v.s : strOf(v));
+            Value n = v.t == VT::Str ? numifyStrFailure(v.s) : numifyStr(strOf(v));
+            if (n.t == VT::Hash && n.hashKind == "Failure") return n; // -"a" is a quiet Failure too
             if (n.t == VT::Int && !n.big) return Value::integer(-n.toInt());
             return n.t==VT::Rat ? Value::rat(-(*n.ratN),*n.ratD) : Value::number(-n.toNum());
         }
@@ -11571,7 +11608,8 @@ Value Interpreter::evalUnary(Unary* u) {
             Value nv = v; nv.hashKind.clear(); nv.s.clear(); return nv;
         }
         if (v.t == VT::Match) return numifyStr(strOf(v)); // +$0 of digits is an Int, like +Str
-        return v.isNumeric() ? v : (v.t == VT::Str ? numifyStr(v.s) : Value::number(v.toNum()));
+        // `+"a"` is an error, not an undefined value (Rakudo: X::Str::Numeric)
+        return v.isNumeric() ? v : (v.t == VT::Str ? numifyStrFailure(v.s) : Value::number(v.toNum()));
     }
     if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
     if (u->op == "!") return Value::boolean(!boolify(v));
@@ -11672,7 +11710,21 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     return Value::object(od);
 }
 
+// An UNHANDLED Failure detonates the moment its value is actually used —
+// `say +"a"` throws, while `(+"a").defined` stays quiet. (`.handled`, set by
+// `try`/CATCH/`.so`, makes it inert.)
+static void failureDetonate(const Value& v) {
+    if (v.t == VT::Hash && v.hashKind == "Failure" && v.hash) {
+        auto h = v.hash->find("handled");
+        if (h != v.hash->end() && h->second.truthy()) return;
+        auto m = v.hash->find("message");
+        auto e = v.hash->find("exception");
+        throw RakuError{e != v.hash->end() ? e->second : Value::typeObj("X::AdHoc"),
+                        m != v.hash->end() ? m->second.toStr() : "Failure"};
+    }
+}
 std::string Interpreter::gistOf(const Value& v) {
+    failureDetonate(v);
     // a DateTime/Date carrying a :formatter gists through .Str (which runs it) —
     // `say DateTime.now(formatter => …)` shows the formatted form
     if (v.t == VT::Hash && (v.hashKind == "DateTime" || v.hashKind == "Date") &&
@@ -11732,6 +11784,7 @@ std::string Interpreter::gistOf(const Value& v) {
     return v.gist();
 }
 std::string Interpreter::strOf(const Value& v) {
+    failureDetonate(v);
     // A JUNCTION stringifies by AUTOTHREADING .Str over its eigenstates and
     // concatenating — `print 1 & 2` writes "12" (Rakudo). (`say` is different: it
     // uses .gist, which is the junction's own "all(1, 2)".)
@@ -12196,7 +12249,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     bool neg = op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==";
     std::string base = neg ? op.substr(1) : op;
     if (scan) { // yield (a, a op b, a op b op c, …)
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq"; // `[\+]` is lazy (Rakudo)
         if (items.empty()) return out;
         if (op == ",") { // [\,] : growing prefixes — ((1) (1 2) (1 2 3))
             for (size_t k = 0; k < items.size(); k++) {
