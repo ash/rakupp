@@ -57,7 +57,8 @@ struct Callable {
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
-    std::vector<const Param*> primedParams;           // params left unbound by the priming (point into the AST)
+    std::vector<std::shared_ptr<Param>> primedParams; // the residual signature (copies: a primed named param
+                                                      // survives with the primed value as its default)
 };
 
 enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };

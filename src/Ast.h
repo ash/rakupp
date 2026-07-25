@@ -227,6 +227,10 @@ struct Param {
     ExprPtr whereExpr;  // `where` constraint (checked in multi-dispatch)
     ExprPtr litVal;     // literal parameter, e.g. MAIN('population') — arg must equal this
     ExprPtr defaultVal; // may be null
+    std::string defaultRaku; // pre-rendered default, for a .assuming residual signature
+                             // (priming a named param turns it into `:$a = <primed value>`)
+    bool hadWhere = false;   // residual-signature copies can't own whereExpr; remember it was there
+    bool typeCapture = false; // `::T $x` — `type` names a type variable, not a real type
     std::string namedKey; // external name for `:name($var)` (else = var name)
     bool aliasBoth = false; // `:name(:$var)` — BOTH the alias and the var name bind
     std::vector<std::string> aliasKeys; // nested aliases `:x(:y(:z($a)))` — every layer's key answers

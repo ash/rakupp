@@ -129,7 +129,9 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "+" || o == "-") { in.valid = true; in.lbp = BP_ADD; return in; }
         if (o == "~") { in.valid = true; in.lbp = BP_CONCAT; return in; } // concatenation: looser than x/xx
         if (o == ".." || o == "..^" || o == "^.." || o == "^..^") { in.valid = true; in.lbp = BP_RANGE; in.isRange = true; return in; }
-        if (o == "..." || o == "...^") { in.valid = true; in.lbp = BP_COMMA; return in; } // sequence op: looser than comma, so `1,3 ... 19` seeds with (1,3)
+        // sequence op: looser than comma, so `1,3 ... 19` seeds with (1,3).
+        // `^` on either end excludes that endpoint (`1 ^... 5` is 2,3,4,5).
+        if (o == "..." || o == "...^" || o == "^..." || o == "^...^") { in.valid = true; in.lbp = BP_COMMA; return in; }
         if (o == "==>") { in.valid = true; in.lbp = BP_OR; return in; } // forward feed (left-assoc: data flows L→R)
         if (o == "<==") { in.valid = true; in.lbp = BP_OR; in.rightAssoc = true; return in; } // backward feed (right-assoc: the far-right source flows leftward)
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||
@@ -510,6 +512,30 @@ ExprPtr Parser::parseExpr(int minbp) {
                 bin->op = "!" + negIn.op;
                 bin->lhs = std::move(lhs);
                 bin->rhs = parseExpr(negIn.lbp + 1);
+                lhs = std::move(bin);
+                continue;
+            }
+        }
+        // Flip-flops with `^` edge markers — `^ff`, `ff^`, `^ff^` (likewise fff).
+        // The lexer hands the `^` over as its own token, so stitch the operator
+        // back together here, ahead of classifyInfix (which would otherwise read
+        // the leading `^` as the one-junction infix).
+        {
+            int k = 0; std::string ffOp;
+            if (cur().kind == Tok::Op && cur().text == "^" && !peek().spaceBefore &&
+                peek().kind == Tok::Ident && (peek().text == "ff" || peek().text == "fff"))
+                { ffOp = "^" + peek().text; k = 2; }
+            else if (cur().kind == Tok::Ident && (cur().text == "ff" || cur().text == "fff"))
+                { ffOp = cur().text; k = 1; }
+            if (k && peek(k).kind == Tok::Op && peek(k).text == "^" && !peek(k).spaceBefore)
+                { ffOp += "^"; k++; }
+            // only claim the DECORATED forms; plain ff/fff keep the normal path
+            if (k && (ffOp.front() == '^' || ffOp.back() == '^') && BP_TERNARY >= minbp) {
+                for (int i = 0; i < k; i++) advance();
+                auto bin = std::make_unique<Binary>();
+                bin->op = ffOp;
+                bin->lhs = std::move(lhs);
+                bin->rhs = parseExpr(BP_TERNARY + 1);
                 lhs = std::move(bin);
                 continue;
             }
@@ -2531,9 +2557,15 @@ ExprPtr Parser::parsePrimary() {
             }
             if (((peek(1).kind == Tok::Op && peek(1).text != "\\") || identReduce) &&
                 peek(1).text != "]") {
-                // the op may span several TIGHT tokens ([!=:=] lexes as `!=` + `:=`)
+                // the op may span several TIGHT tokens ([!=:=] lexes as `!=` + `:=`),
+                // and the `!` negation metaop can be glued to a WORD infix ([!after]).
+                // ONLY as the run's FIRST token: `[-x]` is an array literal and `[:!a]` a pair.
                 int j = 2;
-                while (peek(j).kind == Tok::Op && !peek(j).spaceBefore && peek(j).text != "]") j++;
+                while (peek(j).text != "]" && !peek(j).spaceBefore &&
+                       (peek(j).kind == Tok::Op ||
+                        (peek(j).kind == Tok::Ident && !peek(j).text.empty() &&
+                         std::islower((unsigned char)peek(j).text[0]) &&
+                         j == 2 && peek(1).kind == Tok::Op && peek(1).text == "!"))) j++;
                 if (peek(j).kind == Tok::RBracket) {
                     advance(); // [
                     std::string innerOp;
@@ -2600,9 +2632,14 @@ ExprPtr Parser::parsePrimary() {
                          (peek(2).text[0] == 'Z' || peek(2).text[0] == 'X' || peek(2).text[0] == 'R')
                        : std::islower((unsigned char)peek(2).text[0])))) &&
                 !peek(2).spaceBefore && peek(2).text != "]") {
-                // multi-token base ops too: [\X~] lexes as `\` `X` `~`
+                // multi-token base ops too: [\X~] lexes as `\` `X` `~`, and the `!`
+                // negation metaop can be glued to a WORD infix ([\!eq]) — only there
                 int j = 3;
-                while (peek(j).kind == Tok::Op && !peek(j).spaceBefore && peek(j).text != "]") j++;
+                while (peek(j).text != "]" && !peek(j).spaceBefore &&
+                       (peek(j).kind == Tok::Op ||
+                        (peek(j).kind == Tok::Ident && !peek(j).text.empty() &&
+                         std::islower((unsigned char)peek(j).text[0]) &&
+                         j == 3 && peek(2).kind == Tok::Op && peek(2).text == "!"))) j++;
                 if (peek(j).kind == Tok::RBracket) {
                     advance(); // [
                     advance(); // '\'
@@ -3901,7 +3938,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // Capture the type-variable name (+ optional smiley) and fall through to
         // the shared var/named/default handling so it can type a following param.
         if (isOp("::") && peek().kind == Tok::Ident) {
-            advance(); p.type = advance().text;
+            advance(); p.type = advance().text; p.typeCapture = true;
             if (isOp(":") && peek().kind == Tok::Ident &&
                 (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
                 advance(); std::string sm = advance().text;

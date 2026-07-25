@@ -336,7 +336,10 @@ public:
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
     struct SubsetInfo { std::string base; const Expr* where = nullptr; };
     std::unordered_map<std::string, SubsetInfo> subsets_;
-    std::unordered_map<const void*, bool> ffState_; // per-site `ff`/`fff` flip-flop latch
+    // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
+    // (the result while on is that count, not a Bool)
+    struct FlipFlop { bool on = false; long long seq = 0; };
+    std::unordered_map<const void*, FlipFlop> ffState_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
@@ -538,6 +541,7 @@ public:
     long gilReleaseCount_ = 0;
     void gilYieldNotify();                 // gil_.unlock() + bump the release counter + notify
     void yieldToWorker();                  // drop the GIL until some worker makes progress, then reacquire
+    bool yieldToWorkerFor(double secs);    // …bounded: false if the wait expired with no progress
     void sleepYield(double secs);          // sleep with the GIL released so other threads run concurrently
     // Release the GIL around a blocking syscall (e.g. waiting on a child process),
     // so sibling worker threads run — and spawn their OWN children — concurrently.

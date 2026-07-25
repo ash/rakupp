@@ -1292,12 +1292,88 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
 
 // Build a Signature introspection value from a routine's parameters.
 // Rendered as a Hash tagged "Signature" carrying its .raku text and arity/count.
+// A parameter's default as Rakudo renders it: only simple literals and type
+// names constant-fold; anything else is a thunk, printed as `Code.new`.
+static std::string renderDefault(const Param& p) {
+    if (!p.defaultRaku.empty()) return p.defaultRaku;
+    const Expr* d = p.defaultVal.get();
+    if (!d) return "";
+    switch (d->kind) {
+        case NK::IntLit: {
+            auto* n = static_cast<const IntLit*>(d);
+            return n->big.empty() ? std::to_string(n->v) : n->big;
+        }
+        case NK::NumLit:  return rakuRepr(Value::number(static_cast<const NumLit*>(d)->v));
+        case NK::StrLit:  return rakuStrLit(static_cast<const StrLit*>(d)->v);
+        case NK::BoolLit: return static_cast<const BoolLit*>(d)->v ? "Bool::True" : "Bool::False";
+        case NK::NameTerm: {
+            const std::string& n = static_cast<const NameTerm*>(d)->name;
+            // a bare type name folds; a called-by-name term does not
+            if (!n.empty() && (isupper((unsigned char)n[0]) || n == "Nil")) return n;
+            return "Code.new";
+        }
+        default: return "Code.new";
+    }
+}
+
+// One parameter, Rakudo-style: `Int:D $x`, `:$a!`, `:b($a) = 2`, `*@r`, `|c`.
+static std::string renderParam(const Param& p) {
+    std::string o;
+    if (!p.type.empty()) {
+        o += p.type;
+        if (p.defConstraint == 1) o += ":D";
+        else if (p.defConstraint == 2) o += ":U";
+        o += " ";
+    }
+    // `|c` is a capture, not a `*`-slurpy — it renders with its own leading `|`
+    bool capture = p.slurpy && p.slurpyKind == 0 && (p.sigil == '|' || p.sigil == '\\');
+    if (capture) return o + "|" + p.name;
+    if (p.slurpy) o += p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+" : "*";
+    std::string var = p.name.empty() ? std::string(1, p.sigil) : p.name;
+    if (p.named) {
+        std::string bare = p.name.size() > 1 ? p.name.substr(1) : p.name;
+        // `:$a` when the external name matches the variable, else nested alias
+        // layers `:b(:c($a))` — every key answers
+        if ((p.namedKey.empty() || p.namedKey == bare) && p.aliasKeys.empty()) o += ":" + var;
+        else {
+            std::string inner = var;
+            for (auto it = p.aliasKeys.rbegin(); it != p.aliasKeys.rend(); ++it)
+                inner = ":" + *it + "(" + inner + ")";
+            o += ":" + (p.namedKey.empty() ? bare : p.namedKey) + "(" + inner + ")";
+        }
+    }
+    else o += var;
+    std::string def = renderDefault(p);
+    if (p.named) { if (p.required) o += "!"; }
+    else if (p.optional && def.empty() && !p.slurpy) o += "?";
+    if (p.isRw) o += " is rw";
+    if (p.isCopy) o += " is copy";
+    if (p.whereExpr || p.hadWhere) o += " where { ... }";
+    if (!def.empty()) o += " = " + def;
+    return o;
+}
+
+// Param owns unique_ptr expressions, so a residual signature can't hold copies of
+// them — snapshot the plain fields and pre-render what the exprs contribute.
+static std::shared_ptr<Param> signatureParamCopy(const Param& p) {
+    auto q = std::make_shared<Param>();
+    q->name = p.name; q->sigil = p.sigil; q->type = p.type; q->namedKey = p.namedKey;
+    q->aliasBoth = p.aliasBoth; q->aliasKeys = p.aliasKeys; q->pod = p.pod;
+    q->slurpyKind = p.slurpyKind; q->named = p.named; q->slurpy = p.slurpy;
+    q->optional = p.optional; q->required = p.required; q->invocant = p.invocant;
+    q->defConstraint = p.defConstraint; q->coerce = p.coerce;
+    q->isRw = p.isRw; q->isCopy = p.isCopy;
+    q->hadWhere = p.whereExpr != nullptr || p.hadWhere;
+    q->defaultRaku = renderDefault(p);
+    return q;
+}
+
 static Value makeSignature(const Callable* c) {
     // a .assuming wrapper carries its residual params; everything else renders
     // its declared params
     std::vector<const Param*> ps;
     if (c) {
-        if (c->hasPrimed) ps = c->primedParams;
+        if (c->hasPrimed) { for (auto& sp : c->primedParams) ps.push_back(sp.get()); }
         else if (c->params) for (auto& p : *c->params) ps.push_back(&p);
     }
     std::string sig = "(";
@@ -1307,11 +1383,8 @@ static Value makeSignature(const Callable* c) {
         if (p.invocant) continue;
         if (!first) sig += ", ";
         first = false;
-        if (!p.type.empty()) sig += p.type + " ";
-        sig += p.name.empty() ? std::string(1, p.sigil) : p.name;
-        if (p.named) sig += "!"; // marked as named; doesn't affect arity/count below
-        else if (p.optional) sig += "?";
-        if (!p.named) { if (p.slurpy) slurpy = true; else { count++; if (!p.optional) arity++; } }
+        sig += renderParam(p);
+        if (!p.named) { if (p.slurpy) slurpy = true; else { count++; if (!p.optional && !p.defaultVal && p.defaultRaku.empty()) arity++; } }
     }
     sig += ")";
     Value s = Value::makeHash(); s.hashKind = "Signature";
@@ -2050,8 +2123,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 
     // Signature introspection value (from &routine.signature).
     if (inv.t == VT::Hash && inv.hashKind == "Signature") {
-        if (m == "raku" || m == "gist" || m == "Str" || m == "perl")
-            return inv.hash->count("str") ? (*inv.hash)["str"] : Value::str("()");
+        if (m == "raku" || m == "gist" || m == "Str" || m == "perl") {
+            std::string body = inv.hash->count("str") ? (*inv.hash)["str"].toStr() : "()";
+            // .raku is the signature literal; .gist/.Str are the bare parens
+            return Value::str((m == "raku" || m == "perl") ? ":" + body : body);
+        }
         if (m == "arity") return inv.hash->count("arity") ? (*inv.hash)["arity"] : Value::integer(0);
         if (m == "count") return inv.hash->count("count") ? (*inv.hash)["count"] : Value::integer(0);
         if (m == "params" || m == "parameters") { Value p = inv.hash->count("params") ? (*inv.hash)["params"] : Value::array(); p.isList = true; return p; }
@@ -2169,7 +2245,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
         !inv.obj->cls->findMethod(m) && !inv.obj->cls->findAttr(m)) {
         static const std::set<std::string> keepOnObj = {
-            "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa", "WHERE"};
+            // `.can` must see the MIXIN's methods — forwarding it to the boxed
+            // value hides them (`(Any but $failure).can('Failure')`)
+            "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa", "WHERE", "can"};
         if (!keepOnObj.count(m)) return methodCall(inv.obj->boxed, m, args, rwArgs);
     }
 
@@ -2996,12 +3074,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
         }
         if (m == "receive") {
+            // `.receive` BLOCKS until an item arrives (or the channel closes) —
+            // under the cooperative GIL that means handing off to the workers that
+            // could send. With no async engaged nothing ever could, so answer Nil
+            // rather than deadlock; likewise once every worker has finished.
+            if (q.empty() && !isClosed() && gilHeld_) {
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+                while (q.empty() && !isClosed() &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
+                    yieldToWorkerFor(0.02);
+                }
+            }
             if (q.empty()) {
                 if (isClosed()) {
                     if (inv.hash->count("failCause")) throw RakuError{(*inv.hash)["failCause"], "Channel failed"};
                     throw RakuError{Value::typeObj("X::Channel::ReceiveOnClosed"), "Cannot receive on a closed channel"};
                 }
-                return Value::nil(); // would block; single-thread model returns Nil
+                return Value::nil(); // nothing running that could ever send
             }
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
         }
@@ -5015,31 +5105,111 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             Value orig = inv; ValueList pre = args;
             Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
             code.code->builtin = [orig, pre](Interpreter& I, ValueList& a) -> Value {
-                ValueList all = pre; for (auto& x : a) all.push_back(x);
+                // a `*` in the priming is a hole: the call's next positional
+                // fills it, so `f.assuming(*, 2)(1)` calls `f(1, 2)`
+                ValueList pos, nam;
+                for (auto& x : a) (x.t == VT::Pair ? nam : pos).push_back(x);
+                ValueList all; size_t pi = 0;
+                for (auto& p : pre) {
+                    if (p.t == VT::Whatever) { if (pi < pos.size()) all.push_back(pos[pi++]); }
+                    else all.push_back(p);
+                }
+                for (; pi < pos.size(); pi++) all.push_back(pos[pi]);
+                for (auto& n : nam) all.push_back(n); // the caller's nameds override the primed ones
                 return I.callCallable(orig, all);
             };
             // residual signature: params the priming bound disappear; the rest
             // (unbound positional tail, unbound nameds, slurpies) remain
-            if (inv.code->params) {
-                size_t posBound = 0; std::set<std::string> namedBound;
+            if (inv.code->params || inv.code->hasPrimed) {
+                std::vector<Value> posArgs; std::map<std::string, Value> namedBound;
                 for (auto& a : pre) {
-                    if (a.t == VT::Pair) namedBound.insert(a.s);
-                    else posBound++;
+                    if (a.t == VT::Pair) namedBound[a.s] = a.pairVal ? *a.pairVal : Value::any();
+                    else posArgs.push_back(a); // a `*` here is a hole, not a value
                 }
+                // `::T $a` primed with an Int makes every later `T` an Int
+                std::map<std::string, std::string> typeBind;
+                // priming args that can't bind throw right here, as Rakudo's do —
+                // but only for a sub whose signature is the whole story (a body
+                // using @_ / $^a placeholders takes whatever it's given)
+                Value bindErr = Value::nil();
+                bool checkBind = !inv.code->usesArgs && inv.code->placeholders.empty();
+                std::set<std::string> namedSeen; bool posSlurpy = false, namedSlurpy = false;
+                // priming an already-primed sub re-primes its residual signature
+                std::vector<const Param*> src;
+                if (inv.code->hasPrimed) for (auto& sp : inv.code->primedParams) src.push_back(sp.get());
+                else if (inv.code->params) for (auto& p : *inv.code->params) src.push_back(&p);
                 size_t pos = 0;
                 code.code->hasPrimed = true;
-                for (auto& p : *inv.code->params) {
+                for (const Param* pp : src) {
+                    const Param& p = *pp;
                     if (p.invocant) continue;
+                    auto keep = [&]() -> Param& {
+                        code.code->primedParams.push_back(signatureParamCopy(p));
+                        Param& q = *code.code->primedParams.back();
+                        auto tb = typeBind.find(q.type);
+                        if (tb != typeBind.end()) { q.type = tb->second; q.typeCapture = false; }
+                        return q;
+                    };
                     if (p.named) {
-                        std::string key = !p.namedKey.empty() ? p.namedKey
-                                        : p.name.size() > 1 ? p.name.substr(1) : p.name;
-                        if (namedBound.count(key)) continue;
-                        code.code->primedParams.push_back(&p);
+                        // any alias layer of `:b(:c($a))` can be the one primed
+                        std::vector<std::string> keys = p.aliasKeys;
+                        keys.push_back(!p.namedKey.empty() ? p.namedKey
+                                     : p.name.size() > 1 ? p.name.substr(1) : p.name);
+                        if (p.aliasBoth && p.name.size() > 1) keys.push_back(p.name.substr(1));
+                        auto it = namedBound.end();
+                        for (auto& k : keys) {
+                            namedSeen.insert(k);
+                            if (it == namedBound.end()) it = namedBound.find(k);
+                        }
+                        if (it == namedBound.end()) { keep(); continue; }
+                        // a primed named param stays bindable — the caller may
+                        // override it — but is now optional, defaulting to the
+                        // primed value
+                        Param& q = keep();
+                        q.required = false; q.optional = true;
+                        q.defaultRaku = rakuRepr(it->second);
                     }
-                    else if (p.slurpy) code.code->primedParams.push_back(&p);
-                    else if (pos < posBound) pos++;      // consumed by the priming
-                    else code.code->primedParams.push_back(&p);
+                    else if (p.slurpy) { // a `|c` capture takes both kinds
+                        if (p.sigil != '%') posSlurpy = true;
+                        if (p.sigil == '%' || p.sigil == '\\' || p.sigil == '|') namedSlurpy = true;
+                        keep();
+                    }
+                    else if (pos < posArgs.size()) {
+                        const Value& av = posArgs[pos++];
+                        if (av.t == VT::Whatever) { keep(); continue; } // hole: still unbound
+                        if (p.typeCapture && !p.type.empty()) typeBind[p.type] = av.typeName();
+                        // `Int @a` constrains the ELEMENTS, not the Array — only a
+                        // scalar param's type checks against the argument itself
+                        else if (!p.type.empty() && !p.coerce && p.sigil == '$' &&
+                                 checkBind && bindErr.t == VT::Nil) {
+                            auto tb = typeBind.find(p.type); // a bound `::T` checks as its type
+                            const std::string& want = tb != typeBind.end() ? tb->second : p.type;
+                            if (!typeOrSubsetMatches(av, want))
+                                bindErr = makeTypedEx("X::TypeCheck::Binding",
+                                    {{"expected", Value::typeObj(want)}, {"got", Value::typeObj(av.typeName())},
+                                     {"symbol", Value::str(p.name)}},
+                                    "Type check failed in binding " + p.name + "; expected " + want +
+                                    " but got " + av.typeName());
+                        }
+                    }
+                    else keep();
                 }
+                // Rakudo doesn't throw when a priming can't bind — it mixes a
+                // Failure into the returned Code, so the call site sees it
+                if (checkBind && bindErr.t == VT::Nil && pos < posArgs.size() && !posSlurpy)
+                    bindErr = makeTypedEx("X::AdHoc", {},
+                        "Too many positionals passed; expected " + std::to_string(pos) +
+                        " arguments but got " + std::to_string(posArgs.size()));
+                if (checkBind && bindErr.t == VT::Nil && !namedSlurpy)
+                    for (auto& kv : namedBound)
+                        if (!namedSeen.count(kv.first)) {
+                            bindErr = makeTypedEx("X::AdHoc", {},
+                                "Unexpected named argument '" + kv.first + "' passed");
+                            break;
+                        }
+                if (bindErr.t != VT::Nil)
+                    throw RakuError{bindErr, bindErr.obj && bindErr.obj->attrs.count("message")
+                                             ? bindErr.obj->attrs["message"].toStr() : "binding failed"};
             }
             return code;
         }
@@ -9782,6 +9952,7 @@ void Interpreter::registerBuiltins() {
                 Value ex; ex.t = VT::Object; ex.obj = std::make_shared<ObjectData>();
                 ex.obj->cls = it->second;
                 ex.obj->attrs["message"] = Value::str(msg);
+                ex.obj->attrs["payload"] = a.empty() ? Value::str(msg) : a[0]; // .payload is what was thrown
                 payload = ex;
             }
         }

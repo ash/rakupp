@@ -1613,7 +1613,7 @@ Token Lexer::lexOperator() {
     }
     static const char* ops[] = {
         "==>", "<==", // feed operators (before == / <=)
-        "!!!", "???", "...^", "...", "^..^", "..^", "^..",
+        "!!!", "???", "^...^", "^...", "...^", "...", "^..^", "..^", "^..", // ^... before ^.. (greedy)
         "!===", // negated value identity (before !== / ===)
         "!=:=", // negated container identity (before != / =:=) — JSON::Class
         "=~=", "≅", "===", "!==", "!%%", "**=", "//=", "||=", "&&=", "^^=", "<=>", "<<=", ">>=", "!~~",

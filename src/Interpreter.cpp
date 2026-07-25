@@ -1225,7 +1225,7 @@ Interpreter::Interpreter() {
             for (const char* an : attrs) { ClassAttr a; a.name = an; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
             classes_[name] = ci;
         };
-        reg("X::AdHoc", {"message"});
+        reg("X::AdHoc", {"payload", "message"}); // `die "msg"` — .payload IS the message
         reg("X::Syntax::Reserved", {"reserved", "instead", "pos", "message"});
         reg("Exception", {"message"}); // base class: Exception.new is instantiable
     }
@@ -1469,6 +1469,30 @@ void Interpreter::yieldToWorker() {
     { std::unique_lock<std::mutex> lk(gilRelMutex_); gilReleased_.wait(lk, [&] { return gilReleaseCount_ > before; }); }
     gil_.lock();
     loadCtx(parked);
+}
+
+// Same handoff, but bounded — for callers that block on a condition a worker may
+// never satisfy (Channel.receive on a queue nobody sends to) and must not wedge.
+bool Interpreter::yieldToWorkerFor(double secs) {
+    if (!gilHeld_ || parallelMode_) return false;
+    static thread_local ExecContext parked;
+    saveCtx(parked);
+    // Release the GIL *and* notify: a counterpart parked in yieldToWorker is
+    // waiting for the release counter to move, and a plain unlock would leave it
+    // asleep — so the thread that could satisfy us never runs.
+    gil_.unlock();
+    long before;
+    { std::lock_guard<std::mutex> lk(gilRelMutex_); before = ++gilReleaseCount_; }
+    gilReleased_.notify_all();
+    bool progressed;
+    {
+        std::unique_lock<std::mutex> lk(gilRelMutex_);
+        progressed = gilReleased_.wait_for(lk, std::chrono::duration<double>(secs),
+                                           [&] { return gilReleaseCount_ > before; });
+    }
+    gil_.lock();
+    loadCtx(parked);
+    return progressed;
 }
 
 // sleep with the GIL released, so sibling worker threads run (and sleep) at the
@@ -4346,6 +4370,8 @@ Value Interpreter::makeTypedEx(const std::string& type,
     ex.obj->cls = it->second;
     for (auto& kv : attrs) ex.obj->attrs[kv.first] = kv.second;
     ex.obj->attrs["message"] = Value::str(message);
+    if (type == "X::AdHoc" && !ex.obj->attrs.count("payload"))
+        ex.obj->attrs["payload"] = Value::str(message);
     return ex;
 }
 
@@ -4527,6 +4553,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 env->define(p.name, h);
             } else {
                 Value a = Value::array();
+                // a capture doesn't CONSUME its args — it sees the whole
+                // remaining list, so `sub (|c ($a,$b), |d ($c,$d))` binds both
+                // captures from the same arguments (nothing required may follow
+                // a capture, so leaving `pi` put is safe)
+                size_t piStart = pi;
+                bool capture = p.sigil == '\\' && p.slurpyKind == 0;
                 size_t remaining = positional.size() - pi;
                 if (p.slurpyKind == 'f') {
                     // *@a — flatten: dissolve every Iterable arg into the slurpy.
@@ -4569,6 +4601,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     }
                     bindParams(*p.subSig, inner, env);
                 }
+                if (capture) pi = piStart;
             }
             continue;
         }
@@ -4634,7 +4667,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     env->define(p.name, p.sigil == '@' ? coerceArray(v) : p.sigil == '%' ? coerceHash(v) : v);
                 continue;
             }
-            if (p.sigil == '@') v = coerceArray(v);
+            // parameter binding is not assignment: an ITEMIZED Array (`$[1,2]`,
+            // `@m[0]`) binds to an `@` param as the Positional it is, where
+            // `my @a = $[1,2]` would have nested it
+            if (p.sigil == '@') {
+                if (v.t == VT::Array && v.itemized) { Value u = v; u.itemized = false; v = coerceArray(u); }
+                else v = coerceArray(v);
+            }
             else if (p.sigil == '%') v = coerceHash(v);
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
@@ -10482,9 +10521,9 @@ Value Interpreter::evalBinary(Binary* b) {
     // The classification is computed once and cached on the node.
     if (b->simpleOp < 0) {
         static const std::set<std::string> special = {
-            "~", "does", "but", "xx", "==>", "<==", "...", "...^", "~~", "!~~",
+            "~", "does", "but", "xx", "==>", "<==", "...", "...^", "^...", "^...^", "~~", "!~~",
             "&&", "and", "||", "or", "andthen", "orelse", "notandthen", "//", "^^", "xor", "&", "|", "^",
-            "=:=", "!=:=", "ff", "fff",
+            "=:=", "!=:=", "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
             "Z", "X"}; // plain Z/X: chained forms are ONE n-ary list-infix
         bool rmeta = op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]);
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
@@ -10556,8 +10595,17 @@ Value Interpreter::evalBinary(Binary* b) {
             tagTemporal(op, l, r, res);
             return res;
         }
-        // function composition `f ∘ g` / `f o g` → a callable computing f(g(...))
+        // function composition `f ∘ g` / `f o g` → a callable computing f(g(...)).
+        // Both operands must BE callable — Rakudo has no candidate for `1 o 2`.
         if (op == "\xE2\x88\x98" || op == "o") {
+            auto composable = [](const Value& v) {
+                return v.t == VT::Code || (v.t == VT::Whatever) ||
+                       (v.t == VT::Hash && v.hashKind == "Signature");
+            };
+            if (!composable(l) || !composable(r))
+                throwTypedV("X::Multi::NoMatch", {},
+                            "Cannot resolve caller infix:<o>(" + l.typeName() + ", " +
+                            r.typeName() + "); only Callables compose");
             Value fV = l, gV = r;
             Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
             code.code->builtin = [fV, gV](Interpreter& I, ValueList& a) -> Value {
@@ -10689,6 +10737,16 @@ Value Interpreter::evalBinary(Binary* b) {
     if (op == "does" || op == "but") {
         Value base = eval(b->lhs.get());
         Value rhs = eval(b->rhs.get());
+        // `does` composes a ROLE; only `but` takes a plain value (`1 but "one"`).
+        // Rakudo says as much rather than quietly mixing nothing in.
+        // Reject only what is DEFINITELY not a role — a parameterized role
+        // (`R[42]`) doesn't evaluate to a type object here, so a whitelist would
+        // wrongly refuse it.
+        if (op == "does" && (rhs.t == VT::Int || rhs.t == VT::Str || rhs.t == VT::Num ||
+                             rhs.t == VT::Rat || rhs.t == VT::Bool || rhs.t == VT::Complex))
+            throwTypedV("X::AdHoc", {},
+                        "Cannot use 'does' operator on a " + base.typeName() +
+                        ", did you mean 'but'?");
         Value res = mixinValue(std::move(base), rhs, op == "but");
         // `does` mutates the container in place; for a boxed non-object base the
         // mixed value is a fresh object, so write it back to the LHS lvalue.
@@ -10740,10 +10798,15 @@ Value Interpreter::evalBinary(Binary* b) {
         *lv = sig == '@' ? coerceArray(src) : sig == '%' ? coerceHash(src) : src;
         return *lv;
     }
-    if (op == "..." || op == "...^") { // sequence operator: seed [, closure] ... endpoint|*
+    if (op == "..." || op == "...^" || op == "^..." || op == "^...^") {
+        // sequence operator: seed [, closure] ... endpoint|*. A leading `^`
+        // excludes the seed, a trailing one the endpoint.
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
-        return seqOp(std::move(l), std::move(r), op == "...^");
+        Value out = seqOp(std::move(l), std::move(r), op.back() == '^');
+        if (op.front() == '^' && out.t == VT::Array && out.arr && !out.arr->empty())
+            out.arr->erase(out.arr->begin());
+        return out;
     }
     if (op == "~~" || op == "!~~") {
         // regex match: $str ~~ /pat/   /   $str ~~ s/pat/repl/
@@ -10867,28 +10930,41 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         return applyArith(op, lTopic, r); // generic smartmatch on the already-evaluated operands
     }
-    if (op == "ff" || op == "fff") {
-        // flip-flop: stateful per site. Off: test LHS; a hit turns it on (and for
-        // `ff` the RHS is tested on the SAME element, so a one-element range works).
-        // On: test RHS; a hit turns it off — the closing element still returns True.
-        bool& on = ffState_[b];
+    if (op == "ff" || op == "fff" || op == "ff^" || op == "fff^" ||
+        op == "^ff" || op == "^fff" || op == "^ff^" || op == "^fff^") {
+        // Flip-flop: stateful per site. Off it tests the LHS; a hit turns it on
+        // (and for `ff` the RHS is tested on the SAME element, so a one-element
+        // run works — `fff` is sed-like and waits for the next). On it tests the
+        // RHS; a hit turns it off, the closing element included.
+        // The result is NOT a Bool: Rakudo answers Any while off, and while on an
+        // Int counting the elements since it fired. A `^` on either end excludes
+        // that edge element from the result (Any) — but it still counts.
+        bool sedlike = op.find("fff") != std::string::npos;
+        bool exclFirst = op.front() == '^', exclLast = op.back() == '^';
+        FlipFlop& st = ffState_[b];
         auto test = [&](Expr* side) -> bool {
             Value v = eval(side);
             if (v.t == VT::Bool) return v.truthy();
-            if (v.t == VT::Whatever) return op == "ff" ? false : false; // `ff *`: never end
+            if (v.t == VT::Whatever) return false; // `ff *`: never end
             Value* tp = tctx_.cur->find("$_");
             Value topic = tp ? *tp : Value::any();
             if (v.t == VT::Regex) return regexMatch(topic.toStr(), v.s).truthy();
             return applyArith("~~", topic, v).truthy();
         };
-        if (!on) {
-            if (!test(b->lhs.get())) return Value::boolean(false);
-            on = true;
-            if (op == "ff" && test(b->rhs.get())) on = false;
-            return Value::boolean(true);
+        bool closes = false;
+        if (!st.on) {
+            if (!test(b->lhs.get())) return Value::any();
+            st.on = true; st.seq = 1;
+            if (!sedlike && test(b->rhs.get())) closes = true; // `ff` may close at once
+            if (exclFirst) { if (closes) st.on = false; return Value::any(); }
         }
-        if (test(b->rhs.get())) on = false;
-        return Value::boolean(true);
+        else {
+            st.seq++;
+            closes = test(b->rhs.get());
+        }
+        if (closes) st.on = false;
+        if (closes && exclLast) return Value::any();
+        return Value::integer(st.seq);
     }
     if (op == "&&" || op == "and") {
         Value l = eval(b->lhs.get());
@@ -11716,6 +11792,9 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     auto od = std::make_shared<ObjectData>();
     od->cls = ci;
     od->attrs["message"] = Value::str(e.message);
+    // an X::AdHoc's .payload is whatever was passed to `die` — for `die "msg"`
+    // that's the message itself
+    if (tn == "X::AdHoc") od->attrs["payload"] = Value::str(e.message);
     return Value::object(od);
 }
 
