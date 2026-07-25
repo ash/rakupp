@@ -8475,6 +8475,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // …and a LIST numifies to its ELEMENT COUNT, exactly: `(1,2) + (3,4,5)` is
         // Int 5, not Num (a junction is NOT a list here — it autothreads elsewhere).
         auto exactify = [&](const Value& v, Value& out) -> bool {
+            // a Blob/Buf is a Str only in representation — its bytes are elements,
+            // not digits, so it numifies to its ELEMENT COUNT like a list does
+            if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+                out = Value::integer((long long)v.blobList().size()); return true;
+            }
             if (v.t == VT::Str && !v.isAllomorph()) {
                 // a NON-numeric string is an error here, not a silent 0 (Rakudo)
                 Value t = numifyStrOrThrow(v.toStr());

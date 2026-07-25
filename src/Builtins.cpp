@@ -250,7 +250,7 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
     si.hStdInput = inR; si.hStdOutput = outW; si.hStdError = nul;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
-    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr /* inherit cwd: spawnWithInput has no :cwd */, &si, &pi);
     CloseHandle(inR); CloseHandle(outW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (!started) { CloseHandle(inW); CloseHandle(outR); return; }
     bool parked = gil ? gil->gilPark() : false;

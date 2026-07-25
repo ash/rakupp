@@ -30,6 +30,8 @@ class C2 is P2 { has $.x = 42; method describe { 'C2:' ~ self.P2::describe } }
 my $r = do given %h {
     when .<blacklist>.?chars && any(|.<blacklist>) ~~ any('*') { 'fired' }
 };
-@fail.push('when-falsy-on-hash') if $r.defined;
+# a `given` whose `when` never matches yields False — which IS defined, so the
+# check is that the block did not FIRE, not that $r is undefined
+@fail.push("when-falsy-on-hash ({$r.raku})") unless $r === False;
 
 if @fail { note "FAILED: @fail[]"; say 'FAIL' } else { say 'PASS' }

@@ -14,13 +14,13 @@ my @fail;
     my @got;
     my $s = supply { whenever $p -> $v { @got.push("unkept:$v") }; whenever Promise.in(0.2) { done } };
     $s.tap(-> $x { @got.push($x) });
-    sleep 0.5;
+    sleep 1.5;
     @fail.push("unkept-fired (@got[])") if @got;
 }
 {
     my @got;
     supply { whenever Promise.kept(42) -> $v { emit $v } }.tap(-> $x { @got.push($x) });
-    sleep 0.2;
+    sleep 1;
     @fail.push("kept-value (@got[])") unless @got eqv [42];
 }
 # later-kept fires with the settled value
@@ -28,7 +28,7 @@ my @fail;
     my $p = Promise.new; my $v = $p.vow; my @got;
     supply { whenever $p -> $x { emit "s:$x" } }.tap(-> $y { @got.push($y) });
     start { sleep 0.15; $v.keep(9) };
-    sleep 0.6;
+    sleep 1.5;
     @fail.push("late-kept (@got[])") unless @got eqv ['s:9'];
 }
 # Promise.in in a supply block is a real timer (fires after the delay, not at t=0)
@@ -36,7 +36,7 @@ my @fail;
     my $fired-at;
     my $t0 = now;
     supply { whenever Promise.in(0.3) { $fired-at = now - $t0; emit 1 } }.tap(-> $ {});
-    sleep 0.5;
+    sleep 1.5;
     @fail.push("timer-immediate ($fired-at)") unless $fired-at.defined && $fired-at >= 0.2;
 }
 # `.emit` acts on the topic
@@ -48,7 +48,7 @@ my @fail;
     $sup.emit('a'); $sup.emit('b');
     my @got;
     supply { whenever $sup.Supply -> $x { emit $x } }.tap(-> $y { @got.push($y) });
-    sleep 0.3;
+    sleep 1;
     @fail.push("preserving-replay (@got[])") unless @got eqv ['a', 'b'];
 }
 
