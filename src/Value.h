@@ -162,6 +162,13 @@ struct Value {
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
     static Value object(std::shared_ptr<ObjectData> o) { Value v; v.t = VT::Object; v.obj = std::move(o); return v; }
     static Value enumVal(const std::string& name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
+    // Order::Less/Same/More — the result of cmp/<=>/leg/unicmp/coll. Tagged with
+    // its enum TYPE so `.WHAT.^name` is `Order`, not `Int` (Rakudo parity).
+    static Value orderVal(long long c) {
+        Value v = enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c < 0 ? -1 : c > 0 ? 1 : 0);
+        v.enumType = "Order";
+        return v;
+    }
     static Value regex(std::string pat, std::string flags = "") {
         Value v; v.t = VT::Regex; v.s = std::move(pat); v.hashKind = std::move(flags); return v;
     }

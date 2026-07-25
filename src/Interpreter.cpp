@@ -716,9 +716,22 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // canonical `1, 1, { $^a + $^b } … *` fibonacci), `-> $a, $b {…}` by its
         // signature — and a topic block `{ $_ … }` or a bare block by 1 (an EMPTY
         // params vector must not read as arity 0, which fed the block nothing).
+        // arity 0 = SLURPY: the generator takes EVERY element produced so far
+        // (`sub { [*] @_[*-1], @_ + 1 }` — a body using @_, or a declared *@slurpy).
         long long arity = 1;
         if (hasGen && gen.code) {
-            if (gen.code->whateverArity > 0)            arity = gen.code->whateverArity;
+            bool slurpy = gen.code->usesArgs;
+            if (gen.code->params)
+                for (auto& p : *gen.code->params) if (p.slurpy) { slurpy = true; break; }
+            // an ANONYMOUS `sub { … @_ … }` is built without usesArgs being computed,
+            // so look for @_/%_ in the body here too
+            if (!slurpy && gen.code->body && (!gen.code->params || gen.code->params->empty())) {
+                std::set<std::string> ph2;
+                for (auto& s2 : *gen.code->body) collectPHStmt(s2.get(), ph2);
+                slurpy = ph2.count("@_") || ph2.count("%_");
+            }
+            if (slurpy)                                 arity = 0;
+            else if (gen.code->whateverArity > 0)       arity = gen.code->whateverArity;
             else if (!gen.code->placeholders.empty())   arity = (long long)gen.code->placeholders.size();
             else if (gen.code->params && !gen.code->params->empty()) arity = (long long)gen.code->params->size();
         }
@@ -748,7 +761,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 Value next;
                 if (hasGen) {
                     ValueList args; size_t n = cache.size();
-                    for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? cache[idx] : Value::integer(0)); }
+                    if (arity == 0) { for (size_t q = 0; q < n; q++) args.push_back(cache[q]); } // slurpy: all so far
+                    else for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? cache[idx] : Value::integer(0)); }
                     // `last` inside the generator terminates the sequence
                     try { next = self->callCallable(gen, args); }
                     catch (const LastEx&) { return false; }
@@ -803,7 +817,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             Value next;
             if (hasGen) {
                 ValueList args; size_t n = out.arr->size();
-                for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? (*out.arr)[idx] : Value::integer(0)); }
+                if (arity == 0) { for (size_t q = 0; q < n; q++) args.push_back((*out.arr)[q]); } // slurpy: all so far
+                else for (long long k = arity; k >= 1; k--) { long long idx = (long long)n - k; args.push_back(idx >= 0 ? (*out.arr)[idx] : Value::integer(0)); }
                 // `last` inside the generator terminates the sequence
                 try { next = callCallable(gen, args); }
                 catch (const LastEx&) { break; }
@@ -924,9 +939,9 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
     // builtin enum members (mirror the NameTerm eval): without the numeric
     // payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
-    if (n == "Order::Same" || n == "Same") return Value::enumVal("Same", 0);
-    if (n == "Order::Less" || n == "Less") return Value::enumVal("Less", -1);
-    if (n == "Order::More" || n == "More") return Value::enumVal("More", 1);
+    if (n == "Order::Same" || n == "Same") return Value::orderVal(0);
+    if (n == "Order::Less" || n == "Less") return Value::orderVal(-1);
+    if (n == "Order::More" || n == "More") return Value::orderVal(1);
     if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);
     if (n == "PromiseStatus::Broken"  || n == "Broken")  return Value::enumVal("Broken", 1);
     if (n == "PromiseStatus::Kept"    || n == "Kept")    return Value::enumVal("Kept", 2);
@@ -8102,7 +8117,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "Z" || (op.size() > 1 && op[0] == 'Z')) { // zip; Z<op> applies op pairwise
         std::string sub = op.substr(1); // "" -> tuples, "=>" -> pairs, else infix op
         ValueList a = listCtx(l), b = listCtx(r);
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo: Z/X are lazy
         for (size_t i = 0; i < a.size() && i < b.size(); i++) {
             if (sub.empty()) { Value t = Value::array({a[i], b[i]}); t.isList = true; out.arr->push_back(t); }
             else if (sub == "=>") out.arr->push_back(Value::pair(a[i].toStr(), b[i]));
@@ -8113,7 +8128,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "X" || (op.size() > 1 && op[0] == 'X')) { // cross; X<op> applies op
         std::string sub = op.substr(1);
         ValueList a = listCtx(l), b = listCtx(r);
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
         for (auto& x : a) for (auto& y : b) {
             if (sub.empty()) { Value t = Value::array({x, y}); t.isList = true; out.arr->push_back(t); }
             else if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
@@ -8245,7 +8260,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 return x < y ? -1 : x > y ? 1 : 0;
             };
             int c = ncmp(a.real(), b.real()); if (!c) c = ncmp(a.imag(), b.imag());
-            return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c);
+            return Value::orderVal(c);
         }
         if (op == "<" || op == "<=" || op == ">" || op == ">=" || op == "<=>") {
             // arithmetic comparison coerces to Real: ok when |im| is within
@@ -8312,7 +8327,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             else if (aP) c = pa[k].first ? (pa[k].second == "0" ? 0 : 1) : -1;
             else         c = pb[k].first ? (pb[k].second == "0" ? 0 : -1) : 1;
         }
-        if (op == "cmp") return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c);
+        if (op == "cmp") return Value::orderVal(c);
         if (op == "==" || op == "eqv" || op == "eq" || op == "~~") return Value::boolean(c == 0);
         if (op == "!=" || op == "ne") return Value::boolean(c != 0);
         if (op == "<"  || op == "before") return Value::boolean(c < 0);
@@ -8328,6 +8343,25 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil || v.t == VT::Type; };
         if (undef(l) && isExact(r)) return applyArith(op, Value::integer(0), r);
         if (undef(r) && isExact(l)) return applyArith(op, l, Value::integer(0));
+    }
+    // A NUMERIC-LOOKING STRING enters the exact tower too: `1 * "2"` is Int 2 and
+    // `1 / "2"` is Rat 0.5 (Rakudo), not Num. numifyStr already yields the right
+    // exact type (Int/Rat) — or an undefined value for a non-numeric string, which
+    // falls through to the existing (Num) path unchanged.
+    if ((l.t == VT::Str || r.t == VT::Str || l.t == VT::Array || r.t == VT::Array) && !isSetOpStr(op) &&
+        (op == "+" || op == "-" || op == "*" || op == "/" || op == "**" ||
+         op == "%" || op == "%%" || op == "div" || op == "mod" || op == "gcd" || op == "lcm")) {
+        // …and a LIST numifies to its ELEMENT COUNT, exactly: `(1,2) + (3,4,5)` is
+        // Int 5, not Num (a junction is NOT a list here — it autothreads elsewhere).
+        auto exactify = [&](const Value& v, Value& out) -> bool {
+            if (v.t == VT::Str && !v.isAllomorph()) { Value t = numifyStr(v.toStr()); if (isExact(t)) { out = t; return true; } }
+            else if (v.t == VT::Array && v.arr && v.enumName.empty()) { out = Value::integer((long long)v.arr->size()); return true; }
+            return false;
+        };
+        Value ln = l, rn = r;
+        bool conv = exactify(l, ln);
+        conv = exactify(r, rn) || conv;
+        if (conv && isExact(ln) && isExact(rn)) return applyArith(op, ln, rn);
     }
     if (isExact(l) && isExact(r)) {
         bool anyRat = (l.t == VT::Rat || r.t == VT::Rat);
@@ -8517,7 +8551,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (op == "<=") return Value::boolean(c <= 0);
             if (op == ">")  return Value::boolean(c > 0);
             if (op == ">=") return Value::boolean(c >= 0);
-            return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c < 0 ? -1 : c > 0 ? 1 : 0);
+            return Value::orderVal(c);
         }
     }
 
@@ -8595,7 +8629,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         Value a = Value::array();
         long long n = r.toInt();
         for (long long k = 0; k < n; k++) a.arr->push_back(l);
-        a.isList = true; // `1 xx 5` is a flattening List, so `[1 xx 5]` spreads to 5 elems
+        a.isList = true; // `1 xx 5` is a flattening list, so `[1 xx 5]` spreads to 5 elems
+        a.s = "Seq";     // …and it is lazy: Rakudo reports Seq
         return a;
     }
     // numeric bitwise / shift
@@ -8669,7 +8704,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "le") return Value::boolean(l.toStr() <= r.toStr());
     if (op == "ge") return Value::boolean(l.toStr() >= r.toStr());
     auto orderVal = [](int c) {
-        return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c < 0 ? -1 : c > 0 ? 1 : 0);
+        return Value::orderVal(c);
     };
     if (op == "<=>") {
         // numeric comparison: a non-numeric Str operand cannot coerce
@@ -8695,7 +8730,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return cps;
         };
         int c = uniCollate(decode(l.toStr()), decode(r.toStr()));
-        return Value::enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c);
+        return Value::orderVal(c);
     }
     if (op == "before") return Value::boolean(valueCmp(l, r) < 0);
     if (op == "after") return Value::boolean(valueCmp(l, r) > 0);
@@ -10332,7 +10367,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
             return ValueList{v};
         };
         ValueList a = oneLevel(l), bb = oneLevel(r);
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq"; // Z<op>/X<op> are lazy (Rakudo)
         auto emit = [&](const Value& x, const Value& y) {
             if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
             else if (sub == ",") { // Z, / X, — tuples
@@ -10560,7 +10595,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 return ValueList{v};
             };
             ValueList a = oneLevel(l), bb = oneLevel(r);
-            Value out = Value::array(); out.isList = true;
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; // Z<op>/X<op> are lazy (Rakudo)
             auto emit = [&](const Value& x, const Value& y) {
                 if (sub.empty() || sub == ",") { // Z / Z, — tuples
                     Value t = Value::array({x, y}); t.isList = true;
@@ -10634,7 +10669,7 @@ Value Interpreter::evalBinary(Binary* b) {
             return a;
         }
         long long n = rv.toInt();
-        Value a = Value::array(); a.isList = true;
+        Value a = Value::array(); a.isList = true; a.s = "Seq"; // `EXPR xx N` is a Seq (Rakudo)
         for (long long k = 0; k < n; k++) a.arr->push_back(eval(b->lhs.get()));
         return a;
     }
@@ -10825,7 +10860,7 @@ Value Interpreter::evalBinary(Binary* b) {
         bool def = isDefined(l);
         bool run = op == "andthen" ? def : !def; // orelse/notandthen fire on undefined
         if (!run) { // skip the RHS: orelse/andthen yield the LHS, notandthen yields Empty
-            if (op == "notandthen") { Value e = Value::array(); e.isList = true; return e; }
+            if (op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; } // Empty
             return l;
         }
         auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
@@ -11561,6 +11596,11 @@ Value Interpreter::evalUnary(Unary* u) {
             return out;
         }
         if (v.t == VT::Range) { Value out = Value::array(v.flatten()); out.isList = true; out.s = "Slip"; return out; }
+        // a SCALAR slips too: `|1` is a one-element Slip, not a bare Int (Rakudo)
+        if (v.t != VT::Hash && v.t != VT::Code) {
+            Value out = Value::array({v}); out.isList = true; out.s = "Slip";
+            return out;
+        }
         return v;
     }
     // user-defined prefix operator: `sub prefix:<§>($x) { … }`
@@ -11692,6 +11732,15 @@ std::string Interpreter::gistOf(const Value& v) {
     return v.gist();
 }
 std::string Interpreter::strOf(const Value& v) {
+    // A JUNCTION stringifies by AUTOTHREADING .Str over its eigenstates and
+    // concatenating — `print 1 & 2` writes "12" (Rakudo). (`say` is different: it
+    // uses .gist, which is the junction's own "all(1, 2)".)
+    if (v.t == VT::Array && v.arr &&
+        (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none")) {
+        std::string out;
+        for (auto& e : *v.arr) out += strOf(e);
+        return out;
+    }
     // a DateTime/Date carrying a :formatter stringifies through .Str (which runs it)
     if (v.t == VT::Hash && (v.hashKind == "DateTime" || v.hashKind == "Date") &&
         v.hash && v.hash->count("formatter"))
@@ -13503,9 +13552,9 @@ Value Interpreter::eval(Expr* e) {
             if (n == "False" || n == "Bool::False") return Value::boolean(false);
             if (n == "Inf") return Value::number(INFINITY);
             if (n == "NaN") return Value::number(NAN);
-            if (n == "Order::Same" || n == "Same") return Value::enumVal("Same", 0);
-            if (n == "Order::Less" || n == "Less") return Value::enumVal("Less", -1);
-            if (n == "Order::More" || n == "More") return Value::enumVal("More", 1);
+            if (n == "Order::Same" || n == "Same") return Value::orderVal(0);
+            if (n == "Order::Less" || n == "Less") return Value::orderVal(-1);
+            if (n == "Order::More" || n == "More") return Value::orderVal(1);
             // PromiseStatus <Planned Broken Kept> — real enum values so `$p.status`
             // both compares (=== Kept) and stringifies (~$s eq 'Kept') correctly.
             if (n == "PromiseStatus::Planned" || n == "Planned") return Value::enumVal("Planned", 0);

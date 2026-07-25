@@ -1783,7 +1783,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // enumName.empty() first: it rejects everything but junctions/enums in one load.
     if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr &&
         (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none") &&
-        (m == "print" || m == "printf" || m == "sprintf" || m == "say" || m == "put" || m == "note" || m == "Str")) {
+        (m == "printf" || m == "sprintf")) { // format verbs use the joined eigenstates as the FORMAT
         std::string s;
         for (size_t i = 0; i < inv.arr->size(); i++) {
             if (i) s += " ";
@@ -1798,11 +1798,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     }
     // any other method on a junction AUTOTHREADS: call it on each eigenstate,
     // return a junction of the results (`($a & $b).finish`, `$j.defined`, …)
-    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr &&
+    // (a METAMODEL call `.^name`/`.^WHAT`/… answers for the Junction ITSELF and is
+    //  excluded here — `(1 & 2).^name` is "Junction", not a junction of "Int")
+    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr && !(m.size() && m[0] == '^') &&
         (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none")) {
         static const std::set<std::string> junctionOwn = {
             "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
-            "WHICH", "WHY", "item", "new", "defined-or", "THREAD"};
+            "WHICH", "WHY", "item", "new", "defined-or", "THREAD",
+            "defined", "DEFINITE",  // a Junction is itself a defined object
+            "say"};                 // .say gists the junction ("all(1, 2)"); .print autothreads
         if (m == "THREAD" && !args.empty()) {
             // shallow map: the block sees each eigenstate whole (junctions included)
             Value out = Value::array(); out.enumName = inv.enumName;
@@ -8545,7 +8549,7 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             return out;
         }
         if (m == "grep") {
-            Value out = Value::array(); out.isList = true;
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo: .grep is lazy
             if (args.empty()) return out;
             // adverbs: :v values (default), :k indices, :kv, :p pairs
             std::string adv = "v";
@@ -9707,6 +9711,16 @@ void Interpreter::registerBuiltins() {
         return I.ioEmit(out, "$*OUT", false);
     };
     B["put"] = [](Interpreter& I, ValueList& a) -> Value {
+        // a Junction argument AUTOTHREADS the call: `put 1 & 2` writes "1\n2\n"
+        // (unlike `print`, whose per-eigenstate output simply runs together).
+        for (size_t i = 0; i < a.size(); i++) {
+            const Value& j = a[i];
+            if (j.t == VT::Array && j.arr &&
+                (j.enumName == "any" || j.enumName == "all" || j.enumName == "one" || j.enumName == "none")) {
+                for (auto& e : *j.arr) { ValueList a2 = a; a2[i] = e; I.callBuiltin("put", a2); }
+                return Value::boolean(true);
+            }
+        }
         std::string out; for (auto& v : a) out += I.strOf(v); out += "\n";
         return I.ioEmit(out, "$*OUT", false);
     };
