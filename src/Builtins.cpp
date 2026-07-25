@@ -7503,6 +7503,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // before the regex (`.subst(:g, /re/, repl)`), so we can't assume positions.
     int rxIdx = -1;
     for (size_t i = 0; i < args.size(); i++) if (args[i].t == VT::Regex) { rxIdx = (int)i; break; }
+    // `"abc".match("b")` — a Str needle is a LITERAL pattern, not a regex
+    if (m == "match" && inv.t == VT::Str && inv.hashKind.empty() &&
+        !args.empty() && args[0].t == VT::Str && args[0].hashKind.empty()) {
+        const std::string& subj = inv.s; const std::string& needle = args[0].s;
+        size_t p = subj.find(needle);
+        if (p == std::string::npos) return Value::nil();
+        return Value::matchVal(needle, (long)p, (long)(p + needle.size()));
+    }
     if ((m == "match" || m == "subst" || m == "comb" || m == "split" || m == "contains" || m == "subst-mutate")
         && rxIdx >= 0) {
         std::string subj = inv.toStr();
@@ -11561,6 +11569,27 @@ void Interpreter::registerBuiltins() {
     };
     // indir($path, &code) — run the block with the process directory changed,
     // then put it back however the block exits
+    // uniparse("LATIN SMALL LETTER A") — the inverse of .uniname. A comma-
+    // separated list of names yields one character each.
+    B["uniparse"] = [](Interpreter&, ValueList& a) -> Value {
+        std::string out;
+        for (auto& v : a) {
+            std::string spec = v.toStr(), cur;
+            auto emit = [&](std::string nm) {
+                // trim
+                size_t b = nm.find_first_not_of(" \t"), e = nm.find_last_not_of(" \t");
+                if (b == std::string::npos) return;
+                nm = nm.substr(b, e - b + 1);
+                int32_t cp = uniCharByName(nm);
+                if (cp < 0) throw RakuError{Value::typeObj("X::Str::InvalidCharName"),
+                                            "Unrecognized character name [" + nm + "]"};
+                out += cpToU8((uint32_t)cp);
+            };
+            for (char c : spec) { if (c == ',') { emit(cur); cur.clear(); } else cur += c; }
+            emit(cur);
+        }
+        return Value::str(out);
+    };
     B["indir"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return Value::any();
         std::string to = a[0].toStr();

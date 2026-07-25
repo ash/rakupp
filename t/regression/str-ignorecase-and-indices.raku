@@ -33,4 +33,17 @@ check("banana".indices("ana", :overlap).raku, '(1, 3)', 'indices-overlap');
 # a multi-byte prefix must not shift the answers
 check("Ünïcödé ïs fun".indices("ï").raku, '(2, 8)', 'indices-are-characters-not-bytes');
 
+# `.match` with a STRING needle matches it literally (not as a regex)
+check("abc".match("b").Str,   'b',     'match-with-a-string-needle');
+check("abc".match("b").^name, 'Match', 'match-string-returns-a-Match');
+check("abc".match("z").^name, 'Nil',   'match-string-misses-give-Nil');
+check("abcabc".match("bc").from, '1',  'match-string-reports-its-position');
+check("abc".match(/b/).Str,   'b',     'match-with-a-regex-still-works');
+
+# uniparse — the inverse of .uniname
+check(uniparse('LATIN SMALL LETTER A'),      'a',  'uniparse');
+check(uniparse('GREEK SMALL LETTER ALPHA'),  'α',  'uniparse-non-ascii');
+check(uniparse('LATIN SMALL LETTER A, LATIN SMALL LETTER B'), 'ab', 'uniparse-comma-list');
+check(uniparse('LATIN SMALL LETTER A').uniname, 'LATIN SMALL LETTER A', 'uniparse-round-trips');
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }
