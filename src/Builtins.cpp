@@ -95,7 +95,8 @@ static std::string lubType(const std::string& a, const std::string& b) {
 // multithreaded process); only the poll/read/reap loop runs GIL-free.
 static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
                          std::string& out, int& exitCode, bool& timedout,
-                         Interpreter* gil = nullptr, std::string* errOut = nullptr) {
+                         Interpreter* gil = nullptr, std::string* errOut = nullptr,
+                         const std::string& cwd = "") {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
@@ -121,7 +122,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     si.hStdError = errOut ? errW : nul;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
-    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
     CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (!started) { CloseHandle(outR); if (errR) CloseHandle(errR); return; }
     bool parked = gil ? gil->gilPark() : false;
@@ -174,6 +175,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         else { int devnull = open("/dev/null", O_WRONLY); if (devnull >= 0) dup2(devnull, STDERR_FILENO); }
         close(pipefd[0]); close(pipefd[1]);
         if (errOut) { close(errfd[0]); close(errfd[1]); }
+        if (!cwd.empty()) { if (::chdir(cwd.c_str()) != 0) _exit(126); }
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
@@ -248,7 +250,7 @@ static void spawnWithInput(const std::vector<std::string>& argv, const std::stri
     si.hStdInput = inR; si.hStdOutput = outW; si.hStdError = nul;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
-    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
     CloseHandle(inR); CloseHandle(outW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (!started) { CloseHandle(inW); CloseHandle(outR); return; }
     bool parked = gil ? gil->gilPark() : false;
@@ -405,10 +407,17 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     std::vector<std::string> argv;
     if (proc.hash->count("argv")) for (auto& x : *(*proc.hash)["argv"].arr) argv.push_back(x.toStr());
     std::string out; int code; bool timedout;
-    spawnCapture(argv, timeoutSec, out, code, timedout, this);
+    std::string cwd;
+    { auto c = promise.hash->find("cwd"); if (c != promise.hash->end()) cwd = c->second.toStr(); }
+    spawnCapture(argv, timeoutSec, out, code, timedout, this, nullptr, cwd);
     auto taps = proc.hash->find("taps");
     if (taps != proc.hash->end() && taps->second.arr)
-        for (auto& cb : *taps->second.arr) { ValueList ca{Value::str(out)}; callCallable(cb, ca); }
+        for (auto& cb : *taps->second.arr) {
+            Value chunk = Value::str(out);
+            chunk.hashKind = "Blob"; // stdout(:bin) taps get bytes (Buf.append needs a Blob)
+            ValueList ca{chunk};
+            callCallable(cb, ca);
+        }
     (*proc.hash)["exitcode"] = Value::integer(code);
     (*proc.hash)["timedout"] = Value::boolean(timedout);
     (*promise.hash)["status"] = Value::str(timedout ? "Broken" : "Kept");
@@ -2816,6 +2825,10 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         auto it = widths.find(inv.s);
         if (it != widths.end()) return Value::integer(it->second);
     }
+    // Instant.DateTime — an Instant is posix seconds (tagged Num); build the
+    // DateTime from it (zef: `now.DateTime.earlier(:hours(N)).Instant`).
+    if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric())
+        return methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(inv.toNum())});
     if (inv.t == VT::Type && inv.s == "Instant" && m == "from-posix") {
         // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
         return Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
@@ -3228,15 +3241,35 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "new") {
             Value p = Value::makeHash(); p.hashKind = "Proc::Async";
             Value argv = Value::array();
-            for (auto& x : args) if (x.t != VT::Pair) argv.arr->push_back(x);
+            for (auto& x : args) {
+                if (x.t == VT::Pair) continue; // :w / :enc etc.
+                // a Positional arg flattens into the command list (slurpy semantics):
+                // zef's zrun-async passes ONE list — `Proc::Async.new((|@_).grep(…))`
+                if (x.t == VT::Array && x.arr && !x.itemized)
+                    for (auto& e : *x.arr) argv.arr->push_back(e);
+                else argv.arr->push_back(x);
+            }
             (*p.hash)["argv"] = argv; (*p.hash)["taps"] = Value::array();
             return p;
         }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc::Async") {
         if (m == "stdout" || m == "stderr" || m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash)["proc"] = inv; (*s.hash)["stream"] = Value::str(m); return s; }
-        if (m == "start") { Value pr = Value::makeHash(); pr.hashKind = "Promise"; (*pr.hash)["kind"] = Value::str("proc"); (*pr.hash)["proc"] = inv; (*pr.hash)["status"] = Value::str("Planned"); return pr; }
+        if (m == "start") {
+            Value pr = Value::makeHash(); pr.hashKind = "Promise";
+            (*pr.hash)["kind"] = Value::str("proc"); (*pr.hash)["proc"] = inv;
+            (*pr.hash)["status"] = Value::str("Planned");
+            // record :cwd so the (lazy) run happens in the right directory —
+            // zef's tar extract runs `tar -zxvf <basename>` with :cwd(archive dir)
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "cwd" && a.pairVal)
+                    (*pr.hash)["cwd"] = Value::str(a.pairVal->toStr());
+            return pr;
+        }
         if (m == "kill" || m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
+        // after runProcPromise stored the exit status on the proc:
+        if (m == "exitcode") { auto it = inv.hash->find("exitcode"); return it != inv.hash->end() ? it->second : Value::integer(-1); }
+        if (m == "so" || m == "Bool") { auto it = inv.hash->find("exitcode"); return Value::boolean(it != inv.hash->end() && it->second.toInt() == 0); }
     }
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
         // Supply.Promise: a Promise kept with the LAST value the Supply emits when it
@@ -6098,7 +6131,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         for (auto& a : args) if (a.t == VT::Pair && a.s == "bin" && a.pairVal && a.pairVal->truthy()) v.hashKind = "Blob";
         return v;
     }
-    if (m == "spurt") {
+    if (m == "spurt" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) {
+        // path-spurt; an open IO::Handle's .spurt is handled in the FileHandle
+        // block below (buffer + flush-on-close), not by stringifying the handle
         bool append = false;
         std::string content;
         bool haveContent = false;
@@ -6186,7 +6221,29 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return Value::str(inv.toStr());
     }
-    if (m == "basename") { std::string s = inv.toStr(); auto p = s.find_last_of('/'); return Value::str(p == std::string::npos ? s : s.substr(p + 1)); }
+    if (m == "relative") {
+        // IO::Path.relative($base = $*CWD) — the path expressed relative to $base.
+        // Prefix case only (zef's extractor lists files under the extraction dir);
+        // unrelated paths come back unchanged rather than computed via `..`.
+        std::string p = inv.toStr();
+        std::string base;
+        for (auto& a : args) if (a.t != VT::Pair) { base = a.toStr(); break; }
+        if (base.empty()) { char buf[4096]; base = getcwd(buf, sizeof buf) ? buf : "."; }
+        while (base.size() > 1 && base.back() == '/') base.pop_back();
+        if (p == base) return Value::str(".");
+        if (p.rfind(base + "/", 0) == 0) return Value::str(p.substr(base.size() + 1));
+        return Value::str(p);
+    }
+    if (m == "basename") {
+        // trailing slashes don't count: "/a/b/".basename is "b" (Rakudo; zef's
+        // fez mirror "http://360.zef.pm/" must yield "360.zef.pm", not "")
+        std::string s = inv.toStr();
+        size_t end = s.find_last_not_of('/');
+        if (end == std::string::npos) return Value::str("/"); // all slashes: root
+        s = s.substr(0, end + 1);
+        auto p = s.find_last_of('/');
+        return Value::str(p == std::string::npos ? s : s.substr(p + 1));
+    }
     // ---- more IO::Path methods (operate on the path string) ----
     {
         auto asIO = [](std::string s) { Value v = Value::str(s); v.hashKind = "IO"; return v; };
@@ -6307,6 +6364,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
         // IO::Handle accessors (with defaults); writable via lvalue()
         if (m == "chomp")  { auto it = inv.hash->find("chomp");  return it != inv.hash->end() ? it->second : Value::boolean(true); }
+        // .lock/.unlock (flock): rakupp handles are buffered (no live OS fd), so
+        // there is nothing to flock; report success. Cross-PROCESS exclusion (zef's
+        // lock-file-protect guards concurrent zef runs) is thus not provided — fine
+        // for a single interpreter process, revisit if real fd-backed IO lands.
+        if (m == "lock" || m == "unlock") return Value::boolean(true);
         if (m == "encoding") { auto it = inv.hash->find("encoding"); return it != inv.hash->end() ? it->second : Value::str("utf8"); }
         if (m == "nl-in")  { auto it = inv.hash->find("nl-in");  return it != inv.hash->end() ? it->second : Value::str("\n"); }
         if (m == "nl-out") { auto it = inv.hash->find("nl-out"); return it != inv.hash->end() ? it->second : Value::str("\n"); }
@@ -6386,6 +6448,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                 (*inv.hash)["flushed"] = Value::boolean(true); // exit-flush skips it now
             }
             return Value::boolean(true);
+        }
+        if (m == "spurt") { // IO::Handle.spurt($content) — write through the open handle
+            Value c = args.empty() ? Value::str("") : args[0];
+            (*inv.hash)["buffer"] = Value::str((*inv.hash)["buffer"].toStr() + c.toStr());
+            return Value::boolean(true); // flushed to "path" on .close (zef's spurt-package-list)
         }
         if (m == "slurp") {
             auto cap = inv.hash->find("captured"); // in-memory handle (e.g. Proc.out)
@@ -11257,6 +11324,26 @@ void Interpreter::registerBuiltins() {
                 std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
                 return I.spawnTimerWhenever(secs, blk, ctx);
             }
+            // whenever $proc.start { … } — a lazy Proc::Async promise: the process
+            // runs when the promise is realized (await does the same); run it NOW,
+            // then fire the block once with the finished proc (its .so/.exitcode
+            // reflect the exit status — zef's curl/wget fetch checks `$_.so`).
+            if (s.t == VT::Hash && s.hashKind == "Promise" &&
+                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "proc") {
+                I.runProcPromise(s, 0);
+                Value procv = s.hash->count("proc") ? (*s.hash)["proc"] : s;
+                ValueList one{procv};
+                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
+                Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+            }
+            // whenever over a SETTLED Promise binds the block to its RESULT, not the
+            // promise object. (An unkept one still fires immediately with the object —
+            // the full async react registration is still an open item.)
+            if (s.t == VT::Hash && s.hashKind == "Promise" && s.ext) {
+                auto ps = std::static_pointer_cast<PromiseState>(s.ext);
+                bool done; { std::lock_guard<std::mutex> lk(ps->m); done = ps->done; }
+                if (done) { ValueList one{ps->result}; return I.callCallable(blk, one); }
+            }
             // whenever over a Promise/plain value: run the block once with it
             ValueList one{s}; return I.callCallable(blk, one);
         }
@@ -11652,14 +11739,44 @@ void Interpreter::registerBuiltins() {
             std::string kind = p.hash->count("kind") ? (*p.hash)["kind"].toStr() : "";
             if (kind == "anyof" || kind == "allof") {
                 double timeout = 0; Value* procP = nullptr;
+                std::vector<std::shared_ptr<PromiseState>> pss; // start/spawn promises in the combinator
+                std::vector<Value*> psvals;
                 if (p.hash->count("promises")) for (auto& q : *(*p.hash)["promises"].arr) {
                     if (q.t == VT::Hash && q.hashKind == "Promise") {
                         std::string k = q.hash->count("kind") ? (*q.hash)["kind"].toStr() : "";
                         if (k == "timer") timeout = (*q.hash)["seconds"].toNum();
                         else if (k == "proc") procP = &q;
+                        else if (q.ext) { pss.push_back(std::static_pointer_cast<PromiseState>(q.ext)); psvals.push_back(&q); }
                     }
                 }
                 if (procP) I.runProcPromise(*procP, timeout);
+                // WAIT for the member start-promises — anyof: until ANY settles (a
+                // timer member is the deadline); allof: until EVERY one settles.
+                // (They were ignored before, so `await Promise.anyof: $todo, $time-up`
+                // returned at t=0 with $todo still Planned — zef's fetch timeout wrap.)
+                if (!pss.empty()) {
+                    auto anyDone = [&]() {
+                        for (auto& ps : pss) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) return true; }
+                        return false;
+                    };
+                    if (kind == "allof") {
+                        for (auto& ps : pss) I.awaitPromise(ps);
+                    } else {
+                        auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                std::chrono::duration<double>(timeout > 0 ? timeout : 3600));
+                        while (!anyDone() && std::chrono::steady_clock::now() < deadline)
+                            I.sleepYield(0.01); // GIL released so the workers can run
+                    }
+                    // reflect settled members onto their hashes so `.so`/`.status` read true
+                    for (size_t i = 0; i < pss.size(); i++) {
+                        std::lock_guard<std::mutex> lk(pss[i]->m);
+                        if (pss[i]->done && psvals[i]->hash) {
+                            (*psvals[i]->hash)["status"] = Value::str(pss[i]->broken ? "Broken" : "Kept");
+                            if (!pss[i]->broken) (*psvals[i]->hash)["result"] = pss[i]->result;
+                        }
+                    }
+                }
                 (*p.hash)["status"] = Value::str("Kept");
                 return p;
             }

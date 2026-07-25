@@ -116,7 +116,8 @@ Regex::NodePtr Regex::parseSeq() {
         skipWs();
         bool hadSpace = pos_ > before;
         char c = peek();
-        if (eof() || c == '|' || c == '&' || c == ')' || c == ']' ||
+        if (eof() || c == '|' || c == '&' || c == ']' ||
+            (c == ')' && peek(1) != '>') ||
             (assertDepth_ > 0 && c == '>')) {
             // sigspace: TRAILING whitespace in a rule also matches <.ws> —
             // `rule TOP { \w+ '=' \N* }` accepts the line's trailing newline
@@ -221,6 +222,19 @@ Regex::NodePtr Regex::parseQuant() {
         if (peek() == '%') { pos_++; rep->sepTrail = true; } // %%: trailing separator allowed
         skipWs();
         NodePtr sep = parseAtom();
+        // the separator may itself be quantified: `X* %% ['\\' . ]+` (zef's
+        // identity value-regex). One level, no nested separators.
+        if (peek() == '+' || peek() == '*' || peek() == '?') {
+            auto srep = std::make_unique<Node>();
+            srep->k = K::Rep;
+            srep->min = peek() == '+' ? 1 : 0;
+            srep->max = peek() == '?' ? 1 : -1;
+            srep->greedy = true;
+            pos_++;
+            if (peek() == '?') { srep->greedy = false; pos_++; }
+            srep->kids.push_back(std::move(sep));
+            sep = std::move(srep);
+        }
         if (sigspace_) {
             // In a `rule`, whitespace around the separator is significant: `<x>* %% ','`
             // must match `a, b` (space after the comma). Wrap the separator in `\s*`.
@@ -241,6 +255,10 @@ static std::string ruleFlag(const std::string& nm); // built-in rule → classMa
 Regex::NodePtr Regex::parseAtom() {
     skipWs();
     char c = peek();
+    if (c == ')' && peek(1) == '>') { // `)>` — match-capture end (pairs with `<(`)
+        pos_ += 2;
+        auto n = std::make_unique<Node>(); n->k = K::CapEnd; return n;
+    }
     if (c == '{') { // bare code block { … } — execute for side effects, zero-width
         int depth = 1; pos_++;
         std::string code;
@@ -449,23 +467,53 @@ Regex::NodePtr Regex::parseAtom() {
         }
         else if (peek() == '-' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '.' || peek(1) == '_')) {
             // <-name> — negated subrule char class: one char NOT matched by rule `name`.
-            // Equivalent to `[ <!name> . ]`.
+            // Equivalent to `[ <!name> . ]`. COMPOSABLE with further set terms:
+            // `<-restricted +name-sep>` (zef's identity grammar) is
+            //   [ <name-sep> | <!restricted> . ]
+            // — each `+rule` adds a positive alternative, each `-rule` another
+            // negative lookahead on the fallback any-char branch.
             pos_++;
             if (peek() == '.') pos_++;
-            std::string nm; while (!eof() && peek() != '>' && peek() != '(') nm += pat_[pos_++];
+            auto readName = [&]() {
+                std::string nm;
+                while (!eof() && (std::isalnum((unsigned char)peek()) || peek() == '-' || peek() == '_' || peek() == ':' || peek() == '.')) {
+                    // a '-' is part of a kebab-case name only between ident chars
+                    if (peek() == '-' && !(std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) break;
+                    nm += pat_[pos_++];
+                }
+                return nm;
+            };
+            std::vector<std::string> negs{readName()};
+            std::vector<std::string> poss;
             std::string args;
             if (peek() == '(') { int d = 1; pos_++; while (!eof() && d > 0) { char x = pat_[pos_++]; if (x == '(') d++; else if (x == ')') { d--; if (!d) break; } args += x; } }
+            for (;;) {
+                while (!eof() && (peek() == ' ' || peek() == '\t')) pos_++;
+                if (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { pos_++; poss.push_back(readName()); }
+                else if (peek() == '-' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { pos_++; negs.push_back(readName()); }
+                else break;
+            }
             if (peek() == '>') pos_++;
-            auto sub = std::make_unique<Node>();
-            sub->k = K::Subrule; sub->ruleName = nm; sub->ruleArgs = args; sub->ruleCapture = false;
-            auto look = std::make_unique<Node>();
-            look->k = K::Look; look->negate = true; look->behind = false;
-            look->kids.push_back(std::move(sub));
+            auto mkSubN = [&](const std::string& n, bool cap) {
+                auto s = std::make_unique<Node>();
+                s->k = K::Subrule; s->ruleName = n; s->ruleCapture = cap;
+                if (n == negs[0]) s->ruleArgs = args;
+                return s;
+            };
+            auto fall = std::make_unique<Node>(); fall->k = K::Seq; // <!neg1> <!neg2> … .
+            for (auto& n : negs) {
+                auto look = std::make_unique<Node>();
+                look->k = K::Look; look->negate = true; look->behind = false;
+                look->kids.push_back(mkSubN(n, false));
+                fall->kids.push_back(std::move(look));
+            }
             auto any = std::make_unique<Node>(); any->k = K::Any;
-            auto seq = std::make_unique<Node>(); seq->k = K::Seq;
-            seq->kids.push_back(std::move(look));
-            seq->kids.push_back(std::move(any));
-            return seq;
+            fall->kids.push_back(std::move(any));
+            if (poss.empty()) return fall;
+            auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true;
+            for (auto& p : poss) altN->kids.push_back(mkSubN(p, false)); // positives first: '::' beats not-':'
+            altN->kids.push_back(std::move(fall));
+            return altN;
         }
         else if (peek() == '?' || peek() == '!') {
             // zero-width assertion: <?before P> / <!before P> / <?after P> / <!after P>
@@ -1058,7 +1106,7 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
             return n->kids.empty() ? std::make_pair(0L, 0L) : nodeWidth(n->kids.back().get(), st);
         case K::Group: return nodeWidth(n->kids[0].get(), st);
         case K::AnchorStart: case K::AnchorEnd: case K::WBLeft: case K::WBRight:
-        case K::Nop: case K::Code: case K::Look: case K::CapStart:
+        case K::Nop: case K::Code: case K::Look: case K::CapStart: case K::CapEnd:
             return {0, 0};
         case K::Subrule:
             if (st.grammar) {
@@ -1080,6 +1128,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
     switch (n->k) {
         case K::Nop: return k(pos);
         case K::CapStart: { st.capFrom = pos; return k(pos); } // `<(`: zero-width, marks the .Str start
+        case K::CapEnd:   { st.capTo   = pos; return k(pos); } // `)>`: zero-width, marks the .Str end
         case K::Look: {
             // zero-width assertion — match the inner in an isolated capture state
             const Node* child = n->kids.empty() ? nullptr : n->kids[0].get();
@@ -1352,10 +1401,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         }
         case K::Alt: {
             if (n->firstMatch) { // `||` — try branches in order, first that satisfies k wins
-                long cf0 = st.capFrom, fc0 = st.firstCode;
+                long cf0 = st.capFrom, ct0 = st.capTo, fc0 = st.firstCode;
                 for (auto& kid : n->kids) {
                     if (matchNode(kid.get(), st, pos, k)) return true;
-                    st.capFrom = cf0; st.firstCode = fc0; // roll back a failed branch's <( / firstCode
+                    st.capFrom = cf0; st.capTo = ct0; st.firstCode = fc0; // roll back a failed branch's <( )> / firstCode
                 }
                 return false;
             }
@@ -1372,7 +1421,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             auto savedCaps = st.caps; auto savedNamed = st.named;
             auto savedSubs = st.subs; auto savedChildren = st.children;
             auto savedReps = st.capReps;
-            long savedCapFrom = st.capFrom, savedFirstCode = st.firstCode;
+            long savedCapFrom = st.capFrom, savedCapTo = st.capTo, savedFirstCode = st.firstCode;
             std::vector<std::pair<long, size_t>> order; // (greedy end, branch index)
             for (size_t i = 0; i < n->kids.size(); i++) {
                 long e0 = -1;
@@ -1382,7 +1431,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             st.caps = std::move(savedCaps); st.named = std::move(savedNamed);
             st.subs = std::move(savedSubs); st.children = std::move(savedChildren);
             st.capReps = std::move(savedReps);
-            st.capFrom = savedCapFrom; st.firstCode = savedFirstCode;
+            st.capFrom = savedCapFrom; st.capTo = savedCapTo; st.firstCode = savedFirstCode;
             if (snap && st.hooks->restoreState) st.hooks->restoreState(snap);
             std::stable_sort(order.begin(), order.end(),
                              [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -1545,7 +1594,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
         long endPos = -1;
         try {
             if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
-                out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = endPos;
+                out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = st.capTo >= 0 ? st.capTo : endPos;
                 out.caps = st.caps; out.named = st.named; out.subs = st.subs;
                 out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
                 return true;
@@ -1571,7 +1620,7 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
             // engine to keep backtracking, so EVERY reachable end is enumerated.
             matchNode(root_.get(), st, start, [&](long e) -> bool {
                 RxMatch out;
-                out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = e;
+                out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = st.capTo >= 0 ? st.capTo : e;
                 out.caps = st.caps; out.named = st.named; out.subs = st.subs;
                 out.children = st.children; out.capReps = st.capReps;
                 out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
@@ -1592,7 +1641,7 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
     long endPos = -1;
     try {
         if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
-            out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = endPos;
+            out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = st.capTo >= 0 ? st.capTo : endPos;
             out.caps = st.caps; out.named = st.named; out.subs = st.subs;
             out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
             return true;

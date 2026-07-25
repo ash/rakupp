@@ -128,7 +128,7 @@ public:
     const GrammarHooks* runHooks = nullptr;
 
 private:
-    enum class K { Lit, Any, Class, Seq, Alt, Conj, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart };
+    enum class K { Lit, Any, Class, Seq, Alt, Conj, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart, CapEnd };
     struct Node {
         K k;
         std::string lit;                 // Lit
@@ -218,6 +218,7 @@ public:
         std::map<int, std::vector<std::pair<long, long>>> capReps; // list-valued positional capture occurrences
         long startPos = 0;                                 // where this frame's match began (for $/ in code assertions)
         long capFrom = -1;                                 // `<(` capture-start position (overall match .from), -1 = none
+        long capTo = -1;                                   // `)>` capture-end position (overall match .to), -1 = none
         const GrammarHooks* hooks = nullptr;               // interpreter callbacks (null = lenient/no runtime eval)
         const std::string* curSym = nullptr;               // proto candidate's sym value, so `<sym>` matches it
         long firstCode = -1;                               // string pos at the first bare `{…}` block (ends the LTM declarative prefix)

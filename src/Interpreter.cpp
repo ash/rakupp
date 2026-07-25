@@ -2428,15 +2428,26 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // $*PROGRAM.parent(2).add("packages/Test-Helpers")`), so try `<base>/lib/` too —
     // this is the common case Rakudo resolves via META6.json.
     static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    if (std::getenv("RAKUPP_TRACE")) {
+        std::cerr << "[LibPaths]"; for (auto& b : libPaths_) std::cerr << " [" << b << "]"; std::cerr << "\n";
+    }
     for (auto& base : libPaths_) {
         for (const std::string& dir : {base, base + "/lib"}) {
             for (auto ext : exts) {
                 std::ifstream in(dir + "/" + rel + ext);
                 if (!in) continue;
+                if (std::getenv("RAKUPP_TRACE"))
+                    std::cerr << "[Load] " << name << " <- source " << dir << "/" << rel << ext << "\n";
                 std::ostringstream ss; ss << in.rdbuf();
-                // Bind %?RESOURCES from the source checkout's META6 (the dist root is
-                // `base`; when we matched `base/lib` it's still `base`). Pop after load.
-                resourceStack_.push_back(buildSourceResourceMap(base));
+                // Bind %?RESOURCES from the source checkout's META6. The dist root is
+                // the parent of the lib dir that matched: for `-I <root>` we matched
+                // `<root>/lib/...` (root = base), for the default cwd `lib` entry we
+                // matched `lib/...` (root = "."). Pop after load.
+                std::string distRoot = dir;
+                if (distRoot == "lib") distRoot = ".";
+                else if (distRoot.size() > 4 && distRoot.compare(distRoot.size() - 4, 4, "/lib") == 0)
+                    distRoot = distRoot.substr(0, distRoot.size() - 4);
+                resourceStack_.push_back(buildSourceResourceMap(distRoot));
                 struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
                 loadSource(ss.str());
                 return;
@@ -2459,6 +2470,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (lines.size() < 4 || lines[3].empty()) continue; // line 4 = source SHA
         std::ifstream src(repo + "/sources/" + lines[3]);
         if (!src) continue;
+        if (std::getenv("RAKUPP_TRACE"))
+            std::cerr << "[Load] " << name << " <- installed " << repo << " dist=" << entry << "\n";
         std::ostringstream ss; ss << src.rdbuf();
         // Bind %?RESOURCES for this module (the short-index filename is its dist
         // id) so BEGIN-time `%?RESOURCES<x>.slurp` resolves. Pop after loading.
@@ -7053,8 +7066,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (!ve->name.empty()) sigil = ve->name[0];
-        // `state $x = INIT` initializes ONCE: if already set from a prior call, skip re-init
-        if (a->op == "=" && ve->declare && ve->declScope == "state" && tctx_.curStateEnv && tctx_.curStateEnv->vars.count(ve->name))
+        // `state $x = INIT` initializes ONCE: if already set from a prior call, skip re-init.
+        // EXCEPT the anonymous `$`: `$ = EXPR` is a plain ASSIGNMENT to an anonymous
+        // state slot, re-run on every evaluation (zef's `::($ = $module)` idiom relies
+        // on it; only the slot persists — for `$++`-style counters).
+        if (a->op == "=" && ve->declare && ve->declScope == "state" && tctx_.curStateEnv && tctx_.curStateEnv->vars.count(ve->name) &&
+            ve->name.rfind("$anon--state--", 0) != 0)
             return tctx_.curStateEnv->vars[ve->name];
     }
 
@@ -11897,6 +11914,23 @@ Value Interpreter::evalCall(Call* c) {
             }
         }
         if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args, &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        // sub-form container mutators AUTOVIVIFY their first argument's slot:
+        // `push %h{$k}, $dist` fills the slot with an Array and appends (Rakudo
+        // semantics; zef's ecosystem short-name index is built exactly this way).
+        // A bound @array first-arg already worked (shared storage); a hash/array
+        // ELEMENT evaluated to a detached Any and the push vanished.
+        if ((c->name == "push" || c->name == "append" ||
+             c->name == "unshift" || c->name == "prepend") &&
+            !c->args.empty() && !args.empty() &&
+            c->args[0]->kind == NK::Index && args[0].t != VT::Array) {
+            if (Value* lv = lvalue(c->args[0].get())) {
+                if (lv->t == VT::Any || lv->t == VT::Nil) *lv = Value::array();
+                if (lv->t == VT::Array) {
+                    ValueList rest(args.begin() + 1, args.end());
+                    return methodCall(*lv, c->name, rest);
+                }
+            }
+        }
         auto it = builtins_.find(c->name);
         if (it != builtins_.end()) return it->second(*this, args);
         // enum-type coercion: `Color(1)` -> the enum value whose number is 1
