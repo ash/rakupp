@@ -2745,8 +2745,15 @@ ExprPtr Parser::parsePrimary() {
             if (t.text == "\\") { // capture: \(…) builds a Capture (assoc-indexable); bare \x itemizes
                 advance();
                 if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                    // the capture is exactly the PARENTHESISED group — parsing a
+                    // full prefix here would swallow the postfix too, making
+                    // `\(1,2).list` a capture OF `(1,2).list`
+                    advance(); // (
                     auto u = std::make_unique<Unary>();
-                    u->op = "capture"; u->operand = parsePrefix(true);
+                    u->op = "capture";
+                    if (isKind(Tok::RParen)) u->operand = std::make_unique<ListExpr>();
+                    else u->operand = parseExpression();
+                    expectKind(Tok::RParen, ")");
                     return u; // caller's parsePostfix attaches any postfixes
                 }
                 return parsePrefix();

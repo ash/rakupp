@@ -581,6 +581,37 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             std::vector<std::string> keys;
             if (v.hash) for (auto& kv : *v.hash) keys.push_back(kv.first);
             std::sort(keys.begin(), keys.end());
+            // A QuantHash renders as the expression that rebuilds it, not as a
+            // Hash literal: the weighted kinds as a pair list coerced to the
+            // kind, the Set family as a constructor over their elements, and a
+            // Map as Map.new((…)).
+            if (v.hashKind == "Set" || v.hashKind == "SetHash") {
+                std::string o = v.hashKind + ".new("; bool f = true;
+                for (auto& k : keys) { if (!f) o += ","; f = false; o += rakuStrLit(k); }
+                if (v.hash) seen.erase(v.hash.get());
+                return o + ")";
+            }
+            if (v.hashKind == "Bag" || v.hashKind == "BagHash" ||
+                v.hashKind == "Mix" || v.hashKind == "MixHash") {
+                std::string o = "("; bool f = true;
+                for (auto& k : keys) {
+                    if (!f) o += ","; f = false;
+                    o += rakuStrLit(k) + "=>" + rakuRepr(v.hash->at(k), depth + 1, seen);
+                }
+                if (v.hash) seen.erase(v.hash.get());
+                return o + ")." + v.hashKind;
+            }
+            if (v.hashKind == "Map") {
+                std::string o = "Map.new(("; bool f = true;
+                for (auto& k : keys) {
+                    if (!f) o += ","; f = false;
+                    Value val = v.hash->at(k);
+                    o += rakuIdentKey(k) ? ":" + k + "(" + rakuRepr(val, depth + 1, seen) + ")"
+                                         : rakuStrLit(k) + " => " + rakuRepr(val, depth + 1, seen);
+                }
+                if (v.hash) seen.erase(v.hash.get());
+                return o + "))";
+            }
             std::string o = "{"; bool first = true;
             for (auto& k : keys) {
                 if (!first) o += ", "; first = false;
@@ -5930,7 +5961,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         std::complex<double> z(inv.n, inv.im);
         if (m == "re" || m == "Real") return Value::number(inv.n);
         if (m == "im") return Value::number(inv.im);
-        if (m == "reals") return Value::array({Value::number(inv.n), Value::number(inv.im)});
+        if (m == "reals") { Value o = Value::array({Value::number(inv.n), Value::number(inv.im)});
+                            o.isList = true; return o; } // a List, not an Array
         if (m == "abs" || m == "magnitude") return Value::number(std::abs(z));
         if (m == "conj") return Value::complex(inv.n, -inv.im);
         if (m == "sqrt") { auto r = std::sqrt(z); return Value::complex(r.real(), r.imag()); }
@@ -9270,7 +9302,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 start = std::max(0L, std::min(start, n));
                 long count = args.size() > 1 ? args[1].toInt() : (n - start);
                 count = std::max(0L, std::min(count, n - start));
-                Value removed = Value::array(); removed.isList = true;
+                Value removed = Value::array(); // the removed elements are an Array
                 for (long k = 0; k < count; k++) removed.arr->push_back((*inv.arr)[start + k]);
                 ValueList repl;
                 for (size_t k = 2; k < args.size(); k++) for (auto& x : toList(args[k])) repl.push_back(x);
