@@ -2296,7 +2296,7 @@ Value Interpreter::buildSourceResourceMap(const std::string& distRoot) {
     return h;
 }
 
-void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport) {
+void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet) {
     if (loadedModules_.count(name)) return;
     noteSymbolMutation("module load (use/need)");
     loadedModules_.insert(name);
@@ -2489,7 +2489,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         "NativeCall",  // its `is native` FFI is handled natively by the compiler
     };
     bool versionLit = name.size() >= 2 && name[0] == 'v' && std::isdigit((unsigned char)name[1]);
-    if (!pragmas.count(name) && !versionLit)
+    if (!pragmas.count(name) && !versionLit && !quiet)
         std::cerr << "===WARNING=== Could not find module '" << name << "' (use ignored)\n";
 }
 
@@ -2672,11 +2672,13 @@ void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "LAST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
-void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts) {
-    // reverse source order
+void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok) {
+    // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
+    // UNDO only when it isn't; LEAVE always. (Firing both made zef log
+    // "Updated <mirror>" and "Failed to update <mirror>" for the same fetch.)
     std::vector<Block*> leaves;
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO") leaves.push_back(b); }
+        if (b->phaser == "LEAVE" || (ok ? b->phaser == "KEEP" : b->phaser == "UNDO")) leaves.push_back(b); }
     // A LEAVE/KEEP/UNDO phaser body runs to completion even though the block is
     // leaving via a cooperative return/next/last — those flags belong to the
     // OUTER control flow. Save and clear them around each phaser so execBlock's
@@ -2758,7 +2760,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                 catch (RakuError& e) {
                     int r = runCatch(e);
                     if (r == 1) continue;                // .resume → next statement
-                    runLeavePhasers(b->stmts);
+                    runLeavePhasers(b->stmts, /*ok=*/false);
                     if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
                         for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
                         tctx_.cur->letRestores.clear();
@@ -2774,7 +2776,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             if (tctx_.returning || tctx_.loopCtl) break; // cooperative return/next/last unwinds native blocks
         }
     } catch (RakuError& e) {
-        runLeavePhasers(b->stmts);
+        runLeavePhasers(b->stmts, /*ok=*/false);
         // `let`-saved containers restore only on this UNSUCCESSFUL exit
         if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
             for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
@@ -2784,7 +2786,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         tctx_.cur = saved;
         throw;
     } catch (...) {
-        runLeavePhasers(b->stmts);
+        runLeavePhasers(b->stmts, /*ok=*/false);
         if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
             for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
             tctx_.cur->letRestores.clear();
@@ -6304,11 +6306,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 for (auto& s : catchBlk->stmts) exec(s.get());
             } catch (BreakGivenEx&) { matched = true; /* a when/default matched */ }
             catch (ResumeEx&) { matched = true; /* .resume: absorbed; body can't re-enter, treat as handled */ }
-            catch (...) { if (c.body) runLeavePhasers(*c.body); restore(); throw; } // die/rethrow from CATCH
+            catch (...) { if (c.body) runLeavePhasers(*c.body, /*ok=*/false); restore(); throw; } // die/rethrow from CATCH
             // Only a matching when/default handles the exception (R1): a CATCH
             // whose clauses matched none — or with no clauses at all — rethrows.
             if (!matched) {
-                if (c.body) runLeavePhasers(*c.body);
+                if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
                 runLetRestoresOf(tctx_.cur);
                 tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
                 throw;
@@ -6320,7 +6322,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             if (isRoutine && tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
             return Value::nil();
         }
-        if (c.body) runLeavePhasers(*c.body);
+        if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
         runLetRestoresOf(tctx_.cur); // unsuccessful exit
         tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
         throw;
@@ -6329,7 +6331,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
         return le.hasVal ? le.v : Value::nil(); // `leave` exits this block with its value
     } catch (...) {
-        if (c.body) runLeavePhasers(*c.body);
+        if (c.body) runLeavePhasers(*c.body, /*ok=*/false);
         runLetRestoresOf(tctx_.cur); // unsuccessful exit
         tctx_.cur = saved; tctx_.curStateEnv = savedState; tctx_.dynStack.pop_back();
         throw;
@@ -11308,7 +11310,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (name.empty())
             throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
                             "require: empty module name"};
-        loadModule(name, {}, /*doImport=*/true);
+        loadModule(name, {}, /*doImport=*/true, /*quiet=*/true);
         // success = the name now resolves to a class/module type. (loadedModules_
         // is registered unconditionally at loadModule entry, so it can't signal
         // success; requiring the type covers zef's plugins and typical modules,

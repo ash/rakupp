@@ -1929,14 +1929,18 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                       std::shared_ptr<const ChildMap> kids,
                       std::shared_ptr<const std::set<std::string>> listNames,
                       std::shared_ptr<const std::set<int>> listCaps = nullptr,
-                      std::shared_ptr<const std::map<int, std::vector<std::pair<long,long>>>> capReps = nullptr) -> bool {
+                      std::shared_ptr<const std::map<int, std::vector<std::pair<long,long>>>> capReps = nullptr,
+                      long capFrom = -1, long capTo = -1) -> bool {
         if (capKey.empty()) return k(end);
-        ParseNode pn; pn.name = name; pn.from = pos; pn.to = end;
+        // `<( … )>` in the rule body trims what the CAPTURE reports; the parse
+        // still continues at the real end.
+        long cf = capFrom >= 0 ? capFrom : pos, ct = capTo >= 0 ? capTo : end;
+        ParseNode pn; pn.name = name; pn.from = cf; pn.to = ct;
         pn.caps = caps; pn.named = named; pn.kids = std::move(kids);
         pn.listNames = std::move(listNames);
         pn.listCaps = std::move(listCaps); pn.capReps = std::move(capReps);
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
-        st.named[capKey] = {pos, end};
+        st.named[capKey] = {cf, ct};
         st.children[capKey].push_back(std::move(pn)); // collate repeated captures into a list
         if (k(end)) return true;
         st.children[capKey].pop_back();               // backtrack: drop this occurrence
@@ -1965,7 +1969,8 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                 const MemoEntry& me = mit->second;
                 candDeclEnd_ = me.declEnd;
                 candLitPrefix_ = me.litPrefix;
-                return record(me.end, me.caps, me.named, me.kids, me.listNames, me.listCaps, me.capReps);
+                return record(me.end, me.caps, me.named, me.kids, me.listNames, me.listCaps, me.capReps,
+                              me.capFrom, me.capTo);
             }
         }
         std::map<std::string, std::string> bound;
@@ -1985,6 +1990,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         me.listCaps = re->listCapsPtr();
         re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
             me.matched = true; me.end = end;
+            me.capFrom = sub.capFrom; me.capTo = sub.capTo; // rule-body `<( … )>`
             me.declEnd = (sub.firstCode >= 0 ? sub.firstCode : end);
             me.litPrefix = (sub.litPrefix >= 0 ? sub.litPrefix - pos : 0);
             me.caps = sub.caps; me.named = sub.named;
@@ -2001,13 +2007,15 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             if (!me.matched) return false;
             candDeclEnd_ = me.declEnd;
             candLitPrefix_ = me.litPrefix;
-            return record(me.end, me.caps, me.named, me.kids, me.listNames, me.listCaps, me.capReps);
+            return record(me.end, me.caps, me.named, me.kids, me.listNames, me.listCaps, me.capReps,
+                              me.capFrom, me.capTo);
         }
         auto& slot = (memo_[mkey] = std::move(me));
         if (!slot.matched) return false;
         candDeclEnd_ = slot.declEnd;
         candLitPrefix_ = slot.litPrefix;
-        return record(slot.end, slot.caps, slot.named, slot.kids, slot.listNames, slot.listCaps, slot.capReps);
+        return record(slot.end, slot.caps, slot.named, slot.kids, slot.listNames, slot.listCaps, slot.capReps,
+                      slot.capFrom, slot.capTo);
     }
 
     // non-ratchet `regex`: thread `k` through so the caller can backtrack into the callee
@@ -2034,7 +2042,8 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                              sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children),
                              re->listNamesPtr(), re->listCapsPtr(),
                              sub.capReps.empty() ? nullptr
-                               : std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps)));
+                               : std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps),
+                             sub.capFrom, sub.capTo)); // rule-body `<( … )>` trims the capture
     });
     if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
     scope_.pop_back();

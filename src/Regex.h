@@ -289,6 +289,8 @@ public:
         long end = 0;
         long declEnd = 0; // string pos where the LTM declarative prefix ends (first bare code block, else end)
         long litPrefix = 0; // length of the leading literal-atom run (LTM specificity tie-break)
+        long capFrom = -1, capTo = -1; // the rule body's `<( … )>` span (-1 = none): the
+                                       // CAPTURE is trimmed to it, while matching continues at `end`
         std::vector<std::pair<long, long>> caps;
         std::map<std::string, std::pair<long, long>> named;
         std::shared_ptr<const ChildMap> kids; // frozen once; replays share, never copy

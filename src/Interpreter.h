@@ -354,11 +354,17 @@ public:
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
     void runFirstPhasers(const std::vector<StmtPtr>& stmts); // FIRST once before a loop's first iteration
     void runLastPhasers(const std::vector<StmtPtr>& stmts);  // LAST once after a loop's last iteration
-    void runLeavePhasers(const std::vector<StmtPtr>& stmts); // LEAVE/KEEP/UNDO at block exit (reverse order)
+    // LEAVE/KEEP/UNDO at block exit (reverse order). `ok` selects which conditional
+    // phasers fire: LEAVE always, KEEP only on a successful exit, UNDO only on an
+    // unsuccessful one (an exception / control exception leaving the block).
+    void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
     bool suppressLoopFirst_ = false; // set while running a loop body so execBlock skips FIRST
     Value evalString(const std::string& src, bool mainlinePH = false); // EVAL
-    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true);  // `use Foo::Bar` -> compile lib file into global scope
+    // `use Foo::Bar` -> compile lib file into global scope. `quiet` suppresses the
+    // not-found warning: a runtime `require` reports failure by THROWING instead
+    // (so `try require ::($m)` is silent, as in Rakudo).
+    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false);
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // sets $/ $0..; rxVal (an anonymous `regex {…}` value) engages wired mode:

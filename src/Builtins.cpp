@@ -406,18 +406,24 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     Value& proc = pit->second;
     std::vector<std::string> argv;
     if (proc.hash->count("argv")) for (auto& x : *(*proc.hash)["argv"].arr) argv.push_back(x.toStr());
-    std::string out; int code; bool timedout;
+    std::string out, err; int code; bool timedout;
     std::string cwd;
     { auto c = promise.hash->find("cwd"); if (c != promise.hash->end()) cwd = c->second.toStr(); }
-    spawnCapture(argv, timeoutSec, out, code, timedout, this, nullptr, cwd);
-    auto taps = proc.hash->find("taps");
-    if (taps != proc.hash->end() && taps->second.arr)
+    // stderr is CAPTURED (not inherited): an async proc's noise must go to its
+    // .stderr taps (or nowhere), never straight to the user's terminal.
+    spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd);
+    auto feed = [&](const char* key, const std::string& data) {
+        auto taps = proc.hash->find(key);
+        if (taps == proc.hash->end() || !taps->second.arr) return;
         for (auto& cb : *taps->second.arr) {
-            Value chunk = Value::str(out);
+            Value chunk = Value::str(data);
             chunk.hashKind = "Blob"; // stdout(:bin) taps get bytes (Buf.append needs a Blob)
             ValueList ca{chunk};
             callCallable(cb, ca);
         }
+    };
+    feed("taps", out);
+    feed("taps-err", err);
     (*proc.hash)["exitcode"] = Value::integer(code);
     (*proc.hash)["timedout"] = Value::boolean(timedout);
     (*promise.hash)["status"] = Value::str(timedout ? "Broken" : "Kept");
@@ -3457,8 +3463,12 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
                                         inv.hash->count("quit-message") ? (*inv.hash)["quit-message"].toStr() : "Supply quit"};
                 }
                 else if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
-            } else if (!args.empty() && args[0].t == VT::Code && (*inv.hash)["stream"].toStr() == "stdout") {
-                Value proc = (*inv.hash)["proc"]; (*proc.hash)["taps"].arr->push_back(args[0]);
+            } else if (!args.empty() && args[0].t == VT::Code) {
+                // register per-stream: stdout taps under "taps", stderr under "taps-err"
+                Value proc = (*inv.hash)["proc"];
+                const char* key = (*inv.hash)["stream"].toStr() == "stderr" ? "taps-err" : "taps";
+                if (!proc.hash->count(key)) (*proc.hash)[key] = Value::array();
+                (*proc.hash)[key].arr->push_back(args[0]);
             }
             Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
         }
@@ -10342,10 +10352,11 @@ void Interpreter::registerBuiltins() {
     // run(prog, *@args, :timeout(N)) -> { out => Str, exitcode => Int, timedout => Bool }
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
+        int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
-                if (v.s == "out") wantOut = v.pairVal ? v.pairVal->truthy() : true;
-                else if (v.s == "err") wantErr = v.pairVal ? v.pairVal->truthy() : true;
+                if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0; }
+                else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0; }
                 else if (v.s == "in") wantIn = v.pairVal ? v.pairVal->truthy() : true;
             }
             else argv.push_back(v.toStr());
@@ -10364,8 +10375,11 @@ void Interpreter::registerBuiltins() {
             return p;
         }
         std::string out, err; int code; bool timedout;
-        spawnCapture(argv, 0, out, code, timedout, &I, wantErr ? &err : nullptr);
-        if (!wantOut) std::cout << out; // not capturing: echo child stdout (approximates inherit)
+        // :err captures; :!err captures-and-discards (so probes like
+        // `zrun('git','--help', :!out, :!err)` stay silent); unspecified inherits.
+        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr);
+        if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
+        if (errMode == -1) { /* stderr already inherited by the child */ }
         (*p.hash)["exitcode"] = Value::integer(code);
         (*p.hash)["out-str"] = Value::str(out);
         (*p.hash)["err-str"] = Value::str(err);
@@ -10375,18 +10389,19 @@ void Interpreter::registerBuiltins() {
     // so redirections/pipes in CMD work. Returns a Proc; +$proc is the exit status.
     B["shell"] = [](Interpreter& I, ValueList& a) -> Value {
         std::string cmd; bool wantOut = false, wantErr = false;
+        int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
-                if (v.s == "out") wantOut = v.pairVal ? v.pairVal->truthy() : true;
-                else if (v.s == "err") wantErr = v.pairVal ? v.pairVal->truthy() : true;
+                if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0; }
+                else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0; }
             }
             else if (cmd.empty()) cmd = v.toStr();
         }
         std::vector<std::string> argv = {"/bin/sh", "-c", cmd};
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         std::string out, err; int code = 0; bool timedout = false;
-        spawnCapture(argv, 0, out, code, timedout, &I, wantErr ? &err : nullptr);
-        if (!wantOut) std::cout << out;
+        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr);
+        if (outMode == -1) std::cout << out;
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr->push_back(Value::str(cmd));
         (*p.hash)["argv"] = av; // .command — shell reports the command string
