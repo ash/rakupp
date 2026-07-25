@@ -255,7 +255,8 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `f 0, +^$x`
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `f 0, ++$x`
-                   t.text == "*" || t.text == "->" || t.text == "<->" || t.text == "|" ||
+                   t.text == "*" || t.text == "**" || // `*` Whatever, `**` HyperWhatever: `(1, **, 8)`
+                   t.text == "->" || t.text == "<->" || t.text == "|" ||
                    t.text == "^" || // prefix `^N` (upto) after a comma: `1, ^10 .Seq` (infix ^ is impossible there)
                    t.text == "&" || // operator-as-value `&[+]` (bare `&` in term position is only `&[OP]`)
                    t.text == "." || // leading `.method` => $_.method (e.g. `1, .uc`)
@@ -336,6 +337,12 @@ bool Parser::startsListopArg(const Token& t) const {
                        peek().text == "min" || peek().text == "max" || peek().text == "gcd" ||
                        peek().text == "lcm" || peek().text == "div" || peek().text == "mod")))) || // `*..1` / `* quack 5` / `* min 2`
                    t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
+                   // `foo **` — a bare HyperWhatever argument. Infix `**` would
+                   // need a term after it, and the statement ends instead.
+                   (t.text == "**" && (peek().kind == Tok::Semicolon ||
+                                       peek().kind == Tok::RParen ||
+                                       peek().kind == Tok::Comma ||
+                                       peek().kind == Tok::End)) ||
                    (t.text == "|" && t.spaceBefore) || // slip first arg `run |@cmd` (space before |) — NOT infix junction `Any|Blob`
                    t.text == "!!" || // prefix boolify `say !!$x` (`!!` never starts a bare term otherwise)
                    (t.text == "." && t.spaceBefore) || // leading `.method` => $_.method (only after a space: `say .uc`)

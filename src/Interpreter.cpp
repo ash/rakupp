@@ -8898,6 +8898,26 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
         // `when *`, `$x ~~ *`. (~~ never curries — see kNoCurry above.)
         if (r.t == VT::Whatever) return Value::boolean(op == "~~");
+        // list ~~ list where the PATTERN holds a HyperWhatever: `**` matches any
+        // run of elements (including none), so (1,2,4,8) ~~ (1,**,8) holds
+        if (l.t == VT::Array && l.arr && r.t == VT::Array && r.arr && r.enumName.empty() &&
+            std::any_of(r.arr->begin(), r.arr->end(),
+                        [](const Value& e) { return e.t == VT::Whatever && e.b; })) {
+            const ValueList& xs = *l.arr; const ValueList& ps = *r.arr;
+            // classic greedy-with-backtracking glob match over the two lists
+            std::function<bool(size_t, size_t)> go = [&](size_t i, size_t k) -> bool {
+                if (k == ps.size()) return i == xs.size();
+                if (ps[k].t == VT::Whatever && ps[k].b) {          // `**` — zero or more
+                    for (size_t j = i; j <= xs.size(); j++) if (go(j, k + 1)) return true;
+                    return false;
+                }
+                if (i == xs.size()) return false;
+                if (!applyArith("~~", xs[i], ps[k]).truthy()) return false;
+                return go(i + 1, k + 1);
+            };
+            res = go(0, 0);
+            return Value::boolean(op == "~~" ? res : !res);
+        }
         if (!r.enumType.empty() && r.t == VT::Array) {
             // $val ~~ EnumType : the enum type object is a tagged pair-list
             res = (!l.enumType.empty() && l.enumType == r.enumType) || l.typeName() == r.enumType;
