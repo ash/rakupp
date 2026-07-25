@@ -567,6 +567,13 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                 seen.erase(v.arr.get());
             }
             o += v.isList ? ')' : ']';
+            // an itemized container shows its `$` marker at the TOP level only —
+            // as an Array ELEMENT Rakudo prints `[[1, 2],]`, disambiguating with
+            // the trailing comma instead
+            if (v.itemized && depth == 0) o = "$" + o;
+            // a Seq's .raku is the list form plus the coercion that rebuilds it:
+            // `(1, 2).Seq`. Only .raku carries it — .gist/.Str stay `(1 2)`.
+            if (v.isList && v.s == "Seq") o += ".Seq";
             return o;
         }
         case VT::Hash: {
@@ -1592,7 +1599,19 @@ static std::string jsonEncode(const Value& v) {
     }
 }
 
+// `.kv`/`.keys`/`.values`/`.pairs`/`.antipairs` answer a Seq on EVERY container in
+// Rakudo — Hash, Array, List, Pair, Match alike. Marking them at the one dispatch
+// point keeps that uniform instead of tagging a dozen construction sites.
 Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    Value r = methodCallInner(std::move(inv), m, std::move(args), rwArgs);
+    if (r.t == VT::Array && r.isList && r.s.empty() &&
+        (m == "kv" || m == "keys" || m == "values" || m == "pairs" ||
+         m == "antipairs" || m == "invert"))
+        r.s = "Seq";
+    return r;
+}
+
+Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     // package-relative short name: a bare `Frog` type invocant answers as its
     // qualified nested class (`Forest::Frog`) when no real class claims the
     // short name — covers `.new`, `.= new` on typed decls, and user methods
@@ -2230,14 +2249,44 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         return c;
     }
-    if (inv.t == VT::Array && inv.hashKind == "Capture" && (m == "list" || m == "hash" || m == "Map")) {
-        if (m == "list") {
-            Value o = Value::array(); o.isList = true;
-            if (inv.arr) for (auto& e : *inv.arr) if (e.t != VT::Pair) o.arr->push_back(e);
+    // A Capture is TWO collections, not one flat list: positionals indexed 0..n
+    // and nameds keyed by name. Every accessor partitions accordingly —
+    // `\(1, 2, :x(3)).elems` is 2 (the positionals), and .keys/.values/.pairs
+    // run the positionals first, then the nameds.
+    if (inv.t == VT::Array && inv.hashKind == "Capture" &&
+        (m == "list" || m == "hash" || m == "Map" || m == "elems" ||
+         m == "keys" || m == "values" || m == "pairs" || m == "antipairs" || m == "Bool")) {
+        ValueList pos; std::map<std::string, Value> named;
+        if (inv.arr) for (auto& e : *inv.arr) {
+            if (e.t == VT::Pair) named[e.s] = e.pairVal ? *e.pairVal : Value::any();
+            else pos.push_back(e);
+        }
+        if (m == "list") { Value o = Value::array(); o.isList = true; *o.arr = pos; return o; }
+        if (m == "elems") return Value::integer((long long)pos.size());
+        if (m == "Bool")  return Value::boolean(!pos.empty() || !named.empty());
+        if (m == "keys" || m == "values" || m == "pairs" || m == "antipairs") {
+            Value o = Value::array(); o.isList = true; o.s = "Seq";
+            for (size_t i = 0; i < pos.size(); i++) {
+                Value k = Value::integer((long long)i);
+                if (m == "keys")      o.arr->push_back(k);
+                else if (m == "values") o.arr->push_back(pos[i]);
+                else if (m == "pairs")  { Value p = Value::pair(std::to_string(i), pos[i]);
+                                          p.pairKey = std::make_shared<Value>(k); o.arr->push_back(p); }
+                else { Value p = Value::pair(pos[i].toStr(), k); // antipairs: value => key
+                       p.pairKey = std::make_shared<Value>(pos[i]); o.arr->push_back(p); }
+            }
+            for (auto& kv : named) {
+                if (m == "keys")        o.arr->push_back(Value::str(kv.first));
+                else if (m == "values") o.arr->push_back(kv.second);
+                else if (m == "pairs")  { Value p = Value::pair(kv.first, kv.second);
+                                          p.namedArg = true; o.arr->push_back(p); }
+                else { Value p = Value::pair(kv.second.toStr(), Value::str(kv.first));
+                       p.pairKey = std::make_shared<Value>(kv.second); o.arr->push_back(p); }
+            }
             return o;
         }
         Value o = Value::makeHash(); o.hashKind = "Map";
-        if (inv.arr) for (auto& e : *inv.arr) if (e.t == VT::Pair) (*o.hash)[e.s] = e.pairVal ? *e.pairVal : Value::any();
+        for (auto& kv : named) (*o.hash)[kv.first] = kv.second;
         return o;
     }
 
@@ -2609,14 +2658,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     // Buf/Blob.new(elem, elem, …) — a byte buffer, stored as a Str of bytes.
     // blob16/32/64 (and utf16/32) pack each element as a little-endian word;
     // ofType carries the element type (Digest's blob32 word arithmetic).
-    if (inv.t == VT::Type && (inv.s == "buf8" || inv.s == "blob8" || inv.s == "utf8" ||
-                              inv.s == "buf16" || inv.s == "blob16" || inv.s == "utf16" ||
-                              inv.s == "buf32" || inv.s == "blob32" || inv.s == "utf32" ||
-                              inv.s == "buf64" || inv.s == "blob64") &&
-        (m == "new" || m == "allocate")) {
-        int w = inv.s.find("16") != std::string::npos ? 2
-              : inv.s.find("32") != std::string::npos ? 4
-              : inv.s.find("64") != std::string::npos ? 8 : 1;
+    // the named element-width types (blob8, buf32, …) and the equivalent
+    // parameterized spellings (`Blob[uint8]`, `Buf[uint32]`) build the same thing
+    if (inv.t == VT::Type && (m == "new" || m == "allocate") &&
+        (inv.s == "buf8" || inv.s == "blob8" || inv.s == "utf8" ||
+         inv.s == "buf16" || inv.s == "blob16" || inv.s == "utf16" ||
+         inv.s == "buf32" || inv.s == "blob32" || inv.s == "utf32" ||
+         inv.s == "buf64" || inv.s == "blob64" ||
+         inv.s.rfind("Blob[", 0) == 0 || inv.s.rfind("Buf[", 0) == 0 ||
+         ((inv.s == "Blob" || inv.s == "Buf") && !inv.ofType.empty()))) {
+        // the width comes from the name (blob32) or the parameter (Blob[uint32])
+        const std::string& wsrc = inv.ofType.empty() ? inv.s : inv.ofType;
+        int w = wsrc.find("16") != std::string::npos ? 2
+              : wsrc.find("32") != std::string::npos ? 4
+              : wsrc.find("64") != std::string::npos ? 8 : 1;
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
             if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) add(e); }
@@ -2631,8 +2686,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             bytes.assign((size_t)(n2 * w), '\0');
         }
         else for (auto& a : args) add(a);
-        Value b = Value::str(bytes); b.hashKind = inv.s.rfind("buf", 0) == 0 ? "Buf" : "Blob"; // buf* is mutable
-        if (w > 1) b.ofType = "uint" + std::to_string(w * 8);
+        Value b = Value::str(bytes); // buf*/Buf[T] are the mutable spellings
+        b.hashKind = (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("Buf", 0) == 0) ? "Buf" : "Blob";
+        b.ofType = "uint" + std::to_string(w * 8); // blob8 IS Blob[uint8] — the [T] always shows
         return b;
     }
     if (inv.t == VT::Type &&
@@ -5559,7 +5615,9 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
          inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair || inv.t == VT::Type ||
          inv.t == VT::Any || inv.t == VT::Nil)) {
-        Value o = Value::array(); o.isList = true; o.arr->push_back(inv); return o;
+        Value o = Value::array(); o.isList = true; o.arr->push_back(inv);
+        if (m == "Seq") o.s = "Seq";
+        return o;
     }
     if (m == "toggle" &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
@@ -7676,6 +7734,20 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
         if (m == "kv") { Value o = Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()}); o.isList = true; return o; }
         if (m == "antipair") return Value::pair((inv.pairVal ? inv.pairVal->toStr() : ""), Value::str(inv.s));
+        // `.antipairs`/`.invert` are the LIST forms of .antipair — and a list
+        // VALUE inverts to one pair per element: `(a => (1,2)).invert` is
+        // (1 => "a", 2 => "a")
+        if (m == "antipairs" || m == "invert") {
+            Value o = Value::array(); o.isList = true;
+            Value val = inv.pairVal ? *inv.pairVal : Value::any();
+            ValueList vs = (m == "invert" && val.t == VT::Array && val.arr) ? *val.arr : ValueList{val};
+            for (auto& v : vs) {
+                Value p = Value::pair(v.toStr(), Value::str(inv.s));
+                p.pairKey = std::make_shared<Value>(v);
+                o.arr->push_back(std::move(p));
+            }
+            return o;
+        }
     }
 
     // scalar .Array / .List — a 1-element container: "LLL".Array is ["LLL"]
@@ -8008,8 +8080,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         // lazy Seq needs forcing (its elements are already materialised in `items`)
         if (m == "eager" && inv.t == VT::Array && !inv.ext)
             return inv;
-        if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy")
-            return Value::list(items);
+        if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {
+            Value out = Value::list(items);
+            if (m == "Seq") out.s = "Seq"; // `.Seq` really is one — `(1,2).Seq.raku` says so
+            return out;
+        }
         if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }
         if (m == "rotate") { long n = args.empty() ? 1 : args[0].toInt(); long sz = (long)items.size();
             if (sz) { n = ((n % sz) + sz) % sz; std::rotate(items.begin(), items.begin() + n, items.end()); }
@@ -8869,10 +8944,15 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "invert" && inv.t == VT::Hash) { // %h.invert -> list of (value => key)
             Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto push1 = [&](const Value& v, const std::string& k) {
+                Value p = Value::pair(v.toStr(), Value::str(k));
+                if (v.t != VT::Str) p.pairKey = std::make_shared<Value>(v); // a numeric value stays a numeric key
+                out.arr->push_back(std::move(p));
+            };
             for (auto& kv : *inv.hash) {
                 if (kv.second.t == VT::Array && kv.second.arr)
-                    for (auto& v : *kv.second.arr) out.arr->push_back(Value::pair(v.toStr(), Value::str(kv.first)));
-                else out.arr->push_back(Value::pair(kv.second.toStr(), Value::str(kv.first)));
+                    for (auto& v : *kv.second.arr) push1(v, kv.first);
+                else push1(kv.second, kv.first);
             }
             return out;
         }
@@ -8959,7 +9039,11 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
         }
         if (m == "antipairs" && inv.t == VT::Hash) { // (value => key) pairs, like invert
             Value out = Value::array(); out.isList = true; out.s = "Seq";
-            for (auto& kv : *inv.hash) out.arr->push_back(Value::pair(kv.second.toStr(), kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first)));
+            for (auto& kv : *inv.hash) {
+                Value p = Value::pair(kv.second.toStr(), Value::str(kv.first));
+                if (kv.second.t != VT::Str) p.pairKey = std::make_shared<Value>(kv.second); // numeric value -> numeric key
+                out.arr->push_back(std::move(p));
+            }
             return out;
         }
         if (m == "pairup") { // (1,2,3,4).pairup → (1=>2, 3=>4); odd tail pairs with Any
@@ -9049,8 +9133,24 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
             if (m == "append") { for (auto& a : appendValues(args)) inv.arr->push_back(a); return inv; }
             if (m == "unshift") { inv.arr->insert(inv.arr->begin(), args.begin(), args.end()); return inv; }
             if (m == "prepend") { auto f = appendValues(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return inv; }
-            if (m == "pop") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->back(); inv.arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
-            if (m == "shift") { if (inv.arr->empty()) return Value::typeObj("Failure"); Value v = inv.arr->front(); inv.arr->erase(inv.arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
+            // popping/shifting an EMPTY Array yields a FAILURE, not a bare
+            // undefined value: it boolifies False — so `while @a.shift -> $x`
+            // terminates, which is how Cro's router drains its handler queue —
+            // but detonates with X::Cannot::Empty the moment the value is USED.
+            if (m == "pop" || m == "shift") {
+                if (inv.arr->empty()) {
+                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    (*f.hash)["exception"] = makeTypedEx("X::Cannot::Empty",
+                        {{"action", Value::str(m)}, {"what", Value::str("Array")}},
+                        "Cannot " + m + " from an empty Array");
+                    (*f.hash)["message"] = Value::str("Cannot " + m + " from an empty Array");
+                    return f;
+                }
+                Value v = m == "pop" ? inv.arr->back() : inv.arr->front();
+                if (m == "pop") inv.arr->pop_back(); else inv.arr->erase(inv.arr->begin());
+                if (v.t == VT::Array) v.itemized = true;
+                return v;
+            }
             if (m == "splice") { // .splice($start?, $count?, *@replacement) → the removed elements
                 // a lazy array only holds a prefix — materialize enough to cover the window
                 if (inv.ext) {

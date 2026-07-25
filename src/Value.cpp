@@ -373,7 +373,16 @@ std::string Value::gist() const {
             if (hashKind == "Buf" || hashKind == "Blob") { // Buf:0x<01 02 03> / Buf[uint8]:0x<…>
                 std::string h = hashKind + (ofType.empty() ? "" : "[" + ofType + "]") + ":0x<";
                 static const char* hx = "0123456789ABCDEF";
-                for (size_t k = 0; k < s.size(); k++) { if (k) h += ' '; unsigned char b = s[k]; h += hx[b >> 4]; h += hx[b & 15]; }
+                // one group per ELEMENT, big-endian — a blob32 shows 00000001,
+                // not the four little-endian bytes it is stored as
+                int w = blobElemSize(); if (w < 1) w = 1;
+                for (size_t k = 0; k + (size_t)w <= s.size(); k += (size_t)w) {
+                    if (k) h += ' ';
+                    for (int b = w - 1; b >= 0; b--) {
+                        unsigned char c = (unsigned char)s[k + (size_t)b];
+                        h += hx[c >> 4]; h += hx[c & 15];
+                    }
+                }
                 return h + ">";
             }
             return s;
