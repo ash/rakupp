@@ -10657,7 +10657,16 @@ Value Interpreter::evalBinary(Binary* b) {
             Value* lp = nullptr; Value* rp = nullptr;
             try { lp = lvalue(b->lhs.get()); } catch (RakuError&) {}
             try { rp = lvalue(b->rhs.get()); } catch (RakuError&) {}
-            same = lp && rp && lp == rp;
+            // A `&`-sigil variable holds a Code with no intervening Scalar, so
+            // identity is the ROUTINE's, not the slot's: `sub h(&x) { &x =:= &f }`
+            // is True (while `my $g = &f; $g =:= &f` compares a container: False).
+            if (lp && rp && lp->t == VT::Code && rp->t == VT::Code &&
+                !static_cast<VarExpr*>(b->lhs.get())->name.empty() &&
+                !static_cast<VarExpr*>(b->rhs.get())->name.empty() &&
+                static_cast<VarExpr*>(b->lhs.get())->name[0] == '&' &&
+                static_cast<VarExpr*>(b->rhs.get())->name[0] == '&')
+                same = lp->code.get() == rp->code.get();
+            else same = lp && rp && lp == rp;
         }
         else {
             Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
@@ -13663,6 +13672,12 @@ Value Interpreter::eval(Expr* e) {
                 // a |slip in a list literal splices its elements: Set, |@more, Bag
                 if (it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "|") {
                     Value v = eval(static_cast<Unary*>(it.get())->operand.get());
+                    // splice the ELEMENTS as-is: flatten() would recurse into them,
+                    // dropping an element that is itself an empty list
+                    // (`my @b = (), 1; (|@b, 2)` must stay 3 elements).
+                    if (v.t == VT::Array && v.arr && !v.itemized) {
+                        for (auto& x : *v.arr) items.push_back(x); continue;
+                    }
                     if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
                     // |%hash (or a Hash-valued expr like `|$<authority>.ast`)
                     // slips its PAIRS — Cro builds `%parts = scheme => …, |$<hier-part>.ast`

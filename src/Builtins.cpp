@@ -10309,14 +10309,16 @@ void Interpreter::registerBuiltins() {
         // evalString itself converts escaping control flow (routine-aware)
         return I.evalString(code.toStr(), /*mainlinePH=*/true);
     };
-    B["RUN-MAIN"] = [](Interpreter& I, ValueList& a) -> Value {
-        // RUN-MAIN(&main, $return): parse the LIVE @*ARGS per the CLI rules
+    // Default @*ARGS -> argument-list conversion (the built-in ARGS-TO-CAPTURE).
+    // main-refactored.t adjudicates the rules; see rakuppMainCapture below.
+    B["RUN-MAIN-args-to-capture"] = [](Interpreter& I, ValueList& a) -> Value {
+        // The DEFAULT ARGS-TO-CAPTURE: parse the live @*ARGS per the CLI rules
         // main-refactored.t adjudicates: --name / --name=v / -n=v are named
         // (repeats collect into an array; values are val()-allomorphed;
         // `--` ends option parsing; --/name negates). In the DEFAULT mode an
         // option after the first positional is a plain positional; with
         // %*SUB-MAIN-OPTS<named-anywhere> options bind anywhere.
-        if (a.empty() || a[0].t != VT::Code) return Value::any();
+        (void)a;
         auto dynFind = [&](const char* n) -> Value* {
             if (Value* p = I.tctx_.cur->find(n)) return p;
             for (auto it = I.tctx_.dynStack.rbegin(); it != I.tctx_.dynStack.rend(); ++it)
@@ -10371,7 +10373,97 @@ void Interpreter::registerBuiltins() {
             p.namedArg = true;
             margs.push_back(std::move(p));
         }
-        return I.callCallable(a[0], std::move(margs));
+        Value cap = Value::array(); cap.hashKind = "Capture"; *cap.arr = std::move(margs);
+        return cap;
+    };
+    // RUN-MAIN(&main, $mainline-result) — the 2018.10 command-line protocol:
+    //   @*ARGS -> ARGS-TO-CAPTURE -> dispatch &main -> on failure GENERATE-USAGE
+    //   (or the legacy USAGE), then exit through &*EXIT.
+    // A user sub of any of those names, visible where RUN-MAIN is called,
+    // REPLACES the built-in step, and is also what &*ARGS-TO-CAPTURE /
+    // &*GENERATE-USAGE answer inside it. MAIN_HELPER is never called.
+    B["RUN-MAIN"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty() || a[0].t != VT::Code) return Value::any();
+        Value mainSub = a[0];
+        auto lookup = [&](const char* n) -> Value* {
+            if (Value* p = I.tctx_.cur->find(n)) return p;
+            for (auto it = I.tctx_.dynStack.rbegin(); it != I.tctx_.dynStack.rend(); ++it)
+                if (*it) if (Value* p = (*it)->find(n)) return p;
+            return nullptr;
+        };
+        // the raw @*ARGS as an Array, for the ARGS-TO-CAPTURE hook
+        Value argsArr = Value::array();
+        if (Value* av = lookup("@*ARGS"))
+            if (av->t == VT::Array && av->arr) *argsArr.arr = *av->arr;
+
+        // --- 1. args -> capture -------------------------------------------
+        Value userA2C;
+        if (Value* p = lookup("&*ARGS-TO-CAPTURE")) userA2C = *p;
+        if (userA2C.t != VT::Code) if (Value* p = lookup("&ARGS-TO-CAPTURE")) userA2C = *p;
+        ValueList margs;
+        {   // &*ARGS-TO-CAPTURE is the sub actually in force while it runs
+            if (userA2C.t == VT::Code) {
+                // &*ARGS-TO-CAPTURE names the sub actually in force while it runs
+                auto scope = std::make_shared<Env>(); scope->parent = I.tctx_.cur;
+                scope->define("&*ARGS-TO-CAPTURE", userA2C);
+                auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+                I.tctx_.dynStack.push_back(scope.get());
+                struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx_.cur = s; I.tctx_.dynStack.pop_back(); } } r{I, saved};
+                Value cap = I.callCallable(userA2C, ValueList{mainSub, argsArr});
+                if (cap.t == VT::Array && cap.arr) {
+                    margs = *cap.arr;                       // a Capture IS the arg list…
+                    for (auto& m : margs)                   // …its Pairs are NAMED args
+                        if (m.t == VT::Pair) m.namedArg = true;
+                } else if (cap.t != VT::Any && cap.t != VT::Nil) margs.push_back(cap);
+            } else {
+                Value cap = I.callBuiltin("RUN-MAIN-args-to-capture", ValueList{});
+                if (cap.t == VT::Array && cap.arr) margs = *cap.arr;
+            }
+        }
+        // did the user ask for help? (drives the exit code)
+        bool wantsHelp = false;
+        for (auto& m : margs) if (m.t == VT::Pair && m.s == "help" && m.namedArg &&
+                                  (!m.pairVal || m.pairVal->truthy())) wantsHelp = true;
+
+        // --- 2. dispatch --------------------------------------------------
+        bool matches = true;
+        if (mainSub.code && mainSub.code->isMultiDispatcher) {
+            matches = false;
+            for (auto& cand : mainSub.code->candidates)
+                if (I.scoreCandidate(cand, margs) >= 0) { matches = true; break; }
+        } else if (mainSub.code && mainSub.code->params) {
+            matches = I.scoreCandidate(mainSub, margs) >= 0;
+        }
+        if (matches) return I.callCallable(mainSub, margs);
+
+        // --- 3. no candidate: usage ---------------------------------------
+        Value userGU;
+        if (Value* p = lookup("&*GENERATE-USAGE")) userGU = *p;
+        if (userGU.t != VT::Code) if (Value* p = lookup("&GENERATE-USAGE")) userGU = *p;
+        Value usageText;
+        if (userGU.t == VT::Code) {
+            Value inForce = userGU;
+            auto scope = std::make_shared<Env>(); scope->parent = I.tctx_.cur;
+            scope->define("&*GENERATE-USAGE", inForce);
+            auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+            I.tctx_.dynStack.push_back(scope.get());
+            struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx_.cur = s; I.tctx_.dynStack.pop_back(); } } r{I, saved};
+            ValueList ga{mainSub};
+            for (auto& m : margs) ga.push_back(m);
+            usageText = I.callCallable(userGU, ga);
+        } else if (Value* p = lookup("&USAGE"); p && p->t == VT::Code) {
+            I.callCallable(*p, ValueList{});   // the legacy hook PRINTS; it returns nothing useful
+        } else {
+            usageText = Value::str(I.mainUsage());
+        }
+        if (usageText.t == VT::Str && !usageText.s.empty())
+            (wantsHelp ? std::cout : std::cerr) << usageText.s << "\n";
+
+        // --- 4. exit through &*EXIT (so a test can intercept) --------------
+        Value code = Value::integer(wantsHelp ? 0 : 2);
+        if (Value* e = lookup("&*EXIT"); e && e->t == VT::Code)
+            return I.callCallable(*e, ValueList{code});
+        throw ExitEx{(int)code.toInt()};
     };
     B["samemark"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() < 2) return a.empty() ? Value::any() : a[0];
