@@ -80,4 +80,19 @@ check((butter => 0.22).Mix.gist, 'Mix(butter(0.22))', 'mix-gist-form');
 check((a => 1.0).Mix.gist,       'Mix(a)',            'mix-gist-omits-weight-one');
 check((a => 2).Bag.gist,         'Bag(a(2))',         'bag-gist-unchanged-2');
 
+# 7. a Buf/Blob is a Str only in REPRESENTATION — its .raku is the constructor
+#    that rebuilds it over its ELEMENTS, and the ENCODING names the result type
+check(Buf.new(1, 42, 3).raku,   'Buf.new(1,42,3)',      'buf-raku');
+check(Blob.new(1, 2).raku,      'Blob.new(1,2)',        'blob-raku');
+check(blob8.new(1, 2).raku,     'Blob[uint8].new(1,2)', 'blob8-raku');
+check(blob32.new(1, 2).raku,    'Blob[uint32].new(1,2)','blob32-raku');
+check(Buf.new.raku,             'Buf.new()',            'empty-buf-raku');
+check('abc'.encode.raku,        'utf8.new(97,98,99)',   'encode-raku');
+check('abc'.encode.^name,       'utf8',                 'encode-names-its-encoding');
+check('abc'.encode.gist,        'utf8:0x<61 62 63>',    'encode-gist');
+check('abc'.encode.decode,      'abc',                  'encode-round-trips');
+check(Buf.new(1, 2).gist,       'Buf:0x<01 02>',        'buf-gist-unchanged');
+# a plain Str is still a string literal
+check('plain'.raku,             '"plain"',              'plain-str-raku');
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

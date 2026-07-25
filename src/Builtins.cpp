@@ -475,7 +475,23 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
         case VT::Any:  return "Any";
         case VT::Bool: return v.b ? "Bool::True" : "Bool::False";
         case VT::Type: return v.s;
-        case VT::Str:  return rakuStrLit(v.s);
+        case VT::Str:
+            // a Buf/Blob is a Str only in REPRESENTATION — its .raku is the
+            // constructor that rebuilds it, over its ELEMENTS, not a string
+            // literal of its raw bytes
+            if (v.hashKind == "Buf" || v.hashKind == "Blob") {
+                std::string nm = !v.enumName.empty() ? v.enumName   // an encoding names its own type
+                               : v.hashKind + (v.ofType.empty() ? "" : "[" + v.ofType + "]");
+                std::string o = nm + ".new("; bool f = true;
+                for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
+                return o + ")";
+            }
+            if (v.hashKind == "CArray") { // a locally-built CArray rebuilds the same way
+                std::string o = "CArray.new("; bool f = true;
+                for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
+                return o + ")";
+            }
+            return rakuStrLit(v.s);
         case VT::Int:  return v.toStr();
         case VT::Rat: {
             std::string n = v.ratN ? v.ratN->toString() : "0";
@@ -7057,6 +7073,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 b = Value::str(bytes);
             } else b = Value::str(inv.s); // utf8/ascii: the bytes as stored
             b.hashKind = "Blob";
+            // the ENCODING names the result type (`"abc".encode` is a utf8, a
+            // Blob subtype). Kept in enumName so every `hashKind == "Blob"`
+            // check still sees a Blob.
+            if (!latin1) b.enumName = "utf8";
             return b;
         }
         // decode: the invocant is a byte string (Buf/Blob)

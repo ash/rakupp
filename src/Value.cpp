@@ -251,7 +251,8 @@ static std::string ratToStr(const BigInt& num, const BigInt& den) {
 }
 
 std::string Value::toStr() const {
-    if (!enumName.empty()) return enumName;
+    // (a Blob/Buf uses enumName for its ENCODING, not as an enum key)
+    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf") return enumName;
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
     switch (t) {
         case VT::Nil:
@@ -340,7 +341,7 @@ std::string Value::toStr() const {
 
 std::string Value::gist() const {
     if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
-    if (!enumName.empty()) {
+    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf") {
         // a Junction gists with its eigenstates: any(1, 2, 3)
         if (t == VT::Array && arr &&
             (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none")) {
@@ -371,7 +372,10 @@ std::string Value::gist() const {
         case VT::Str:
             if (hashKind == "Version") return "v" + s; // v1.2.3.gist is "v1.2.3" (.Str is "1.2.3")
             if (hashKind == "Buf" || hashKind == "Blob") { // Buf:0x<01 02 03> / Buf[uint8]:0x<…>
-                std::string h = hashKind + (ofType.empty() ? "" : "[" + ofType + "]") + ":0x<";
+                // an encoding names its own type (`utf8:0x<…>`); otherwise the
+                // kind plus its element-type parameter
+                std::string h = (!enumName.empty() ? enumName
+                                 : hashKind + (ofType.empty() ? "" : "[" + ofType + "]")) + ":0x<";
                 static const char* hx = "0123456789ABCDEF";
                 // one group per ELEMENT, big-endian — a blob32 shows 00000001,
                 // not the four little-endian bytes it is stored as
@@ -485,7 +489,7 @@ std::string Value::typeName() const {
         case VT::Num:  return hashKind == "Duration" ? "Duration"
                             : hashKind == "Instant" ? "Instant" : "Num";
         case VT::Complex: return "Complex";
-        case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? "Blob" : hashKind == "Buf" ? "Buf" : hashKind == "IO::Special" ? "IO::Special" : "Str";
+        case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName.empty() ? "Blob" : enumName) : hashKind == "Buf" ? "Buf" : hashKind == "IO::Special" ? "IO::Special" : "Str";
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
