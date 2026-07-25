@@ -13259,6 +13259,7 @@ Value Interpreter::evalIndex(Index* idx) {
             }
             if (base.t == VT::Hash && !base.hashKind.empty()) // Set/Bag/Mix typed default
                 return base.hashKind.find("Set") == 0 ? Value::boolean(false) : Value::integer(0);
+            if (base.pairVal) return *base.pairVal;                // `%h is default(v)`
             if (!base.ofType.empty()) return typedElemDefault(base); // Hash[Int] -> Int
             return Value::any();
         };
@@ -13987,6 +13988,13 @@ Value Interpreter::eval(Expr* e) {
         case NK::Index: return evalIndex(static_cast<Index*>(e));
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
+            // `.dynamic` asks about the VARIABLE, not its value: a `*` twigil is
+            // what makes a container dynamic, and only the name carries that
+            if (mc->method == "dynamic" && mc->args.empty() && mc->inv &&
+                mc->inv->kind == NK::VarExpr) {
+                const std::string& vn = static_cast<VarExpr*>(mc->inv.get())->name;
+                return Value::boolean(vn.size() > 1 && vn[1] == '*');
+            }
             if (mc->bang && !tctx_.cur->find("self")) // private call outside any method body
                 throw RakuError{Value::typeObj("X::Method::NotFound"),
                     "Private method call to '" + mc->method + "' outside the defining class"};

@@ -2243,6 +2243,22 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
     }
     // a Parameter's introspection (.name/.type/.named/.optional/.slurpy)
+    // `.dynamic` — was this container declared with a `*` twigil? `.default` —
+    // its `is default(…)` element value (Any when it has none).
+    // a value reached any other way is not a dynamic variable (the `*`-twigil
+    // case is answered from the NAME, in the MethodCall evaluator)
+    if (m == "dynamic" && (inv.t == VT::Array || inv.t == VT::Hash || inv.t == VT::Str ||
+                           inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Any))
+        return Value::boolean(false);
+    if (m == "default" && (inv.t == VT::Array || inv.t == VT::Hash)) {
+        if (inv.pairVal) return *inv.pairVal;
+        // a QuantHash has a TYPED default, not Any: False for the Set family,
+        // 0 for the weighted ones
+        if (inv.t == VT::Hash && !inv.hashKind.empty() && inv.hashKind != "Map")
+            return inv.hashKind.rfind("Set", 0) == 0 ? Value::boolean(false) : Value::integer(0);
+        return Value::any();
+    }
+
     if (inv.t == VT::Hash && inv.hashKind == "Parameter") {
         if ((m == "name" || m == "named" || m == "optional" || m == "slurpy" ||
              m == "constraints" || m == "named_names" || m == "usage-name" ||
