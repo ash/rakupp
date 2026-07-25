@@ -3240,7 +3240,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             }
         };
         if (m == "send") {
-            if (isClosed()) throw RakuError{Value::typeObj("X::Channel::SendOnClosed"), "Cannot send on a closed channel"};
+            if (isClosed()) throw RakuError{Value::typeObj("X::Channel::SendOnClosed"), "Cannot send a message on a closed channel"};
             Value v = args.empty() ? Value::any() : args[0]; q.push_back(v); return v;
         }
         if (m == "poll") {
@@ -3263,7 +3263,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             if (q.empty()) {
                 if (isClosed()) {
                     if (inv.hash->count("failCause")) throw RakuError{(*inv.hash)["failCause"], "Channel failed"};
-                    throw RakuError{Value::typeObj("X::Channel::ReceiveOnClosed"), "Cannot receive on a closed channel"};
+                    throw RakuError{Value::typeObj("X::Channel::ReceiveOnClosed"), "Cannot receive a message on a closed channel"};
                 }
                 return Value::nil(); // nothing running that could ever send
             }
@@ -5146,6 +5146,35 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 // Only when the attr actually received a value (an explicit default or a
                 // construction arg); a bare `has T:D $.x` with neither is a compile-time
                 // concern (X::Syntax::Variable::MissingInitializer) we don't model here.
+                // the DEFAULT constructor takes named arguments only — a class
+                // that wants positionals writes its own .new or a BUILD
+                // …but a class deriving a BUILT-IN (`is Num`, `is Str`) inherits
+                // that type's constructor, which does take a positional
+                bool nativeBased = false;
+                for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get())
+                    if (!c2->nativeParent.empty()) { nativeBased = true; break; }
+                if (!nativeBased && !ci->findMethod("new") && !ci->findMethod("BUILD"))
+                    for (auto& arg : args)
+                        if (arg.t != VT::Pair)
+                            throwTypedV("X::Constructor::Positional",
+                                        {{"type", Value::typeObj(ci->name)}},
+                                        "Default constructor for '" + ci->name +
+                                        "' only takes named arguments");
+                // `is required` — construction must supply a value
+                for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
+                    for (auto& at : (*cit)->attrs) {
+                        if (!at.required) continue;
+                        // `is required` means SUPPLIED AT CONSTRUCTION — a default
+                        // of its own does not excuse it
+                        bool gotArg = false;
+                        for (auto& arg : args)
+                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+                        if (!gotArg)
+                            throwTypedV("X::Attribute::Required",
+                                        {{"name", Value::str("$!" + at.name)}},
+                                        "The attribute '$!" + at.name +
+                                        "' is required, but you did not provide a value for it.");
+                    }
                 for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
                     for (auto& at : (*cit)->attrs) {
                         if (!at.defConstraint) continue;

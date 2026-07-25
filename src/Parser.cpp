@@ -4756,6 +4756,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         continue;
                     }
                     if (tr == "is" && isIdent("rw")) a.rw = true;
+                    if (tr == "is" && isIdent("required")) a.required = true;
                     if (tr == "is" && isKind(Tok::Ident)) {
                         static const std::set<std::string> containers = {
                             "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};

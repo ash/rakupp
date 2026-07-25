@@ -39,4 +39,26 @@ check(\().elems,                  '0',                 'empty-capture');
 my $c = \(1, 2);
 check($c.raku, '\\(1, 2)', 'capture-raku-round-trips');
 
+# 4. typed exceptions the docs demonstrate
+class Req { has $.a is required }
+check((try { Req.new; 'no-throw' }) // $!.^name, 'X::Attribute::Required', 'required-attr-throws');
+check(Req.new(a => 5).a, '5', 'required-attr-supplied');
+# a default of its own does NOT excuse `is required`
+class ReqD { has $.d is required = 7 }
+check((try { ReqD.new; 'no-throw' }) // $!.^name, 'X::Attribute::Required', 'required-beats-default');
+# the DEFAULT constructor is named-only …
+class Plain { has $.b }
+check((try { Plain.new(1); 'no-throw' }) // $!.^name, 'X::Constructor::Positional', 'default-ctor-is-named-only');
+check(Plain.new(b => 2).b, '2', 'named-construction-works');
+# … but a class with its own .new, a BUILD, or a BUILT-IN parent takes positionals
+class Own { has $.e; method new($v) { self.bless(e => $v) } }
+check(Own.new(9).e, '9', 'own-new-takes-positional');
+class Built { has $.f; submethod BUILD(:$!f = 3) { } }
+check(Built.new.f, '3', 'build-submethod');
+my $sub = my class MyNum is Num { }.new(NaN);
+check($sub.defined, 'True', 'builtin-parent-takes-positional');
+# Channel wording
+my $ch = Channel.new; $ch.close;
+check((try { $ch.send(1); 'no-throw' }) // $!.message, 'Cannot send a message on a closed channel', 'send-on-closed-wording');
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

@@ -3291,7 +3291,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& md : cd->methods) addTo(ci->methods, md.get());
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
-                        ca.pub = a.pub; ca.rw = a.rw; ca.def = a.def.get(); ca.type = a.type;
+                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.type = a.type;
                         ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
                         ci->attrs.push_back(ca);
@@ -3661,7 +3661,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                     "Attribute '" + std::string(1, a.sigil) + "!" + a.name +
                                     "' conflicts in class '" + clsName +
                                     "' composition: also declared in role '" + role->name + "'"};
-                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.type = a.type;
+                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = a.type;
                 ca.containerIs = a.containerIs;
                 ca.handles = a.handles;
                 ca.defConstraint = a.defConstraint;
