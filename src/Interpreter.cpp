@@ -6978,6 +6978,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // the invocant is only a route to the real target — a read-only attr is OK here
         Value* base = lvalue(mc->inv.get(), /*asInvocant=*/true);
+        // `$failure.handled = True` marks it inert — the one writable accessor
+        // a Failure has
+        if (base->t == VT::Hash && base->hashKind == "Failure" && mc->method == "handled") {
+            if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
+            return &(*base->hash)["handled"];
+        }
         if (base->t == VT::Hash && (base->hashKind == "FileHandle" || base->hashKind == "Scheduler")) {
             if (!base->hash) base->hash = std::make_shared<std::map<std::string, Value>>();
             return &(*base->hash)[mc->method];

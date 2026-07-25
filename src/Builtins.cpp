@@ -2245,17 +2245,25 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // a Parameter's introspection (.name/.type/.named/.optional/.slurpy)
     // `.dynamic` — was this container declared with a `*` twigil? `.default` —
     // its `is default(…)` element value (Any when it has none).
+    // `.self` is the invocant itself — the identity method every type has
+    if (m == "self" && args.empty()) return inv;
+
     // a value reached any other way is not a dynamic variable (the `*`-twigil
     // case is answered from the NAME, in the MethodCall evaluator)
     if (m == "dynamic" && (inv.t == VT::Array || inv.t == VT::Hash || inv.t == VT::Str ||
                            inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Any))
         return Value::boolean(false);
-    if (m == "default" && (inv.t == VT::Array || inv.t == VT::Hash)) {
+    if (m == "default" && (inv.t == VT::Array ||
+                          (inv.t == VT::Hash && inv.hashKind != "Parameter"))) {
         if (inv.pairVal) return *inv.pairVal;
         // a QuantHash has a TYPED default, not Any: False for the Set family,
-        // 0 for the weighted ones
-        if (inv.t == VT::Hash && !inv.hashKind.empty() && inv.hashKind != "Map")
+        // 0 for the weighted ones. Only those — every other tagged Hash
+        // (Parameter, Failure, …) has its own `.default`, or none.
+        static const std::set<std::string> quant = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+        if (inv.t == VT::Hash && quant.count(inv.hashKind))
             return inv.hashKind.rfind("Set", 0) == 0 ? Value::boolean(false) : Value::integer(0);
+        if (inv.t == VT::Hash && !inv.hashKind.empty() && inv.hashKind != "Map")
+            return Value::any(); // not a container — fall through below
         return Value::any();
     }
 
@@ -2278,6 +2286,25 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // Capture.new(:list(...), :hash(...)) — build the \(…)-style capture value
     // Attribute.new(:name<$!x>, :type(Int), :package(Foo)) — build an Attribute
     // meta-object (for .^add_attribute and dynamic class construction).
+    if (inv.t == VT::Type && inv.s == "IO::Path::Parts" && m == "new") {
+        Value pp = Value::makeHash(); pp.hashKind = "IO::Path::Parts";
+        auto pos = [&](size_t i) { return args.size() > i && args[i].t != VT::Pair ? args[i].toStr() : std::string(); };
+        (*pp.hash)["volume"] = Value::str(pos(0));
+        (*pp.hash)["dirname"] = Value::str(pos(1));
+        (*pp.hash)["basename"] = Value::str(pos(2));
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal &&
+            (a.s == "volume" || a.s == "dirname" || a.s == "basename"))
+            (*pp.hash)[a.s] = Value::str(a.pairVal->toStr());
+        return pp;
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "IO::Path::Parts") {
+        if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash)[m];
+        if (m == "gist" || m == "raku" || m == "perl" || m == "Str") {
+            auto q = [&](const char* k) { return "\"" + (*inv.hash)[k].toStr() + "\""; };
+            return Value::str("IO::Path::Parts.new(" + q("volume") + "," + q("dirname") + "," + q("basename") + ")");
+        }
+        if (m == "elems") return Value::integer(3);
+    }
     if (inv.t == VT::Type && inv.s == "Attribute" && m == "new") {
         Value at = Value::makeHash(); at.hashKind = "Attribute";
         (*at.hash)["name"] = Value::str(""); (*at.hash)["type"] = Value::typeObj("Mu");
@@ -6434,6 +6461,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         return Value::boolean(true);
     }
 
+    // Str -> Date / DateTime / Version: the string coercions the types answer
+    // through their own .new (`"2024-06-01".Date`)
+    if (inv.t == VT::Str && inv.hashKind.empty() &&
+        (m == "Date" || m == "DateTime" || m == "Version")) {
+        ValueList one{inv};
+        return methodCall(Value::typeObj(m), "new", one, nullptr);
+    }
+
     // ---- IO::Path (string-as-path) ----
     if (m == "IO") {
         // Any has no .IO (Cool does): an undefined invocant dies rather than
@@ -6618,6 +6653,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             return asIO(s);
         }
         if (m == "dirname") return Value::str(dirOf(inv.toStr()));
+        // `.parts` — the (volume, dirname, basename) triple as an
+        // IO::Path::Parts, which is Associative on those three keys
+        if (m == "parts") {
+            std::string full = inv.toStr();
+            Value pp = Value::makeHash(); pp.hashKind = "IO::Path::Parts";
+            (*pp.hash)["volume"]   = Value::str("");
+            (*pp.hash)["dirname"]  = Value::str(dirOf(full));
+            std::string b = full; while (b.size() > 1 && b.back() == '/') b.pop_back();
+            auto bp = b.find_last_of('/');
+            (*pp.hash)["basename"] = Value::str(bp == std::string::npos ? b : b.substr(bp + 1));
+            return pp;
+        }
         if (m == "sibling") return asIO(dirOf(inv.toStr()) + "/" + (args.empty() ? "" : a0().toStr()));
         if (m == "child" || m == "add") {
             if (!args.empty()) rejectNulPath(args[0].toStr());
@@ -10202,8 +10249,14 @@ void Interpreter::registerBuiltins() {
             Value* be = I.tctx_.cur->find("$!");
             if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be;
         }
+        // a bare `fail` with no $! still carries an exception — X::AdHoc
+        // "Failed" — so `.exception.message` answers rather than dying on Any
+        if (ex.t != VT::Object)
+            ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s : "Failed");
         Value f = Value::makeHash(); f.hashKind = "Failure";
         (*f.hash)["exception"] = ex;
+        (*f.hash)["message"] = ex.obj && ex.obj->attrs.count("message")
+                             ? ex.obj->attrs["message"] : Value::str("Failed");
         throw ReturnEx{f};
     };
     // val(Str) — a fully-numeric string becomes the matching allomorph
