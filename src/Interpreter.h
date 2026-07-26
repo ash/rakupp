@@ -382,6 +382,7 @@ public:
     // code blocks/assertions run for real, in the regex's closed-over scope
     // What a `for` walks: an object with its own `.iterator` decides for itself.
     Value iterationSourceOf(Value v);
+    std::thread::id mainThreadId() const { return mainThread_; } // `exit` ends the process from any thread
     Value regexMatch(const std::string& subject, const std::string& pattern,
                      const Value* rxVal = nullptr);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation

@@ -9747,7 +9747,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             bool first = true; Value prevKey;
             for (auto& v : items) {
                 Value k = keyOf(v); bool same = false;
-                if (!first) same = withF.t == VT::Code ? callCallable(withF, ValueList{k, prevKey}).truthy() : (k.toStr() == prevKey.toStr());
+                if (!first) same = withF.t == VT::Code ? callCallable(withF, ValueList{k, prevKey}).truthy()
+                                                      : applyArith("===", k, prevKey).truthy();
                 if (first || !same) out.arr->push_back(v);
                 prevKey = k; first = false;
             }
@@ -11879,8 +11880,16 @@ void Interpreter::registerBuiltins() {
         ValueList rest(a.begin() + 1, a.end());
         return I.methodCall(a[0], "samemark", rest);
     };
-    B["exit"] = [](Interpreter&, ValueList& a) -> Value {
-        throw ExitEx{(int)(a.empty() ? 0 : a[0].toInt())};
+    B["exit"] = [](Interpreter& I, ValueList& a) -> Value {
+        int code = (int)(a.empty() ? 0 : a[0].toInt());
+        // `exit` ends the PROCESS, wherever it is called from. Thrown on a worker
+        // thread the ExitEx would only break that thread's Promise, leaving the
+        // main thread to run on — `start { sleep 3; exit }` has to stop everything.
+        if (std::this_thread::get_id() != I.mainThreadId()) {
+            std::cout.flush(); std::cerr.flush();
+            _exit(code);
+        }
+        throw ExitEx{code};
     };
     // stub / yada operators
     B["!!!"] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::str("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
@@ -12978,6 +12987,19 @@ void Interpreter::registerBuiltins() {
         I.sleepYield(a.empty() ? 0 : a[0].toNum());  // GIL-released + capped (see sleepYield)
         return Value::any(); // sleep returns Nil
     };
+    // `sleep-until $instant` sleeps until that moment and answers whether it
+    // actually waited — an instant already past answers False without sleeping.
+    B["sleep-until"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::boolean(false);
+        // measured against the same high-resolution clock `now` reads, so a
+        // fraction-of-a-second target is not lost to truncation
+        auto d = std::chrono::system_clock::now().time_since_epoch();
+        double now = std::chrono::duration<double>(d).count();
+        double target = a[0].toNum();
+        if (target <= now) return Value::boolean(false);
+        I.sleepYield(target - now);
+        return Value::boolean(true);
+    };
     // signal(SIGINT, …) — a Supply that emits the Signal enum value each time the
     // process receives one of the named OS signals. Standard Ctrl-C shutdown:
     // `react { whenever signal(SIGINT) { $server.stop; done } }`.
@@ -13131,11 +13153,28 @@ void Interpreter::registerBuiltins() {
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->front(); a[0].arr->erase(a[0].arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
         return Value::any();
     };
+    // `flat(…)` delegates to the METHOD, whose recursive walk is the one that
+    // stops at an itemized element wherever it sits — `flat 1, (2, $(5,6))` keeps
+    // the `$(5,6)` whole, which a one-level flatten of each argument does not.
+    // `flat(…)` opens each ARGUMENT one level (an Array counts, so `flat(@a)` is
+    // its elements) and then descends through non-itemized sublists — an
+    // itemized one stays whole wherever it sits, so `flat 1, (2, $(5,6))` keeps
+    // the `$(5,6)`. Delegating wholesale to the METHOD is not the same thing:
+    // that rule never opens an Array below the top level, which is what Cro's
+    // router walks.
     B["flat"] = [](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array(); out.isList = true; // flat is a List (flattens in list context)
+        Value out = Value::array(); out.isList = true;
+        std::function<void(const Value&)> deeper = [&](const Value& x) {
+            if (x.t == VT::Array && x.arr && x.isList && !x.itemized)
+                for (auto& e : *x.arr) deeper(e);
+            else if (x.t == VT::Range) for (auto& e : x.flatten()) out.arr->push_back(e);
+            else out.arr->push_back(x);
+        };
         for (auto& v : a) {
-            if (v.itemized) { out.arr->push_back(v); continue; } // $(@a) stays ONE item
-            ValueList l = v.flatten(); for (auto& x : l) out.arr->push_back(x);
+            if (v.itemized) { out.arr->push_back(v); continue; }
+            if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) deeper(e); continue; }
+            if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr->push_back(e); continue; }
+            out.arr->push_back(v);
         }
         return out;
     };
