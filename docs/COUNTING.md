@@ -140,6 +140,48 @@ A change ships only if the sorted list of fully-passing files (`[PASS]` lines) h
 **no removals** versus the prior baseline. Per-assertion numbers may wobble by a
 few on timing-sensitive files; the file list is the gate.
 
+### Watch measure 2's DENOMINATOR, not just its numerator
+
+Measure 2 is the only ratio whose denominator moves with the code under test:
+it counts assertions the files *actually emitted*. When a change makes a file die
+partway through, that file stops printing TAP, so the lost tests leave **both**
+sides of measure 2 at once. The percentage barely twitches while real coverage
+walks out of the room.
+
+A worked example, from the 2026-07-26 conformance batch. Baseline:
+
+```
+Assertions passed:    195924 / 200440  (97.8%)  of tests that ran
+```
+
+Adding `$val ~~ :method` (a Pair on the right of a smartmatch names a method to
+call) gave:
+
+```
+Assertions passed:    195922 / 200427  (97.8%)  of tests that ran
+```
+
+The numerator moved by −2, comfortably inside the flapper band, and the
+percentage was identical to one decimal place. The **denominator** is what gave
+the change away: 13 assertions stopped being emitted, so some file was now dying
+mid-run. The cause was that the new code evaluated the smartmatch's right-hand
+side eagerly to find out whether it was a Pair — which meant every *other*
+right-hand side got evaluated twice, and anything with side effects ran twice.
+Restricting the check to a syntactic pair node restored the emission count and
+turned the −2 into a +10:
+
+```
+Assertions passed:    195934 / 200440  (97.8%)  of tests that ran
+```
+
+Note that 200,440 is measure 2's denominator — *tests that ran*. The ~214k and
+~217k figures on the next two lines of the same summary block are measures 3 and
+4, and they do **not** move like this: a file that dies mid-run still declared
+its `plan N`, so measures 3 and 4 keep charging us for every test it failed to
+reach. That is exactly what makes them the honest headline numbers — and exactly
+what makes measure 2's moving denominator the sharpest *early warning* while
+iterating.
+
 ## Reproducing
 
 ```sh
