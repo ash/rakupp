@@ -3255,8 +3255,28 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     // Instant.DateTime — an Instant is posix seconds (tagged Num); build the
     // DateTime from it (zef: `now.DateTime.earlier(:hours(N)).Instant`).
+    // `$instant.to-posix` — the POSIX seconds and whether this is a leap second.
+    // rakupp's Instant is TAI (POSIX + 10), so the trip back subtracts them.
+    if (m == "to-posix" && (inv.hashKind == "Instant" || inv.isNumeric())) {
+        Value o = Value::array(); o.isList = true;
+        o.arr->push_back(applyArith("-", inv.hashKind == "Instant" ? inv : Value::number(inv.toNum()),
+                                    Value::integer(10)));
+        o.arr->push_back(Value::boolean(false));
+        return o;
+    }
     if (m == "DateTime" && inv.hashKind == "Instant" && inv.isNumeric())
         return methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(inv.toNum())});
+    // `Date.new-from-daycount($n)` — days since the Modified Julian Date epoch
+    if (inv.t == VT::Type && inv.s == "Date" && m == "new-from-daycount" && !args.empty()) {
+        // MJD day 0 is 1858-11-17, which is 40587 days before the civil epoch
+        long long y, mo, d;
+        daysToCivil(args[0].toInt() - 40587, y, mo, d);
+        Value v = Value::makeHash(); v.hashKind = "Date";
+        (*v.hash)["year"] = Value::integer(y);
+        (*v.hash)["month"] = Value::integer(mo);
+        (*v.hash)["day"] = Value::integer(d);
+        return v;
+    }
     if (inv.t == VT::Type && inv.s == "Instant" && m == "from-posix") {
         // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
         return Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
@@ -4830,6 +4850,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             if (m == "days-in-month") return Value::integer(dim);
             return makeDate(civilToDays(y, mo, dim)); // last-date-in-month → a Date
         }
+        if (m == "first-date-in-month")
+            return makeDate(civilToDays(fld("year"), fld("month"), 1));
         if (m == "day-of-year") {
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             return Value::integer(civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1);
@@ -6188,6 +6210,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
 
     // Set/Bag/Mix coercions and queries
+    // the ROLE coercers name the immutable member of each family
+    if (m == "Setty" || m == "Baggy" || m == "Mixy")
+        return methodCall(inv, m == "Setty" ? "Set" : m == "Baggy" ? "Bag" : "Mix", args, rwArgs);
+    // a Capture is already one
+    if (m == "Capture" && inv.t == VT::Array && inv.hashKind == "Capture") return inv;
     if (m == "Set" || m == "SetHash" || m == "Bag" || m == "BagHash" || m == "Mix" || m == "MixHash") {
         if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL)
             throwTyped("X::Cannot::Lazy", {{"what", m}}, "Cannot " + m + " a lazy list");
@@ -8535,6 +8562,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         return one;
     }
     // list methods on a lone scalar treat it as a 1-element list: 42.grep(*>3), 'x'.map(...)
+    // (a Code is one too — `(&say).kv` is `(0, &say)`)
+    if (inv.t == VT::Code &&
+        (m == "kv" || m == "pairs" || m == "antipairs" || m == "keys" || m == "values")) {
+        Value one = Value::array(); one.arr->push_back(inv); one.isList = true;
+        return methodCall(one, m, args, rwArgs);
+    }
     if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
          inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair) &&
         (m == "grep" || m == "map" || m == "first" || m == "sort" || m == "reverse" ||
@@ -8817,6 +8850,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
     }
     // an infinite range (…..Inf) must not materialise: only lazy views are defined
+    // `$range.in-range($v)` — True when the value is inside, and otherwise
+    // THROWS X::OutOfRange (Rakudo throws here; it does not hand back a soft
+    // Failure, so even `.defined` on the result explodes)
+    if (inv.t == VT::Range && m == "in-range" && !args.empty()) {
+        if (applyArith("~~", args[0], inv).truthy()) return Value::boolean(true);
+        std::string what = "Value";
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal) what = a.pairVal->toStr();
+        throwTypedV("X::OutOfRange",
+            {{"got", args[0]}, {"what", Value::str(what)}, {"range", inv}},
+            what + " out of range. Is: " + args[0].gist() + ", should be in " + inv.gist());
+    }
     if (inv.t == VT::Range && inv.rTo >= 9000000000000000000LL) {
         long long lo = inv.rFrom + (inv.rExFrom ? 1 : 0);
         if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
@@ -8858,6 +8902,32 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr = items; (*s.hash)["values"] = v; return s; }
         if (m == "chrs") { std::string r; for (auto& x : items) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); } // list of codepoints -> Str
         if (m == "of") return Value::typeObj("Mu"); // element type of an untyped Array/List
+        // the positional protocol, spelled out — a Range answers these as the
+        // list it stands for, and an Array/List does too
+        if (m == "AT-POS" && !args.empty()) {
+            long long i = args[0].toInt(), n = (long long)items.size();
+            if (i < 0) i += n;
+            return (i >= 0 && i < n) ? items[(size_t)i] : Value::any();
+        }
+        if (m == "EXISTS-POS" && !args.empty()) {
+            long long i = args[0].toInt(), n = (long long)items.size();
+            if (i < 0) i += n;
+            return Value::boolean(i >= 0 && i < n);
+        }
+        // `.slice(@indices)` — the elements at those positions, as a Seq
+        if (m == "slice") {
+            Value o = Value::array(); o.isList = true; o.s = "Seq";
+            long long n = (long long)items.size();
+            for (auto& a : args) {
+                if (a.t == VT::Pair) continue;
+                for (auto& iv : (a.t == VT::Array || a.t == VT::Range) ? toList(a) : ValueList{a}) {
+                    long long i = iv.toInt();
+                    if (i < 0) i += n;
+                    if (i >= 0 && i < n) o.arr->push_back(items[(size_t)i]);
+                }
+            }
+            return o;
+        }
         if (m == "elems") return Value::integer((long long)items.size());
         if (m == "end") return Value::integer((long long)items.size() - 1);
         if (m == "Bool") return Value::boolean(!items.empty());
@@ -12231,6 +12301,14 @@ void Interpreter::registerBuiltins() {
     // then put it back however the block exits
     // uniparse("LATIN SMALL LETTER A") — the inverse of .uniname. A comma-
     // separated list of names yields one character each.
+    // `comb($matcher, $input [, $limit])` — the sub form takes the matcher FIRST
+    B["comb"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) { Value o = Value::array(); o.isList = true; o.s = "Seq"; return o; }
+        if (a.size() == 1) return I.methodCall(a[0], "comb", ValueList{});
+        ValueList rest{a[0]};
+        for (size_t i = 2; i < a.size(); i++) rest.push_back(a[i]);
+        return I.methodCall(a[1], "comb", rest);
+    };
     B["uniparse"] = [](Interpreter&, ValueList& a) -> Value {
         std::string out;
         for (auto& v : a) {

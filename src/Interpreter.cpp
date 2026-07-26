@@ -14243,6 +14243,26 @@ Value Interpreter::eval(Expr* e) {
                 }
                 else inv = Value::array(); // no container: still act on a fresh Array
             }
+            // `$s.subst-mutate(…)` substitutes IN PLACE and answers the Match —
+            // it needs the invocant's slot, so it is handled here rather than in
+            // the value-only method dispatcher.
+            if (mc->method == "subst-mutate" && !mc->meta && !mc->methodExpr && !mc->args.empty()) {
+                Value* lv = nullptr;
+                try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
+                if (lv) {
+                    ValueList sargs = evalArgs(mc->args);
+                    std::string pat; bool literal = false;
+                    if (!sargs.empty() && sargs[0].t == VT::Regex) pat = rxInterpArrays(sargs[0].s);
+                    else if (!sargs.empty()) { pat = sargs[0].toStr(); literal = true; }
+                    Value replArg = sargs.size() > 1 ? sargs[1] : Value::str("");
+                    ValueList adv;
+                    for (size_t i = 2; i < sargs.size(); i++) adv.push_back(sargs[i]);
+                    long nsub = 0; Value mres;
+                    std::string out = substSelect(lv->toStr(), pat, &replArg, adv, nsub, literal, nullptr, &mres);
+                    *lv = Value::str(out);
+                    return mres;
+                }
+            }
             // `.DEFINITE` as a literal identifier is a metamodel macro: it always
             // reports concreteness and never a user-declared DEFINITE method. The
             // quoted `."DEFINITE"()` form (methodExpr set) still dispatches normally.

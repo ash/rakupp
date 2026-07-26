@@ -329,7 +329,12 @@ std::string Value::toStr() const {
             }
             return out;
         }
-        case VT::Code: return "sub { ... }";
+        // a NAMED routine gists as its `&`-reference; an anonymous block keeps
+        // the generic form (Rakudo prints an address there, which is not
+        // reproducible and not worth reproducing)
+        case VT::Code: return code && !code->name.empty() &&
+                              code->name.rfind("anon", 0) != 0
+                            ? "&" + code->name : "sub { ... }";
         case VT::Whatever: return "*";
         case VT::Object:
             if (obj && obj->hasBoxed) return obj->boxed.toStr(); // but/does mixin over a value
