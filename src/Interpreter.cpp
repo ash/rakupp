@@ -13922,7 +13922,9 @@ Value Interpreter::eval(Expr* e) {
             Value a = Value::array();
             a.isList = l->isList; // word-lists are Lists (flatten in list context)
             for (auto& it : l->items) {
-                Value v = eval(it.get());
+                // an element is a VALUE: a bare `/pat/` in `["a", /b+/, 4]` is the
+                // Regex itself, not an immediate match against $_
+                Value v = evalValueOf(it.get());
                 // a bare @-variable (or a |slip) flattens into the array literal;
                 // nested [...] literals stay as single items. A hyper result
                 // (`@x».meth`) is itemized — it stays one element (so

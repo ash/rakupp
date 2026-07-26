@@ -369,6 +369,9 @@ std::string Value::gist() const {
             // IO::Spec::Unix gists by its SHORT name, `(Unix)` — Rakudo does
             if (s.rfind("IO::Spec::", 0) == 0) return "(" + s.substr(10) + ")";
             return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
+        // a Regex gists as the literal that makes it, `rx/a/` — not as its bare
+        // pattern text (which is what .Str answers, and what the engine consumes)
+        case VT::Regex: if (g_rakuRepr) return g_rakuRepr(*this); return s;
         case VT::Array: {
             ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
             // a Capture gists as the literal that makes it, `\(1, :a(2))`

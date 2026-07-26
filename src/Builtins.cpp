@@ -7553,8 +7553,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "split") {
             Regex re(pat); Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
             bool skipEmpty = false;
+            // `:v`/`:k`/`:kv`/`:p` — the separator comes back between the pieces as
+            // a Match, as its delimiter index (always 0 here: one delimiter), or both
+            char want = 0;
             for (auto& la : args)
-                if (la.t == VT::Pair && la.s == "skip-empty" && (!la.pairVal || la.pairVal->truthy())) skipEmpty = true;
+                if (la.t == VT::Pair && (!la.pairVal || la.pairVal->truthy())) {
+                    if (la.s == "skip-empty") skipEmpty = true;
+                    else if (la.s == "v" || la.s == "k" || la.s == "p") want = la.s[0];
+                    else if (la.s == "kv") want = 'm';
+                }
             auto emit = [&](const std::string& piece) { if (!(skipEmpty && piece.empty())) out.arr->push_back(Value::str(piece)); };
             // optional limit (second positional): <=0 → empty, 1 → the whole string,
             // n → at most n pieces
@@ -7570,6 +7577,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 if (haveLimit && (long long)out.arr->size() >= limit - 1) break;
                 if (mm.to == mm.from && mm.from == pos) { if (pos >= (long)subj.size()) break; }
                 emit(subj.substr(pos, mm.from - pos));
+                if (want) {
+                    Value sepv = Value::matchVal(subj.substr(mm.from, mm.to - mm.from),
+                                                 (long)mm.from, (long)mm.to);
+                    Value idx = Value::integer(0);
+                    if (want == 'k' || want == 'm') out.arr->push_back(idx);
+                    if (want == 'v' || want == 'm') out.arr->push_back(sepv);
+                    if (want == 'p') {
+                        Value pr = Value::pair("0", sepv);
+                        pr.pairKey = std::make_shared<Value>(idx);
+                        out.arr->push_back(std::move(pr));
+                    }
+                }
                 pos = mm.to > mm.from ? mm.to : mm.to + 1;
             }
             emit(subj.substr(std::min((size_t)pos, subj.size())));
@@ -7714,13 +7733,22 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         std::vector<Delim> delims;
         auto add = [&](const Value& d) { if (d.t == VT::Regex) delims.push_back({true, d.s}); else delims.push_back({false, d.toStr()}); };
         if (d0.t == VT::Array) { for (auto& e : *d0.arr) add(e); } else add(d0);
+        // `:v`/`:k`/`:kv`/`:p` interleave the SEPARATORS with the pieces — as the
+        // matched text, the matching delimiter's INDEX in the delimiter list, both,
+        // or index => text. A regex delimiter yields a Match, a literal one a Str.
+        char want = 0;
+        for (auto& a : args)
+            if (a.t == VT::Pair && (!a.pairVal || a.pairVal->truthy())) {
+                if (a.s == "v" || a.s == "k" || a.s == "p") want = a.s[0];
+                else if (a.s == "kv") want = 'm';
+            }
         bool keepSep = false, skipEmpty = false, fromEnd = false;
         long long limit = -1; bool haveLimit = false; // second positional (a `*` means unlimited)
         { bool first = true;
           for (auto& a : args) {
               if (a.t == VT::Pair) {
                   if (a.pairVal && a.pairVal->truthy()) {
-                      if (a.s == "v" || a.s == "kv") keepSep = true;
+                      if (a.s == "v" || a.s == "kv" || a.s == "k" || a.s == "p") keepSep = true;
                       else if (a.s == "skip-empty") skipEmpty = true;
                       else if (a.s == "end") fromEnd = true; // limit applies from the END (2026.06)
                   }
@@ -7758,24 +7786,26 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         // collect every separator match, then apply the limit by VALUE count
         // (separators from :v never count) from the front — or the end (:end)
-        std::vector<std::pair<size_t, size_t>> seps;
+        struct Sep { size_t at, len, which; };
+        std::vector<Sep> seps;
         size_t pos = 0;
         while (pos <= s.size()) {
-            size_t bestStart = std::string::npos, bestLen = 0; // earliest, then longest match
-            for (auto& d : delims) {
+            size_t bestStart = std::string::npos, bestLen = 0, bestWhich = 0; // earliest, then longest match
+            for (size_t di = 0; di < delims.size(); di++) {
+                const Delim& d = delims[di];
                 if (d.isRx) {
                     Regex re(d.str); RxMatch mm;
                     if (re.ok() && re.search(s, (long)pos, mm) && mm.to > mm.from) {
                         size_t st = mm.from, ln = mm.to - mm.from;
-                        if (st < bestStart || (st == bestStart && ln > bestLen)) { bestStart = st; bestLen = ln; }
+                        if (st < bestStart || (st == bestStart && ln > bestLen)) { bestStart = st; bestLen = ln; bestWhich = di; }
                     }
                 } else if (!d.str.empty()) {
                     size_t f = s.find(d.str, pos);
-                    if (f != std::string::npos && (f < bestStart || (f == bestStart && d.str.size() > bestLen))) { bestStart = f; bestLen = d.str.size(); }
+                    if (f != std::string::npos && (f < bestStart || (f == bestStart && d.str.size() > bestLen))) { bestStart = f; bestLen = d.str.size(); bestWhich = di; }
                 }
             }
             if (bestStart == std::string::npos) break;
-            seps.push_back({bestStart, bestLen});
+            seps.push_back({bestStart, bestLen, bestWhich});
             pos = bestStart + (bestLen ? bestLen : 1);
         }
         size_t keep = haveLimit ? (size_t)std::max(0LL, limit - 1) : seps.size();
@@ -7784,9 +7814,22 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         size_t k1 = (fromEnd && haveLimit) ? seps.size() : keep;
         size_t at = 0;
         for (size_t k = k0; k < k1; k++) {
-            emit(s.substr(at, seps[k].first - at));
-            if (keepSep) out.arr->push_back(Value::str(s.substr(seps[k].first, seps[k].second)));
-            at = seps[k].first + seps[k].second;
+            emit(s.substr(at, seps[k].at - at));
+            if (keepSep) {
+                std::string txt = s.substr(seps[k].at, seps[k].len);
+                Value sepv = delims[seps[k].which].isRx
+                           ? Value::matchVal(txt, (long)seps[k].at, (long)(seps[k].at + seps[k].len))
+                           : Value::str(txt);
+                Value idx = Value::integer((long long)seps[k].which);
+                if (want == 'k' || want == 'm') out.arr->push_back(idx);
+                if (want == 'v' || want == 'm' || !want) out.arr->push_back(sepv);
+                if (want == 'p') {
+                    Value pr = Value::pair(std::to_string(seps[k].which), sepv);
+                    pr.pairKey = std::make_shared<Value>(idx);
+                    out.arr->push_back(std::move(pr));
+                }
+            }
+            at = seps[k].at + seps[k].len;
         }
         emit(s.substr(at));
         return out;
@@ -7794,7 +7837,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "words") {
         std::istringstream is(inv.toStr()); std::string w; Value out = Value::array();
         out.isList = true; out.s = "Seq";
-        while (is >> w) out.arr->push_back(Value::str(w));
+        // an optional limit: at most N words (`*`/Inf means all of them)
+        long long limit = -1;
+        for (auto& a : args)
+            if (a.t != VT::Pair && a.t != VT::Whatever &&
+                !(a.isNumeric() && std::isinf(a.toNum()))) { limit = a.toInt(); break; }
+        while (is >> w) {
+            if (limit >= 0 && (long long)out.arr->size() >= limit) break;
+            out.arr->push_back(Value::str(w));
+        }
         return out;
     }
     if (m == "lines") {
