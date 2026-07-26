@@ -1551,12 +1551,16 @@ static Value makeSignature(const Callable* c) {
     Value params = Value::array(); params.isList = true;
     for (const Param* pp : ps) {
         const Param& p = *pp;
-        if (p.invocant) continue;
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
         // an ANONYMOUS parameter has an empty .name, not its bare sigil
         (*pv.hash)["name"] = Value::str(p.name.size() > 1 ? p.name : std::string());
-        // `.usage-name` is the name without its sigil/twigil
-        (*pv.hash)["usage-name"] = Value::str(p.name.size() > 1 ? p.name.substr(1) : std::string());
+        // `.usage-name` is the name without its sigil AND its twigil, so the
+        // dynamic `Str @*l` is usable as plain `l`
+        {
+            std::string un = p.name.size() > 1 ? p.name.substr(1) : std::string();
+            if (!un.empty() && std::strchr("*?!.=~^:", un[0])) un = un.substr(1);
+            (*pv.hash)["usage-name"] = Value::str(un);
+        }
         (*pv.hash)["type"] = Value::str(p.type);
         // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router).
         // Unconstrained is Mu; a slurpy/@-sigil param is Positional, %-sigil
@@ -1598,7 +1602,9 @@ static Value makeSignature(const Callable* c) {
             };
             (*pv.hash)["default"] = dc;
         }
-        else (*pv.hash)["default"] = Value::any();
+        // with no default at all `.default` is the Code TYPE OBJECT — the
+        // attribute's declared type — not a bare Any
+        else (*pv.hash)["default"] = Value::typeObj("Code");
         (*pv.hash)["optional"] = Value::boolean(p.optional || p.defaultVal != nullptr);
         (*pv.hash)["slurpy"] = Value::boolean(p.slurpy);
         // `.constraints`: a literal parameter ('greet' in `get -> 'greet', $n {}`)
@@ -6076,9 +6082,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (inv.t == VT::Match && m == "Str") return Value::str(inv.s);
     if (inv.t == VT::Match && (m == "from")) return Value::integer(inv.rFrom);
     if (inv.t == VT::Match && (m == "to")) return Value::integer(inv.rTo);
-    if (inv.t == VT::Match && (m == "orig" || m == "prematch" || m == "postmatch")) {
+    // `.target` is `.orig` under its Cursor-era name
+    if (inv.t == VT::Match && (m == "orig" || m == "target" || m == "prematch" || m == "postmatch")) {
         std::string orig = inv.ext ? *std::static_pointer_cast<std::string>(inv.ext) : inv.s;
-        if (m == "orig") return Value::str(orig);
+        if (m == "orig" || m == "target") return Value::str(orig);
         if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom, orig.size())));
         return Value::str((size_t)inv.rTo <= orig.size() ? orig.substr(inv.rTo) : "");
     }
