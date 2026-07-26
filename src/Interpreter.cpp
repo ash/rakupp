@@ -4785,7 +4785,7 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
     static const std::set<std::string> natNumTypes = {"num", "num32", "num64"};
     switch (arg.t) {
-        case VT::Int:  return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || type == "Rat" || natIntTypes.count(type) > 0;
+        case VT::Int:  return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || natIntTypes.count(type) > 0;
         case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real" || natNumTypes.count(type) > 0;
         case VT::Complex: return type == "Complex" || type == "Cool" || type == "Numeric";
         case VT::Rat:  return type == "Rat" || type == "Cool" || type == "Numeric" || type == "Real";
@@ -11995,6 +11995,12 @@ std::string Interpreter::strOf(const Value& v) {
     return v.toStr();
 }
 
+// `infix:<<∈>>` writes the operator inside a SECOND pair of angles, so the outer
+// pair is stripped — but a handful of real operators are themselves `<…>`-shaped
+// and must survive verbatim (`&infix:<<=>>` is the three-way comparison, not `=`).
+static bool angleShapedOp(const std::string& op) {
+    return op == "<=>" || op == "<==>" || op == "<->" || op == "<<>>";
+}
 // hyper markers in operator NAMES (&infix:<»+«>, prefix:<-«>) arrive as raw
 // UTF-8 — the lexer only normalizes op tokens — so map them to ASCII >>/<<.
 static std::string normHyperMarkers(std::string s) {
@@ -12294,7 +12300,7 @@ Value Interpreter::evalCall(Call* c) {
     // operator-call form: infix:<+>(1,2) / postfix:<i>($x) / prefix:<[**]>(2,3,4)
     if (c->name.rfind("infix:<", 0) == 0 && c->name.back() == '>') {
         std::string op = c->name.substr(7, c->name.size() - 8);
-        if (op.size() > 2 && op.front() == '<' && op.back() == '>')
+        if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
             op = op.substr(1, op.size() - 2); // infix:<<∈>> — double-angle form
         op = normHyperMarkers(op); // infix:<»+«>(…) — the hyper spelling as ASCII
         // `infix:<=>($x, v)` / `infix:<+=>($x, v)` / … — an assignment operator in
@@ -13659,7 +13665,7 @@ Value Interpreter::eval(Expr* e) {
                 std::string bare = ve->name.substr(1);
                 if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
                     std::string op = bare.substr(7, bare.size() - 8);
-                    if (op.size() > 2 && op.front() == '<' && op.back() == '>')
+                    if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
                         op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
                     op = normHyperMarkers(op); // &infix:<»+«> — hyper spelling
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;

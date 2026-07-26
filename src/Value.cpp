@@ -371,6 +371,8 @@ std::string Value::gist() const {
             return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
         case VT::Array: {
             ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
+            // a Capture gists as the literal that makes it, `\(1, :a(2))`
+            if (hashKind == "Capture" && g_rakuRepr) return g_rakuRepr(*this);
             std::string out = isList ? "(" : "[";
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
                 if (k) out += " ";

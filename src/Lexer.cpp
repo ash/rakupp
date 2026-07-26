@@ -1315,6 +1315,17 @@ Token Lexer::lexIdentOrVar() {
             while (!eof() && peek() != '>') name += advance();
             if (peek() == '>') name += advance();
         }
+        // `&infix:«<=>»` — the guillemet spelling of the same name. Its content is
+        // the operator verbatim, so it normalises to the `:<…>` form the rest of
+        // the compiler looks up (`&infix:«<=>»` and `&[<=>]` are one symbol).
+        else if (peek() == ':' && (unsigned char)peek(1) == 0xC2 && (unsigned char)peek(2) == 0xAB) {
+            advance(); advance(); advance(); // : «
+            std::string op;
+            while (!eof() && !((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB))
+                op += advance();
+            if (!eof()) { advance(); advance(); } // »
+            name += ":<" + op + ">";
+        }
         return make(Tok::Var, name);
     }
     // version literal: v0.48  v6  v1.2.3+  v6.*  — parts are digits or '*'

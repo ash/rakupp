@@ -3278,6 +3278,7 @@ ExprPtr Parser::parsePrimary() {
                 static const std::set<std::string> blockListops = {
                     "map", "grep", "first", "sort", "reduce", "produce",
                     "classify", "categorize", "grep-index", "first-index",
+                    "deepmap", "duckmap", "nodemap",
                 };
                 if (blockListops.count(name)) listopOk = true;
             }
@@ -3300,6 +3301,7 @@ ExprPtr Parser::parsePrimary() {
                     "map", "grep", "first", "sort", "reduce", "produce",
                     "min", "max", "sum", "classify", "categorize",
                     "grep-index", "first-index",
+                    "deepmap", "duckmap", "nodemap",
                 };
                 if (whateverListops.count(name)) listopOk = true;
             }
