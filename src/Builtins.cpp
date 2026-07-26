@@ -8615,6 +8615,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         one.isList = (m == "List");
         return one;
     }
+    // A TYPE OBJECT is an EMPTY list, not a one-element one: `Num.pairs` is (),
+    // `Range.reduce(&[+])` is Nil. (An INSTANCE of the same type is one element —
+    // that is the branch just below.)
+    if (inv.t == VT::Type) {
+        // …but only for the KEY/VALUE family. `.map`/`.sort`/`.grep` still see a
+        // ONE-element list (`Int.map({$_})` is `((Int))`) — a type object has no
+        // ELEMENTS to pair up, yet it is still a single thing to iterate.
+        static const std::set<std::string> emptyList = {
+            "pairs", "antipairs", "kv", "keys", "values", "invert"};
+        if (emptyList.count(m)) { Value o = Value::array(); o.isList = true; o.s = "Seq"; return o; }
+        if (m == "reduce" || m == "produce") return Value::nil();
+    }
     // list methods on a lone scalar treat it as a 1-element list: 42.grep(*>3), 'x'.map(...)
     // (a Code is one too — `(&say).kv` is `(0, &say)`)
     if (inv.t == VT::Code &&
@@ -8623,11 +8635,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         return methodCall(one, m, args, rwArgs);
     }
     if ((inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool ||
-         inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair) &&
+         inv.t == VT::Str || inv.t == VT::Complex || inv.t == VT::Pair ||
+         inv.t == VT::Type) && // a type object is one item to ITERATE (see above)
         (m == "grep" || m == "map" || m == "first" || m == "sort" || m == "reverse" ||
          m == "flat" || m == "reduce" || m == "grep-index" || m == "first-index" || m == "Supply" ||
          m == "head" || m == "tail" || m == "skip" || m == "elems" || m == "end" ||
-         m == "keys" || m == "values" || m == "kv" || m == "pairs" || m == "batch" || m == "rotor")) {
+         m == "keys" || m == "values" || m == "kv" || m == "pairs" || m == "batch" ||
+         m == "rotor" || m == "unique" || m == "squish" || m == "antipairs" ||
+         m == "combinations" || m == "permutations")) {
         // toList keeps the scalar as one item, but a Blob/Buf expands to its
         // BYTES (`$blob.rotor(3, :partial)` in Base64 chunks byte-wise)
         Value one = Value::array(); *one.arr = toList(inv); one.isList = true;
@@ -9338,11 +9353,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 out.arr->push_back(Value::integer(inv.rTo - (inv.rExTo ? 1 : 0)));
                 return out;
             }
-            Value lo, hi; bool started = false;
+            // an optional &mapper (or `:by(&code)`) decides the ORDER; the
+            // endpoints are still the original elements
+            Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "by" && a.pairVal) mapper = *a.pairVal;
+            Value lo, hi, loK, hiK; bool started = false;
             for (auto& v : items) {
-                if (!started) { lo = hi = v; started = true; continue; }
-                if (valueCmp(v, lo) < 0) lo = v;
-                if (valueCmp(v, hi) > 0) hi = v;
+                Value k = v;
+                if (mapper.t == VT::Code) { ValueList one{v}; k = callCallable(mapper, one); }
+                if (!started) { lo = hi = v; loK = hiK = k; started = true; continue; }
+                if (valueCmp(k, loK) < 0) { lo = v; loK = k; }
+                if (valueCmp(k, hiK) > 0) { hi = v; hiK = k; }
             }
             if (started && lo.t == VT::Int && hi.t == VT::Int)
                 return Value::range(lo.toInt(), hi.toInt(), false, false);
@@ -9668,9 +9690,31 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             return out;
         }
         if (m == "repeated") { // elements seen more than once (2nd+ occurrences)
-            Value out = Value::array(); std::set<std::string> seen;
-            for (auto& v : items) if (!seen.insert(v.toStr()).second) out.arr->push_back(v);
-            out.isList = true;
+            // `:as(&code)` compares the MAPPED value; `:with(&op)` supplies the
+            // comparison itself, which needs a linear scan rather than a set
+            Value asF, withF;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal) {
+                    if (a.s == "as") asF = *a.pairVal;
+                    else if (a.s == "with") withF = *a.pairVal;
+                }
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto keyOf = [&](const Value& v) {
+                if (asF.t != VT::Code) return v;
+                ValueList one{v}; return callCallable(asF, one);
+            };
+            if (withF.t == VT::Code) {
+                ValueList kept;
+                for (auto& v : items) {
+                    Value k = keyOf(v);
+                    bool dup = false;
+                    for (auto& p : kept) { ValueList two{p, k}; if (callCallable(withF, two).truthy()) { dup = true; break; } }
+                    if (dup) out.arr->push_back(v); else kept.push_back(k);
+                }
+                return out;
+            }
+            std::set<std::string> seen;
+            for (auto& v : items) if (!seen.insert(keyOf(v).toStr()).second) out.arr->push_back(v);
             return out;
         }
         if (m == "toggle") { // gate values on/off, flipping at each condition boundary
@@ -12332,12 +12376,20 @@ void Interpreter::registerBuiltins() {
             return I.methodCall(list, mname, named);
         };
     }
-    B["minmax"] = [](Interpreter&, ValueList& a) -> Value {
-        Value lo, hi; bool s = false;
-        ValueList f = flattenArgs(a);
-        for (auto& v : f) { if (!s) { lo = hi = v; s = true; } else { if (valueCmp(v, lo) < 0) lo = v; if (valueCmp(v, hi) > 0) hi = v; } }
-        if (!s) return Value::any();
-        return Value::range(lo.toInt(), hi.toInt(), false, false);
+    // `minmax` as a SUB delegates to the method, so `:by(&code)` and a leading
+    // &mapper mean there what they mean here
+    B["minmax"] = [](Interpreter& I, ValueList& a) -> Value {
+        ValueList pos, named;
+        for (auto& v : a) { if (v.t == VT::Pair && v.namedArg) named.push_back(v); else pos.push_back(v); }
+        Value mapper;
+        if (!pos.empty() && pos[0].t == VT::Code) { mapper = pos[0]; pos.erase(pos.begin()); }
+        Value list;
+        if (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Range)) list = pos[0];
+        else { list = Value::array(flattenArgs(pos)); list.isList = true; }
+        ValueList ma;
+        if (mapper.t == VT::Code) ma.push_back(mapper);
+        for (auto& nv : named) ma.push_back(nv);
+        return I.methodCall(list, "minmax", ma);
     };
     B["chdir"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
@@ -13186,12 +13238,18 @@ void Interpreter::registerBuiltins() {
     };
     B["classify"] = [](Interpreter& I, ValueList& a) -> Value {
         // `:into(%h)` classifies into an existing hash, APPENDING to its lists.
-        Value* into = nullptr; ValueList pos;
-        for (auto& x : a) { if (x.t == VT::Pair && x.s == "into" && x.pairVal) into = x.pairVal.get(); else pos.push_back(x); }
+        Value* into = nullptr; ValueList pos, named;
+        for (auto& x : a) {
+            if (x.t == VT::Pair && x.s == "into" && x.pairVal) into = x.pairVal.get();
+            else if (x.t == VT::Pair && x.namedArg) named.push_back(x); // `:as` and friends
+            else pos.push_back(x);
+        }
         if (pos.size() < 2) return into ? *into : Value::makeHash();
         Value mapper = pos[0];
         Value list = pos.size() == 2 ? pos[1] : Value::array(ValueList(pos.begin() + 1, pos.end()));
-        ValueList ma{mapper}; Value res = I.methodCall(list, "classify", ma);
+        ValueList ma{mapper};
+        for (auto& nv : named) ma.push_back(nv);
+        Value res = I.methodCall(list, "classify", ma);
         if (!into) return res;
         if (into->t != VT::Hash || !into->hash) *into = Value::makeHash();
         if (res.hash) for (auto& kv : *res.hash) { // append the grouped elements
@@ -13206,9 +13264,14 @@ void Interpreter::registerBuiltins() {
     for (const char* mf : {"categorize", "deepmap", "duckmap", "nodemap"}) {
         std::string mname = mf;
         B[mname] = [mname](Interpreter& I, ValueList& a) -> Value {
-            if (a.size() < 2) return Value::array();
-            Value list = a.size() == 2 ? a[1] : Value::array(ValueList(a.begin() + 1, a.end()));
-            ValueList ma{a[0]};
+            // the ADVERBS (`:as`, `:into`) are not list elements — they ride
+            // through to the method, which is where they mean something
+            ValueList pos, named;
+            for (auto& v : a) { if (v.t == VT::Pair && v.namedArg) named.push_back(v); else pos.push_back(v); }
+            if (pos.size() < 2) return Value::array();
+            Value list = pos.size() == 2 ? pos[1] : Value::array(ValueList(pos.begin() + 1, pos.end()));
+            ValueList ma{pos[0]};
+            for (auto& nv : named) ma.push_back(nv);
             return I.methodCall(list, mname, ma);
         };
     }
