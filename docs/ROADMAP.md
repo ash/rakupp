@@ -140,6 +140,17 @@ selected by reverse-dependency count, vendored + sandboxed for safety, with
 all 62 locally installed dists already `use` cleanly.
 
 
+**The documentation-conformance track** runs alongside it, measured by
+[raku-spec](https://github.com/ash/raku-spec): every runnable example in the
+official docs executed on both engines and classified three ways. At v1.1.5,
+835 of them are byte-identical on Raku++ and Rakudo (from 596), leaving 237
+where Raku++ is the one that is wrong. The largest single item left there is
+**regex code blocks under backtracking** — `/(\d) { say $0 }/` — which accounts
+for 5 of the 6 remaining `Match` rows. It was attempted once and backed out:
+the engine re-runs blocks while backtracking, so side effects fire repeatedly,
+and a real fix has to defer them to the accepted path. `:exhaustive` matching
+is the same family.
+
 The cheap Roast wins are largely spent; moving the full-pass count now takes
 *whole features* (parse + runtime + dispatch together). Roughly ordered:
 

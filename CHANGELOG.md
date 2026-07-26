@@ -3,6 +3,57 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## v1.1.5 (2026-07-26) — documentation conformance
+
+An intermediate release measuring one thing: how much of the *official Raku
+documentation* Raku++ now reproduces exactly. Every runnable example in the docs
+is executed on both engines and classified three ways (see
+[raku-spec/CONFORMANCE.md](https://github.com/ash/raku-spec)); the number to
+watch is `ok` — documentation, Rakudo and Raku++ all agreeing.
+
+| Verdict | before | now |
+|---|---:|---:|
+| `ok` — all three agree | 596 | **835** |
+| `rakupp-differs` — Raku++ is wrong | 471 | **237** |
+| `all-differ` — needs a human | 176 | 164 |
+| `doc-drift` — the docs are stale | 104 | 112 |
+| `rakudo-differs` — Rakudo is the odd one out | 16 | 15 |
+
+Roast moved with it: **194,904 → 196,052** assertions and **598 → 611** files
+fully passing, with no removals from the fully-passing list.
+
+Sixteen batches, each gated on both suites and each with a regression test that
+passes under Rakudo too. The larger pieces:
+
+- **The custom Iterator protocol.** A class with its own `.iterator` decides what
+  iterating it means, for both `for` forms and for an Iterable held in a `$`. The
+  blocker was not the protocol but binding: `my @a := SubclassOfArray.new` coerced
+  the object to a plain Array and threw the class away, so a user `.iterator` was
+  unreachable however it was written.
+- **Itemization.** A `$` container itemizes the list or hash it holds, which
+  fixed `list()`, `.item`, `my @b = $t` and the `$(…)` render marker together.
+- **Definiteness types as first-class.** `Foo:D` in term position was parsed and
+  discarded, so the constraint existed only inside a signature; it now rides on
+  the type value, and `.^name`, smartmatch and `.^base_type` all follow.
+- **Runtime class creation** via `Metamodel::ClassHOW.new_type`, and the HOW
+  spellings of the MOP operations.
+- `.match`'s occurrence adverbs (`:continue`, `:pos`, `:x`, `:nth`, `:1st`…),
+  `.split`'s separator adverbs, `.lines`/`.words` arguments, a fuller `substr`,
+  `:ignoremark` on the Str search routines.
+- `DateTime.new(date => …)`, which had been dropping the date entirely, plus an
+  exact clock: fractional seconds parse as a Rat, so `.day-fraction` and the
+  Julian dates stay rational.
+- `.round($scale)` in exact arithmetic; non-numeric string coercions answering a
+  Failure; `exit` ending the process from any thread.
+
+Two behaviours were deliberately NOT copied. Rakudo's `first(…, :end, :kv)`
+reports an index counted from the end where `:end, :k` reports the true one; the
+consistent answer is implemented instead, leaving one documented example
+permanently in `rakupp-differs`. And treating every subscript target as a
+list-assignment — which is what Rakudo parses — costs 210 emitted Roast tests,
+so the computed-key case (`%h{%other.keys} = …`) is parked rather than bought at
+that price.
+
 ## v1.1.0 (2026-07-24) — 100% Unicode (S15)
 
 Every S15 (Unicode / strings / NFG) assertion now passes: **91,752 / 91,752**,

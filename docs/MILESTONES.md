@@ -20,10 +20,10 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-07-19 | **v0.9.0** | the satellite sites take shape (playground, examples) |
 | 2026-07-22 | **v1.0.0** | **90% of declared Roast** (194,496 / 216,066); ~39% of files fully pass |
 | 2026-07-24 | **v1.1.0** | **100% of S15 (Unicode) assertions** (91,752 / 91,752) |
+| 2026-07-26 | **v1.1.5** | **835 documentation examples byte-identical to Rakudo** (from 596) |
 | 2026-07-22 → | *(in progress)* | **v2.0** — running the ecosystem's zef modules |
 
-**By the numbers:** v0.1.0 → v1.1.0 in 22 days and 776 commits (2026-07-02 to
-2026-07-24).
+**By the numbers:** v0.1.0 → v1.1.5 in 24 days (2026-07-02 to 2026-07-26).
 
 ---
 

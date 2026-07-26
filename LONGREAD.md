@@ -100,7 +100,7 @@ do," and conflating them flatters you.
 
 **File coverage** — *how many whole Roast files pass every assertion* — is the
 harsh one. One stray failure in a 200-assertion file zeroes the whole file. This
-number sat around 17% early on and is ~41% now (**598 of 1,462 files**). It is a
+number sat around 17% early on and is ~42% now (**611 of 1,462 files**). It is a
 coverage figure: how much of the suite is *completely* conquered.
 
 **Per-test rate** — *of every individual test the suite declares, how many pass* —
@@ -133,7 +133,7 @@ July**. The set-operator, typed-diagnostic, and parse-fail campaigns took it to
 ~85% (mid-July) and ~88% by 20 July; **v1.0.0 (22 July) crossed 90%**
 (194,496 / 216,066, 576 files). Two days later **v1.1.0 closed S15 — Unicode — to
 100% of its assertions**, and the complete case tables lifted the whole suite to
-**598 files** and **194,901 / 216,222**.
+**598 files** and **194,901 / 217,016**.
 
 ---
 
