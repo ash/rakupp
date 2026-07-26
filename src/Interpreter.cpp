@@ -10919,6 +10919,27 @@ Value Interpreter::evalBinary(Binary* b) {
         return out;
     }
     if (op == "~~" || op == "!~~") {
+        // a PAIR pattern names a METHOD: `3 ~~ :is-prime` asks 3.is-prime, and
+        // the pair's value says what the answer must be (`:!is-prime` for False,
+        // `is-prime => 'truthy'` for anything truthy). Only for a non-Associative
+        // LHS — matching a Hash or Pair against a Pair is a plain value compare.
+        // (only a SYNTACTIC pair — evaluating any other RHS here would run it
+        // twice, and a RegexLit RHS matches as a side effect of being evaluated)
+        if (b->rhs->kind == NK::Pair) {
+            Value rp = eval(b->rhs.get());
+            if (rp.t == VT::Pair && !rp.s.empty()) {
+                Value l = eval(b->lhs.get());
+                if (l.t != VT::Pair && l.t != VT::Hash && l.t != VT::Array) {
+                    Value want = rp.pairVal ? *rp.pairVal : Value::boolean(true);
+                    bool res;
+                    try { res = methodCall(l, rp.s, {}).truthy() == want.truthy(); }
+                    catch (RakuError&) { res = false; }
+                    return Value::boolean(op == "~~" ? res : !res);
+                }
+                Value r = rp;
+                return applyArith(op, l, r);
+            }
+        }
         // regex match: $str ~~ /pat/   /   $str ~~ s/pat/repl/
         if (b->rhs->kind == NK::RegexLit) {
             Value l = eval(b->lhs.get());
@@ -13191,6 +13212,10 @@ Value Interpreter::evalIndex(Index* idx) {
                     auto it = base.hash->find(key);
                     if (it != base.hash->end()) { exists = true; val = it->second; }
                 }
+                // a Pair is Associative on its ONE key
+                else if (base.t == VT::Pair && key == base.s) {
+                    exists = true; val = base.pairVal ? *base.pairVal : Value::any();
+                }
             } else {
                 // `*-1` / `*` in an adverbed slice (`@a[*-1, *-2]:v`) resolve against length
                 long long asz = (base.t == VT::Array && base.arr) ? (long long)base.arr->size() : 0;
@@ -13303,8 +13328,10 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         Value iv = eval(idx->index.get());
         auto lookup1 = [&](const std::string& key) -> Value {
-            if (base.t == VT::Pair) // a Pair is associative on its own key
-                return key == base.s && base.pairVal ? *base.pairVal : Value::any();
+            // a Pair is associative on its own key; any OTHER key is Nil (not the
+            // Any a Hash answers — a Pair has no element type to default to)
+            if (base.t == VT::Pair)
+                return key == base.s && base.pairVal ? *base.pairVal : Value::nil();
             if (base.t == VT::Hash && base.hash) {
                 auto it = base.hash->find(key);
                 if (it != base.hash->end()) return it->second;

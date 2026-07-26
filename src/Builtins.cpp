@@ -8138,6 +8138,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         return out;
     }
+    // a Pair formats its KEY and VALUE as the two arguments
+    if (m == "fmt" && inv.t == VT::Pair)
+        return Value::str(doSprintf(args.empty() ? "%s\t%s" : a0().toStr(),
+                                    {inv.pairKey ? *inv.pairKey : Value::str(inv.s),
+                                     inv.pairVal ? *inv.pairVal : Value::any()}));
     if (m == "fmt" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)
         return Value::str(doSprintf(args.empty() ? "%s" : a0().toStr(), {inv}));
     // Cool.printf / Cool.sprintf: the invocant IS the format ("%s\n".printf($x))
@@ -8367,7 +8372,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             ValueList vs = (m == "invert" && val.t == VT::Array && val.arr) ? *val.arr : ValueList{val};
             for (auto& v : vs) {
                 Value p = Value::pair(v.toStr(), Value::str(inv.s));
-                p.pairKey = std::make_shared<Value>(v);
+                // a Str key needs no separate key VALUE — carrying one makes the
+                // pair render as `"bar" => "foo"` instead of `:bar("foo")`
+                if (v.t != VT::Str) p.pairKey = std::make_shared<Value>(v);
                 o.arr->push_back(std::move(p));
             }
             return o;
