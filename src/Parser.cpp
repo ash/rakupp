@@ -867,7 +867,14 @@ ExprPtr Parser::parsePrefix(bool tight) {
             // sigil-on-variable form ($@foo, $%h): parsePrefix (not just primary) so
             // nested contextualizers work; tight, so a space-preceded `.method`
             // binds to the contextualized value.
-            u->operand = parsePrefix(true);
+            // A plain VARIABLE operand takes only the primary, so a postfix binds
+            // to the CONTEXTUALIZED value like it does for the circumfix forms
+            // above: `@$p[0]` is `(@$p)[0]`, not `@($p[0])`. Letting parsePrefix
+            // run here would consume the subscript into the operand.
+            if (cur().kind == Tok::Var)
+                u->operand = parsePrimary();
+            else
+                u->operand = parsePrefix(true);
             return parsePostfix(std::move(u), tight);
         }
     }
