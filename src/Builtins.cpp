@@ -694,6 +694,34 @@ static std::vector<uint32_t> utf8cp(const std::string& s) {
     }
     return out;
 }
+// Drop every combining mark, keeping ONE base character per grapheme — the
+// folding `:ignoremark` compares through. Character positions survive it, so an
+// index into the folded text is an index into the original.
+static std::string markFold(const std::string& in) {
+    std::vector<uint32_t> cps;
+    for (uint32_t c : utf8cp(in)) cps.push_back(c);
+    std::string out;
+    for (size_t i = 0; i < cps.size();) {
+        std::vector<uint32_t> g{cps[i++]};
+        while (i < cps.size() && rakupp::uniCombiningClass(cps[i]) != 0) g.push_back(cps[i++]);
+        bool wrote = false;
+        for (uint32_t cp : rakupp::uniNormalize(g, 0))
+            if (rakupp::uniCombiningClass(cp) == 0 && !wrote) { out += cpToU8(cp); wrote = true; }
+        if (!wrote) out += cpToU8(g[0]); // a lone combining mark stands for itself
+    }
+    return out;
+}
+// A CHARACTER offset as a byte offset (Raku positions count characters).
+static size_t charToByte(const std::string& s, long long chars) {
+    if (chars <= 0) return 0;
+    size_t b = 0; long long n = 0;
+    while (b < s.size() && n < chars) {
+        b++;
+        while (b < s.size() && (static_cast<unsigned char>(s[b]) & 0xC0) == 0x80) b++;
+        n++;
+    }
+    return b;
+}
 static std::string cpToUtf8(uint32_t cp) {
     std::string r;
     if (cp < 0x80) r += (char)cp;
@@ -7156,10 +7184,26 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         for (char ch : enc) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
         bool latin1 = norm == "iso88591" || norm == "latin1" || norm == "windows1252";
         if (m == "encode") {
+            // `:replacement` substitutes for every character the encoding cannot
+            // represent; a bare `:replacement` means "?". Without it an
+            // unencodable character is an error in Rakudo — we keep the byte.
+            bool haveRepl = false; std::string repl;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "replacement" && (!a.pairVal || a.pairVal->truthy())) {
+                    haveRepl = true;
+                    repl = (a.pairVal && a.pairVal->t == VT::Str) ? a.pairVal->s : "?";
+                }
+            bool ascii = norm == "ascii" || norm == "usascii";
             Value b;
             if (latin1) { // one byte per codepoint (<= 0xFF; others become '?')
                 std::string bytes;
-                for (uint32_t cp : utf8cp(inv.s)) bytes += (char)(unsigned char)(cp <= 0xFF ? cp : '?');
+                for (uint32_t cp : utf8cp(inv.s))
+                    if (cp <= 0xFF) bytes += (char)(unsigned char)cp;
+                    else bytes += haveRepl ? repl : "?";
+                b = Value::str(bytes);
+            } else if (ascii && haveRepl) {
+                std::string bytes;
+                for (uint32_t cp : utf8cp(inv.s)) { if (cp < 0x80) bytes += (char)cp; else bytes += repl; }
                 b = Value::str(bytes);
             } else b = Value::str(inv.s); // utf8/ascii: the bytes as stored
             b.hashKind = "Blob";
@@ -7242,7 +7286,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "unival" || m == "univals" || m == "uniname") {
         if (inv.t == VT::Type)
             throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call " + m + " with a type object"};
-        auto univ = [](uint32_t cp) -> Value { long long num, den; if (!uniNumValue(cp, num, den)) return Value::nil(); return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den)); };
+        // a character with no numeric value has unival NaN, not Nil — `'a'.unival`
+        // is a Num you can compare, and `.univals` interleaves them with the reals
+        auto univ = [](uint32_t cp) -> Value { long long num, den; if (!uniNumValue(cp, num, den)) return Value::number(std::nan("")); return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den)); };
         if (m == "univals") { Value out = Value::array(); out.isList = true; for (uint32_t cp : utf8cp(inv.toStr())) out.arr->push_back(univ(cp)); return out; }
         uint32_t cp; bool have = true;
         if (inv.t == VT::Int || inv.t == VT::Bool) cp = (uint32_t)inv.toInt();
@@ -7463,11 +7509,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         // positions are in characters, not bytes; the optional 2nd arg is the
         // start (index) / rightmost-allowed start (rindex) position.
         // `:i`/`:ignorecase` case-folds both sides before comparing.
-        bool icase = false;
+        bool icase = false, imark = false;
         for (auto& av : args)
-            if (av.t == VT::Pair && (av.s == "i" || av.s == "ignorecase"))
-                icase = !av.pairVal || av.pairVal->truthy();
-        auto cps = utf8cp(inv.toStr()); auto ncps = utf8cp(a0().toStr());
+            if (av.t == VT::Pair) {
+                if (av.s == "i" || av.s == "ignorecase") icase = !av.pairVal || av.pairVal->truthy();
+                // `:ignoremark` compares base characters; the fold is
+                // grapheme-for-grapheme, so the answered position still indexes
+                // the ORIGINAL string
+                else if (av.s == "m" || av.s == "ignoremark") imark = !av.pairVal || av.pairVal->truthy();
+            }
+        std::string hay = inv.toStr(), ndl = a0().toStr();
+        if (imark) { hay = markFold(hay); ndl = markFold(ndl); }
+        auto cps = utf8cp(hay); auto ncps = utf8cp(ndl);
         if (icase) { for (auto& c : cps) c = toLowerCp(c); for (auto& c : ncps) c = toLowerCp(c); }
         long long n = (long long)cps.size(), k = (long long)ncps.size();
         long long from = m == "index" ? 0 : n;
@@ -7536,7 +7589,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                     return regexMatch(subj, ":g " + pat);
             return regexMatch(subj, pat);
         }
-        if (m == "contains") { Regex re(pat); RxMatch mm; return Value::boolean(re.ok() && re.search(subj, 0, mm)); }
+        if (m == "contains") { // an optional second positional is where to start
+            long from = 0;
+            for (size_t i = 0; i < args.size(); i++)
+                if ((int)i != rxIdx && args[i].t != VT::Pair)
+                    { from = (long)charToByte(subj, args[i].toInt()); break; }
+            Regex re(pat); RxMatch mm;
+            return Value::boolean(re.ok() && from <= (long)subj.size() && re.search(subj, from, mm));
+        }
         if (m == "subst") {
             long nsub = 0;
             std::string out = substSelect(subj, pat, replArg, args, nsub);
@@ -7673,18 +7733,29 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     // `:i`/`:ignorecase` on the string predicates — fold both sides and compare
     if (m == "contains" || m == "starts-with" || m == "ends-with") {
-        bool icase = false;
+        bool icase = false, imark = false;
         for (auto& a2 : args)
-            if (a2.t == VT::Pair && (a2.s == "i" || a2.s == "ignorecase"))
-                icase = !a2.pairVal || a2.pairVal->truthy();   // bare `:i` is true
+            if (a2.t == VT::Pair) {
+                if (a2.s == "i" || a2.s == "ignorecase")
+                    icase = !a2.pairVal || a2.pairVal->truthy();   // bare `:i` is true
+                else if (a2.s == "m" || a2.s == "ignoremark")
+                    imark = !a2.pairVal || a2.pairVal->truthy();
+            }
         auto fold = [](const std::string& in) {
             auto cps = utf8cp(in); std::string o;
             for (auto c : cps) o += cpToU8(toLowerCp(c));
             return o;
         };
         std::string s = inv.toStr(), n = a0().toStr();
+        if (imark) { s = markFold(s); n = markFold(n); }
         if (icase) { s = fold(s); n = fold(n); }
-        if (m == "contains")    return Value::boolean(s.find(n) != std::string::npos);
+        // `.contains($needle, $pos)` starts the search at CHARACTER $pos
+        size_t from = 0;
+        if (m == "contains") {
+            for (size_t i = 1; i < args.size(); i++)
+                if (args[i].t != VT::Pair) { from = charToByte(s, args[i].toInt()); break; }
+            return Value::boolean(from <= s.size() && s.find(n, from) != std::string::npos);
+        }
         if (m == "starts-with") return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0);
         return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0);
     }
@@ -7949,11 +8020,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // Str.indices($needle, :overlap) — every start position of the substring
     if (m == "indices" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
         std::string s = inv.toStr(), needle = a0().toStr();
-        bool overlap = false, icase = false;
+        bool overlap = false, icase = false, imark = false;
         for (auto& a : args) if (a.t == VT::Pair) {
             if (a.s == "overlap") overlap = !a.pairVal || a.pairVal->truthy();
             else if (a.s == "i" || a.s == "ignorecase") icase = !a.pairVal || a.pairVal->truthy();
+            else if (a.s == "m" || a.s == "ignoremark") imark = !a.pairVal || a.pairVal->truthy();
         }
+        // a second positional is the CHARACTER position to start looking from
+        size_t from = 0;
+        for (size_t i = 1; i < args.size(); i++)
+            if (args[i].t != VT::Pair) { from = charToByte(s, args[i].toInt()); break; }
+        if (imark) { s = markFold(s); needle = markFold(needle); }
         if (icase) {
             auto fold = [](const std::string& in) {
                 std::string o; for (auto c : utf8cp(in)) o += cpToU8(toLowerCp(c)); return o;
@@ -7968,8 +8045,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 if ((static_cast<unsigned char>(s[k]) & 0xC0) != 0x80) n++;
             return n;
         };
-        if (!needle.empty())
-            for (size_t p = s.find(needle); p != std::string::npos;
+        if (!needle.empty() && from <= s.size())
+            for (size_t p = s.find(needle, from); p != std::string::npos;
                  p = s.find(needle, p + (overlap ? 1 : needle.size())))
                 out.arr->push_back(Value::integer(charPos(p)));
         return out;
