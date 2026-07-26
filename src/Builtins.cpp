@@ -490,10 +490,16 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             // (its .gist is the short `"foo/bar".IO` form)
             if (v.hashKind == "IO") {
                 char cbuf[4096];
-                std::string cwd = getcwd(cbuf, sizeof cbuf) ? cbuf : ".";
+                std::string cwd = v.ofType.empty()                      // an explicit :CWD wins
+                                ? (getcwd(cbuf, sizeof cbuf) ? cbuf : ".")
+                                : v.ofType;
+                // a FLAVORED path names its flavor in the class, so it needs no
+                // :SPEC; the plain one spells the spec out
+                if (!v.enumName.empty())
+                    return "IO::Path::" + v.enumName + ".new(" + rakuStrLit(v.s) +
+                           ", :CWD(" + rakuStrLit(cwd) + "))";
                 return "IO::Path.new(" + rakuStrLit(v.s) +
-                       ", :SPEC(IO::Spec::" + (v.enumName.empty() ? "Unix" : v.enumName) +
-                       "), :CWD(" + rakuStrLit(cwd) + "))";
+                       ", :SPEC(IO::Spec::Unix), :CWD(" + rakuStrLit(cwd) + "))";
             }
             if (v.hashKind == "CArray") { // a locally-built CArray rebuilds the same way
                 std::string o = "CArray.new("; bool f = true;
@@ -3004,9 +3010,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         return methodCall(l, m, args); // Bool.pick(*) shuffles (False, True)
     }
     if (inv.t == VT::Type && inv.s == "IO::Path" && m == "new") {
-        std::string path = args.empty() ? "" : args[0].toStr();
+        std::string path;
+        for (auto& a : args) if (a.t != VT::Pair) { path = a.toStr(); break; }
         rejectNulPath(path);
-        Value p = Value::str(path); p.hashKind = "IO"; return p;
+        Value p = Value::str(path); p.hashKind = "IO";
+        // an explicit `:CWD` is the directory this path is relative to; it rides
+        // in ofType, which a path value has no other use for
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.s == "CWD" && a.pairVal) p.ofType = a.pairVal->toStr();
+        return p;
     }
     // IO::Spec::Unix / ::Win32 — the per-OS path grammar an IO::Path routes
     // through. A type object with class methods; `.new` answers itself.
@@ -6755,7 +6767,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (p.rfind(base + "/", 0) == 0) return Value::str(p.substr(base.size() + 1));
         return Value::str(p);
     }
-    if (m == "basename") {
+    if (m == "basename" && !(inv.hashKind == "IO" && !inv.enumName.empty())) {
+        // (a FLAVORED path answers through its own IO::Spec, further down)
         // trailing slashes don't count: "/a/b/".basename is "b" (Rakudo; zef's
         // fez mirror "http://360.zef.pm/" must yield "360.zef.pm", not "")
         std::string s = inv.toStr();
@@ -6778,10 +6791,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         // through ITS IO::Spec instead of the platform default
         if (!inv.enumName.empty()) {
             std::string spec = "IO::Spec::" + inv.enumName;
-            if (m == "volume" || m == "dirname" || m == "basename") {
+            if (m == "volume" || m == "dirname" || m == "basename" || m == "parts") {
                 ValueList sa{Value::str(inv.s)};
                 Value r;
                 if (ioSpecMethod(*this, spec, "split", sa, r) && r.t == VT::Hash && r.hash) {
+                    if (m == "parts") { r.hashKind = "IO::Path::Parts"; return r; }
                     auto it = r.hash->find(m);
                     if (it != r.hash->end()) return it->second;
                 }
@@ -6831,7 +6845,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "child" || m == "add") {
             if (!args.empty()) rejectNulPath(args[0].toStr());
             std::string s = inv.toStr(); if (!s.empty() && s.back() == '/') s.pop_back();
-            return asIO(s + "/" + (args.empty() ? "" : a0().toStr()));
+            // several parts (or one list argument) append as successive segments:
+            // `"foo".IO.add(<bar baz>)` is foo/bar/baz
+            for (auto& a : args) {
+                if (a.t == VT::Pair) continue;
+                for (auto& part : toList(a)) { s += "/"; s += part.toStr(); }
+            }
+            if (args.empty()) s += "/";
+            return asIO(s);
         }
         if (m == "extension") {
             std::string b = inv.toStr();
@@ -6856,6 +6877,30 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                     else lo = hi = p.toInt();
                 }
             long long take = hi < avail ? hi : avail;
+            // A positional argument REPLACES the extension instead of reading it:
+            // the matched parts come off and `$joiner ~ $new` goes on. The joiner
+            // defaults to "" for an empty replacement and "." otherwise, which is
+            // why `.extension('')` trims the dot too but `:joiner<_>` keeps one.
+            const Value* repl = nullptr;
+            for (auto& a : args) if (a.t != VT::Pair) { repl = &a; break; }
+            if (repl) {
+                std::string nw = repl->toStr(), joiner = nw.empty() ? "" : ".";
+                for (auto& a : args)
+                    if (a.t == VT::Pair && a.s == "joiner" && a.pairVal) joiner = a.pairVal->toStr();
+                // no extension of the requested size exists → nothing is replaced
+                if (take < lo && lo > 0) return asIO(inv.toStr());
+                if (take < 0) take = 0;
+                std::string stem;
+                for (long long k = 0; k < (long long)seg.size() - take; k++) {
+                    if (k) stem += ".";
+                    stem += seg[(size_t)k];
+                }
+                std::string name = stem + joiner + nw;
+                if (name.empty()) name = "."; // an empty basename is the current directory
+                std::string full = inv.toStr();
+                auto sl2 = full.find_last_of('/');
+                return asIO(sl2 == std::string::npos ? name : full.substr(0, sl2 + 1) + name);
+            }
             if (take < lo || take <= 0) return Value::str("");
             std::string out;
             for (long long k = (long long)seg.size() - take; k < (long long)seg.size(); k++) {
@@ -6869,12 +6914,31 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             if ((m == "absolute" || m == "resolve") && !s.empty() && s[0] != '/') {
                 char buf[4096]; if (getcwd(buf, sizeof buf)) s = std::string(buf) + "/" + s;
             }
-            return (m == "canonpath" || m == "cleanup") ? Value::str(s) : asIO(s);
+            if (m == "canonpath" || m == "cleanup") {
+                // squeeze repeated separators and drop `.` segments — but NOT
+                // `..`, which may cross a symlink and so cannot be resolved
+                // textually (that is `.resolve`'s job)
+                bool abs = !s.empty() && s[0] == '/';
+                std::vector<std::string> segs;
+                { std::string cur;
+                  for (char c : s) { if (c == '/') { if (!cur.empty()) segs.push_back(cur); cur.clear(); } else cur += c; }
+                  if (!cur.empty()) segs.push_back(cur); }
+                std::vector<std::string> keep;
+                for (auto& g : segs) if (g != ".") keep.push_back(g);
+                std::string out = abs ? "/" : "";
+                for (size_t k = 0; k < keep.size(); k++) { if (k) out += "/"; out += keep[k]; }
+                if (out.empty()) out = ".";
+                return m == "canonpath" ? Value::str(out) : asIO(out);
+            }
+            return asIO(s);
         }
         if (m == "is-absolute") return Value::boolean(!inv.toStr().empty() && inv.toStr()[0] == '/');
         // the path's OS grammar and the directory it is resolved against
         if (m == "SPEC") return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? "Unix" : inv.enumName));
-        if (m == "CWD") { char buf[4096]; return Value::str(getcwd(buf, sizeof buf) ? buf : "."); }
+        if (m == "CWD") {
+            if (!inv.ofType.empty()) return Value::str(inv.ofType); // an explicit :CWD
+            char buf[4096]; return Value::str(getcwd(buf, sizeof buf) ? buf : ".");
+        }
         if (m == "is-relative") return Value::boolean(inv.toStr().empty() || inv.toStr()[0] != '/');
         if (m == "contents" || m == "dir") {
             Value out = Value::array(); out.isList = true;

@@ -251,8 +251,10 @@ static std::string ratToStr(const BigInt& num, const BigInt& den) {
 }
 
 std::string Value::toStr() const {
-    // (a Blob/Buf uses enumName for its ENCODING, not as an enum key)
-    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf") return enumName;
+    // (a Blob/Buf uses enumName for its ENCODING, and a flavored IO::Path for its
+    // OS grammar — neither is an enum key)
+    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO")
+        return enumName;
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
     switch (t) {
         case VT::Nil:
@@ -344,11 +346,13 @@ std::string Value::gist() const {
     // an IO::Path gists as the expression that makes one: `"foo/bar".IO`
     // (.Str stays the bare path)
     if (t == VT::Str && hashKind == "IO") {
+        // only a quote is escaped — a backslash is an ordinary path character
+        // here, and Rakudo shows it verbatim (`"C:\foo".IO`)
         std::string q = "\"";
-        for (char c : s) { if (c == '"' || c == '\\') q += '\\'; q += c; }
+        for (char c : s) { if (c == '"') q += '\\'; q += c; }
         return q + "\".IO";
     }
-    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf") {
+    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
         // a Junction gists with its eigenstates: any(1, 2, 3)
         if (t == VT::Array && arr &&
             (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none")) {
