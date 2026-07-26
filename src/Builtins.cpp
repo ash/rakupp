@@ -434,6 +434,10 @@ static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any &&
 // `.raku` / `.perl` — an EVAL-round-trippable representation of a value (as opposed
 // to `.gist`, which is the human-readable form). Recursive over containers.
 static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
+// True while rendering an element of an `[…]` Array. Every Array slot is its own
+// scalar container, so an itemized value nested there needs no `$` marker —
+// Rakudo prints `[[1, 2],]`. Inside a `(…)` List the marker does matter.
+static bool g_reprInArrayElem = false;
 static std::string rakuRepr(const Value& v) { std::set<const void*> seen; return rakuRepr(v, 0, seen); }
 // Value.cpp renders Range endpoints with .raku; hand it this implementation.
 static const bool g_rakuReprInstalled = ((g_rakuRepr = &rakuRepr), true);
@@ -586,22 +590,26 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             }
             if (v.arr && !seen.insert(v.arr.get()).second) return v.isList ? "(...)" : "[...]"; // cycle
             std::string o(1, v.isList ? '(' : '[');
+            bool wasElem = g_reprInArrayElem;
             if (v.arr) {
                 bool first = true;
+                g_reprInArrayElem = !v.isList;
                 for (auto& e : *v.arr) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
+                g_reprInArrayElem = wasElem;
                 if (v.isList && v.arr->size() == 1) o += ",";
                 // a 1-element ARRAY holding an iterable disambiguates with a
                 // trailing comma too: [1..5,] (else the raku form would flatten)
                 if (!v.isList && v.arr->size() == 1 &&
-                    ((*v.arr)[0].t == VT::Range || (*v.arr)[0].t == VT::Array))
+                    ((*v.arr)[0].t == VT::Range || (*v.arr)[0].t == VT::Array ||
+                     (*v.arr)[0].t == VT::Hash))
                     o += ",";
                 seen.erase(v.arr.get());
             }
             o += v.isList ? ')' : ']';
-            // an itemized container shows its `$` marker at the TOP level only —
-            // as an Array ELEMENT Rakudo prints `[[1, 2],]`, disambiguating with
-            // the trailing comma instead
-            if (v.itemized && depth == 0) o = "$" + o;
+            // an ITEMIZED container carries its `$` marker — `($t,)` for a
+            // `$`-held list is `($(1, 2),)` — except as an ARRAY element, whose
+            // slot itemizes anyway (`[$x,]` is `[[1, 2],]`)
+            if (v.itemized && !wasElem) o = "$" + o;
             // a Seq's .raku is the list form plus the coercion that rebuilds it:
             // `(1, 2).Seq`. Only .raku carries it — .gist/.Str stay `(1 2)`.
             if (v.isList && v.s == "Seq") o += ".Seq";
@@ -651,7 +659,11 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                                      : rakuStrLit(k) + " => " + rakuRepr(val, depth + 1, seen);
             }
             if (v.hash) seen.erase(v.hash.get());
-            return o + "}";
+            o += "}";
+            // an itemized hash (one held in a `$`) shows the same `$` marker a
+            // list does — except as an Array element, whose slot itemizes anyway
+            if (v.itemized && !g_reprInArrayElem) o = "$" + o;
+            return o;
         }
         case VT::Object: {
             if (!v.obj || !v.obj->cls) return v.gist();
@@ -668,6 +680,26 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
         }
         default: return v.gist();
     }
+}
+
+// Does `v` satisfy a MATCHER argument (the thing `.grep`/`.first` take)?
+// A Regex goes through the engine — the generic `~~` in applyArith does not know
+// regexes — and a JUNCTION of matchers is tested eigenstate by eigenstate so a
+// regex inside one still matches (`.grep(none /<[aeiou]>/)`).
+static bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
+    if (mt.t == VT::Regex) return I.regexMatch(v.toStr(), mt.s).truthy();
+    if (mt.t == VT::Array && mt.arr &&
+        (mt.enumName == "any" || mt.enumName == "all" ||
+         mt.enumName == "one" || mt.enumName == "none")) {
+        size_t hits = 0;
+        for (auto& e : *mt.arr) if (matcherAccepts(I, v, e)) hits++;
+        if (mt.enumName == "any")  return hits > 0;
+        if (mt.enumName == "all")  return hits == mt.arr->size();
+        if (mt.enumName == "one")  return hits == 1;
+        return hits == 0;                                     // none
+    }
+    if (mt.t == VT::Code) return I.callCallable(const_cast<Value&>(mt), ValueList{v}).truthy();
+    return applyArith("~~", v, mt).truthy();
 }
 
 // The positional arity of a Code value — how many elements `.map`/`for` feed it
@@ -6186,6 +6218,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "rand") return Value::number(inv.toNum() * randDouble()); // $n.rand — Num in [0, $n)
     if (m == "base" && !args.empty() && (inv.t == VT::Int || inv.t == VT::Bool)) { // Int -> string in base 2..36
         long long b = args[0].toInt(); if (b < 2) b = 2; if (b > 36) b = 36;
+        static const char* BD = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        // a BIG integer digits out by repeated division — toInt() would truncate
+        if (inv.big && !inv.big->fitsLL()) {
+            BigInt n = inv.big->abs(), base((long long)b), q, r;
+            std::string d;
+            while (!n.isZero()) { BigInt::divmod(n, base, q, r); d = std::string(1, BD[r.fitsLL() ? r.toLL() : 0]) + d; n = q; }
+            if (d.empty()) d = "0";
+            return Value::str(inv.big->sign < 0 ? "-" + d : d);
+        }
         long long n = inv.toInt();
         if (n == 0) return Value::str("0");
         bool neg = n < 0; unsigned long long u = neg ? -(unsigned long long)n : (unsigned long long)n;
@@ -8120,6 +8161,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "conj" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool)) return inv;
     // .lsb / .msb — least / most significant set bit of an Int (Nil for 0).
     if ((m == "lsb" || m == "msb") && (inv.t == VT::Int || inv.t == VT::Bool)) {
+        // a BIG integer counts its bits by halving — 64 bits is not the limit
+        if (inv.big && !inv.big->fitsLL()) {
+            BigInt n = inv.big->abs(), two(2LL), q, r;
+            if (n.isZero()) return Value::nil();
+            long long lsb = -1, bit = 0;
+            while (!n.isZero()) {
+                BigInt::divmod(n, two, q, r);
+                if (!r.isZero() && lsb < 0) lsb = bit;
+                n = q; bit++;
+            }
+            return Value::integer(m == "lsb" ? lsb : bit - 1);
+        }
         long long v = inv.toInt();
         if (v == 0) return Value::nil();
         unsigned long long u = v < 0 ? (unsigned long long)(-v) : (unsigned long long)v;
@@ -8718,7 +8771,16 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             return op == "**" || op == "=>";
         };
         if (m == "reduce" && !args.empty() && args[0].t == VT::Code) { // fold with a 2-arg op: (1,2,3).reduce(* + *)
-            if (items.empty()) return Value::any();
+            // over NOTHING an operator answers its identity — `().reduce(&[+])`
+            // is 0 — which the [op] metaop already knows how to look up
+            if (items.empty()) {
+                const std::string& cn = args[0].code ? args[0].code->name : std::string();
+                if (cn.rfind("infix:<", 0) == 0 && cn.back() == '>') {
+                    ValueList none;
+                    return applyReduce(cn.substr(7, cn.size() - 8), none);
+                }
+                return Value::any();
+            }
             if (rightAssoc(args[0])) {
                 Value acc = items.back();
                 for (size_t k = items.size() - 1; k-- > 0; ) acc = callCallable(args[0], {items[k], acc});
@@ -8931,7 +8993,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         auto resolveCount = [&](Value a, long long sz) -> long long {
             if (a.t == VT::Whatever) return sz;
             if (a.isNumeric() && std::isinf(a.toNum())) return sz; // head(Inf) / tail(Inf) = all
-            if (a.t == VT::Code && a.code && a.code->isWhateverCode) { ValueList one{Value::integer(sz)}; return callCallable(a, one).toInt(); }
+            // ANY Callable count is called with the element count — `*-2` and the
+            // spelled-out `{ $_ - 2 }` mean the same thing to .head/.tail/.skip
+            if (a.t == VT::Code) { ValueList one{Value::integer(sz)}; return callCallable(a, one).toInt(); }
             if (a.t == VT::Str) { // a non-numeric string count is an error (.skip("foo"))
                 const std::string& s = a.s; bool num = !s.empty();
                 for (char c : s) if (!std::isdigit((unsigned char)c) && c != '-' && c != '+' && c != '.' && c != ' ') { num = false; break; }
@@ -8991,11 +9055,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             for (auto& a : args) if (a.t != VT::Pair) { pred = a; havePred = true; break; }
             auto match = [&](const Value& v) {
                 if (!havePred) return true;
-                // a Regex matcher goes through the engine — applyArith's `~~`
-                // does not know regexes (`~~` on a literal regex is an AST form)
-                if (pred.t == VT::Regex) return regexMatch(v.toStr(), pred.s).truthy();
-                return pred.t == VT::Code ? callCallable(pred, {v}).truthy()
-                                          : applyArith("~~", v, pred).truthy();
+                return matcherAccepts(*this, v, pred);
             };
             if (wantEnd) {
                 for (size_t i = items.size(); i-- > 0; ) if (match(items[i])) return answer(i);
@@ -9481,8 +9541,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                     if (match) { for (size_t k = 0; k < ar && gi + k < items.size(); k++) emit(gi + k, gi + k == gi ? v : items[gi + k]); continue; }
                     continue;
                 }
-                else if (mt.t == VT::Regex) match = regexMatch(v.toStr(), mt.s).truthy(); // .grep(/re/)
-                else match = applyArith("~~", v, mt).truthy();                            // .grep(Int) / junction / value
+                else match = matcherAccepts(*this, v, mt); // .grep(/re/) / .grep(Int) / junction / value
                 if (match) emit(gi, v);
             }
             return out;
@@ -11695,33 +11754,23 @@ void Interpreter::registerBuiltins() {
         srandSeed(seed);
         return Value::integer(seed);
     };
-    B["reduce"] = [](Interpreter& I, ValueList& a) -> Value {
-        // functional form: reduce &infix:<+>, LIST — fold the callable over the list
-        if (a.empty()) return Value::any();
-        Value f = a[0];
-        ValueList items;
-        for (size_t i = 1; i < a.size(); i++)
-            for (auto& x : a[i].flatten()) items.push_back(x);
-        if (items.empty()) return Value::any();
-        if (items.size() == 1) { ValueList one{items[0]}; return I.callCallable(f, one); }
-        Value acc = items[0];
-        for (size_t k = 1; k < items.size(); k++) { ValueList ab{acc, items[k]}; acc = I.callCallable(f, ab); }
-        return acc;
-    };
-    B["produce"] = [](Interpreter& I, ValueList& a) -> Value {
-        // triangular form of reduce: the list of running partial results
-        Value out = Value::array(); out.isList = true;
-        if (a.empty()) return out;
-        Value f = a[0];
-        ValueList items;
-        for (size_t i = 1; i < a.size(); i++)
-            for (auto& x : a[i].flatten()) items.push_back(x);
-        if (items.empty()) return out;
-        Value acc = items[0];
-        out.arr->push_back(acc);
-        for (size_t k = 1; k < items.size(); k++) { ValueList ab{acc, items[k]}; acc = I.callCallable(f, ab); out.arr->push_back(acc); }
-        return out;
-    };
+    // `reduce &f, LIST` / `produce &f, LIST` delegate to the METHOD of the same
+    // name — that is where the operator's associativity is read off the
+    // callable's name, so `produce &[**], (2,3,4)` folds right like the method.
+    for (const char* rf : {"reduce", "produce"}) {
+        std::string rname = rf;
+        B[rname] = [rname](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return rname == "reduce" ? Value::any()
+                                                    : [] { Value o = Value::array(); o.isList = true; return o; }();
+            Value f = a[0];
+            ValueList items;
+            for (size_t i = 1; i < a.size(); i++)
+                for (auto& x : a[i].flatten()) items.push_back(x);
+            Value list = Value::array(items); list.isList = true;
+            ValueList ma{f};
+            return I.methodCall(list, rname, ma);
+        };
+    }
     B["cis"] = [](Interpreter&, ValueList& a) -> Value {
         double x = a.empty() ? 0.0 : a[0].toNum();
         return Value::complex(std::cos(x), std::sin(x)); // e^(ix)
@@ -12914,8 +12963,17 @@ void Interpreter::registerBuiltins() {
     B["set"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Set", true); };
     B["bag"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Bag", true); };
     B["mix"] = [settyArgs](Interpreter&, ValueList& a) -> Value { ValueList i = settyArgs(a); return makeBaggy(i, "Mix", true); };
+    // `list(…)` builds a List of its ARGUMENTS — it does not flatten them, so
+    // `list((1,2),(3,4))` has two elements. The one-arg rule still applies: a
+    // lone Positional spreads, unless it is ITEMIZED (`$(1,2)` stays one thing).
     B["list"] = [](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array(); for (auto& v : a) { for (auto& x : toList(v)) out.arr->push_back(x); } return out;
+        Value out = Value::array(); out.isList = true;
+        if (a.size() == 1 && (a[0].t == VT::Array || a[0].t == VT::Range) && !a[0].itemized) {
+            for (auto& x : toList(a[0])) out.arr->push_back(x);
+            return out;
+        }
+        for (auto& v : a) out.arr->push_back(v);
+        return out;
     };
     B["unshift"] = [](Interpreter&, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = a.size(); i > 1; i--) a[0].arr->insert(a[0].arr->begin(), a[i - 1]); return Value::integer((long long)a[0].arr->size()); }

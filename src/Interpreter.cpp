@@ -1080,6 +1080,8 @@ static Value hashToPairs(const Value& v) {
 }
 
 Value rtArrayVal(const Value& v) {
+    // an ITEMIZED hash (`$%h`, `$(%h)`) is one element, not a spread of pairs
+    if (v.t == VT::Hash && v.hash && v.itemized) { Value a = Value::array(); a.arr->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     if (v.t == VT::Array && v.arr) {
         if (v.ext) return v; // a lazy seq stays lazy; indexing/consumers materialise on demand
@@ -1094,6 +1096,7 @@ Value rtArrayVal(const Value& v) {
 }
 
 static Value coerceArray(const Value& v) {
+    if (v.t == VT::Hash && v.hash && v.itemized) { Value a = Value::array(); a.arr->push_back(v); return a; }
     if (v.t == VT::Hash && v.hash) return hashToPairs(v);
     // a Blob/Buf assigns to an @-array as its elements (`my uint32 @W = $M`
     // in Digest::SHA1 — 32-bit words for blob32)
@@ -7682,6 +7685,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (en->vars.count(nm)) break;
                 }
             }
+            // a `$` container ITEMIZES what it holds: `my $t = (1,2)` is one
+            // thing, so it does not flatten into a later list (`my @b = $t` has
+            // ONE element) and renders as `$(1, 2)`
+            if (a->op == "=" && (rhs.t == VT::Array || rhs.t == VT::Hash) && !rhs.itemized)
+                rhs.itemized = true;
             *lv = rhs;
         }
         if (nb) wrapNative(*lv, nb, ns, nf);
@@ -8287,6 +8295,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     bool skipCurry = (op == "~~" || op == "!~~") &&
                      l.t == VT::Code && l.code && l.code->isWhateverCode &&
                      r.t != VT::Whatever;
+    // a HyperWhatever on the RIGHT of a smartmatch is the always-matching
+    // PATTERN (`@a ~~ **` holds for any list), not a curry
+    if ((op == "~~" || op == "!~~") && r.t == VT::Whatever && r.b) skipCurry = true;
     if (!skipCurry && (isWhateverish(l) || isWhateverish(r))) {
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
         code.code->isWhateverCode = true;
@@ -8669,7 +8680,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return Value::bigint(rem);
         }
         if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" ||
-            op == "<=>" || op == "cmp" || op == "leg") {
+            op == "<=>" || op == "cmp") { // (`leg` is STRINGWISE — it never lands here)
             // zero-denominator Rats compare as their Num (±Inf / NaN; NaN == NaN is False)
             auto zeroDen = [](const Value& v) { return v.t == VT::Rat && v.ratD && v.ratD->isZero(); };
             if (zeroDen(l) || zeroDen(r))
@@ -8856,7 +8867,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         double a = l.toNum(), b = r.toNum();
         return orderVal(a < b ? -1 : a > b ? 1 : 0);
     }
-    if (op == "cmp" || op == "leg") { return orderVal(valueCmp(l, r)); }
+    // `leg` is the STRING comparison — it stringifies both sides first, so
+    // `-4 leg -1` is More where `-4 cmp -1` is Less
+    if (op == "leg") return orderVal(valueCmp(Value::str(l.toStr()), Value::str(r.toStr())));
+    if (op == "cmp") { return orderVal(valueCmp(l, r)); }
     if (op == "unicmp" || op == "coll") { // UCA collation (DUCET) over the two strings
         auto decode = [](const std::string& str) {
             std::vector<uint32_t> cps;
@@ -8898,11 +8912,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
         // `when *`, `$x ~~ *`. (~~ never curries — see kNoCurry above.)
         if (r.t == VT::Whatever) return Value::boolean(op == "~~");
-        // list ~~ list where the PATTERN holds a HyperWhatever: `**` matches any
-        // run of elements (including none), so (1,2,4,8) ~~ (1,**,8) holds
+        // list ~~ list where the PATTERN holds a Whatever: `**` matches any RUN of
+        // elements (including none), so (1,2,4,8) ~~ (1,**,8) holds, while a
+        // plain `*` matches exactly ONE — (1,2,3) ~~ (1,*,3)
         if (l.t == VT::Array && l.arr && r.t == VT::Array && r.arr && r.enumName.empty() &&
             std::any_of(r.arr->begin(), r.arr->end(),
-                        [](const Value& e) { return e.t == VT::Whatever && e.b; })) {
+                        [](const Value& e) { return e.t == VT::Whatever; })) {
             const ValueList& xs = *l.arr; const ValueList& ps = *r.arr;
             // classic greedy-with-backtracking glob match over the two lists
             std::function<bool(size_t, size_t)> go = [&](size_t i, size_t k) -> bool {
@@ -11511,7 +11526,8 @@ Value Interpreter::evalUnary(Unary* u) {
             Value a = Value::array(); a.arr->push_back(v); a.isList = true; return a;
         }
         if (u->op == "ctx%") return v.t == VT::Hash ? v : coerceHash(v); // %(...) hash composer
-        if (v.t == VT::Array) v.itemized = true; // $[...] / $(...): array becomes one non-flattening item
+        // $[...] / $(...) / $%h: the container becomes ONE non-flattening item
+        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
         return v; // item context
     }
     if (u->op == "do") {

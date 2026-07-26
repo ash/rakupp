@@ -1500,6 +1500,8 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
                 "not", "so", "say", "print", "put", "note", "grep", "map", "first",
                 "gather", "take", "ok", "nok", "is", "isnt", "like", "unlike", "split",
                 "comb", "join", "for", "elsif", "where", "die", "warn", "dd",
+                // junction constructors take matchers: `.grep(none /a/)`
+                "any", "all", "one", "none",
             };
             return kw.count(pv.text) > 0;
         }
