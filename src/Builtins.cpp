@@ -690,6 +690,24 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
     }
 }
 
+// Adverbs the shared occurrence-selection code (substSelect) understands. An
+// ordinal written as one token (`:2nd`, `:3x`) counts too. `.match` routes
+// through that code only when EVERY adverb is one of these — `:overlap` and
+// `:exhaustive` are not implemented there and it THROWS on an unknown name,
+// which would abort the caller rather than degrade to a plain match.
+static bool substSelectKnowsAdverb(const std::string& k) {
+    static const std::set<std::string> known = {
+        "g", "global", "x", "nth", "st", "nd", "rd", "th", "p", "pos",
+        "c", "continue", "i", "ignorecase", "samecase", "ii", "s", "sigspace",
+        "samespace", "ss", "samemark", "mm", "m", "ignoremark"};
+    if (known.count(k)) return true;
+    if (k.size() >= 2 && std::isdigit((unsigned char)k[0])) { // :2nd / :3x
+        size_t d = 0; while (d < k.size() && std::isdigit((unsigned char)k[d])) d++;
+        std::string suf = k.substr(d);
+        return suf == "st" || suf == "nd" || suf == "rd" || suf == "th" || suf == "x";
+    }
+    return false;
+}
 // Does `v` satisfy a MATCHER argument (the thing `.grep`/`.first` take)?
 // A Regex goes through the engine — the generic `~~` in applyArith does not know
 // regexes — and a JUNCTION of matchers is tested eigenstate by eigenstate so a
@@ -7497,6 +7515,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         return out;
     }
+    // `.uniparse` as a METHOD — the invocant NAMES the character(s) to build
+    // ('TWO HEARTS, BUTTERFLY'.uniparse), the mirror of `.uniname`
+    if (m == "uniparse" && (inv.t == VT::Str || inv.t == VT::Match)) {
+        auto it = builtins_.find("uniparse");
+        if (it != builtins_.end()) { ValueList ua{Value::str(inv.toStr())}; return it->second(*this, ua); }
+    }
     if (m == "unival" || m == "univals" || m == "uniname") {
         if (inv.t == VT::Type)
             throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot call " + m + " with a type object"};
@@ -7656,7 +7680,25 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "substr" || m == "substr-rw") {
         auto cps = utf8cp(inv.toStr());
         long long n = (long long)cps.size();
-        long long start = a0().toInt();
+        // a RANGE gives both ends at once: `substr("Long string", 3..6)`
+        if (!args.empty() && args[0].t == VT::Range) {
+            const Value& rg = args[0];
+            long long lo = rg.rFrom + (rg.rExFrom ? 1 : 0);
+            long long hi = rg.rTo - (rg.rExTo ? 1 : 0);
+            if (lo < 0) lo += n;
+            if (hi < 0) hi += n;
+            if (lo < 0) lo = 0;
+            if (hi >= n) hi = n - 1;
+            std::string r; for (long long k = lo; k <= hi && k < n; k++) r += cpToUtf8(cps[k]);
+            return Value::str(r);
+        }
+        // the START may be a Whatever/WhateverCode too — `*-3` counts from the end
+        long long start;
+        if (!args.empty() && args[0].t == VT::Whatever) start = n;
+        else if (!args.empty() && args[0].t == VT::Code) {
+            ValueList wa{Value::integer(n)}; start = callCallable(args[0], wa).toInt();
+        }
+        else start = a0().toInt();
         if (start < 0) start += n;
         if (start < 0) start = 0;
         if (start > n) start = n;
@@ -7665,7 +7707,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         long long len;
         if (args.size() <= 1) len = n - start;
         else if (args[1].t == VT::Whatever) len = n - start;
-        else if (args[1].t == VT::Code) { ValueList wa{Value::integer(n - start)}; len = callCallable(args[1], wa).toInt(); }
+        else if (args[1].t == VT::Code) {
+            // `*-1` as a LENGTH counts back from the END of the string, not from
+            // the remaining tail — `substr($s, *-3, *-1)` keeps all but the last
+            ValueList wa{Value::integer(n)}; len = callCallable(args[1], wa).toInt() - start;
+        }
         else len = args[1].toInt();
         if (len < 0) len = n - start + len;
         if (len < 0) len = 0;
@@ -7777,10 +7823,28 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // before the regex (`.subst(:g, /re/, repl)`), so we can't assume positions.
     int rxIdx = -1;
     for (size_t i = 0; i < args.size(); i++) if (args[i].t == VT::Regex) { rxIdx = (int)i; break; }
-    // `"abc".match("b")` — a Str needle is a LITERAL pattern, not a regex
-    if (m == "match" && inv.t == VT::Str && inv.hashKind.empty() &&
-        !args.empty() && args[0].t == VT::Str && args[0].hashKind.empty()) {
-        const std::string& subj = inv.s; const std::string& needle = args[0].s;
+    // `"abc".match("b")` — a Str needle is a LITERAL pattern, not a regex.
+    // An ARRAY needle is its elements joined by a space (`.match([1,2,3])`).
+    if (m == "match" && inv.t == VT::Str && inv.hashKind.empty() && !args.empty() &&
+        ((args[0].t == VT::Str && args[0].hashKind.empty()) ||
+         (args[0].t == VT::Array && args[0].arr))) {
+        const std::string& subj = inv.s;
+        std::string needle;
+        if (args[0].t == VT::Array) {
+            for (auto& e : *args[0].arr) { if (!needle.empty()) needle += " "; needle += e.toStr(); }
+        } else needle = args[0].s;
+        bool anyAdverb = false, allKnown = true;
+        for (auto& a : args) if (a.t == VT::Pair && a.namedArg) {
+            anyAdverb = true;
+            if (!substSelectKnowsAdverb(a.s)) allKnown = false;
+        }
+        if (anyAdverb && allKnown) { // the adverbs mean the same thing for a literal needle
+            long nsub = 0; Value mres;
+            std::string keep = subj;
+            ValueList sargs = args;
+            substSelect(subj, needle, nullptr, sargs, nsub, true, &keep, &mres);
+            return mres;
+        }
         size_t p = subj.find(needle);
         if (p == std::string::npos) return Value::nil();
         return Value::matchVal(needle, (long)p, (long)(p + needle.size()));
@@ -7796,11 +7860,22 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         for (size_t i = 0; i < args.size(); i++)
             if ((int)i != rxIdx && args[i].t != VT::Pair) { replArg = &args[i]; break; }
         if (m == "match") {
-            // `.match(/re/, :g)` passes the adverb as a Pair arg; regexMatch only
-            // understands `:g`/`:global` baked into the pattern text, so splice it in.
-            for (auto& a : args)
-                if (a.t == VT::Pair && (a.s == "g" || a.s == "global") && (!a.pairVal || a.pairVal->truthy()))
-                    return regexMatch(subj, ":g " + pat);
+            // Any adverb at all (`:g`, `:x(2)`, `:2nd`, `:continue(2)`, `:pos(2)`,
+            // `:exhaustive`, …) goes through the SAME occurrence-selection code
+            // s/// uses — it already implements the whole family. The replacement
+            // is a no-op there; only the selected matches are wanted.
+            bool anyAdverb = false, allKnown = true;
+            for (auto& a : args) if (a.t == VT::Pair && a.namedArg) {
+                anyAdverb = true;
+                if (!substSelectKnowsAdverb(a.s)) allKnown = false;
+            }
+            if (anyAdverb && allKnown) {
+                long nsub = 0; Value mres;
+                std::string keep = subj;                 // replace each match with itself
+                ValueList sargs = args;
+                substSelect(subj, pat, nullptr, sargs, nsub, false, &keep, &mres);
+                return mres;
+            }
             return regexMatch(subj, pat);
         }
         if (m == "contains") { // an optional second positional is where to start
@@ -7976,16 +8051,21 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "substr-eq") { // does the substring starting at pos equal the needle?
         if (args.empty() || (args[0].t == VT::Type && args.size() < 2))
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
-        bool icase = false;
+        bool icase = false, imark = false;
         ValueList pargs;
         for (auto& a2 : args) {
             if (a2.t == VT::Pair && (a2.s == "i" || a2.s == "ignorecase"))
-                icase = a2.pairVal && a2.pairVal->truthy();
+                icase = !a2.pairVal || a2.pairVal->truthy();
+            else if (a2.t == VT::Pair && (a2.s == "m" || a2.s == "ignoremark"))
+                imark = !a2.pairVal || a2.pairVal->truthy();
             else if (a2.t != VT::Pair) pargs.push_back(a2);
         }
         if (pargs.empty()) // only adverbs given, no needle — a clean error, not an OOB read
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
         std::string s = inv.toStr(), n = pargs[0].toStr();
+        // `:ignoremark` compares base characters; the fold keeps one character
+        // per grapheme, so the POSITION still indexes the original
+        if (imark) { s = markFold(s); n = markFold(n); }
         long long len = (long long)methodCall(inv, "chars", ValueList{}).toInt();
         long long pos = 0;
         if (pargs.size() > 1) // a Code position (*-4) resolves against .chars
@@ -7996,7 +8076,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             (*f.hash)["exception"] = Value::typeObj("X::OutOfRange");
             return f;
         }
-        Value sub = methodCall(inv, "substr", ValueList{Value::integer(pos),
+        // taken from `s`, which is the mark-folded text when :ignoremark is on
+        Value sub = methodCall(Value::str(s), "substr", ValueList{Value::integer(pos),
                                                         methodCall(Value::str(n), "chars", ValueList{})});
         if (!icase) return Value::boolean(sub.toStr() == n);
         Value a1 = methodCall(sub, "lc", ValueList{}), b1 = methodCall(Value::str(n), "lc", ValueList{});
@@ -8136,12 +8217,29 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "lines") {
         std::istringstream is(inv.toStr()); std::string w; Value out = Value::array();
         out.isList = true; out.s = "Seq";
+        // `:!chomp` keeps each terminator; `:count` answers HOW MANY lines there
+        // are; a positional limit stops after that many
+        bool chomp = true, wantCount = false;
+        for (auto& a : args)
+            if (a.t == VT::Pair) {
+                bool on = !a.pairVal || a.pairVal->truthy();
+                if (a.s == "chomp") chomp = on;
+                else if (a.s == "count") wantCount = on;
+            }
+        long long limit = -1;
+        for (auto& a : args)
+            if (a.t != VT::Pair && a.t != VT::Whatever &&
+                !(a.isNumeric() && std::isinf(a.toNum()))) { limit = a.toInt(); break; }
         // `\r\n` (and a lone trailing `\r`) is a line terminator too — Raku's
         // .lines strips it, so an HTTP response's `$resp.lines[0]` has no \r
         while (std::getline(is, w)) {
-            if (!w.empty() && w.back() == '\r') w.pop_back();
-            out.arr->push_back(Value::str(w));
+            if (limit >= 0 && (long long)out.arr->size() >= limit) break;
+            std::string term;
+            if (!w.empty() && w.back() == '\r') { w.pop_back(); term = "\r"; }
+            if (!is.eof()) term += "\n"; // getline ate the newline unless this is the last line
+            out.arr->push_back(Value::str(chomp ? w : w + term));
         }
+        if (wantCount) return Value::integer((long long)out.arr->size());
         return out;
     }
     if (m == "comb") {
@@ -11773,13 +11871,17 @@ void Interpreter::registerBuiltins() {
     // lines() / get() / words() with no arg read from $*ARGFILES: the files named
     // in @*ARGS (awk/perl -n style), or standard input when there are none.
     B["lines"] = [](Interpreter& I, ValueList& a) -> Value {
-        Value out = Value::array(); out.isList = true;
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
         std::string line;
-        if (!a.empty() && a[0].t == VT::Str) { // lines("a\nb")
-            std::istringstream is(a[0].toStr());
-            while (std::getline(is, line)) out.arr->push_back(Value::str(line));
-            return out;
+        // the STRING to split may sit behind a named argument
+        // (`lines(:!chomp, "a\nb")`), so look past the adverbs for it
+        const Value* src = nullptr; ValueList named;
+        for (auto& v : a) {
+            if (v.t == VT::Pair && v.namedArg) { named.push_back(v); continue; }
+            if (!src && v.t == VT::Str) src = &v;
+            else named.push_back(v);            // a limit / :count rides along
         }
+        if (src) return I.methodCall(*src, "lines", named);
         Value argv = I.getArgs();
         if (argv.arr && !argv.arr->empty()) {
             for (auto& fn : *argv.arr) {
@@ -11796,10 +11898,17 @@ void Interpreter::registerBuiltins() {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         return Value::str(line);
     };
-    B["words"] = [](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array(); out.isList = true;
+    B["words"] = [](Interpreter& I, ValueList& a) -> Value {
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
         std::string all, w;
-        if (!a.empty() && a[0].t == VT::Str) all = a[0].toStr();          // words("a b c")
+        if (!a.empty() && a[0].t == VT::Str) { // words("a b c" [, $limit])
+            ValueList rest(a.begin() + 1, a.end());
+            return I.methodCall(a[0], "words", rest);
+        }
+        if (!a.empty() && a[0].t == VT::Match) { // words($match, ∞)
+            ValueList rest(a.begin() + 1, a.end());
+            return I.methodCall(a[0], "words", rest);
+        }
         else { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); } // words() = $*IN.words
         std::istringstream ws(all);
         while (ws >> w) out.arr->push_back(Value::str(w));
