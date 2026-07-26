@@ -76,6 +76,14 @@ static const std::vector<std::string>& typeAncestry(const std::string& t) {
     auto it = A.find(t);
     return it != A.end() ? it->second : fallback;
 }
+// The names in the ancestry table that are ROLES, not classes. `.does` counts
+// them; `.isa` and `.^mro` do not (Rakudo: `Date.isa(Dateish)` is False).
+static bool isBuiltinRole(const std::string& n) {
+    static const std::set<std::string> roles = {
+        "Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable",
+        "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy"};
+    return roles.count(n) > 0;
+}
 static std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s : v.typeName(); }
 static std::string lubType(const std::string& a, const std::string& b) {
     if (a == b) return a;
@@ -4904,6 +4912,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (t == "Int") return Value::integer(0);
         if (t == "Num" || t == "Real" || t == "Numeric") return Value::number(0.0);
         if (t == "Bool") return Value::boolean(false);
+        // `Mu.new` / `Any.new` — an instance of the bare root type: defined (so
+        // truthy), gisting as `Mu.new`. It carries no attributes of its own.
+        if (t == "Mu" || t == "Any") {
+            Value v = Value::makeHash(); v.hashKind = t; return v;
+        }
     }
     if (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" || inv.s == "array") && m == "new") {
         if (inv.s == "array" && inv.ofType.empty()) // native arrays need a type parameter
@@ -4968,19 +4981,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         // .^mro / .mro on a built-in type → the class-only linearisation (roles like
         // Real/Numeric are excluded, matching Rakudo's Int.^mro == (Int Cool Any Mu)).
         if (m == "mro" && !classes_.count(inv.s)) {
-            static const std::set<std::string> roles = {"Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable", "Positional", "Associative"};
             Value out = Value::array(); out.isList = true;
-            for (auto& a : typeAncestry(inv.s)) if (!roles.count(a)) out.arr->push_back(Value::typeObj(a));
+            for (auto& a : typeAncestry(inv.s)) if (!isBuiltinRole(a)) out.arr->push_back(Value::typeObj(a));
             if (out.arr->empty()) { out.arr->push_back(Value::typeObj(inv.s)); out.arr->push_back(Value::typeObj("Any")); out.arr->push_back(Value::typeObj("Mu")); }
             return out;
         }
         if (m == "parents" && !classes_.count(inv.s)) { // built-in type: () by default, full chain with :all
-            static const std::set<std::string> roles = {"Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable", "Positional", "Associative"};
             Value out = Value::array(); out.isList = true;
             bool all = false;
             for (auto& a : args) if (a.t == VT::Pair && a.s == "all" && (!a.pairVal || a.pairVal->truthy())) all = true;
             if (all) { bool self = true;
-                for (auto& a : typeAncestry(inv.s)) { if (self) { self = false; continue; } if (!roles.count(a)) out.arr->push_back(Value::typeObj(a)); } }
+                for (auto& a : typeAncestry(inv.s)) { if (self) { self = false; continue; } if (!isBuiltinRole(a)) out.arr->push_back(Value::typeObj(a)); } }
             return out;
         }
         auto cit = classes_.find(inv.s);
@@ -5982,9 +5993,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     if (m == "sink") return Value::nil(); // Mu.sink: evaluate for side effects, yield Nil (user `sink` dispatched earlier)
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
-    if (m == "item") { // .item: decontainerize to a single item (itemize a list)
+    if (m == "item") { // .item: decontainerize to a single item (itemize a container)
         Value v = inv;
-        if (v.t == VT::Array) v.itemized = true;
+        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
         return v;
     }
     // Bool is an enum (False => 0, True => 1): .key is the name, .value the ordinal.
@@ -6122,6 +6133,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             for (ClassInfo* c = ci; c; c = c->parent.get()) if (c->name == rn) { res = true; break; }
             if (!res) res = ci->doesRole(rn);
         }
+        // a BUILT-IN value does the roles its ancestry lists (`Date.does(Dateish)`)
+        if (!res && !ci)
+            for (auto& a : typeAncestry(typeOfVal(inv))) if (a == rn) { res = true; break; }
         // a Code value does the Callable/Code/Routine/Block roles
         if (!res && inv.t == VT::Code &&
             (rn == "Callable" || rn == "Code" || rn == "Routine" || rn == "Block" || rn == "Sub"))
@@ -6586,18 +6600,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         // `.isa` is strict CLASS inheritance — a role (Numeric, Real, …) is never
         // an `isa` ancestor (use `~~`/`.does` for role membership)
-        static const std::set<std::string> roles = {
-            "Numeric", "Real", "Stringy", "Positional", "Associative", "Iterable",
-            "Callable", "Rational", "Baggy", "Setty", "Mixy"};
-        if (roles.count(want)) return Value::boolean(false);
+        if (isBuiltinRole(want)) return Value::boolean(false);
         ClassInfo* c0 = inv.t == VT::Object && inv.obj ? inv.obj->cls.get() : nullptr;
         if (!c0) { auto cit = classes_.find(tn); if (cit != classes_.end()) c0 = cit->second.get(); }
         for (ClassInfo* c = c0; c; c = c->parent.get()) {
             if (c->name == want || c->nativeParent == want) return Value::boolean(true);
             if (!c->nativeParent.empty())
-                for (auto& anc : typeAncestry(c->nativeParent)) if (anc == want && !roles.count(anc)) return Value::boolean(true);
+                for (auto& anc : typeAncestry(c->nativeParent)) if (anc == want) return Value::boolean(true);
         }
-        for (auto& anc : typeAncestry(tn)) if (anc == want && !roles.count(anc)) return Value::boolean(true);
+        for (auto& anc : typeAncestry(tn)) if (anc == want) return Value::boolean(true);
         return Value::boolean(false);
     }
     if (m == "package" && inv.t == VT::Code && inv.code)
@@ -8587,6 +8598,27 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
          inv.hashKind == "Mix" || inv.hashKind == "MixHash")) {
         Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
         if (inv.hash) for (auto& kv : *inv.hash) c.arr->push_back(Value::pair(kv.first, kv.second));
+        return c;
+    }
+    // $obj.Capture — the object's public attributes as NAMED arguments, each
+    // read through its accessor (a method may override the attribute's value)
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls && m == "Capture") {
+        Value c = Value::array(); c.hashKind = "Capture"; c.itemized = true;
+        std::set<std::string> seen;
+        for (ClassInfo* ci = inv.obj->cls.get(); ci; ci = ci->parent.get())
+            for (auto& at : ci->attrs) {
+                if (!at.pub || !seen.insert(at.name).second) continue;
+                Value v;
+                try { v = methodCall(inv, at.name, {}); }
+                catch (RakuError&) {
+                    auto it = inv.obj->attrs.find(at.name);
+                    if (it == inv.obj->attrs.end()) continue;
+                    v = it->second;
+                }
+                c.arr->push_back(Value::pair(at.name, v));
+            }
+        std::sort(c.arr->begin(), c.arr->end(),
+                  [](const Value& a, const Value& b) { return a.s < b.s; });
         return c;
     }
     // @a.Capture — elements become positional arguments, Pairs become named ones
@@ -12790,7 +12822,13 @@ void Interpreter::registerBuiltins() {
         }
         return h;
     };
-    B["item"] = [](Interpreter&, ValueList& a) -> Value { return a.empty() ? Value::any() : a[0]; };
+    // `item($x)` is `$x.item` — a container becomes ONE non-flattening thing
+    B["item"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) return Value::any();
+        Value v = a[0];
+        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
+        return v;
+    };
     B["VAR"] = [](Interpreter&, ValueList& a) -> Value { return a.empty() ? Value::any() : a[0]; }; // container introspection: value is its own container
     B["sink"] = [](Interpreter& I, ValueList& a) -> Value {
         // sink EXPR / sink { … }: evaluate for side effects, discard the value

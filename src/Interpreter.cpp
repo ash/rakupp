@@ -8988,8 +8988,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (!res && l.t == VT::Object) res = typeMatchesArg(l, r.s);
             // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
             // array[int] ~~ Positional[int], Mix ~~ Associative, …)
-            if (!res && l.t == VT::Type) {
-                std::string ln = l.s;
+            // (an INSTANCE consults the same table under its own type name, so
+            // `Date.new(…) ~~ Dateish` holds just as `Date ~~ Dateish` does)
+            if (!res) {
+                std::string ln = l.t == VT::Type ? l.s : l.typeName();
                 size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
                 static const std::map<std::string, std::set<std::string>> typeDoes = {
                     {"array", {"array", "Array", "List", "Positional", "Iterable", "Cool"}},
@@ -9005,6 +9007,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                     {"BagHash", {"BagHash", "Baggy", "QuantHash", "Associative"}},
                     {"Mix",   {"Mix", "Mixy", "Baggy", "QuantHash", "Associative"}},
                     {"MixHash", {"MixHash", "Mixy", "Baggy", "QuantHash", "Associative"}},
+                    {"Date",     {"Date", "Dateish"}},
+                    {"DateTime", {"DateTime", "Dateish"}},
                 };
                 std::string rn = r.s;
                 auto td = typeDoes.find(ln);

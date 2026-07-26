@@ -92,7 +92,8 @@ bool Value::truthy() const {
                 auto it = hash->find("status");
                 if (it != hash->end()) return it->second.toStr() != "Planned";
             }
-            return (hashKind == "Raku" || hashKind == "Compiler") // object-like: always defined/true
+            return (hashKind == "Raku" || hashKind == "Compiler" ||
+                    hashKind == "Mu" || hashKind == "Any") // object-like: always defined/true
                             || (hash && !hash->empty());
         case VT::Range: return true;
         case VT::Code:  return true;
@@ -312,6 +313,8 @@ std::string Value::toStr() const {
             return out;
         }
         case VT::Hash: {
+            // a bare `Mu.new` / `Any.new` instance has no attributes to show
+            if (hashKind == "Mu" || hashKind == "Any") return hashKind + ".new";
             if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
             if (hashKind == "StrDistance" && hash && hash->count("after"))
                 return hash->at("after").toStr(); // "$dist" is the resulting string
@@ -370,6 +373,8 @@ std::string Value::gist() const {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "(Any)";
         case VT::Type:
+            // IterationEnd is a SENTINEL, not a type object — it gists bare
+            if (s == "IterationEnd") return s;
             // IO::Spec::Unix gists by its SHORT name, `(Unix)` — Rakudo does
             if (s.rfind("IO::Spec::", 0) == 0) return "(" + s.substr(10) + ")";
             return "(" + (ofType.empty() ? s : s + "[" + ofType + "]") + ")";
