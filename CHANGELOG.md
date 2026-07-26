@@ -3,9 +3,9 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
-## v1.1.5 (2026-07-26) — documentation conformance
+## v1.2.0 (2026-07-26) — documentation conformance
 
-An intermediate release measuring one thing: how much of the *official Raku
+A release measuring one thing: how much of the *official Raku
 documentation* Raku++ now reproduces exactly. Every runnable example in the docs
 is executed on both engines and classified three ways (see
 [raku-spec/CONFORMANCE.md](https://github.com/ash/raku-spec)); the number to
