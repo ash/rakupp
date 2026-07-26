@@ -7532,6 +7532,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
         if (sigil == '@') {
             std::string keepType = lv->ofType; // the container keeps its element type
+            // …and its ELEMENT DEFAULT: `my @a is default(9) = 1,2` still answers
+            // 9 for an unassigned slot (assignment refills, it does not redeclare)
+            auto keepDefault = lv->pairVal;
             // Shaped array assignment (`my @a[2;2] = …`).
             if (a->op == "=" && lv->shape && !lv->shape->empty()) {
                 auto shp = lv->shape;
@@ -7595,11 +7598,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 *lv = nv;
             }
             if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
+            if (keepDefault && !lv->pairVal) lv->pairVal = keepDefault;
         }
         else if (sigil == '%') {
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             std::string keepType = lv->ofType; // typed container: `my Int %h` keeps Int
+            auto keepDefault = lv->pairVal;    // …and its `is default(…)` element default
             if (lv->t == VT::Hash && setty.count(lv->hashKind)) { // my %h is Set = 1,2,3
                 // Set/Bag/Mix are immutable — only the initial (empty) fill assigns
                 if (lv->hash && !lv->hash->empty() &&
@@ -7628,6 +7633,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 *lv = nv;
             }
             if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
+            if (keepDefault && !lv->pairVal) lv->pairVal = keepDefault;
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)

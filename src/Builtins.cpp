@@ -8943,6 +8943,51 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             for (size_t k = 1; k < items.size(); k++) { acc = callCallable(args[0], {acc, items[k]}); out.arr->push_back(acc); }
             return out;
         }
+        // `%h.classify-list($mapper, *@values)` classifies INTO the invocant and
+        // answers it. A list-valued key NESTS — `("1a","1b")` files the value
+        // under %h<1a><1b> — which is what separates it from plain `.classify`.
+        // `.categorize-list` files under EVERY key the mapper yields instead.
+        if ((m == "classify-list" || m == "categorize-list") && !args.empty()) {
+            bool cat = (m == "categorize-list");
+            Value self = inv.t == VT::Hash && inv.hash ? inv : Value::makeHash();
+            Value mapper = args[0];
+            ValueList vals;
+            for (size_t i = 1; i < args.size(); i++)
+                for (auto& x : toList(args[i])) vals.push_back(x);
+            auto keyFor = [&](const Value& v) -> Value {
+                if (mapper.t == VT::Code) return callCallable(mapper, {v});
+                if (mapper.t == VT::Hash && mapper.hash) {
+                    auto it = mapper.hash->find(v.toStr());
+                    return it != mapper.hash->end() ? it->second : Value::any();
+                }
+                if (mapper.t == VT::Array && mapper.arr) {
+                    long long i = v.toInt();
+                    return (i >= 0 && i < (long long)mapper.arr->size()) ? (*mapper.arr)[i] : Value::any();
+                }
+                return v;
+            };
+            // walk/‌create the nested hashes, then append at the leaf
+            auto fileUnder = [&](Value& root, const ValueList& path, const Value& v) {
+                Value* cur = &root;
+                for (size_t d = 0; d + 1 < path.size(); d++) {
+                    Value& slot = (*cur->hash)[path[d].toStr()];
+                    if (slot.t != VT::Hash || !slot.hash) slot = Value::makeHash();
+                    cur = &slot;
+                }
+                Value& leaf = (*cur->hash)[path.back().toStr()];
+                if (leaf.t != VT::Array || !leaf.arr) leaf = Value::array();
+                leaf.arr->push_back(v);
+            };
+            for (auto& v : vals) {
+                Value k = keyFor(v);
+                if (k.t == VT::Array && k.arr && !k.arr->empty()) {
+                    if (cat) for (auto& kk : *k.arr) fileUnder(self, ValueList{kk}, v);
+                    else     fileUnder(self, *k.arr, v);
+                }
+                else fileUnder(self, ValueList{k}, v);
+            }
+            return self;
+        }
         if (m == "classify" || m == "categorize") { // group elements by a mapper into a Hash of lists
             Value* into = nullptr; Value* asF = nullptr;
             for (auto& x : args) if (x.t == VT::Pair && x.pairVal) {
