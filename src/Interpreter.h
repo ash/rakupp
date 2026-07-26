@@ -380,6 +380,8 @@ public:
     std::set<std::string> loadedModules_;
     // sets $/ $0..; rxVal (an anonymous `regex {…}` value) engages wired mode:
     // code blocks/assertions run for real, in the regex's closed-over scope
+    // What a `for` walks: an object with its own `.iterator` decides for itself.
+    Value iterationSourceOf(Value v);
     Value regexMatch(const std::string& subject, const std::string& pattern,
                      const Value* rxVal = nullptr);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation

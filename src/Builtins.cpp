@@ -2301,12 +2301,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             return pushed < want ? iterEnd() : Value::integer(pushed);
         }
         if (m == "sink-all") { posV.i = n; return iterEnd(); }
-        if (m == "skip-one") { bool ok = posV.i < n; if (ok) posV.i++; return Value::boolean(ok); }
+        // the skip methods answer an INT (1/0), not a Bool
+        if (m == "skip-one") { bool ok = posV.i < n; if (ok) posV.i++; return Value::integer(ok ? 1 : 0); }
         if (m == "skip-at-least") {
             long long want = args.empty() ? 0 : args[0].toInt();
             long long skipped = std::min(want, n - posV.i); if (skipped < 0) skipped = 0;
             posV.i += skipped;
-            return Value::boolean(skipped >= want);
+            return Value::integer(skipped >= want ? 1 : 0);
         }
         if (m == "skip-at-least-pull-one") {
             long long want = args.empty() ? 0 : args[0].toInt();
@@ -2316,7 +2317,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "count-only") return Value::integer(n - posV.i); // remaining, no advance
         if (m == "bool-only") return Value::boolean(posV.i < n);
         if (m == "is-lazy") { auto it = inv.hash->find("lazy"); return Value::boolean(it != inv.hash->end() && it->second.truthy()); }
-        if (m == "is-deterministic" || m == "is-monotonically-increasing") return Value::boolean(true);
+        // an iterator over a RANDOMISED or unordered source promises neither a
+        // stable order nor an increasing one; the flag rides on the iterator
+        if (m == "is-deterministic" || m == "is-monotonically-increasing") {
+            auto it = inv.hash->find("nondeterministic");
+            return Value::boolean(it == inv.hash->end() || !it->second.truthy());
+        }
         if (m == "can") { // introspection: which protocol methods this iterator supports
             static const std::set<std::string> ms = {
                 "pull-one", "push-all", "push-until-lazy", "push-exactly", "push-at-least",
@@ -5836,7 +5842,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "put") return ioEmit(strOf(inv) + "\n", "$*OUT", false);
     if (m == "note") return ioEmit(gistOf(inv) + "\n", "$*ERR", true);
     if (m == "Str" || (inv.t == VT::Type && m == "Stringy")) {
-        if (inv.t == VT::Type) return Value::str(""); // type objects stringify empty (with a warning in Rakudo)
+        // type objects stringify empty (with a warning in Rakudo) — but
+        // IterationEnd is a SENTINEL, and stringifies to its own name
+        if (inv.t == VT::Type) return Value::str(inv.s == "IterationEnd" ? inv.s : "");
         return Value::str(inv.toStr());
     }
     if ((m == "Int" || m == "Num" || m == "Real" || m == "Rat" || m == "FatRat") && inv.t == VT::Complex) {
@@ -6129,6 +6137,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             ValueList none;
             Value ps = methodCall(inv, "pairs", none, nullptr);
             if (ps.t == VT::Array && ps.arr) *items.arr = *ps.arr;
+            // a hash has no promised order, so neither has its iterator
+            (*it.hash)["nondeterministic"] = Value::boolean(true);
         }
         else if (inv.t != VT::Nil && inv.t != VT::Any) items.arr->push_back(inv);
         (*it.hash)["items"] = items;
@@ -8979,6 +8989,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {
             Value out = Value::list(items);
             if (m == "Seq") out.s = "Seq"; // `.Seq` really is one — `(1,2).Seq.raku` says so
+            if (m == "lazy") out.b = true; // `.lazy` MARKS it: `.is-lazy` says True after
             return out;
         }
         if (m == "reverse") { std::reverse(items.begin(), items.end()); return Value::list(items); }

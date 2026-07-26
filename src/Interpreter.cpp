@@ -4031,7 +4031,22 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // runs in the enclosing scope (so `my $x = … for …` leaves $x declared),
             // with $_ topicalized per iteration and restored afterward.
             if (fs->modifier && fs->vars.empty() && !fs->destructure) {
-                Value lv = eval(fs->list.get());
+                Value lvRaw = eval(fs->list.get());
+                Value lv = iterationSourceOf(lvRaw);
+                // an object that supplied its own iterator is ITERATED, even
+                // through a `$` variable — being Iterable is what decides here,
+                // not the sigil
+                bool viaIterator = lvRaw.t == VT::Object && lv.t != VT::Object;
+                // a literal IterationEnd in the list is the protocol's sentinel
+                // and ENDS the loop there (same rule as the block form below)
+                if (lv.t == VT::Array && lv.arr)
+                    for (size_t k = 0; k < lv.arr->size(); k++)
+                        if ((*lv.arr)[k].t == VT::Type && (*lv.arr)[k].s == "IterationEnd") {
+                            Value cut = Value::array(); cut.isList = lv.isList;
+                            cut.arr->assign(lv.arr->begin(), lv.arr->begin() + k);
+                            lv = cut;
+                            break;
+                        }
                 auto env = tctx_.cur;
                 bool hadTopic = env->vars.count("$_");
                 Value savedTopic = hadTopic ? env->vars["$_"] : Value::any();
@@ -4050,9 +4065,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 } else {
                     ValueList items;
                     // an itemized value ($(@a)) or a $-scalar source is ONE topic
-                    bool oneItem = lv.itemized ||
+                    bool oneItem = !viaIterator &&
+                        (lv.itemized ||
                         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
-                         static_cast<VarExpr*>(fs->list.get())->name[0] == '$');
+                         static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
                     if (oneItem) items.push_back(lv);
                     else if (lv.t == VT::Array && lv.arr) items = *lv.arr;
                     else if (lv.t == VT::Range) items = lv.flatten();
@@ -4072,7 +4088,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                 return forResult();
             }
-            Value listv = eval(fs->list.get());
+            Value listvRaw = eval(fs->list.get());
+            Value listv = iterationSourceOf(listvRaw);
+            bool viaIterator = listvRaw.t == VT::Object && listv.t != VT::Object;
             // a user object doing the Iterator role iterates by the pull-one
             // protocol: drain it (until IterationEnd) and loop over the values
             if (listv.t == VT::Object && listv.obj && listv.obj->cls &&
@@ -4087,12 +4105,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 listv = acc;
             }
+            // IterationEnd is the iteration protocol's SENTINEL, so a literal one
+            // sitting in the list ENDS the loop there (`.say for ["foo",
+            // IterationEnd, "baz"]` prints only foo)
+            if (listv.t == VT::Array && listv.arr) {
+                for (size_t k = 0; k < listv.arr->size(); k++)
+                    if ((*listv.arr)[k].t == VT::Type && (*listv.arr)[k].s == "IterationEnd") {
+                        Value cut = Value::array(); cut.isList = listv.isList;
+                        cut.arr->assign(listv.arr->begin(), listv.arr->begin() + k);
+                        listv = cut;
+                        break;
+                    }
+            }
             // A `$`-sigil scalar source (or an explicitly itemized value) is a single item:
             // `for $scalar { }` runs once even when the scalar holds an Array/Range, because a
             // scalar container does not flatten in list context. `@a`, ranges, and lists still flatten.
-            bool scalarItem = listv.itemized ||
+            bool scalarItem = !viaIterator &&
+                (listv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
-                 && static_cast<VarExpr*>(fs->list.get())->name[0] == '$');
+                 && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
             // A body using $^a/$^b placeholders is an arity-N block, exactly like
             // `-> $a, $b`: bind them (sorted, per placeholder rules) and batch.
             std::vector<std::string> phVars;
@@ -7044,6 +7075,35 @@ Value Interpreter::evalValueOf(Expr* e) {
     return eval(e);
 }
 
+// What should a `for` actually walk? An object with its OWN `.iterator` method
+// says so itself — that is how a container class changes what iterating it means
+// (the docs' SkippingArray skips undefined elements; DNA yields codon triples).
+// The iterator it hands back may be a user object driven by `pull-one`, or a
+// built-in one, whose remaining items are taken directly.
+Value Interpreter::iterationSourceOf(Value v) {
+    if (v.t != VT::Object || !v.obj || !v.obj->cls) return v;
+    if (v.obj->cls->findMethod("pull-one")) return v;      // already an Iterator
+    Value* itm = v.obj->cls->findMethod("iterator");
+    if (!itm) return v;
+    ValueList none;
+    Value it = invokeMethod(*itm, v, none);
+    if (it.t == VT::Object && it.obj && it.obj->cls && it.obj->cls->findMethod("pull-one"))
+        return it;
+    if (it.t == VT::Hash && it.hashKind == "Iterator" && it.hash) {
+        auto items = it.hash->find("items");
+        if (items != it.hash->end() && items->second.t == VT::Array && items->second.arr) {
+            long long pos = 0;
+            auto p = it.hash->find("pos");
+            if (p != it.hash->end()) pos = p->second.toInt();
+            Value out = Value::array(); out.isList = true;
+            for (size_t k = (size_t)std::max(0LL, pos); k < items->second.arr->size(); k++)
+                out.arr->push_back((*items->second.arr)[k]);
+            return out;
+        }
+    }
+    return it.t == VT::Array || it.t == VT::Range ? it : v;
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `my @a is List` makes the container immutable — reassigning it throws (the
     // declaration's own initialiser, declare=true, still runs; only later `@a = …` dies)
@@ -7576,6 +7636,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
             // elements: a Range, a List, an Array — not their union).
             if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
+            // `my @a := SubclassOfArray.new` BINDS the object itself — coercing
+            // it to a plain Array would throw away the class, and with it every
+            // method the subclass adds (`.iterator` above all)
+            else if (a->op == ":=" && rhs.t == VT::Object && rhs.obj && rhs.obj->cls) {
+                bool positional = false;
+                for (ClassInfo* c = rhs.obj->cls.get(); c; c = c->parent.get())
+                    if (c->nativeParent == "Array" || c->nativeParent == "List" ||
+                        c->doesRole("Positional") || c->doesRole("Iterable")) { positional = true; break; }
+                if (positional) *lv = rhs;
+                else *lv = coerceArray(rhs);
+            }
             else if (a->op == "=" && a->value && a->value->kind == NK::VarExpr &&
                      !static_cast<VarExpr*>(a->value.get())->name.empty() &&
                      static_cast<VarExpr*>(a->value.get())->name[0] == '$' &&
@@ -8775,7 +8846,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return out;
         }
         // an undefined operand stringifies to "" (Rakudo warns; `Any ~ $x` is $x)
-        auto undef = [](const Value& v) { return v.t == VT::Any || v.t == VT::Nil || v.t == VT::Type; };
+        // — except IterationEnd, which is a sentinel with a real name
+        auto undef = [](const Value& v) {
+            return (v.t == VT::Any || v.t == VT::Nil ||
+                    (v.t == VT::Type && v.s != "IterationEnd"));
+        };
         return Value::str(nfcNormalize((undef(l) ? std::string() : l.toStr()) +
                                        (undef(r) ? std::string() : r.toStr())));
     }

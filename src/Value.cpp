@@ -274,7 +274,8 @@ std::string Value::toStr() const {
                                 "Attempt to divide by zero when coercing Rational to Str"};
             return (ratN && ratD) ? ratToStr(*ratN, *ratD) : "0";
         case VT::Str:  return s;
-        case VT::Type: return "(" + s + ")";
+        // IterationEnd is a SENTINEL, not a type object — it stringifies bare
+        case VT::Type: return s == "IterationEnd" ? s : "(" + s + ")";
         case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
