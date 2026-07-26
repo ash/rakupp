@@ -8504,7 +8504,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (v.t == VT::Str && !v.isAllomorph()) {
                 // a NON-numeric string is an error here, not a silent 0 (Rakudo)
                 Value t = numifyStrOrThrow(v.toStr());
-                if (isExact(t)) { out = t; return true; }
+                // a COMPLEX-shaped string carries its imaginary part along too —
+                // `1 + "0+1i"` is 1+1i, not 1
+                if (isExact(t) || t.t == VT::Complex) { out = t; return true; }
             }
             else if (v.t == VT::Array && v.arr && v.enumName.empty()) { out = Value::integer((long long)v.arr->size()); return true; }
             return false;
@@ -8512,7 +8514,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         Value ln = l, rn = r;
         bool conv = exactify(l, ln);
         conv = exactify(r, rn) || conv;
-        if (conv && isExact(ln) && isExact(rn)) return applyArith(op, ln, rn);
+        if (conv && (isExact(ln) || ln.t == VT::Complex) && (isExact(rn) || rn.t == VT::Complex))
+            return applyArith(op, ln, rn);
     }
     if (isExact(l) && isExact(r)) {
         bool anyRat = (l.t == VT::Rat || r.t == VT::Rat);

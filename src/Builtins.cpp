@@ -5848,7 +5848,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         // the BigInt-aware parse, not the lossy long-long toInt() (which returns 0
         // on overflow). Int stays Int; Rat/Num truncate toward zero.
         if (inv.t == VT::Str || inv.t == VT::Match) {
-            Value nv = numifyStr(inv.s);
+            Value nv = numifyStrFailure(inv.toStr()); // a non-number is a Failure, like `+$str`
+            if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
             if (nv.t == VT::Int) return nv;
             if (nv.t == VT::Rat || nv.t == VT::Num) return methodCall(nv, "Int", ValueList{});
         }
@@ -5859,12 +5860,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (inv.t == VT::Rat) return Value::boolean(inv.ratD && inv.ratD->isZero() && inv.ratN && inv.ratN->isZero()); // 0/0
         if (inv.t == VT::Int || inv.t == VT::Bool) return Value::boolean(false);
     }
-    if (m == "Num") return Value::number(inv.toNum());
+    if (m == "Num") {
+        if ((inv.t == VT::Str && inv.hashKind.empty() && !inv.isAllomorph()) || inv.t == VT::Match) {
+            Value nv = numifyStrFailure(inv.toStr());
+            if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
+        }
+        return Value::number(inv.toNum());
+    }
     if (m == "Numeric" || m == "Real") {
         // a string numifies via the type-preserving ladder ("1"->Int, "1.5"->Rat,
-        // "1e0"->Num), like `+$str` — not a blanket Num.
-        if (inv.t == VT::Str) return numifyStr(inv.s);
-        if (inv.t == VT::Match) return numifyStr(inv.toStr());
+        // "1e0"->Num), like `+$str` — and a non-number is that same Failure.
+        if (inv.t == VT::Str) return numifyStrFailure(inv.s);
+        if (inv.t == VT::Match) return numifyStrFailure(inv.toStr());
         return Value::number(inv.toNum());
     }
     if (m == "Bool" || m == "so") {
@@ -6206,6 +6213,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // numeric -> Complex coercion
     if (m == "Complex" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool))
         return Value::complex(inv.toNum(), 0);
+    // A STRING that spells a complex number answers the Complex methods through
+    // it — `"6+8i".abs` is 10, not the real part. (A non-numeric string gives the
+    // usual Failure.)
+    if (inv.t == VT::Str && inv.hashKind.empty() && !inv.isAllomorph() &&
+        (m == "Complex" || m == "conj" || m == "re" || m == "im" ||
+         m == "abs" || m == "polar" || m == "sqrt")) {
+        Value nv = numifyStrFailure(inv.s);
+        if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
+        if (nv.t == VT::Complex || m == "Complex")
+            return methodCall(nv.t == VT::Complex ? nv : Value::complex(nv.toNum(), 0), m, args, rwArgs);
+    }
     // Complex
     if (inv.t == VT::Complex) {
         std::complex<double> z(inv.n, inv.im);
@@ -6459,9 +6477,21 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "round") {
         double x = inv.toNum();
         if (!std::isfinite(x)) return Value::number(x); // NaN/±Inf round to themselves
-        double scale = args.empty() ? 1.0 : a0().toNum();
+        // Rakudo rounds a half toward +∞ — `(self / $scale + 1/2).floor * $scale`.
+        // Done in VALUE arithmetic whenever neither side is a Num, so
+        // `round(1000, 23.01)` is exactly 989.43 rather than 989.4300000000001,
+        // and a big Int rounded by an Int stays that Int.
+        Value scaleV = args.empty() ? Value::integer(1) : a0();
+        bool exact = inv.t != VT::Num && scaleV.t != VT::Num &&
+                     inv.t != VT::Complex && scaleV.toNum() != 0;
+        if (exact) {
+            Value q = applyArith("+", applyArith("/", inv, scaleV),
+                                 Value::ratZ(BigInt(1LL), BigInt(2LL)));
+            Value fl = methodCall(q, "floor", {});
+            return args.empty() ? fl : applyArith("*", fl, scaleV);
+        }
+        double scale = args.empty() ? 1.0 : scaleV.toNum();
         if (scale == 0) scale = 1.0;
-        // Rakudo rounds a half toward +∞ (floor(x+0.5)), not away from zero
         double r = std::floor(x / scale + 0.5) * scale;
         if (args.empty()) return Value::integer((long long)r); // .round with no arg is an Int
         return Value::number(r);
@@ -6636,6 +6666,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (m == "Rat" || m == "FatRat") {
         bool fat = (m == "FatRat");
         Value r;
+        // a non-numeric string is the usual Failure, not a Rat of zero
+        if (inv.t == VT::Str && inv.hashKind.empty() && !inv.isAllomorph()) {
+            Value nv = numifyStrFailure(inv.s);
+            if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
+            if (nv.t != VT::Str) return methodCall(nv, m, args, rwArgs);
+        }
         if (inv.t == VT::Rat) r = inv;
         else if (inv.t == VT::Int || inv.t == VT::Bool) r = Value::rat(inv.toBig(), BigInt(1));
         else {
