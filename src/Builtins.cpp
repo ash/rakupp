@@ -2235,7 +2235,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (mm == "name") {
             if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW")
                 return Value::str("Perl6::Metamodel::ClassHOW"); // Rakudo's full metaclass name
+            // a DEFINITENESS-constrained type reports its smiley: `Any:D.^name`
+            if (inv.t == VT::Type && inv.i)
+                return Value::str(inv.typeName() + (inv.i == 1 ? ":D" : ":U"));
             return Value::str(inv.typeName());
+        }
+        // `.^base_type` — the same type without its definiteness constraint
+        if (mm == "base_type" && inv.t == VT::Type) {
+            Value b = Value::typeObj(inv.s); b.ofType = inv.ofType; return b;
         }
         if (mm == "shortname") { // type name without its package qualifier
             std::string n = inv.typeName();
@@ -6161,6 +6168,41 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (inv.t == VT::Hash)  { Value nv = inv; nv.hash = std::make_shared<std::map<std::string, Value>>(*inv.hash); return nv; }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
+    // `Metamodel::ClassHOW.new_type(:name, :ver, :auth)` — a class created at
+    // RUNTIME. It registers like a declared one, so `.^add_method` and `.new`
+    // then work on it exactly as they do on `class Foo { }`.
+    if (inv.t == VT::Type && m == "new_type" &&
+        (inv.s == "Metamodel::ClassHOW" || inv.s == "Metamodel::ParametricRoleHOW" ||
+         inv.s == "Metamodel::ParametricRoleGroupHOW")) {
+        auto ci = std::make_shared<ClassInfo>();
+        ci->name = "<anon|1>";
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.pairVal) {
+                if (a.s == "name") ci->name = a.pairVal->toStr();
+                else if (a.s == "ver") ci->ver = a.pairVal->toStr();
+                else if (a.s == "auth") ci->auth = a.pairVal->toStr();
+                else if (a.s == "api") ci->api = a.pairVal->toStr();
+            }
+        noteSymbolMutation("runtime .new_type");
+        classes_[ci->name] = ci;
+        return Value::typeObj(ci->name);
+    }
+    // The HOW forms of the MOP operations take the type as their FIRST argument —
+    // `$t.HOW.add_method($t, …)` — where the `.^` spelling passes it implicitly
+    // as the invocant. Named explicitly: a metaclass also answers ORDINARY
+    // methods (`.isa`, `.gist`), which must not be forwarded to their argument.
+    if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW" && !args.empty() &&
+        args[0].t == VT::Type) {
+        static const std::set<std::string> howOps = {
+            "add_method", "add_attribute", "add_parent", "add_role", "add_fallback",
+            "compose", "compose_repr", "compose_attributes", "set_name", "set_shortname",
+            "set_ver", "set_auth", "set_api", "set_rw",
+            "publish_method_cache", "publish_type_cache", "invalidate_method_caches"};
+        if (howOps.count(m)) {
+            ValueList rest(args.begin() + 1, args.end());
+            return methodCall(args[0], "^" + m, rest, rwArgs);
+        }
+    }
     if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
     if (m == "WHO") { Value st = Value::makeHash(); st.hashKind = "Stash"; return st; } // package stash
     if (m == "WHICH") { // object identity: value-based for immutables, pointer-based for objects
@@ -6207,6 +6249,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         }
         return Value::boolean(res);
     }
+    // a DEFINITENESS-constrained type object reports its smiley, and
+    // `.^base_type` is the same type without it
     if (m == "name" || m == "^name") {
         // the metaclass reports Rakudo's full name; HOW.name($obj) names the OBJECT's type
         if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW") {

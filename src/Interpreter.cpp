@@ -9058,6 +9058,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (g_subsetCheck(r.s, l, sres))
                     return Value::boolean(op == "~~" ? sres : !sres);
             }
+            // `$x ~~ Foo:D` is the type test AND a definedness test
+            if (r.i == 1 && !isDefined(l)) return Value::boolean(op != "~~");
+            if (r.i == 2 && isDefined(l))  return Value::boolean(op != "~~");
             res = (l.typeName() == r.s) || r.s == "Any" || r.s == "Mu" ||
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
@@ -13937,8 +13940,13 @@ Value Interpreter::eval(Expr* e) {
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
             if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
-                Value ty = Value::typeObj(n); ty.ofType = nt->ofType; return ty;
+                Value ty = Value::typeObj(n); ty.ofType = nt->ofType;
+                ty.i = nt->defConstraint;
+                return ty;
             }
+            // `Foo:D` / `Foo:U` — the smiley rides on the type value (i), so the
+            // constraint survives into .^name, smartmatch and .^base_type
+            if (nt->defConstraint) { Value ty = Value::typeObj(n); ty.i = nt->defConstraint; return ty; }
             if (n == "next" || n == "last" || n == "redo") {
                 if (tctx_.curLoopFrame != 0 && tctx_.frameTop == tctx_.curLoopFrame) {
                     tctx_.loopCtl = n == "next" ? 1 : n == "last" ? 2 : 3; // cooperative

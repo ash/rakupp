@@ -3208,12 +3208,16 @@ ExprPtr Parser::parsePrimary() {
                 nt->ofType = params;
                 return nt;
             }
-            // type smiley on a type name: Channel:U / Foo:D / Bar:_  (definedness ignored)
+            // type smiley on a type name: `Foo:D` / `Channel:U` / `Bar:_` — a
+            // DEFINITENESS-constrained type, which the value carries so that
+            // `.^name`, smartmatch and `.^base_type` all see it
             if (!name.empty() && std::isupper((unsigned char)name[0]) &&
                 isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
                 (peek().text == "U" || peek().text == "D" || peek().text == "_")) {
-                advance(); advance(); // : and the smiley letter
-                return std::make_unique<NameTerm>(name);
+                advance(); std::string sm = advance().text; // : and the smiley letter
+                auto nt = std::make_unique<NameTerm>(name);
+                nt->defConstraint = sm == "D" ? 1 : sm == "U" ? 2 : 0;
+                return nt;
             }
             // `use nqp` compatibility subset: nqp::const::X resolves to an
             // IntLit at parse time; nqp::op(...) becomes a dedicated NqpOp

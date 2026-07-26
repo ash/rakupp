@@ -79,6 +79,7 @@ struct VarExpr : Expr {
 struct NameTerm : Expr {
     std::string name;
     std::string ofType; // type parameters for `Array[Int]` / `Hash[Int,Str]` (comma-joined)
+    int defConstraint = 0; // type smiley: 1 = `:D` (defined), 2 = `:U` (type object)
     explicit NameTerm(std::string n): Expr(NK::NameTerm), name(std::move(n)) {}
 };
 
