@@ -93,7 +93,15 @@ whenever the release adds or changes user-visible behaviour; D is a safety net.
    Refresh both comparison tables, the `-O` table, the short-version bullets, the
    prose speed-ups, and the dated footer snapshot. If a number went the wrong way,
    fix the code before tagging — don't just record the regression.
-6. **Tag and push** — `git tag vX.Y.Z && git push --tags`. The
+6. **Push the commits FIRST, then tag** — `git push && git tag vX.Y.Z && git push --tags`.
+   Order matters, and getting it wrong is expensive: a tag pushed ahead of its
+   commits builds a release from whatever the branch held at that moment, and
+   because **`releases/latest` follows publication TIME rather than version
+   order**, a wrongly-published release keeps the `Latest` flag even after its
+   tag is deleted — and `Latest` is exactly what spec.raku.online and
+   tour.raku.online download to build with. Deleting the tag is not enough;
+   delete the *release* (`gh release delete vX.Y.Z`) and confirm with
+   `gh release list` that the flag moved. The
    [`release.yml`](../.github/workflows/release.yml) CI then builds the
    binaries for macOS (universal), Linux (static), and Windows (MSVC + MinGW),
    **and** the `wasm` job builds `rakujs-<tag>.zip` (playground bundle) and the
@@ -118,12 +126,19 @@ whenever the release adds or changes user-visible behaviour; D is a safety net.
 
 ### B. Regenerate the WebAssembly and update raku.online
 
-The CI attaches a wasm zip to the Release, but the **live playground is
-deployed from the `ash/raku.online` repo**, not from CI — so it must be
-refreshed by hand.
+This repo's CI attaches a wasm zip to the Release, but the **live playground is
+published from the `ash/raku.online` repo**, whose own Pages workflow serves
+`www/` — so the artifacts have to be rebuilt here and copied there by hand. The
+publish itself is that repo's push, not anything in this one.
 
 1. **Build native rakupp first** (Step A already did this) — `build.sh` uses it
-   to regenerate `examples.js` from `examples/*.raku`.
+   to regenerate `examples.js` from `examples/*.raku`. **Check which binary it
+   picks**: it searches `build/rakupp`, then `build-arm64/rakupp`, then
+   `./rakupp`, and takes the first that exists — so a stale `build/` shadows the
+   one you just built. Either pass it explicitly or verify the line it prints:
+   ```sh
+   RAKUPP=build-arm64/rakupp rakujs/build.sh     # or: check "==> generating examples.js with …"
+   ```
 2. **Build the wasm** — from this repo:
    ```sh
    rakujs/build.sh          # → rakujs/playground/rakujs.{js,wasm} + examples.js
@@ -134,20 +149,37 @@ refreshed by hand.
    `www/`: `rakujs.js`, `rakujs.wasm`, `examples.js` (always), plus
    `worker.js`/`index.html` **only if** they changed upstream in
    `rakujs/playground/` (raku.online keeps its own branded `index.html`).
-4. **Deploy** — mount the server (sshfs), then from the `raku.online` checkout:
+4. **Stamp the cache tag** — from the `raku.online` checkout:
    ```sh
    ./deploy.sh
    ```
-   This stamps a content-hash `?v=` cache-busting tag onto `index.html`/`raku.js`
-   (so browsers refetch the new wasm) and rsyncs `www/` to the doc root.
-5. **Commit and push** the `raku.online` repo so it mirrors the live site
-   (including the stamped `?v=` tag).
+   Its job that still matters is the **content-hash `?v=` tag** it writes into
+   `index.html`/`raku.js`, so browsers refetch the new wasm. (It also rsyncs to
+   an sshfs mount, which is a leftover from when the site was served from that
+   server — see below.)
+5. **Commit and push** the `raku.online` repo. **This is the publish**: the site
+   is served by **GitHub Pages** from `www/`, via
+   [`.github/workflows/pages.yml`](https://github.com/ash/raku.online/blob/main/.github/workflows/pages.yml),
+   which runs on every push to `main`. Copying to the sshfs mount does *not*
+   update the live site — `curl -sI https://raku.online/` answers
+   `server: GitHub.com`. Verify after the Pages run finishes:
+   ```sh
+   curl -s https://raku.online/ | grep -o '?v=[0-9a-f]\{8\}' | head -1   # matches the tag deploy.sh printed
+   ```
 
 ### C. Update spec.raku.online for the new feature list
 
-The spec inherits the new **engine** automatically once Step B ships (it loads
-raku.online's `raku.js`). What remains is **content** — documenting features the
-release newly supports.
+The spec uses the engine in **two** places, and they update on different
+schedules — worth keeping straight:
+
+- the **live examples** a reader runs in the browser load raku.online's
+  `raku.js`, so they inherit the new engine as soon as Step B ships;
+- the **build-time verification** runs against the binary its CI downloads,
+  which is `releases/latest` (see step 3) — not your local build, and not
+  necessarily the release you just cut.
+
+What remains for you here is **content** — documenting features the release
+newly supports.
 
 1. **Author/update feature pages** — one Markdown-ish file per feature under
    the `raku-spec` checkout's `src/pages/<category>/<slug>.md` (categories: `literals`,
@@ -156,17 +188,21 @@ release newly supports.
    where deterministic, a matching ```` ```output ```` block — the build verifies
    these against the real interpreter. Update `status:` (`full`/`partial`/
    `divergent`/`ni`) for features whose support level changed.
-2. **Build + verify + deploy** — from the `raku-spec` checkout (with `.deploy.env`
-   pointing `RAKUPP` at the freshly built binary, `SPEC_DEST` at the doc root,
-   and ideally `ORACLE=raku` + a Node `WASM=` build for cross-checking):
+2. **Build + verify locally** — from the `raku-spec` checkout:
    ```sh
-   ./deploy.sh
+   rakupp build.raku --clean --verify     # every example run through rakupp
+   rakupp rules.raku                      # the /rules sub-site
    ```
-   This runs `rakupp build.raku --clean --verify` — every example is executed
-   through rakupp (and the oracle/wasm if set); **any drift aborts the deploy**,
-   so the spec can never contradict the shipped interpreter. Then it rsyncs
-   `out/` to the server.
-3. **Commit and push** the `raku-spec` repo.
+   Every example is executed through rakupp (and the Rakudo oracle, if
+   `ORACLE=raku`); **any drift fails the build**, so the spec can never
+   contradict the shipped interpreter.
+3. **Commit and push** the `raku-spec` repo. **This is the publish**: like
+   raku.online, spec.raku.online is served by **GitHub Pages**, via its own
+   `pages.yml`. That workflow does not use your local binary — it downloads
+   **`releases/latest`** from this repo and builds with that. So the spec picks
+   up a new engine only once the release for it is published *and* holds the
+   `Latest` flag. If a stale release is still marked Latest, the spec keeps
+   building against it; `gh release list` shows which one holds the flag.
 
 **tour.raku.online** ([ash/raku-tour](https://github.com/ash/raku-tour)) needs no
 server step at all: its GitHub Pages workflow installs the **latest release
