@@ -4474,6 +4474,16 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                     else if (a.s == "hour") { h = val; haveNamedField = true; } else if (a.s == "minute") { mi = val; haveNamedField = true; }
                     else if (a.s == "second") { secV = a.pairVal ? *a.pairVal : Value::integer(0); haveNamedField = true; } // exact (frac OK)
                     else if (a.s == "timezone") tz = val;
+                    // `DateTime.new(date => Date.new(…), hour => 1)` — the date
+                    // argument supplies year/month/day, the rest default to 0
+                    else if (a.s == "date" && a.pairVal && a.pairVal->t == VT::Hash && a.pairVal->hash) {
+                        auto& dh = *a.pairVal->hash;
+                        auto get = [&](const char* k, long long dflt) {
+                            auto it = dh.find(k); return it == dh.end() ? dflt : it->second.toInt();
+                        };
+                        y = get("year", y); mo = get("month", mo); d = get("day", d);
+                        haveNamedField = true;
+                    }
                 } else if (a.t == VT::Str && a.s.find('-', 1) == std::string::npos &&
                            !a.s.empty() && std::isdigit((unsigned char)a.s[0]) &&
                            posN == 1) {
@@ -4496,7 +4506,24 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                         std::string tstr = is.substr(tp + 1);
                         for (auto& c : tstr) if (c == ',') c = '.'; // comma decimal separator for seconds
                         (void)sscanf(tstr.c_str(), "%lld:%lld:%lf", &h, &mi, &fs);
+                        // fractional seconds are EXACT — `:00.43` is the Rat 43/100,
+                        // not a double, so .day-fraction and friends stay rational
                         secV = (fs == (long long)fs) ? Value::integer((long long)fs) : Value::number(fs);
+                        {
+                            size_t c1 = tstr.find(':');
+                            size_t c2 = c1 == std::string::npos ? c1 : tstr.find(':', c1 + 1);
+                            if (c2 != std::string::npos) {
+                                std::string st;
+                                for (size_t k = c2 + 1; k < tstr.size() &&
+                                     (std::isdigit((unsigned char)tstr[k]) || tstr[k] == '.'); k++) st += tstr[k];
+                                size_t dot = st.find('.');
+                                if (dot != std::string::npos && dot + 1 < st.size()) {
+                                    std::string digits = st.substr(0, dot) + st.substr(dot + 1);
+                                    BigInt den(1); for (size_t k = dot + 1; k < st.size(); k++) den = den * BigInt(10LL);
+                                    secV = Value::ratZ(BigInt::fromString(digits), den);
+                                }
+                            }
+                        }
                         size_t zp = is.find_first_of("Zz+-", tp + 1);
                         if (zp != std::string::npos) {
                             if (is[zp] == 'Z' || is[zp] == 'z') tz = 0;
@@ -4569,13 +4596,25 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         // iteration and `for $d1..$d2` rely on this)
         if ((m == "succ" || m == "pred") && inv.hashKind == "Date")
             return makeDate(civilToDays(fld("year"), fld("month"), fld("day")) + (m == "succ" ? 1 : -1));
-        if (m == "formatter") return inv.hash->count("formatter") ? (*inv.hash)["formatter"] : Value::any();
+        // with no formatter of its own a Date/DateTime answers the Callable TYPE
+        // object — the attribute's declared type, not a bare Any
+        if (m == "formatter") return inv.hash->count("formatter") ? (*inv.hash)["formatter"]
+                                                                  : Value::typeObj("Callable");
         if (m == "second" || m == "whole-second") {
             auto it = inv.hash->find("second");
             Value sv = it != inv.hash->end() ? it->second : Value::integer(0);
             return m == "whole-second" ? Value::integer(sv.toInt()) : sv; // .second keeps the fraction
         }
-        if (m == "year" || m == "month" || m == "day" || m == "hour" || m == "minute" || m == "posix")
+        if (m == "posix") { // `:real` keeps the fractional seconds
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "real" && (!a.pairVal || a.pairVal->truthy())) {
+                    Value sec = inv.hash->count("second") ? (*inv.hash)["second"] : Value::integer(0);
+                    Value frac = applyArith("-", sec, Value::integer(sec.toInt()));
+                    return applyArith("+", Value::integer(fld("posix")), frac);
+                }
+            return Value::integer(fld("posix"));
+        }
+        if (m == "year" || m == "month" || m == "day" || m == "hour" || m == "minute")
             return Value::integer(fld(m.c_str()));
         if (m == "hh-mm-ss") { char b[16]; snprintf(b, sizeof b, "%02lld:%02lld:%02lld", fld("hour"), fld("minute"), fld("second")); return Value::str(b); }
         if (m == "day-of-month") return Value::integer(fld("day")); // alias for .day
@@ -4710,6 +4749,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) lim = 29;
                 if (d > lim) d = lim;
             }
+            // A LEAP second (:60) only exists on the day it was inserted — moving
+            // off that day clamps it to :59 rather than rolling into midnight.
+            if (sInt == 60 && (days || months || years || secs)) sInt = 59;
             // fixed duration: fold days + time into an absolute count, then re-split
             long long dayNum = civilToDays(y, mo, d) + sign * days;
             long long totSec = h * 3600 + mi * 60 + sInt + sign * secs;
@@ -4766,6 +4808,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             return Value::integer(civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1);
         }
+        if (m == "days-in-year" && (inv.hashKind == "Date" || inv.hashKind == "DateTime")) {
+            long long y = fld("year");
+            return Value::integer(((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) ? 366 : 365);
+        }
         if (m == "week-number" || m == "week-year" || m == "week") {
             long long y = fld("year"), mo = fld("month"), d = fld("day");
             long long ordinal = civilToDays(y, mo, d) - civilToDays(y, 1, 1) + 1;
@@ -4800,19 +4846,35 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
             long long ymd = fld("year") * 10000 + fld("month") * 100 + fld("day");
             long long dayLen = 86400 + (leapDays.count(ymd) ? 1 : 0);
-            double sec = inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0;
-            double total = fld("hour") * 3600.0 + fld("minute") * 60.0 + sec;
-            if (total == std::floor(total)) // integral seconds: exact Rat (43200/86401)
-                return applyArith("/", Value::integer((long long)total), Value::integer(dayLen));
-            return Value::number(total / (double)dayLen);
+            // stay in Value arithmetic so an exact (Rat) second keeps the answer
+            // exact: 12:23:00.43 of an ordinary day is 4458043/8640000
+            Value sec = inv.hash->count("second") ? (*inv.hash)["second"] : Value::integer(0);
+            Value total = applyArith("+", applyArith("+",
+                              Value::integer(fld("hour") * 3600),
+                              Value::integer(fld("minute") * 60)), sec);
+            return applyArith("/", total, Value::integer(dayLen));
         }
         if (m == "julian-date" || m == "modified-julian-date") {
             long long y = fld("year"), mo = fld("month"), d = fld("day");
-            double frac = (fld("hour") * 3600.0 + fld("minute") * 60.0 +
-                           (inv.hash->count("second") ? (*inv.hash)["second"].toNum() : 0.0)) / 86400.0;
-            double jd = civilToDays(y, mo, d) + 2440587.5 + frac; // civil epoch 1970-01-01
-            return Value::number(m == "julian-date" ? jd : jd - 2400000.5);
+            // exact, like .day-fraction: the day count is an Int and the time of
+            // day a Rat, so the sum stays rational
+            Value sec = inv.hash->count("second") ? (*inv.hash)["second"] : Value::integer(0);
+            Value frac = applyArith("/", applyArith("+", applyArith("+",
+                              Value::integer(fld("hour") * 3600),
+                              Value::integer(fld("minute") * 60)), sec),
+                          Value::integer(86400));
+            // 2440587.5 = the Julian date of the civil epoch 1970-01-01T00:00
+            Value jd = applyArith("+", applyArith("+",
+                           Value::integer(civilToDays(y, mo, d)),
+                           Value::ratZ(BigInt(4881175LL), BigInt(2LL))), frac);
+            return m == "julian-date" ? jd
+                 : applyArith("-", jd, Value::ratZ(BigInt(4800001LL), BigInt(2LL)));
         }
+        // the timezone offset in bigger units (the raw one is seconds)
+        if (m == "offset-in-minutes" && inv.hashKind == "DateTime")
+            return applyArith("/", Value::integer(fld("timezone")), Value::integer(60));
+        if (m == "offset-in-hours" && inv.hashKind == "DateTime")
+            return applyArith("/", Value::integer(fld("timezone")), Value::integer(3600));
         if (m == "truncated-to" || m == "earlier" || m == "later") return inv; // best-effort (weeks etc.)
     }
 
