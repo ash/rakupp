@@ -5,6 +5,11 @@
   #:use-module (guix build-system cmake)
   #:use-module ((guix licenses) #:prefix license:))
 
+(define vcs-file?
+  ;; Return true if the given file is under version control.
+  (or (git-predicate (current-source-directory))
+      (const #t)))
+
 (define-public rakupp
   (package
    (name "rakupp")
