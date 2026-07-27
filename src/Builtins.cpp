@@ -1469,6 +1469,11 @@ static std::shared_ptr<Value> baggyKey(const Value& v) {
 // print correctly; the keys stay renderings.
 std::string baggyKeyStr(const Value& v) {
     if (v.t == VT::Type || v.t == VT::Any) return v.gist(); // type objects ARE elements
+    // An ALLOMORPH is neither of its halves: `<42>` renders "42" exactly like the
+    // Int 42, so keying on the rendering merged them and `42 ∈ <42 55 1>` was True.
+    // Narrow on purpose — plain Str and Int keys keep their rendering, so the set
+    // operators that compare a result against a `set(…)` literal are untouched.
+    if (v.isAllomorph()) return whichOf(v);
     return v.toStr();
 }
 // pairsAsElements: constructors (set()/Set.new) treat a Pair item as ONE element
@@ -1622,6 +1627,35 @@ static Value makeSignature(const Callable* c) {
     if (c) {
         if (c->hasPrimed) { for (auto& sp : c->primedParams) ps.push_back(sp.get()); }
         else if (c->params) for (auto& p : *c->params) ps.push_back(&p);
+    }
+    // A bare `{ … }` block with no written signature carries an IMPLICIT `$_`:
+    // `{;}.signature` is `(;; $_? is raw = OUTER::<$_>)`, arity 0 but count 1.
+    // `-> {…}` and `sub {…}` do NOT (both are `()`), and a placeholder block has
+    // its own real signature — hence the isBlock/!hadSig/no-placeholders guard.
+    if (ps.empty() && c && c->isBlock && !c->hadSig && !c->isSigLiteral &&
+        c->placeholders.empty()) {
+        Value s = Value::makeHash(); s.hashKind = "Signature";
+        (*s.hash)["str"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
+        (*s.hash)["arity"] = Value::integer(0);
+        (*s.hash)["count"] = Value::integer(1);
+        Value params = Value::array(); params.isList = true;
+        Value pv = Value::makeHash(); pv.hashKind = "Parameter";
+        (*pv.hash)["str"] = Value::str("$_? is raw = OUTER::<$_>");
+        (*pv.hash)["name"] = Value::str("$_");
+        (*pv.hash)["usage-name"] = Value::str("_");
+        (*pv.hash)["type"] = Value::str("Any");
+        (*pv.hash)["type-obj"] = Value::typeObj("Any");
+        (*pv.hash)["optional"] = Value::boolean(true);
+        (*pv.hash)["slurpy"] = Value::boolean(false);
+        (*pv.hash)["named"] = Value::boolean(false);
+        (*pv.hash)["raw"] = Value::boolean(true);
+        (*pv.hash)["readonly"] = Value::boolean(false);
+        (*pv.hash)["rw"] = Value::boolean(false);
+        (*pv.hash)["suffix"] = Value::str("?");
+        (*pv.hash)["multi-invocant"] = Value::boolean(false);
+        params.arr->push_back(std::move(pv));
+        (*s.hash)["params"] = std::move(params);
+        return s;
     }
     std::string sig = "(";
     long long arity = 0, count = 0; bool slurpy = false, first = true;
@@ -10311,6 +10345,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                 Value kids = Value::array(); kids.isList = true;
                 for (auto& e : (node.t == VT::Range ? node.flatten() : *node.arr))
                     kids.arr->push_back(build(e, d + 1));
+                // every node BELOW the root is an item — that is what stops a later
+                // `.flat` from descending, so `.tree(2).flat.elems` is 2 and not 6
+                if (d > 0) kids.itemized = true;
                 return kids;
             };
             Value self = inv; self.isList = true; // shares the invocant's storage (=== identity)

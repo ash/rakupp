@@ -2881,6 +2881,7 @@ ExprPtr Parser::parsePrimary() {
                 bool doubly = (t.text == "<->");   // `<->` binds its params `is rw`
                 advance();
                 auto be = std::make_unique<BlockExpr>();
+                be->isPointy = true;   // even `-> {…}` has a written (empty) signature
                 sigRetType_.clear();
                 be->params = parsePointyParams();
                 if (doubly) for (auto& p : be->params) p.isRw = true;
@@ -3832,9 +3833,16 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     int d = 1; var += raw[j++];
                     while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
                     commit();
-                } else if (j + 1 < n && raw[j] == '.' && (std::isalpha((unsigned char)raw[j+1]) || raw[j+1]=='_')) {
-                    // bare .method — tentative; consume its name, commit only if parens follow
+                } else if (j + 1 < n && raw[j] == '.' &&
+                           (std::isalpha((unsigned char)raw[j+1]) || raw[j+1] == '_' ||
+                            ((raw[j+1] == '^' || raw[j+1] == '?' || raw[j+1] == '&') && j + 2 < n &&
+                             (std::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_')))) {
+                    // bare .method — tentative; consume its name, commit only if parens follow.
+                    // One META-SIGIL may sit between the dot and the name: `"$x.^name()"`
+                    // is a meta-method call, `.?meth()` a maybe-call, `.&f()` a sub call.
+                    // Without this the chain ended at `$x` and `.^name()` was literal text.
                     var += raw[j++]; // .
+                    if (raw[j] == '^' || raw[j] == '?' || raw[j] == '&') var += raw[j++];
                     while (j < n && isIdentCont(raw[j])) var += raw[j++];
                     if (j < n && raw[j] == '(') {
                         int d = 1; var += raw[j++];

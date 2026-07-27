@@ -258,6 +258,7 @@ struct BlockExpr : Expr {
     std::vector<StmtPtr> body;
     bool isSub = false;        // anonymous `sub {…}` / `method {…}` term — a Sub, not a Block
     bool isMethodTerm = false; // …and `method {…}` in particular takes an invocant
+    bool isPointy = false;     // `-> {…}` / `<-> {…}` — a WRITTEN signature, even an empty one
     std::string retType;       // `--> T` in the signature of a pointy block / anon routine
     BlockExpr(): Expr(NK::BlockExpr) {}
 };

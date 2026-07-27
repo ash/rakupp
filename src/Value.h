@@ -64,6 +64,7 @@ struct Callable {
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
     bool isPrivateMethod = false;                   // `method !name` — only reachable via self!name
     bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
+    bool isRegexRoutine = false;                     // `my regex R {…}` / token / rule — .^name is Regex, not Sub
     std::string retType;                             // declared return type (`of`/`returns`/`-->`), "" = none
     std::vector<Value> wrappers;                      // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call

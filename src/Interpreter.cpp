@@ -170,6 +170,9 @@ static bool isSpecialVar(const std::string& n) {
 static bool valueEqv(const Value& a, const Value& b) {
     // eqv is type-aware: 42 eqv 42.0 is False (Int vs Num/Rat), unlike ==
     if (a.t != b.t) return false;
+    // …and an allomorph is its own type: `42 eqv <42>` is False although both are
+    // VT::Int. They differ only in their WHICH, which carries both halves.
+    if (a.isAllomorph() || b.isAllomorph()) return whichOf(a) == whichOf(b);
     switch (a.t) {
         case VT::Array:
             if (!a.arr || !b.arr || a.arr->size() != b.arr->size()) return false;
@@ -3100,6 +3103,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             std::string pat = nr->pattern;
             Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
             code.code->name = nr->name;
+            code.code->isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
             code.code->builtin = [pat](Interpreter& I, ValueList& a) -> Value {
                 return a.empty() ? Value::nil() : I.regexMatch(a[0].toStr(), pat);
             };
@@ -4469,6 +4473,9 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // first argument and binds `self`, exactly as a declared one does.
     code.code->isMethod = be->isMethodTerm;
     code.code->isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
+    // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
+    // `()` and only a bare `{;}` gets the implicit `$_`
+    code.code->hadSig = be->isPointy;
     code.code->retType = be->retType; // `-> $x --> Int {…}` / `sub (--> Int) {…}`
     if (be->params.empty()) code.code->placeholders = computePlaceholders(be->body);
     return code;
@@ -9217,6 +9224,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             same = l.fatRat == r.fatRat &&
                    l.ratN && r.ratN && l.ratD && r.ratD &&
                    BigInt::cmp(*l.ratN, *r.ratN) == 0 && BigInt::cmp(*l.ratD, *r.ratD) == 0;
+        // an ALLOMORPH is not identical to either half: `42 === <42>` is False even
+        // though both are VT::Int and render "42". Its .WHICH carries both.
+        else if (l.isAllomorph() || r.isAllomorph()) same = (whichOf(l) == whichOf(r));
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
         return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
@@ -11238,6 +11248,24 @@ Value Interpreter::evalBinary(Binary* b) {
             throwTypedV("X::AdHoc", {},
                         "Cannot use 'does' operator on a " + base.typeName() +
                         ", did you mean 'but'?");
+        // Only a ROLE may be mixed in. The collect walk inside mixinValue accepts any
+        // VT::Type as rolish, so `1 but B` for a plain class B silently built Int+{B}.
+        // An UNREGISTERED type name is left alone: rakupp does not register the
+        // built-in roles (Numeric, Positional, …) as classes, so refusing those
+        // would break `1 but Numeric`, which is legal.
+        {
+            std::function<void(const Value&)> checkComposable = [&](const Value& v) {
+                if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) checkComposable(e); return; }
+                if (v.t != VT::Type) return;                  // a plain value is fine for `but`
+                auto ci = classes_.find(v.s);
+                if (ci == classes_.end() || !ci->second || ci->second->isRole) return;
+                throwTypedV("X::Mixin::NotComposable",
+                            {{"target", base}, {"rolish", Value::typeObj(v.s)}},
+                            "Cannot mix in non-composable type " + v.s +
+                            " into object of type " + base.typeName());
+            };
+            checkComposable(rhs);
+        }
         Value res = mixinValue(std::move(base), rhs, op == "but");
         // `does` mutates the container in place; for a boxed non-object base the
         // mixed value is a fresh object, so write it back to the LHS lvalue.
@@ -13842,12 +13870,9 @@ Value Interpreter::evalIndex(Index* idx) {
                         "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0"};
                 }
                 // any other SCALAR (Pair, Int, …) is a one-item list too:
-                // $b.grabpairs[0] indexes the single returned Pair
-                if (base.t == VT::Pair || base.t == VT::Int || base.t == VT::Num ||
-                    base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex) {
-                    if (i == 0 || i == -1) return base;
-                    return Value::nil();
-                }
+                // (a scalar one-item-list base cannot reach here: this block is
+                // entered only for Array/Range/Str. The live arm is at the end of
+                // the function.)
                 // A negative index is OUT OF RANGE in Raku (there is no Python-style
                 // from-the-end wraparound — that is what `@a[*-1]` is for). Both a
                 // literal `@a[-1]` and a `*-N` that resolves below 0 yield a Failure.
@@ -13914,7 +13939,16 @@ Value Interpreter::evalIndex(Index* idx) {
         if (i >= 0 && i < (long long)f.size()) return f[i];
     } else if (base.t == VT::Pair || base.t == VT::Int || base.t == VT::Num ||
                base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex) {
-        // a scalar is a one-item list: $b.grabpairs[0] indexes the single Pair
+        // a scalar is a one-item list: $b.grabpairs[0] indexes the single Pair.
+        //
+        // Rakudo THROWS X::OutOfRange for any other index (`42[2]`), and the Str
+        // one-item arm above already does. That change was made and BACKED OUT: it
+        // is correct in isolation but it converts a pre-existing soft failure into
+        // a hard death. S03-operators/assign.t line 230 reads `@p[0][1]` where
+        // rakupp wrongly makes `@p[0]` a scalar rather than a list — under Nil that
+        // is one failing assertion, under a throw the file dies and takes 201 more
+        // with it. Fix the list-assignment bug behind `@p = $a or= 3, 4` first; the
+        // throw is a one-line change once nothing depends on the soft Nil.
         if (i == 0 || i == -1) return base;
         return Value::nil();
     }
