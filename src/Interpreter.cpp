@@ -11310,6 +11310,14 @@ Value Interpreter::evalBinary(Binary* b) {
             bool ok = boolify(m);
             return Value::boolean(op == "~~" ? ok : !ok);
         }
+        // `\(…) ~~ :(…)` — a Signature matches by BINDING the capture to it, which
+        // is Signature.ACCEPTS's job. applyArith has no idea what a Signature is
+        // and answered False for every capture.
+        if (r.t == VT::Hash && r.hashKind == "Signature") {
+            ValueList one{lTopic};
+            bool ok = boolify(methodCall(r, "ACCEPTS", one));
+            return Value::boolean(op == "~~" ? ok : !ok);
+        }
         return applyArith(op, lTopic, r); // generic smartmatch on the already-evaluated operands
     }
     if (op == "ff" || op == "fff" || op == "ff^" || op == "fff^" ||

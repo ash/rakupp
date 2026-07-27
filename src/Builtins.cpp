@@ -663,8 +663,16 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             for (auto& k : keys) {
                 if (!first) o += ", "; first = false;
                 Value val = v.hash->at(k);
-                o += rakuIdentKey(k) ? ":" + k + "(" + rakuRepr(val, depth + 1, seen) + ")"
-                                     : rakuStrLit(k) + " => " + rakuRepr(val, depth + 1, seen);
+                // Every hash VALUE sits in a Scalar container, so an Array or Hash
+                // stored there is itemized whether or not the flag happens to be set
+                // — `%h<k> = [1,2]` set it, `my %h = k => [1,2]` never did, and
+                // Rakudo renders `$[1, 2]` for both.
+                if (val.t == VT::Array || val.t == VT::Hash) val.itemized = true;
+                bool wasElem = g_reprInArrayElem; g_reprInArrayElem = false;
+                std::string rv = rakuRepr(val, depth + 1, seen);
+                g_reprInArrayElem = wasElem;
+                o += rakuIdentKey(k) ? ":" + k + "(" + rv + ")"
+                                     : rakuStrLit(k) + " => " + rv;
             }
             if (v.hash) seen.erase(v.hash.get());
             o += "}";
@@ -2370,9 +2378,32 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "count") return inv.hash->count("count") ? (*inv.hash)["count"] : Value::integer(0);
         if (m == "params" || m == "parameters") { Value p = inv.hash->count("params") ? (*inv.hash)["params"] : Value::array(); p.isList = true; return p; }
         if (m == "ACCEPTS") {
-            // would this capture bind? — arity window, literal constraints,
-            // positional types, required nameds (Cro's router bind-check)
             if (args.empty()) return Value::boolean(false);
+            // Signature ~~ Signature is a different question from Signature ~~
+            // Capture: it asks whether EVERY call that binds the left also binds
+            // the right, i.e. whether the left's accepted call-set is contained in
+            // the right's. Arity/count windows answer most of it; a slurpy NAMED
+            // does not widen the positional window, so `:(*%) ~~ :()` needs its own
+            // test (both are [0,0] positionally, but only one takes nameds).
+            if (args[0].t == VT::Hash && args[0].hashKind == "Signature" && args[0].hash) {
+                const Value& lhs = args[0];
+                auto num = [](const Value& sg, const char* k) {
+                    auto it = sg.hash->find(k);
+                    return it == sg.hash->end() ? 0.0 : it->second.toNum();
+                };
+                auto str = [](const Value& sg) {
+                    auto it = sg.hash->find("str");
+                    return it == sg.hash->end() ? std::string() : it->second.s;
+                };
+                if (!(num(lhs, "arity") >= num(inv, "arity") &&
+                      num(lhs, "count") <= num(inv, "count"))) return Value::boolean(false);
+                bool lAny = str(lhs).find("*%") != std::string::npos;
+                bool rAny = str(inv).find("*%") != std::string::npos;
+                if (lAny && !rAny) return Value::boolean(false);
+                return Value::boolean(true);
+            }
+            // otherwise: would this CAPTURE bind? — arity window, literal
+            // constraints, positional types, required nameds (Cro's router check)
             const Value& cap = args[0];
             ValueList pos; std::map<std::string, Value> named;
             if (cap.t == VT::Array && cap.arr)
@@ -2551,7 +2582,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // run the positionals first, then the nameds.
     if (inv.t == VT::Array && inv.hashKind == "Capture" &&
         (m == "list" || m == "hash" || m == "Map" || m == "elems" || m == "Numeric" ||
-         m == "keys" || m == "values" || m == "pairs" || m == "antipairs" || m == "Bool")) {
+         m == "keys" || m == "values" || m == "pairs" || m == "antipairs" || m == "kv" ||
+         m == "Bool")) {
         ValueList pos; std::map<std::string, Value> named;
         if (inv.arr) for (auto& e : *inv.arr) {
             if (e.t == VT::Pair) named[e.s] = e.pairVal ? *e.pairVal : Value::any();
@@ -2562,6 +2594,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         // named parts do not add to it
         if (m == "elems" || m == "Numeric") return Value::integer((long long)pos.size());
         if (m == "Bool")  return Value::boolean(!pos.empty() || !named.empty());
+        // `.kv` is key-then-value flattened: the positional INDEX then its value,
+        // then each named's NAME then its value. Falling through to Array.kv
+        // yielded the named part as (index, Pair) instead.
+        if (m == "kv") {
+            Value o = Value::array(); o.isList = true; o.s = "Seq";
+            for (size_t i = 0; i < pos.size(); i++) {
+                o.arr->push_back(Value::integer((long long)i));
+                o.arr->push_back(pos[i]);
+            }
+            for (auto& kv : named) { o.arr->push_back(Value::str(kv.first)); o.arr->push_back(kv.second); }
+            return o;
+        }
         if (m == "keys" || m == "values" || m == "pairs" || m == "antipairs") {
             Value o = Value::array(); o.isList = true; o.s = "Seq";
             for (size_t i = 0; i < pos.size(); i++) {
@@ -6784,9 +6828,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             static const std::set<std::string> qh = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             if (qh.count(inv.s)) // Mix[Str].keyof is Str; unparameterized quanthashes key on Mu
                 return Value::typeObj(inv.ofType.empty() ? "Mu" : inv.ofType);
-            return Value::typeObj("Str");
+            return Value::typeObj("Str(Any)"); // `Hash.keyof`
         }
-        return Value::typeObj("Str");
+        // An OBJECT hash keys on its declared key type. Parser.cpp records that as
+        // the second half of declType ("Any,Int"), which typedDefault copies into
+        // ofType — `.of` already reads the first half and `.keyof` never read the
+        // second. A plain hash keys on the COERCION type Str(Any), not bare Str.
+        if (inv.t == VT::Hash) {
+            size_t c = inv.ofType.find(',');
+            if (c != std::string::npos) return Value::typeObj(inv.ofType.substr(c + 1));
+        }
+        return Value::typeObj("Str(Any)");
     }
     if (m == "Rat" || m == "FatRat") {
         bool fat = (m == "FatRat");
@@ -10128,12 +10180,31 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             return h;
         }
         if ((m == "push" || m == "append") && inv.t == VT::Hash) { // %h.push(:a(1)) accumulates into a list
+            // Flatten the arguments into the pairs they contribute FIRST: a list, a
+            // Seq or a Hash argument contributes its own pairs (`%inv.push: %wc.invert`
+            // was silently dropping every one of them). A NAMED argument contributes
+            // nothing at all — `%h.push(e => 6)` is a bareword fat-arrow, which binds
+            // as a named and is a no-op, not an element.
+            ValueList flat;
             for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg) continue;
+                if (a.t == VT::Pair) { flat.push_back(a); continue; }
+                if (a.t == VT::Hash && a.hash) {
+                    for (auto& kv : *a.hash) flat.push_back(Value::pair(kv.first, kv.second));
+                    continue;
+                }
+                if (a.t == VT::Array || a.t == VT::Range) { for (auto& x : a.flatten()) flat.push_back(x); continue; }
+                flat.push_back(a);
+            }
+            for (auto& a : flat) {
                 if (a.t != VT::Pair) continue;
                 std::string key = a.s; Value val = a.pairVal ? *a.pairVal : Value::any();
                 auto it = inv.hash->find(key);
                 if (it == inv.hash->end()) {
-                    if (m == "append" || (val.t == VT::Array && val.isList)) { Value ar = Value::array(); for (auto& x : val.flatten()) ar.arr->push_back(x); (*inv.hash)[key] = ar; }
+                    // a NEW key stores the value as it is; only a LIST value spreads
+                    // (append and push agree here — it is the existing-key branch that
+                    // tells them apart)
+                    if (val.t == VT::Array && val.isList) { Value ar = Value::array(); for (auto& x : val.flatten()) ar.arr->push_back(x); (*inv.hash)[key] = ar; }
                     else (*inv.hash)[key] = val;
                 } else {
                     if (it->second.t != VT::Array) { Value ar = Value::array(); ar.arr->push_back(it->second); it->second = ar; }
@@ -12152,10 +12223,13 @@ void Interpreter::registerBuiltins() {
         std::string line;
         // the STRING to split may sit behind a named argument
         // (`lines(:!chomp, "a\nb")`), so look past the adverbs for it
+        // …and it is the first POSITIONAL whatever its type: `lines` is Cool, so
+        // `lines(42)` is "42".lines. Requiring a Str let every other type fall
+        // through to the $*IN branch below, which blocks on stdin.
         const Value* src = nullptr; ValueList named;
         for (auto& v : a) {
             if (v.t == VT::Pair && v.namedArg) { named.push_back(v); continue; }
-            if (!src && v.t == VT::Str) src = &v;
+            if (!src) src = &v;
             else named.push_back(v);            // a limit / :count rides along
         }
         if (src) return I.methodCall(*src, "lines", named);
@@ -12178,11 +12252,10 @@ void Interpreter::registerBuiltins() {
     B["words"] = [](Interpreter& I, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         std::string all, w;
-        if (!a.empty() && a[0].t == VT::Str) { // words("a b c" [, $limit])
-            ValueList rest(a.begin() + 1, a.end());
-            return I.methodCall(a[0], "words", rest);
-        }
-        if (!a.empty() && a[0].t == VT::Match) { // words($match, ∞)
+        // The source is the first POSITIONAL, whatever its type — `words` is a Cool
+        // routine, so `words(42)` is "42".words. Selecting it by VALUE TAG left every
+        // other type falling through to the `$*IN` branch, which blocks on stdin.
+        if (!a.empty() && a[0].t != VT::Pair) {
             ValueList rest(a.begin() + 1, a.end());
             return I.methodCall(a[0], "words", rest);
         }
@@ -13199,6 +13272,18 @@ void Interpreter::registerBuiltins() {
     };
     B["printf"] = [sprintfArgs](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(true);
+        // `printf($fmt, $junction)` PRINTS ONCE PER EIGENSTATE, in order — Rakudo has
+        // a dedicated printf(Str(Cool), Junction:D) candidate. (sprintf does not:
+        // there the junction stays one value.)
+        if (a.size() == 2 && a[1].t == VT::Array && a[1].arr &&
+            (a[1].enumName == "any" || a[1].enumName == "all" ||
+             a[1].enumName == "one" || a[1].enumName == "none")) {
+            for (auto& e : *a[1].arr) {
+                ValueList one{e};
+                std::cout << doSprintf(a[0].toStr(), one, I.langRev_);
+            }
+            return Value::boolean(true);
+        }
         ValueList rest = sprintfArgs(a);
         std::cout << doSprintf(a[0].toStr(), rest, I.langRev_); return Value::boolean(true);
     };
