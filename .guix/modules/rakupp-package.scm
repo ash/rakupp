@@ -22,6 +22,7 @@
    (arguments
     (list 
      #:build-type "Release"
+     #:configure-flags #~(list "-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
      #:tests? #f))
    (synopsis "Raku++ — a Raku language interpreter and compiler written from scratch in C++17, validated against the Roast spec suite.")
    (description
