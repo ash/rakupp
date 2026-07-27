@@ -9665,8 +9665,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                 return out;
             }
             // an optional &mapper (or `:by(&code)`) decides the ORDER; the
-            // endpoints are still the original elements
-            Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            // endpoints are still the original elements. As for min/max, the block
+            // is the first CODE argument — an adverb may precede it.
+            Value mapper = Value::nil();
+            for (auto& a : args)
+                if (a.t == VT::Code) { mapper = a; break; }
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "by" && a.pairVal) mapper = *a.pairVal;
             Value lo, hi, loK, hiK; bool started = false;
@@ -9689,7 +9692,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             bool wantMax = (m == "max");
             // an optional &mapper: compare by mapper($_), returning the original
             // element. `:by(&code)` is the named spelling, for the sub form.
-            Value mapper = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
+            // The block is the first CODE argument, not the first argument — an
+            // adverb may come before it (`.min(:k, { … })`), and looking only at
+            // args[0] silently dropped the mapper and compared the raw elements.
+            Value mapper = Value::nil();
+            for (auto& a : args)
+                if (a.t == VT::Code) { mapper = a; break; }
             // `:k`/`:v`/`:kv`/`:p` answer EVERY position attaining the extremum,
             // as indices / values / both interleaved / index => value pairs
             char want = 0;
