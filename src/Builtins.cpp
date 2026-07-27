@@ -9492,7 +9492,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "elems") return Value::integer((long long)items.size());
         if (m == "end") return Value::integer((long long)items.size() - 1);
         if (m == "Bool") return Value::boolean(!items.empty());
-        if (m == "Array") return inv.t == VT::Array ? inv : Value::array(items);
+        // `.Array` DECONTAINERIZES. A hash/scalar value sits in a container, so
+        // an Array read out of one is itemized; returning it unchanged meant
+        // `my @a = $v.Array` bound it as ONE element while `.Array.elems` said 3.
+        // `@($v)` was already right, which is what made the two disagree.
+        if (m == "Array") {
+            if (inv.t != VT::Array) return Value::array(items);
+            Value r = inv; r.itemized = false; r.isList = false; return r;
+        }
         if (m == "values") {
             Value out = Value::array();
             if (inv.t == VT::Hash) { for (auto& kv : *inv.hash) out.arr->push_back(kv.second); }

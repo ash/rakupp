@@ -499,6 +499,11 @@ sub num-val(Str $t) {
 # =========================================================================
 sub name-key($sigil, $name) { $sigil ~ $name }
 
+# Returns the LIVE Array container (elem-set and resolve-array mutate it). A
+# caller that wants a flat copy must decontainerize — `my @a = @(get-array(...))`
+# — because a hash value sits in a Scalar container and binding it to `@a`
+# directly makes it one itemized element. Raku++ used to spread it; Rakudo does
+# not, and Raku++ now agrees with Rakudo.
 sub get-array($env, $name) {
     my $k = '@' ~ $name;
     my $e = $env.lookup($k);
@@ -835,7 +840,7 @@ sub lvalue-set($n, $v, $env) {
 
 sub elem-get($n, $env) {
     if $n<kind> eq 'idx' {
-        my @a = get-array($env, $n<name>);
+        my @a = @(get-array($env, $n<name>));
         my $i = to-num(eval-scalar($n<key>, $env)).Int;
         $i += @a.elems if $i < 0;
         return $i >= 0 && $i < @a.elems && @a[$i].defined ?? @a[$i] !! UNDEF;
@@ -994,7 +999,7 @@ sub interp-var(@c, $i, $n, $env) {
         return (to-str(elem-get($node, $env)), $k - $i);
     }
     if $sigil eq '@' {
-        my @a = get-array($env, $name);
+        my @a = @(get-array($env, $name));
         return (@a.map({ to-str($_) }).join(' '), $j - $i);
     }
     else {
@@ -1080,7 +1085,7 @@ sub hash-ish($node, $env, $which) {
         return $which eq 'keys' ?? %h.keys.Array !! %h.values.Array;
     }
     if $node && $node<t> eq 'var' && $node<sigil> eq '@' {
-        my @a = get-array($env, $node<name>);
+        my @a = @(get-array($env, $node<name>));
         return $which eq 'keys' ?? (^@a.elems).Array !! @a.Array;
     }
     [];
@@ -1091,7 +1096,7 @@ sub exists-op($node, $env) {
         my %h = get-hash($env, $node<name>);
         return %h{to-str(eval-scalar($node<key>, $env))}:exists ?? 1 !! '';
     }
-    my @a = get-array($env, $node<name>);
+    my @a = @(get-array($env, $node<name>));
     my $i = to-num(eval-scalar($node<key>, $env)).Int;
     return (0 <= $i < @a.elems) ?? 1 !! '';
 }
