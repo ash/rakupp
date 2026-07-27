@@ -353,11 +353,22 @@ is now a size check (which rejects nearly every candidate outright) followed by 
 inlined `memcmp`. Four compile errors, all of them stream or concatenation
 overloads. Worth about 30%:
 
-| 1 M iterations | before | after |
-|---|---:|---:|
-| `'ab'.chars` | 1.63 s | **1.19 s** |
-| `'ab'.uc` | 1.78 s | **1.15 s** |
-| `'ab'.uniname` | 1.61 s | **1.08 s** |
+Two details earn their keep. The comparison is `__attribute__((always_inline))`:
+left to itself the optimizer emits `MName::operator==<N>` **out of line** in this
+function too, and an out-of-line call costs more than the comparison it performs.
+And the first eight bytes of the name are packed into a `uint64_t` at
+construction, so any name of eight characters or fewer — which is most of them —
+compares as a single integer against a literal packed at compile time, with no
+`memcmp` at all.
+
+| 1 M iterations | before | ladder wrapper | + always_inline & packing |
+|---|---:|---:|---:|
+| `'ab'.chars` | 1.63 s | 1.19 s | **1.17 s** |
+| `'ab'.uc` | 1.78 s | 1.15 s | **0.95 s** |
+| `'ab'.uniname` | 1.61 s | 1.08 s | **0.71 s** |
+
+(`.chars` barely moves because it is reached early: few comparisons run before it.
+`.uniname` is deep in the `Str` arm, so it gains the most.)
 
 ### Where that leaves method dispatch
 
@@ -365,15 +376,33 @@ Taken together the two fixes are about **7× on a method call** — `'ab'.chars`
 × 300 K went from 2.47 s to 0.36 s, against Rakudo's 0.11 s. From roughly 20×
 slower than Rakudo per call to roughly 3×.
 
-What remains is ordinary overhead rather than a pathology. Both `methodCall` and
-`methodCallInner` still take their invocant and argument list **by value**; a
-`Value` carries ten `shared_ptr` members plus four `std::string`s, so a call
+A profile of `for ^6000000 { "ab".uc }` now looks completely different from where
+this started:
+
+| | share |
+|---|---:|
+| heap allocate / free | 31% |
+| `Value` copy / destroy | 11% |
+| **method-name comparison** | **8.5%** |
+| `methodCallInner` body | 6.1% |
+
+Name comparison went from 60% to 8.5%, which retires it as a target. **A dispatch
+table would only be chasing that 8.5%** — and it is not a drop-in, because the
+ladder is not a pure dispatch on the name: arms are guarded by invocant type and
+argument shape, and later generic arms deliberately catch what earlier specific
+ones decline. Turning ~1,640 of those into map entries means giving each one its
+own guard and preserving the fall-through order between them: a large, risky
+rewrite for a single-digit percentage.
+
+The 42% now sitting in allocation and `Value` churn is the real remaining target,
+and it is the by-value question from earlier: both `methodCall` and
+`methodCallInner` take their invocant and argument list **by value**, and a
+`Value` carries ten `shared_ptr` members plus four `std::string`s, so every call
 copies those and heap-allocates a `ValueList`. Switching both to `const&` is
-mechanically small — it produces 18 compile errors, each either "make a local copy
-here" or "let this helper take const&" — but it trades away the accidental safety
-that copying provides against a callee mutating the container its own invocant
-lives in, so it wants an aliasing audit of the 178 call sites rather than a quick
-pass.
+mechanically small — 18 compile errors, each either "make a local copy here" or
+"let this helper take const&" — but it trades away the accidental safety copying
+provides against a callee mutating the container its own invocant lives in, so it
+wants an aliasing audit of the 178 call sites rather than a quick pass.
 
 ## Forwarding the C++ optimization level
 

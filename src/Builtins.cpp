@@ -1840,11 +1840,25 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 namespace {
 struct MName {
     const std::string& s;
-    explicit MName(const std::string& v) : s(v) {}
-    template <std::size_t N> bool operator==(const char (&lit)[N]) const {
-        return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
+    std::size_t n;        // cached length: the first test on every comparison
+    std::uint64_t pre;    // first 8 bytes, so short names compare as one integer
+    explicit MName(const std::string& v) : s(v), n(v.size()), pre(pack(v.data(), v.size())) {}
+    static std::uint64_t pack(const char* p, std::size_t k) {
+        std::uint64_t w = 0;
+        for (std::size_t i = 0; i < k && i < 8; i++)
+            w |= (std::uint64_t)(unsigned char)p[i] << (8 * i);
+        return w;
     }
-    template <std::size_t N> bool operator!=(const char (&lit)[N]) const { return !(*this == lit); }
+    // ALWAYS inlined: out of line, the call itself costs more than the comparison,
+    // and the enclosing function is far too large for clang to inline it by choice.
+    template <std::size_t N>
+    __attribute__((always_inline)) inline bool operator==(const char (&lit)[N]) const {
+        if (n != N - 1) return false;
+        if (N - 1 <= 8) return pre == pack(lit, N - 1);
+        return std::memcmp(s.data(), lit, N - 1) == 0;
+    }
+    template <std::size_t N>
+    __attribute__((always_inline)) inline bool operator!=(const char (&lit)[N]) const { return !(*this == lit); }
     bool operator==(const std::string& o) const { return s == o; }
     bool operator!=(const std::string& o) const { return s != o; }
     operator const std::string&() const { return s; }
