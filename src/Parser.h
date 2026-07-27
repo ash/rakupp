@@ -70,6 +70,7 @@ private:
     std::set<std::string> sigilless_; // names declared sigilless (my \x, \a params, -> \d) — parse as terms, not listops
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
+    bool lastIsDynamic_ = false;  // `is dynamic` captured by skipTraits, same way
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
     int anonStateN_ = 0;          // unique ids for bare-`$` anonymous state vars
     bool useNqp_ = false;         // saw `use nqp` — enables the nqp:: op subset

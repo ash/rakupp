@@ -2189,6 +2189,10 @@ int Interpreter::run(Program& prog) {
                         else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
                                  std::isupper((unsigned char)ve0->declType[0]))
                             global_->varDefault[ve0->name] = Value::typeObj(ve0->declType);
+                        // …and its `is dynamic`, which the skipped declaration would
+                        // otherwise never record (a mainline `my $x is dynamic;` with
+                        // no initializer is hoisted here and never evaluated)
+                        if (ve0->declDynamic) global_->varDynamic.insert(ve0->name);
                     }
                 }
                 continue;
@@ -6861,6 +6865,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             else if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
                 tctx_.cur->varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+            if (ve->declDynamic) tctx_.cur->varDynamic.insert(ve->name); // `is dynamic`
             tctx_.cur->define(ve->name, std::move(init));
             return &tctx_.cur->vars[ve->name];
         }
@@ -13942,6 +13947,7 @@ Value Interpreter::eval(Expr* e) {
                         tctx_.cur->varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
                     tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
                 }
+                if (ve->declDynamic) tctx_.cur->varDynamic.insert(ve->name); // `is dynamic`
                 return tctx_.cur->vars[ve->name];
             }
             if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
@@ -14345,12 +14351,29 @@ Value Interpreter::eval(Expr* e) {
         case NK::Index: return evalIndex(static_cast<Index*>(e));
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
-            // `.dynamic` asks about the VARIABLE, not its value: a `*` twigil is
-            // what makes a container dynamic, and only the name carries that
-            if (mc->method == "dynamic" && mc->args.empty() && mc->inv &&
-                mc->inv->kind == NK::VarExpr) {
-                const std::string& vn = static_cast<VarExpr*>(mc->inv.get())->name;
-                return Value::boolean(vn.size() > 1 && vn[1] == '*');
+            // `.dynamic` asks about the VARIABLE, not its value. A `*` twigil makes a
+            // container dynamic and the NAME carries that; `is dynamic` does the same
+            // without a twigil, and is recorded per scope at declaration time.
+            // `$x.VAR.dynamic` asks the same question, so unwrap a `.VAR` first.
+            {
+                Expr* dynInv = nullptr;
+                if (mc->method == "dynamic" && mc->args.empty() && mc->inv) {
+                    if (mc->inv->kind == NK::VarExpr) dynInv = mc->inv.get();
+                    else if (mc->inv->kind == NK::MethodCall) {
+                        auto* inner = static_cast<MethodCall*>(mc->inv.get());
+                        if (inner->method == "VAR" && inner->args.empty() && inner->inv &&
+                            inner->inv->kind == NK::VarExpr) dynInv = inner->inv.get();
+                    }
+                }
+                if (dynInv) {
+                    const std::string& vn = static_cast<VarExpr*>(dynInv)->name;
+                    if (vn.size() > 1 && vn[1] == '*') return Value::boolean(true);
+                    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                        if (en->varDynamic.count(vn)) return Value::boolean(true);
+                        if (en->vars.count(vn)) break; // the declaring scope answers
+                    }
+                    return Value::boolean(false);
+                }
             }
             if (mc->bang && !tctx_.cur->find("self")) // private call outside any method body
                 throw RakuError{Value::typeObj("X::Method::NotFound"),

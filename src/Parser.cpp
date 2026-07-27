@@ -1509,6 +1509,7 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash", "List"};
             bool wasContainer = wasIs && containers.count(cur().text);
             if (wasContainer) lastContainerIs_ = cur().text; // my %h is Set / my @a is List
+            if (wasIs && cur().text == "dynamic") lastIsDynamic_ = true; // my $x is dynamic
             advance(); // trait name / type
             if (wasContainer && isKind(Tok::LBracket)) { // is Bag[Int] — key-type parameter
                 advance();
@@ -1702,9 +1703,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // Hash[valueType,keyType] — an object hash with no explicit value type is
         // Hash[Any, KeyType], so a missing key answers Any (Rakudo)
         if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
-        lastContainerIs_.clear(); lastContainerOf_.clear();
+        lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false;
         skipTraits(scope != "has", &ve->declDefault);
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
+        if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
         if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
         // `my $a is default(42) where * == 42` — constraint parsed, not yet enforced
         if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN + 1); }
@@ -1735,7 +1737,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             matchKind(Tok::RBrace);
             ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
         }
+        lastIsDynamic_ = false;
         skipTraits(scope != "has", &ve->declDefault);
+        if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
         return ve;
     }
     error("expected variable after declarator");

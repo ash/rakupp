@@ -75,6 +75,7 @@ struct Env {
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
     std::map<std::string, Value> varDefault;
+    std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
 
     Value* find(const std::string& name) {
         auto it = vars.find(name);

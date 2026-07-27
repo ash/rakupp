@@ -9263,7 +9263,16 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += doSprintf(fmt, {items[k]}); }
             return Value::str(out);
         }
-        if (m == "sum") { double s = 0; bool allInt = true; for (auto& v : items) { s += v.toNum(); if (v.t != VT::Int) allInt = false; } return allInt ? Value::integer((long long)s) : Value::number(s); }
+        if (m == "sum") {
+            // Fold through the EXACT tower rather than a double: summing into a
+            // double and casting back saturated at int64 (`(2**70, 1).sum` came
+            // out as 9223372036854775807) and lost Rat exactness. applyArith also
+            // autothreads a junction element, which is what Rakudo does.
+            if (items.empty()) return Value::integer(0);
+            Value acc = Value::integer(0);
+            for (auto& v : items) acc = applyArith("+", acc, v);
+            return acc;
+        }
         if (m == "enums") { // enum type (a pair-list) -> Map of name => value
             Value h = Value::makeHash();
             h.hashKind = "Map";
