@@ -1,4 +1,5 @@
 (define-module (rakupp-package)
+  #:use-module (guix)
   #:use-module (guix packages)
   #:use-module (guix gexp)
   #:use-module (guix git-download)
@@ -27,3 +28,5 @@
     "A from-scratch implementation of the Raku programming language in C++17, with no third-party dependencies — a hand-written lexer, parser, and tree-walking evaluator that runs real Raku (classes, roles, grammars, regexes, multi-dispatch, junctions, lazy sequences, a bignum tower, Unicode-correct strings, and concurrency), can also compile a program to a standalone native binary, and — as Raku.js — runs in the browser via WebAssembly, no server required. It is not a fork of Rakudo and shares no code with it; it targets the language, measured against Roast, the official Raku test suite.")
    (home-page "https://github.com/ash/rakupp")
    (license license:artistic2.0)))
+
+rakupp
