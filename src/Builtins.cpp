@@ -5402,6 +5402,19 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                 !(ci && ci->findMethod(m)))
                 return inv;
             if (m == "set_name" || m == "set_shortname") { if (!args.empty()) ci->name = args[0].toStr(); return inv; }
+            // the Versioning SETTERS: only the getters existed, while the howOps
+            // forwarding table already rewrote `$t.HOW.set_ver($t, v)` into
+            // `$t.^set_ver(v)` — faithfully forwarding to a method that was not there.
+            // `:ver<0.0.1>` stores a BARE "0.0.1" and the getter re-adds the v by
+            // tagging hashKind "Version", so a `v0.0.1` literal must be stripped or
+            // it comes back as vv0.0.1.
+            if (m == "set_ver" && !args.empty()) {
+                std::string vs = args[0].toStr();
+                if (!vs.empty() && vs[0] == 'v') vs.erase(0, 1);
+                ci->ver = vs; return inv;
+            }
+            if (m == "set_auth" && !args.empty()) { ci->auth = args[0].toStr(); return inv; }
+            if (m == "set_api"  && !args.empty()) { ci->api  = args[0].toStr(); return inv; }
             if (m == "ver")  return ci->ver.empty()  ? Value::any() : ([&]{ Value v = Value::str(ci->ver);  v.hashKind = "Version"; return v; }());
             if (m == "auth") return Value::str(ci->auth);
             if (m == "api")  return ci->api.empty() ? Value::any() : Value::str(ci->api);
@@ -6382,6 +6395,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "key") return Value::str(inv.enumName);
         if (m == "value") return Value::integer(inv.toInt());
         if (m == "pair") return Value::pair(inv.enumName, Value::integer(inv.toInt()));
+        // TYPE-level queries reach the enum type object — the tagged pair-list the
+        // declaration built. `.enums` was implemented only there, so `Mass.enums`
+        // worked and `g.enums` fell off the ladder. The VT::Array guard matters:
+        // the type object carries enumType too, and forwarding from it recurses.
+        if ((m == "enums" || m == "elems" || m == "pick" || m == "roll") && !inv.enumType.empty())
+            if (Value* et = tctx_.cur->find(inv.enumType))
+                if (et->t == VT::Array) return methodCall(*et, m, args, rwArgs);
     }
     if (inv.t == VT::Match && (m == "made" || m == "ast")) return inv.pairVal ? *inv.pairVal : Value::nil();
     if (inv.t == VT::Match && m == "Str") return Value::str(inv.s);

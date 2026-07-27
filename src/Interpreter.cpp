@@ -11392,12 +11392,15 @@ Value Interpreter::evalBinary(Binary* b) {
         restoreTopic();
         // `$path.IO ~~ :e` (and :d/:f/:r/:w/:x/:s/:z/:l) — a filetest adverb: call
         // the matching method on the path and compare to the adverb's boolean.
-        if (r.t == VT::Pair && lTopic.hashKind == "IO" && !r.s.empty()) {
+        auto fileTest = [&](const Value& pair) {
             // a missing file makes the test False rather than propagating the throw
             bool actual = false;
-            try { actual = boolify(methodCall(lTopic, r.s, {})); } catch (RakuError&) { actual = false; }
-            bool want = r.pairVal ? boolify(*r.pairVal) : true;
-            bool ok = (actual == want);
+            try { actual = boolify(methodCall(lTopic, pair.s, {})); } catch (RakuError&) { actual = false; }
+            bool want = pair.pairVal ? boolify(*pair.pairVal) : true;
+            return actual == want;
+        };
+        if (r.t == VT::Pair && lTopic.hashKind == "IO" && !r.s.empty()) {
+            bool ok = fileTest(r);
             return Value::boolean(op == "~~" ? ok : !ok);
         }
         if (isJunction(r)) {
@@ -11409,6 +11412,10 @@ Value Interpreter::evalBinary(Binary* b) {
                 bool m;
                 if (e.t == VT::Regex) m = regexMatch(lTopic.toStr(), e.s).truthy();
                 else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
+                // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
+                // smartmatch below knows nothing about IO or Pairs and answered
+                // False for every one of them, so the whole junction was False.
+                else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
                 else m = applyArith("~~", lTopic, e).truthy();
                 if (m) t++;
             }

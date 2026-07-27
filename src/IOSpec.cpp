@@ -425,7 +425,14 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
     if (m == "is-absolute") { out = Value::boolean(isAbs(A(0))); return true; }
 
     if (m == "splitpath") {
-        std::string p = A(0); size_t s = p.rfind('/');
+        // `:nofile` makes the WHOLE path the directory — parsed by the Win32 and
+        // Cygwin branches, silently discarded here
+        bool nofile = false;
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.s == "nofile") nofile = a.pairVal ? a.pairVal->truthy() : true;
+        std::string p = A(0);
+        if (nofile) { out = Value::list({Value::str(""), Value::str(p), Value::str("")}); return true; }
+        size_t s = p.rfind('/');
         std::string dir = s == std::string::npos ? "" : p.substr(0, s + 1);
         std::string file = s == std::string::npos ? p : p.substr(s + 1);
         // a trailing "."/".." is part of the dir — but only when a separator matched
@@ -440,6 +447,14 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
     }
     if (m == "split") {
         std::string p = A(0);
+        // the EMPTY path is the one input whose dirname is "" and not "." — with p
+        // empty the no-separator arm below fires and hard-codes the curdir default
+        if (p.empty()) {
+            Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts";
+            (*h.hash)["volume"] = Value::str(""); (*h.hash)["dirname"] = Value::str("");
+            (*h.hash)["basename"] = Value::str("");
+            out = h; return true;
+        }
         while (p.size() > 1 && p.back() == '/') p.pop_back();
         std::string dir, base;
         if (p == "/") { dir = "/"; base = "/"; }
@@ -488,10 +503,12 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         std::string pathenv; bool have = false;
         Value* env = I.global_->find("%*ENV");
         if (env && env->hash) { auto it = env->hash->find("PATH"); if (it != env->hash->end()) { pathenv = it->second.toStr(); have = true; } }
-        if (!have || pathenv.empty()) { out = Value::list({}); return true; }
+        // .path answers a SEQ, both exits — the Win32 branch already tags it and this
+        // one never did, so `.raku` printed ("foo","bar") instead of ("foo","bar").Seq
+        if (!have || pathenv.empty()) { Value v = Value::list({}); v.s = "Seq"; out = v; return true; }
         ValueList res;
         for (auto& part : splitAll(pathenv, ':')) res.push_back(Value::str(part.empty() ? "." : part));
-        out = Value::list(res); return true;
+        Value v = Value::list(res); v.s = "Seq"; out = v; return true;
     }
     if (m == "tmpdir") {
         const char* t = getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp";
