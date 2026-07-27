@@ -8009,6 +8009,7 @@ static void setOpCheckFailure(const Value& v) {
         throw RakuError{Value::typeObj("X::AdHoc"), msg};
     }
 }
+static void setRep(const std::string& k, const Value& v); // defined with setWrap below
 // Coerce one operand to key => weight at the JOINT tier. A plain Hash coerces
 // per tier: truthy-filtered membership at Set tier, numeric counts at Bag/Mix
 // tier ({a => 42, b => 0} is set <a>, but bag (a => 42)). Mix tier keeps
@@ -8025,6 +8026,9 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
             else if (tier == 0) { if (!kv.second.truthy()) continue; w = 1; }
             else w = kv.second.toNum();
             if (tier == 2 ? w == 0 : w <= 0) continue;
+            // an operand that is ALREADY a quanthash carries its elements in the
+            // counts' pairKey; forward them so the result can render them too
+            if (kv.second.pairKey) setRep(kv.first, *kv.second.pairKey);
             m[kv.first] += w;
         }
     } else if (v.t == VT::Array || v.t == VT::Range) {
@@ -8038,19 +8042,34 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
                 if (tier == 2 ? w == 0 : w <= 0) continue;
                 m[x.s] += w;
             }
-            else if (x.t == VT::Type || x.t == VT::Any) m[x.gist()] += 1; // type objects ARE elements, keyed by gist
-            else m[x.toStr()] += 1;
+            // type objects ARE elements. They must key through baggyKeyStr like every
+            // other element, or an operator result and a `set(…)` literal holding the
+            // same type object end up with DIFFERENT keys and compare unequal.
+            else if (x.t == VT::Type || x.t == VT::Any) { std::string k = baggyKeyStr(x); setRep(k, x); m[k] += 1; }
+            else { std::string k = baggyKeyStr(x); setRep(k, x); m[k] += 1; }
         }
     } else if (v.t == VT::Pair) {
         double w = v.pairVal ? v.pairVal->toNum() : 0;
         if (tier == 0) { if (v.pairVal && v.pairVal->truthy()) m[v.s] = 1; }
         else if (!(tier == 2 ? w == 0 : w <= 0)) m[v.s] = w;
     } else if (v.t == VT::Type || v.t == VT::Any) {
-        m[v.gist()] = 1; // (Set) (&) (Set) — the type object is a one-element set
+        std::string k = baggyKeyStr(v); setRep(k, v);
+        m[k] = 1; // (Set) (&) (Set) — the type object is a one-element set
     } else if (v.t != VT::Nil) {
-        m[v.toStr()] = 1;
+        std::string k = baggyKeyStr(v); setRep(k, v); m[k] = 1;
     }
     return m;
+}
+// The ELEMENT behind each key seen while coercing operands. Quanthash keys are
+// identity strings (`Int|42`), not renderings, so the original value has to travel
+// alongside or the result would be a set of identity strings. Scoped to one
+// operator evaluation: setWeights adds, setWrap reads.
+static thread_local std::map<std::string, Value> g_setReps;
+static void setRep(const std::string& k, const Value& v) {
+    // identity keys are deterministic, so a stale entry is never WRONG — but a
+    // long-running program would grow this forever, so cap it
+    if (g_setReps.size() > 4096) g_setReps.clear();
+    g_setReps.emplace(k, v);
 }
 // wrap a weight map as the tier's IMMUTABLE type (Set / Bag / Mix)
 static Value setWrap(const std::map<std::string, double>& res, int tier) {
@@ -8058,10 +8077,17 @@ static Value setWrap(const std::map<std::string, double>& res, int tier) {
     h.hashKind = tier == 2 ? "Mix" : tier == 1 ? "Bag" : "Set";
     for (auto& kv : res) {
         if (tier == 2 ? kv.second == 0 : kv.second <= 0) continue;
-        if (tier == 0) (*h.hash)[kv.first] = Value::boolean(true);
-        else if (kv.second == (double)(long long)kv.second)
-            (*h.hash)[kv.first] = Value::integer((long long)kv.second);
-        else (*h.hash)[kv.first] = Value::number(kv.second);
+        Value cnt = tier == 0 ? Value::boolean(true)
+                  : kv.second == (double)(long long)kv.second ? Value::integer((long long)kv.second)
+                                                              : Value::number(kv.second);
+        auto rp = g_setReps.find(kv.first);
+        if (rp != g_setReps.end()) {
+            // a plain Str keys on its own content and needs no carried element
+            const Value& e = rp->second;
+            if (!(e.t == VT::Str && e.hashKind.empty() && e.enumName.empty() && !e.isAllomorph()))
+                cnt.pairKey = std::make_shared<Value>(e);
+        }
+        (*h.hash)[kv.first] = std::move(cnt);
     }
     return h;
 }
@@ -8095,7 +8121,7 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
         bool neg = (op == "(!elem)" || op == "∉");
         if (r.t == VT::Range) return Value::boolean(neg ? !rangeHas(r, l) : rangeHas(r, l));
         if (lazySetOperand(r)) throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + op + " a lazy list"};
-        auto b = setWeights(r, settyTier(r)); std::string k = l.toStr();
+        auto b = setWeights(r, settyTier(r)); std::string k = baggyKeyStr(l);
         bool in = b.count(k) && b[k] != 0;
         return Value::boolean(neg ? !in : in);
     }
@@ -8103,7 +8129,7 @@ static Value setOp(const std::string& op, const Value& l, const Value& r) {
         bool neg = (op == "(!cont)" || op == "∌");
         if (l.t == VT::Range) return Value::boolean(neg ? !rangeHas(l, r) : rangeHas(l, r));
         if (lazySetOperand(l)) throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot " + op + " a lazy list"};
-        auto a = setWeights(l, settyTier(l)); std::string k = r.toStr();
+        auto a = setWeights(l, settyTier(l)); std::string k = baggyKeyStr(r);
         bool in = a.count(k) && a[k] != 0;
         return Value::boolean(neg ? !in : in);
     }

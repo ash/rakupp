@@ -34,6 +34,11 @@ void           bigStackJoin(std::uintptr_t h);
 void           bigStackClose(std::uintptr_t h);
 #endif
 
+// The canonical identity of a value (what `.WHICH` answers) and the LOOKUP key a
+// quanthash uses for it — see Builtins.cpp. A plain Str keys on its own content;
+// everything else on its identity, so `42`, `"42"` and `<42>` are three elements.
+std::string whichOf(const Value& v);
+std::string baggyKeyStr(const Value& v);
 Value makeBaggy(const ValueList& items, const std::string& kind,
                 bool pairsAsElements = false); // Set/Bag/Mix builder (Builtins.cpp)
 

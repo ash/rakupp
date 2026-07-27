@@ -1392,6 +1392,39 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     return Value::integer((long long)u);
 }
 
+// The canonical identity of a value — what `.WHICH` answers and what a Set/Bag/Mix
+// keys on. Two values are the same element exactly when these agree, so it has to
+// separate things that merely LOOK alike when stringified:
+//   * an allomorph carries BOTH of its halves (`IntStr|Int|42|Str|42`), which is
+//     what keeps `<42>` distinct from `42` and from `"42"`;
+//   * a Rat identifies by its exact numerator/denominator (`Rat|421/10`), not by
+//     its decimal rendering;
+//   * a Complex by its two parts;
+//   * a Bool by 1/0.
+std::string whichOf(const Value& v) {
+    auto ratPart = [](const Value& r) {
+        if (r.ratN && r.ratD) return r.ratN->toString() + "/" + r.ratD->toString();
+        return r.toStr();
+    };
+    if (v.isAllomorph()) {
+        // the numeric half is the same value with the string side dropped
+        Value num = v; num.hashKind.clear(); num.s.clear();
+        std::string numName = v.typeName() == "IntStr"     ? "Int"
+                            : v.typeName() == "RatStr"     ? "Rat"
+                            : v.typeName() == "NumStr"     ? "Num"
+                            : v.typeName() == "ComplexStr" ? "Complex" : "Num";
+        std::string numId = numName == "Rat" ? ratPart(num) : num.toStr();
+        if (numName == "Complex") numId = Value::number(num.n).toStr() + "|" + Value::number(num.im).toStr();
+        return v.typeName() + "|" + numName + "|" + numId + "|Str|" + v.s;
+    }
+    switch (v.t) {
+        case VT::Bool:    return "Bool|" + std::string(v.b ? "1" : "0");
+        case VT::Rat:     return "Rat|" + ratPart(v);
+        case VT::Complex: return "Complex|" + Value::number(v.n).toStr() + "|" + Value::number(v.im).toStr();
+        default:          return v.typeName() + "|" + v.toStr();
+    }
+}
+
 // The typed key of an element, preserved in the count Value's `pairKey` so
 // .keys/.pairs/.min/.max recover the original type (a Bag of Ints keeps Int
 // keys, not the stringified form). Null for a plain Str — that round-trips
@@ -1399,6 +1432,25 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
 static std::shared_ptr<Value> baggyKey(const Value& v) {
     if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return nullptr;
     return std::make_shared<Value>(v);
+}
+// The LOOKUP key of a quanthash element.
+//
+// This SHOULD be the element's identity (`whichOf`), because two elements are the
+// same one exactly when their `.WHICH` agrees — keying on the rendering makes
+// `42`, `"42"` and `<42>` a single element and `set(1,"1")` one-element instead of
+// two. That change was written, measured and backed out, because it exposes a
+// deeper mismatch it cannot fix on its own: rakupp's Hash keys are plain strings,
+// so `{42 => 'a'}` contributes the STRING "42" to a set while a literal `42`
+// contributes an Int. Today both render "42" and compare equal; under identity
+// keys they become different elements, and roast's set operators — which compare
+// an operator result against a `set(…)` literal — lose about 30 assertions.
+//
+// Fixing it properly means Hash keys carrying their original key object, which is
+// its own piece of work. Until then the rendering below is what makes results
+// print correctly; the keys stay renderings.
+std::string baggyKeyStr(const Value& v) {
+    if (v.t == VT::Type || v.t == VT::Any) return v.gist(); // type objects ARE elements
+    return v.toStr();
 }
 // pairsAsElements: constructors (set()/Set.new) treat a Pair item as ONE element
 // (`set [foo=>1, bar=>2]` has two Pair elements); coercions (.Set/.Bag on a
@@ -1423,7 +1475,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
     };
     for (auto& v : items) {
         if (v.t == VT::Pair && pairsAsElements) {
-            add(v.toStr(), 1, std::make_shared<Value>(v)); // the Pair itself is the element
+            add(baggyKeyStr(v), 1, std::make_shared<Value>(v)); // the Pair itself is the element
             continue;
         }
         if (v.t == VT::Pair) {
@@ -1457,7 +1509,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             // do not); Bag/Mix use the numeric weight. (typed key travels in pairKey)
             add(v.s, isSet ? (w.truthy() ? 1 : 0) : w.toInt(), v.pairKey);
         }
-        else add(v.toStr(), 1, baggyKey(v));
+        else add(baggyKeyStr(v), 1, baggyKey(v));
     }
     return h;
 }
@@ -6354,7 +6406,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     if (m == "WHICH" && inv.t == VT::Range) return Value::str("Range|" + inv.gist());
     if (m == "WHICH") { // object identity: value-based for immutables, pointer-based for objects
         if (inv.t == VT::Object && inv.obj) { char buf[24]; std::snprintf(buf, sizeof buf, "|%p", (void*)inv.obj.get()); return Value::str(inv.typeName() + buf); }
-        return Value::str(inv.typeName() + "|" + inv.toStr());
+        return Value::str(whichOf(inv));
     }
     if (m == "WHERE") { // memory address of the value (an Int)
         const void* p = inv.t == VT::Object && inv.obj ? (const void*)inv.obj.get()
