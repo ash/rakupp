@@ -1830,7 +1830,47 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
     return r;
 }
 
-Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+// The method NAME, compared against string literals. The literal's length is part
+// of its TYPE, so `m == "chars"` is a size test plus an inline memcmp and never
+// calls strlen — which matters because methodCallInner is ~8,900 lines with ~1,640
+// such comparisons, far past the point where clang will still inline
+// std::operator==(const string&, const char*). Out of line, that operator calls
+// strlen on the literal every time: the two together were 60% of a profile of
+// `for ^3000000 { "ab".chars }`.
+namespace {
+struct MName {
+    const std::string& s;
+    explicit MName(const std::string& v) : s(v) {}
+    template <std::size_t N> bool operator==(const char (&lit)[N]) const {
+        return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
+    }
+    template <std::size_t N> bool operator!=(const char (&lit)[N]) const { return !(*this == lit); }
+    bool operator==(const std::string& o) const { return s == o; }
+    bool operator!=(const std::string& o) const { return s != o; }
+    operator const std::string&() const { return s; }
+    std::size_t size() const { return s.size(); }
+    bool empty() const { return s.empty(); }
+    const char* c_str() const { return s.c_str(); }
+    const char* data() const { return s.data(); }
+    char operator[](std::size_t i) const { return s[i]; }
+    std::size_t find(const char* n, std::size_t p = 0) const { return s.find(n, p); }
+    std::size_t find(char c, std::size_t p = 0) const { return s.find(c, p); }
+    std::size_t rfind(const char* n, std::size_t p = std::string::npos) const { return s.rfind(n, p); }
+    std::size_t rfind(char c, std::size_t p = std::string::npos) const { return s.rfind(c, p); }
+    std::string substr(std::size_t p = 0, std::size_t n = std::string::npos) const { return s.substr(p, n); }
+    int compare(std::size_t p, std::size_t n, const char* o) const { return s.compare(p, n, o); }
+};
+inline std::string operator+(const char* a, const MName& b) { return a + b.s; }
+inline std::string operator+(const std::string& a, const MName& b) { return a + b.s; }
+inline std::string operator+(const MName& a, const char* b) { return a.s + b; }
+inline std::string operator+(const MName& a, const std::string& b) { return a.s + b; }
+inline std::ostream& operator<<(std::ostream& o, const MName& n) { return o << n.s; }
+inline bool operator==(const std::string& a, const MName& b) { return a == b.s; }
+inline bool operator!=(const std::string& a, const MName& b) { return a != b.s; }
+} // namespace
+
+Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    const MName m{mName};
     // package-relative short name: a bare `Frog` type invocant answers as its
     // qualified nested class (`Forest::Frog`) when no real class claims the
     // short name — covers `.new`, `.= new` on typed decls, and user methods

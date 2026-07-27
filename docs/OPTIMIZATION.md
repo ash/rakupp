@@ -312,11 +312,68 @@ Two smaller per-call costs went with it: `methodCallInner` called
 `std::getenv("RAKUPP_TRACE")` on entry — once per method call, about 10% on its
 own — and is now read once into a `static`.
 
-What is left is ordinary interpreter overhead rather than a pathology. Both
-`methodCall` and `methodCallInner` still take their invocant and argument list
-**by value**, and a `Value` carries ten `shared_ptr` members, so a call copies up
-to ten atomic refcounts plus a heap allocation for the `ValueList`. That is the
-next thing to look at, and it is a refactor rather than a one-line fix.
+### …and then the dispatch ladder, for a reason that is not its length
+
+With the throw gone, a fresh profile of `for ^3000000 { "ab".chars }` put **60% of
+the time in string comparison**: `_platform_strlen` 19%, an out-of-line
+`std::operator==(const string&, const char*)` 19%, `DYLD-STUB$$strlen` 14%,
+`memcmp` 8%.
+
+That looks like the `m == "…"` ladder, and earlier measurement had seemed to
+exonerate it — `.chars` sits 177 comparisons into the file and `.uc` 812, yet they
+cost the same. Both facts are true. Position *in the file* is not the number of
+comparisons *executed*, because the ladder is guarded by invocant-type tests: a
+`Str` invocant only ever runs the `Str` arms, and `.chars`, `.uc` and `.uniname`
+are all in that same group.
+
+The real problem was that `strlen` was being called **at run time on a string
+literal**. Clang normally folds that away, and in a small function it does — a
+1,700-branch toy reproduction compiles to zero `strlen` calls. `methodCallInner`
+is ~8,900 lines with ~1,640 comparisons, which is far past the optimizer's
+inlining budget: `std::operator==` stays out of line, and out of line it cannot
+see the literal, so it measures it with `strlen` on every call.
+
+The fix does not depend on the optimizer's mood. Wrap the name in a type whose
+`operator==` takes the literal **by reference to array**, so its length is part of
+the template argument:
+
+```cpp
+struct MName {
+    const std::string& s;
+    template <std::size_t N> bool operator==(const char (&lit)[N]) const {
+        return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
+    }
+    // …plus the reversed forms, `+`, `<<`, and the handful of std::string
+    // members the function uses, so all ~1,640 sites compile unchanged
+};
+```
+
+`const MName m{mName};` at the top of the function, and every `m == "chars"` site
+is now a size check (which rejects nearly every candidate outright) followed by an
+inlined `memcmp`. Four compile errors, all of them stream or concatenation
+overloads. Worth about 30%:
+
+| 1 M iterations | before | after |
+|---|---:|---:|
+| `'ab'.chars` | 1.63 s | **1.19 s** |
+| `'ab'.uc` | 1.78 s | **1.15 s** |
+| `'ab'.uniname` | 1.61 s | **1.08 s** |
+
+### Where that leaves method dispatch
+
+Taken together the two fixes are about **7× on a method call** — `'ab'.chars`
+× 300 K went from 2.47 s to 0.36 s, against Rakudo's 0.11 s. From roughly 20×
+slower than Rakudo per call to roughly 3×.
+
+What remains is ordinary overhead rather than a pathology. Both `methodCall` and
+`methodCallInner` still take their invocant and argument list **by value**; a
+`Value` carries ten `shared_ptr` members plus four `std::string`s, so a call
+copies those and heap-allocates a `ValueList`. Switching both to `const&` is
+mechanically small — it produces 18 compile errors, each either "make a local copy
+here" or "let this helper take const&" — but it trades away the accidental safety
+that copying provides against a callee mutating the container its own invocant
+lives in, so it wants an aliasing audit of the 178 call sites rather than a quick
+pass.
 
 ## Forwarding the C++ optimization level
 
