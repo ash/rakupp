@@ -3592,7 +3592,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     auto flush = [&]() {
         if (!lit.empty()) { result->parts.push_back(std::make_unique<StrLit>(lit)); lit.clear(); }
     };
-    auto isIdentCont = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
+    auto isIdentCont = [](char c) { return rakuIdentCont(c); };
     (void)fF;
 
     size_t i = 0, n = raw.size();
@@ -3746,7 +3746,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             size_t j = i + 1;
             std::string fname;
             while (j < n && (isIdentCont(raw[j]) || (unsigned char)raw[j] >= 0x80)) fname += raw[j++];
-            while (j + 1 < n && (raw[j] == '-' || raw[j] == '\'') && std::isalnum((unsigned char)raw[j + 1])) {
+            while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
                 fname += raw[j++];
                 while (j < n && isIdentCont(raw[j])) fname += raw[j++];
             }
@@ -3796,7 +3796,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 (raw[j] == ':' && colonPh)) var += raw[j++];
             while (j < n && (isIdentCont(raw[j]) || (unsigned char)raw[j] >= 0x80)) var += raw[j++];
             // hyphen/apostrophe continue the name when followed by an alphanumeric ($foo-bar)
-            while (j + 1 < n && (raw[j] == '-' || raw[j] == '\'') && std::isalnum((unsigned char)raw[j + 1])) {
+            while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
                 var += raw[j++];
                 while (j < n && isIdentCont(raw[j])) var += raw[j++];
             }

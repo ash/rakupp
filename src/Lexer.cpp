@@ -296,7 +296,7 @@ void Lexer::consumeIdentChars(std::string& name) {
         // `isn't` — a `-`/`'` continues the name only when a LETTER/underscore
         // follows (NOT a digit: `elems-1` is `elems - 1`, and `a - b` stays
         // separate). Mirrors the main identifier lexer; `::` segments need it.
-        if ((peek() == '-' || peek() == '\'') && isIdentStart(peek(1))) {
+        if (rakuIdentJoins(peek(), peek(1))) {
             name += advance(); name += advance(); continue;
         }
         if (unicodeLetterHere() || ((unsigned char)peek() >= 0x80 && isIdentMarkCP(codepointHere()))) {
@@ -317,8 +317,8 @@ Token Lexer::make(Tok k, const std::string& t) {
     return tk;
 }
 
-static bool isIdentStart(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
-static bool isIdentCont(char c) { return std::isalnum((unsigned char)c) || c == '_'; }
+static bool isIdentStart(char c) { return rakuIdentStart(c); }
+static bool isIdentCont(char c) { return rakuIdentCont(c); }
 
 // UTF-8: byte length of the codepoint led by byte b
 static int utf8Len(unsigned char b) {
@@ -1288,7 +1288,7 @@ Token Lexer::lexIdentOrVar() {
         } else if (isIdentStart(peek()) || unicodeLetterHere()) {
             consumeIdentChars(name);
             // allow embedded - or ' between identifier chars
-            while ((peek() == '-' || peek() == '\'') && std::isalpha((unsigned char)peek(1))) {
+            while (rakuIdentJoins(peek(), peek(1))) {
                 name += advance();
                 consumeIdentChars(name);
             }
@@ -1353,7 +1353,7 @@ Token Lexer::lexIdentOrVar() {
     if (unicodeLetterHere()) { int n = utf8Len((unsigned char)peek()); for (int i=0;i<n && !eof();i++) name += advance(); }
     else name += advance();
     consumeIdentChars(name);
-    while ((peek() == '-' || peek() == '\'') && std::isalpha((unsigned char)peek(1))) {
+    while (rakuIdentJoins(peek(), peek(1))) {
         name += advance();
         consumeIdentChars(name);
     }
@@ -1383,7 +1383,7 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     // optional rule name (ident, may include - ' :sym<...>)
     std::string name;
     if (isIdentStart(peek())) {
-        while (isIdentCont(peek()) || ((peek() == '-' || peek() == '\'') && isIdentCont(peek(1)))) name += advance();
+        while (isIdentCont(peek()) || rakuIdentJoins(peek(), peek(1))) name += advance();
         // protoregex multi variant: `:sym<dec>`, `:<null>`, or `:foo('x')`
         while (peek() == ':' && (peek(1) == '<' || isIdentStart(peek(1)))) {
             name += advance(); // ':'

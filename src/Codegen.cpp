@@ -932,8 +932,8 @@ struct Codegen {
                     return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?(" + R + "):_a; }())";
                 if (b->op == "||" || b->op == "or")
                     return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?_a:(" + R + "); }())";
-                if (b->op == "//") // defined-or: Nil/Any/Type (incl. Failure) are undefined
-                    return "([&]()->Value{ Value _a=(" + L + "); return (_a.t==VT::Nil||_a.t==VT::Any||_a.t==VT::Type)?(" + R + "):_a; }())";
+                if (b->op == "//") // defined-or — including a Failure, which rtIsDefined knows about
+                    return "([&]()->Value{ Value _a=(" + L + "); return !rtIsDefined(_a)?(" + R + "):_a; }())";
                 if (std::string f = fastBin(b->op); !f.empty()) return f + "(" + L + ", " + R + ")"; // -O
                 return "applyArith(" + cesc(b->op) + ", " + L + ", " + R + ")";
             }
@@ -1497,7 +1497,7 @@ struct Codegen {
             std::string fb = fastBin(binop);
             std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
                            : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
-                           : binop == "//" ? "(__r.t==VT::Nil||__r.t==VT::Any||__r.t==VT::Type) ? (" + rhs + ") : __r"
+                           : binop == "//" ? "!rtIsDefined(__r) ? (" + rhs + ") : __r"
                            : !fb.empty() ? fb + "(__r, " + rhs + ")"
                            : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
             return "([&]()->Value{ Value& __r = " + ref + "; __r = " + nv + "; return __r; }())";
@@ -1505,7 +1505,7 @@ struct Codegen {
         std::string lhs = lvalueExpr(tgt);
         if (binop == "||") return lhs + " = RT.boolify(" + lhs + ") ? " + lhs + " : (" + rhs + ")";
         if (binop == "&&") return lhs + " = RT.boolify(" + lhs + ") ? (" + rhs + ") : " + lhs;
-        if (binop == "//") return lhs + " = (" + lhs + ".t==VT::Nil||" + lhs + ".t==VT::Any||" + lhs + ".t==VT::Type) ? (" + rhs + ") : " + lhs;
+        if (binop == "//") return lhs + " = !rtIsDefined(" + lhs + ") ? (" + rhs + ") : " + lhs;
         if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
             return "([&]()->Value&{ rtCatAssign(" + lhs + ", " + rhs + "); return " + lhs + "; }())";
         if (std::string f = fastBin(binop); !f.empty()) return lhs + " = " + f + "(" + lhs + ", " + rhs + ")"; // -O
@@ -2151,10 +2151,12 @@ struct Codegen {
                 fwd += "rtPos(__a, " + std::to_string(i) + ")";
             }
             line(0, "static Value " + fnName + "(" + sig + ") {");
+            line(1, "try {");
             if (anyCell)
                 for (size_t i = 0; i < ps.size(); i++)
-                    line(1, declVar(ps[i].name, "std::move(__p" + std::to_string(i) + ")") + ";");
+                    line(2, declVar(ps[i].name, "std::move(__p" + std::to_string(i) + ")") + ";");
             emitBody(body);
+            line(1, "} catch (ReturnEx& __r) { return __r.v; }");
             line(0, "}");
             // boxed adapter so named/slurpy/multi call sites still resolve
             line(0, "static Value " + fnName + "(ValueList __a) { return " + fnName + "(" + fwd + "); }");
@@ -2163,8 +2165,16 @@ struct Codegen {
         bool hasRw = false;
         for (auto& p : ps) if (p.isRw && !p.named && !p.slurpy && !p.invocant) hasRw = true;
         line(0, "static Value " + fnName + "(ValueList" + (hasRw ? "&" : "") + " __a) {");
-        bindParams(ps, 1, false);
+        // A ROUTINE BODY IS A ReturnEx BOUNDARY. `return` itself compiles to a C++
+        // return, so this catches the ones thrown from elsewhere — a builtin such
+        // as `fail`, or an interpreter-evaluated callback. Without it they escaped
+        // main() and the binary died with "terminating due to uncaught exception of
+        // type rakupp::ReturnEx", where the interpreter answered normally. The
+        // interpreter states the same boundary at Interpreter.cpp:6524.
+        line(1, "try {");
+        bindParams(ps, 2, false);
         emitBody(body);
+        line(1, "} catch (ReturnEx& __r) { return __r.v; }");
         line(0, "}");
     }
     void subDef(SubDecl* d) { bodyDef(mangleSub(d->name), d->params, d->body, fastSubs.count(d->name) > 0); }

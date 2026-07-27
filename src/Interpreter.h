@@ -96,6 +96,12 @@ struct Env {
 };
 
 // control-flow signals
+// Is this value DEFINED? Nil, Any, a type object — and a Failure, which is a
+// Hash tagged "Failure". Exported because the --exe backend emits calls to it:
+// codegen used to inline `t==VT::Nil||t==VT::Any||t==VT::Type` with a comment
+// claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
+bool rtIsDefined(const Value& v);
+
 struct ReturnEx { Value v; };
 struct ExitEx { int code = 0; };
 struct LastEx { std::string label; };

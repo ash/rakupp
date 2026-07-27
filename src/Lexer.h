@@ -1,5 +1,6 @@
 #pragma once
 #include "Token.h"
+#include <cctype>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -7,6 +8,22 @@
 #include <vector>
 
 namespace rakupp {
+
+// What may appear in an identifier, and the ONE rule about `-`/`'` inside a
+// name: they continue the name only when a LETTER or `_` follows — never a
+// digit. So `elems-1` is `elems - 1` and `$x-1` is `$x - 1`.
+//
+// This lives in the header because the LEXER and the string-interpolation
+// scanner in the PARSER both have to answer it and must agree. They did not:
+// the interpolation scanners tested isalnum, glued the digit into the name, and
+// handed `"$x-1"` to the expression parser — which re-split it correctly and
+// interpolated the ARITHMETIC RESULT, so `my $x = 5; say "$x-1"` printed 4
+// where Rakudo prints 5-1. Six sites implemented this rule three different ways.
+inline bool rakuIdentStart(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
+inline bool rakuIdentCont(char c)  { return std::isalnum((unsigned char)c) || c == '_'; }
+inline bool rakuIdentJoins(char sep, char next) {
+    return (sep == '-' || sep == '\'') && rakuIdentStart(next);
+}
 
 class Lexer {
 public:
