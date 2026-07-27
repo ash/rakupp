@@ -208,8 +208,18 @@ Regex::NodePtr Regex::parseQuant() {
     if (mn == -2) return atom; // no quantifier
     auto rep = std::make_unique<Node>();
     rep->k = K::Rep; rep->min = mn; rep->max = mx; rep->greedy = !ngMod;
+    // Quantifier modifier: `?` frugal, `!` greedy, `:` ratchet (possessive). Each may
+    // also be spelled with a leading colon — `a*:?` is frugal, `a*:!` greedy, and a
+    // bare `a*:` is the ratchet. Consuming the `:` without looking at what follows
+    // turned `xa*:!` into a possessive `a*` followed by a literal `!`.
     if (peek() == '?') { rep->greedy = false; pos_++; }
-    else if (peek() == '+' || peek() == '!') { pos_++; } // ratchet/possessive: treat greedy
+    else if (peek() == '+' || peek() == '!') { pos_++; }   // explicit greedy
+    else if (peek() == ':') {
+        pos_++;
+        if (peek() == '?') { rep->greedy = false; pos_++; }
+        else if (peek() == '!') { pos_++; }
+        else rep->possessive = true;                       // `a*:` — no backtracking into it
+    }
     rep->kids.push_back(std::move(atom));
     // separator quantifier:  X+ % Y  (Y between items)  /  X+ %% Y  (trailing Y allowed)
     size_t sepSave = pos_;
@@ -1358,7 +1368,8 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             const auto& params = st.grammar ? st.grammar->currentParams() : noParams;
             if (n->runOnly) { // execute for side effects, zero-width, always pass
                 if (n->ltmStop && st.firstCode < 0) st.firstCode = pos; // a bare code block ends the LTM declarative prefix
-                if (st.hooks && st.hooks->run) st.hooks->run(n->lit, st.startPos, pos, st.named, params);
+                if (st.hooks && st.hooks->runCaps) st.hooks->runCaps(n->lit, st.startPos, pos, st.named, st.caps, params);
+                else if (st.hooks && st.hooks->run) st.hooks->run(n->lit, st.startPos, pos, st.named, params);
                 return k(pos);
             }
             bool ok = (st.hooks && st.hooks->assertPass) ? st.hooks->assertPass(n->lit, st.startPos, pos, st.named, params) : true;
@@ -1467,7 +1478,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     }
                     return k(q);
                 };
-                if (greedy && ratchet_) {
+                if (greedy && (ratchet_ || n->possessive)) {
                     // possessive: grab as many children as possible (each at its greedy
                     // longest), then commit — never give any back. This is `:ratchet`
                     // token semantics, and it kills exponential partition backtracking.
@@ -1590,6 +1601,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
         st.lexNames = lexNames;
         st.hooks = runHooks; // standalone matches may still run {…} blocks
+        st.startPos = start;  // where THIS attempt began — the `$/` a `{…}` block sees
         st.steps = budget;
         long endPos = -1;
         try {
@@ -1614,6 +1626,7 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
         st.lexNames = lexNames;
         st.hooks = runHooks;
+        st.startPos = start;
         st.steps = budget;
         try {
             // A `false`-returning continuation records the match then forces the

@@ -30,6 +30,10 @@ struct GrammarHooks {
     using ParamMap = std::map<std::string, std::string>;           // current rule params, e.g. $indent
     std::function<bool(const std::string&, long, long, const NamedMap&, const ParamMap&)> assertPass; // <?{…}>
     std::function<void(const std::string&, long, long, const NamedMap&, const ParamMap&)> run;        // :my / {…}
+    // Same as `run`, but carrying the POSITIONAL captures too so the block's `$/`
+    // can offer `$0`. Set by the plain-regex path; preferred over `run` when set.
+    std::function<void(const std::string&, long, long, const NamedMap&,
+                       const std::vector<std::pair<long, long>>&, const ParamMap&)> runCaps;
     std::function<std::string(const std::string&, const NamedMap&, const ParamMap&)> str;             // $var atom
     std::function<std::pair<long,long>(const std::string&, const NamedMap&, const ParamMap&)> range;  // ** {…}
     // Save/restore interpreter side-effect state (`:my` vars, deferred makes) so an LTM
@@ -148,6 +152,7 @@ private:
         // Rep
         long min = 0, max = -1;          // max = -1 => unbounded
         bool greedy = true;
+        bool possessive = false;         // `a*:` — grab greedily and never give any back
         std::unique_ptr<Node> sep;       // `X+ % Y` / `X+ %% Y` separator (null if none)
         bool sepTrail = false;           // `%%`: an optional TRAILING separator may follow the last item
         std::string repCode;             // `** { … }` — evaluate this at match time for (min,max)
@@ -224,6 +229,13 @@ public:
         long firstCode = -1;                               // string pos at the first bare `{…}` block (ends the LTM declarative prefix)
         long litPrefix = -1;                               // end pos of the leading literal-atom run from startPos (-1 = not started)
         long steps = 0;                                    // backtracking step budget (guards catastrophic patterns)
+        // Bare `{…}` blocks QUEUED rather than run where they appear: the matcher
+        // is CPS + backtracking, so a block sitting on a branch that is later
+        // abandoned would otherwise fire its side effects anyway — and fire them
+        // again on every retry. Queued here, unwound when a branch fails, and run
+        // in order only once the overall match is accepted. Off by default: the
+        // GRAMMAR path wants its blocks eager (a later `<?{…}>` can read what one
+        // set), so only the plain-regex entry points turn it on and drain it.
     };
     // Thrown when a match exceeds the step budget — a pathological pattern
     // (nested-quantifier backtracking) would otherwise hang or overflow the C++

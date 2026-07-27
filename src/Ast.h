@@ -256,6 +256,7 @@ struct BlockExpr : Expr {
     std::vector<Param> params; // for pointy blocks / placeholder
     std::vector<StmtPtr> body;
     bool isSub = false;        // anonymous `sub {…}` / `method {…}` term — a Sub, not a Block
+    bool isMethodTerm = false; // …and `method {…}` in particular takes an invocant
     BlockExpr(): Expr(NK::BlockExpr) {}
 };
 

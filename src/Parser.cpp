@@ -278,6 +278,9 @@ bool Parser::startsTermToken(const Token& t) const {
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
                    t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant" ||
+                   // `not` is a loose PREFIX, so it starts a term: `say not 0` says True
+                   // (it is in the keyword set only because it is also an infix-ish word)
+                   t.text == "not" ||
                    // an ANONYMOUS class/role/grammar is an expression: `is class :: {…}.new.x, …`
                    ((t.text == "class" || t.text == "role" || t.text == "grammar") && &t == &cur() &&
                     (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")));
@@ -371,9 +374,13 @@ bool Parser::startsListopArg(const Token& t) const {
             return !kBlockKeywords.count(t.text) ||
                    t.text == "sub" || t.text == "method" || t.text == "do" || t.text == "start" ||
                    t.text == "my" || t.text == "our" || t.text == "state" || t.text == "has" || t.text == "constant" ||
-                   // an ANONYMOUS class/role/grammar is an expression: `is class :: {…}.new.x, …`
+                   t.text == "not" || // `say not 0` — the loose prefix, see startsTermToken
+                   // an inline class/role/grammar is an expression: `is class :: {…}.new.x, …`
+                   // — the NAMED form too, so `say class Foo {}` passes one argument
+                   // instead of parsing as a nullary `say` (startsTermToken agrees)
                    ((t.text == "class" || t.text == "role" || t.text == "grammar") && &t == &cur() &&
-                    (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")));
+                    (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::") ||
+                     (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace)));
         }
         default:
             return false;
@@ -748,6 +755,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 auto* ix = static_cast<Index*>(lhs.get());
                 if (ix->index && !ix->multiDim &&
                     (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+                     ix->index->kind == NK::ArrayLit || // angle-word slice `%h<a b> = …`
                      (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
                       static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
                      (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^")))
@@ -1691,9 +1699,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         }
         // `of Type` postfix trait sets the value/element type
         if (isIdent("of") && peek().kind == Tok::Ident) { advance(); ve->declType = advance().text; }
-        // Hash[valueType,keyType] — an object hash with no explicit value type
-        // is Hash[Mu, KeyType]: its missing-key default is Mu, not Any
-        if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Mu" : ve->declType) + "," + keyType;
+        // Hash[valueType,keyType] — an object hash with no explicit value type is
+        // Hash[Any, KeyType], so a missing key answers Any (Rakudo)
+        if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
         lastContainerIs_.clear(); lastContainerOf_.clear();
         skipTraits(scope != "has", &ve->declDefault);
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
@@ -1725,7 +1733,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             std::string keyType = advance().text;
             if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
             matchKind(Tok::RBrace);
-            ve->declType = (ve->declType.empty() ? "Mu" : ve->declType) + "," + keyType;
+            ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
         }
         skipTraits(scope != "has", &ve->declDefault);
         return ve;
@@ -2569,7 +2577,10 @@ ExprPtr Parser::parsePrimary() {
                 u->operand = parseExpr(BP_ZIP);  // reduce is a list-prefix: looser than Z/X and comma
                 return u;
             }
-            if (((peek(1).kind == Tok::Op && peek(1).text != "\\") || identReduce) &&
+            // `∞` is lexed as an Op but is a TERM, so `[∞]` is a one-element array
+            // literal rather than a reduction over an operator named `∞`.
+            static const std::string kInf = "\xE2\x88\x9E";
+            if (((peek(1).kind == Tok::Op && peek(1).text != "\\" && peek(1).text != kInf) || identReduce) &&
                 peek(1).text != "]") {
                 // the op may span several TIGHT tokens ([!=:=] lexes as `!=` + `:=`),
                 // and the `!` negation metaop can be glued to a WORD infix ([!after]).
@@ -2717,6 +2728,37 @@ ExprPtr Parser::parsePrimary() {
             else if (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
                      (b.kind == Tok::RBrace || b.kind == Tok::Comma))
                 isHash = true;
+            // …but a composer that USES THE TOPIC is a block after all: `{3 => 4, :b}`
+            // is a Hash while `{3 => 4, :b($_)}` and `{3 => 4, :b(.Num)}` are Blocks.
+            // Anything that reads `$_`, a placeholder parameter, or calls a method on
+            // the topic (a `.` in TERM position) can only be code.
+            if (isHash) {
+                size_t li = &t - &toks_[0];
+                int depth = 0;
+                for (size_t k = li; k < toks_.size(); k++) {
+                    const Token& tk = toks_[k];
+                    if (tk.kind == Tok::LBrace) { depth++; continue; }
+                    if (tk.kind == Tok::RBrace) { if (--depth == 0) break; continue; }
+                    if (tk.kind == Tok::End) break;
+                    // only THIS composer's own level: a nested block owns its topic,
+                    // so `{ :out{ .contains: … } }` is still a Hash of one Block
+                    if (depth > 1) continue;
+                    if (tk.kind == Tok::Var &&
+                        (tk.text == "$_" ||
+                         (tk.text.size() > 2 && tk.text[1] == '^'))) { isHash = false; break; }
+                    // `.method` with no invocant before it — the previous token cannot
+                    // end a term, so the dot's invocant is the topic
+                    if (tk.kind == Tok::Op && tk.text == "." && k > li) {
+                        const Token& pv = toks_[k - 1];
+                        bool termBefore = pv.kind == Tok::Var || pv.kind == Tok::Ident ||
+                                          pv.kind == Tok::IntLit || pv.kind == Tok::NumLit ||
+                                          pv.kind == Tok::StrLit || pv.kind == Tok::StrInterp ||
+                                          pv.kind == Tok::RParen || pv.kind == Tok::RBracket ||
+                                          pv.kind == Tok::RBrace;
+                        if (!termBefore) { isHash = false; break; }
+                    }
+                }
+            }
             if (isHash) {
                 advance(); // {
                 auto h = std::make_unique<HashLit>();
@@ -2917,6 +2959,7 @@ ExprPtr Parser::parsePrimary() {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
                 be->isSub = true; // `sub {…}` as a term is a Sub, not a bare Block
+                be->isMethodTerm = name == "method"; // …and a method binds `self`
                 if (isKind(Tok::Ident)) advance(); // optional name (anon use)
                 if (isKind(Tok::LParen)) { advance(); be->params = parseSignature(); expectKind(Tok::RParen, ")"); }
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
@@ -3264,7 +3307,13 @@ ExprPtr Parser::parsePrimary() {
             }
             // list-op style call without parens
             // but a capitalized bareword followed by a block is a type + block body, e.g. `if Mu { }`
-            if (isKind(Tok::LBrace) && !name.empty() && std::isupper((unsigned char)name[0]))
+            // — EXCEPT the all-caps introspection subs, which are routines rather than
+            // types, so `WHAT {3 => 4}` asks what the hash is instead of parsing as the
+            // bareword `WHAT` followed by an unrelated block.
+            static const std::set<std::string> capsSubs = {
+                "WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY", "DEFINITE"};
+            if (isKind(Tok::LBrace) && !name.empty() && std::isupper((unsigned char)name[0]) &&
+                !capsSubs.count(name))
                 return std::make_unique<NameTerm>(name);
             // A capitalized bareword (a type) followed by whitespace then `.method` is
             // a postfix method call on the type — `Thing .new` is `Thing.new`, NOT a
@@ -3333,6 +3382,24 @@ ExprPtr Parser::parsePrimary() {
                     else if (tk.kind == Tok::Op && tk.text == ">" && depth == 0) { wordlist = true; break; }
                 }
                 if (!wordlist) listopOk = false;
+            }
+            // `so` and `not` are LOOSE UNARY prefixes, not listops: they take one
+            // argument and stop at the comma, so `f(so ($x), 2)` passes two arguments
+            // rather than one. (`so 1, 2` is `(so 1), 2`.)
+            if (listopOk && (name == "so" || name == "not")) {
+                auto c = std::make_unique<Call>();
+                c->name = name;
+                c->args.push_back(parseExpr(BP_COMMA + 1));
+                // A trailing `:adverb` belongs to whatever the operand was
+                // (`not %h<k>:exists`); it never modifies `so`/`not` themselves, and
+                // leaving it unconsumed would read as a second term.
+                while (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident) {
+                    advance(); advance();
+                    if (isKind(Tok::LParen)) { int d = 0;
+                        do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                        while (d > 0 && !isKind(Tok::End)); }
+                }
+                return c;
             }
             if (listopOk) {
                 auto c = std::make_unique<Call>();

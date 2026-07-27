@@ -1303,6 +1303,8 @@ Token Lexer::lexIdentOrVar() {
                                  "X::Syntax::Name::Null", {});
         } else if (peek() == '/' || peek() == '!' || peek() == '~') {
             name += advance(); // special vars $/ $! $~
+        } else if ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xA2) {
+            name += advance(); name += advance(); // `$\xC2\xA2` — the match CURSOR
         }
         // operator-name suffix: &infix:<cmp>  &prefix:<->  &infix:«+»  &infix:<<∈>>
         if (peek() == ':' && peek(1) == '<' && peek(2) == '<') {
@@ -1860,7 +1862,11 @@ std::vector<Token> Lexer::tokenize() {
                 throw ParseError("Unsupported use of %" + std::string(1, peek(1)) +
                                  " variable; in Raku please use the named captures directly",
                                  line_, "X::Syntax::Perl5Var", {});
-            if ((c == '%' || c == '&') &&
+            // A bare `%` in TERM position, with nothing but space after it, is the
+            // anonymous empty Hash (`% .classify-list: …`) rather than modulo.
+            bool anonHash = c == '%' && !inAngle && regexContext(out) &&
+                            (peek(1) == ' ' || peek(1) == '\t');
+            if (!anonHash && (c == '%' || c == '&') &&
                 !(isIdentStart(peek(1)) || peek(1) == '*' || peek(1) == '.' ||
                   peek(1) == '!' || peek(1) == '^' ||
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`

@@ -729,6 +729,17 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                         seed[seed.size() - 2].toStr() > seed.back().toStr();
         // exact geometric ratio: Rat/Int seeds continue in Rat space (Rakudo keeps
         // 1, 1/2, 1/4 ... 0 as Rats; doubles would leak an e-suffix via .raku)
+        // exact arithmetic step: Rat/Int seeds continue in Rat space, so
+        // `⅓, ⅔ … 30` reaches an exact 15 instead of drifting into doubles
+        Value stepV; bool exactStep = false;
+        if (!hasGen && !geometric && seed.size() >= 2) {
+            bool seedsExact = true;
+            for (auto& sv : seed) if (sv.t != VT::Int && sv.t != VT::Bool && sv.t != VT::Rat) seedsExact = false;
+            if (seedsExact) {
+                stepV = applyArith("-", seed[1], seed[0]);
+                exactStep = (stepV.t == VT::Rat) && !allInt;
+            }
+        }
         Value ratioV; bool exactRatio = false;
         if (geometric) {
             bool seedsExact = true;
@@ -779,7 +790,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool boundedGen = !infinite;
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity,
-                              succSeed, succDesc, ratioV, exactRatio,
+                              succSeed, succDesc, ratioV, exactRatio, stepV, exactStep,
                               boundedGen, endVal, exclusive](ValueList& cache) -> bool {
                 if (cache.empty() && !hasGen) return false;
                 if (boundedGen && !cache.empty() && cache.back().isNumeric() &&
@@ -813,6 +824,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     else if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
                         next = applyArith("*", lastE, ratioV); // stays Rat
                     else next = Value::number(lastV * ratio);
+                } else if (exactStep && (cache.back().t == VT::Int || cache.back().t == VT::Rat ||
+                                         cache.back().t == VT::Bool)) {
+                    next = applyArith("+", cache.back(), stepV); // stays Rat
                 } else {
                     double nv = lastV + step;
                     next = allInt ? Value::integer((long long)nv) : Value::number(nv);
@@ -870,6 +884,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 else if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
                     next = applyArith("*", lastE, ratioV); // stays Rat
                 else next = Value::number(lastV * ratio);
+            } else if (exactStep && (out.arr->back().t == VT::Int || out.arr->back().t == VT::Rat ||
+                                     out.arr->back().t == VT::Bool)) {
+                next = applyArith("+", out.arr->back(), stepV); // stays Rat
             } else {
                 double nv = lastV + step;
                 next = allInt ? Value::integer((long long)nv) : Value::number(nv);
@@ -4377,6 +4394,9 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     code.code->body = &be->body;
     code.code->closure = tctx_.cur;
     code.code->isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
+    // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
+    // first argument and binds `self`, exactly as a declared one does.
+    code.code->isMethod = be->isMethodTerm;
     if (be->params.empty()) code.code->placeholders = computePlaceholders(be->body);
     return code;
 }
@@ -7246,6 +7266,62 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return tctx_.curStateEnv->vars[ve->name];
     }
 
+    // Does this subscript select MANY elements? A syntactic list / angle-words /
+    // Range / @-var / `^N`, or a call whose result turns out to be a list.
+    auto sliceSubscript = [](Index* ix) {
+        return ix->index && !ix->multiDim &&
+            (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+             ix->index->kind == NK::ArrayLit ||
+             ix->index->kind == NK::MethodCall || ix->index->kind == NK::Call ||
+             (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
+              static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
+             (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^"));
+    };
+    // `$s.substr-rw(from, len) = $repl` / `substr-rw($s, from, len) = $repl` — splice
+    // the replacement over [from, from+len) CHARACTERS in place. A zero length inserts
+    // before that character rather than replacing anything.
+    if (a->op == "=") {
+        Expr* invE = nullptr; std::vector<ExprPtr>* srArgs = nullptr; size_t argOfs = 0;
+        if (a->target->kind == NK::MethodCall &&
+            static_cast<MethodCall*>(a->target.get())->method == "substr-rw") {
+            auto* mc = static_cast<MethodCall*>(a->target.get());
+            invE = mc->inv.get(); srArgs = &mc->args;
+        }
+        else if (a->target->kind == NK::Call &&
+                 static_cast<Call*>(a->target.get())->name == "substr-rw" &&
+                 !static_cast<Call*>(a->target.get())->args.empty()) {
+            auto* c = static_cast<Call*>(a->target.get());
+            invE = c->args[0].get(); srArgs = &c->args; argOfs = 1;
+        }
+        if (invE) {
+            Value* bp = lvalue(invE);
+            if (bp && bp->t == VT::Str && bp->hashKind.empty()) {
+                // character index -> byte offset
+                auto byteAt = [&](long long ch) -> size_t {
+                    size_t b = 0; long long n = 0;
+                    while (b < bp->s.size() && n < ch) {
+                        b++;
+                        while (b < bp->s.size() && ((unsigned char)bp->s[b] & 0xC0) == 0x80) b++;
+                        n++;
+                    }
+                    return b;
+                };
+                long long nch = 0;
+                for (size_t b = 0; b < bp->s.size(); b++)
+                    if (((unsigned char)bp->s[b] & 0xC0) != 0x80) nch++;
+                long long from = srArgs->size() > argOfs ? eval((*srArgs)[argOfs].get()).toInt() : 0;
+                long long len  = srArgs->size() > argOfs + 1 ? eval((*srArgs)[argOfs + 1].get()).toInt() : nch - from;
+                if (from < 0) from += nch;
+                if (from < 0) from = 0; if (from > nch) from = nch;
+                if (len < 0) len = 0; if (from + len > nch) len = nch - from;
+                Value rhs = eval(a->value.get());
+                size_t b0 = byteAt(from), b1 = byteAt(from + len);
+                bp->s = bp->s.substr(0, b0) + rhs.toStr() + bp->s.substr(b1);
+                rwWriteThrough(invE);
+                return sink ? Value::any() : rhs;
+            }
+        }
+    }
     // `$buf.subbuf-rw(from, len) = $repl` / `subbuf-rw($buf, from, len) = $repl`
     // — splice the replacement bytes over [from, from+len) in place
     if (a->op == "=") {
@@ -7367,9 +7443,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
         }
         // quanthash element assignment: $sh<k> = False deletes from a SetHash,
-        // $bh<k> = 0 deletes from a BagHash/MixHash; true/nonzero (re)sets
+        // $bh<k> = 0 deletes from a BagHash/MixHash; true/nonzero (re)sets.
+        // A SLICE subscript falls through to the slice branch below, which applies
+        // the same rule per key (`$sh<a b> = False, True`).
         if (a->op == "=" && a->target->kind == NK::Index &&
-            static_cast<Index*>(a->target.get())->isHash) {
+            static_cast<Index*>(a->target.get())->isHash &&
+            !sliceSubscript(static_cast<Index*>(a->target.get()))) {
             auto* ix = static_cast<Index*>(a->target.get());
             Value* bp = nullptr;
             try { bp = lvalue(ix->base.get()); } catch (RakuError&) {}
@@ -7468,13 +7547,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // Range (^$n), or an @-var — a scalar subscript keeps the ordinary path.
         if (a->op == "=" && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
-            bool sliceForm = ix->index && !ix->multiDim &&
-                (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
-                 ix->index->kind == NK::ArrayLit || // angle-word slice `%h<a b> = …`
-                 (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
-                  static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
-                 (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^"));
-            if (sliceForm) {
+            // A call is included: `%orig{ %new.keys } = %new.values`. A non-list
+            // result falls through to the ordinary path below, which is what keeps
+            // `%h{ $obj.name } = …` a single-key assignment.
+            if (sliceSubscript(ix)) {
                 Value keys = eval(ix->index.get());
                 if (keys.t == VT::Array || keys.t == VT::Range) {
                     ValueList ks = keys.flatten();
@@ -7492,7 +7568,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value out = Value::array(); out.isList = true;
                         for (size_t i = 0; i < ks.size(); i++) {
                             Value v = i < vs.size() ? vs[i] : Value::any();
-                            if (ix->isHash && bp->t == VT::Hash && bp->hash) (*bp->hash)[ks[i].toStr()] = v;
+                            if (ix->isHash && bp->t == VT::Hash && bp->hash) {
+                                const std::string& hk = bp->hashKind;
+                                if (hk == "SetHash" || hk == "BagHash" || hk == "MixHash") {
+                                    // the quanthash rule, per key: falsy/zero removes
+                                    std::string key = ks[i].toStr();
+                                    if (hk == "SetHash" ? !v.truthy() : v.toNum() == 0.0) bp->hash->erase(key);
+                                    else (*bp->hash)[key] = hk == "SetHash" ? Value::boolean(true)
+                                                          : hk == "BagHash" ? Value::integer(v.toInt()) : v;
+                                } else (*bp->hash)[ks[i].toStr()] = v;
+                            }
                             else if (bp->t == VT::Array && bp->arr) {
                                 long long j = ks[i].toInt();
                                 if (j >= 0) {
@@ -8499,7 +8584,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         l.t == VT::Str && r.t == VT::Str &&
         (op == "cmp" || op == "==" || op == "!=" || op == "<" || op == "<=" ||
          op == ">" || op == ">=" || op == "eqv" || op == "before" || op == "after" ||
-         op == "~~" || op == "eq" || op == "ne")) {
+         op == "~~" || op == "eq" || op == "ne" || op == "<=>")) {
         auto parts = [](const std::string& s) {
             std::vector<std::pair<bool, std::string>> out; // {isNumeric, text}
             size_t i = 0;
@@ -8521,12 +8606,34 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             return out;
         };
         auto pa = parts(l.s), pb = parts(r.s);
+        // `v1.0.1+` means "this version or later" and `v1.*` is a wildcard; `~~` is
+        // the MATCHING operator over both, which is not the same question as `cmp`.
+        bool aPlus = !l.s.empty() && l.s.back() == '+';
+        bool bPlus = !r.s.empty() && r.s.back() == '+';
+        if (op == "~~") {
+            if (bPlus) { // X ~~ vA+  ⇔  X >= A
+                Value rr = r; rr.s.pop_back();
+                return Value::boolean(applyArith(">=", l, rr).truthy());
+            }
+            for (size_t k = 0; k < pb.size(); k++) {
+                if (pb[k].second == "*") {
+                    if (k + 1 == pb.size()) return Value::boolean(true); // trailing * takes the rest
+                    continue;                                            // an inner * takes one part
+                }
+                if (k >= pa.size() || pa[k].second != pb[k].second) return Value::boolean(false);
+            }
+            return Value::boolean(true);
+        }
         int c = 0;
         size_t n = pa.size() > pb.size() ? pa.size() : pb.size();
         for (size_t k = 0; k < n && !c; k++) {
             bool aP = k < pa.size(), bP = k < pb.size();
-            if (aP && pa[k].second == "*") continue;
-            if (bP && pb[k].second == "*") continue;
+            // ORDERING (not matching): a `*` part is lower than any concrete one, so
+            // `v1.2.3 cmp v1.*` is More.
+            bool aStar = aP && pa[k].second == "*", bStar = bP && pb[k].second == "*";
+            if (aStar && bStar) continue;
+            if (aStar) { c = -1; break; }
+            if (bStar) { c = 1; break; }
             if (aP && bP) {
                 auto& a = pa[k]; auto& b = pb[k];
                 if (a.first && b.first) // both numeric: by length then lexicographically
@@ -8542,7 +8649,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             else if (aP) c = pa[k].first ? (pa[k].second == "0" ? 0 : 1) : -1;
             else         c = pb[k].first ? (pb[k].second == "0" ? 0 : -1) : 1;
         }
-        if (op == "cmp") return Value::orderVal(c);
+        if (!c && aPlus != bPlus) c = aPlus ? 1 : -1; // `v1.0.1+` sorts after `v1.0.1`
+        if (op == "cmp" || op == "<=>") return Value::orderVal(c);
         if (op == "==" || op == "eqv" || op == "eq" || op == "~~") return Value::boolean(c == 0);
         if (op == "!=" || op == "ne") return Value::boolean(c != 0);
         if (op == "<"  || op == "before") return Value::boolean(c < 0);
@@ -9350,10 +9458,24 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     if (!wired && pat.find('$') != std::string::npos && tctx_.cur) {
         std::string out;
         bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
+        int braces = 0;    // inside `{…}` / `<?{…}>` / `**{…}`: CODE, not pattern — a
+                           // `$var` there is the block's own variable and must reach the
+                           // block verbatim, or `{ $c = $¢ }` arrives as `1 = $¢`.
         for (size_t i = 0; i < pat.size(); i++) {
             if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
-            if (pat[i] == '\'') { inSq = !inSq; out += pat[i]; continue; }
-            if (inSq) { out += pat[i]; continue; }
+            if (pat[i] == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || pat[i + 1] == '-')) {
+                // a character class: copy it through so a literal `{` inside cannot
+                // open a false code span
+                size_t j = i;
+                while (j + 1 < pat.size() && !(pat[j] == ']' && pat[j + 1] == '>')) out += pat[j++];
+                while (j < pat.size() && pat[j] != '>') out += pat[j++];
+                if (j < pat.size()) out += pat[j];
+                i = j; continue;
+            }
+            if (pat[i] == '{') { braces++; out += pat[i]; continue; }
+            if (pat[i] == '}') { if (braces) braces--; out += pat[i]; continue; }
+            if (pat[i] == '\'' && !braces) { inSq = !inSq; out += pat[i]; continue; }
+            if (inSq || braces) { out += pat[i]; continue; }
             if (pat[i] == '$' && i + 1 < pat.size() && (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
                 size_t j = i + 1;
                 while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
@@ -9437,62 +9559,56 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             }
         return v;
     };
-    if (haveNth) { // m:nth(...)/ — enumerate all matches, keep the selected ones
-        std::vector<RxMatch> all;
-        long pos = 0;
-        while (re.ok() && pos <= (long)subject.size()) {
-            RxMatch m;
-            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
-            all.push_back(m);
-            pos = (m.to > m.from) ? m.to : m.to + 1;
-        }
-        long long total = (long long)all.size();
-        if (nthStar) nthList.push_back(total - nthOfs);
-        std::sort(nthList.begin(), nthList.end());
-        std::vector<Value> picked;
-        for (long long n : nthList)
-            if (n >= 1 && n <= total) picked.push_back(build(all[n - 1]));
-        if (picked.empty()) { setMatchVar(Value::nil()); return Value::nil(); }
-        if (nthList.size() == 1 && !global) { setMatchVar(picked[0]); return picked[0]; }
-        Value list = Value::array(); list.isList = true;
-        for (auto& p : picked) list.arr->push_back(p);
-        setMatchVar(list);
-        return list;
-    }
-    if (exhaustive) { // m:ex// — a List of every match at every position and length
-        Value list = Value::array(); list.isList = true;
-        if (re.ok())
-            for (auto& m : re.searchExhaustive(subject, resolver, &lexNames)) list.arr->push_back(build(m));
-        setMatchVar(list);
-        return list;
-    }
-    if (global) { // m:g// — a List of every match
-        Value list = Value::array(); list.isList = true;
-        long pos = 0;
-        while (re.ok() && pos <= (long)subject.size()) {
-            RxMatch m;
-            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
-            list.arr->push_back(build(m));
-            pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
-        }
-        setMatchVar(list);
-        return list;
-    }
-    RxMatch m;
-    Value mv;
     std::shared_ptr<Value> inlineMade; // `{ make … }` inside a plain regex
     GrammarHooks rmHooks;
     bool wantHooks = false;
-    // engage ONLY for make-blocks: running arbitrary {…} side effects during
-    // backtracking/LTM measurement broke subst.t and longest-alternative.t
-    if (pat.find("make") != std::string::npos && pat.find('{') != std::string::npos) {
-        rmHooks.run = [this, &inlineMade](const std::string& code, long, long,
-                                          const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) {
-            if (code.find("make") == std::string::npos) return; // other blocks stay inert
+    // A `{…}` block in a plain regex runs when the match is ACCEPTED, not when the
+    // engine walks past it: the matcher queues the block and unwinds the queue as it
+    // backtracks (see Regex::MState::pending), so a block on a branch that is later
+    // abandoned never fires and a branch that is retried never fires twice. Running
+    // them eagerly instead is what broke subst.t and longest-alternative.t.
+    if (pat.find('{') != std::string::npos) {
+        rmHooks.runCaps = [this, &inlineMade, &build](
+                              const std::string& code, long from, long to,
+                              const GrammarHooks::NamedMap& named,
+                              const std::vector<std::pair<long, long>>& caps,
+                              const GrammarHooks::ParamMap&) {
+            // `$/` and `$¢` inside the block are the CURSOR: the match as far as the
+            // engine has got, captures and all. Building it through build() is what
+            // gives the block `$0`, `$<name>`, `.pos` and the rest.
+            RxMatch cur; cur.matched = true; cur.from = from; cur.to = to;
+            cur.caps = caps; cur.named = named;
+            Value cursor = build(cur);
+            bool hadSlash = tctx_.cur->find("$/") != nullptr;
+            Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
+            Value* csl = tctx_.cur->find("$\xC2\xA2");
+            Value savedCursor = csl ? *csl : Value::nil();
+            // `$0`/`$<name>` are separate slots from `$/`, and a PREVIOUS match's are
+            // still standing: without overwriting them the block reads the last
+            // regex's captures rather than this one's.
+            std::vector<std::pair<std::string, Value>> savedCaps;
+            auto bindCap = [&](const std::string& nm, const Value& v) {
+                Value* old = tctx_.cur->find(nm);
+                savedCaps.push_back({nm, old ? *old : Value::nil()});
+                tctx_.cur->define(nm, v);
+            };
+            if (cursor.arr) for (size_t k = 0; k < cursor.arr->size(); k++)
+                bindCap("$" + std::to_string(k), (*cursor.arr)[k]);
+            if (cursor.hash) for (auto& kv : *cursor.hash) bindCap("$<" + kv.first + ">", kv.second);
+            setMatchVar(cursor);
+            tctx_.cur->define("$\xC2\xA2", cursor);
             Value tgt; tctx_.makeTargets.push_back(&tgt);
             try { evalString(code); } catch (...) {}
             tctx_.makeTargets.pop_back();
             if (tgt.pairVal) inlineMade = tgt.pairVal;
+            // All of these are scoped to the block: the caller sets `$/` and the
+            // capture slots to the finished match straight after, and `$\xC2\xA2`
+            // is Nil outside a regex.
+            tctx_.cur->define("$\xC2\xA2", savedCursor);
+            for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
+                tctx_.cur->define(it->first, it->second);
+            if (!hadSlash) return;
+            if (Value* s2 = tctx_.cur->find("$/")) *s2 = savedSlash;
         };
         wantHooks = true;
     }
@@ -9540,6 +9656,50 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         wantHooks = true;
     }
     if (wantHooks) re.runHooks = &rmHooks;
+
+    if (haveNth) { // m:nth(...)/ — enumerate all matches, keep the selected ones
+        std::vector<RxMatch> all;
+        long pos = 0;
+        while (re.ok() && pos <= (long)subject.size()) {
+            RxMatch m;
+            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
+            all.push_back(m);
+            pos = (m.to > m.from) ? m.to : m.to + 1;
+        }
+        long long total = (long long)all.size();
+        if (nthStar) nthList.push_back(total - nthOfs);
+        std::sort(nthList.begin(), nthList.end());
+        std::vector<Value> picked;
+        for (long long n : nthList)
+            if (n >= 1 && n <= total) picked.push_back(build(all[n - 1]));
+        if (picked.empty()) { setMatchVar(Value::nil()); return Value::nil(); }
+        if (nthList.size() == 1 && !global) { setMatchVar(picked[0]); return picked[0]; }
+        Value list = Value::array(); list.isList = true;
+        for (auto& p : picked) list.arr->push_back(p);
+        setMatchVar(list);
+        return list;
+    }
+    if (exhaustive) { // m:ex// — a List of every match at every position and length
+        Value list = Value::array(); list.isList = true;
+        if (re.ok())
+            for (auto& m : re.searchExhaustive(subject, resolver, &lexNames)) list.arr->push_back(build(m));
+        setMatchVar(list);
+        return list;
+    }
+    if (global) { // m:g// — a List of every match
+        Value list = Value::array(); list.isList = true;
+        long pos = 0;
+        while (re.ok() && pos <= (long)subject.size()) {
+            RxMatch m;
+            if (!re.search(subject, pos, m, resolver, &lexNames)) break;
+            list.arr->push_back(build(m));
+            pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
+        }
+        setMatchVar(list);
+        return list;
+    }
+    RxMatch m;
+    Value mv;
     if (re.ok() && re.search(subject, 0, m, resolver, &lexNames)) mv = build(m);
     else mv = Value::nil();
     if (mv.t == VT::Match && inlineMade) mv.pairVal = inlineMade; // $/.ast
@@ -11878,6 +12038,12 @@ Value Interpreter::evalUnary(Unary* u) {
                 return n;
             }
     }
+    // …and a CAPTURE numifies to its POSITIONAL count: the named parts are not
+    // elements, so `+\(2, 3, :a(7))` is 2, not 3.
+    if ((u->op == "+" || u->op == "-") && v.t == VT::Array && v.hashKind == "Capture") {
+        ValueList none; Value n = methodCall(v, "Numeric", none);
+        return u->op == "-" ? Value::integer(-n.toInt()) : n;
+    }
     // Numeric context of a list/array/hash/range is its element count —
     // except a Proc / Proc::Async, which numifies to its exit status (+$proc).
     if ((u->op == "+" || u->op == "-") &&
@@ -13671,6 +13837,11 @@ Value Interpreter::eval(Expr* e) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) return *p;
                 }
             }
+            // A bare `%` / `@` term is an ANONYMOUS empty Hash / Array — `% .classify-list:
+            // …` builds its result in one. (A bare `$` is the anonymous state scalar and
+            // is handled by the parser.)
+            if (!ve->declare && ve->name == "%" && !tctx_.cur->find("%")) return Value::makeHash();
+            if (!ve->declare && ve->name == "@" && !tctx_.cur->find("@")) { Value a = Value::array(); return a; }
             if (ve->name == "$=finish") return Value::str(finishData_); // =finish data block
             if (ve->name == "%?RESOURCES") { // dist resource files — LEXICAL to the defining module
                 // a module's subs close over the %?RESOURCES bound in their module env,

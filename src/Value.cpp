@@ -274,7 +274,17 @@ std::string Value::toStr() const {
                                 "Attempt to divide by zero when coercing Rational to Str"};
             return (ratN && ratD) ? ratToStr(*ratN, *ratD) : "0";
         case VT::Str:  return s;
-        // IterationEnd is a SENTINEL, not a type object — it stringifies bare
+        // IterationEnd is a SENTINEL, not a type object — it stringifies bare.
+        //
+        // NOTE: Rakudo's Str of a type object is "" (with a warning), not the
+        // parenthesised gist. Changing this one line to "" is correct on its own —
+        // it fixes S32-container/stringify.t, S32-list/are.t, S32-array/delete-adverb.t
+        // and S12-introspection/parents.t outright (+16) — but quanthash keys are
+        // built from toStr (makeBaggy, Builtins.cpp), so every type object then keys
+        // on the SAME empty string while `.raku` still renders the typed key's gist:
+        // `Set (|) Set` becomes `Set.new("(Set)")` where Rakudo says `Set.new("")`.
+        // That cost 48 assertions across the four set-operator files. Fixing this
+        // properly means giving makeBaggy its own key function first.
         case VT::Type: return s == "IterationEnd" ? s : "(" + s + ")";
         case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");
         case VT::Range: {
@@ -398,7 +408,15 @@ std::string Value::gist() const {
             }
             return out + (isList ? ")" : "]");
         }
-        case VT::Pair: return s + " => " + (pairVal ? pairVal->gist() : "");
+        case VT::Pair: {
+            // GIST the key rather than stringify it: a non-Str key keeps its own
+            // rendering (`(1 2) => 3`), and a Pair key is parenthesised so the two
+            // arrows do not run together (`(red => 2) => apples`). Only the KEY —
+            // Rakudo leaves a Pair VALUE bare.
+            std::string k = pairKey ? pairKey->gist() : s;
+            if (pairKey && pairKey->t == VT::Pair) k = "(" + k + ")";
+            return k + " => " + (pairVal ? pairVal->gist() : "");
+        }
         case VT::Str:
             if (hashKind == "Version") return "v" + s; // v1.2.3.gist is "v1.2.3" (.Str is "1.2.3")
             if (hashKind == "Buf" || hashKind == "Blob") { // Buf:0x<01 02 03> / Buf[uint8]:0x<…>
@@ -474,6 +492,13 @@ std::string Value::gist() const {
                     }
                 }
                 return hashKind + "(" + body + ")";
+            }
+            // A Signature/Parameter carries its rendering in "str"; without this it
+            // falls through to the generic Hash Str and dumps forty tab-separated
+            // attribute lines.
+            if ((hashKind == "Signature" || hashKind == "Parameter") && hash) {
+                auto it = hash->find("str");
+                if (it != hash->end()) return it->second.s;
             }
             return toStr();
         }

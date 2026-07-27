@@ -1543,6 +1543,11 @@ static Value makeSignature(const Callable* c) {
         sig += renderParam(p);
         if (!p.named) { if (p.slurpy) slurpy = true; else { count++; if (!p.optional && !p.defaultVal && p.defaultRaku.empty()) arity++; } }
     }
+    // a declared return type is part of the signature's rendering: `($x --> Int)`
+    // (space-separated, no comma — and `(--> Int)` when there are no parameters)
+    // (Rakudo separates with a space either way, so an empty parameter list
+    // renders as `( --> Str)`)
+    if (c && !c->retType.empty()) sig += " --> " + c->retType;
     sig += ")";
     Value s = Value::makeHash(); s.hashKind = "Signature";
     (*s.hash)["str"] = Value::str(sig);
@@ -1552,6 +1557,9 @@ static Value makeSignature(const Callable* c) {
     for (const Param* pp : ps) {
         const Param& p = *pp;
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
+        // how the parameter renders on its own — Value::gist reads this, so a
+        // `say $sig.params[0]` shows `Int $one` rather than the attribute dump
+        (*pv.hash)["str"] = Value::str(renderParam(p));
         // an ANONYMOUS parameter has an empty .name, not its bare sigil
         (*pv.hash)["name"] = Value::str(p.name.size() > 1 ? p.name : std::string());
         // `.usage-name` is the name without its sigil AND its twigil, so the
@@ -2542,7 +2550,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     // `\(1, 2, :x(3)).elems` is 2 (the positionals), and .keys/.values/.pairs
     // run the positionals first, then the nameds.
     if (inv.t == VT::Array && inv.hashKind == "Capture" &&
-        (m == "list" || m == "hash" || m == "Map" || m == "elems" ||
+        (m == "list" || m == "hash" || m == "Map" || m == "elems" || m == "Numeric" ||
          m == "keys" || m == "values" || m == "pairs" || m == "antipairs" || m == "Bool")) {
         ValueList pos; std::map<std::string, Value> named;
         if (inv.arr) for (auto& e : *inv.arr) {
@@ -2550,7 +2558,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             else pos.push_back(e);
         }
         if (m == "list") { Value o = Value::array(); o.isList = true; *o.arr = pos; return o; }
-        if (m == "elems") return Value::integer((long long)pos.size());
+        // `.Numeric` (and so prefix `+`) is the POSITIONAL count, like .elems — the
+        // named parts do not add to it
+        if (m == "elems" || m == "Numeric") return Value::integer((long long)pos.size());
         if (m == "Bool")  return Value::boolean(!pos.empty() || !named.empty());
         if (m == "keys" || m == "values" || m == "pairs" || m == "antipairs") {
             Value o = Value::array(); o.isList = true; o.s = "Seq";
@@ -6080,8 +6090,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     if (inv.t == VT::Match && (m == "made" || m == "ast")) return inv.pairVal ? *inv.pairVal : Value::nil();
     if (inv.t == VT::Match && m == "Str") return Value::str(inv.s);
+    // A LIST of matches answers the span it covers: `.from` of the first, `.to` of
+    // the last. `$/.list.from` is how a :g match reports where its matches start.
+    if ((m == "from" || m == "to") && inv.t == VT::Array && inv.arr && !inv.arr->empty()) {
+        const Value& end = m == "from" ? inv.arr->front() : inv.arr->back();
+        if (end.t == VT::Match) return Value::integer(m == "from" ? end.rFrom : end.rTo);
+    }
     if (inv.t == VT::Match && (m == "from")) return Value::integer(inv.rFrom);
     if (inv.t == VT::Match && (m == "to")) return Value::integer(inv.rTo);
+    // `.pos` is where the engine has got to — meaningful on a match IN PROGRESS
+    // (inside a `{…}` block), where it is the end of what has matched so far.
+    if (inv.t == VT::Match && (m == "pos")) return Value::integer(inv.rTo);
     // `.target` is `.orig` under its Cursor-era name
     if (inv.t == VT::Match && (m == "orig" || m == "target" || m == "prematch" || m == "postmatch")) {
         std::string orig = inv.ext ? *std::static_pointer_cast<std::string>(inv.ext) : inv.s;
@@ -6811,14 +6830,20 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     if (m == "succ") {
         if (inv.t == VT::Bool) return Value::boolean(true);   // Bool saturates
-        return inv.t == VT::Str ? Value::str(strSucc(inv.s)) : Value::integer(inv.toInt() + 1);
+        if (inv.t != VT::Str) return Value::integer(inv.toInt() + 1);
+        Value r = Value::str(strSucc(inv.s));
+        // an IO::Path stays an IO::Path (`"foo/file_02.txt".IO.succ` is an IO::Path)
+        r.hashKind = inv.hashKind; r.enumName = inv.enumName;
+        return r;
     }
     if (m == "pred") {
         if (inv.t == VT::Bool) return Value::boolean(false);
         if (inv.t == VT::Str) {
             bool ok; std::string r = strPred(inv.s, ok);
             if (!ok) throw RakuError{Value::typeObj("X::AdHoc"), "Decrement out of range"};
-            return Value::str(r);
+            Value o = Value::str(r);
+            o.hashKind = inv.hashKind; o.enumName = inv.enumName;
+            return o;
         }
         return Value::integer(inv.toInt() - 1);
     }
@@ -8081,8 +8106,20 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             }
             return out;
         };
+        // `:c`/`:complement` translates everything NOT named on the left, `:d`/`:delete`
+        // drops what has no replacement, `:s`/`:squash` collapses a RUN of the same
+        // replacement to one. An adverb is a Pair with a Bool value — a mapping pair
+        // always has a Str/Range/Array one, so `'squash' => 'x'` still translates.
+        bool squash = false, complement = false, del = false;
+        std::string compTo; // what :complement replaces an unnamed character with
         std::vector<std::pair<std::string, std::string>> maps;
         for (auto& a : args) {
+            if (a.t == VT::Pair && (!a.pairVal || a.pairVal->t == VT::Bool)) {
+                bool on = !a.pairVal || a.pairVal->truthy();
+                if (a.s == "s" || a.s == "squash")          { squash = on; continue; }
+                if (a.s == "c" || a.s == "complement")      { complement = on; continue; }
+                if (a.s == "d" || a.s == "delete")          { del = on; continue; }
+            }
             if (a.t != VT::Pair) continue;
             std::vector<std::string> froms, tos;
             // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
@@ -8093,18 +8130,39 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
             if (a.pairVal && (a.pairVal->t == VT::Array || a.pairVal->t == VT::Range))
                 for (auto& x : a.pairVal->flatten()) tos.push_back(x.toStr());
             else if (a.pairVal) tos = expandTrans(a.pairVal->toStr());
+            // a SHORTER replacement side CYCLES: `.trans("abcd" => "xy")` is xyxy
             for (size_t i = 0; i < froms.size(); i++)
-                maps.push_back({froms[i], i < tos.size() ? tos[i] : (tos.empty() ? std::string() : tos.back())});
+                maps.push_back({froms[i], tos.empty() ? std::string() : tos[i % tos.size()]});
+            // remembered unconditionally: `:complement` may be given AFTER the mapping
+            if (!tos.empty()) compTo = tos.back(); // :c replaces with the LAST replacement
         }
         std::string out;
+        const std::string* lastTo = nullptr; // for :squash — what the previous position emitted
         for (size_t pos = 0; pos < s.size(); ) {
             size_t bestLen = 0; const std::string* bestTo = nullptr;
             for (auto& kv : maps) {
                 if (!kv.first.empty() && kv.first.size() > bestLen &&
                     s.compare(pos, kv.first.size(), kv.first) == 0) { bestLen = kv.first.size(); bestTo = &kv.second; }
             }
-            if (bestTo) { out += *bestTo; pos += bestLen; }
-            else { out += s[pos]; pos++; }
+            if (complement) {
+                // the left side names what to KEEP; everything else is replaced
+                size_t clen = 1; // one CHARACTER, not one byte
+                while (pos + clen < s.size() && ((unsigned char)s[pos + clen] & 0xC0) == 0x80) clen++;
+                if (bestLen) { out.append(s, pos, bestLen); pos += bestLen; lastTo = nullptr; continue; }
+                if (!del || !compTo.empty()) {
+                    if (!(squash && lastTo == &compTo)) out += compTo;
+                    lastTo = &compTo;
+                }
+                pos += clen;
+                continue;
+            }
+            if (bestTo) {
+                if (!(squash && lastTo == bestTo)) out += *bestTo;
+                lastTo = bestTo;
+                pos += bestLen;
+            } else {
+                out += s[pos]; pos++; lastTo = nullptr;
+            }
         }
         return Value::str(out);
     }
@@ -8596,12 +8654,32 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
         if (m == "kv") { Value o = Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()}); o.isList = true; return o; }
         if (m == "antipair") return Value::pair((inv.pairVal ? inv.pairVal->toStr() : ""), Value::str(inv.s));
+        // A Pair is ONE element, so its list views are one long: `.keys` is the key,
+        // not an index (that is what a Positional would answer).
+        if (m == "keys" || m == "values" || m == "pairs") {
+            Value o = Value::array(); o.isList = true;
+            o.arr->push_back(m == "keys"   ? (inv.pairKey ? *inv.pairKey : Value::str(inv.s))
+                           : m == "values" ? (inv.pairVal ? *inv.pairVal : Value::any())
+                                           : inv);
+            return o;
+        }
         // `.antipairs`/`.invert` are the LIST forms of .antipair — and a list
         // VALUE inverts to one pair per element: `(a => (1,2)).invert` is
         // (1 => "a", 2 => "a")
         if (m == "antipairs" || m == "invert") {
             Value o = Value::array(); o.isList = true;
             Value val = inv.pairVal ? *inv.pairVal : Value::any();
+            // a HASH value inverts to one pair per ENTRY, and the entry itself is the
+            // new key: `:foo{ :42a, :72b }.invert` is ((:a(42)) => "foo", …)
+            if (m == "invert" && val.t == VT::Hash && val.hash) {
+                Value o2 = Value::array(); o2.isList = true;
+                for (auto& kv : *val.hash) {
+                    Value p = Value::pair("", Value::str(inv.s));
+                    p.pairKey = std::make_shared<Value>(Value::pair(kv.first, kv.second));
+                    o2.arr->push_back(std::move(p));
+                }
+                return o2;
+            }
             ValueList vs = (m == "invert" && val.t == VT::Array && val.arr) ? *val.arr : ValueList{val};
             for (auto& v : vs) {
                 Value p = Value::pair(v.toStr(), Value::str(inv.s));
@@ -9163,17 +9241,25 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 }
                 return Value::any();
             }
+            // `last` in the folding block ENDS THE FOLD and answers the
+            // accumulator built so far — it is a loop from the block's point of
+            // view, so the control exception must not escape as "last without
+            // loop construct".
             if (rightAssoc(args[0])) {
                 Value acc = items.back();
-                for (size_t k = items.size() - 1; k-- > 0; ) acc = callCallable(args[0], {items[k], acc});
+                try {
+                    for (size_t k = items.size() - 1; k-- > 0; ) acc = callCallable(args[0], {items[k], acc});
+                } catch (LastEx&) {}
                 return acc;
             }
             Value acc = items[0];
-            for (size_t k = 1; k < items.size(); k++) acc = callCallable(args[0], {acc, items[k]});
+            try {
+                for (size_t k = 1; k < items.size(); k++) acc = callCallable(args[0], {acc, items[k]});
+            } catch (LastEx&) {}
             return acc;
         }
         if (m == "produce" && !args.empty() && args[0].t == VT::Code) { // scan: running reductions
-            Value out = Value::array(); out.isList = true;
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; // .produce is a Seq
             if (items.empty()) return out;
             if (rightAssoc(args[0])) {
                 // the running folds of the SUFFIXES, reported left to right
@@ -9185,7 +9271,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                 return out;
             }
             Value acc = items[0]; out.arr->push_back(acc);
-            for (size_t k = 1; k < items.size(); k++) { acc = callCallable(args[0], {acc, items[k]}); out.arr->push_back(acc); }
+            // `last` ends the scan — and DROPS the most recent running value, because
+            // Rakudo produces lazily and so lags one behind what has been computed.
+            // Checked against `(2,3,4,5).produce: {last if $^a > 7; $^a+$^b}` -> (2 5),
+            // `(1,2,3,4)` with `$^a > 2` -> (1), and `$^a > 0` -> ().
+            try {
+                for (size_t k = 1; k < items.size(); k++) { acc = callCallable(args[0], {acc, items[k]}); out.arr->push_back(acc); }
+            } catch (LastEx&) { if (!out.arr->empty()) out.arr->pop_back(); }
             return out;
         }
         // `%h.classify-list($mapper, *@values)` classifies INTO the invocant and
@@ -12100,8 +12192,11 @@ void Interpreter::registerBuiltins() {
         return out;
     };
     B["open"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: open($path, :r/:w/:a)
-        if (!a.empty()) rejectNulPath(a[0].toStr());
-        std::string path = a.empty() ? "" : a[0].toStr();
+        // the path is the first POSITIONAL — `open :w, $path` puts the adverb first,
+        // and taking args[0] blindly opened a file literally named "w\tTrue"
+        std::string path;
+        for (auto& x : a) if (x.t != VT::Pair) { path = x.toStr(); break; }
+        rejectNulPath(path);
         std::string mode = "r";
         for (auto& x : a) if (x.t == VT::Pair) { if (x.s == "w") mode = "w"; else if (x.s == "a") mode = "a"; else if (x.s == "r") mode = "r"; }
         if (mode == "r") { // reading a nonexistent file fails, like Rakudo's X::IO::DoesNotExist
@@ -12194,9 +12289,22 @@ void Interpreter::registerBuiltins() {
     // Comparison operators usable as subs: `cmp($a,$b)`, `$a leg $b`, etc.
     for (auto op : {"cmp", "leg", "before", "after"})
         B[op] = [op](Interpreter&, ValueList& a) -> Value { return a.size() >= 2 ? applyArith(op, a[0], a[1]) : Value::any(); };
-    // List routines that delegate to the method of the same name.
+    // List routines that delegate to the method of the same name. An ADVERB the
+    // routine understands is forwarded as a method argument rather than swept into
+    // the list — `unique @a, as => {.abs}` was uniquing the adverb along with the
+    // elements. The names are an allow-list so a genuine Pair ELEMENT still counts
+    // as data (`unique (a => 1), (a => 1)`).
     for (auto nm : {"permutations", "combinations", "unique", "repeated", "squish", "rotor", "flat"})
-        B[nm] = [nm](Interpreter& I, ValueList& a) -> Value { Value v = a.size() == 1 ? a[0] : Value::array(a); ValueList none; return I.methodCall(v, nm, none); };
+        B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
+            static const std::set<std::string> adv = {"as", "with", "partial"};
+            ValueList items, opts;
+            for (auto& x : a) {
+                if (x.t == VT::Pair && adv.count(x.s)) opts.push_back(x);
+                else items.push_back(x);
+            }
+            Value v = items.size() == 1 ? items[0] : Value::array(items);
+            return I.methodCall(v, nm, opts);
+        };
     // Same-named-method routines that forward the REMAINING args, invocant first:
     // rotate(@a,$n), substr($s,$f,$c), head(@a,$n), trim($s), samecase($s,$pat), …
     for (auto nm : {"rotate", "head", "tail", "substr", "substr-rw", "trim", "trim-leading",
@@ -13149,15 +13257,20 @@ void Interpreter::registerBuiltins() {
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr->push_back(a[i]); return a[0]; }
         return Value::any();
     };
-    B["pop"] = [](Interpreter&, ValueList& a) -> Value {
+    B["pop"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite)
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->back(); a[0].arr->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
+        // empty: the METHOD's Failure, not a silent Any (see B["shift"])
+        if (!a.empty() && a[0].t == VT::Array) { ValueList none; return I.methodCall(a[0], "pop", none); }
         return Value::any();
     };
     B["shift"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext && std::static_pointer_cast<LazySeqState>(a[0].ext)->infinite) I.materializeLazy(a[0], 1);
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr->empty()) { Value v = a[0].arr->front(); a[0].arr->erase(a[0].arr->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
+        // empty: hand off to the METHOD so the sub answers the same Failure
+        // (X::Cannot::Empty) instead of a silent Any
+        if (!a.empty() && a[0].t == VT::Array) { ValueList none; return I.methodCall(a[0], "shift", none); }
         return Value::any();
     };
     // `flat(…)` delegates to the METHOD, whose recursive walk is the one that
@@ -13201,10 +13314,16 @@ void Interpreter::registerBuiltins() {
     B["roundrobin"] = [](Interpreter&, ValueList& a) -> Value {
         // interleave the input lists: round 0 = one from each, round 1 = next, … skipping exhausted lists
         std::vector<ValueList> lists;
-        for (auto& v : a) { ValueList l = (v.t == VT::Array || v.t == VT::Range) ? v.flatten() : ValueList{v}; lists.push_back(l); }
+        bool slip = false; // `:slip` flattens the rounds into one list
+        for (auto& v : a) {
+            if (v.t == VT::Pair && v.namedArg) { if (v.s == "slip") slip = !v.pairVal || v.pairVal->truthy(); continue; }
+            ValueList l = (v.t == VT::Array || v.t == VT::Range) ? v.flatten() : ValueList{v};
+            lists.push_back(l);
+        }
         size_t maxLen = 0; for (auto& l : lists) maxLen = std::max(maxLen, l.size());
         Value out = Value::array(); out.isList = true;
         for (size_t i = 0; i < maxLen; i++) {
+            if (slip) { for (auto& l : lists) if (i < l.size()) out.arr->push_back(l[i]); continue; }
             Value round = Value::array(); round.isList = true;
             for (auto& l : lists) if (i < l.size()) round.arr->push_back(l[i]);
             out.arr->push_back(round);
