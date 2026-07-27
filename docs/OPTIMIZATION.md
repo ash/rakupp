@@ -202,6 +202,54 @@ round-trip. It is default (not `-O`-gated); on `fib`, whose ternary runs 1.6M
 times, it took `--exe` from 186 → 165 ms and `--exe -O` from 84 → 66 ms; on
 `streq` the string form is most of a 15× cut in plain `--exe`.
 
+## Another default: `.sort($key)` extracts the key once per element
+
+`.sort` takes either a **2-ary comparator** (`{ $^a <=> $^b }`) or a **1-ary key
+extractor** (`*.chars`). They are different contracts, and the difference is
+asymptotic: a comparator is *supposed* to run per comparison, but a key extractor
+runs **once per element**, and the sort then compares the extracted keys. Raku++
+used to call the 1-ary block inside the comparator, evaluating the key O(n log n)
+times where the contract asks for O(n).
+
+```cpp
+// before — the key is recomputed for both sides of every comparison
+std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+    Value kx = callCallable(blk, {items[x]}), ky = callCallable(blk, {items[y]});
+    return valueCmp(kx, ky) < 0;
+});
+
+// after — a Schwartzian transform: n calls, then compare the keys
+std::vector<Value> keys(items.size());
+for (size_t i = 0; i < items.size(); i++) keys[i] = callCallable(blk, {items[i]});
+std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+    return valueCmp(keys[x], keys[y]) < 0;
+});
+```
+
+Like in-place `~=` above, this is a **correctness wart rather than a missing
+optimization** — Rakudo has always evaluated the key once per element — so it is
+the default in every mode, not gated by `-O`.
+
+The cost was only visible when the key itself was expensive. Sorting codepoints
+by the length of their Unicode name (`.uniname` is a table lookup) on this
+machine, `say (0..N).sort(*.uniname.chars)[*-1]`:
+
+| N | before | after | Rakudo |
+|---|---:|---:|---:|
+| `0x1FFF` (8 K) | 5.70 s | 0.29 s | 0.34 s |
+| `0xFFFF` (64 K) | 18.09 s | 0.68 s | 0.63 s |
+| `0x1FFFF` (128 K) | still running at 95 s | 1.33 s | 1.09 s |
+
+The ratio grows with `log n`, which is the shape the change predicts. The last
+row is the example as the documentation writes it; before the fix it was the
+slowest thing in the conformance corpus by two orders of magnitude.
+
+A 2-ary comparator is unaffected — it keeps calling per comparison, because that
+is what a comparator means. Raku++ is still slower than Rakudo *per call* on that
+path (`(0..0xFFF).sort({ $^a.uniname.chars <=> $^b.uniname.chars })` is 1.78 s
+against 0.27 s), which is call overhead rather than complexity and is a separate
+problem from this one.
+
 ## Forwarding the C++ optimization level
 
 `--exe` compiles the generated C++ at **`-O2`** by default. A level on the `-O`
