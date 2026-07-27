@@ -12395,6 +12395,15 @@ std::string Interpreter::gistOf(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         if (Value* m = v.obj->cls->findMethod("gist")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
         // exceptions gist to their message (`say $!` prints "boom", not X::AdHoc<obj>)
+        // NOTE: this is the X::-NAME test, not "is it an Exception". A user
+        // subclass of Exception not named X::* gists as Class<obj> here while `~$e`
+        // finds its message — three tests for one question. Unifying them was tried
+        // and BACKED OUT: widening the predicate to the class graph costs 3
+        // assertions in S32-exceptions/misc.t (throws-like matchers on compile-time
+        // exceptions), and neither method-first, attribute-first nor
+        // own-declared-method-first recovers them. The audit finding is real; the
+        // fix needs to understand how the built-in X:: classes are synthesised
+        // first, which is its own piece of work.
         if (v.obj->cls->name.rfind("X::", 0) == 0) {
             auto it = v.obj->attrs.find("message");
             if (it != v.obj->attrs.end()) return it->second.toStr();

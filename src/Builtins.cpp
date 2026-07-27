@@ -2003,7 +2003,19 @@ inline bool operator!=(const std::string& a, const MName& b) { return a != b.s; 
 } // namespace
 
 Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs) {
-    const MName m{mName};
+    // `.perl` IS `.raku` — the old name for the same method. Aliasing once, here,
+    // replaces sixteen `|| m == "perl"` clauses scattered down the ladder, each of
+    // which had to be remembered by whoever added the next `.raku` arm. It has to
+    // happen at construction: MName holds a REFERENCE to the string, so binding it
+    // to a ternary temporary would dangle — hence the static lvalue.
+    // …but a class that defines its OWN `method perl` keeps it: Rakudo's `.perl`
+    // is a real method on Mu, so a user override wins over the forward to `.raku`.
+    // The lookup only runs for the literal name "perl", which is rare.
+    static const std::string kRaku = "raku";
+    const bool userPerl = mName.size() == 4 && mName == "perl" &&
+                          inv.t == VT::Object && inv.obj && inv.obj->cls &&
+                          inv.obj->cls->findMethod("perl");
+    const MName m{(mName == "perl" && !userPerl) ? kRaku : mName};
     // package-relative short name: a bare `Frog` type invocant answers as its
     // qualified nested class (`Forest::Frog`) when no real class claims the
     // short name — covers `.new`, `.= new` on typed decls, and user methods
@@ -2223,7 +2235,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     // A multi-dim shaped array renders its structure: rows on their own lines for
     // .gist, and a `Array.new(:shape(…), row, …)` constructor for .raku.
     if (inv.t == VT::Array && inv.shape && inv.shape->size() >= 2 && inv.arr &&
-        (m == "gist" || m == "raku" || m == "perl")) {
+        (m == "gist" || m == "raku")) {
         if (m == "gist") {
             std::string out = "[";
             for (size_t i = 0; i < inv.arr->size(); i++) { if (i) out += "\n "; out += gistOf((*inv.arr)[i]); }
@@ -2433,7 +2445,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     // a Scalar container record (from `.VAR` on a $-variable): its own name/default,
     // .^name = Scalar via typeName; anything else answers from the held value.
     if (inv.t == VT::Hash && inv.hashKind == "Scalar" && inv.hash &&
-        m != "^name" && m != "WHAT" && m != "WHICH" && m != "raku" && m != "perl") {
+        m != "^name" && m != "WHAT" && m != "WHICH" && m != "raku") {
         if (m == "name")    { auto it = inv.hash->find("name");    return it != inv.hash->end() ? it->second : Value::any(); }
         if (m == "dynamic") { // a $*twigil variable is dynamic
             auto it = inv.hash->find("name");
@@ -2570,10 +2582,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
 
     // Signature introspection value (from &routine.signature).
     if (inv.t == VT::Hash && inv.hashKind == "Signature") {
-        if (m == "raku" || m == "gist" || m == "Str" || m == "perl") {
+        if (m == "raku" || m == "gist" || m == "Str") {
             std::string body = inv.hash->count("str") ? (*inv.hash)["str"].toStr() : "()";
             // .raku is the signature literal; .gist/.Str are the bare parens
-            return Value::str((m == "raku" || m == "perl") ? ":" + body : body);
+            return Value::str(m == "raku" ? ":" + body : body);
         }
         if (m == "arity") return inv.hash->count("arity") ? (*inv.hash)["arity"] : Value::integer(0);
         if (m == "count") return inv.hash->count("count") ? (*inv.hash)["count"] : Value::integer(0);
@@ -2708,7 +2720,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     }
     if (inv.t == VT::Hash && inv.hashKind == "IO::Path::Parts") {
         if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash)[m];
-        if (m == "gist" || m == "raku" || m == "perl" || m == "Str") {
+        if (m == "gist" || m == "raku" || m == "Str") {
             // the parts are STRING LITERALS, so a backslash in a Windows path has to
             // be escaped like any other Str.raku (`"\\a"`, not `"\a"`)
             auto q = [&](const char* k) {
@@ -3325,7 +3337,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             return out;
         }
         if (m == "Str") return Value::str(inv.s);
-        if (m == "gist" || m == "raku" || m == "perl") return Value::str("v" + inv.s);
+        if (m == "gist" || m == "raku") return Value::str("v" + inv.s);
         if (m == "plus") return Value::boolean(!inv.s.empty() && inv.s.back() == '+');
         if (m == "whatever") return Value::boolean(inv.s.find('*') != std::string::npos);
     }
@@ -3668,7 +3680,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob
         if (m == "id" || m == "release") return Value::str(RAKUPP_VERSION);
         if (m == "codename") return Value::str("Raku++");
-        if (m == "gist" || m == "Str" || m == "raku" || m == "perl") return Value::str(nm + " (" + (isComp ? "6.d" : langVer) + ")");
+        if (m == "gist" || m == "Str" || m == "raku") return Value::str(nm + " (" + (isComp ? "6.d" : langVer) + ")");
     }
     if (inv.t == VT::Type && (inv.s == "ThreadPoolScheduler" || inv.s == "CurrentThreadScheduler")) {
         if (m == "new") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str(inv.s); return s; }
@@ -4392,7 +4404,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "config")   return h.count("config") ? h["config"] : Value::makeHash();
         if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s : "Pod::Block");
         if (m == "defined" || m == "Bool") return Value::boolean(true);
-        if (m == "Str" || m == "gist" || m == "raku" || m == "perl") {
+        if (m == "Str" || m == "gist" || m == "raku") {
             // stringify to the concatenated text of the contents (paragraphs/children)
             std::function<std::string(const Value&)> flat = [&](const Value& v) -> std::string {
                 if (v.t == VT::Str) return v.s;
@@ -4618,7 +4630,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         }
         if (m == "list" || m == "List" || m == "values" || m == "Seq" || m == "cache") { Value out = Value::array(); out.isList = true; if (inv.arr) out.arr = inv.arr; return out; }
         if (m == "codes" || m == "elems") return Value::integer(inv.arr ? (long long)inv.arr->size() : 0);
-        if (m == "gist" || m == "raku" || m == "perl") {
+        if (m == "gist" || m == "raku") {
             // .gist  -> "Uni:0x<0044 0307 0323>"  (original codepoint order, not NFC)
             // .raku  -> "Uni.new(0x0044, 0x0307, 0x0323)"
             char buf[16];
@@ -5002,7 +5014,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             (*v.hash)["posix"] = Value::integer(ep); (*v.hash)["timezone"] = Value::integer(newTz);
             return v;
         }
-        if ((m == "raku" || m == "perl") && inv.hashKind == "DateTime") {
+        if (m == "raku" && inv.hashKind == "DateTime") {
             char buf[160];
             snprintf(buf, sizeof buf,
                 "DateTime.new(:year(%lld), :month(%lld), :day(%lld), :hour(%lld), :minute(%lld), :second(%lld), :timezone(%lld))",
@@ -5807,7 +5819,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                 std::string nb;
                 for (ClassInfo* c = ci.get(); c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
                 if ((nb == "DateTime" || nb == "Date") && !ci->findMethod(m) &&
-                    m != "raku" && m != "perl" && m != "gist" && m != "Str") {
+                    m != "raku" && m != "gist" && m != "Str") {
                     Value r = methodCall(Value::typeObj(nb), m, args, rwArgs);
                     if (r.t == VT::Hash && (r.hashKind == "DateTime" || r.hashKind == "Date")) {
                         auto od = std::make_shared<ObjectData>(); od->cls = ci; od->hasBoxed = true; od->boxed = r;
@@ -5824,7 +5836,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                     return r;
                 }
             }
-            if (m == "raku" || m == "perl") return Value::str(inv.s); // type-object .raku is the bare name
+            if (m == "raku") return Value::str(inv.s); // type-object .raku is the bare name
             if (m == "gist") return Value::str("(" + inv.s + ")");
             if (m == "Str") return Value::str(""); // type objects stringify empty
         }
@@ -5890,7 +5902,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     if (inv.t == VT::Whatever) {
         // introspection metamethods do NOT autocurry: *.WHAT is (Whatever)
         if (m == "WHAT") return Value::typeObj("Whatever");
-        if (m == "HOW" || m == "WHO" || m == "VAR" || m == "WHICH" || m == "raku" || m == "perl")
+        if (m == "HOW" || m == "WHO" || m == "VAR" || m == "WHICH" || m == "raku")
             { /* fall through to the generic paths below with the Whatever value */ }
         else {
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
@@ -6355,12 +6367,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         }
         return out;
     }
-    if (inv.t == VT::Type && (m == "raku" || m == "perl")) return Value::str(inv.s); // Int.raku -> "Int" (no parens)
+    if (inv.t == VT::Type && m == "raku") return Value::str(inv.s); // Int.raku -> "Int" (no parens)
     // An OBJECT's gist is the interpreter's — Class.new(attr => …), a user .gist
     // method, an exception's message. Value::gist() has no access to any of that
     // and falls back to `Class<obj>`, so `say $x` and `say $x.gist` disagreed.
     if (m == "gist") return Value::str(inv.t == VT::Object ? gistOf(inv) : inv.gist());
-    if (m == "raku" || m == "perl") return Value::str(rakuRepr(inv));
+    if (m == "raku") return Value::str(rakuRepr(inv));
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
         if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
         if (inv.t == VT::Range) { Value r = Value::array(); *r.arr = inv.flatten(); r.isList = true; r.s = "Slip"; return r; }
@@ -6377,7 +6389,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "w") return Value::boolean(inv.s != "<STDIN>");
         if (m == "modified" || m == "accessed" || m == "changed") return Value::typeObj("Instant");
         if (m == "mode") return Value::nil();
-        if (m == "raku" || m == "perl") return Value::str("IO::Special.new(\"" + inv.s + "\")");
+        if (m == "raku") return Value::str("IO::Special.new(\"" + inv.s + "\")");
         if (m == "WHICH") { Value w = Value::str("IO::Special|" + inv.s); w.hashKind = "ObjAt"; return w; }
     }
     // a Blob/Buf (Str-tagged internally) is Positional over its BYTES, not a scalar
@@ -6767,7 +6779,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "Complex") return inv;
         if (m == "isNaN") return Value::boolean(std::isnan(inv.n) || std::isnan(inv.im));
         if (m == "Str" || m == "gist" || m == "Stringy") return Value::str(inv.toStr());
-        if (m == "raku" || m == "perl") return Value::str("<" + inv.toStr() + ">");
+        if (m == "raku") return Value::str("<" + inv.toStr() + ">");
         if (m == "Num" || m == "Real" || m == "Int") { if (inv.im != 0) throw RakuError{Value::str("Complex"), "Can not convert Complex with nonzero imaginary part"}; return m == "Int" ? Value::integer((long long)inv.n) : Value::number(inv.n); }
         // Complex.narrow is `self.im == 0 ?? self.re.narrow !! self` — it must RECURSE,
         // or (4.0+0i).narrow stops at the Num and never demotes to Int.
@@ -7468,7 +7480,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                     return m == "is-absolute" ? r : Value::boolean(!r.truthy());
             }
             if (m == "path") return Value::str(inv.s);
-            if (m == "raku" || m == "perl") {
+            if (m == "raku") {
                 std::string q = inv.s; // escape for a double-quoted literal
                 std::string esc; for (char ch : q) { if (ch == '"' || ch == '\\') esc += '\\'; esc += ch; }
                 return Value::str("IO::Path::" + inv.enumName + ".new(\"" + esc + "\")");
