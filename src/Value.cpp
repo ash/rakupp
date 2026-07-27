@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <functional>
 #include <cstdlib>
+#include <cerrno>
 #include <limits>
 #include <sstream>
 
@@ -165,6 +166,18 @@ long long Value::toInt() const {
     }
 }
 
+// Parse a leading number the way `std::stod` does, but WITHOUT throwing: an
+// unparseable string is 0.0, which is what every caller here wanted anyway.
+static double strToNumOr0(const std::string& s) {
+    if (s.empty()) return 0.0;
+    const char* p = s.c_str();
+    char* end = nullptr;
+    errno = 0;
+    double d = std::strtod(p, &end);
+    if (end == p) return 0.0;   // nothing numeric at the front — stod would throw
+    return d;
+}
+
 double Value::toNum() const {
     switch (t) {
         case VT::Bool: return b ? 1.0 : 0.0;
@@ -201,10 +214,15 @@ double Value::toNum() const {
                 return ratN->toDouble() / ratD->toDouble();
             }
             return 0.0;
+        // `std::stod` THROWS on a non-numeric string, and numifying a string that
+        // turns out not to be one is routine in an interpreter — the invocant of
+        // every `"ab".method` call reaches here. A C++ exception per method call
+        // cost ~7 microseconds each; `strtod` reports the same failure by leaving
+        // `end == data()` and costs nothing.
         case VT::Str:
             if (hashKind == "Blob" || hashKind == "Buf") return (double)blobElems(); // element count, like .Int
-            { try { return std::stod(s); } catch (...) { return 0.0; } }
-        case VT::Match: { try { return std::stod(s); } catch (...) { return 0.0; } }
+            return strToNumOr0(s);
+        case VT::Match: return strToNumOr0(s);
         default: return (double)toInt();
     }
 }

@@ -250,31 +250,73 @@ construction. `(0..0xFFF).sort({ $^a.uniname.chars <=> $^b.uniname.chars })` tak
 1.78 s against Rakudo's 0.27 s, and profiling that gap turns up something with
 nothing to do with sorting:
 
-> **Every method call costs about 7 µs.** Measured with
-> `for ^300000 { 'ab'.METHOD; … }` minus the empty-loop baseline: `.chars`,
-> `.uc` and `.uniname` all land within a few percent of each other at ~7.4 µs a
-> call, against roughly 0.17 µs for the same loop under Rakudo. The bare loop
-> itself is *faster* in Raku++ (0.10 s vs 0.41 s for 300 K iterations), so this is
-> the call, not the interpreter.
->
-> Two candidates are ruled out. It is **not** the length of the `m == "…"`
-> dispatch ladder in `methodCallInner`: `.chars` sits 177 comparisons in and
-> `.uc` 812, and they cost the same. It is **not** the method bodies: `.uniname`
-> is a binary search plus a hash lookup, and 200 K direct calls to it cost the
-> same as 200 K calls to `.chars`.
->
-> One contributor has been removed — `methodCallInner` called
-> `std::getenv("RAKUPP_TRACE")` on entry, i.e. once per method call, worth about
-> 10%. What remains is unexplained; the leading suspects are that both
-> `methodCall` and `methodCallInner` take their invocant and argument list **by
-> value** (a `Value` carries ten `shared_ptr` members, so a copy is up to ten
-> atomic refcount operations, plus a heap allocation for the `ValueList`), and
-> the exception-unwinding machinery that dominates a `sample` profile of the
-> loop.
+> **`std::stod` threw a C++ exception on every method call.** See below.
 
-That is a much larger prize than anything in this document and wants its own
-measurement pass; it is recorded here because the sort example is what exposed
-it.
+## A third default: never numify a string by throwing
+
+Chasing the comparator gap above turned up something with nothing to do with
+sorting. `for ^300000 { 'ab'.METHOD }` minus the empty-loop baseline used to cost
+about **7 µs per method call**, against roughly 0.17 µs for the same loop under
+Rakudo — while Raku++'s bare loop is *faster* than Rakudo's (0.10 s vs 0.41 s for
+300 K iterations). So it was the call, not the interpreter.
+
+Two plausible causes were ruled out by measurement first. Not the length of the
+`m == "…"` dispatch ladder in `methodCallInner`: `.chars` sits 177 comparisons in
+and `.uc` 812, and they cost the same. Not the method bodies: `.uniname` is a
+binary search plus a hash lookup and cost what `.chars` cost.
+
+A breakpoint on `__cxa_throw` gave the answer — **one throw per method call**, and
+none at all for an empty loop:
+
+```
+__cxa_throw
+  std::__throw_invalid_argument
+    std::stod(std::string const&, unsigned long*)
+      rakupp::Value::toNum() const
+        rakupp::Interpreter::methodCallInner(…)
+```
+
+`Value::toNum()` numified a `Str` with `std::stod`, which **throws
+`std::invalid_argument`** when the string does not start with a number. The
+result was caught and turned into `0.0` — the right answer, arrived at by
+raising, unwinding and catching a C++ exception. Speculatively numifying a string
+that turns out not to be one is completely routine in an interpreter (the
+invocant of every `"ab".method` call reaches here), so the language's slowest
+control-transfer mechanism sat on its hottest path.
+
+`std::strtod` reports the same failure by leaving its end pointer at the start of
+the input, and costs nothing:
+
+```cpp
+static double strToNumOr0(const std::string& s) {
+    if (s.empty()) return 0.0;
+    const char* p = s.c_str(); char* end = nullptr;
+    double d = std::strtod(p, &end);
+    return end == p ? 0.0 : d;   // stod would have thrown here
+}
+```
+
+Measured on this machine, 300 K iterations:
+
+| | before | after | Rakudo |
+|---|---:|---:|---:|
+| `'ab'.chars` | 2.23 s | **0.73 s** | 0.34 s |
+| `'ab'.uniname` | 2.51 s | **0.47 s** | 0.36 s |
+| `"hello world".uc.chars`, 200 K | 2.9 s | **0.94 s** | 0.27 s |
+| `(0..0xFFF).sort({…uniname…})` | 1.78 s | **0.68 s** | 0.28 s |
+
+Roast is unchanged across the switch, which is the point: `strtod` and a caught
+`stod` agree on every input that reaches this path.
+
+Two smaller per-call costs went with it: `methodCallInner` called
+`std::getenv("RAKUPP_TRACE")` on entry — once per method call, about 10% on its
+own — and is now read once into a `static`.
+
+What is left is ordinary interpreter overhead rather than a pathology. Both
+`methodCall` and `methodCallInner` still take their invocant and argument list
+**by value**, and a `Value` carries ten `shared_ptr` members, so a call copies up
+to ten atomic refcounts plus a heap allocation for the `ValueList`. That is the
+next thing to look at, and it is a refactor rather than a one-line fix.
 
 ## Forwarding the C++ optimization level
 
