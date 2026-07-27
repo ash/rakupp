@@ -632,9 +632,16 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             // Hash literal: the weighted kinds as a pair list coerced to the
             // kind, the Set family as a constructor over their elements, and a
             // Map as Map.new((…)).
+            // An ELEMENT renders as itself, not as its key string: the key is a
+            // lookup string, and the original value rides in the count's pairKey
+            // (baggyKey). `set(1,2).raku` is `Set.new(1,2)`, not `Set.new("1","2")`.
+            auto elemRepr = [&](const std::string& k) {
+                const Value& cnt = v.hash->at(k);
+                return cnt.pairKey ? rakuRepr(*cnt.pairKey, depth + 1, seen) : rakuStrLit(k);
+            };
             if (v.hashKind == "Set" || v.hashKind == "SetHash") {
                 std::string o = v.hashKind + ".new("; bool f = true;
-                for (auto& k : keys) { if (!f) o += ","; f = false; o += rakuStrLit(k); }
+                for (auto& k : keys) { if (!f) o += ","; f = false; o += elemRepr(k); }
                 if (v.hash) seen.erase(v.hash.get());
                 return o + ")";
             }
@@ -643,7 +650,7 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                 std::string o = "("; bool f = true;
                 for (auto& k : keys) {
                     if (!f) o += ","; f = false;
-                    o += rakuStrLit(k) + "=>" + rakuRepr(v.hash->at(k), depth + 1, seen);
+                    o += elemRepr(k) + "=>" + rakuRepr(v.hash->at(k), depth + 1, seen);
                 }
                 if (v.hash) seen.erase(v.hash.get());
                 return o + ")." + v.hashKind;

@@ -484,12 +484,13 @@ std::string Value::gist() const {
                 std::string body; bool first = true;
                 if (hash) for (auto& kv : *hash) {
                     if (!first) body += " "; first = false;
-                    if (isSet) body += kv.first;
-                    else { // Bag AND Mix: elem(weight), a weight of 1 omitted
-                        body += kv.first;
-                        if (!(kv.second.isNumeric() && kv.second.toNum() == 1.0))
-                            body += "(" + kv.second.gist() + ")";
-                    }
+                    // the ELEMENT, not its lookup key — the original value rides in
+                    // the count's pairKey for anything that is not a plain Str
+                    std::string el = kv.second.pairKey ? kv.second.pairKey->gist() : kv.first;
+                    body += el;
+                    // Bag AND Mix: elem(weight), a weight of 1 omitted
+                    if (!isSet && !(kv.second.isNumeric() && kv.second.toNum() == 1.0))
+                        body += "(" + kv.second.gist() + ")";
                 }
                 return hashKind + "(" + body + ")";
             }
