@@ -21,6 +21,10 @@
 
 namespace rakupp {
 
+// How a type-check failure renders the offending value (Rakudo: `.raku`, elided
+// past 23 chars). Shared by the five message builders across Interpreter/Builtins.
+std::string typeCheckRepr(const Value& v);
+
 double randDouble(); // uniform random in [0,1)
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
 int signalNumberOfName(const std::string& n); // Signal-enum name → OS number ("SIGINT"→2), -1 if unknown

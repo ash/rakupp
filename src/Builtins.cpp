@@ -54,6 +54,15 @@ struct SemaphoreState { std::mutex m; std::condition_variable cv; long count = 0
 
 // A small hardcoded slice of the built-in type lattice (narrowest-first, widest-last),
 // used by `.are` to find the narrowest common type of a list's elements.
+// A CORE type name — the set `.^add_method` may extend. isKnownTypeName is too
+// loose for that: it blanket-accepts any X::, Metamodel:: or IO:: prefix, so a
+// typo'd `Metamodel::Whatever.^add_method` would silently succeed there.
+static bool isCoreTypeName(const std::string& n) {
+    if (n.empty()) return false;
+    if (n.rfind("X::", 0) == 0 || n.rfind("Metamodel::", 0) == 0) return false;
+    return isKnownTypeName(n);
+}
+
 static const std::vector<std::string>& typeAncestry(const std::string& t) {
     static const std::map<std::string, std::vector<std::string>> A = {
         {"Int",     {"Int","Real","Numeric","Cool","Any","Mu"}},
@@ -2412,6 +2421,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             size_t cut = n.rfind("::", base == std::string::npos ? std::string::npos : base);
             if (cut != std::string::npos) n = n.substr(cut + 2);
             return Value::str(n);
+        }
+        // `.^mixin(Role)` is a COPYING mixin — exactly `but`'s semantics. It has to
+        // answer here, ahead of the `tobj` collapse below, which replaces an object
+        // invocant with its bare type object and so loses the thing to mix into.
+        if (mm == "mixin") {
+            Value r = inv;
+            for (auto& a : args) r = mixinValue(std::move(r), a, true);
+            return r;
         }
         if (mm == "WHAT") return Value::typeObj(inv.typeName());
         // `X.^parameterize(T)` yields the parameterized type `X[T]` (same as `X[T]`)
@@ -5290,6 +5307,21 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                 for (auto& a : typeAncestry(inv.s)) { if (self) { self = false; continue; } if (!isBuiltinRole(a)) out.arr->push_back(Value::typeObj(a)); } }
             return out;
         }
+        // The whole MOP-mutator surface below is gated on the invocant being a
+        // user-declared type, so `Int.^add_method` died. The storage and the reader
+        // already exist: builtinExt_ is what `augment class Int {…}` writes to and
+        // what method dispatch consults for every non-Object invocant. Only the
+        // writer was missing. Kept to CORE types — isKnownTypeName blanket-accepts
+        // any X::/Metamodel::/IO:: prefix, which would let a typo mint a method.
+        if (!classes_.count(inv.s) && isCoreTypeName(inv.s)) {
+            if (m == "add_method" && args.size() >= 2) {
+                noteSymbolMutation("runtime .^add_method on a built-in type");
+                builtinExt_[inv.s][args[0].toStr()] = args[1];
+                return args[1];
+            }
+            if (m == "compose" || m == "publish_method_cache" || m == "invalidate_method_caches")
+                return inv;
+        }
         auto cit = classes_.find(inv.s);
         if (cit != classes_.end()) {
             auto ci = cit->second;
@@ -6267,7 +6299,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         return out;
     }
     if (inv.t == VT::Type && (m == "raku" || m == "perl")) return Value::str(inv.s); // Int.raku -> "Int" (no parens)
-    if (m == "gist") return Value::str(inv.gist());
+    // An OBJECT's gist is the interpreter's — Class.new(attr => …), a user .gist
+    // method, an exception's message. Value::gist() has no access to any of that
+    // and falls back to `Class<obj>`, so `say $x` and `say $x.gist` disagreed.
+    if (m == "gist") return Value::str(inv.t == VT::Object ? gistOf(inv) : inv.gist());
     if (m == "raku" || m == "perl") return Value::str(rakuRepr(inv));
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
         if (inv.t == VT::Array) { Value r = inv; r.isList = true; r.s = "Slip"; return r; }
@@ -10670,7 +10705,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                         : bt.compare(0, 3, "num") == 0 ? v.isNumeric()
                         : (v.t == VT::Int || v.t == VT::Bool);
                 if (!ok) throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
-                    "Type check failed in binding; expected " + bt + " but got " + v.typeName() + " (" + v.gist() + ")"};
+                    "Type check failed in binding; expected " + bt + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
             };
             // a shaped array (`my @a[2;2]`) has fixed dimensions — size-changing
             // operations are illegal
@@ -11668,7 +11703,8 @@ void Interpreter::registerBuiltins() {
     B["callsame"] = [dispTop](Interpreter& I, ValueList&) -> Value {
         auto* d = dispTop(I);
         if (!d) {
-            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callsame with no dispatcher in scope"};
+            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callsame")}},
+                              "callsame is not in the dynamic scope of a dispatcher");
             return Value::nil(); // exhausted chain bottom
         }
         if (d->lastcall) return Value::nil(); // trimmed by lastcall
@@ -11677,7 +11713,8 @@ void Interpreter::registerBuiltins() {
     B["callwith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
         auto* d = dispTop(I);
         if (!d) {
-            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "callwith with no dispatcher in scope"};
+            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callwith")}},
+                              "callwith is not in the dynamic scope of a dispatcher");
             return Value::nil();
         }
         if (d->lastcall) return Value::nil();
@@ -11686,7 +11723,8 @@ void Interpreter::registerBuiltins() {
     B["nextsame"] = [dispTop](Interpreter& I, ValueList&) -> Value {
         auto* d = dispTop(I);
         if (!d) {
-            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextsame with no dispatcher in scope"};
+            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextsame")}},
+                              "nextsame is not in the dynamic scope of a dispatcher");
             throw ReturnEx{Value::nil()};
         }
         if (d->lastcall) throw ReturnEx{Value::nil()};
@@ -11696,13 +11734,15 @@ void Interpreter::registerBuiltins() {
         // re-dispatch the CURRENT routine from scratch with new args, returning its result
         auto* d = dispTop(I);
         if (!d || !d->restart)
-            throw RakuError{Value::typeObj("X::NoDispatcher"), "samewith with no dispatcher in scope"};
+            I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("samewith")}},
+                              "samewith is not in the dynamic scope of a dispatcher");
         return d->restart(a);
     };
     B["nextwith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
         auto* d = dispTop(I);
         if (!d) {
-            if (I.redispatchStack_.empty()) throw RakuError{Value::typeObj("X::NoDispatcher"), "nextwith with no dispatcher in scope"};
+            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextwith")}},
+                              "nextwith is not in the dynamic scope of a dispatcher");
             throw ReturnEx{Value::nil()};
         }
         if (d->lastcall) throw ReturnEx{Value::nil()};
@@ -12170,8 +12210,11 @@ void Interpreter::registerBuiltins() {
             if (v.t == VT::Pair && v.s == "lang") {
                 std::string lang = v.pairVal ? v.pairVal->toStr() : "";
                 if (lang != "Raku" && lang != "Perl6")
-                    throw RakuError{Value::str("Cannot EVAL :lang<" + lang + ">"),
-                                    "Cannot EVAL code in language '" + lang + "'"};
+                    // the payload slot takes the exception TYPE, not a message —
+                    // a Str payload only promotes to a real exception when it
+                    // starts with "X::", so this used to surface as a bare Str
+                    I.throwTypedV("X::Eval::NoSuchLang", {{"lang", Value::str(lang)}},
+                                  "No compiler available for language '" + lang + "'");
             } else if (v.t != VT::Pair && !haveCode) { code = v; haveCode = true; }
         }
         if (!haveCode) return Value::any();

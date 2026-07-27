@@ -4565,13 +4565,17 @@ std::string Interpreter::symRefName(SymbolicRef* sr) {
 // type-selects; without this a single `sub f(Int $x)` bound anything). Type
 // objects/undefined bind (no :D enforcement here) and junction kinds pass —
 // they were autothreaded upstream; one reaching here is a matcher-style arg.
-// How a type-check failure renders the offending value: a Str is QUOTED, and
-// anything long is elided. The binding message did this and the assignment
-// message used a bare .gist, so the two diverged — `got Str (forty plus two)`
-// against Rakudo's `got Str ("forty plus two")`.
-static std::string typeCheckRepr(const Value& v) {
-    std::string g = v.t == VT::Str ? "\"" + v.s + "\"" : v.gist();
-    return g.size() > 50 ? g.substr(0, 47) + "..." : g;
+// How a type-check failure renders the offending value. Rakudo uses `.raku`, not
+// `.gist` — so a Str keeps its quotes, a List separates with commas and a Hash
+// uses the colon-pair form — and elides once the repr exceeds 23 characters,
+// keeping 20 plus "...". (Measured against the oracle at every length either
+// side of the boundary.) Five message builders each rendered this their own way;
+// they share this one now.
+std::string typeCheckRepr(const Value& v) {
+    std::string r = g_rakuRepr ? g_rakuRepr(v) : v.gist();
+    // an itemised value reprs as `$(1, 2)`; the message shows the bare `(1, 2)`
+    if (r.size() > 1 && r[0] == '$' && (r[1] == '(' || r[1] == '[' || r[1] == '{')) r.erase(0, 1);
+    return r.size() > 23 ? r.substr(0, 20) + "..." : r;
 }
 
 void Interpreter::typeCheckBind(const Param& p, const Value& v) {
@@ -6599,7 +6603,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         throwTypedV("X::TypeCheck::Return",
                     {{"got", v}, {"expected", Value::typeObj(c.retType)}},
                     "Type check failed for return value; expected " + c.retType +
-                    " but got " + v.typeName() + " (" + v.gist() + ")");
+                    " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
     return v;
 }
 
@@ -7476,16 +7480,28 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // an expression RHS must not be evaluated twice)
             static const std::set<std::string> kBindChecked = {
                 "Int", "Num", "Rat", "Complex", "Str", "Bool"};
+            // …including a DOUBLE-quoted one: `"foo"` lexes as StrInterp and parses
+            // to InterpStr, so only the single-quoted spelling was ever checked.
+            // An InterpStr whose parts are all literal has nothing to interpolate
+            // and no side effects, so the no-double-evaluation reason for the gate
+            // does not apply (sinkPure already makes exactly this judgement).
+            auto constStr = [](const Expr* e) {
+                if (e->kind != NK::InterpStr) return false;
+                for (auto& part : static_cast<const InterpStr*>(e)->parts)
+                    if (part->kind != NK::StrLit) return false;
+                return true;
+            };
             if (tv->declare && kBindChecked.count(tv->declType) &&
                 (a->value->kind == NK::IntLit || a->value->kind == NK::NumLit ||
-                 a->value->kind == NK::StrLit || a->value->kind == NK::BoolLit)) {
+                 a->value->kind == NK::StrLit || a->value->kind == NK::BoolLit ||
+                 constStr(a->value.get()))) {
                 Value bv = eval(a->value.get());
                 if (!rtTypeMatch(bv, tv->declType) &&
                     !(tv->declType == "Int" && bv.t == VT::Bool))
                     throwTypedV("X::TypeCheck::Binding",
                         {{"got", bv}, {"expected", Value::typeObj(tv->declType)}},
                         "Type check failed in binding; expected " + tv->declType +
-                        " but got " + bv.typeName() + " (" + bv.gist() + ")");
+                        " but got " + bv.typeName() + " (" + typeCheckRepr(bv) + ")");
             }
         }
         if (a->target->kind == NK::Index) {
@@ -10135,7 +10151,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     if (haveX) { // the :x count must be an Int, a Range, or Whatever
         VT t = xVal.t;
         if (!(t == VT::Int || t == VT::Num || t == VT::Rat || t == VT::Range || t == VT::Whatever || t == VT::Bool))
-            throw RakuError{Value::typeObj("X::Str::Match::x"), "Invalid :x argument"};
+            throwTypedV("X::Str::Match::x", {{"got", xVal}},
+                "in Str.match, got invalid value of type " + xVal.typeName() +
+                " for :x, must be Int or Range");
     }
     if (!literal) {
         // interpolate scalar variables ($foo, $^a) into the regex as literal (quotemeta'd) text
