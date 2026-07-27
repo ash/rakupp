@@ -297,6 +297,7 @@ struct ClassAttr {
     bool pub = true;
     bool rw = false;  // `is rw` — the public accessor is a writable lvalue
     bool required = false; // `is required` — construction without a value throws
+    std::string requiredWhy;  // `is required("it is a good idea")` — the reason, for the message
     std::string type; // declared type name (`has Int $.x`), "" = Mu
     std::string containerIs; // `has %.a is Set` — container type trait
     const Expr* def = nullptr; // borrowed from AST

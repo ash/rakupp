@@ -5676,9 +5676,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                             if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
                         if (!gotArg)
                             throwTypedV("X::Attribute::Required",
-                                        {{"name", Value::str("$!" + at.name)}},
-                                        "The attribute '$!" + at.name +
-                                        "' is required, but you did not provide a value for it.");
+                                        {{"name", Value::str("$!" + at.name)},
+                                         {"why", Value::str(at.requiredWhy)}},
+                                        "The attribute '$!" + at.name + "' is required" +
+                                        (at.requiredWhy.empty()
+                                             ? std::string(", ")
+                                             : " because " + at.requiredWhy + ",\n") +
+                                        "but you did not provide a value for it.");
                     }
                 for (auto cit = chain.rbegin(); cit != chain.rend(); ++cit)
                     for (auto& at : (*cit)->attrs) {
@@ -5941,6 +5945,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "returns" || m == "of")
             return inv.code->retType.empty() ? Value::typeObj("Mu") : Value::typeObj(inv.code->retType);
         if (m == "signature") return makeSignature(inv.code.get());
+        if (m == "yada") return Value::boolean(inv.code->isStub);   // a `{ ... }` / `{ !!! }` body
         if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code->isMultiDispatcher);
         if (m == "candidates") {
             Value out = Value::array(); out.isList = true;

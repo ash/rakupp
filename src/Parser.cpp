@@ -2865,10 +2865,12 @@ ExprPtr Parser::parsePrimary() {
                 return arr;
             }
             if (t.text == "->" || t.text == "<->") {
+                bool doubly = (t.text == "<->");   // `<->` binds its params `is rw`
                 advance();
                 auto be = std::make_unique<BlockExpr>();
                 sigRetType_.clear();
                 be->params = parsePointyParams();
+                if (doubly) for (auto& p : be->params) p.isRw = true;
                 be->retType = sigRetType_;   // `-> $x --> Int { … }`
                 auto blk = parseBlock();
                 be->body = std::move(blk->stmts);
@@ -3038,7 +3040,11 @@ ExprPtr Parser::parsePrimary() {
                 auto call = std::make_unique<Call>(); call->name = "whenever";
                 call->args.push_back(parseExpr(BP_COMMA + 1)); // the supply/promise expression
                 auto be = std::make_unique<BlockExpr>();
-                if (isOp("->") || isOp("<->")) { advance(); be->params = parsePointyParams(); } // whenever $s -> $v { }
+                if (isOp("->") || isOp("<->")) { // whenever $s -> $v { } / <-> $v { }
+                    bool doubly = isOp("<->");
+                    advance(); be->params = parsePointyParams();
+                    if (doubly) for (auto& p : be->params) p.isRw = true;
+                }
                 if (isKind(Tok::LBrace)) { auto blk = parseBlock(); be->body = std::move(blk->stmts); }
                 call->args.push_back(std::move(be));
                 return call;
@@ -4861,6 +4867,20 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     }
                     if (tr == "is" && isIdent("rw")) a.rw = true;
                     if (tr == "is" && isIdent("required")) a.required = true;
+                    // `is required("reason")` — the reason goes into the exception
+                    // message. The generic trait-argument skip below used to eat it.
+                    if (tr == "is" && isIdent("required") && peek().kind == Tok::LParen) {
+                        size_t save = pos_;
+                        advance();                                    // `required`
+                        advance();                                    // `(`
+                        if ((isKind(Tok::StrLit) || isKind(Tok::StrInterp)) &&
+                            peek().kind == Tok::RParen) {
+                            a.requiredWhy = advance().text;
+                            advance();                                // `)`
+                            continue;
+                        }
+                        pos_ = save;                                  // not a literal: fall through
+                    }
                     if (tr == "is" && isKind(Tok::Ident)) {
                         static const std::set<std::string> containers = {
                             "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
@@ -5375,7 +5395,19 @@ StmtPtr Parser::parseStatementImpl() {
                 pos_ = save; // not a typed scoped decl — restore
             }
         }
-        if (kw == "method" || kw == "submethod") { advance(); return parseSub(false); }
+        if (kw == "method" || kw == "submethod") {
+            bool sub = (kw == "submethod");
+            advance();
+            auto st = parseSub(false);
+            // a statement-level `my method m(Int:D: $x) {…}` is still a METHOD: it
+            // binds `self` from the invocant and answers Method to `.^name`. The
+            // flag was only ever set on class-body declarations.
+            if (st && st->kind == NK::SubDecl) {
+                static_cast<SubDecl*>(st.get())->isMethod = true;
+                static_cast<SubDecl*>(st.get())->isSubmethod = sub;
+            }
+            return st;
+        }
         if (kw == "token" || kw == "rule" || kw == "regex") {
             std::string knd = advance().text;
             auto nr = std::make_unique<NamedRegexDecl>();

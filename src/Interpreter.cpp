@@ -42,6 +42,18 @@ static char** rakupp_environ() { return environ; }
 
 namespace rakupp {
 
+// A `{ ... }` / `{ !!! }` body: the routine is a STUB. Was a lambda local to the
+// class-declaration case and so was only ever asked about methods — `.yada` on a
+// plain `sub f() { ... }` had no answer at all.
+static bool stmtIsStub(const std::vector<StmtPtr>& body) {
+    if (body.size() != 1 || body[0]->kind != NK::ExprStmt) return false;
+    Expr* e = static_cast<ExprStmt*>(body[0].get())->e.get();
+    if (!e || e->kind != NK::Call) return false;
+    auto* c = static_cast<Call*>(e);
+    return (c->name == "..." || c->name == "!!!") && c->args.empty() && !c->callee;
+}
+
+
 // Thread-local RNG state: drand48's process-global state is not thread-safe, so
 // under parallel execution each thread keeps its own erand48 seed.
 // Does a CATCH block contain `when`/`default` clauses? If so, an exception that
@@ -3143,6 +3155,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code->closure = tctx_.cur;
                 c.code->retType = sd->retType;
                 c.code->pod = sd->pod;
+                // a statement-level `my method m {…}` is a SubDecl with isMethod set;
+                // dropping the flag here meant callCallable never bound `self`
+                c.code->isMethod = sd->isMethod;
+                c.code->isStub = stmtIsStub(sd->body);
                 {   // `sub f { @_ }` — an @_/%_ reference implies a slurpy signature
                     std::set<std::string> ph2;
                     for (auto& s2 : sd->body) collectPHStmt(s2.get(), ph2);
@@ -3373,7 +3389,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& md : cd->methods) addTo(ci->methods, md.get());
                     for (auto& a : cd->attrs) {
                         ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil;
-                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.type = a.type;
+                        ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.type = a.type; ca.requiredWhy = a.requiredWhy;
                         ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
                         ci->attrs.push_back(ca);
@@ -3743,7 +3759,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                     "Attribute '" + std::string(1, a.sigil) + "!" + a.name +
                                     "' conflicts in class '" + clsName +
                                     "' composition: also declared in role '" + role->name + "'"};
-                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = a.type;
+                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = a.type; ca.requiredWhy = a.requiredWhy;
                 ca.containerIs = a.containerIs;
                 ca.handles = a.handles;
                 ca.defConstraint = a.defConstraint;
@@ -3751,13 +3767,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ca.declId = &a;
                 ci->attrs.push_back(ca);
             }
-            auto stmtIsStub = [](const std::vector<StmtPtr>& body) -> bool {
-                if (body.size() != 1 || body[0]->kind != NK::ExprStmt) return false;
-                Expr* e = static_cast<ExprStmt*>(body[0].get())->e.get();
-                if (!e || e->kind != NK::Call) return false;
-                auto* c = static_cast<Call*>(e);
-                return (c->name == "..." || c->name == "!!!") && c->args.empty() && !c->callee;
-            };
             std::set<const void*> ownParams; // this declaration's own method signatures
             for (auto& md : cd->methods) ownParams.insert(&md->params);
             for (auto& md : cd->methods) {
@@ -4459,6 +4468,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
     // first argument and binds `self`, exactly as a declared one does.
     code.code->isMethod = be->isMethodTerm;
+    code.code->isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
     code.code->retType = be->retType; // `-> $x --> Int {…}` / `sub (--> Int) {…}`
     if (be->params.empty()) code.code->placeholders = computePlaceholders(be->body);
     return code;
@@ -4555,6 +4565,15 @@ std::string Interpreter::symRefName(SymbolicRef* sr) {
 // type-selects; without this a single `sub f(Int $x)` bound anything). Type
 // objects/undefined bind (no :D enforcement here) and junction kinds pass —
 // they were autothreaded upstream; one reaching here is a matcher-style arg.
+// How a type-check failure renders the offending value: a Str is QUOTED, and
+// anything long is elided. The binding message did this and the assignment
+// message used a bare .gist, so the two diverged — `got Str (forty plus two)`
+// against Rakudo's `got Str ("forty plus two")`.
+static std::string typeCheckRepr(const Value& v) {
+    std::string g = v.t == VT::Str ? "\"" + v.s + "\"" : v.gist();
+    return g.size() > 50 ? g.substr(0, 47) + "..." : g;
+}
+
 void Interpreter::typeCheckBind(const Param& p, const Value& v) {
     if (v.t == VT::Type || v.t == VT::Nil || v.t == VT::Any) return;
     if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
@@ -4568,11 +4587,9 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v) {
     if (!classes_.count(p.type) && !subsets_.count(p.type) &&
         !isKnownTypeName(p.type) && !natNames.count(p.type)) return;
     if (typeOrSubsetMatches(v, p.type)) return;
-    std::string gist = v.t == VT::Str ? "\"" + v.s + "\"" : v.gist();
-    if (gist.size() > 50) gist = gist.substr(0, 47) + "...";
     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
         "Type check failed in binding to parameter '" + p.name + "'; expected " +
-        p.type + " but got " + v.typeName() + " (" + gist + ")"};
+        p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
 }
 
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
@@ -7904,7 +7921,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                  {"symbol", Value::str(nm)}},
                                 "Type check failed in assignment to " + nm +
                                 "; expected " + di->second.s + " but got " + rhs.typeName() +
-                                (isDefined(rhs) ? " (" + rhs.gist() + ")"
+                                (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")"
                                                 : " " + rhs.gist())); // undef gist has its own parens
                         break;
                     }
@@ -12236,7 +12253,17 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // |@list slips positionally ONE level (post-GLR: nested lists stay
             // whole elements — |(<a b>, <c d>) is two List arguments, not four
             // strings); |%hash slips as named args.
-            if (v.t == VT::Array && v.arr) { for (auto& x : *v.arr) args.push_back(x); }
+            // A CAPTURE is an Array carrying hashKind "Capture"; the Pairs inside it
+            // are its NAMED parts, so `|$c` must slip them as nameds. Pushed verbatim
+            // they arrived as trailing positionals — `min |\(1,7,3, by => {1/$_})`
+            // compared four values instead of three with a :by.
+            if (v.t == VT::Array && v.arr) {
+                bool cap = v.hashKind == "Capture";
+                for (auto& x : *v.arr) {
+                    if (cap && x.t == VT::Pair) { Value pr = x; pr.namedArg = true; args.push_back(std::move(pr)); }
+                    else args.push_back(x);
+                }
+            }
             else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
             else if (v.t == VT::Hash && v.hash) { for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); } }
             else args.push_back(v);
