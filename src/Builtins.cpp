@@ -439,6 +439,16 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
 
 static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
 
+// √z from the MODULUS, the way Rakudo computes it — not std::sqrt(std::complex),
+// whose libc++ form loses a ULP on the real part: (-3+4i).sqrt came out as
+// 1.0000000000000002+2i instead of 1+2i. Both the method and the sub must use
+// this, or `$z.sqrt` and `sqrt($z)` disagree.
+static Value complexSqrt(double re, double im) {
+    double a = std::hypot(re, im);
+    return Value::complex(std::sqrt((a + re) / 2.0),
+                          std::copysign(std::sqrt((a - re) / 2.0), im));
+}
+
 // `.raku` / `.perl` — an EVAL-round-trippable representation of a value (as opposed
 // to `.gist`, which is the human-readable form). Recursive over containers.
 static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
@@ -2227,8 +2237,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
             "return", "return-rw", // control flow acts on the junction, not each state
             "WHICH", "WHY", "item", "new", "defined-or", "THREAD",
-            "defined", "DEFINITE",  // a Junction is itself a defined object
+            "DEFINITE",             // a Junction IS a defined object — but `.defined` is not that
+                                    // question: it autothreads and collapses (see below)
             "say"};                 // .say gists the junction ("all(1, 2)"); .print autothreads
+        // `.defined` autothreads over the eigenstates and COLLAPSES to a plain Bool —
+        // `(none 3, Str).defined` is False. It is not an alias for `.Bool`:
+        // `(any 0, "").defined` is True while `.Bool` is False.
+        if (m == "defined") {
+            Value j = Value::array(); j.enumName = inv.enumName;
+            j.arr = std::make_shared<ValueList>();
+            for (auto& el : *inv.arr) j.arr->push_back(Value::boolean(defined(el)));
+            return Value::boolean(j.truthy());
+        }
         if (m == "THREAD" && !args.empty()) {
             // shallow map: the block sees each eigenstate whole (junctions included)
             Value out = Value::array(); out.enumName = inv.enumName;
@@ -4009,7 +4029,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             return inv;
         }
         if (m == "list" || m == "List" || m == "Seq" || m == "eager") { Value o = Value::array(); *o.arr = vals(); o.isList = true; return o; }
-        if (m == "comb" && listy) { // concatenate the stream, run Str.comb, re-wrap
+        // .comb/.words/.lines all concatenate the stream FIRST and then run the Str
+        // method. Applied per MESSAGE instead, `.words` over "Hello Word!".comb
+        // yielded one "word" per character.
+        if ((m == "comb" || m == "words" || m == "lines") && listy) {
             std::string all; for (auto& v : vals()) all += v.toStr();
             Value res = methodCall(Value::str(all), m, args, rwArgs);
             ValueList segs; if (res.t == VT::Array && res.arr) segs = *res.arr;
@@ -4558,6 +4581,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "new") return Value::complex(args.size() > 0 ? args[0].toNum() : 0.0,
                                               args.size() > 1 ? args[1].toNum() : 0.0);
     }
+    // Num had no constructor, so `Num.new(⅓)` fell through to the generic
+    // type-object `.new` and answered 0 for every argument.
+    if (inv.t == VT::Type && inv.s == "Num" && m == "new")
+        return Value::number(args.empty() ? 0.0 : args[0].toNum());
     if (inv.t == VT::Type && m == "Range" &&
         (inv.s == "Int" || inv.s == "Rat" || inv.s == "FatRat" || inv.s == "Num" || inv.s == "UInt")) {
         // numeric type ranges: -Inf..Inf (UInt: 0..Inf); ranges are int-backed, so saturated
@@ -4703,6 +4730,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                     "Cannot call " + inv.s + ".new with no arguments"};
             long long y = 0, mo = 1, d = 1, h = 0, mi = 0, tz = 0;
             Value secV = Value::integer(0);
+            // `*` in the DAY slot means "the last day of that month" (Date.new(2042, 2, *)
+            // is 2042-02-28). It reaches here as a Whatever/WhateverCode, which numifies
+            // to 0 and used to trip the 1..days-in-month check. Year and month may be
+            // parsed after the day, so record it and resolve once both are known.
+            bool lastDay = false;
+            auto isWhatever = [](const Value& v) {
+                return v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode);
+            };
+
             std::vector<Value> pos;
             bool isoStr = false;
             bool haveNamedField = false;
@@ -4711,7 +4747,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             for (auto& a : args) {
                 if (a.t == VT::Pair) {
                     long long val = a.pairVal ? a.pairVal->toInt() : 0;
-                    if (a.s == "year") { y = val; haveNamedField = true; } else if (a.s == "month") { mo = val; haveNamedField = true; } else if (a.s == "day") { d = val; haveNamedField = true; }
+                    if (a.s == "year") { y = val; haveNamedField = true; } else if (a.s == "month") { mo = val; haveNamedField = true; } else if (a.s == "day") { d = val; haveNamedField = true; if (a.pairVal && isWhatever(*a.pairVal)) lastDay = true; }
                     else if (a.s == "hour") { h = val; haveNamedField = true; } else if (a.s == "minute") { mi = val; haveNamedField = true; }
                     else if (a.s == "second") { secV = a.pairVal ? *a.pairVal : Value::integer(0); haveNamedField = true; } // exact (frac OK)
                     else if (a.s == "timezone") tz = val;
@@ -4811,10 +4847,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             if (!isoStr) {
                 if (pos.size() >= 1) y = pos[0].toInt();
                 if (pos.size() >= 2) mo = pos[1].toInt();
-                if (pos.size() >= 3) d = pos[2].toInt();
+                if (pos.size() >= 3) { if (isWhatever(pos[2])) lastDay = true; else d = pos[2].toInt(); }
                 if (pos.size() >= 4) h = pos[3].toInt();   // DateTime.new(y, m, d, H, M, S)
                 if (pos.size() >= 5) mi = pos[4].toInt();
                 if (pos.size() >= 6) secV = pos[5];        // exact (frac OK)
+            }
+            if (lastDay) { // resolve `*` now that the year and month are known
+                static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                d = (mo >= 1 && mo <= 12) ? mlen[mo - 1] : 31;
+                if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) d = 29;
             }
             long long sInt = secV.toInt(); // floor for epoch/leap math
             if (secV.toNum() < 0) // a fractional negative second (-1/2) truncates to 0, so check the value
@@ -5213,6 +5254,22 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     }
     if (inv.t == VT::Type) {
         if (inv.s.rfind("IO::Spec", 0) == 0) { Value r; if (ioSpecMethod(*this, inv.s, m, args, r)) return r; }
+        // `.CREATE` is the low-level allocator: an instance with attributes at their
+        // declared defaults and NO BUILD/TWEAK run. Delegating to .new/.bless would
+        // pass the one documented example (`Mu.CREATE.defined` is True) while being
+        // semantically wrong, so it builds the ObjectData directly.
+        if (m == "CREATE") {
+            auto od = std::make_shared<ObjectData>();
+            auto it = classes_.find(resolveClassAlias(inv.s));
+            if (it != classes_.end()) {
+                od->cls = it->second;
+                for (auto* c = it->second.get(); c; c = c->parent.get())
+                    for (auto& at : c->attrs)
+                        if (!od->attrs.count(at.name))
+                            od->attrs[at.name] = at.type.empty() ? Value::any() : Value::typeObj(at.type);
+            }
+            return Value::object(od);
+        }
         // .^mro / .mro on a built-in type → the class-only linearisation (roles like
         // Real/Numeric are excluded, matching Rakudo's Int.^mro == (Int Cool Any Mu)).
         if (m == "mro" && !classes_.count(inv.s)) {
@@ -6034,6 +6091,30 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         // type objects stringify empty (with a warning in Rakudo) — but
         // IterationEnd is a SENTINEL, and stringifies to its own name
         if (inv.t == VT::Type) return Value::str(inv.s == "IterationEnd" ? inv.s : "");
+        // `Int.Str(:superscript)` / `(:subscript)` render the digits (and a leading
+        // minus) in the Unicode super/subscript forms. Note ¹²³ are NOT in the
+        // U+2070 run — a `0x2070 + d` table is wrong for exactly those three.
+        if (inv.t == VT::Int) {
+            static const char* sup[] = {"⁰","¹","²","³","⁴",
+                                        "⁵","⁶","⁷","⁸","⁹"};
+            static const char* sub[] = {"₀","₁","₂","₃","₄",
+                                        "₅","₆","₇","₈","₉"};
+            bool up = false, down = false;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal && a.pairVal->truthy()) {
+                    if (a.s == "superscript") up = true;
+                    else if (a.s == "subscript") down = true;
+                }
+            if (up || down) {
+                std::string out;
+                for (char c : inv.toStr()) {
+                    if (c == '-') out += up ? "⁻" : "₋";
+                    else if (c >= '0' && c <= '9') out += (up ? sup : sub)[c - '0'];
+                    else out += c;
+                }
+                return Value::str(out);
+            }
+        }
         return Value::str(inv.toStr());
     }
     if ((m == "Int" || m == "Num" || m == "Real" || m == "Rat" || m == "FatRat") && inv.t == VT::Complex) {
@@ -6531,7 +6612,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                             o.isList = true; return o; } // a List, not an Array
         if (m == "abs" || m == "magnitude") return Value::number(std::abs(z));
         if (m == "conj") return Value::complex(inv.n, -inv.im);
-        if (m == "sqrt") { auto r = std::sqrt(z); return Value::complex(r.real(), r.imag()); }
+        if (m == "sqrt") return complexSqrt(inv.n, inv.im);
         if (m == "exp") { auto r = std::exp(z); return Value::complex(r.real(), r.imag()); }
         if (m == "log") { // optional base argument: log(z) / log(base)
             auto r = std::log(z);
@@ -6580,7 +6661,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "Str" || m == "gist" || m == "Stringy") return Value::str(inv.toStr());
         if (m == "raku" || m == "perl") return Value::str("<" + inv.toStr() + ">");
         if (m == "Num" || m == "Real" || m == "Int") { if (inv.im != 0) throw RakuError{Value::str("Complex"), "Can not convert Complex with nonzero imaginary part"}; return m == "Int" ? Value::integer((long long)inv.n) : Value::number(inv.n); }
-        if (m == "narrow") return inv.im == 0 ? Value::number(inv.n) : inv;
+        // Complex.narrow is `self.im == 0 ?? self.re.narrow !! self` — it must RECURSE,
+        // or (4.0+0i).narrow stops at the Num and never demotes to Int.
+        if (m == "narrow") return inv.im == 0 ? methodCall(Value::number(inv.n), "narrow", ValueList{}) : inv;
     }
 
     // Cool-style numeric coercion: an object that defines .Numeric/.Bridge (but
@@ -11440,7 +11523,7 @@ Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr
 Value rtBLc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 0, 0)); }
 Value rtBChars(Interpreter&, const Value& v) { return Value::integer(graphemeCount(v.toStr())); }
 Value rtBSqrt(Interpreter& I, const Value& v) {
-    if (v.t == VT::Complex) { auto r = std::sqrt(std::complex<double>(v.n, v.im)); return Value::complex(r.real(), r.imag()); }
+    if (v.t == VT::Complex) return complexSqrt(v.n, v.im);
     ValueList one{v};
     double x = numArg(I, one);   // same coercion the sub form uses (Object → .Bridge/.Numeric)
     if (x < 0 && I.langRev_ >= 2) return Value::complex(0, std::sqrt(-x));
@@ -11895,12 +11978,15 @@ void Interpreter::registerBuiltins() {
             ? (a[1].t == VT::Type ? a[1].s : a[1].t == VT::Str ? a[1].toStr() : a[1].typeName())
             : "";
         std::string got = a.empty() ? "Any" : a[0].typeName();
+        // ONE default description for both exit paths — the fast path used to say
+        // "isa Int" and the ancestry fallback said nothing at all
+        std::string desc = a.size() > 2 ? a[2].toStr() : "The object is-a '" + want + "'";
         // the real .isa knows allomorphs and user-class chains — consult it first
         if (a.size() > 1) {
             ValueList ia{a[1]};
             Value r = I.methodCall(a[0], "isa", ia);
             if (r.truthy()) {
-                I.emitTest(true, a.size() > 2 ? a[2].toStr() : "isa " + want);
+                I.emitTest(true, desc);
                 return Value::boolean(true);
             }
         }
@@ -11949,7 +12035,7 @@ void Interpreter::registerBuiltins() {
             return false;
         };
         bool c = ancestorHas(got);
-        I.emitTest(c, a.size() > 2 ? a[2].toStr() : "");
+        I.emitTest(c, desc);
         return Value::boolean(c);
     };
     B["is-approx"] = [](Interpreter& I, ValueList& a) -> Value {

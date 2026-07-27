@@ -9402,6 +9402,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             else { long long n = l.rTo - l.rFrom + 1 - (l.rExFrom ? 1 : 0) - (l.rExTo ? 1 : 0);
                    cnt = n < 0 ? 0 : (double)n; }
             res = applyArith("==", Value::number(cnt), r).truthy();
+        } else if (r.isAllomorph() && l.t == VT::Str && !l.isAllomorph() && l.hashKind.empty()) {
+            // An allomorph matches a plain Str by its STRING face, not numerically:
+            // Allomorph.ACCEPTS is numeric only when the matchee is Numeric, so
+            // `"5.0" ~~ <5>` and `"05" ~~ <5>` are False where `5.0 ~~ <5>` is True.
+            res = (l.s == r.s);
         } else if ((r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.t == VT::Str || l.t == VT::Bool)) {
             res = applyArith("==", l, r).truthy(); // `$x ~~ 5` : numeric coercion ('05' ~~ 5 is True)
@@ -13127,6 +13132,20 @@ Value Interpreter::evalIndex(Index* idx) {
     // Indexing an unhandled Failure propagates it (`@a[-1][0]` keeps the Failure
     // from the out-of-range outer index rather than reading through it).
     if (base.t == VT::Hash && base.hashKind == "Failure") return base;
+    // Nil.AT-POS / Nil.AT-KEY are Nil, at any depth and for any key — `Nil[0][2][4]`
+    // and `Nil<foo><bar>` are Nil. Without this the whole function falls through to
+    // its trailing `return Value::any()` and answers (Any). A SLICE answers one Nil
+    // per index, so `(Nil)[0,1]` is `(Nil Nil)`, not a lone Nil.
+    if (base.t == VT::Nil) {
+        if (!idx->index) return Value::nil();
+        Value k = eval(idx->index.get());
+        if (k.t == VT::Array && k.arr) {
+            Value out = Value::array(); out.isList = true;
+            for (size_t j = 0; j < k.arr->size(); j++) out.arr->push_back(Value::nil());
+            return out;
+        }
+        return Value::nil();
+    }
     // NativeCall CArray / Pointer element read (`$carray[$i]`): byte-backed
     // (CArray.new/allocate stores packed bytes) or a live native pointer.
     if (!idx->isHash && idx->index && !idx->multiDim) {
