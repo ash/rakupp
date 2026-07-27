@@ -2863,7 +2863,9 @@ ExprPtr Parser::parsePrimary() {
             if (t.text == "->" || t.text == "<->") {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
+                sigRetType_.clear();
                 be->params = parsePointyParams();
+                be->retType = sigRetType_;   // `-> $x --> Int { … }`
                 auto blk = parseBlock();
                 be->body = std::move(blk->stmts);
                 return be;
@@ -2961,7 +2963,12 @@ ExprPtr Parser::parsePrimary() {
                 be->isSub = true; // `sub {…}` as a term is a Sub, not a bare Block
                 be->isMethodTerm = name == "method"; // …and a method binds `self`
                 if (isKind(Tok::Ident)) advance(); // optional name (anon use)
-                if (isKind(Tok::LParen)) { advance(); be->params = parseSignature(); expectKind(Tok::RParen, ")"); }
+                if (isKind(Tok::LParen)) {
+                    advance(); sigRetType_.clear();
+                    be->params = parseSignature();
+                    be->retType = sigRetType_;   // `sub (--> Int) { … }`
+                    expectKind(Tok::RParen, ")");
+                }
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
                 if (isKind(Tok::LBrace)) {
                     routineDepth_++; // &?ROUTINE is legal inside an anon sub too
@@ -3734,10 +3741,15 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             }
             // bare &name without parens: stays literal text
         }
+        // `$:name` is the implicit NAMED placeholder parameter; it interpolates like
+        // any other twigilled variable. (A bare `$:` is a compile error in Rakudo,
+        // so requiring a name after the colon costs nothing.)
+        bool colonPh = (i + 2 < n) && raw[i + 1] == ':' &&
+                       (std::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_');
         if (((c == '$' && fS) || (c == '@' && fA) || (c == '%' && fH)) &&
             (i + 1 < n) && (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
                             raw[i + 1] == '{' || raw[i + 1] == '*' || raw[i + 1] == '!' ||
-                            raw[i + 1] == '.' || raw[i + 1] == '^' ||
+                            raw[i + 1] == '.' || raw[i + 1] == '^' || colonPh ||
                             (unsigned char)raw[i + 1] >= 0x80)) {
             char sig = c;
             size_t j = i + 1;
@@ -3756,7 +3768,8 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 continue;
             }
             // twigil ($*dyn, $!attr, $.attr, $^placeholder)
-            if (raw[j] == '*' || raw[j] == '!' || raw[j] == '.' || raw[j] == '^') var += raw[j++];
+            if (raw[j] == '*' || raw[j] == '!' || raw[j] == '.' || raw[j] == '^' ||
+                (raw[j] == ':' && colonPh)) var += raw[j++];
             while (j < n && (isIdentCont(raw[j]) || (unsigned char)raw[j] >= 0x80)) var += raw[j++];
             // hyphen/apostrophe continue the name when followed by an alphanumeric ($foo-bar)
             while (j + 1 < n && (raw[j] == '-' || raw[j] == '\'') && std::isalnum((unsigned char)raw[j + 1])) {

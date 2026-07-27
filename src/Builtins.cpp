@@ -8706,6 +8706,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
         if (m == "kv") { Value o = Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()}); o.isList = true; return o; }
         if (m == "antipair") return Value::pair((inv.pairVal ? inv.pairVal->toStr() : ""), Value::str(inv.s));
+        // `.Hash` / `.Map` on a Pair is the one-entry hash it describes
+        if (m == "Hash" || m == "Map") {
+            Value h = Value::makeHash();
+            h.hashRef()[inv.s] = inv.pairVal ? *inv.pairVal : Value::any();
+            if (m == "Map") h.hashKind = "Map";
+            return h;
+        }
         // A Pair is ONE element, so its list views are one long: `.keys` is the key,
         // not an index (that is what a Positional would answer).
         if (m == "keys" || m == "values" || m == "pairs") {
@@ -10453,10 +10460,19 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                     materializeLazy(inv, args.size() > 1 ? (size_t)(std::max(0L, s0) + args[1].toInt()) : 1000000);
                 }
                 long n = (long)inv.arr->size();
-                long start = args.size() > 0 ? args[0].toInt() : 0;
+                // `*-2` / `{ $_ - 2 }` resolve against the length, like .head/.tail
+                // do — .toInt() on a WhateverCode is 0, so `splice(*-2, *-1)` was
+                // splicing nothing at the front.
+                auto resolve = [&](const Value& a, long long sz) -> long {
+                    if (a.t == VT::Whatever) return (long)sz;
+                    if (a.t == VT::Code) { ValueList one{Value::integer(sz)}; return (long)callCallable(const_cast<Value&>(a), one).toInt(); }
+                    return (long)a.toInt();
+                };
+                long start = args.size() > 0 ? resolve(args[0], n) : 0;
                 if (start < 0) start += n;
                 start = std::max(0L, std::min(start, n));
-                long count = args.size() > 1 ? args[1].toInt() : (n - start);
+                // the COUNT resolves against what is left after the start
+                long count = args.size() > 1 ? resolve(args[1], n - start) : (n - start);
                 count = std::max(0L, std::min(count, n - start));
                 Value removed = Value::array(); // the removed elements are an Array
                 for (long k = 0; k < count; k++) removed.arr->push_back((*inv.arr)[start + k]);
@@ -12367,7 +12383,22 @@ void Interpreter::registerBuiltins() {
     // the list — `unique @a, as => {.abs}` was uniquing the adverb along with the
     // elements. The names are an allow-list so a genuine Pair ELEMENT still counts
     // as data (`unique (a => 1), (a => 1)`).
-    for (auto nm : {"permutations", "combinations", "unique", "repeated", "squish", "rotor", "flat"})
+    // `rotor(CYCLE…, LIST)` — the 6.e sub form takes the cycle FIRST and the
+    // iterable LAST, the opposite way round from the method. Sweeping every
+    // positional into the list made `rotor(3, 'a'..'h')` rotor the cycle too.
+    B["rotor"] = [](Interpreter& I, ValueList& a) -> Value {
+        ValueList pos, opts;
+        for (auto& x : a) {
+            if (x.t == VT::Pair && x.namedArg) opts.push_back(x); // `:partial` may come last
+            else pos.push_back(x);
+        }
+        if (pos.empty()) return Value::array();
+        Value list = pos.back();                       // the LAST positional is the iterable
+        ValueList cycle(pos.begin(), pos.end() - 1);   // everything before it is the cycle
+        for (auto& o : opts) cycle.push_back(o);
+        return I.methodCall(list, "rotor", cycle);
+    };
+    for (auto nm : {"permutations", "combinations", "unique", "repeated", "squish", "flat"})
         B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
             static const std::set<std::string> adv = {"as", "with", "partial"};
             ValueList items, opts;

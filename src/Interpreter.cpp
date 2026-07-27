@@ -4397,6 +4397,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
     // first argument and binds `self`, exactly as a declared one does.
     code.code->isMethod = be->isMethodTerm;
+    code.code->retType = be->retType; // `-> $x --> Int {…}` / `sub (--> Int) {…}`
     if (be->params.empty()) code.code->placeholders = computePlaceholders(be->body);
     return code;
 }
