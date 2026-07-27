@@ -690,13 +690,27 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             std::string end = r.s, cur = seed.back().s;
             bool desc = cur > end;
             if (cur == end) { if (exclusive) out.arr->pop_back(); return out; }
+            // Single-CODEPOINT endpoints step by codepoint, not by succ — the same
+            // rule `..` already follows. succ only knows the magic alphabets, so
+            // ('☀' ... '☕') left the seed unchanged and re-pushed it a million
+            // times (11 MB of ☀); by codepoint it is the 22 characters Rakudo gives.
+            if (u8CpLen(cur) == 1 && u8CpLen(end) == 1) {
+                long long a = (long long)u8FirstCp(cur), b = (long long)u8FirstCp(end);
+                for (long long cp = a + (desc ? -1 : 1); desc ? cp >= b : cp <= b; cp += desc ? -1 : 1) {
+                    if (cp == b && exclusive) break;
+                    out.arr->push_back(Value::str(cpToU8((uint32_t)cp)));
+                }
+                return out;
+            }
             const size_t SCAP = 1000000;
+            const long long endLen = u8CpLen(end);
             while (out.arr->size() < SCAP) {
                 bool ok = true;
                 std::string nxt = desc ? strPred(cur, ok) : strSucc(cur);
-                if (!ok) break;
-                if (!desc && (nxt.length() > end.length() || (nxt.length() == end.length() && nxt > end))) break;
-                if (desc && (nxt.length() < end.length() || (nxt.length() == end.length() && nxt < end))) break;
+                if (!ok || nxt == cur) break;   // a value succ/pred cannot advance
+                long long nxtLen = u8CpLen(nxt);
+                if (!desc && (nxtLen > endLen || (nxtLen == endLen && nxt > end))) break;
+                if (desc && (nxtLen < endLen || (nxtLen == endLen && nxt < end))) break;
                 out.arr->push_back(Value::str(nxt));
                 cur = nxt;
                 if (cur == end) { if (exclusive) out.arr->pop_back(); break; }
@@ -906,20 +920,64 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
     return Value::array();
 }
 
-// `from .. to` for native codegen: a string range materialises via succ (like the
-// interpreter's NK::Range eval); anything else is a numeric Range value.
+// `'aa' .. 'bb'` — a MULTI-character string range, as an eager list.
+//
+// Rakudo does not climb by succ here at all: it delegates to the `...` sequence
+// machinery, which cross-products the character positions, so ('ab'..'ba') is
+// ("ab","aa","bb","ba") and not the 26-element succ chain we produce. That is a
+// separate (large) piece of work; what this function owns is the part that is
+// not about ORDER — when the range is EMPTY, and never running away.
+//
+//   * the emptiness guard is a plain whole-string compare of the RAW endpoints,
+//     `min gt max`. It used to be length-first, so ("Y".."AB") yielded Y Z AA AB
+//     (Rakudo: nothing) and, far worse, ('fig'..'banana') — 3 chars climbing
+//     toward a 6-char endpoint it can never reach — ran to the 1,000,000 cap and
+//     peaked at 952 MB of resident memory before answering.
+//   * the length tests count CODEPOINTS, not bytes; on the byte count every
+//     multi-byte character looked "longer" than its ASCII endpoint.
+//   * strSucc leaves a non-magical string unchanged ('a!'.succ is 'a!'), which
+//     made the loop re-push the same value until the cap. Rakudo genuinely hangs
+//     on this input; we stop instead — a compiler that allocates a gigabyte, or
+//     spins, is worse than one that gives up on a value succ cannot advance.
+Value strRangeList(const std::string& min, const std::string& to, bool exFrom, bool exTo) {
+    Value arr = Value::array(); arr.isList = true; // a string range is list-like (flattens)
+    if (min > to) return arr;                      // the guard, on the RAW endpoints
+    // `^..` seeds from min.succ; the guard above has already run on the raw pair,
+    // so ('az'^..'ba') is ("ba") and not empty.
+    const std::string from = exFrom ? strSucc(min) : min;
+    if (from == to) { if (!exTo) arr.arr->push_back(Value::str(from)); return arr; }
+    if (from > to) return arr;
+    const long long endLen = u8CpLen(to);
+    // The SEED is emitted whatever its length; it is each SUCCESSOR that is tested,
+    // against BOTH the endpoint and the endpoint's length. ('aa'..'b') is therefore
+    // ("aa") — the seed, then 'ab' is too long — and ('a'..'aa') is ("a"), because
+    // 'b' already sorts after 'aa'. Testing `cur` instead of `cur.succ` made the
+    // first empty and the second the whole alphabet.
+    arr.arr->push_back(Value::str(from));
+    std::string cur = from;
+    for (int g = 0; g < 1000000; g++) {
+        std::string nxt = strSucc(cur);
+        if (nxt == cur) break;                     // succ cannot advance this value
+        if (nxt > to || u8CpLen(nxt) > endLen) break;
+        if (nxt == to) { if (!exTo) arr.arr->push_back(Value::str(nxt)); break; }
+        arr.arr->push_back(Value::str(nxt));
+        cur = std::move(nxt);
+    }
+    return arr;
+}
+
+// `from .. to` for native codegen. Str endpoints follow the interpreter's NK::Range
+// eval exactly — single-codepoint endpoints are a real Range VALUE, everything else
+// the eager list above. The single-codepoint branch was missing here, so `'a'..'c'`
+// was a Range interpreted and a List under --exe.
 Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
     if (from.t == VT::Str && to.t == VT::Str) {
-        Value arr = Value::array(); arr.isList = true; // a string range is list-like (flattens)
-        std::string cur = from.s, end = to.s;
-        for (int g = 0; g < 1000000; g++) {
-            if (cur.length() > end.length()) break;
-            if (cur.length() == end.length() && cur > end) break;
-            if (cur == end) { if (!exTo) arr.arr->push_back(Value::str(cur)); break; }
-            arr.arr->push_back(Value::str(cur));
-            cur = strSucc(cur);
+        if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
+            Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s), exFrom, exTo);
+            rr.ofType = "Str";
+            return rr;
         }
-        return arr;
+        return strRangeList(from.s, to.s, exFrom, exTo);
     }
     {
         Value r = Value::range(from.toInt(), to.toInt(), exFrom, exTo);
@@ -14791,43 +14849,17 @@ Value Interpreter::eval(Expr* e) {
             if (from.t == VT::Str && to.t == VT::Str) {
                 // single-CHARACTER endpoints walk CODEPOINTS: chr(0)..chr(0x7F)
                 // is the 128 ASCII chars ('<'..'F' includes the symbols between)
-                {
-                    auto cpLen = [](const std::string& s) -> long long {
-                        long long n = 0;
-                        for (unsigned char ch : s) if ((ch & 0xC0) != 0x80) n++;
-                        return n;
-                    };
-                    if (cpLen(from.s) == 1 && cpLen(to.s) == 1) {
-                        auto firstCp = [](const std::string& s) -> uint32_t {
-                            unsigned char c0 = s[0];
-                            if (c0 < 0x80) return c0;
-                            int len = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xE ? 3 : 4;
-                            uint32_t cp = c0 & (0xFF >> (len + 1));
-                            for (int k = 1; k < len && k < (int)s.size(); k++) cp = (cp << 6) | (s[k] & 0x3F);
-                            return cp;
-                        };
-                        // a real Str Range VALUE: codepoints live in rFrom/rTo
-                        // (so elems/iteration arithmetic works), the endpoint
-                        // STRINGS in s/enumName, ofType tags it (raku/gist,
-                        // smartmatch, and flatten() render chars from it)
-                        Value rr = Value::range(firstCp(from.s), firstCp(to.s),
-                                                r->exFrom, r->exTo);
-                        rr.ofType = "Str"; // endpoint text derives from the codepoints
-                        return rr;
-                    }
+                if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
+                    // a real Str Range VALUE: codepoints live in rFrom/rTo
+                    // (so elems/iteration arithmetic works), the endpoint
+                    // text DERIVES from those codepoints, ofType tags it
+                    // (raku/gist, smartmatch, and flatten() render chars from it)
+                    Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s),
+                                            r->exFrom, r->exTo);
+                    rr.ofType = "Str"; // endpoint text derives from the codepoints
+                    return rr;
                 }
-                Value arr = Value::array(); arr.isList = true; // a string range is list-like (flattens)
-                std::string cur = from.s, end = to.s;
-                for (int g = 0; g < 1000000; g++) {
-                    if (cur.length() > end.length()) break;
-                    // a descending string range ("e".."a") is empty: succ only climbs, so
-                    // once we're past `end` at equal length there is nothing to yield.
-                    if (cur.length() == end.length() && cur > end) break;
-                    if (cur == end) { if (!r->exTo) arr.arr->push_back(Value::str(cur)); break; }
-                    arr.arr->push_back(Value::str(cur));
-                    cur = strSucc(cur);
-                }
-                return arr;
+                return strRangeList(from.s, to.s, r->exFrom, r->exTo);
             }
             // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
             // marks an infinite range, same as 1..Inf)

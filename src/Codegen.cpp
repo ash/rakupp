@@ -1642,13 +1642,28 @@ struct Codegen {
         std::string topic = f->vars.empty() ? gensym("v__t") : mangleVar(f->vars[0]);
         line(ind, "{");
         if (f->list->kind == NK::Range) {
+            // `for A..B` counts with a raw long long — but ONLY when the range is
+            // numeric. A Str range ('a'..'c', or two Str variables) used to reach
+            // this loop too, where `.toInt()` made both endpoints 0 and the body
+            // ran exactly once with the topic 0: `for 'a'..'c' { .say }` printed
+            // "0" natively and "a b c" interpreted. The endpoints are only known
+            // at runtime ($x..$y), so the kind test is a runtime one; the counter
+            // then indexes either the integers or a materialised element list.
             auto* r = static_cast<RangeExpr*>(f->list.get());
+            std::string rv = gensym("__rv"), lst = gensym("__rl"), isInt = gensym("__ri");
             std::string lo = gensym("__lo"), hi = gensym("__hi"), i = gensym("__i");
-            line(ind + 1, "long long " + lo + " = (" + ex(r->from.get()) + ").toInt()" + (r->exFrom ? " + 1" : "") + ";");
-            line(ind + 1, "long long " + hi + " = (" + ex(r->to.get()) + ").toInt()" + (r->exTo ? " - 1" : "") + ";");
+            line(ind + 1, "Value " + rv + " = rtRangeVal(" + ex(r->from.get()) + ", " + ex(r->to.get()) +
+                          ", " + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ");");
+            line(ind + 1, "bool " + isInt + " = (" + rv + ".t == VT::Range && " + rv + ".ofType.empty());");
+            line(ind + 1, "Value " + lst + "; long long " + lo + ", " + hi + ";");
+            line(ind + 1, "if (" + isInt + ") { " + lo + " = " + rv + ".rFrom + (" + rv + ".rExFrom ? 1 : 0); "
+                                                 + hi + " = " + rv + ".rTo - (" + rv + ".rExTo ? 1 : 0); }");
+            line(ind + 1, "else { " + lst + " = rtArrayVal(" + rv + "); " + lo + " = 0; "
+                                    + hi + " = (long long)" + lst + ".arr->size() - 1; }");
             line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");
-            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], "Value::integer(" + i + ")") + ";");
-            else line(ind + 2, "Value " + topic + " = Value::integer(" + i + ");");
+            std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr)[" + i + "]";
+            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], elem) + ";");
+            else line(ind + 2, "Value " + topic + " = " + elem + ";");
             topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
             topics.pop_back();

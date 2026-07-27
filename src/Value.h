@@ -22,6 +22,23 @@ inline std::string cpToU8(uint32_t cp) {
     else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
     return o;
 }
+// …and back. Str ranges and the `...` string sequence both dispatch on the
+// CODEPOINT count (Rakudo tests `.codes` there, not bytes), so both live here
+// rather than as a lambda re-declared at each site.
+inline long long u8CpLen(const std::string& s) {
+    long long n = 0;
+    for (unsigned char ch : s) if ((ch & 0xC0) != 0x80) n++;
+    return n;
+}
+inline uint32_t u8FirstCp(const std::string& s) {
+    if (s.empty()) return 0;
+    unsigned char c0 = s[0];
+    if (c0 < 0x80) return c0;
+    int len = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xE ? 3 : 4;
+    uint32_t cp = c0 & (0xFF >> (len + 1));
+    for (int k = 1; k < len && k < (int)s.size(); k++) cp = (cp << 6) | (s[k] & 0x3F);
+    return cp;
+}
 struct Env;
 class Interpreter;
 
