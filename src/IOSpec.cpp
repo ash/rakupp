@@ -58,12 +58,23 @@ std::string canon(const std::string& path, bool parent, bool qnx = false) {
     return abs ? prefix + r : r;
 }
 
+// `*@parts` is SLURPY, so a single List/Array argument spreads into N parts —
+// ONE level only (`catdir(['a','b'], 'c')` is "a b/c", checked against Rakudo).
+// Without this a list argument stringified to one space-joined segment.
+static void pushParts(const Value& a, std::vector<std::string>& out) {
+    if (a.t == VT::Array && a.arr) { for (auto& e : *a.arr) out.push_back(e.toStr()); return; }
+    if (a.t == VT::Range) { for (auto& e : a.flatten()) out.push_back(e.toStr()); return; }
+    out.push_back(a.toStr());
+}
+
 // catdir(@parts) == canonpath( (@parts, '').join('/') ).
 // Appending '/' after each part yields exactly parts.join('/') ~ '/'.
 std::string catdir(ValueList& args) {
     if (args.empty()) return "";
+    std::vector<std::string> parts;
+    for (auto& a : args) pushParts(a, parts);
     std::string joined;
-    for (auto& a : args) { joined += a.toStr(); joined += '/'; }
+    for (auto& p : parts) { joined += p; joined += '/'; }
     return canon(joined, false);
 }
 
@@ -166,7 +177,7 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
             else if (a.s == "nofile") nofileFlag = on;
         }
         else if (a.t == VT::Type) pos.push_back(""); // undefined (Any) → ''
-        else pos.push_back(a.toStr());
+        else pushParts(a, pos);                     // `*@parts` spreads a list argument
     }
     auto P = [&](size_t i) { return i < pos.size() ? pos[i] : std::string(); };
 
@@ -199,18 +210,22 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
         if (nofileFlag) dir = rest;
         else {
             size_t s = rest.find_last_of("/\\");
-            if (s == std::string::npos) file = rest;
-            else { dir = rest.substr(0, s + 1); file = rest.substr(s + 1); }
-            if (file == "." || file == "..") { dir = rest; file = ""; } // trailing "."/".." belongs to the dir
+            if (s == std::string::npos) file = rest;   // no separator: a bare "." IS the file
+            else {
+                dir = rest.substr(0, s + 1); file = rest.substr(s + 1);
+                // a trailing "."/".." belongs to the dir — but only once a separator
+                // has matched, which is what Perl's File::Spec regex requires
+                if (file == "." || file == "..") { dir = rest; file = ""; }
+            }
         }
-        out = Value::array({Value::str(v.vol), Value::str(dir), Value::str(file)});
+        out = Value::list({Value::str(v.vol), Value::str(dir), Value::str(file)}); // a List, not an Array
         return true;
     }
     if (m == "splitdir") {
         ValueList v; std::string cur;
         for (char c : P(0)) { if (wsep(c)) { v.push_back(Value::str(cur)); cur.clear(); } else cur += c; }
         v.push_back(Value::str(cur));
-        out = Value::array(v); return true;
+        out = Value::list(v); return true;   // splitdir is a List
     }
     if (m == "split") {
         std::string p = P(0);
@@ -224,7 +239,7 @@ static bool winSpecMethod(Interpreter& I, const std::string& m, ValueList& args,
             if (s == std::string::npos) { dir = "."; base = rest; }
             else { base = rest.substr(s + 1); dir = rest.substr(0, s); if (dir.empty()) dir = "\\"; }
         }
-        Value h = Value::makeHash();
+        Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
         (*h.hash)["volume"] = Value::str(v.vol);
         (*h.hash)["dirname"] = Value::str(dir);
         (*h.hash)["basename"] = Value::str(base);
@@ -346,7 +361,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
                 if (s == std::string::npos) { dir = "."; base = rest; }
                 else { base = rest.substr(s + 1); std::string d = rest.substr(0, s); dir = d.empty() ? "/" : d; }
             }
-            Value h = Value::makeHash();
+            Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
             (*h.hash)["volume"] = Value::str(vol);
             (*h.hash)["dirname"] = Value::str(dir);
             (*h.hash)["basename"] = Value::str(base);
@@ -360,11 +375,13 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
             if (nofile) dir = rest;
             else {
                 size_t s = rest.rfind('/');
-                if (s == std::string::npos) file = rest;
-                else { dir = rest.substr(0, s + 1); file = rest.substr(s + 1); }
-                if (file == "." || file == "..") { dir = rest; file = ""; }
+                if (s == std::string::npos) file = rest;   // no separator: "." is the file
+                else {
+                    dir = rest.substr(0, s + 1); file = rest.substr(s + 1);
+                    if (file == "." || file == "..") { dir = rest; file = ""; }
+                }
             }
-            out = Value::array({Value::str(vol), Value::str(dir), Value::str(file)});
+            out = Value::list({Value::str(vol), Value::str(dir), Value::str(file)});
             return true;
         }
         if (m == "catpath" || m == "join") {
@@ -411,13 +428,15 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         std::string p = A(0); size_t s = p.rfind('/');
         std::string dir = s == std::string::npos ? "" : p.substr(0, s + 1);
         std::string file = s == std::string::npos ? p : p.substr(s + 1);
-        if (file == "." || file == "..") { dir = p; file = ""; } // trailing "."/".." is part of the dir
-        out = Value::array({Value::str(""), Value::str(dir), Value::str(file)});
+        // a trailing "."/".." is part of the dir — but only when a separator matched
+        // first, so a bare "." splits as ("", "", ".")
+        if (s != std::string::npos && (file == "." || file == "..")) { dir = p; file = ""; }
+        out = Value::list({Value::str(""), Value::str(dir), Value::str(file)});
         return true;
     }
     if (m == "splitdir") {
         ValueList v; for (auto& p : splitAll(A(0), '/')) v.push_back(Value::str(p));
-        out = Value::array(v); return true;
+        out = Value::list(v); return true;   // splitdir is a List
     }
     if (m == "split") {
         std::string p = A(0);
@@ -429,7 +448,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
             if (s == std::string::npos) { dir = "."; base = p; }
             else { base = p.substr(s + 1); std::string d = p.substr(0, s); dir = d.empty() ? "/" : d; }
         }
-        Value h = Value::makeHash();
+        Value h = Value::makeHash(); h.hashKind = "IO::Path::Parts"; // .split answers an IO::Path::Parts
         (*h.hash)["volume"] = Value::str("");
         (*h.hash)["dirname"] = Value::str(dir);
         (*h.hash)["basename"] = Value::str(base);

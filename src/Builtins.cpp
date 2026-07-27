@@ -2110,6 +2110,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none")) {
         static const std::set<std::string> junctionOwn = {
             "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
+            "return", "return-rw", // control flow acts on the junction, not each state
             "WHICH", "WHY", "item", "new", "defined-or", "THREAD",
             "defined", "DEFINITE",  // a Junction is itself a defined object
             "say"};                 // .say gists the junction ("all(1, 2)"); .print autothreads
@@ -2508,7 +2509,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     if (inv.t == VT::Hash && inv.hashKind == "IO::Path::Parts") {
         if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash)[m];
         if (m == "gist" || m == "raku" || m == "perl" || m == "Str") {
-            auto q = [&](const char* k) { return "\"" + (*inv.hash)[k].toStr() + "\""; };
+            // the parts are STRING LITERALS, so a backslash in a Windows path has to
+            // be escaped like any other Str.raku (`"\\a"`, not `"\a"`)
+            auto q = [&](const char* k) {
+                std::string v = (*inv.hash)[k].toStr(), o = "\"";
+                for (char c : v) { if (c == '\\' || c == '"') o += '\\'; o += c; }
+                return o + "\"";
+            };
             return Value::str("IO::Path::Parts.new(" + q("volume") + "," + q("dirname") + "," + q("basename") + ")");
         }
         if (m == "elems") return Value::integer(3);
@@ -5987,6 +5994,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         // "1e0"->Num), like `+$str` — and a non-number is that same Failure.
         if (inv.t == VT::Str) return numifyStrFailure(inv.s);
         if (inv.t == VT::Match) return numifyStrFailure(inv.toStr());
+        // an already-numeric value is ITSELF: `3.Numeric` is an Int and `(-4/3).Real`
+        // a Rat. Going through toNum() forced everything to Num.
+        if (inv.t == VT::Int || inv.t == VT::Rat || inv.t == VT::Num) return inv;
+        if (inv.t == VT::Bool) return Value::integer(inv.b ? 1 : 0);
         return Value::number(inv.toNum());
     }
     if (m == "Bool" || m == "so") {
@@ -6275,6 +6286,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
     if (m == "WHO") { Value st = Value::makeHash(); st.hashKind = "Stash"; return st; } // package stash
+    // a Range's identity is its GIST, exclusion markers and all — the generic
+    // path stringified it as a space-joined list of its elements
+    if (m == "WHICH" && inv.t == VT::Range) return Value::str("Range|" + inv.gist());
     if (m == "WHICH") { // object identity: value-based for immutables, pointer-based for objects
         if (inv.t == VT::Object && inv.obj) { char buf[24]; std::snprintf(buf, sizeof buf, "|%p", (void*)inv.obj.get()); return Value::str(inv.typeName() + buf); }
         return Value::str(inv.typeName() + "|" + inv.toStr());
@@ -7838,7 +7852,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     if (m == "flip") { auto cps = utf8cp(inv.toStr()); std::string r; for (auto it = cps.rbegin(); it != cps.rend(); ++it) r += cpToUtf8(*it); return Value::str(r); }
     if (m == "ords") { Value out = Value::array(); for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
-    if (m == "chomp") { std::string s = inv.toStr(); if (!s.empty() && s.back() == '\n') s.pop_back(); return Value::str(s); }
+    if (m == "chomp") { // a logical newline: "\n", "\r\n" or a lone "\r"
+        std::string s = inv.toStr();
+        if (!s.empty() && s.back() == '\n') s.pop_back();
+        if (!s.empty() && s.back() == '\r') s.pop_back();
+        return Value::str(s);
+    }
     if (m == "trim") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a, b - a + 1)); }
     if (m == "trim-leading") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a)); }
     if (m == "trim-trailing") { std::string s = inv.toStr(); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(b == std::string::npos ? "" : s.substr(0, b + 1)); }
@@ -8608,6 +8627,11 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
     }
     // .UInt — Int coercion that fails on negatives
     if (m == "UInt") {
+        // a non-numeric string is a FAILURE, not a silent 0 — same ladder as .Int
+        if (inv.t == VT::Str || inv.t == VT::Match) {
+            Value nv = numifyStrFailure(inv.toStr());
+            if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
+        }
         long long v = inv.toInt();
         if (v < 0) return Value::typeObj("Failure");
         return Value::integer(v);
@@ -8706,6 +8730,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "value") return inv.pairVal ? *inv.pairVal : Value::any();
         if (m == "kv") { Value o = Value::array({inv.pairKey ? *inv.pairKey : Value::str(inv.s), inv.pairVal ? *inv.pairVal : Value::any()}); o.isList = true; return o; }
         if (m == "antipair") return Value::pair((inv.pairVal ? inv.pairVal->toStr() : ""), Value::str(inv.s));
+        // `.freeze` snapshots the value out of its container. rakupp's Pair already
+        // copies rather than binding, so the pair is frozen the moment it is built —
+        // if Pair ever holds a real container this has to copy pairVal explicitly.
+        if (m == "freeze") return inv;
         // `.Hash` / `.Map` on a Pair is the one-entry hash it describes
         if (m == "Hash" || m == "Map") {
             Value h = Value::makeHash();
@@ -9033,7 +9061,8 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (m == "excludes-min") return Value::boolean(inv.rExFrom);
         if (m == "excludes-max") return Value::boolean(inv.rExTo);
         if (m == "infinite")     return Value::boolean(false);
-        if (m == "is-int")       return Value::boolean(!inv.rNum); // fractional ranges aren't integer-bounded
+        // fractional ranges aren't integer-bounded, and neither is a Str range
+        if (m == "is-int")       return Value::boolean(!inv.rNum && inv.ofType != "Str");
         // .min/.max/.bounds answer the endpoint OBJECTS when the range kept them
         // (`(1/2 .. 1/3).min` is a Rat, not the Int it iterates from)
         const RangeEnds* re = rangeEnds(inv);
@@ -9943,9 +9972,15 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
                         return callCallable(blk, {items[x], items[y]}).toInt() < 0;
                     });
                 } else {
+                    // A 1-ary block is a KEY EXTRACTOR, so it runs ONCE PER ELEMENT and
+                    // the sort compares the extracted keys — a Schwartzian transform,
+                    // which is what Rakudo does. Calling it inside the comparator ran it
+                    // O(n log n) times instead of O(n): the documented
+                    // `(0..0x1FFFF).sort(*.uniname.chars)` took 49s against Rakudo's 1.2s.
+                    std::vector<Value> keys(items.size());
+                    for (size_t i = 0; i < items.size(); i++) keys[i] = callCallable(blk, {items[i]});
                     std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
-                        Value kx = callCallable(blk, {items[x]}); Value ky = callCallable(blk, {items[y]});
-                        return valueCmp(kx, ky) < 0;
+                        return valueCmp(keys[x], keys[y]) < 0;
                     });
                 }
             } else {
