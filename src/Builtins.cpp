@@ -1510,8 +1510,12 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
                 auto it = h.hash->find(v.s);
                 auto keep = it != h.hash->end() && it->second.pairKey ? it->second.pairKey : v.pairKey;
                 if (it != h.hash->end()) {
-                    double sum = it->second.toNum() + w.toNum();
-                    if (sum == 0.0) h.hash->erase(v.s); else { w = Value::number(sum); w.pairKey = keep; (*h.hash)[v.s] = w; }
+                    // through the EXACT tower, not a C double: the Rats 1/10 and 1/50
+                    // summed as doubles gave 0.12000000000000001, and being a Num the
+                    // result then printed at full Num precision too
+                    Value sum = applyArith("+", it->second, w);
+                    if (sum.toNum() == 0.0) h.hash->erase(v.s);
+                    else { sum.pairKey = keep; (*h.hash)[v.s] = std::move(sum); }
                 } else if (w.toNum() != 0.0) { w.pairKey = keep; (*h.hash)[v.s] = w; }
                 continue;
             }
@@ -9152,6 +9156,19 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         return regexMatch(args.empty() ? std::string() : args[0].toStr(), inv.s);
 
     // quanthash smartmatch: same support with equal weights (topic coerced to
+    // `.set` / `.unset` exist on SetHash ONLY — Set.^can('set') and
+    // BagHash.^can('set') are both False in Rakudo, and roast checks .^can.
+    // Both take a single (possibly listy) positional and return Nil.
+    if (inv.t == VT::Hash && inv.hash && inv.hashKind == "SetHash" &&
+        (m == "set" || m == "unset")) {
+        for (auto& a : args)
+            for (auto& x : a.flatten()) {
+                std::string k = baggyKeyStr(x);
+                if (m == "set") { Value b = Value::boolean(true); b.pairKey = baggyKey(x); (*inv.hash)[k] = std::move(b); }
+                else inv.hash->erase(k);
+            }
+        return Value::nil();
+    }
     // the invocant's family — Set weights count as 1)
     if (inv.t == VT::Hash && m == "ACCEPTS" && !args.empty() &&
         (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||

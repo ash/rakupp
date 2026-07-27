@@ -1219,7 +1219,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 error("Whitespace required before < operator");
             advance();
             std::vector<std::string> words = readAngleWords(">");
-            if (words.empty()) continue; // `$x<>` / `@x<>`: zen-slice / decontainerize — the value itself
+            if (words.empty()) {
+                // `$x<>` / `@x<>`: zen-slice / decontainerize — the value itself.
+                // But an ADVERBED zen slice keeps an Index to hang the adverb on,
+                // exactly as `%h{}:k` does; without it `%h<>:k` dropped the `:k`.
+                if (isOp(":") && (peek().kind == Tok::Ident || peek().kind == Tok::Var ||
+                                  (peek().kind == Tok::Op && peek().text == "!"))) {
+                    auto zi = std::make_unique<Index>();
+                    zi->base = std::move(base);
+                    zi->index = std::make_unique<WhateverExpr>();
+                    zi->isHash = true;
+                    base = std::move(zi);
+                }
+                continue;
+            }
             char sigilCtx = 0;
             if (base->kind == NK::VarExpr) {
                 auto* ve = static_cast<VarExpr*>(base.get());

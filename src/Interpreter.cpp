@@ -14488,7 +14488,14 @@ Value Interpreter::eval(Expr* e) {
             {
                 Expr* dynInv = nullptr;
                 if (mc->method == "dynamic" && mc->args.empty() && mc->inv) {
-                    if (mc->inv->kind == NK::VarExpr) dynInv = mc->inv.get();
+                    // A BARE `$s.dynamic` decontainerizes first and asks the HELD
+                    // value, so it is the Hash's/Array's own flag (False) — only
+                    // `$s.VAR.dynamic` asks the Scalar. For @ and % the value IS
+                    // the container, so there the name answer is the right one.
+                    if (mc->inv->kind == NK::VarExpr) {
+                        const std::string& n0 = static_cast<VarExpr*>(mc->inv.get())->name;
+                        if (!n0.empty() && (n0[0] == '@' || n0[0] == '%')) dynInv = mc->inv.get();
+                    }
                     else if (mc->inv->kind == NK::MethodCall) {
                         auto* inner = static_cast<MethodCall*>(mc->inv.get());
                         if (inner->method == "VAR" && inner->args.empty() && inner->inv &&
