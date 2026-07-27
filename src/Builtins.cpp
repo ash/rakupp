@@ -1946,6 +1946,16 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 // std::operator==(const string&, const char*). Out of line, that operator calls
 // strlen on the literal every time: the two together were 60% of a profile of
 // `for ^3000000 { "ab".chars }`.
+// Always-inline, portably. GCC and Clang take the attribute; MSVC does not know
+// `__attribute__` at all and derails on the `((` — which broke the windows-x64
+// build (and only that one: MinGW uses GCC) from the commit that introduced this
+// struct. `__forceinline` already implies `inline` on MSVC.
+#if defined(_MSC_VER)
+#define RAKUPP_ALWAYS_INLINE __forceinline
+#else
+#define RAKUPP_ALWAYS_INLINE __attribute__((always_inline)) inline
+#endif
+
 namespace {
 struct MName {
     const std::string& s;
@@ -1961,13 +1971,13 @@ struct MName {
     // ALWAYS inlined: out of line, the call itself costs more than the comparison,
     // and the enclosing function is far too large for clang to inline it by choice.
     template <std::size_t N>
-    __attribute__((always_inline)) inline bool operator==(const char (&lit)[N]) const {
+    RAKUPP_ALWAYS_INLINE bool operator==(const char (&lit)[N]) const {
         if (n != N - 1) return false;
         if (N - 1 <= 8) return pre == pack(lit, N - 1);
         return std::memcmp(s.data(), lit, N - 1) == 0;
     }
     template <std::size_t N>
-    __attribute__((always_inline)) inline bool operator!=(const char (&lit)[N]) const { return !(*this == lit); }
+    RAKUPP_ALWAYS_INLINE bool operator!=(const char (&lit)[N]) const { return !(*this == lit); }
     bool operator==(const std::string& o) const { return s == o; }
     bool operator!=(const std::string& o) const { return s != o; }
     operator const std::string&() const { return s; }
