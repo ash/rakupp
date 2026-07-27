@@ -1839,7 +1839,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& m, ValueList ar
         if (ai != classAliases_.end()) inv.s = ai->second;
     }
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
-    if (std::getenv("RAKUPP_TRACE")) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
+    // read the environment ONCE, not on every method call — getenv walks environ
+    static const bool kTrace = std::getenv("RAKUPP_TRACE") != nullptr;
+    if (kTrace) std::cerr << "[M] ." << m << " on type=" << (int)inv.t << " s=[" << inv.s << "]" << (inv.t==VT::Object && inv.obj && inv.obj->cls ? " ("+inv.obj->cls->name+")" : "") << "\n";
     // ---- CompUnit repository machinery (what zef drives to query/install dists) ----
     {
         auto homeDir = []() -> std::string { const char* h = getenv("HOME"); return h ? h : ""; };

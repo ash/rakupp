@@ -245,10 +245,36 @@ row is the example as the documentation writes it; before the fix it was the
 slowest thing in the conformance corpus by two orders of magnitude.
 
 A 2-ary comparator is unaffected — it keeps calling per comparison, because that
-is what a comparator means. Raku++ is still slower than Rakudo *per call* on that
-path (`(0..0xFFF).sort({ $^a.uniname.chars <=> $^b.uniname.chars })` is 1.78 s
-against 0.27 s), which is call overhead rather than complexity and is a separate
-problem from this one.
+is what a comparator means, so it still does O(n log n) key evaluations by
+construction. `(0..0xFFF).sort({ $^a.uniname.chars <=> $^b.uniname.chars })` takes
+1.78 s against Rakudo's 0.27 s, and profiling that gap turns up something with
+nothing to do with sorting:
+
+> **Every method call costs about 7 µs.** Measured with
+> `for ^300000 { 'ab'.METHOD; … }` minus the empty-loop baseline: `.chars`,
+> `.uc` and `.uniname` all land within a few percent of each other at ~7.4 µs a
+> call, against roughly 0.17 µs for the same loop under Rakudo. The bare loop
+> itself is *faster* in Raku++ (0.10 s vs 0.41 s for 300 K iterations), so this is
+> the call, not the interpreter.
+>
+> Two candidates are ruled out. It is **not** the length of the `m == "…"`
+> dispatch ladder in `methodCallInner`: `.chars` sits 177 comparisons in and
+> `.uc` 812, and they cost the same. It is **not** the method bodies: `.uniname`
+> is a binary search plus a hash lookup, and 200 K direct calls to it cost the
+> same as 200 K calls to `.chars`.
+>
+> One contributor has been removed — `methodCallInner` called
+> `std::getenv("RAKUPP_TRACE")` on entry, i.e. once per method call, worth about
+> 10%. What remains is unexplained; the leading suspects are that both
+> `methodCall` and `methodCallInner` take their invocant and argument list **by
+> value** (a `Value` carries ten `shared_ptr` members, so a copy is up to ten
+> atomic refcount operations, plus a heap allocation for the `ValueList`), and
+> the exception-unwinding machinery that dominates a `sample` profile of the
+> loop.
+
+That is a much larger prize than anything in this document and wants its own
+measurement pass; it is recorded here because the sort example is what exposed
+it.
 
 ## Forwarding the C++ optimization level
 
