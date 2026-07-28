@@ -294,16 +294,18 @@ std::string Value::toStr() const {
         case VT::Str:  return s;
         // IterationEnd is a SENTINEL, not a type object — it stringifies bare.
         //
-        // NOTE: Rakudo's Str of a type object is "" (with a warning), not the
-        // parenthesised gist. Changing this one line to "" is correct on its own —
-        // it fixes S32-container/stringify.t, S32-list/are.t, S32-array/delete-adverb.t
-        // and S12-introspection/parents.t outright (+16) — but quanthash keys are
-        // built from toStr (makeBaggy, Builtins.cpp), so every type object then keys
-        // on the SAME empty string while `.raku` still renders the typed key's gist:
-        // `Set (|) Set` becomes `Set.new("(Set)")` where Rakudo says `Set.new("")`.
-        // That cost 48 assertions across the four set-operator files. Fixing this
-        // properly means giving makeBaggy its own key function first.
-        case VT::Type: return s == "IterationEnd" ? s : "(" + s + ")";
+        // A type object STRINGIFIES EMPTY (Rakudo warns and yields ""); the
+        // parenthesised `(Int)` form is its GIST, which is a different question —
+        // `~Int`, `"{Int}"`, `put Int` and `.join` all want the empty string.
+        //
+        // This was tried once and backed out, because quanthash keys were built
+        // straight from toStr: every type object then keyed on the SAME empty
+        // string and `Set (|) Set` rendered `Set.new("(Set)")` against Rakudo's
+        // `Set.new("")`, costing 48 assertions across the four set-operator
+        // files. baggyKeyStr now opens with its own `v.t == VT::Type` arm that
+        // keys on the gist, which is exactly the "give makeBaggy its own key
+        // function first" the old note asked for — so the blocker is gone.
+        case VT::Type: return s == "IterationEnd" ? s : "";
         case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
