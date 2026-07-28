@@ -1440,21 +1440,35 @@ void Interpreter::setMatchVar(Value v) {
 // in the block env so a sibling reference resolves. We descend through EXPRESSION
 // nodes only — never into a nested Block/BlockExpr/SubDecl body, which owns its
 // own scope. Zero-cost for blocks with no expression-buried declarations.
-void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env) {
+void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, signed char* cache) {
     // Narrow by design: only a plain `my` declared INSIDE a conditional branch
     // (a Ternary then/else, or an nqp::if/while/stmts arg) needs hoisting for a
     // SIBLING branch to see it. `state` is excluded (its persistence machinery
     // owns scoping), and a `my` in normal statement flow is left alone (hoisting
     // it would disturb loop/gather per-iteration freshness — that cost the
     // state/gather regressions). `cond` = we're inside such a branch.
+    //
+    // Whether a body holds any such declaration is a STATIC property of its AST,
+    // but this used to run the whole walk on EVERY call — and every sub call and
+    // block entry comes through here. For a body with nothing to hoist, which is
+    // the overwhelmingly common case, that was pure overhead: profiling fib
+    // against the 1.0.0 binary put ~6% of runtime in this lambda, which is a
+    // std::function and so also allocates. Decide once per body and remember it.
+    if (cache && *cache == 0) return;   // decided already: nothing here to hoist
+    bool found = false;
     std::function<void(const Expr*, bool)> walkE = [&](const Expr* e, bool cond) {
         if (!e) return;
         switch (e->kind) {
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
-                if (cond && v->declare && v->declScope == "my" &&
-                    !v->name.empty() && !env->vars.count(v->name))
-                    env->vars[v->name] = typedDefault(v->declType, v->name[0]);
+                // `found` tracks the STATIC half of the test — that a candidate
+                // exists at all. Whether it actually needs defining on this call
+                // is the dynamic `env->vars.count` below, which must stay per-call.
+                if (cond && v->declare && v->declScope == "my" && !v->name.empty()) {
+                    found = true;
+                    if (!env->vars.count(v->name))
+                        env->vars[v->name] = typedDefault(v->declType, v->name[0]);
+                }
                 if (v->declDefault) walkE(v->declDefault.get(), cond);
                 break;
             }
@@ -1485,6 +1499,7 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env) {
                         if (bs->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(bs.get())->e.get(), true);
         }
     }
+    if (cache) *cache = found ? 1 : 0;
 }
 
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
@@ -2944,7 +2959,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     for (auto& s : b->stmts)
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
     hasNestedSub = hoistSubs(b->stmts);
-    hoistExprDecls(b->stmts, blockEnv); // `my` buried in ternary/nqp branches → block scope
+    hoistExprDecls(b->stmts, blockEnv, &b->hoistNeed); // `my` buried in ternary/nqp branches → block scope
     runEnterPhasers(b->stmts);
     // Run the block's CATCH handler; returns true if `.resume` was called (so the
     // block should carry on after the throwing statement).
@@ -6534,7 +6549,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     } fguard{tctx_, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
     if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
-    if (c.body) hoistExprDecls(*c.body, tctx_.cur.get()); // `my` buried in ternary/nqp branches → routine scope
+    if (c.body) hoistExprDecls(*c.body, tctx_.cur.get(), &c.hoistNeed); // `my` buried in ternary/nqp branches → routine scope
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
     Block* catchBlk = nullptr;
     if (c.body) for (auto& s : *c.body)

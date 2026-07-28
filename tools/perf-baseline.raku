@@ -18,10 +18,10 @@
     'tolerance-pct' => 5,     # a build may be this much slower before the gate fails
     'kernels' => {
         # kernel  => { baseline-ms, best-ms, best-version, best-date }
-        'fib'     => { 'baseline' => 911.0, 'best' => 816.3, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
-        'asg'     => { 'baseline' => 527.7, 'best' => 502.0, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
-        'loopsum' => { 'baseline' => 205.2, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
-        'hash'    => { 'baseline' =>  40.3, 'best' =>  39.7, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
+        'fib'     => { 'baseline' => 827.9, 'best' => 816.3, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
+        'asg'     => { 'baseline' => 501.5, 'best' => 501.5, 'best-version' => 'unreleased', 'best-date' => '2026-07-29' },
+        'loopsum' => { 'baseline' => 200.9, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
+        'hash'    => { 'baseline' => 38.7, 'best' => 38.7, 'best-version' => 'unreleased', 'best-date' => '2026-07-29' },
     },
     # Recorded 2026-07-29 at 625/1462 Roast files. The baseline is deliberately
     # the CURRENT (slower) state rather than `best`: a permanently-red gate gets

@@ -60,25 +60,43 @@ for <fib asg loopsum hash> -> $k {
 
 if $record {
     my %b = EVAL slurp $BASEFILE;
-    my @l = $BASEFILE.slurp.lines;
-    # rewrite only the numeric `baseline` fields, keeping every comment in place —
-    # the file explains WHY the baseline is what it is, and that is the valuable part
+    # Rewrite ONLY the kernel lines, rebuilt from the parsed data — every comment
+    # in the file survives, because the file's explanation of why the baseline is
+    # what it is outlives the numbers. (An earlier version tried to patch the
+    # numbers with a regex and silently matched nothing, which is worse than not
+    # having a record path at all; hence the verification at the end.)
     my @out;
-    for @l -> $line {
-        my $new = $line;
-        for %now.kv -> $k, $v {
-            if $line ~~ /^ \s* "'" $k "'" \s* '=>' / {
-                $new = $line.subst(/"'baseline'" \s* '=>' \s* <[\d.]>+/, "'baseline' => $v");
-                # a kernel that got FASTER also moves `best`
-                my $old-best = %b<kernels>{$k}<best>;
-                if $v < $old-best {
-                    $new = $new.subst(/"'best'" \s* '=>' \s* <[\d.]>+/, "'best' => $v");
-                }
+    for $BASEFILE.slurp.lines -> $line {
+        my $matched = '';
+        # plain string test, not a regex: interpolating $k into a pattern does not
+        # match under rakupp itself (which is what runs this), and this tool has to
+        # work on the interpreter it measures
+        for %now.keys -> $k { $matched = $k if $line.trim.starts-with("'$k'") }
+        if $matched {
+            my $e    = %b<kernels>{$matched};
+            my $base = %now{$matched};
+            # a kernel that got FASTER than anything seen before moves `best` too
+            my ($best, $ver, $date) = $e<best>, $e<best-version>, $e<best-date>;
+            if $base < $best {
+                $best = $base; $ver = 'unreleased'; $date = Date.today.Str;
             }
+            # format to one decimal: `.round(0.1)` on a Num still carries its
+            # representation error into the file (841.4000000000001)
+            $base = $base.fmt('%.1f'); $best = $best.fmt('%.1f');
+            my $pad = ' ' x (8 - $matched.chars);
+            my $open = '{';
+            my $close = '}';
+            @out.push: "        '$matched'$pad=> $open 'baseline' => $base, 'best' => $best, "
+                     ~ "'best-version' => '$ver', 'best-date' => '$date' $close,";
         }
-        @out.push: $new;
+        else { @out.push: $line }
     }
     $BASEFILE.spurt(@out.join("\n") ~ "\n");
+    # verify the write actually took, rather than trusting the substitution
+    my %after = EVAL slurp $BASEFILE;
+    # compare at the precision actually written, not bit-for-bit
+    my @bad = %now.keys.grep({ abs(%after<kernels>{$_}<baseline> - %now{$_}) > 0.05 });
+    if @bad { note "record FAILED to update: @bad.join(', ')"; exit 1 }
     say "";
     say "recorded {%now.elems} kernels into {$BASEFILE.basename}";
     exit 0;

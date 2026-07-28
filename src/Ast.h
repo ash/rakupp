@@ -355,6 +355,10 @@ struct SelfTerm : Expr { SelfTerm(): Expr(NK::SelfTerm) {} };
 
 struct Block : Stmt {
     std::vector<StmtPtr> stmts;
+    // -1 = not yet decided, 0 = no hoistable decl, 1 = has one. See
+    // Interpreter::hoistExprDecls: a static property of this AST, so it is
+    // decided once instead of re-walked on every entry to the block.
+    signed char hoistNeed = -1;
     bool isCatch = false;   // CATCH { } phaser
     std::string phaser;     // "BEGIN"/"CHECK"/"INIT"/"END"/... (empty = plain block)
     bool stmtForm = false;  // `PHASER statement;` (no braces): runs in the ENCLOSING

@@ -58,6 +58,7 @@ struct Callable {
     std::string name;
     const std::vector<Param>* params = nullptr;   // borrowed from AST
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
+    signed char hoistNeed = -1;                    // see Interpreter::hoistExprDecls (-1 = undecided)
     std::shared_ptr<Env> closure;
     std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)
     std::once_flag stateInit;                      // stateEnv is created exactly once (thread-safe under parallel calls)
