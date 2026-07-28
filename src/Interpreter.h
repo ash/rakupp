@@ -102,6 +102,12 @@ struct Env {
 // claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
 bool rtIsDefined(const Value& v);
 
+// "Cannot modify an immutable Set (Set(1 2))" — ONE sentence and ONE class for
+// every immutable-container write. The `:delete` path threw X::Immutable where
+// assignment threw X::Assignment::RO, so `CATCH { when X::Assignment::RO }`
+// caught one and missed the other. Rakudo uses RO for both.
+[[noreturn]] void throwImmutable(const Value& v);
+
 // The PUBLIC attributes of a class, in the order the default renderer shows them:
 // the class's OWN first, then its parents' (Rakudo prints `Q.new(q => 2, p => 1)`
 // for `class Q is P`). One walk, because `.gist` and `.raku` of a hookless object

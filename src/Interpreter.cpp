@@ -120,6 +120,12 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
     for (auto& p : c->extraParents) collectPubAttrs(p.get(), out);
 }
 
+[[noreturn]] void throwImmutable(const Value& v) {
+    std::string kind = v.t == VT::Hash && !v.hashKind.empty() ? v.hashKind : v.typeName();
+    throw RakuError{Value::typeObj("X::Assignment::RO"),
+                    "Cannot modify an immutable " + kind + " (" + v.gist() + ")"};
+}
+
 bool rtIsDefined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
 static bool isDefined(const Value& v) { return rtIsDefined(v); }
 
@@ -7884,8 +7890,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // Set/Bag/Mix are immutable — only the initial (empty) fill assigns
                 if (lv->hash && !lv->hash->empty() &&
                     (lv->hashKind == "Set" || lv->hashKind == "Bag" || lv->hashKind == "Mix"))
-                    throw RakuError{Value::typeObj("X::Assignment::RO"),
-                        "Cannot modify an immutable " + lv->hashKind + " (" + lv->gist() + ")"};
+                    throwImmutable(*lv);
                 std::string keyT = lv->ofType;
                 Value nh = makeBaggy(rhs.flatten(), lv->hashKind);
                 if (!keyT.empty() && nh.hash) // parameterized: keys must match `is Bag[Int]`
@@ -13698,8 +13703,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // Set/Bag/Mix are immutable — :delete dies (SetHash/BagHash/MixHash mutate)
         if (wantDelete && base.t == VT::Hash &&
             (base.hashKind == "Set" || base.hashKind == "Bag" || base.hashKind == "Mix"))
-            throw RakuError{Value::typeObj("X::Immutable"),
-                "Cannot modify an immutable " + base.hashKind + " (" + base.gist() + ")"};
+            throwImmutable(base);
         if (wantDelete) for (auto& h : hits) if (h.exists) {
             if (idx->isHash) base.hash->erase(h.keyV.toStr());
             else { long long ai = h.keyV.toInt();
