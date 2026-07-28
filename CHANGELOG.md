@@ -3,6 +3,193 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## Unreleased (on `main` since v1.2.6)
+
+| | v1.2.6 | `main` |
+|---|---:|---:|
+| Documentation examples byte-identical to Rakudo | 936 | **944** |
+| …of which Raku++ is the one that is wrong | 144 | **122** |
+| Operator-matrix divergences | 72 | **30** |
+| Roast assertions (all declared) | 196,381 | **196,395** |
+| Roast files fully passing | 622 | **625** |
+| Regression tests | 137 | **148** |
+
+Both halves of <https://raku.online/spec/rules/divergences/> are measured here:
+the per-type documentation sweep (1,451 examples) and the operator behaviour
+matrix (833 expressions over 121 operators). Together the page's "Raku++ differs"
+count went **202 → 152**.
+
+Two caveats on reading those numbers. The conformance count has a **±5 flap
+band** — the `Set`/`Bag`/`Mix`/`Map` examples move in both directions between
+runs of identical code, because Rakudo randomizes hash iteration order per
+process; two sweeps of the same tree gave 934 and 939. And six of the remaining
+operator rows are `prefix:<~^>`, where *Rakudo* answers "not yet implemented" and
+Raku++ works — counted as a divergence, but not a defect.
+
+Roast itself flaps by a file: 624↔625 fully passing and 10↔11 timeouts across
+runs, which moves the assertion total by about 20 either way. The figures above
+are one coherent run, and the conservative of the three taken.
+
+### Fixed
+
+- Reported: [#8](https://github.com/ash/rakupp/issues/8) — two `--exe` codegen
+  bugs, both about writing through a subscript. A closure mutating a captured
+  container **by key** (`%bag{$k}++`, `@r[$i] += 1`) was not recorded as
+  mutating it, so the variable was captured `const` and the generated C++ would
+  not compile; and `.push` on a not-yet-existing element (`@ready[2].push(10)`)
+  mutated a temporary and vanished, which is why the reporter's program looped
+  forever once it did compile. The interpreter was always right; only the
+  compiler diverged.
+
+- **`@(…)` did not keep its Array.** `@(%h<k>).raku` gave `(1, 2)` where Rakudo
+  gives `[1, 2]` — the contextualiser converted to a List instead of only
+  stripping the itemisation. Found while writing the containers FAQ page against
+  a live binary.
+
+- Reported: [#9](https://github.com/ash/rakupp/issues/9) — an object hash
+  (`my %h{Int}`) lost its key type. `%h{+$k} = 66` came back as the Str `"33"`,
+  and `.raku` rendered a plain `{"33" => 66}`. The store is a
+  `map<std::string, Value>`, so a key is a lookup *string* and its real value has
+  to come from somewhere: a Set/Bag/Mix parks it in the count's `pairKey`, an
+  object hash can rebuild it from the declared key type. Both now go through one
+  `hashEntryKey`, which is what `.keys`, `.pairs`, `.kv`, `.antipairs`,
+  `.invert`, `.sort` and iteration all ask. `.raku` renders the declaration that
+  rebuilds it (`(my Any %{Int} = 33 => 66)`) rather than a Str-keyed literal that
+  would not round-trip, and `.^name` reports `Hash[Any,Int]` — on the name only,
+  since `typeName()` is what dispatch and error messages key on.
+
+  Still open, and the reason this is narrowed rather than general: a key type
+  that cannot be rebuilt from a string — a class, or bare `Any`/`Mu`, where
+  Rakudo distinguishes `%h{3}` from `%h<3>` and Raku++ cannot — stays a `Str`.
+  That is the pre-existing "Hash keys are plain strings" limit, unchanged.
+
+- **A declared type did not survive compilation.** Fixing #9 in the interpreter
+  left `--exe` still printing `{"33" => 66}`, and the cause was broader than
+  object hashes: codegen emitted a bare `Value::array()`/`makeHash()`/`any()`
+  for *every* declaration and dropped the declared type on the floor. So
+  `my Int $x` was `(Any)` compiled and `(Int)` interpreted, `my Int @a` was an
+  Array of `Mu`, and `my %h{Int}` lost its key type entirely. Both sides now go
+  through the interpreter's own `typedDefault` via a small `rtTypedDefault`
+  shim, rather than the compiler keeping its own idea of what a declaration
+  means. Top-level declarations become C++ globals, so the type had to be
+  carried there too.
+
+- **An enum value numified to itself, tag and all.** `b.Numeric` and `+b`
+  rendered as `b`, while `.Int` and `.value` — which build a fresh Int —
+  correctly gave `1`: one value answering three ways. Both coercion paths now
+  return a plain Int.
+
+### Conformance: closing divergences
+
+Measured against the two data sets behind the divergences page. The operator
+matrix collapsed hardest, because two of these are parse- and lex-level and so
+cascade across every operator they touch.
+
+- **`Nil` is a TERM, not a routine** (~15 operator rows). The parser fell through
+  to its general identifier path, so anything that could begin a listop argument
+  turned into a call: `Nil ~ 1` parsed as **`Nil(~1)`** and died with "No such
+  method 'Nil' for invocant of type 'Str'"; `Nil ff 1` as `Nil(ff 1)`. `max`,
+  `min`, `X`, `Z`, `but`, `^`, `minmax`, `notandthen` and `?^` were all the same
+  bug. This is also what took Roast from 624 to 625 files.
+- **A non-numeric string operand is an error, not a silent 0** (9 rows).
+  `"a" +& "b"` answered `0`: the bitwise, repeat and approx-equal operators each
+  reached for `toInt()`/`toNum()` directly, while ordinary arithmetic had long
+  gone through `numifyStrOrThrow`. One `strictNum` helper now serves `+&` `+|`
+  `+^` `+<` `+>` `x` `xx` `≅` and the two prefix forms.
+- **The flip-flop family** (8 rows). The state machine was implemented but three
+  of its eight spellings were unreachable: `^ff`, `ff^` and `^ff^` lexed as three
+  tokens, so the carets read as prefix/postfix on the operands. It also answered
+  `Any` while off where Rakudo answers `Nil`. All six variants now match Rakudo
+  element for element.
+- **`Nil` is a set element** (6 rows). `Nil (|) 1` dropped it — while a `Nil`
+  *inside a list* had always been kept, which was the tell that the scalar case
+  was simply excluded.
+- **An anonymous mixin role is named `<anon|N>`** (5 rows): `1 but 2` is an
+  `Int+{<anon|1>}`, not the bare `Int+{}`.
+- **`0..^N` renders as `^N`** (3 rows), for `.gist` and `.raku` alike — Int-zero
+  only, so `0.0..^5`, `0..^5e0` and `0..^0.5` keep the long form.
+- **`+<` after a term is the shift** (2 rows). `1 +< "2"` lexed as `+` followed by
+  a word list and swallowed the rest of the line. The term test is deliberately
+  narrow: a bare identifier may be a LISTOP, and treating `is-deeply ~<2>, '2'`
+  as a shift cost all 119 assertions of `S02-literals/allomorphic.t` before the
+  rule was tightened to literals, variables, closers and the five identifiers
+  that can never be a listop.
+- **Methods the documentation exercises that did not exist**: `Proc::Async.command`,
+  `Format.directives`, `Buf.splice`, `Blob.unpack`, and `.files` on a
+  `CompUnit::Repository`. `Buf.splice` is the interesting one — it mutates in
+  place, and a Buf's bytes are a plain `std::string` rather than a shared_ptr the
+  way an Array's elements are, so unlike `Array.splice` it cannot mutate through
+  a copy. `methodCall` takes its invocant BY VALUE, so it lives beside `bufBitOp`
+  as a `Value&`-taking member.
+- **An `IO::Handle` gists as an `IO::Handle`** and Strs as its path — it had no
+  rendering of its own and dumped `buffer`/`mode`/`path` as a hash, the same root
+  cause as the Proc dump in [#10](https://github.com/ash/rakupp/issues/10).
+- **`IO::Path::Parts` subscripts positionally**, in declaration order:
+  `$parts[0]` is the volume Pair. (Only the subscript — Rakudo treats it as ONE
+  item for `.list`, `.pairs` and `for`, which spreading it broke in the other
+  direction, so that was tried and reverted.)
+- **`Complex.round($scale)`** honours the scale, per component. Each component
+  goes through the scalar path rather than repeating the arithmetic — doing it
+  again in doubles gave `-3.9000000000000004` for the imaginary part.
+
+### Semantic-duplication audit — batches B7–B11
+
+One rule implemented in more than one place, so that fixing a bug in one copy
+leaves the other wrong. Each batch is gated on the full Roast run.
+
+- **B7 — value identity has one home (`whichOf`).** `.WHICH` identified an
+  object by its address; the quanthash key identified it by its rendering, so
+  two distinct objects collapsed into one Set element (`set($x, $y).elems` was
+  1). `===` and `eqv` also lacked Range and parametric-type arms. Fixing the
+  Range case exposed a bug it had been masking: `Rat.Range` carried saturated
+  int endpoints where they should be ±Inf.
+- **B8 — a type object stringifies empty.** `Int.Str` was already `""` while
+  `~Int`, `"{Int}"`, `put Int` and `.join` gave `(Int)`. This was tried once
+  before and backed out because quanthash keys were built from `toStr`; B7's
+  `baggyKeyStr` was the missing prerequisite. +37 assertions, 622 → 624 files.
+- **B9 — an exception's payload is its type object, everywhere.** Seventeen
+  throw sites stored a Str naming the class, a Str that was never a class name
+  (`"op"`, `"Not callable"`), or nil — so `$!.message` died with "No such
+  method". Two of them were in the code generator, meaning a multi with no
+  matching candidate could not be caught by class under `--exe` at all.
+- **B10 — one class and one sentence for an immutable-container write.**
+  `$s<1> = 5` threw `X::Assignment::RO`, `$s<1>:delete` threw `X::Immutable`;
+  same rule, so a `CATCH` caught one and missed the other. Only the
+  subscript-write sites moved — Rakudo keeps `X::Immutable` for a different rule
+  that Roast asserts.
+- **B11 — divide-by-zero is one Failure with one wording.** Three verbatim copies
+  of the zero check each returned a bare Failure *type object*, which carries no
+  exception and never detonates, and the one message built hard-coded `infix:<%%>`
+  whatever operator was used. That exposed a second half: `try` cleared `$!`
+  unless something was *thrown*, so a block that returns a Failure left `$!`
+  unset.
+
+### Documentation
+
+- **[docs/faq/](docs/faq/)** — a new section, six pages: running external
+  commands, containers and itemisation, compiling, performance, debugging, and
+  where Raku++ and Rakudo differ. Every runnable snippet is executed on both
+  engines and must produce identical output; where the two genuinely diverge the
+  page says so rather than documenting whichever is convenient.
+- Spec and tour links repointed from `ash/raku-spec` / `ash/raku-tour` to
+  `ash/raku.online` (`sites/spec`, `sites/tour`), across six files.
+- All measured figures refreshed against a single clean run — including several
+  that had gone stale independently of the headline: ROAST.md claimed "≈39% of
+  files" and "about a sixth produces no TAP" (it is a tenth), the no-TAP
+  denominator note said 101 files (88), and the per-synopsis table was a release
+  old. README now states that its figures are measured on `main`, since `main`
+  is ahead of the v1.2.6 tag.
+
+### Known, not fixed
+
+- `:(…) ~~ :($ where …)` is True here, False in Rakudo — Rakudo fails a
+  signature smartmatch whenever the target carries *any* `where` constraint,
+  since it cannot statically verify one.
+- A `rotor` **sub** is registered that Rakudo has no routine for
+  (`rotor(1..6, 2)` gives `((2))` here, "Undeclared routine" there).
+- A missing semicolon between statements is accepted where Rakudo rejects it;
+  `die` prints no backtrace. Both documented in the FAQ as gaps.
+
 ## v1.2.6 (2026-07-28) — Proc rendering
 
 A point release for one user-visible bug found just after v1.2.5 shipped.

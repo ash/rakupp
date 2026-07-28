@@ -451,6 +451,14 @@ static Value typedDefault(const std::string& type, char sigil) {
     }
     return defaultFor(sigil);
 }
+// The COMPILER needs the same answer: `my Int @a` is an Array[Int] whether the
+// program is interpreted or generated as C++. Codegen used to emit a bare
+// Value::array()/makeHash()/any() and drop the declared type, so `.of` was (Mu)
+// and an object hash lost its key type. One rule, reached from both sides.
+Value rtTypedDefault(const char* type, char sigil) {
+    return typedDefault(type ? type : "", sigil);
+}
+
 // Truncate an integer value to a native type's bit width (wraparound), keeping the tag.
 static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
     if (bits <= 0) return;
@@ -1187,6 +1195,23 @@ Value rtHashLit(const ValueList& items) {
 // gives `key => value`, a Set gives `elem => True`, a Bag/Mix `elem => weight`.
 // `my @a = %h` / `my @s = $set` all go through this. (Iteration order follows
 // the container; callers that need a stable order sort.)
+// IO::Path::Parts SUBSCRIPTS in declaration order — volume, dirname, basename —
+// not the map's sorted order, so `$parts[0]` is the volume pair.
+//
+// Only the subscript. Rakudo does NOT spread the parts anywhere else: `.list` is
+// `(IO::Path::Parts.new(…),)`, `.pairs` is `(0 => the object,)` and `for $parts`
+// yields the object once. Spreading them in toList/hashToPairs was tried and
+// reverted — it made `.list` diverge in the other direction.
+ValueList pathPartsPairs(const Value& v) {
+    ValueList out;
+    if (!v.hash) return out;
+    for (const char* k : {"volume", "dirname", "basename"}) {
+        auto it = v.hash->find(k);
+        out.push_back(Value::pair(k, it != v.hash->end() ? it->second : Value::str("")));
+    }
+    return out;
+}
+
 static Value hashToPairs(const Value& v) {
     Value out = Value::array(); out.isList = true;
     if (!v.hash) return out;
@@ -5651,6 +5676,18 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
                 while ((long long)base.arr->size() <= i && base.arr->size() < CAP && st->appendNext(*base.arr)) {}
         }
     }
+    // IO::Path::Parts is Positional as well as Associative: `$parts[0]` is the
+    // volume PAIR, in declaration order rather than the map's sorted order.
+    if (base.t == VT::Hash && base.hashKind == "IO::Path::Parts" && base.hash) {
+        static const char* kOrder[3] = {"volume", "dirname", "basename"};
+        long long i = key.toInt();
+        if (i < 0) i += 3;
+        if (i >= 0 && i < 3) {
+            auto it = base.hash->find(kOrder[i]);
+            return Value::pair(kOrder[i], it != base.hash->end() ? it->second : Value::str(""));
+        }
+        return Value::nil();
+    }
     if ((base.t == VT::Array || base.t == VT::Match) && base.arr) { // Match: positional captures
         long long i = key.toInt(), n = (long long)base.arr->size();
         if (i < 0) i += n;
@@ -8182,7 +8219,11 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
     } else if (v.t == VT::Type || v.t == VT::Any) {
         std::string k = baggyKeyStr(v); setRep(k, v);
         m[k] = 1; // (Set) (&) (Set) — the type object is a one-element set
-    } else if (v.t != VT::Nil) {
+    } else {
+        // Nil is an ELEMENT too, like every other type object: `Nil (|) 1` is
+        // Set(1 Nil) in Rakudo, not Set(1). Excluding it here also made the
+        // scalar case disagree with the list case just above, which has always
+        // kept a Nil inside a list.
         std::string k = baggyKeyStr(v); setRep(k, v); m[k] = 1;
     }
     return m;
@@ -8373,6 +8414,21 @@ static ValueList listCtx(const Value& v) {
         return v.blobList();
     return v.flatten();
 }
+
+// The numeric operand of a bitwise / repeat / approx-equal operator. `"a" +& "b"`
+// is X::Str::Numeric in Rakudo, not a silent 0 — but these operators reached for
+// toInt()/toNum() directly, which answer 0 for any non-numeric string. Ordinary
+// arithmetic already goes through numifyStrOrThrow; this is the same rule for the
+// operators that kept their own copy of it.
+//
+// A Blob/Buf is excluded: its "string" is bytes, and it numifies to its element
+// count elsewhere. An allomorph already carries a real number.
+static Value strictNum(const Value& v) {
+    if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty())
+        return numifyStrOrThrow(v.s);
+    return v;
+}
+static long long strictInt(const Value& v) { return strictNum(v).toInt(); }
 
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
@@ -9123,13 +9179,13 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "x") {
         std::string base = l.toStr(), out;
-        long long n = r.toInt();
+        long long n = strictInt(r);
         for (long long k = 0; k < n; k++) out += base;
         return Value::str(out);
     }
     if (op == "xx") {
         Value a = Value::array();
-        long long n = r.toInt();
+        long long n = strictInt(r);
         for (long long k = 0; k < n; k++) a.arr->push_back(l);
         a.isList = true; // `1 xx 5` is a flattening list, so `[1 xx 5]` spreads to 5 elems
         a.s = "Seq";     // …and it is lazy: Rakudo reports Seq
@@ -9137,16 +9193,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     // numeric bitwise / shift
     if (op == "+&" || op == "+|" || op == "+^") {
+        if (l.t == VT::Str || r.t == VT::Str) { strictNum(l); strictNum(r); } // reject a non-numeric string
         if (l.big || r.big) {
             BigInt res = bigBitwise(l.big ? *l.big : BigInt(l.toInt()),
                                     r.big ? *r.big : BigInt(r.toInt()), op[1]);
             return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
         }
-        long long a = l.toInt(), b = r.toInt();
+        long long a = strictInt(l), b = strictInt(r);
         return Value::integer(op[1] == '&' ? (a & b) : op[1] == '|' ? (a | b) : (a ^ b));
     }
     if (op == "+<") { // escalate to BigInt when the result would overflow long long
-        long long sh = r.toInt();
+        strictNum(l); long long sh = strictInt(r);
         if (sh < 0) return Value::integer(0);
         if (!l.big && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
             return Value::integer(l.toInt() << sh);
@@ -9155,7 +9212,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
     }
     if (op == "+>") {
-        long long sh = r.toInt();
+        strictNum(l); long long sh = strictInt(r);
         if (sh < 0) return Value::integer(0);
         if (!l.big) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
         BigInt q, rem;
@@ -9190,7 +9247,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "==") return Value::boolean(l.toNum() == r.toNum());
     if (op == "!=") return Value::boolean(l.toNum() != r.toNum());
     if (op == "=~=" || op == "≅") { // approximately-equal (relative tolerance 1e-15)
-        double a = l.toNum(), b = r.toNum();
+        double a = strictNum(l).toNum(), b = strictNum(r).toNum();
         if (a == b) return Value::boolean(true);
         double scale = std::max(std::fabs(a), std::fabs(b));
         return Value::boolean(std::fabs(a - b) <= 1e-15 * scale);
@@ -11323,7 +11380,7 @@ Value Interpreter::evalBinary(Binary* b) {
             a.ext = st;
             return a;
         }
-        long long n = rv.toInt();
+        long long n = strictInt(rv); // a non-numeric count is X::Str::Numeric, not 0
         Value a = Value::array(); a.isList = true; a.s = "Seq"; // `EXPR xx N` is a Seq (Rakudo)
         for (long long k = 0; k < n; k++) a.arr->push_back(eval(b->lhs.get()));
         return a;
@@ -11541,17 +11598,20 @@ Value Interpreter::evalBinary(Binary* b) {
         };
         bool closes = false;
         if (!st.on) {
-            if (!test(b->lhs.get())) return Value::any();
+            // OFF answers Nil, not Any — `say ($n == 2 ff $n == 4)` prints Nil in
+            // Rakudo for every element outside the run, and an excluded edge
+            // element answers the same way.
+            if (!test(b->lhs.get())) return Value::nil();
             st.on = true; st.seq = 1;
             if (!sedlike && test(b->rhs.get())) closes = true; // `ff` may close at once
-            if (exclFirst) { if (closes) st.on = false; return Value::any(); }
+            if (exclFirst) { if (closes) st.on = false; return Value::nil(); }
         }
         else {
             st.seq++;
             closes = test(b->rhs.get());
         }
         if (closes) st.on = false;
-        if (closes && exclLast) return Value::any();
+        if (closes && exclLast) return Value::nil();
         return Value::integer(st.seq);
     }
     if (op == "&&" || op == "and") {
@@ -11659,7 +11719,11 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy) {
         } else {
             // `X but VALUE` mixes in a method named after VALUE's type that
             // returns it: 5 but "t" stringifies as "t"; 0 but True is true.
+            // The role it composes is anonymous but NOT nameless — Rakudo calls
+            // it `<anon|N>`, so `1 but 2` is an `Int+{<anon|1>}`. Without a name
+            // the mixin rendered as the bare `Int+{}`.
             valueMixins.push_back(v);
+            roleNames.push_back("<anon|" + std::to_string(++anonMixinSeq_) + ">");
         }
     };
     collect(rhs);
@@ -12306,13 +12370,16 @@ Value Interpreter::evalUnary(Unary* u) {
             Value nv = v; nv.hashKind.clear(); nv.s.clear(); return nv;
         }
         if (v.t == VT::Match) return numifyStr(strOf(v)); // +$0 of digits is an Int, like +Str
+        if (v.isNumeric() && !v.enumName.empty()) { // +EnumValue is a PLAIN Int, not the name
+            Value nv = v; nv.enumName.clear(); nv.enumType.clear(); return nv;
+        }
         // `+"a"` is an error, not an undefined value (Rakudo: X::Str::Numeric)
         return v.isNumeric() ? v : (v.t == VT::Str ? numifyStrFailure(v.s) : Value::number(v.toNum()));
     }
     if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
-    if (u->op == "+^") return Value::integer(~v.toInt()); // bitwise NOT
+    if (u->op == "+^") return Value::integer(~strictInt(v)); // bitwise NOT
     if (u->op == "?^") return Value::boolean(!boolify(v));
     if (u->op == "~^") { // string bitwise NOT (byte-wise complement)
         std::string r = v.toStr();
@@ -12320,7 +12387,7 @@ Value Interpreter::evalUnary(Unary* u) {
         return Value::str(r);
     }
     if (u->op == "^") {
-        Value r = Value::range(0, v.toInt(), false, true);
+        Value r = Value::range(0, strictInt(v), false, true);
         if (v.t == VT::Int && v.big) r.big = v.big; // keep the big bound (pick/roll sample it)
         return r;
     }
@@ -13242,6 +13309,33 @@ Value Interpreter::evalIndex(Index* idx) {
     // Indexing an unhandled Failure propagates it (`@a[-1][0]` keeps the Failure
     // from the out-of-range outer index rather than reading through it).
     if (base.t == VT::Hash && base.hashKind == "Failure") return base;
+    // IO::Path::Parts is Positional AS WELL AS Associative: `$parts<volume>` is the
+    // string, `$parts[0]` the volume PAIR, and `$parts[]` all three in DECLARATION
+    // order (not the map's sorted order). It has to answer here because everything
+    // below treats a Hash base as associative whichever bracket was written.
+    if (base.t == VT::Hash && base.hashKind == "IO::Path::Parts" && base.hash && !idx->isHash) {
+        static const char* kOrder[3] = {"volume", "dirname", "basename"};
+        auto pairAt = [&](int i) {
+            auto it = base.hash->find(kOrder[i]);
+            return Value::pair(kOrder[i], it != base.hash->end() ? it->second : Value::str(""));
+        };
+        if (!idx->index) { // the zen slice `$parts[]`
+            Value out = Value::array(); out.isList = true;
+            for (int i = 0; i < 3; i++) out.arr->push_back(pairAt(i));
+            return out;
+        }
+        Value k = eval(idx->index.get());
+        auto one = [&](long long i) {
+            if (i < 0) i += 3;
+            return (i >= 0 && i < 3) ? pairAt((int)i) : Value::nil();
+        };
+        if (k.t == VT::Range || (k.t == VT::Array && k.arr)) {
+            Value out = Value::array(); out.isList = true;
+            for (auto& e : k.flatten()) out.arr->push_back(one(e.toInt()));
+            return out;
+        }
+        return one(k.toInt());
+    }
     // Nil.AT-POS / Nil.AT-KEY are Nil, at any depth and for any key — `Nil[0][2][4]`
     // and `Nil<foo><bar>` are Nil. Without this the whole function falls through to
     // its trailing `return Value::any()` and answers (Any). A SLICE answers one Nil
@@ -14731,6 +14825,19 @@ Value Interpreter::eval(Expr* e) {
                     return bufBitOp(*lv, mc->method, wargs);
                 }
                 return bufBitOp(inv, mc->method, wargs); // temporary: mutate the copy
+            }
+            // `.splice` on a Buf mutates IN PLACE, and a Buf's bytes live in a plain
+            // std::string rather than behind a shared_ptr the way an Array's do — so
+            // unlike Array.splice it cannot mutate through a copy and needs the
+            // invocant's own slot, exactly as the write-* mutators above do.
+            if (mc->method == "splice" && !mc->meta && !mc->methodExpr &&
+                inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+                if (inv.hashKind == "Blob")
+                    throw RakuError{Value::typeObj("X::Buf::RO"), "Cannot write to an immutable Blob"};
+                ValueList sargs = evalArgs(mc->args);
+                Value* lv = nullptr;
+                try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
+                return bufSplice(lv ? *lv : inv, sargs); // no lvalue: mutate the temporary
             }
             // a write- on the buf8/buf16/… TYPE object autocreates a zero buffer of
             // the needed size; blob types stay immutable

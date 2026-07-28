@@ -69,7 +69,7 @@ private:
     bool heredocInterp_ = false;
     bool warnedLeadingZero_ = false; // emit the leading-0-isn't-octal warning once
     Token lexIdentOrVar();
-    Token lexOperator();
+    Token lexOperator(bool termBefore = false);
     bool p5AssignAhead(size_t off) const; // ws* then a plain `=` (not == => =~)
 
     Token make(Tok k, const std::string& t);

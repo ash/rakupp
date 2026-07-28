@@ -198,7 +198,12 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_ADD; return in; } // infix min/max
         if (o == "and" || o == "andthen" || o == "notandthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
-        if (o == "ff" || o == "fff") { in.valid = true; in.lbp = BP_TERNARY; return in; } // flip-flop
+        // flip-flop, all eight spellings: a leading `^` excludes the evaluation that
+        // switches it ON, a trailing `^` the one that switches it OFF.
+        if (o == "ff"   || o == "fff"   || o == "^ff"  || o == "^fff" ||
+            o == "ff^"  || o == "fff^"  || o == "^ff^" || o == "^fff^") {
+            in.valid = true; in.lbp = BP_TERNARY; return in;
+        }
         return in;
     }
     return in;
@@ -2908,6 +2913,15 @@ ExprPtr Parser::parsePrimary() {
             std::string name = t.text;
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
+            // `Nil` is a TERM, never a routine. Falling through to the general
+            // identifier path let it be read as a listop whenever what followed
+            // could start one: `Nil ~ 1` parsed as `Nil(~1)` and died with
+            // "No such method 'Nil'", and `Nil ff 1` as `Nil(ff 1)`. Rakudo
+            // answers those as ordinary infixes on the Nil type object.
+            // A postfix still applies — `Nil.gist` parses the same as `True.Str`.
+            if (name == "Nil" && peek(1).kind != Tok::LParen) {
+                advance(); return std::make_unique<NameTerm>("Nil");
+            }
             // anonymous `regex {…}` / `token {…}` / `rule {…}` in term position:
             // a first-class Regex value that closes over the current scope
             // (Cro's route matcher is `EVAL 'regex { … }'`)

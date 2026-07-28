@@ -69,6 +69,16 @@ static std::string mangleBody(const std::string& s) {
     }
     return o;
 }
+// The initial value of a DECLARED variable. An untyped one is the bare empty
+// container; a typed one has to go through the interpreter's own typedDefault, or
+// `my Int @a` compiles to an Array of Mu and `my %h{Int}` loses its key type
+// entirely — the declared type was simply dropped here before.
+static std::string declInit(const std::string& type, char sigil) {
+    if (type.empty())
+        return sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
+    return "rtTypedDefault(" + cesc(type) + ", '" + std::string(1, sigil) + "')";
+}
+
 std::string mangleVar(const std::string& name) {
     // keep the sigil (tagged) so `$x` / `@x` / `%x` / `&x` are distinct C++ names
     char sigil = (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) ? name[0] : 0;
@@ -1118,6 +1128,7 @@ struct Codegen {
     std::vector<Block*> topLevelEnds; // top-level END phasers, run at program end
     int leaveCtr_ = 0;                // unique names for LEAVE scope guards
     std::set<std::string> topVars_;   // top-level `my` vars hoisted to C++ globals
+    std::map<std::string, std::string> topVarTypes_; // …and their declared types, if any
     bool atTopLevel_ = false;         // emitting the mainline (not a sub body)
 
     void emitPhaserBody(Block* b, int ind) {
@@ -1304,8 +1315,7 @@ struct Codegen {
                     const std::string& nm = static_cast<VarExpr*>(e)->name;
                     if (atTopLevel_ && topVars_.count(nm)) { line(ind, "; // " + nm + " is a global"); return; }
                     char sigil = nm.empty() ? '$' : nm[0];
-                    std::string def = sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
-                    line(ind, declVar(nm, def) + ";");
+                    line(ind, declVar(nm, declInit(static_cast<VarExpr*>(e)->declType, sigil)) + ";");
                     return;
                 }
                 // bare declaration list `my ($x, $y, $k);` — declare each, no value
@@ -1320,8 +1330,7 @@ struct Codegen {
                             const std::string& nm = static_cast<VarExpr*>(it.get())->name;
                             if (atTopLevel_ && topVars_.count(nm)) continue; // global
                             char sigil = nm.empty() ? '$' : nm[0];
-                            std::string def = sigil == '@' ? "Value::array()" : sigil == '%' ? "Value::makeHash()" : "Value::any()";
-                            line(ind, declVar(nm, def) + ";");
+                            line(ind, declVar(nm, declInit(static_cast<VarExpr*>(it.get())->declType, sigil)) + ";");
                         }
                         return;
                     }
@@ -1343,9 +1352,7 @@ struct Codegen {
                 char sigil = d->names[0].empty() ? '$' : d->names[0][0];
                 std::string init;
                 if (d->init) init = sigil == '@' ? "rtArrayVal(" + exArg(d->init.get()) + ")" : exArg(d->init.get());
-                else if (sigil == '@') init = "Value::array()";
-                else if (sigil == '%') init = "Value::makeHash()";
-                else init = "Value::any()";
+                else init = declInit("", sigil); // VarDecl carries no declared type
                 line(ind, declVar(d->names[0], init) + ";");
                 return;
             }
@@ -2287,7 +2294,11 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                     // sigilled vars need a name beyond the sigil; sigilless (constant \W) are fine at 1 char
                     bool sigilled = !nm.empty() && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%' || nm[0] == '&');
                     if (nm.size() > 1 && nm[1] == '*') return; // dynamics live in the runtime env
-                    if (sigilled ? nm.size() > 1 : !nm.empty()) g.topVars_.insert(nm);
+                    if (sigilled ? nm.size() > 1 : !nm.empty()) {
+                        g.topVars_.insert(nm);
+                        const std::string& dt = static_cast<VarExpr*>(x)->declType;
+                        if (!dt.empty()) g.topVarTypes_[nm] = dt;
+                    }
                 }
             };
             if (e) {
@@ -2326,9 +2337,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     // top-level `my` vars as globals (initialised in program order inside main)
     for (auto& nm : g.topVars_) {
         char sg = nm[0];
+        auto ty = g.topVarTypes_.find(nm);
         g.out << "static Value " << mangleVar(nm) << " = "
-              << (sg == '@' ? "Value::array()" : sg == '%' ? "Value::makeHash()" : "Value::any()")
-              << ";\n";
+              << declInit(ty == g.topVarTypes_.end() ? "" : ty->second, sg) << ";\n";
     }
     if (!g.topVars_.empty()) g.out << "\n";
     // enum values as globals

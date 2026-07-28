@@ -376,6 +376,7 @@ public:
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
     // (the result while on is that count, not a Bool)
+    long long anonMixinSeq_ = 0; // names the anonymous role a value mixin composes
     struct FlipFlop { bool on = false; long long seq = 0; };
     std::unordered_map<const void*, FlipFlop> ffState_;
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
@@ -665,6 +666,7 @@ public:
     Value buildSourceResourceMap(const std::string& distRoot); // source checkout META6 `resources` → resource Hash
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
+    Value bufSplice(Value& buf, ValueList& args); // Buf.splice — mutates in place, answers the removed bytes
     std::string execPath_;            // absolute path of the rakupp binary (for $*EXECUTABLE)
     int quietDepth_ = 0;              // inside a `quietly {…}`, warn() is suppressed (codegen bumps it too)
 private:
@@ -891,6 +893,8 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); 
 std::vector<std::string> collectAttrRefs(const std::vector<StmtPtr>& body); // $!x/@!x/%!x references in a body
 std::string firstBlockPlaceholder(const std::vector<StmtPtr>& body); // first $^/$:/@_ in a signature-less body
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out); // expr-level placeholder walk
+ValueList pathPartsPairs(const Value& v); // IO::Path::Parts in declaration order
+Value  rtTypedDefault(const char* type, char sigil); // `my Int @a` / `my %h{Int}`: the declared empty container
 Value  rtArrayVal(const Value& v);  // list-assignment semantics for `@a = expr` (splice Lists, keep itemized rows)
 void   rtSpreadArg(ValueList& as, const Value& v, bool argPos); // |x spread into an arg/list being built
 Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args); // >>.method

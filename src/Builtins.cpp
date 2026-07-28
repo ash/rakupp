@@ -533,6 +533,45 @@ static Value complexSqrt(double re, double im) {
                           std::copysign(std::sqrt((a - re) / 2.0), im));
 }
 
+// The declared KEY TYPE of an OBJECT hash (`my %h{Int}`), or "" for a plain one.
+// Parser.cpp records it as the second half of declType ("Any,Int") and typedDefault
+// copies that into ofType; `.keyof` reads the same half.
+std::string objHashKeyType(const Value& h) {
+    if (h.t != VT::Hash || !h.hashKind.empty()) return "";
+    size_t c = h.ofType.find(',');
+    return c == std::string::npos ? "" : h.ofType.substr(c + 1);
+}
+
+// The REAL key of a hash entry, from whichever of the three sources has it.
+//
+// The store is `map<std::string, Value>`, so a key is a lookup STRING and its
+// original value has to come from somewhere else. A Set/Bag/Mix parks it in the
+// count's pairKey; an object hash reconstructs it from the declared key type; a
+// plain hash genuinely keys on Str. Every site that hands a key back to a program
+// — .keys, .pairs, .kv, iteration, .raku — needs the same answer, and before this
+// existed each spelled the first two cases out for itself (or, mostly, didn't).
+//
+// A key type we cannot rebuild from a string (a class, or bare Any/Mu, where
+// `%h{3}` and `%h<3>` are different keys in Rakudo and the same one here) stays a
+// Str. That is the pre-existing gap — Hash keys being plain strings — narrowed to
+// where it actually bites rather than papered over with a guess.
+Value hashEntryKey(const Value& h, const std::string& k, const Value& stored) {
+    if (stored.pairKey) return *stored.pairKey;
+    const std::string kt = objHashKeyType(h);
+    if (kt.empty()) return Value::str(k);
+    static const std::set<std::string> numericKey = {
+        "Int", "UInt", "int", "Num", "num", "Rat", "FatRat", "Numeric", "Real", "Cool"
+    };
+    if (numericKey.count(kt)) {
+        // numifyStr already picks the Raku-correct type ("33" -> Int, "1.5" -> Rat),
+        // which is the same ladder that put the key there; a key that will not
+        // numify (a Cool hash keyed by a Str) stays the Str it was.
+        Value n = numifyStrFailure(k);
+        if (n.isNumeric()) return n;
+    }
+    return Value::str(k);
+}
+
 // `.raku` / `.perl` — an EVAL-round-trippable representation of a value (as opposed
 // to `.gist`, which is the human-readable form). Recursive over containers.
 static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
@@ -659,6 +698,10 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
             if (v.ofType == "Str") // Str range: quoted endpoint form
                 return "\"" + cpToU8((uint32_t)v.rFrom) + "\"" + (v.rExFrom ? "^" : "") + ".." +
                        (v.rExTo ? "^" : "") + "\"" + cpToU8((uint32_t)v.rTo) + "\"";
+            // `0..^N` is `^N` here too — Rakudo shows the short form for .raku as
+            // well as gist. Same Int-zero-only rule as Value::gist.
+            if (!v.rExFrom && v.rExTo && v.rFrom == 0 && !v.rNum)
+                return "^" + std::to_string(v.rTo);
             return std::to_string(v.rFrom) + (v.rExFrom ? "^" : "") + ".." + (v.rExTo ? "^" : "") + std::to_string(v.rTo);
         case VT::Pair: {
             Value val = v.pairVal ? *v.pairVal : Value::nil();
@@ -759,6 +802,28 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
                 }
                 if (v.hash) seen.erase(v.hash.get());
                 return o + "))";
+            }
+            // An OBJECT hash renders as the DECLARATION that rebuilds it —
+            // `(my Any %{Int} = 3 => "a")` — because `{3 => "a"}` would round-trip
+            // through EVAL as a plain Str-keyed hash and lose the constraint. The
+            // entries are the same as below, except the key is its real value.
+            const std::string okt = objHashKeyType(v);
+            if (!okt.empty()) {
+                std::string vt = v.ofType.substr(0, v.ofType.find(','));
+                std::string o = "(my " + (vt.empty() ? "Any" : vt) + " %{" + okt + "}";
+                bool f = true;
+                for (auto& k : keys) {
+                    o += f ? " = " : ", "; f = false;
+                    Value val = v.hash->at(k);
+                    if (val.t == VT::Array || val.t == VT::Hash) val.itemized = true;
+                    std::string rv = rakuRepr(val, depth + 1, seen);
+                    Value rk = hashEntryKey(v, k, v.hash->at(k));
+                    o += (rk.t == VT::Str && rakuIdentKey(k))
+                             ? ":" + k + "(" + rv + ")"
+                             : rakuRepr(rk, depth + 1, seen) + " => " + rv;
+                }
+                if (v.hash) seen.erase(v.hash.get());
+                return o + ")";
             }
             std::string o = "{"; bool first = true;
             for (auto& k : keys) {
@@ -1025,7 +1090,19 @@ static ValueList toList(const Value& v) {
         return v.blobList();
     if (v.t == VT::Hash && v.hash) {
         ValueList out;
-        for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; out.push_back(std::move(p)); }
+        // The object-hash test is hoisted: this is the hot path for every hash
+        // iteration, and a plain hash must cost exactly what it did before —
+        // one shared_ptr copy, not a Value built and thrown away per entry.
+        const bool objHash = !objHashKeyType(v).empty();
+        for (auto& kv : *v.hash) {
+            Value p = Value::pair(kv.first, kv.second);
+            if (kv.second.pairKey) p.pairKey = kv.second.pairKey;
+            else if (objHash) {
+                Value rk = hashEntryKey(v, kv.first, kv.second);
+                if (rk.t != VT::Str) p.pairKey = std::make_shared<Value>(std::move(rk));
+            }
+            out.push_back(std::move(p));
+        }
         return out;
     }
     return {v};
@@ -1348,6 +1425,31 @@ static bool deepEq(const Value& a, const Value& b) {
 // Buf/Blob binary IO: bit-addressed (read|write)-(u)bits and byte-addressed
 // numeric forms. Bits are MSB-first within the byte stream; values may exceed
 // 64 bits (BigInt). Writes mutate `buf` in place (the caller routes an lvalue).
+// `.splice` on a Buf replaces a window IN PLACE and answers the removed bytes.
+// It needs the invocant's own slot: methodCall takes its invocant BY VALUE, and a
+// Buf's bytes are a plain std::string rather than a shared_ptr the way an Array's
+// elements are — so unlike Array.splice it cannot mutate through a copy. Same
+// reason bufBitOp lives out here.
+Value Interpreter::bufSplice(Value& buf, ValueList& args) {
+    long long n = (long long)buf.s.size();
+    long long from = args.size() > 0 && args[0].t != VT::Pair ? args[0].toInt() : 0;
+    if (from < 0) from += n;
+    if (from < 0) from = 0; if (from > n) from = n;
+    long long len = args.size() > 1 && args[1].t != VT::Pair ? args[1].toInt() : n - from;
+    if (len < 0) len = 0; if (from + len > n) len = n - from;
+    std::string repl; // the replacement flattens: .splice(0, 3, <3 2 1>)
+    for (size_t k = 2; k < args.size(); k++) {
+        if (args[k].t == VT::Pair) continue;
+        if (args[k].t == VT::Array || args[k].t == VT::Range)
+            for (auto& e : args[k].flatten()) repl += (char)(unsigned char)(e.toInt() & 0xFF);
+        else repl += (char)(unsigned char)(args[k].toInt() & 0xFF);
+    }
+    Value removed = Value::str(buf.s.substr((size_t)from, (size_t)len));
+    removed.hashKind = buf.hashKind;
+    buf.s.replace((size_t)from, (size_t)len, repl);
+    return removed;
+}
+
 Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     std::string& bytes = buf.s;
     auto endianOf = [&](const Value& v) -> int { // 0 native, 1 little, 2 big
@@ -2157,6 +2259,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             if (m == "head") return mkCURI("home", homeDir() + "/.raku");
             if (m == "name-for-repository") return Value::str("home");
         }
+        // A FileSystem repo is the non-installed sibling: it serves a source tree
+        // directly. rakupp does not enumerate its dists either, so `.files` answers
+        // the same empty list rather than being absent.
+        if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
+            inv.obj->cls->name == "CompUnit::Repository::FileSystem" &&
+            (m == "files" || m == "candidates" || m == "installed")) {
+            Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
+        }
         if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
             inv.obj->cls->name == "CompUnit::Repository::Installation") {
             auto& at = inv.obj->attrs;
@@ -2179,6 +2289,14 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                 Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
             }
             if (m == "installed") {
+                Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
+            }
+            // `.files($name, :$ver, :$auth, :$api)` looks up an INSTALLED file (a
+            // `bin/` script or a `resources/` entry) across the repo's distributions.
+            // rakupp does not enumerate dists yet — the same Phase-1 gap as
+            // `.candidates` — so the honest answer is the empty list every caller
+            // already handles with `// "Nada"`, not a missing method.
+            if (m == "files") {
                 Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
             }
             if (m == "install") {
@@ -2562,6 +2680,10 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (mm == "name") {
             if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW")
                 return Value::str("Perl6::Metamodel::ClassHOW"); // Rakudo's full metaclass name
+            // An OBJECT hash is a PARAMETERIZED Hash: `my Int %h{Str}` is a
+            // Hash[Int,Str]. Only the name carries the parameters — typeName()
+            // stays "Hash", because dispatch and error messages key on it.
+            if (!objHashKeyType(inv).empty()) return Value::str("Hash[" + inv.ofType + "]");
             // a DEFINITENESS-constrained type reports its smiley: `Any:D.^name`
             if (inv.t == VT::Type && inv.i)
                 return Value::str(inv.typeName() + (inv.i == 1 ? ":D" : ":U"));
@@ -2820,6 +2942,25 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     }
     if (inv.t == VT::Hash && inv.hashKind == "IO::Path::Parts") {
         if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash)[m];
+        // It is Positional as well as Associative: `$parts[0]` is the volume PAIR
+        // and `$parts[]` lists all three. The order is the declaration order —
+        // volume, dirname, basename — not the map's sorted order, so this cannot
+        // just walk the hash.
+        if (m == "AT-POS" || m == "list" || m == "List" || m == "elems" || m == "Numeric") {
+            static const char* kOrder[3] = {"volume", "dirname", "basename"};
+            if (m == "elems" || m == "Numeric") return Value::integer(3);
+            auto pairAt = [&](int i) {
+                return Value::pair(kOrder[i], (*inv.hash)[kOrder[i]]);
+            };
+            if (m == "AT-POS") {
+                long long i = args.empty() ? 0 : args[0].toInt();
+                if (i < 0) i += 3;
+                return (i >= 0 && i < 3) ? pairAt((int)i) : Value::any();
+            }
+            Value out = Value::array(); out.isList = true;
+            for (int i = 0; i < 3; i++) out.arr->push_back(pairAt(i));
+            return out;
+        }
         if (m == "gist" || m == "raku" || m == "Str") {
             // the parts are STRING LITERALS, so a backslash in a Windows path has to
             // be escaped like any other Str.raku (`"\\a"`, not `"\a"`)
@@ -2875,6 +3016,21 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     if (inv.t == VT::Hash && inv.hashKind == "Format") {
         if (m == "Str" || m == "gist" || m == "raku") return (*inv.hash)["fmt"];
         if (m == "arity" || m == "count") return (*inv.hash)["arity"];
+        // `.directives` names the conversion letter of each `%…` in order:
+        // "%05d%3x:%s" is (d x s). Flags, width and precision are skipped —
+        // the directive is the first ALPHABETIC character after the percent.
+        if (m == "directives") {
+            const std::string fmt = (*inv.hash)["fmt"].toStr();
+            Value out = Value::array(); out.isList = true;
+            for (size_t k = 0; k + 1 < fmt.size(); k++) {
+                if (fmt[k] != '%') continue;
+                if (fmt[k + 1] == '%') { k++; continue; } // a literal percent
+                size_t j = k + 1;
+                while (j < fmt.size() && !std::isalpha((unsigned char)fmt[j])) j++;
+                if (j < fmt.size()) { out.arr->push_back(Value::str(std::string(1, fmt[j]))); k = j; }
+            }
+            return out;
+        }
         if (m == "CALL-ME" || m == "()") return methodCall((*inv.hash)["code"], "CALL-ME", args, rwArgs);
     }
     if (inv.t == VT::Type && inv.s == "Capture" && m == "new") {
@@ -4117,6 +4273,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                 if (a.t == VT::Pair && a.s == "cwd" && a.pairVal)
                     (*pr.hash)["cwd"] = Value::str(a.pairVal->toStr());
             return pr;
+        }
+        // `.command` is the argv the process was constructed with, as a List
+        if (m == "command") {
+            auto it = inv.hash->find("argv");
+            Value out = Value::array(); out.isList = true;
+            if (it != inv.hash->end() && it->second.arr) *out.arr = *it->second.arr;
+            return out;
         }
         if (m == "kill" || m == "close-stdin" || m == "print" || m == "say" || m == "write" || m == "put") return Value::boolean(true);
         // after runProcPromise stored the exit status on the proc:
@@ -6340,11 +6503,16 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         return re; // Num / Real
     }
     if (inv.t == VT::Complex && (m == "floor" || m == "ceiling" || m == "round" || m == "truncate")) {
+        // A Complex rounds PER COMPONENT, and `.round($scale)` rounds to a multiple
+        // of the scale — `(1.256-3.875i).round(0.1)` is 1.3-3.9i. The scale used to
+        // be dropped here. Each component goes through the scalar path rather than
+        // repeating the arithmetic: that one is exact (Rat), and doing it again in
+        // doubles gave -3.9000000000000004 for the imaginary part.
         auto f = [&](double x) {
-            return m == "floor" ? std::floor(x) : m == "ceiling" ? std::ceil(x)
-                 : m == "round" ? std::floor(x + 0.5) : std::trunc(x);
+            ValueList a2 = args;
+            return methodCall(numifyStr(Value::number(x).toStr()), m, a2, nullptr).toNum();
         };
-        return Value::complex(f(inv.n), f(inv.im)); // per-component
+        return Value::complex(f(inv.n), f(inv.im));
     }
     if (m == "Int") {
         // ±Inf / NaN cannot convert to Int (X::Numeric::CannotConvert)
@@ -6401,7 +6569,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (inv.t == VT::Match) return numifyStrFailure(inv.toStr());
         // an already-numeric value is ITSELF: `3.Numeric` is an Int and `(-4/3).Real`
         // a Rat. Going through toNum() forced everything to Num.
-        if (inv.t == VT::Int || inv.t == VT::Rat || inv.t == VT::Num) return inv;
+        if (inv.t == VT::Int || inv.t == VT::Rat || inv.t == VT::Num) {
+            // …but an ENUM VALUE numifies to a PLAIN Int. Returning it unchanged
+            // kept its enumName, so `b.Numeric` and `+b` rendered as `b` rather
+            // than 1, while `.Int` and `.value` (which build a fresh Int) were
+            // right — the same value answering three ways.
+            if (!inv.enumName.empty()) {
+                Value n = inv; n.enumName.clear(); n.enumType.clear();
+                return n;
+            }
+            return inv;
+        }
         if (inv.t == VT::Bool) return Value::integer(inv.b ? 1 : 0);
         return Value::number(inv.toNum());
     }
@@ -7996,6 +8174,62 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (from < 0) from = 0; if (from > n) from = n;
         if (len < 0) len = 0; if (from + len > n) len = n - from;
         Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind; return b;
+    }
+    // `.unpack(TEMPLATE)` — the subset the documentation exercises. "C*" is every
+    // byte as an integer; a count is a repeat, `*` is "all that remain".
+    if (m == "unpack" && inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+        const std::string tmpl = args.empty() ? "" : args[0].toStr();
+        const std::string& d = inv.s;
+        Value out = Value::array(); out.isList = true;
+        size_t pos = 0;
+        for (size_t k = 0; k < tmpl.size(); k++) {
+            char dir = tmpl[k];
+            if (std::isspace((unsigned char)dir)) continue;
+            bool all = false; long long cnt = 1;
+            if (k + 1 < tmpl.size() && tmpl[k + 1] == '*') { all = true; k++; }
+            else if (k + 1 < tmpl.size() && std::isdigit((unsigned char)tmpl[k + 1])) {
+                size_t j = k + 1; std::string num;
+                while (j < tmpl.size() && std::isdigit((unsigned char)tmpl[j])) num += tmpl[j++];
+                cnt = std::stoll(num); k = j - 1;
+            }
+            auto left = [&] { return d.size() > pos ? (long long)(d.size() - pos) : 0LL; };
+            auto be = [&](int w) { long long v = 0;
+                for (int b2 = 0; b2 < w && pos < d.size(); b2++) v = (v << 8) | (unsigned char)d[pos++];
+                return v; };
+            auto le = [&](int w) { long long v = 0; int sh = 0;
+                for (int b2 = 0; b2 < w && pos < d.size(); b2++, sh += 8)
+                    v |= (long long)(unsigned char)d[pos++] << sh;
+                return v; };
+            if (dir == 'C' || dir == 'c') {
+                long long r = all ? left() : cnt;
+                for (long long i2 = 0; i2 < r && pos < d.size(); i2++)
+                    out.arr->push_back(Value::integer((unsigned char)d[pos++]));
+            } else if (dir == 'A' || dir == 'a' || dir == 'Z') {
+                long long r = all ? left() : cnt;
+                std::string t; for (long long i2 = 0; i2 < r && pos < d.size(); i2++) t += d[pos++];
+                out.arr->push_back(Value::str(t));
+            } else if (dir == 'H') {
+                long long r = all ? left() * 2 : cnt;
+                std::string t; static const char* hx = "0123456789abcdef";
+                for (long long i2 = 0; i2 < r && pos < d.size(); i2 += 2) {
+                    unsigned char c2 = (unsigned char)d[pos++];
+                    t += hx[c2 >> 4]; if (i2 + 1 < r) t += hx[c2 & 0xF];
+                }
+                out.arr->push_back(Value::str(t));
+            } else if (dir == 'x') {
+                pos += (size_t)(all ? left() : cnt);
+            } else {
+                int w = (dir == 'n' || dir == 'S' || dir == 'v') ? 2 : 4;
+                bool bigEnd = (dir == 'n' || dir == 'N');
+                long long r = all ? left() / w : cnt;
+                for (long long i2 = 0; i2 < r && pos < d.size(); i2++)
+                    out.arr->push_back(Value::integer(bigEnd ? be(w) : le(w)));
+            }
+        }
+        // Rakudo hands back the VALUE when the template produced exactly one —
+        // `.unpack("A3")` is a Str and `.unpack("C1")` an Int, not a 1-element list.
+        if (out.arr->size() == 1) return (*out.arr)[0];
+        return out;
     }
     if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
     if ((m == "encode" || m == "decode") && inv.t == VT::Str) {
@@ -10716,7 +10950,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "keys") {
             Value out = Value::array();
             // Set/Bag/Mix recover the element's original type from the count's pairKey.
-            if (inv.t == VT::Hash) { for (auto& kv : *inv.hash) out.arr->push_back(kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first)); }
+            if (inv.t == VT::Hash) { for (auto& kv : *inv.hash) out.arr->push_back(hashEntryKey(inv, kv.first, kv.second)); }
             else for (size_t i = 0; i < items.size(); i++) out.arr->push_back(Value::integer((long long)i));
             out.isList = true;
             return out;
@@ -10738,15 +10972,16 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         }
         if (m == "invert" && inv.t == VT::Hash) { // %h.invert -> list of (value => key)
             Value out = Value::array(); out.isList = true; out.s = "Seq";
-            auto push1 = [&](const Value& v, const std::string& k) {
-                Value p = Value::pair(v.toStr(), Value::str(k));
+            auto push1 = [&](const Value& v, const Value& k) {
+                Value p = Value::pair(v.toStr(), k);
                 if (v.t != VT::Str) p.pairKey = std::make_shared<Value>(v); // a numeric value stays a numeric key
                 out.arr->push_back(std::move(p));
             };
             for (auto& kv : *inv.hash) {
+                Value key = hashEntryKey(inv, kv.first, kv.second);
                 if (kv.second.t == VT::Array && kv.second.arr)
-                    for (auto& v : *kv.second.arr) push1(v, kv.first);
-                else push1(kv.second, kv.first);
+                    for (auto& v : *kv.second.arr) push1(v, key);
+                else push1(kv.second, key);
             }
             return out;
         }
@@ -10834,7 +11069,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "antipairs" && inv.t == VT::Hash) { // (value => key) pairs, like invert
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             for (auto& kv : *inv.hash) {
-                Value p = Value::pair(kv.second.toStr(), Value::str(kv.first));
+                Value p = Value::pair(kv.second.toStr(), hashEntryKey(inv, kv.first, kv.second));
                 if (kv.second.t != VT::Str) p.pairKey = std::make_shared<Value>(kv.second); // numeric value -> numeric key
                 out.arr->push_back(std::move(p));
             }
@@ -10854,10 +11089,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             if (inv.t == VT::Hash) {
                 for (auto& kv : *inv.hash) {
-                    Value key = kv.second.pairKey ? *kv.second.pairKey : Value::str(kv.first);
+                    Value key = hashEntryKey(inv, kv.first, kv.second);
                     if (m == "kv") { out.arr->push_back(key); out.arr->push_back(kv.second); }
                     else if (m == "antipairs") { Value p = Value::pair(kv.second.toStr(), key); out.arr->push_back(std::move(p)); }
-                    else { Value p = Value::pair(kv.first, kv.second); p.pairKey = kv.second.pairKey; out.arr->push_back(std::move(p)); }
+                    else { Value p = Value::pair(kv.first, kv.second);
+                           if (key.t != VT::Str) p.pairKey = std::make_shared<Value>(std::move(key));
+                           out.arr->push_back(std::move(p)); }
                 }
             } else {
                 for (size_t i = 0; i < items.size(); i++) {

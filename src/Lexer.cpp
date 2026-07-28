@@ -1362,6 +1362,13 @@ Token Lexer::lexIdentOrVar() {
         name += advance(); name += advance();
         consumeIdentChars(name);
     }
+    // A flip-flop's trailing `^` belongs to the OPERATOR: `ff^` / `fff^` (and the
+    // `^ff^` form, whose leading caret is glued on in lexOperator). Without this
+    // they lex as three tokens and the `^` reads as a prefix on the right operand.
+    if ((name == "ff" || name == "fff") && peek() == '^') {
+        name += advance();
+        return make(Tok::Ident, name);
+    }
     // word-operator compound assignment: `div= mod= gcd= lcm=` (one Op token, tight `=`)
     if ((name == "div" || name == "mod" || name == "gcd" || name == "lcm") &&
         peek() == '=' && peek(1) != '=' && peek(1) != ':') {
@@ -1537,7 +1544,7 @@ bool Lexer::trySetOp(Token& out) {
     return false;
 }
 
-Token Lexer::lexOperator() {
+Token Lexer::lexOperator(bool termBefore) {
     // hyper metaop with guillemet brackets: »op« / «op» / »op» / «op«  (2-byte UTF-8
     // « = C2 AB, » = C2 BB). Normalise to the ASCII >>op<< form the parser already
     // understands. Only reached in operator position, so it never shadows a «…» word
@@ -1652,7 +1659,13 @@ Token Lexer::lexOperator() {
         int k = 2;
         while (peek(k) == ' ' || peek(k) == '\t') k++;
         char cN = peek(k);
-        bool shifty = (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-' || cN == '*'))
+        // An infix needs a LEFT OPERAND: once a term precedes, `+<` can only be the
+        // shift, whatever follows it — `1 +< "2"` and `True +< False` used to lex as
+        // `+` then a word list and swallow the rest of the line. In TERM position
+        // the old follow-set still decides, which is what keeps `+< foo bar >` and
+        // `+<3 4>` prefix-plus-wordlist (one-pass-parsing/less-than.t).
+        bool shifty = termBefore
+                    || (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-' || cN == '*'))
                     || peek(2) == '='; // compound `+<=` is always a shift
         if (shifty) {
             std::string op; op += advance(); op += advance(); // + <
@@ -1678,6 +1691,26 @@ Token Lexer::lexOperator() {
             return make(Tok::Op, s);
         }
     }
+    // `^ff` / `^fff` (and their `^`-suffixed forms): the leading caret is part of
+    // the flip-flop, not a prefix `^` on its left operand. Only in INFIX position —
+    // in term position `^ff` really is `^` applied to a variable named ff.
+    if (peek() == '^' && termBefore) {
+        int k = 1;
+        while (peek(k) == ' ' || peek(k) == '\t') k++;
+        for (const char* w : {"fff", "ff"}) {
+            size_t wl = std::strlen(w);
+            bool hit = true;
+            for (size_t j = 0; j < wl; j++) if (peek(k + (int)j) != w[j]) { hit = false; break; }
+            if (!hit) continue;
+            char after = peek(k + (int)wl);
+            if (std::isalnum((unsigned char)after) || after == '_' || after == '-') continue; // ffoo
+            advance();                                   // the leading ^
+            while (peek() == ' ' || peek() == '\t') advance();
+            std::string nm; for (size_t j = 0; j < wl; j++) nm += advance();
+            if (peek() == '^') nm += advance();          // ^ff^
+            return make(Tok::Ident, "^" + nm);
+        }
+    }
     char c = advance();
     return make(Tok::Op, std::string(1, c));
 }
@@ -1685,6 +1718,30 @@ Token Lexer::lexOperator() {
 // Is a `<` here a bare word-list opener?  Only where NO term precedes it — a
 // comparison needs a left operand, so directly after `(`/`[`/`,`/`;`/`=>`/most
 // operators/list-keywords a `<` can only open `< a b >`.  Mirrors regexContext.
+// Is the token before a `+<` / `~<` unambiguously a TERM? Then the operator can
+// only be the infix shift, whatever follows it.
+//
+// Deliberately narrower than angleTermContext's inverse: a bare identifier is NOT
+// enough, because a listop looks exactly like one — `is-deeply ~<2>, '2'` is a
+// prefix `~` on a word list, and treating `~<` there as a shift swallowed the rest
+// of S02-literals/allomorphic.t. Only literals, variables, closers and the handful
+// of identifiers that can never be a listop count.
+static bool prevIsClearTerm(const std::vector<Token>& out) {
+    if (out.empty()) return false;
+    const Token& pv = out.back();
+    switch (pv.kind) {
+        case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp:
+        case Tok::VersionLit: case Tok::QwList: case Tok::Var:
+        case Tok::RParen: case Tok::RBracket: case Tok::RBrace:
+            return true;
+        case Tok::Ident: {
+            static const std::set<std::string> terms = {"True", "False", "Nil", "Inf", "NaN"};
+            return terms.count(pv.text) > 0;
+        }
+        default: return false;
+    }
+}
+
 static bool angleTermContext(const std::vector<Token>& out) {
     if (out.empty()) return true;
     const Token& pv = out.back();
@@ -1872,7 +1929,7 @@ std::vector<Token> Lexer::tokenize() {
                   peek(1) == '!' || peek(1) == '^' ||
                   (peek(1) == ':' && peek(2) == ':') || // symbolic deref `%::($n)` / `&::($n)`
                   ((peek(1) == '?' || peek(1) == '=' || peek(1) == '~') && isIdentStart(peek(2))))) {
-                t = lexOperator();
+                t = lexOperator(prevIsClearTerm(out));
             } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) && tryQuoteForm(t)) {
                 // t set by tryQuoteForm
             } else {
@@ -1924,7 +1981,7 @@ std::vector<Token> Lexer::tokenize() {
             t = make(Tok::RegexLit, raw);
         }
         else {
-            t = lexOperator();
+            t = lexOperator(prevIsClearTerm(out));
         }
         // bare `< … >` word-list tracking: enter in term context (never for the
         // `[<]` reduce metaop), nest on inner `<`, leave on a `>`-leading op;

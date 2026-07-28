@@ -354,6 +354,10 @@ std::string Value::toStr() const {
             // a bare `Mu.new` / `Any.new` instance has no attributes to show
             if (hashKind == "Mu" || hashKind == "Any") return hashKind + ".new";
             if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
+            // An IO::Handle Strs as its PATH — `"foo".IO.open.Str` is "foo".
+            // Without this it fell through to the key\tvalue dump below.
+            if (hashKind == "FileHandle" && hash && hash->count("path"))
+                return hash->at("path").toStr();
             if (hashKind == "StrDistance" && hash && hash->count("after"))
                 return hash->at("after").toStr(); // "$dist" is the resulting string
             if ((hashKind == "Date" || hashKind == "DateTime") && hash) return dateGist(*hash, hashKind == "Date");
@@ -484,6 +488,14 @@ std::string Value::gist() const {
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
             const char* exF = rExFrom ? "^" : "";
             const char* exT = rExTo ? "^" : "";
+            // `0..^N` renders as `^N` — Rakudo shows the short form for gist AND
+            // .raku. It is exactly the Int-zero case: `0.0..^5`, `0..^5e0` and
+            // `0..^0.5` all keep the long form, so a non-Int endpoint on either
+            // side (rNum, or a stored RangeEnds spelling) falls through below.
+            if (!rExFrom && rExTo && rFrom == 0 && !rNum && ofType != "Str" && !rangeEnds(*this)) {
+                std::ostringstream os; os << "^" << rTo;
+                return os.str();
+            }
             if (ofType == "Str")
                 return "\"" + cpToU8((uint32_t)rFrom) + "\"" + exF + ".." + exT + "\"" + cpToU8((uint32_t)rTo) + "\"";
             // endpoints written as something other than plain Ints render as
@@ -508,6 +520,18 @@ std::string Value::gist() const {
             if (hashKind == "Scalar" && hash) { // a .VAR container gists as its value
                 auto it = hash->find("value");
                 return it != hash->end() ? it->second.gist() : "(Any)";
+            }
+            // Same story as Proc below: an IO::Handle had no rendering of its own,
+            // so `say $fh` and `$fh.Str` dumped buffer/mode/path as a hash. Rakudo
+            // gists it as IO::Handle<"path".IO>(opened) and Strs it as the PATH.
+            if (hashKind == "FileHandle" && hash) {
+                auto it = hash->find("path");
+                std::string path = it != hash->end() ? it->second.toStr() : "";
+                bool closed = hash->count("closed") && hash->at("closed").truthy();
+                std::string q = "\"";
+                for (char c : path) { if (c == '\\' || c == '"') q += '\\'; q += c; }
+                q += "\"";
+                return "IO::Handle<" + q + ".IO>(" + (closed ? "closed" : "opened") + ")";
             }
             // A Proc gists as a Proc, not as a dump of its internals. Falling
             // through to the generic hash rendering printed every slot including
