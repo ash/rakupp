@@ -45,6 +45,10 @@ Silent wrong answers, none of which Roast caught:
   emptiness guard compared lengths before values.
 - `for 'a'..'c' { .say }` printed `0` under `--exe`.
 - `∞/∞` gave Inf — the lexer read the `/` as opening a regex.
+- `say shell("ls")` printed the listing **twice**. A Proc had no gist of its
+  own, so it fell through to the generic hash rendering — which prints every
+  slot, including the captured `out-str`. It renders in Rakudo's shape now,
+  `Proc.new(… exitcode => 0, signal => 0, pid => …, command => ("ls",))`.
 
 Also: exact Mix weights, `Nil` subscripts, `Junction.defined`, allomorph
 identity in sets and `===`/`eqv`, `.perl` aliased once rather than in sixteen
