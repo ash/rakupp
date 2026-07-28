@@ -143,6 +143,7 @@ course. Build it with `rakujs/build.sh`; details in
 - **[MODULES.md](docs/MODULES.md)** — working with modules: how `use` finds modules installed by zef, the search-path order, and writing your own.
 - **[REFERENCE.md](docs/REFERENCE.md)** — exhaustive lookup sheet: every operator, built-in subroutine, and method, each with a verified example.
 - **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
+- **[faq/](docs/faq/)** — short answers to questions people actually ask ("how do I capture a command's output?"), every snippet verified against both Raku++ and Rakudo, with the differences called out.
 - **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
 - **[ASYNC.md](docs/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[NETWORKING.md](docs/NETWORKING.md)** — talking over the network: async TCP clients and servers, HTTP, graceful shutdown with `signal`, and HTTPS/TLS via `IO::Socket::Async::SSL`.

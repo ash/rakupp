@@ -10,6 +10,7 @@ point; everything else lives here.
 - **[GUIDE.md](GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 - **[FEATURES.md](FEATURES.md)** — inventory of supported language features, by theme.
 - **[COOKBOOK.md](COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
+- **[faq/](faq/)** — short answers to questions people actually ask, every snippet verified against both engines, with the Raku++/Rakudo differences called out.
 - **[UNICODE.md](UNICODE.md)** — Unicode support: graphemes, normalization, UCA collation, character introspection.
 - **[ASYNC.md](ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
