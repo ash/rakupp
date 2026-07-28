@@ -10,7 +10,7 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v1.2.5** (2026-07-28) — *documentation
+**Status:** current release **v1.2.6** (2026-07-28) — *documentation
 conformance*: **936** of the official Raku documentation's runnable examples now
 produce byte-identical output on Raku++ and Rakudo, up from 835.
 Measured per individual test, **90% of Roast passes** — 196,381 of

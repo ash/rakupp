@@ -3,6 +3,30 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## v1.2.6 (2026-07-28) — Proc rendering
+
+A point release for one user-visible bug found just after v1.2.5 shipped.
+
+### Fixed
+
+- `say shell("ls")` printed the listing **twice**: once as the child ran, once
+  inside the Proc's own gist. A Proc had no gist of its own, so it fell through
+  to the generic hash rendering, which prints every slot — including the
+  captured `out-str`. It renders in Rakudo's shape now, byte-identical apart
+  from the pid:
+  `Proc.new(in => IO::Pipe, out => IO::Pipe, err => IO::Pipe, os-error => Str,
+  exitcode => 0, signal => 0, pid => 58353, command => ("ls",))`.
+  The argv is rendered .raku-style so a Str argument keeps its quotes and a
+  one-element command keeps its trailing comma; the child's pid is plumbed out
+  of the spawn on both platforms rather than reported as Any.
+
+  The same missing gist explains the tab-separated key/value dump in
+  [#10](https://github.com/ash/rakupp/issues/10) — that was never a Windows
+  artefact, it is what a Proc looked like everywhere.
+
+Roast and documentation-conformance numbers are unchanged from v1.2.5
+(196,381 assertions, 622 files, 936 examples).
+
 ## v1.2.5 (2026-07-28) — correctness, and one rule in one place
 
 A maintenance release. Two threads: closing documentation divergences, and a
@@ -45,10 +69,6 @@ Silent wrong answers, none of which Roast caught:
   emptiness guard compared lengths before values.
 - `for 'a'..'c' { .say }` printed `0` under `--exe`.
 - `∞/∞` gave Inf — the lexer read the `/` as opening a regex.
-- `say shell("ls")` printed the listing **twice**. A Proc had no gist of its
-  own, so it fell through to the generic hash rendering — which prints every
-  slot, including the captured `out-str`. It renders in Rakudo's shape now,
-  `Proc.new(… exitcode => 0, signal => 0, pid => …, command => ("ls",))`.
 
 Also: exact Mix weights, `Nil` subscripts, `Junction.defined`, allomorph
 identity in sets and `===`/`eqv`, `.perl` aliased once rather than in sixteen
