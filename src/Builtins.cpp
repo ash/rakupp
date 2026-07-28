@@ -130,18 +130,67 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         SetHandleInformation(errR, HANDLE_FLAG_INHERIT, 0);
     }
     HANDLE nul = errOut ? INVALID_HANDLE_VALUE : CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
-    std::string cmd; // quoted command line
-    for (size_t i = 0; i < argv.size(); i++) { if (i) cmd += ' '; cmd += '"'; for (char c : argv[i]) { if (c == '"') cmd += '\\'; cmd += c; } cmd += '"'; }
+    // Quote an argument only when it NEEDS it. Quoting unconditionally breaks a
+    // command processor switch — cmd.exe does not recognise a quoted `"/c"` — and
+    // `cmd.exe /c "…"` is exactly the shape shell() and the not-an-.exe fallback
+    // below both produce.
+    std::string cmd;
+    for (size_t i = 0; i < argv.size(); i++) {
+        if (i) cmd += ' ';
+        const std::string& a0 = argv[i];
+        bool needQuote = a0.empty() || a0.find_first_of(" \t\"") != std::string::npos;
+        if (!needQuote) { cmd += a0; continue; }
+        cmd += '"';
+        for (char c : a0) { if (c == '"') cmd += '\\'; cmd += c; }
+        cmd += '"';
+    }
     STARTUPINFOA si; ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    // STARTF_USESTDHANDLES requires ALL THREE handles to be valid AND inheritable.
+    // GetStdHandle does not guarantee either — under a host that redirected stdin,
+    // or with no console at all, it can hand back INVALID_HANDLE_VALUE, and then
+    // CreateProcess fails for every command. Fall back to NUL and mark it
+    // inheritable rather than passing a handle the child cannot use.
+    HANDLE inH = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE inNul = INVALID_HANDLE_VALUE;
+    if (inH == nullptr || inH == INVALID_HANDLE_VALUE) {
+        inNul = CreateFileA("NUL", GENERIC_READ, FILE_SHARE_READ, &sa, OPEN_EXISTING, 0, nullptr);
+        inH = inNul;
+    }
+    else SetHandleInformation(inH, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    si.hStdInput = inH;
     si.hStdOutput = outW;
     si.hStdError = errOut ? errW : nul;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
     BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+    DWORD spawnErr = started ? 0 : GetLastError();
+    // Not an .exe? It may be a .bat/.cmd, or a name the command processor knows.
+    // CreateProcess cannot start those directly, so retry through COMSPEC — which
+    // is what makes `run 'somescript.bat'` work at all on Windows.
+    std::vector<char> cmdbuf2;
+    if (!started && (spawnErr == ERROR_FILE_NOT_FOUND || spawnErr == ERROR_BAD_EXE_FORMAT ||
+                     spawnErr == ERROR_ACCESS_DENIED)) {
+        const char* comspec = std::getenv("COMSPEC");
+        std::string shellCmd = std::string(comspec && *comspec ? comspec : "cmd.exe") + " /c " + cmd;
+        cmdbuf2.assign(shellCmd.begin(), shellCmd.end()); cmdbuf2.push_back('\0');
+        started = CreateProcessA(nullptr, cmdbuf2.data(), nullptr, nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+        if (!started) spawnErr = GetLastError();
+    }
     CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
-    if (!started) { CloseHandle(outR); if (errR) CloseHandle(errR); return; }
+    if (inNul != INVALID_HANDLE_VALUE) CloseHandle(inNul);
+    if (!started) {
+        // A silent -1 with no output is undiagnosable — say WHY, on the error
+        // stream when one was asked for, otherwise on our own stderr.
+        char msg[512] = {0};
+        FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
+                       spawnErr, 0, msg, sizeof msg - 1, nullptr);
+        std::string text = "Could not spawn '" + argv[0] + "': " + msg;
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+        if (errOut) *errOut = text + "\n"; else std::cerr << text << "\n";
+        CloseHandle(outR); if (errR) CloseHandle(errR);
+        return;
+    }
     bool parked = gil ? gil->gilPark() : false;
     auto start = std::chrono::steady_clock::now();
     char buf[8192]; bool oEof = false, eEof = (errR == nullptr);
@@ -12560,7 +12609,15 @@ void Interpreter::registerBuiltins() {
             }
             else if (cmd.empty()) cmd = v.toStr();
         }
+        // `shell` runs its argument through the SYSTEM command processor, which is
+        // cmd.exe on Windows — `/bin/sh` does not exist there, so every shell()
+        // call failed with exitcode -1 and no output (issue #10).
+#if defined(_WIN32)
+        const char* comspec = std::getenv("COMSPEC");
+        std::vector<std::string> argv = {comspec && *comspec ? comspec : "cmd.exe", "/c", cmd};
+#else
         std::vector<std::string> argv = {"/bin/sh", "-c", cmd};
+#endif
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         std::string out, err; int code = 0; bool timedout = false;
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr);
