@@ -38,6 +38,10 @@ point; everything else lives here.
 
 ## dev/ — working notes & history
 
+- **[dev/RELEASING.md](dev/RELEASING.md)** — the release checklist: the Roast,
+  local-suite, **performance** and compiler-agreement gates that must pass before
+  a version is bumped, and why each one exists.
+
 - **[dev/ROAST-GAPS.md](dev/ROAST-GAPS.md)** — classification of everything that still
   blocks a full Roast pass (from a systematic scan of all failing files), with
   a suggested attack order.

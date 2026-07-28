@@ -42,9 +42,76 @@ sub measure(Str $code --> Numeric) {
     @ms.skip(1).min;   # best of the measured runs
 }
 
+# --check compares against tools/perf-baseline.raku and EXITS NON-ZERO on a
+# regression, so a release can be gated on it. --record rewrites the baseline.
+# Without either it just prints the numbers, as it always did.
+my $BASEFILE = $repo.add('tools/perf-baseline.raku');
+my $check  = so @*ARGS.grep('--check');
+my $record = so @*ARGS.grep('--record');
+
 say "perf-guard: $RAKUPP";
+my %now;
 say "kernel      best (ms)";
 say "-" x 24;
 for <fib asg loopsum hash> -> $k {
-    printf "%-10s %8.1f\n", $k, measure(%kernels{$k});
+    %now{$k} = measure(%kernels{$k});
+    printf "%-10s %8.1f\n", $k, %now{$k};
+}
+
+if $record {
+    my %b = EVAL slurp $BASEFILE;
+    my @l = $BASEFILE.slurp.lines;
+    # rewrite only the numeric `baseline` fields, keeping every comment in place —
+    # the file explains WHY the baseline is what it is, and that is the valuable part
+    my @out;
+    for @l -> $line {
+        my $new = $line;
+        for %now.kv -> $k, $v {
+            if $line ~~ /^ \s* "'" $k "'" \s* '=>' / {
+                $new = $line.subst(/"'baseline'" \s* '=>' \s* <[\d.]>+/, "'baseline' => $v");
+                # a kernel that got FASTER also moves `best`
+                my $old-best = %b<kernels>{$k}<best>;
+                if $v < $old-best {
+                    $new = $new.subst(/"'best'" \s* '=>' \s* <[\d.]>+/, "'best' => $v");
+                }
+            }
+        }
+        @out.push: $new;
+    }
+    $BASEFILE.spurt(@out.join("\n") ~ "\n");
+    say "";
+    say "recorded {%now.elems} kernels into {$BASEFILE.basename}";
+    exit 0;
+}
+
+if $check {
+    my %b   = EVAL slurp $BASEFILE;
+    my $tol = %b<tolerance-pct>;
+    my @bad;
+    say "";
+    say "gate: baseline {$BASEFILE.basename} (recorded %b<recorded>), tolerance {$tol}%";
+    say "kernel        now   baseline    delta   vs best";
+    say "-" x 52;
+    for <fib asg loopsum hash> -> $k {
+        my $base = %b<kernels>{$k}<baseline>;
+        my $best = %b<kernels>{$k}<best>;
+        my $d    = 100 * (%now{$k} - $base) / $base;
+        my $vb   = 100 * (%now{$k} - $best) / $best;
+        printf "%-10s %7.1f  %9.1f  %+6.1f%%  %+6.1f%%\n", $k, %now{$k}, $base, $d, $vb;
+        @bad.push("$k {$d.round(0.1)}% slower than baseline") if $d > $tol;
+    }
+    say "";
+    if @bad {
+        note "perf-guard FAILED: @bad.join('; ')";
+        note "A release must not ship a performance regression. Either fix it, or —";
+        note "if the cost is understood and accepted — re-record the baseline with";
+        note "`rakupp tools/perf-guard.raku --record` and say why in the CHANGELOG.";
+        exit 1;
+    }
+    say "perf-guard OK — no kernel is more than {$tol}% slower than the last release.";
+    my @debt = <fib asg loopsum hash>.grep({
+        100 * (%now{$_} - %b<kernels>{$_}<best>) / %b<kernels>{$_}<best> > $tol });
+    note "note: still behind the best ever measured on: @debt.join(', ') "
+       ~ "(see the `best` column — standing debt, not a new regression)" if @debt;
+    exit 0;
 }
