@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 611 / 1,462 (**~42%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 196,052 / 200,501 (~98%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 196,052 / 214,004 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 196,052 / 217,016 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 622 / 1,462 (**~43%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 196,381 / 200,728 (~98%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 196,381 / 214,093 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 196,381 / 217,101 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~42%)** and **measure 4 (all declared tests, ~90%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -63,9 +63,9 @@ declares its real — often larger, dynamically computed — plan, so the percen
 can dip while absolute passes rise.) Only **5 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 196,052 passes read two ways:
+So our same 196,381 passes read two ways:
 
-- **~90%** against *our* denominator (196,052 / 217,016) — *"of the tests we can
+- **~90%** against *our* denominator (196,381 / 217,101) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
 - Essentially the **same ~90%** against the suite's *full* declared total —

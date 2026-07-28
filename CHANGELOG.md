@@ -3,6 +3,64 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## v1.2.5 (2026-07-28) — correctness, and one rule in one place
+
+A maintenance release. Two threads: closing documentation divergences, and a
+systematic audit for **semantic duplication** — one rule implemented in more than
+one place, so that fixing a bug in one copy leaves the other wrong.
+
+| | v1.2.0 | v1.2.5 |
+|---|---|---|
+| Documentation examples byte-identical to Rakudo | 835 | **936** |
+| Roast assertions (all declared) | 196,052 | **196,381** |
+| Roast files fully passing | 611 | **622** |
+| Regression tests | 113 | **137** |
+
+### Fixed
+
+Reported: [#7](https://github.com/ash/rakupp/issues/7) `.min`/`.max`/`.minmax`
+took `&by` as the first ARGUMENT rather than the first CODE argument, so an
+adverb in front of the block silently dropped it and the extremum was taken over
+the raw elements. [#10](https://github.com/ash/rakupp/issues/10) `run`/`shell`
+failed on Windows with exitcode -1 and no output — four causes: `shell` ran a
+hardcoded `/bin/sh`, the spawn passed a possibly-invalid stdin handle to
+`STARTF_USESTDHANDLES`, a failed spawn reported nothing at all, and every
+argument was quoted unconditionally (which breaks a `cmd.exe` switch).
+
+Silent wrong answers, none of which Roast caught:
+
+- `my $x = 5; say "$x-1"` printed **4**. A `-` continues an identifier only
+  before a letter or `_`; the string-interpolation scanners accepted a digit, so
+  the arithmetic result was interpolated.
+- `fail` under `--exe` **aborted the binary** with an uncaught ReturnEx; fixing
+  it exposed a second copy of the same rule, codegen inlining "undefined"
+  without the Failure case.
+- `.Array` did not decontainerize: `$v.Array.elems` said 3 while
+  `my @a = $v.Array` bound 1. Found by running showcase/perl against real perl,
+  where three of six examples produced wrong output.
+- `.raku` silently **dropped every inherited attribute**, so an object could not
+  round-trip through EVAL. `.gist` and `.raku` of a hookless object are one
+  renderer now.
+- `('fig'..'banana')` built 1,000,000 elements and peaked at 952 MB; the
+  emptiness guard compared lengths before values.
+- `for 'a'..'c' { .say }` printed `0` under `--exe`.
+- `∞/∞` gave Inf — the lexer read the `/` as opening a regex.
+
+Also: exact Mix weights, `Nil` subscripts, `Junction.defined`, allomorph
+identity in sets and `===`/`eqv`, `.perl` aliased once rather than in sixteen
+places, Uni and ISO-8601 rendering moved into the value model, `@.`/`%.`
+attributes coercing to their sigil's container, and the MSVC build (an
+`__attribute__` MSVC does not know had left windows-x64 red).
+
+### Not done, deliberately
+
+Rakudo iterates an equal-length multi-char Str range as a per-position cross
+product; we still use a succ chain. Quanthash identity keying needs Hash keys to
+carry their key object. `42[2]` should throw X::OutOfRange — correct in
+isolation, but it turns a soft failure into a file-killing throw until the
+`@p[0]` list-assignment bug behind it is fixed. Each reason is recorded at the
+site, not only here.
+
 ## v1.2.0 (2026-07-26) — documentation conformance
 
 A release measuring one thing: how much of the *official Raku

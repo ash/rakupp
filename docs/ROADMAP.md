@@ -142,8 +142,8 @@ all 62 locally installed dists already `use` cleanly.
 
 **The documentation-conformance track** runs alongside it, measured by
 [raku-spec](https://github.com/ash/raku-spec): every runnable example in the
-official docs executed on both engines and classified three ways. At v1.2.0,
-835 of them are byte-identical on Raku++ and Rakudo (from 596), leaving 237
+official docs executed on both engines and classified three ways. At v1.2.5,
+936 of them are byte-identical on Raku++ and Rakudo (from 835), leaving 144
 where Raku++ is the one that is wrong. The largest single item left there is
 **regex code blocks under backtracking** — `/(\d) { say $0 }/` — which accounts
 for 5 of the 6 remaining `Match` rows. It was attempted once and backed out:

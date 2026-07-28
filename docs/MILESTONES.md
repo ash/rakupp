@@ -21,9 +21,10 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-07-22 | **v1.0.0** | **90% of declared Roast** (194,496 / 216,066); ~39% of files fully pass |
 | 2026-07-24 | **v1.1.0** | **100% of S15 (Unicode) assertions** (91,752 / 91,752) |
 | 2026-07-26 | **v1.2.0** | **835 documentation examples byte-identical to Rakudo** (from 596) |
+| 2026-07-28 | **v1.2.5** | **936 documentation examples byte-identical** (from 835); semantic-duplication audit begins |
 | 2026-07-22 → | *(in progress)* | **v2.0** — running the ecosystem's zef modules |
 
-**By the numbers:** v0.1.0 → v1.2.0 in 24 days (2026-07-02 to 2026-07-26).
+**By the numbers:** v0.1.0 → v1.2.5 in 26 days (2026-07-02 to 2026-07-28).
 
 ---
 
