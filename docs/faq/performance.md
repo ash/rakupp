@@ -12,23 +12,27 @@ The short answer, in order of how much it usually buys:
 rakupp --exe -O prog.raku -o prog && ./prog
 ```
 
-Measured on the benchmark kernels, interpreter against `--exe -O`:
+Measured on the benchmark kernels (2026-07-29), interpreter against `--exe -O`:
 
-| kernel | interpreter | `--exe -O` |
-|---|---:|---:|
-| 5M integer accumulation | 295ms | **32ms** |
-| `fib(32)`, recursive calls | 672ms | **170ms** |
-| 1M `** 3` then `% 1000` | 538ms | **52ms** |
-| primes < 200k by trial division | 1245ms | **25ms** |
+| kernel | interpreter | `--exe` | `--exe -O` |
+|---|---:|---:|---:|
+| 5M integer accumulation | 1342ms | 296ms | **33ms** |
+| `fib(32)`, recursive calls | 3809ms | 637ms | **170ms** |
+| 1M `** 3` then `% 1000` | 847ms | 578ms | **54ms** |
+| primes < 200k by trial division | 11579ms | 1206ms | **23ms** |
 
 That is where the big factors are: arithmetic in a loop, called functions, integer
 work. `-O` turns those into native operations instead of boxed values.
 
-What it does **not** speed up:
+The middle column matters: **`--exe` alone is worth a lot, and `-O` again on top
+of it.** Compiling without `-O` already removes the tree-walk; `-O` then turns
+the arithmetic into native operations.
 
-| kernel | interpreter | `--exe -O` |
-|---|---:|---:|
-| 400k string appends | 23ms | 23ms |
+What neither speeds up much:
+
+| kernel | interpreter | `--exe` | `--exe -O` |
+|---|---:|---:|---:|
+| 400k string appends | 99ms | 24ms | 23ms |
 
 String building, IO, regex and hash work are already doing the same underlying
 operations in both modes. If that is your program, compiling changes little —

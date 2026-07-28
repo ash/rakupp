@@ -11,8 +11,9 @@ where you will notice — in both directions.
 ## Where Raku++ does something Rakudo does not
 
 **It compiles to a standalone binary.** `--exe` generates C++ and links it; the
-result needs no Raku installed, and with `-O` runs 4×–50× faster than the
-interpreter on arithmetic-heavy code. See [compiling.md](compiling.md).
+result needs no Raku installed, and with `-O` runs 4×–500× faster than the
+interpreter depending on the kernel — string building at the low end, tight
+integer loops at the high. See [compiling.md](compiling.md).
 
 **It runs in a browser.** The same interpreter compiled to WebAssembly — no
 server, no install: <https://raku.online>.

@@ -12,7 +12,9 @@ rakupp --bundle prog.raku -o prog     # embed source + interpreter — always wo
 ## Which one do I want?
 
 **`--exe`** compiles your program to C++ and links it against the runtime. It is
-the fast one — 4× to 50× over the interpreter on arithmetic-heavy code with `-O`.
+the fast one — with `-O`, 4× to 500× over the interpreter depending entirely on
+the kernel: string building sits at the low end, tight integer loops at the high
+(the prime sieve in `tools/optbench/` is 11.6 s interpreted and 23 ms with `-O`).
 Constructs the code generator does not handle yet make it fall back to bundling
 for that program, so it always produces a working binary; it just may not be the
 fast kind.
