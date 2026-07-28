@@ -42,4 +42,20 @@ check(shell('echo hi', :out).command.join('|'), 'echo hi', 'shell .command is th
 my $missing = run('definitely-not-a-real-cmd-xyz', :out, :err);
 check(($missing.exitcode != 0).gist, 'True', 'a missing command is a nonzero exit');
 
+# A Proc gists as a Proc, not as a dump of its slots. The generic hash rendering
+# printed every key including out-str, so `say shell("ls")` showed the listing
+# TWICE — once echoed as the child ran, once inside the gist.
+#
+# Asserted on a NON-captured Proc: with `:out` still open Rakudo prints a much
+# richer self-referential form (`my \Proc_… = Proc.new(out => IO::Pipe.new(proc
+# => Proc_…, …))`) that we do not reproduce, and that is not what was reported.
+my $pg = run('true').gist;
+check($pg.starts-with('Proc.new(in => IO::Pipe, out => IO::Pipe, err => IO::Pipe, os-error => Str, exitcode => 0'),
+      True, "a Proc gists in Rakudo's shape");
+check($pg.contains('command => ("true",)'), True, 'a ONE-element argv keeps its trailing comma');
+check($pg.contains('out-str'), False, 'and NOT its captured output');
+check(($pg ~~ /'pid => ' \d+/).so, True, 'and reports a real pid');
+my $pm = run('echo', 'hi').gist;
+check($pm.contains('command => ("echo", "hi")'), True, 'a two-element argv, quoted');
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

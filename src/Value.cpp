@@ -507,6 +507,33 @@ std::string Value::gist() const {
                 auto it = hash->find("value");
                 return it != hash->end() ? it->second.gist() : "(Any)";
             }
+            // A Proc gists as a Proc, not as a dump of its internals. Falling
+            // through to the generic hash rendering printed every slot including
+            // out-str — so `say shell("ls")` showed the listing TWICE: once echoed
+            // as the child ran, once inside the Proc's own gist.
+            if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash) {
+                auto fld = [&](const char* k) -> const Value* {
+                    auto it = hash->find(k); return it != hash->end() ? &it->second : nullptr;
+                };
+                std::string cmd = "()";
+                if (const Value* av = fld("argv")) {
+                    cmd = "(";
+                    if (av->arr) for (size_t k = 0; k < av->arr->size(); k++) {
+                        if (k) cmd += ", ";
+                        // .raku-style, so a Str argument keeps its quotes the way
+                        // Rakudo shows them: command => ("ls",)
+                        cmd += g_rakuRepr ? g_rakuRepr((*av->arr)[k]) : (*av->arr)[k].gist();
+                        if (av->arr->size() == 1) cmd += ",";   // a one-element list keeps its comma
+                    }
+                    cmd += ")";
+                }
+                const Value* ec = fld("exitcode");
+                const Value* pid = fld("pid");
+                return hashKind + ".new(in => IO::Pipe, out => IO::Pipe, err => IO::Pipe, "
+                       "os-error => Str, exitcode => " + (ec ? ec->gist() : "0") +
+                       ", signal => 0, pid => " + (pid ? pid->gist() : "Any") +
+                       ", command => " + cmd + ")";
+            }
             if (hashKind.empty() || hashKind == "Map" || hashKind == "Stash") {
                 ReprDepthGuard g; if (g.tooDeep()) return "{...}";
                 std::string body; bool first = true;

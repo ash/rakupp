@@ -113,7 +113,7 @@ static std::string lubType(const std::string& a, const std::string& b) {
 static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
                          std::string& out, int& exitCode, bool& timedout,
                          Interpreter* gil = nullptr, std::string* errOut = nullptr,
-                         const std::string& cwd = "") {
+                         const std::string& cwd = "", long long* pidOut = nullptr) {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
@@ -191,6 +191,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         CloseHandle(outR); if (errR) CloseHandle(errR);
         return;
     }
+    if (pidOut) *pidOut = (long long)pi.dwProcessId;
     bool parked = gil ? gil->gilPark() : false;
     auto start = std::chrono::steady_clock::now();
     char buf[8192]; bool oEof = false, eEof = (errR == nullptr);
@@ -245,6 +246,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
+    if (pidOut) *pidOut = (long long)pid;
     // parent: don't let a concurrent spawn (another worker) inherit our read ends
     // across its execvp — that would keep the write end open and defer our EOF.
     fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
@@ -12589,12 +12591,14 @@ void Interpreter::registerBuiltins() {
         std::string out, err; int code; bool timedout;
         // :err captures; :!err captures-and-discards (so probes like
         // `zrun('git','--help', :!out, :!err)` stay silent); unspecified inherits.
-        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr);
+        long long childPid = 0;
+        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid);
         if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
         if (errMode == -1) { /* stderr already inherited by the child */ }
         (*p.hash)["exitcode"] = Value::integer(code);
         (*p.hash)["out-str"] = Value::str(out);
         (*p.hash)["err-str"] = Value::str(err);
+        if (childPid) (*p.hash)["pid"] = Value::integer(childPid);
         return p;
     };
     // shell(CMD, :out, :err) — run CMD through the system shell (`/bin/sh -c CMD`),
@@ -12620,7 +12624,8 @@ void Interpreter::registerBuiltins() {
 #endif
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
         std::string out, err; int code = 0; bool timedout = false;
-        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr);
+        long long childPid = 0;
+        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid);
         if (outMode == -1) std::cout << out;
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr->push_back(Value::str(cmd));
@@ -12628,6 +12633,7 @@ void Interpreter::registerBuiltins() {
         (*p.hash)["exitcode"] = Value::integer(code);
         (*p.hash)["out-str"] = Value::str(out);
         (*p.hash)["err-str"] = Value::str(err);
+        if (childPid) (*p.hash)["pid"] = Value::integer(childPid);
         return p;
     };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
