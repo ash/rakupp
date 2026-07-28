@@ -17,6 +17,20 @@ trips over.
 
 - **[shell.md](shell.md)** — running external commands: `run` vs `shell`,
   capturing output, feeding input, exit codes, and what a `Proc` shows you.
+- **[containers.md](containers.md)** — "why does my list have one element?":
+  itemisation, `$(…)` vs `[…]`, when you need `@(…)`, and passing a list to a
+  routine.
+- **[compiling.md](compiling.md)** — turning a program into a binary: `--exe`
+  vs `--aot` vs `--bundle`, what `-O` buys, and why `--exe` needs a C++ compiler
+  on the machine that runs it.
+- **[performance.md](performance.md)** — "my program is slow": what compiling
+  does and does not speed up, with measured numbers, and the things that are slow
+  in any Raku.
+- **[debugging.md](debugging.md)** — when something goes wrong: `--lint`,
+  `--ast`, `--cpp`, telling your bug from ours, and what to put in a report.
+- **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
+  directions: what Raku++ does that Rakudo does not, where Rakudo is ahead, and
+  the handful you will actually run into.
 
 ## Adding one
 

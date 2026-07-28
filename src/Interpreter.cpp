@@ -11968,7 +11968,16 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Any || v.t == VT::Nil) { Value a = Value::array(); a.isList = true; return a; } // @<undefined> = ()
             // one-level list context: an array yields its top-level elements (nested
             // itemized arrays stay intact); a Range flattens; a scalar becomes (x,).
-            if (v.t == VT::Array && v.arr) { Value a = Value::array(*v.arr); a.isList = true; return a; }
+            // `@(…)` DECONTAINERISES; it does not convert. An Array stays an Array
+            // (Rakudo: `@(%h<k>).raku` is `[1, 2]`, not `(1, 2)`) — only the
+            // itemisation is stripped. A List stays a List.
+            if (v.t == VT::Array && v.arr) {
+                Value a = Value::array(*v.arr);
+                a.isList = v.isList;
+                a.ofType = v.ofType;
+                a.shape = v.shape;
+                return a;
+            }
             if (v.t == VT::Range) return Value::array(v.flatten());
             // `@$blob` lists a Blob/Buf's elements (`flat @$msg, 0x80, …` in Digest)
             if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
