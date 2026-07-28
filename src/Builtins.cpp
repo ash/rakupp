@@ -1522,6 +1522,21 @@ std::string whichOf(const Value& v) {
         case VT::Bool:    return "Bool|" + std::string(v.b ? "1" : "0");
         case VT::Rat:     return "Rat|" + ratPart(v);
         case VT::Complex: return "Complex|" + Value::number(v.n).toStr() + "|" + Value::number(v.im).toStr();
+        // An OBJECT is identified by its address, not by its contents — two
+        // instances with equal attributes are different elements of a Set. This
+        // lived only in the `.WHICH` arm, so `.WHICH` said they differed while
+        // baggyKeyStr (which keys on the RENDERING, `A<obj>` for every instance
+        // of A) merged them: `set($x, $y).elems` was 1.
+        case VT::Object:  if (v.obj) {
+                              char buf[24];
+                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.obj.get());
+                              return v.typeName() + buf;
+                          }
+                          return v.typeName() + "|<null>";
+        // a Range's identity is its GIST, exclusion markers and all — expanding
+        // it makes `1..^5` and `1..4` the same value, and builds a huge string
+        // for a large range on the way
+        case VT::Range:   return "Range|" + v.gist();
         default:          return v.typeName() + "|" + v.toStr();
     }
 }
@@ -1556,6 +1571,9 @@ std::string baggyKeyStr(const Value& v) {
     // Narrow on purpose — plain Str and Int keys keep their rendering, so the set
     // operators that compare a result against a `set(…)` literal are untouched.
     if (v.isAllomorph()) return whichOf(v);
+    // …and an OBJECT, whose rendering is `Class<obj>` for every instance, so two
+    // distinct objects collapsed into one Set element.
+    if (v.t == VT::Object) return whichOf(v);
     return v.toStr();
 }
 // pairsAsElements: constructors (set()/Set.new) treat a Pair item as ONE element
@@ -4745,8 +4763,17 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         return Value::number(args.empty() ? 0.0 : args[0].toNum());
     if (inv.t == VT::Type && m == "Range" &&
         (inv.s == "Int" || inv.s == "Rat" || inv.s == "FatRat" || inv.s == "Num" || inv.s == "UInt")) {
-        // numeric type ranges: -Inf..Inf (UInt: 0..Inf); ranges are int-backed, so saturated
-        return Value::range(inv.s == "UInt" ? 0 : LLONG_MIN, LLONG_MAX, false, false);
+        // The endpoints are ±Inf. The range stays int-backed and saturated for
+        // arithmetic, but it must also CARRY them: without RangeEnds it rendered
+        // as -9223372036854775808..9223372036854775807, and `Rat.Range eqv
+        // -Inf..Inf` only passed because the old comparison expanded both sides.
+        // Int is exclusive at both ends (no Int is infinite), UInt starts at 0.
+        bool uint = inv.s == "UInt";
+        bool exFrom = inv.s == "Int", exTo = inv.s == "Int" || uint;
+        Value r = Value::range(uint ? 0 : LLONG_MIN, LLONG_MAX, exFrom, exTo);
+        attachRangeEnds(r, uint ? Value::integer(0) : Value::number(-INFINITY),
+                        Value::number(INFINITY));
+        return r;
     }
     if (inv.t == VT::Type && (inv.s == "Rat" || inv.s == "FatRat") && m == "new") {
         BigInt n = args.size() > 0 ? args[0].toBig() : BigInt(0);
@@ -6674,13 +6701,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
     }
     if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
     if (m == "WHO") { Value st = Value::makeHash(); st.hashKind = "Stash"; return st; } // package stash
-    // a Range's identity is its GIST, exclusion markers and all — the generic
-    // path stringified it as a space-joined list of its elements
-    if (m == "WHICH" && inv.t == VT::Range) return Value::str("Range|" + inv.gist());
-    if (m == "WHICH") { // object identity: value-based for immutables, pointer-based for objects
-        if (inv.t == VT::Object && inv.obj) { char buf[24]; std::snprintf(buf, sizeof buf, "|%p", (void*)inv.obj.get()); return Value::str(inv.typeName() + buf); }
-        return Value::str(whichOf(inv));
-    }
+    if (m == "WHICH") return Value::str(whichOf(inv)); // whichOf is the one home for identity
     if (m == "WHERE") { // memory address of the value (an Int)
         const void* p = inv.t == VT::Object && inv.obj ? (const void*)inv.obj.get()
                       : inv.t == VT::Array && inv.arr  ? (const void*)inv.arr.get()

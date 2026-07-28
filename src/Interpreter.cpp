@@ -193,6 +193,13 @@ static bool valueEqv(const Value& a, const Value& b) {
         case VT::Pair:
             return a.s == b.s && valueEqv(a.pairVal ? *a.pairVal : Value::any(), b.pairVal ? *b.pairVal : Value::any());
         case VT::Object: return a.obj == b.obj;
+        // A RANGE compares by its endpoint FORM, exclusion markers included —
+        // expanding it made `1..^5 eqv 1..4` True, and built the whole list to
+        // answer. A CODE object is identical only to itself. A TYPE object carries
+        // its parameterisation, so Array[Int] and Array[Str] are different types.
+        case VT::Range:  return whichOf(a) == whichOf(b);
+        case VT::Code:   return a.code == b.code;
+        case VT::Type:   return a.s == b.s && a.ofType == b.ofType;
         case VT::Rat: // structural nude compare — .Str on a 0-denominator Rat throws
             return a.fatRat == b.fatRat &&
                    a.ratN && b.ratN && a.ratD && b.ratD &&
@@ -9235,6 +9242,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // an ALLOMORPH is not identical to either half: `42 === <42>` is False even
         // though both are VT::Int and render "42". Its .WHICH carries both.
         else if (l.isAllomorph() || r.isAllomorph()) same = (whichOf(l) == whichOf(r));
+        // a RANGE by its endpoint form, not by its elements (`1..^5 === 1..4`)
+        else if (l.t == VT::Range) same = (whichOf(l) == whichOf(r));
+        // a parameterised TYPE keeps its parameter: Array[Int] is not Array[Str]
+        else if (l.t == VT::Type) same = (l.s == r.s && l.ofType == r.ofType);
         else same = (l.toStr() == r.toStr()); // value types (Int/Str/Num/Rat/...)
         return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
