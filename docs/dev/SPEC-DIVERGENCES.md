@@ -2,7 +2,7 @@
 
 Found on 20 July 2026 by cross-checking every runnable example on the
 **[Raku++ Specification](https://spec.raku.online/)** (repo:
-[ash/raku-spec](https://github.com/ash/raku-spec)) under `build/rakupp` and
+[ash/raku.online, sites/spec](https://github.com/ash/raku.online/tree/main/sites/spec)) under `build/rakupp` and
 Rakudo (v2026.06). The spec's generator (`build.raku --verify --oracle=raku`)
 runs each `raku`/`output` example pair through **both** interpreters and fails
 the build on any disagreement, so every divergence below was caught mechanically,

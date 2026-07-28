@@ -90,7 +90,7 @@ site, not only here.
 A release measuring one thing: how much of the *official Raku
 documentation* Raku++ now reproduces exactly. Every runnable example in the docs
 is executed on both engines and classified three ways (see
-[raku-spec/CONFORMANCE.md](https://github.com/ash/raku-spec)); the number to
+[CONFORMANCE.md](https://github.com/ash/raku.online/blob/main/sites/spec/CONFORMANCE.md)); the number to
 watch is `ok` — documentation, Rakudo and Raku++ all agreeing.
 
 | Verdict | before | now |

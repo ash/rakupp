@@ -41,7 +41,7 @@ The conformance sweep classifies 19 examples as *doc and Raku++ agree, Rakudo do
 not*. Most are small — `1.asinh` gives the documented `0.881373587019543` here and
 `0.8813735870195429` in Rakudo, for instance. A few are randomness or stale docs
 rather than real wins; the classified list lives in
-[raku-spec](https://github.com/ash/raku-spec).
+[the spec site's source](https://github.com/ash/raku.online/tree/main/sites/spec).
 
 ## Where Rakudo is ahead
 
@@ -92,7 +92,8 @@ If a program must run on both, the reliable habits are:
 ---
 
 The measured, per-example classification is in
-[raku-spec](https://github.com/ash/raku-spec); the Roast standing and how it is
-counted are in [ROAST.md](../ROAST.md) and [COUNTING.md](../COUNTING.md).
+[the spec site's source](https://github.com/ash/raku.online/tree/main/sites/spec);
+the Roast standing and how it is counted are in [ROAST.md](../ROAST.md) and
+[COUNTING.md](../COUNTING.md).
 
 Back to the [FAQ index](README.md).

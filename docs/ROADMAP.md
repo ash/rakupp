@@ -141,7 +141,7 @@ all 62 locally installed dists already `use` cleanly.
 
 
 **The documentation-conformance track** runs alongside it, measured by
-[raku-spec](https://github.com/ash/raku-spec): every runnable example in the
+[the spec site](https://github.com/ash/raku.online/tree/main/sites/spec): every runnable example in the
 official docs executed on both engines and classified three ways. At v1.2.5,
 936 of them are byte-identical on Raku++ and Rakudo (from 835), leaving 144
 where Raku++ is the one that is wrong. The largest single item left there is

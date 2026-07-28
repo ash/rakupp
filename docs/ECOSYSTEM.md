@@ -18,8 +18,8 @@ it. There is one implementation behind every surface.
 | **Raku++ (rakupp)** | The interpreter + native compiler in C++17. Source of truth for everything below. | [ash/rakupp](https://github.com/ash/rakupp) | native binary, `--exe` |
 | **Raku.js** | `../src` compiled to WebAssembly (Emscripten) — Raku in the browser, no server. Additive: nothing in `../src` is modified. | (part of rakupp, [`rakujs/`](../rakujs/README.md)) | `rakujs.{js,wasm}` |
 | **raku.online** | The public playground built on Raku.js — editor, output pane, share/open links, an embeddable widget (`raku.js`). | [ash/raku.online](https://github.com/ash/raku.online) | [raku.online](https://raku.online/) |
-| **raku-spec** | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku-spec](https://github.com/ash/raku-spec) | [spec.raku.online](https://spec.raku.online/) |
-| **raku-tour** | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec; GitHub Pages CI builds it with the latest **release** binary. | [ash/raku-tour](https://github.com/ash/raku-tour) | [tour.raku.online](https://tour.raku.online/) |
+| **spec** (was `raku-spec`) | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku.online `sites/spec`](https://github.com/ash/raku.online/tree/main/sites/spec) | [spec.raku.online](https://spec.raku.online/) |
+| **tour** (was `raku-tour`) | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec; GitHub Pages CI builds it with the latest **release** binary. | [ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour) | [tour.raku.online](https://tour.raku.online/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
@@ -182,13 +182,13 @@ What remains for you here is **content** — documenting features the release
 newly supports.
 
 1. **Author/update feature pages** — one Markdown-ish file per feature under
-   the `raku-spec` checkout's `src/pages/<category>/<slug>.md` (categories: `literals`,
+   the spec site's `sites/spec/src/pages/<category>/<slug>.md` (categories: `literals`,
    `operators`, `types`, `variables`, `control`, `subs`, `methods`, `builtins`,
    `regexes`, `phasers`, `concurrency`). Give each a ```` ```raku ```` example and,
    where deterministic, a matching ```` ```output ```` block — the build verifies
    these against the real interpreter. Update `status:` (`full`/`partial`/
    `divergent`/`ni`) for features whose support level changed.
-2. **Build + verify locally** — from the `raku-spec` checkout:
+2. **Build + verify locally** — from `sites/spec/` in the raku.online checkout:
    ```sh
    rakupp build.raku --clean --verify     # every example run through rakupp
    rakupp rules.raku                      # the /rules sub-site
@@ -196,7 +196,7 @@ newly supports.
    Every example is executed through rakupp (and the Rakudo oracle, if
    `ORACLE=raku`); **any drift fails the build**, so the spec can never
    contradict the shipped interpreter.
-3. **Commit and push** the `raku-spec` repo. **This is the publish**: like
+3. **Commit and push** the raku.online repo. **This is the publish**: like
    raku.online, spec.raku.online is served by **GitHub Pages**, via its own
    `pages.yml`. That workflow does not use your local binary — it downloads
    **`releases/latest`** from this repo and builds with that. So the spec picks
@@ -204,7 +204,7 @@ newly supports.
    `Latest` flag. If a stale release is still marked Latest, the spec keeps
    building against it; `gh release list` shows which one holds the flag.
 
-**tour.raku.online** ([ash/raku-tour](https://github.com/ash/raku-tour)) needs no
+**tour.raku.online** ([ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour)) needs no
 server step at all: its GitHub Pages workflow installs the **latest release
 binary**, re-verifies every lesson, and deploys. It runs on every push — after a
 release with no content change, trigger it once so the lessons re-verify against
