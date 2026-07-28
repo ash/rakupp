@@ -39,6 +39,13 @@ inline uint32_t u8FirstCp(const std::string& s) {
     for (int k = 1; k < len && k < (int)s.size(); k++) cp = (cp << 6) | (s[k] & 0x3F);
     return cp;
 }
+// ISO 8601 for a Date/DateTime attribute map. Declared here because the value
+// model renders one (say, interpolation, a container holding one) and the
+// .Str/.gist/.yyyy-mm-dd method arm renders the same thing — it was written out
+// twice, verbatim, including the year>9999 `+` prefix, the ±HH:MM suffix and the
+// fractional-second branch.
+std::string dateGist(const std::map<std::string, Value>& h, bool isDate);
+
 struct Env;
 class Interpreter;
 

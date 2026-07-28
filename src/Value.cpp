@@ -35,7 +35,7 @@ struct ReprDepthGuard {
     bool tooDeep() const { return g_reprDepth > 512; }
 };
 
-static std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
+std::string dateGist(const std::map<std::string, Value>& h, bool isDate) {
     auto f = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0; };
     char buf[48];
     const char* ys = f("year") > 9999 ? "+" : ""; // ISO 8601: years past 9999 carry a leading +
@@ -334,6 +334,13 @@ std::string Value::toStr() const {
         }
         case VT::Array: {
             ReprDepthGuard g; if (g.tooDeep()) return "...";
+            // a Uni / NFC / NFD / NFKC / NFKD stringifies back to its TEXT, not to
+            // the codepoint numbers — `"$u"` is Ḍ, not "68 803"
+            if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") {
+                std::string out;
+                if (arr) for (auto& c : *arr) out += cpToU8((uint32_t)c.toInt());
+                return out;
+            }
             std::string out;
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
                 if (k) out += " ";
@@ -419,6 +426,22 @@ std::string Value::gist() const {
             ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
             // a Capture gists as the literal that makes it, `\(1, :a(2))`
             if (hashKind == "Capture" && g_rakuRepr) return g_rakuRepr(*this);
+            // A Uni / NFC / NFD / NFKC / NFKD is an array of codepoints tagged in
+            // `s`, and renders as `NFD:0x<0044 0323>`. That lived only in the .gist
+            // METHOD arm, so a direct `$u.gist` was right while `say $u`, string
+            // interpolation and any container holding one printed the raw array
+            // `[68 803]`. Rendering belongs to the value, not to one method.
+            // ORIGINAL codepoint order — never routed through uniNormalize.
+            if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") {
+                char buf[16];
+                std::string body;
+                if (arr) for (size_t k = 0; k < arr->size(); k++) {
+                    if (k) body += " ";
+                    std::snprintf(buf, sizeof buf, "%04x", (unsigned)(*arr)[k].toInt()); // lowercase, as Rakudo
+                    body += buf;
+                }
+                return s + ":0x<" + body + ">";
+            }
             std::string out = isList ? "(" : "[";
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
                 if (k) out += " ";

@@ -4630,19 +4630,18 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         }
         if (m == "list" || m == "List" || m == "values" || m == "Seq" || m == "cache") { Value out = Value::array(); out.isList = true; if (inv.arr) out.arr = inv.arr; return out; }
         if (m == "codes" || m == "elems") return Value::integer(inv.arr ? (long long)inv.arr->size() : 0);
-        if (m == "gist" || m == "raku") {
-            // .gist  -> "Uni:0x<0044 0307 0323>"  (original codepoint order, not NFC)
-            // .raku  -> "Uni.new(0x0044, 0x0307, 0x0323)"
+        // .gist lives in Value::gist now, so `say $u` and an interpolated $u agree
+        // with it. Only .raku is here — it genuinely differs.
+        if (m == "raku") {
             char buf[16];
             std::string body;
             if (inv.arr) for (size_t i = 0; i < inv.arr->size(); i++) {
-                if (i) body += (m == "gist") ? " " : ", ";
-                snprintf(buf, sizeof buf, (m == "gist") ? "%04X" : "0x%04X",
-                         (unsigned)(*inv.arr)[i].toInt());
+                if (i) body += ", ";
+                snprintf(buf, sizeof buf, "0x%04x", (unsigned)(*inv.arr)[i].toInt()); // lowercase, as Rakudo
                 body += buf;
             }
-            return Value::str(m == "gist" ? inv.s + ":0x<" + body + ">"
-                                          : inv.s + ".new(" + body + ")");
+            // Rakudo reprs the CONSTRUCTOR plus the normalisation: Uni.new(…).NFD
+            return Value::str("Uni.new(" + body + ")" + (inv.s == "Uni" ? "" : "." + inv.s));
         }
         if (m == "Str" || m == "Stringy") {
             // Raku Strs are NFG (NFC-normalized under the hood): canonically
@@ -5028,24 +5027,9 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
             return Value::str(buf);
         }
         if (m == "Str" || m == "gist" || m == "yyyy-mm-dd" || m == "Date") {
-            char buf[48];
-            const char* ys = fld("year") > 9999 ? "+" : ""; // ISO 8601: 5+ digit years carry a leading +
-            if (inv.hashKind == "Date" || m == "yyyy-mm-dd")
-                snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lld", ys, fld("year"), fld("month"), fld("day"));
-            else {
-                long long tz = fld("timezone");
-                char suf[12];
-                if (tz == 0) snprintf(suf, sizeof suf, "Z");
-                else snprintf(suf, sizeof suf, "%c%02lld:%02lld", tz < 0 ? '-' : '+', (tz < 0 ? -tz : tz) / 3600, ((tz < 0 ? -tz : tz) % 3600) / 60);
-                auto sit2 = inv.hash->find("second");
-                double sd = sit2 != inv.hash->end() ? sit2->second.toNum() : 0.0;
-                if (sd != (double)(long long)sd)
-                    snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%09.6f%s", ys, fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), sd, suf);
-                else
-                    snprintf(buf, sizeof buf, "%s%04lld-%02lld-%02lldT%02lld:%02lld:%02lld%s", ys, fld("year"), fld("month"), fld("day"), fld("hour"), fld("minute"), fld("second"), suf);
-            }
             if (m == "Date") return makeDate(civilToDays(fld("year"), fld("month"), fld("day")));
-            return Value::str(buf);
+            // one ISO 8601 formatter, shared with the value model
+            return Value::str(dateGist(*inv.hash, inv.hashKind == "Date" || m == "yyyy-mm-dd"));
         }
         if (m == "day-of-week" || m == "dow") { // 1=Monday .. 7=Sunday (Sakamoto's algorithm)
             long long y = fld("year"), mo = fld("month"), d = fld("day");
@@ -7996,7 +7980,13 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "codes") return Value::integer(cpCount(inv.toStr()));       // codepoints
         int mode = m == "NFD" ? 0 : m == "NFC" ? 1 : m == "NFKD" ? 2 : 3;
         auto norm = uniNormalize(utf8cp(inv.toStr()), mode);
-        Value out = Value::array(); out.s = "Uni"; for (auto c : norm) out.arr->push_back(Value::integer((long long)c)); return out;
+        // tag it with the NORMALISATION FORM, not the generic "Uni": `"x".NFD` is
+        // an NFD, and both `.gist` (NFD:0x<…>) and `.raku` (Uni.new(…).NFD) read
+        // this. The Uni type-object constructor a few hundred lines up already
+        // tags correctly; only this Str-method path flattened them all to "Uni".
+        Value out = Value::array(); out.s = m;
+        for (auto c : norm) out.arr->push_back(Value::integer((long long)c));
+        return out;
     }
     if (m == "unimatch") { // method form delegates to the sub
         ValueList a2; a2.push_back(inv);
