@@ -3,21 +3,27 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
-## Unreleased (on `main` since v1.2.6)
+## v1.5.0 (2026-07-29) — narrowing the measured gap with Rakudo
 
-| | v1.2.6 | `main` |
+**The goal of this release was to make the differences between Raku++ and Rakudo
+smaller, and to stop the ones we fix from coming back.** Everything below is one
+of those two things: closing divergences that
+<https://raku.online/spec/rules/divergences/> actually measures, or turning a
+property we care about into a gate that fails a release rather than a number
+someone has to remember to look at.
+
+| | v1.2.6 | v1.5.0 |
 |---|---:|---:|
 | Documentation examples byte-identical to Rakudo | 936 | **944** |
 | …of which Raku++ is the one that is wrong | 144 | **122** |
 | Operator-matrix divergences | 72 | **30** |
 | Roast assertions (all declared) | 196,381 | **196,395** |
 | Roast files fully passing | 622 | **625** |
-| Regression tests | 137 | **148** |
+| Regression tests | 137 | **149** |
 
-Both halves of <https://raku.online/spec/rules/divergences/> are measured here:
-the per-type documentation sweep (1,451 examples) and the operator behaviour
-matrix (833 expressions over 121 operators). Together the page's "Raku++ differs"
-count went **202 → 152**.
+Both halves of that page are measured here: the per-type documentation sweep
+(1,451 examples) and the operator behaviour matrix (833 expressions over 121
+operators). Together the page's "Raku++ differs" count went **202 → 152**.
 
 Two caveats on reading those numbers. The conformance count has a **±5 flap
 band** — the `Set`/`Bag`/`Mix`/`Map` examples move in both directions between
@@ -164,6 +170,40 @@ leaves the other wrong. Each batch is gated on the full Roast run.
   unless something was *thrown*, so a block that returns a Failure left `$!`
   unset.
 
+### Performance, and a gate to keep it
+
+- **Fixed an ~11.6% interpreter regression on `fib`** that had accreted across
+  the v1.2.x cycle. `hoistExprDecls` pre-declares a `my` buried in a ternary or
+  nqp branch so a sibling branch can see it — and it ran on every sub call and
+  block entry, walking the body's whole expression tree through a
+  `std::function` that allocates. For `fib`, whose body has nothing to hoist,
+  that walk ran ~2.7M times for nothing. Whether a body holds such a declaration
+  is a **static property of its AST**, so it is decided once and remembered on
+  the owning `Block` / `Callable`; the dynamic half — whether the variable needs
+  defining on this particular call — is unchanged.
+
+  Found by sampling `fib(32)` under the 1.0.0 binary and under HEAD and diffing
+  the top-of-stack tallies: the lambda was ~6% of runtime and absent from 1.0.0
+  entirely. `fib` 911.0 → 830.9 ms; `asg` and `hash` are now past their 1.0.0
+  bests.
+
+- **A release can no longer ship a performance regression.**
+  `rakupp tools/perf-guard.raku --check` compares against
+  [`tools/perf-baseline.raku`](tools/perf-baseline.raku) — the last release's
+  times, 5% tolerance — and **exits non-zero**. The baseline tracks two numbers
+  per kernel: `baseline` (enforced) and `best` (the fastest ever measured, and
+  when — reported but not enforced), so a regression that was once accepted
+  cannot quietly become the new normal.
+
+  This is the second time a gradual interpreter regression has slipped through:
+  an 8–22% one crossed v0.7.1→v0.9.0, which is why `loopsum` and `hash` are in
+  the guard at all. Printing four numbers and trusting someone to remember last
+  release's has now failed twice, so it is a gate.
+
+- **[docs/dev/RELEASING.md](docs/dev/RELEASING.md)** is new — there was no release
+  checklist. It documents all five gates (Roast, local suite, performance,
+  compiler agreement, conformance) and, for each, what it has actually caught.
+
 ### Documentation
 
 - **[docs/faq/](docs/faq/)** — a new section, six pages: running external
@@ -173,6 +213,14 @@ leaves the other wrong. Each batch is gated on the full Roast run.
   page says so rather than documenting whichever is convenient.
 - Spec and tour links repointed from `ash/raku-spec` / `ash/raku-tour` to
   `ash/raku.online` (`sites/spec`, `sites/tour`), across six files.
+- **Benchmarks re-measured**, and a table corrected. `docs/faq/performance.md`
+  labelled its first column "interpreter" while holding `run-optbench`'s `--exe`
+  numbers, understating compilation by an order of magnitude — 5M integer
+  accumulation is 1342 ms interpreted, not the 295 ms printed there. Re-measured
+  with a third column, since `--exe` alone turns out to be most of the win. The
+  "4×–50× with `-O`" claim in two FAQ pages came from the same mislabelled
+  column; the real span against the interpreter is 4× (string building) to 503×
+  (the prime sieve), and both pages now name the ends rather than a middle.
 - All measured figures refreshed against a single clean run — including several
   that had gone stale independently of the headline: ROAST.md claimed "≈39% of
   files" and "about a sixth produces no TAP" (it is a tenth), the no-TAP
@@ -189,6 +237,20 @@ leaves the other wrong. Each batch is gated on the full Roast run.
   (`rotor(1..6, 2)` gives `((2))` here, "Undeclared routine" there).
 - A missing semicolon between statements is accepted where Rakudo rejects it;
   `die` prints no backtrace. Both documented in the FAQ as gaps.
+- **152 divergences remain**, and the last stretch is not like the first. Six of
+  the operator rows are `prefix:<~^>`, where *Rakudo* answers "not yet
+  implemented" and Raku++ works — counted against us but not a defect. Around
+  ten more are hash-iteration order (we iterate sorted, Rakudo randomizes) and a
+  few are environment-bound (`Kernel|2` wants `x86_64` on an arm64 machine). The
+  rest is a long tail of singletons — `substr-rw` write-through proxies, Pair
+  container binding, leap-second tables, the Metamodel HOW types — where the
+  clustering that made this release cheap has run out. An honest floor is
+  somewhere near 125–135 without changing what the number measures.
+- `IO::Path::Parts` is Positional only for subscripts; `.list`/`.pairs`/`for`
+  still spread it where Rakudo treats it as one item. Closing that needs the
+  zen-slice `$x[]` semantics, which touches every subscript in the language.
+- The interpreter is still ~2% behind its 1.0.0 best on `fib` and `loopsum` —
+  within measurement spread, but the `best` column keeps reporting it.
 
 ## v1.2.6 (2026-07-28) — Proc rendering
 

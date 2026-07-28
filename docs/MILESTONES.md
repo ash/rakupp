@@ -23,9 +23,10 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-07-26 | **v1.2.0** | **835 documentation examples byte-identical to Rakudo** (from 596) |
 | 2026-07-28 | **v1.2.5** | **936 documentation examples byte-identical** (from 835); semantic-duplication audit begins |
 | 2026-07-28 | **v1.2.6** | Proc rendering — `say shell(…)` no longer prints its output twice |
+| 2026-07-29 | **v1.5.0** | **the measured gap with Rakudo, halved** — 202 → 152 divergences; a performance gate on every release |
 | 2026-07-22 → | *(in progress)* | **v2.0** — running the ecosystem's zef modules |
 
-**By the numbers:** v0.1.0 → v1.2.6 in 26 days (2026-07-02 to 2026-07-28).
+**By the numbers:** v0.1.0 → v1.5.0 in 27 days (2026-07-02 to 2026-07-29).
 
 ---
 
