@@ -113,6 +113,13 @@ std::string sha1hex(const std::string& msg) {
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
 
+void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
+    if (!c) return;
+    for (auto& a : c->attrs) if (a.pub) out.push_back(&a);
+    collectPubAttrs(c->parent.get(), out);
+    for (auto& p : c->extraParents) collectPubAttrs(p.get(), out);
+}
+
 bool rtIsDefined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
 static bool isDefined(const Value& v) { return rtIsDefined(v); }
 
@@ -12414,44 +12421,15 @@ std::string Interpreter::gistOf(const Value& v) {
     if (v.t == VT::Object && v.obj && v.obj->hasBoxed && v.obj->cls)
         if (Value* m = v.obj->cls->findMethod("Str")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
     if (v.t == VT::Object && v.obj && v.obj->hasBoxed) return gistOf(v.obj->boxed);
-    if (v.t == VT::Object && v.obj && v.obj->cls) {
-        // Rakudo's default gist: Class.new(pubattr => repr, ...) — public attrs
-        // in declaration order, base-class attrs first.
-        std::vector<const ClassAttr*> pub;
-        std::function<void(ClassInfo*)> collect = [&](ClassInfo* c) {
-            if (!c) return;
-            collect(c->parent.get());
-            for (auto& p : c->extraParents) collect(p.get());
-            for (auto& a : c->attrs) if (a.pub) pub.push_back(&a);
-        };
-        collect(v.obj->cls.get());
-        std::function<std::string(const Value&)> repr = [&](const Value& av) -> std::string {
-            if (av.t == VT::Str && av.hashKind.empty()) {
-                std::string o = "\"";
-                for (char ch : av.s) { if (ch == '"' || ch == '\\' || ch == '$' || ch == '@' || ch == '{') o += '\\'; o += ch; }
-                return o + "\"";
-            }
-            if (av.t == VT::Type) return av.ofType.empty() ? av.s : av.s + "[" + av.ofType + "]";
-            if (av.t == VT::Any) return "Any";
-            if (av.t == VT::Nil) return "Nil";
-            if (av.t == VT::Object) return gistOf(av);
-            return av.gist();
-        };
-        std::string o = v.obj->cls->name + ".new";
-        if (!pub.empty()) {
-            o += "(";
-            bool first = true;
-            for (auto* a : pub) {
-                if (!first) o += ", "; first = false;
-                auto it = v.obj->attrs.find(a->name);
-                Value av = it != v.obj->attrs.end() ? it->second : Value::any();
-                if (av.t == VT::Any && !a->type.empty()) av = Value::typeObj(a->type); // unset typed attr shows its type
-                o += a->name + " => " + repr(av);
-            }
-            o += ")";
-        }
-        return o;
-    }
+    // Rakudo's default gist for a hookless object IS its .raku — the same string,
+    // byte for byte. Ours were two hand-written renderers that disagreed four ways:
+    // .raku walked no parents (so it silently DROPPED every inherited attribute and
+    // could not round-trip through EVAL), this one escaped only 5 characters (so a
+    // Str attribute holding a newline printed a RAW newline inside what looked like
+    // a string literal), they disagreed on container form, and they ordered the
+    // attributes differently. One renderer now; the g_rakuRepr hook is already how
+    // Value.cpp reaches it.
+    if (v.t == VT::Object && v.obj && v.obj->cls && g_rakuRepr) return g_rakuRepr(v);
     return v.gist();
 }
 std::string Interpreter::strOf(const Value& v) {

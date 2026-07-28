@@ -446,6 +446,30 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     (*promise.hash)["status"] = Value::str(timedout ? "Broken" : "Kept");
 }
 
+// An attribute's SIGIL is a container type: `has @.a` holds an Array and
+// `has %.h` a Hash, whatever shape the initialiser produced. Without this a
+// `has @.a = (1,2)` kept the List and `has %.h = (a=>1)` kept the bare Pair, so
+// `.WHAT` and the default renderer both disagreed with Rakudo.
+static Value coerceToSigil(Value v, char sigil) {
+    if (sigil == '@') {
+        if (v.t == VT::Array) { v.isList = false; v.itemized = false; return v; }
+        if (v.t == VT::Nil || v.t == VT::Any) return v;
+        Value a = Value::array();
+        if (v.t == VT::Range) *a.arr = v.flatten(); else a.arr->push_back(v);
+        return a;
+    }
+    if (sigil == '%') {
+        if (v.t == VT::Hash) return v;
+        if (v.t == VT::Nil || v.t == VT::Any) return v;
+        Value h = Value::makeHash();
+        ValueList items = v.t == VT::Array && v.arr ? *v.arr : ValueList{v};
+        for (auto& e : items)
+            if (e.t == VT::Pair) (*h.hash)[e.s] = e.pairVal ? *e.pairVal : Value::any();
+        return h;
+    }
+    return v;
+}
+
 static bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
 
 // √z from the MODULUS, the way Rakudo computes it — not std::sqrt(std::complex),
@@ -710,13 +734,20 @@ static std::string rakuRepr(const Value& v, int depth, std::set<const void*>& se
         case VT::Object: {
             if (!v.obj || !v.obj->cls) return v.gist();
             std::string r = v.obj->cls->name + ".new";
+            // INHERITED attributes count: iterating only cls->attrs dropped every
+            // one, so `class Q is P` reprd as `Q.new(q => 2)` and would not survive
+            // a round trip through EVAL.
+            std::vector<const ClassAttr*> pub;
+            collectPubAttrs(v.obj->cls.get(), pub);
             std::string inner;
-            for (auto& at : v.obj->cls->attrs) {
-                if (!at.pub) continue;
-                auto it = v.obj->attrs.find(at.name);
-                if (it == v.obj->attrs.end()) continue;
+            for (auto* at : pub) {
+                auto it = v.obj->attrs.find(at->name);
+                // an UNSET typed attribute shows its declared type (`i => Int`)
+                Value av = it != v.obj->attrs.end() ? it->second
+                         : (at->type.empty() ? Value::any() : Value::typeObj(at->type));
+                if (av.t == VT::Any && !at->type.empty()) av = Value::typeObj(at->type);
                 if (!inner.empty()) inner += ", ";
-                inner += at.name + " => " + rakuRepr(it->second, depth + 1, seen);
+                inner += at->name + " => " + rakuRepr(av, depth + 1, seen);
             }
             return inner.empty() ? r : r + "(" + inner + ")";
         }
@@ -5723,6 +5754,12 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                         Value dv = at.hasDefVal ? at.defVal
                                  : at.def ? eval(const_cast<Expr*>(at.def))
                                           : seed;
+                        // the SIGIL is a container type: `has @.a = (1,2)` holds an
+                        // Array and `has %.h = (a=>1)` a Hash, so `.WHAT` answers
+                        // (Array)/(Hash) and the default renderer shows [1, 2] /
+                        // {:a(1)} rather than the List and Pair the initialiser
+                        // happened to produce.
+                        dv = coerceToSigil(dv, at.sigil);
                         od->attrs[at.name] = dv;
                     }
                 // the default constructor binds nameds to declared PUBLIC attributes
@@ -5733,7 +5770,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                     if (arg.t == VT::Pair) {
                         const ClassAttr* at = ci->findAttr(arg.s);
                         if (at && at->pub)
-                            od->attrs[arg.s] = arg.pairVal ? *arg.pairVal : Value::any();
+                            od->attrs[arg.s] = coerceToSigil(arg.pairVal ? *arg.pairVal : Value::any(), at->sigil);
                     }
                 // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
                 // on the FINAL slot value, matching Rakudo's X::TypeCheck::Attribute::Default.

@@ -102,6 +102,12 @@ struct Env {
 // claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
 bool rtIsDefined(const Value& v);
 
+// The PUBLIC attributes of a class, in the order the default renderer shows them:
+// the class's OWN first, then its parents' (Rakudo prints `Q.new(q => 2, p => 1)`
+// for `class Q is P`). One walk, because `.gist` and `.raku` of a hookless object
+// are the same string and were computing this two different ways.
+void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out);
+
 struct ReturnEx { Value v; };
 struct ExitEx { int code = 0; };
 struct LastEx { std::string label; };
