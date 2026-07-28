@@ -120,6 +120,15 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out) {
     for (auto& p : c->extraParents) collectPubAttrs(p.get(), out);
 }
 
+Value divideByZero(const Value& lhs, const char* opName) {
+    Value ex = Value::typeObj("X::Numeric::DivideByZero");
+    Value f = Value::makeHash(); f.hashKind = "Failure";
+    (*f.hash)["exception"] = ex;
+    (*f.hash)["message"] = Value::str("Attempt to divide " + lhs.toStr() +
+                                      " by zero using infix:<" + opName + ">");
+    return f;
+}
+
 [[noreturn]] void throwImmutable(const Value& v) {
     std::string kind = v.t == VT::Hash && !v.hashKind.empty() ? v.hashKind : v.typeName();
     throw RakuError{Value::typeObj("X::Assignment::RO"),
@@ -8977,7 +8986,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (bn.isZero()) {
                     if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                         "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                    return Value::typeObj("Failure");
+                    return divideByZero(l, op.c_str());
                 }
                 BigInt N = an * bd, D = ad * bn;
                 if (D.sign < 0) { N = -N; D = -D; }
@@ -8992,7 +9001,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (b == 0) {
                     if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                         "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                    return Value::typeObj("Failure");
+                    return divideByZero(l, op.c_str());
                 }
                 if (b == -1) return op == "%%" ? Value::boolean(true) : Value::integer(0); // a % -1 == 0 (avoids LLONG_MIN%-1 UB)
                 long long rem = a % b;
@@ -9004,7 +9013,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (b.isZero()) {
                 if (op == "%%") throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
                     "Attempt to divide " + l.toStr() + " by zero using infix:<%%>"};
-                return Value::typeObj("Failure");
+                return divideByZero(l, op.c_str());
             }
             BigInt q, rem; BigInt::divmod(a, b, q, rem);
             // Raku `div` floors (rounds toward -∞); BigInt::divmod truncates toward
@@ -12040,7 +12049,15 @@ Value Interpreter::evalUnary(Unary* u) {
             if (u->operand->kind == NK::BlockExpr)
                 r = callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {});
             else r = eval(u->operand.get());
-            tctx_.cur->define("$!", Value::nil());
+            // A block that RETURNS a Failure sets `$!` too — it did not throw, but
+            // the failure is still what happened. Without this `try { 1 % 0 }`
+            // handed back an undefined value with `$!` cleared to Nil, so there was
+            // no way to ask what went wrong.
+            if (r.t == VT::Hash && r.hashKind == "Failure" && r.hash) {
+                auto it = r.hash->find("exception");
+                tctx_.cur->define("$!", it != r.hash->end() ? it->second : Value::nil());
+            }
+            else tctx_.cur->define("$!", Value::nil());
             return r;
         } catch (RakuError& e) {
             tctx_.cur->define("$!", exceptionFor(e));

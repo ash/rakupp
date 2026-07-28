@@ -108,6 +108,13 @@ bool rtIsDefined(const Value& v);
 // caught one and missed the other. Rakudo uses RO for both.
 [[noreturn]] void throwImmutable(const Value& v);
 
+// Dividing by zero yields a FAILURE carrying X::Numeric::DivideByZero — not a
+// bare `Failure` type object, which has no exception to detonate and leaves `$!`
+// unset. Three verbatim copies of the check inside one `if` block each returned
+// the bare type object, and all three hard-coded `infix:<%%>` in the one message
+// they did build.
+Value divideByZero(const Value& lhs, const char* opName);
+
 // The PUBLIC attributes of a class, in the order the default renderer shows them:
 // the class's OWN first, then its parents' (Rakudo prints `Q.new(q => 2, p => 1)`
 // for `class Q is P`). One walk, because `.gist` and `.raku` of a hookless object
