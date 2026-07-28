@@ -387,7 +387,15 @@ struct Codegen {
     void collectMutatedCaptures(const std::vector<StmtPtr>& body, std::set<std::string> local,
                                 bool inClosure, std::set<std::string>& out) {
         auto record = [&](Expr* t) {
-            if (!inClosure || !t || t->kind != NK::VarExpr) return;
+            if (!inClosure || !t) return;
+            // Mutating THROUGH a subscript mutates the variable: `%bag{$k}++`,
+            // `@result[$i] += 1`, `@ready[$p].push(…)` all write to the container.
+            // Only a bare VarExpr counted before, so a hash or array a closure
+            // updated by key was not made a cell — it was captured by value, came
+            // out `const` inside the lambda, and the generated C++ would not
+            // compile ("binding reference of type Value& to const Value").
+            while (t->kind == NK::Index) t = static_cast<Index*>(t)->base.get();
+            if (!t || t->kind != NK::VarExpr) return;
             auto* v = static_cast<VarExpr*>(t);
             if (v->declare) return;
             const std::string& n = v->name;
@@ -1018,6 +1026,24 @@ struct Codegen {
                     if (m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index) unsupported(".= on this invocant");
                     return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; __r = RT.methodCall(__r, "
                          + cesc(name) + ", " + argsVL(m->args) + "); return __r; }())";
+                }
+                // AUTOVIVIFY through a subscript for the methods that grow a
+                // container. `@ready[2].push(10)` must create the inner Array in the
+                // ARRAY, not in a temporary: ex() on an Index yields rtIndexGet,
+                // which returns a fresh Any for a missing element, so the push
+                // landed in a copy and vanished — @ready stayed empty and the
+                // element read back as Nil. (A plain `@a.push` works either way,
+                // because the Value copy shares the same arr shared_ptr; only the
+                // not-there-yet case needs the lvalue.) Mirrors the interpreter,
+                // which takes an lvalue invocant for exactly this method set.
+                if (m->inv->kind == NK::Index &&
+                    (name == "push" || name == "append" || name == "unshift" ||
+                     name == "prepend" || name == "ASSIGN-KEY" || name == "BIND-KEY")) {
+                    bool hashy = (name == "ASSIGN-KEY" || name == "BIND-KEY");
+                    return "([&]()->Value{ Value& __s = " + lvalueExpr(m->inv.get()) + "; "
+                           "if (__s.t == VT::Any || __s.t == VT::Nil || __s.t == VT::Type) __s = " +
+                           std::string(hashy ? "Value::makeHash()" : "Value::array()") + "; "
+                           "return RT.methodCall(__s, " + cesc(name) + ", " + argsVL(m->args) + "); }())";
                 }
                 return "RT.methodCall(" + ex(m->inv.get()) + ", " + cesc(name) + ", " + argsVL(m->args) + ")";
             }
