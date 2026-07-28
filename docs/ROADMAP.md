@@ -54,8 +54,8 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing: **584 / 1,462 Roast
-files fully pass (~39%)**, **194,506 / 216,066 declared assertions (~90%)** —
+synopses rather than isolated features. Current standing: **625 / 1,462 Roast
+files fully pass (~43%)**, **196,395 / 217,060 declared assertions (~90%)** —
 run the harness for live numbers; definitions in [COUNTING.md](COUNTING.md).
 Major subsystems now in:
 
@@ -142,9 +142,12 @@ all 62 locally installed dists already `use` cleanly.
 
 **The documentation-conformance track** runs alongside it, measured by
 [the spec site](https://github.com/ash/raku.online/tree/main/sites/spec): every runnable example in the
-official docs executed on both engines and classified three ways. At v1.2.5,
-936 of them are byte-identical on Raku++ and Rakudo (from 835), leaving 144
-where Raku++ is the one that is wrong. The largest single item left there is
+official docs executed on both engines and classified three ways. On current
+`main`, 939 of them are byte-identical on Raku++ and Rakudo (from 835 at v1.2.0),
+leaving 122 where Raku++ is the one that is wrong (and a further 30 in the
+companion operator-behaviour matrix, down from 72). (The `Set`/`Bag`/`Mix`/`Map`
+rows flap by a few either way between runs — Rakudo randomizes hash iteration
+order per process — so read the count with a ±5 band.) The largest single item left there is
 **regex code blocks under backtracking** — `/(\d) { say $0 }/` — which accounts
 for 5 of the 6 remaining `Match` rows. It was attempted once and backed out:
 the engine re-runs blocks while backtracking, so side effects fire repeatedly,

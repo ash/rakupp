@@ -100,12 +100,12 @@ do," and conflating them flatters you.
 
 **File coverage** — *how many whole Roast files pass every assertion* — is the
 harsh one. One stray failure in a 200-assertion file zeroes the whole file. This
-number sat around 17% early on and is ~42% now (**611 of 1,462 files**). It is a
+number sat around 17% early on and is ~43% now (**625 of 1,462 files**). It is a
 coverage figure: how much of the suite is *completely* conquered.
 
 **Per-test rate** — *of every individual test the suite declares, how many pass* —
 is the fair one for "correctness on what runs." This is the headline: **90%**,
-or roughly **194,900 of ~216,200** declared tests. One whole synopsis — S15,
+or roughly **196,400 of ~217,100** declared tests. One whole synopsis — S15,
 Unicode — is at **100%** of its assertions.
 
 The subtlety we documented in [docs/COUNTING.md](docs/COUNTING.md) is that the
