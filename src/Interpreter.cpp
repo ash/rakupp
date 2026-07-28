@@ -5280,7 +5280,7 @@ struct DepthGuard {
         size_t reserve = size_t(2) << 20;
         if (t_stackLimit < reserve * 4) reserve = t_stackLimit / 4;
         if (used + reserve >= t_stackLimit || d > 100000) { // hard frame backstop too
-            --d; throw RakuError{Value::str("X::Recursion"), "Too many levels of recursion"};
+            --d; throw RakuError{Value::typeObj("X::Recursion"), "Too many levels of recursion"};
         }
     }
     ~DepthGuard() { --d; }
@@ -5349,7 +5349,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
         Value* p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
         if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
         if (p && p->t == VT::Code) return callCallable(*p, std::move(args));
-        throw RakuError{Value::nil(), "Undefined routine '" + name + "'"};
+        throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + name + "'"};
     }
     return it->second(*this, args);
 }
@@ -5572,7 +5572,7 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
                         "Cannot modify an immutable '" + name + "'"};
         return base.obj->attrs[name];
     }
-    throw RakuError{Value::str("Cannot assign"), "Target is not assignable"};
+    throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
 }
 
 // Assignable slot for a dynamic/special variable (native codegen): the existing
@@ -6243,7 +6243,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (Value* cm = cit->second->findMethod("CALL-ME"))
                     return invokeMethod(*cm, codeVal, std::move(args));
         }
-        throw RakuError{Value::str("Not callable"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
+        throw RakuError{Value::typeObj("X::Method::NotFound"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
     }
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code;
@@ -6279,7 +6279,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     }
                     return out;
                 }
-                throw RakuError{Value::str("X::Multi::NoMatch"),
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
             }
             visited->push_back(best);
@@ -6807,7 +6807,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     }
                     return out;
                 }
-                throw RakuError{Value::str("X::Multi::NoMatch"),
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "No matching multi candidate for method " + c.name};
             }
             visited->push_back(best);
@@ -7189,7 +7189,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         auto* nt = static_cast<NameTerm*>(e);
         if (Value* p = tctx_.cur->find(nt->name)) return p;
     }
-    throw RakuError{Value::str("Cannot assign"), "Target is not assignable"};
+    throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
 }
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
@@ -8012,7 +8012,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             bool keep = scOr ? cur.truthy() : scAnd ? !cur.truthy()
                       : scAt ? !isDefined(cur) : isDefined(cur);
             if (keep) return sink ? Value::any() : cur;
-            if (!lv) throw RakuError{Value::str("Cannot assign"), "Target is not assignable"};
+            if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
             Value rhs = eval(a->value.get());
             int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
             *lv = rhs;
@@ -9484,7 +9484,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         return Value::boolean(op == "~~" ? res : !res);
     }
-    throw RakuError{Value::str("op"), "Unsupported operator '" + op + "'"};
+    throw RakuError{Value::typeObj("X::NYI"), "Unsupported operator '" + op + "'"};
 }
 
 // Escape regex metacharacters so an interpolated string matches literally.
@@ -11328,7 +11328,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (it != builtins_.end()) return it->second(*this, args);
             }
             if (c->callee) return callCallable(eval(c->callee.get()), args);
-            throw RakuError{Value::str("Undefined routine"), "Undefined routine '" + c->name + "'"};
+            throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + c->name + "'"};
         }
         // ==> my @target (or an existing container): store the fed value
         Value* lv = lvalue(dstE);
@@ -12320,7 +12320,7 @@ Value Interpreter::evalUnary(Unary* u) {
     // user-defined prefix operator: `sub prefix:<§>($x) { … }`
     if (Value* f = tctx_.cur->find("&prefix:<" + u->op + ">"))
         return callCallable(*f, ValueList{v});
-    throw RakuError{Value::str("op"), "Unsupported prefix '" + u->op + "'"};
+    throw RakuError{Value::typeObj("X::NYI"), "Unsupported prefix '" + u->op + "'"};
 }
 
 ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
@@ -12907,7 +12907,7 @@ Value Interpreter::evalCall(Call* c) {
             return a0; // already a T — identity
         return methodCall(a0, c->name, ValueList{});
     }
-    throw RakuError{Value::str("Undefined routine &" + c->name),
+    throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
                     "Undefined routine '" + c->name + "'"};
 }
 

@@ -1411,7 +1411,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     if ((kind != "num" && kind != "int" && kind != "uint") ||
         (width != 0 && width != 8 && width != 16 && width != 32 && width != 64 && width != 128) ||
         (kind == "num" && width != 0 && width < 32))
-        throw RakuError{Value::str("op"), "No such method '" + m + "' for Buf"};
+        throw RakuError{Value::typeObj("X::Method::NotFound"), "No such method '" + m + "' for Buf"};
     long long off = args.size() > 0 ? args[0].toInt() : 0;
     size_t vi = isWrite ? 1 : 1; // value index for writes; endian index varies
     Value val = (isWrite && args.size() > 1) ? args[1] : Value::number(0);
@@ -6873,7 +6873,7 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
         if (m == "isNaN") return Value::boolean(std::isnan(inv.n) || std::isnan(inv.im));
         if (m == "Str" || m == "gist" || m == "Stringy") return Value::str(inv.toStr());
         if (m == "raku") return Value::str("<" + inv.toStr() + ">");
-        if (m == "Num" || m == "Real" || m == "Int") { if (inv.im != 0) throw RakuError{Value::str("Complex"), "Can not convert Complex with nonzero imaginary part"}; return m == "Int" ? Value::integer((long long)inv.n) : Value::number(inv.n); }
+        if (m == "Num" || m == "Real" || m == "Int") { if (inv.im != 0) throw RakuError{Value::typeObj("X::Numeric::Real"), "Can not convert Complex with nonzero imaginary part"}; return m == "Int" ? Value::integer((long long)inv.n) : Value::number(inv.n); }
         // Complex.narrow is `self.im == 0 ?? self.re.narrow !! self` — it must RECURSE,
         // or (4.0+0i).narrow stops at the Num and never demotes to Int.
         if (m == "narrow") return inv.im == 0 ? methodCall(Value::number(inv.n), "narrow", ValueList{}) : inv;
@@ -12581,8 +12581,8 @@ void Interpreter::registerBuiltins() {
         throw ExitEx{code};
     };
     // stub / yada operators
-    B["!!!"] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::str("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
-    B["..."] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::str("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
+    B["!!!"] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::typeObj("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
+    B["..."] = [](Interpreter&, ValueList& a) -> Value { throw RakuError{Value::typeObj("X::StubCode"), a.empty() ? "Stub code executed" : a[0].toStr()}; };
     B["???"] = [](Interpreter&, ValueList& a) -> Value { std::cerr << (a.empty() ? "Stub code executed" : a[0].toStr()) << "\n"; return Value::nil(); };
     // run(prog, *@args, :timeout(N)) -> { out => Str, exitcode => Int, timedout => Bool }
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -14736,7 +14736,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::P6BoxS: return Value::str(v.empty() ? std::string() : v[0].toStr());
         default: break;
     }
-    throw RakuError{Value::str("nqp"), "nqp op not implemented in this build"};
+    throw RakuError{Value::typeObj("X::NYI"), "nqp op not implemented in this build"};
 }
 
 } // namespace rakupp

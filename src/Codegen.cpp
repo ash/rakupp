@@ -2121,7 +2121,7 @@ struct Codegen {
                     }
                     d += " if (" + guard + ") return " + methodCandFn(cd->name, kv.first, (int)k) + "(__a);";
                 }
-                d += " throw RakuError{Value::nil(), \"No matching multi-method candidate for " + kv.first + "\"}; });";
+                d += " throw RakuError{Value::typeObj(\"X::Multi::NoMatch\"), \"No matching multi-method candidate for " + kv.first + "\"}; });";
                 line(1, d);
             }
         }
@@ -2243,7 +2243,7 @@ struct Codegen {
             }
             line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
         }
-        line(1, "throw RakuError{Value::nil(), \"No matching multi candidate for " + name + "\"};");
+        line(1, "throw RakuError{Value::typeObj(\"X::Multi::NoMatch\"), \"No matching multi candidate for " + name + "\"};");
         line(0, "}");
     }
 };
