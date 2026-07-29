@@ -51,6 +51,9 @@ point; everything else lives here.
 - **[dev/ROSETTACODE.md](dev/ROSETTACODE.md)** — Raku++ vs Rakudo on real
   [RosettaCode](https://rosettacode.org/wiki/Category:Raku) programs: the
   `tools/rc-compare.raku` harness, results, and the gaps it surfaces.
+- **[dev/METHOD-DISPATCH-EXPERIMENT.md](dev/METHOD-DISPATCH-EXPERIMENT.md)** — why the
+  interpreter's `if (m == …)` dispatch chain was **not** replaced with a hash map or a
+  switch: the measurements, and the direction that would actually pay.
 - **[dev/DISPATCH.md](dev/DISPATCH.md)** — call dispatch in `--exe` code: what each
   call shape costs (measured), the cached-builtin/inline-string-compare cuts, and
   what's deliberately left on the table.
