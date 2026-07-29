@@ -3159,6 +3159,10 @@ bool isKnownTypeName(const std::string& n) {
     if (n.rfind("X::", 0) == 0) return true;         // exception types
     if (n.rfind("Metamodel::", 0) == 0) return true; // HOWs
     if (n.rfind("IO::", 0) == 0) return true;         // IO::Path::Unix, etc.
+    // NativeCall's containers, bare or parameterized: `--> CArray[uint8]` is a
+    // routine return type in NativeHelpers::Array and friends
+    if (n == "CArray" || n == "Pointer" ||
+        n.rfind("CArray[", 0) == 0 || n.rfind("Pointer[", 0) == 0) return true;
     static const std::set<std::string> t = {
         "Mu", "Any", "Cool", "Junction", "Whatever", "WhateverCode", "Nil",
         "Int", "UInt", "Num", "Rat", "FatRat", "Complex", "Numeric", "Real", "Bool",
@@ -10846,6 +10850,18 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         size_t c = nm.find(":sym<");
         if (c == std::string::npos) c = nm.find(":sym\xC2\xAB"); // :sym«…»
         if (c == std::string::npos) c = nm.find(":<");
+        // a PLAIN adverb candidate — `token match:character-class { … }` — is a
+        // proto member too (IO::Glob's whole matcher is built from these); any
+        // `name:key` where key is a bare identifier counts, parens excluded
+        // (`:foo('x')` carries an argument, not a candidate tag)
+        if (c == std::string::npos) {
+            size_t p2 = nm.find(':');
+            if (p2 != std::string::npos && p2 > 0 && p2 + 1 < nm.size() &&
+                (std::isalpha((unsigned char)nm[p2 + 1]) || nm[p2 + 1] == '_') &&
+                nm.find('(', p2) == std::string::npos &&
+                nm.find('<', p2) == std::string::npos)
+                c = p2;
+        }
         if (c != std::string::npos && c > 0) gm.protos[nm.substr(0, c)].push_back(nm);
     }
 

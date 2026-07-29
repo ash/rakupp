@@ -509,6 +509,7 @@ void Lexer::skipWhitespaceAndComments() {
                 bool capture = (name == "pod"); // collect pod block content for `$=pod` / --doc
                 size_t contentStart = eof() ? pos_ : pos_ + 1; // just after this line's newline
                 // skip until the matching =end <name> (nested =begin/=end of other names are skipped over)
+                int depth = 0; // nested =begin of the SAME name — Date::Names nests =begin comment
                 for (;;) {
                     if (eof()) break;
                     if (col_ == 1 && (peek() == ' ' || peek() == '\t')) {
@@ -522,16 +523,20 @@ void Lexer::skipWhitespaceAndComments() {
                         advance();
                         std::string w2;
                         while (isIdentCont(peek())) w2 += advance();
-                        if (w2 == "end") {
-                            std::string endName;
+                        if (w2 == "end" || w2 == "begin") {
+                            std::string dirName;
                             while (peek() == ' ' || peek() == '\t') advance();
-                            while (isIdentCont(peek())) endName += advance();
-                            if (endName == name) { // matching close
-                                if (capture) podData_ += renderPod(src_.substr(contentStart, s2 - contentStart));
-                                while (!eof() && peek() != '\n') advance();
-                                break;
+                            while (isIdentCont(peek())) dirName += advance();
+                            if (dirName == name) {
+                                if (w2 == "begin") depth++;      // same-name block NESTS
+                                else if (depth > 0) depth--;     // closes the nested one
+                                else { // matching close of OUR block
+                                    if (capture) podData_ += renderPod(src_.substr(contentStart, s2 - contentStart));
+                                    while (!eof() && peek() != '\n') advance();
+                                    break;
+                                }
                             }
-                            // =end of a different (nested) block — keep skipping
+                            // a different name — keep skipping
                         }
                         pos_ = s2; // restore; consume the line below
                     }
@@ -1399,7 +1404,12 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         // protoregex multi variant: `:sym<dec>`, `:<null>`, or `:foo('x')`
         while (peek() == ':' && (peek(1) == '<' || isIdentStart(peek(1)))) {
             name += advance(); // ':'
-            while (isIdentCont(peek())) name += advance(); // adverb key (e.g. sym)
+            // the adverb key takes embedded - and ' like any identifier:
+            // `token match:character-class` stopped at "character", leaving
+            // `-class` in the stream and the body un-lexed as a regex — which is
+            // why IO::Glob (and so Config) failed lines later with "expected ]"
+            while (isIdentCont(peek()) || rakuIdentJoins(peek(), peek(1)))
+                name += advance(); // adverb key (e.g. sym, character-class)
             char open = peek();
             if (open == '<' || open == '(') {
                 char close = open == '<' ? '>' : ')';

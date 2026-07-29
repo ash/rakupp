@@ -907,7 +907,24 @@ ExprPtr Parser::parsePrefix(bool tight) {
             // to the CONTEXTUALIZED value like it does for the circumfix forms
             // above: `@$p[0]` is `(@$p)[0]`, not `@($p[0])`. Letting parsePrefix
             // run here would consume the subscript into the operand.
-            if (cur().kind == Tok::Var)
+            //
+            // The MATCH-CAPTURE shorthand is the exception: in `@$<seg>` the angle
+            // subscript is part of the VARIABLE ($/<seg>), not a postfix on the
+            // contextualized value — taking only the primary stranded it outside,
+            // so it re-attached as an associative index on the Array
+            // (`@($/)<seg>`), and Cro::Uri's `for @$<segment>` died on it. Build
+            // the capture node here, the same shape the postfix pass builds.
+            if (cur().kind == Tok::Var && cur().text == "$" &&
+                peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore) {
+                advance(); advance(); // $  <
+                std::vector<std::string> words = readAngleWords(">");
+                auto ix = std::make_unique<Index>();
+                ix->base = std::make_unique<VarExpr>("$/");
+                ix->isHash = true;
+                ix->index = std::make_unique<StrLit>(words.empty() ? "" : words[0]);
+                u->operand = std::move(ix);
+            }
+            else if (cur().kind == Tok::Var)
                 u->operand = parsePrimary();
             else
                 u->operand = parsePrefix(true);
@@ -2842,6 +2859,17 @@ ExprPtr Parser::parsePrimary() {
                 auto ve = std::make_unique<VarExpr>(t.text + "!anon");
                 ve->declare = true; ve->declScope = "my";
                 return ve;
+            }
+            // `&%dispatch{$key}` / `&@handlers[$i]` — the CODE sigil on a hash/array
+            // ELEMENT: the element is the callable, so the subscript belongs to the
+            // variable and the `&` itself adds nothing at runtime (Rakudo binds the
+            // value as a Callable). Date::Calendar::Strftime picks its formatters
+            // out of a dispatch hash exactly this way.
+            if (t.text == "&" && peek().kind == Tok::Var && !peek().spaceBefore &&
+                peek().text.size() > 1 &&
+                (peek().text[0] == '%' || peek().text[0] == '@' || peek().text[0] == '$')) {
+                advance(); // &
+                return parsePostfix(parsePrimary());
             }
             if (t.text == "*") { advance(); return std::make_unique<WhateverExpr>(); }
             if (t.text == "**") { advance(); auto w = std::make_unique<WhateverExpr>(); w->hyper = true; return w; } // HyperWhatever (e.g. %h{**})
