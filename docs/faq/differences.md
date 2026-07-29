@@ -2,7 +2,7 @@
 
 Raku++ targets the same language as Rakudo and is measured against it: every
 runnable example in the official documentation is executed on both, and every
-Roast assertion is scored. **939 of 1,451 documentation examples produce
+Roast assertion is scored. **943 of 1,451 documentation examples produce
 byte-identical output on both engines**, and ~90% of Roast's declared tests pass.
 
 The two are not the same program, though, and this page is the honest list of
