@@ -278,10 +278,20 @@ section('showcase/rakus (a static HTTP file server)');
 # last stdout line. Add new cases as plain files; nothing to register.
 section('t/regression (once broken, must stay fixed)');
 for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
-    my ($out, $exit) = run-rakupp($f.Str);
+    # capture stderr too: a failing case prints WHICH check failed on stderr via
+    # `note`, and run-rakupp discards it — so a CI failure used to say only
+    # "exit=0 last-line='FAIL'", which is not enough to act on. (Learned the hard
+    # way from a macOS-only failure of the blocking-receive case.)
+    my $p = run($*EXECUTABLE, $f.Str, :out, :err);
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    my $exit = $p.exitcode;
     my $last = $out.lines.tail // '';
     ok($exit == 0 && $last eq 'PASS', "regression: {$f.basename}");
-    diag("exit=$exit last-line='$last'") if $exit != 0 || $last ne 'PASS';
+    if $exit != 0 || $last ne 'PASS' {
+        diag("exit=$exit last-line='$last'");
+        diag("stderr: $_") for $err.lines;
+    }
 }
 
 # ---- native codegen coverage -------------------------------------------
