@@ -64,10 +64,12 @@ std::string nfcNormalize(std::string in);
 // SHA-1 as UPPERCASE hex (Interpreter.cpp) — the CURI short-index / content-id scheme.
 std::string sha1hex(const std::string& msg);
 
-struct Env {
-    std::unordered_map<std::string, Value> vars;
-    std::shared_ptr<Env> parent;
-    bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+// The eight containers below are empty in the overwhelming majority of scopes —
+// they exist for `is rw` write-through, `temp`/`let` restoration, `is default`
+// and `is dynamic`. An Env is built for every routine call AND every block, so
+// constructing and destroying eight containers per scope is pure overhead for
+// the ordinary case. They live behind one lazily-allocated pointer instead.
+struct EnvExtras {
     // rw-param write-through: paramName → (caller's argument expr, caller env).
     // An assignment to the param writes through the caller's lvalue IMMEDIATELY
     // (so the caller sees it mid-call); rwSynced records the last value pushed
@@ -86,6 +88,22 @@ struct Env {
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
     std::map<std::string, Value> varDefault;
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
+};
+
+struct Env {
+    std::unordered_map<std::string, Value> vars;
+    std::shared_ptr<Env> parent;
+    bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+
+    // `x()` materialises the extras (use for WRITES); `xr()` returns a shared
+    // empty instance when there are none (use for READS, so a lookup never
+    // allocates). Checking `ex` directly is fine too where the fast path matters.
+    std::unique_ptr<EnvExtras> ex;
+    EnvExtras& x() { if (!ex) ex = std::make_unique<EnvExtras>(); return *ex; }
+    const EnvExtras& xr() const {
+        static const EnvExtras kEmpty;
+        return ex ? *ex : kEmpty;
+    }
 
     Value* find(const std::string& name) {
         auto it = vars.find(name);
@@ -341,16 +359,16 @@ public:
     }
     Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
     void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
-    Value methodCall(Value inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
-    Value methodCallInner(Value inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs);
+    Value methodCall(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
+    Value methodCallInner(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs);
     // Ordered SEGMENTS of the same dispatch chain, split out of methodCallInner to
     // get it under control (it was 9,138 lines). Each returns nullopt for "not
     // handled here"; they must be called in this order — see MethodCallTail.cpp.
-    std::optional<Value> methodCallPart2(Value& inv, const struct MName& m, ValueList& args,
+    std::optional<Value> methodCallPart2(const Value& inv, const struct MName& m, ValueList& args,
                                          const std::vector<ExprPtr>* rwArgs);
-    std::optional<Value> methodCallPart3(Value& inv, const struct MName& m, ValueList& args,
+    std::optional<Value> methodCallPart3(const Value& inv, const struct MName& m, ValueList& args,
                                          const std::vector<ExprPtr>* rwArgs);
-    std::optional<Value> methodCallTail(Value& inv, const struct MName& m, ValueList& args,
+    std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
     std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)

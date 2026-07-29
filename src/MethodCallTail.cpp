@@ -18,7 +18,7 @@
 // nullopt = "not handled here", and the caller falls through to the next segment.
 namespace rakupp {
 
-std::optional<Value> Interpreter::methodCallTail(Value& inv, const MName& m,
+std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -1919,7 +1919,11 @@ std::optional<Value> Interpreter::methodCallTail(Value& inv, const MName& m,
                         }
                     } else { // key path: descend/autovivify nested hashes, push at the leaf
                         if (!c.arr || c.arr->empty()) continue;
-                        Value* curH = &inv;
+                        // mutable cursor for the descent; the copy shares inv's
+                        // hash shared_ptr, so the autovivified writes still land in
+                        // the caller's container (see the same pattern in Part3)
+                        Value invLocal = inv;
+                        Value* curH = &invLocal;
                         for (size_t k = 0; k + 1 < c.arr->size(); k++) {
                             Value& slot = (*curH->hash)[(*c.arr)[k].toStr()];
                             if (slot.t != VT::Hash || !slot.hash) { slot = Value::makeHash(); slot.itemized = true; }

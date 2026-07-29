@@ -2114,8 +2114,8 @@ static std::string jsonEncode(const Value& v) {
 // `.kv`/`.keys`/`.values`/`.pairs`/`.antipairs` answer a Seq on EVERY container in
 // Rakudo — Hash, Array, List, Pair, Match alike. Marking them at the one dispatch
 // point keeps that uniform instead of tagging a dozen construction sites.
-Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
-    Value r = methodCallInner(std::move(inv), m, std::move(args), rwArgs);
+Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    Value r = methodCallInner(inv, m, std::move(args), rwArgs);
     if (r.t == VT::Array && r.isList && r.s.empty() &&
         (m == "kv" || m == "keys" || m == "values" || m == "pairs" ||
          m == "antipairs" || m == "invert" ||
@@ -2144,7 +2144,30 @@ Value Interpreter::methodCall(Value inv, const std::string& m, ValueList args, c
 
 
 
-Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    // The invocant arrives BY REFERENCE. It used to be by value, which cost a
+    // 376-byte copy and up to eleven atomic refcount bumps on every method call —
+    // to serve the handful of arms that actually rewrite it (the class-alias
+    // rewrite just below, a Supply drain, one numeric coercion). Those few take a
+    // copy on demand through `mutInv()`; everything else reads `inv` and pays
+    // nothing. The compiler enforces it: `inv` is a const reference, so a write
+    // that forgets to go through mutInv() will not compile.
+    // Exactly one rewrite happens before dispatch — the package-relative alias
+    // below — so it is done here, into a copy, and `inv` is bound afterwards.
+    // std::optional, not a plain Value: a default-constructed Value is 376 bytes,
+    // five std::strings and eleven shared_ptrs, and this runs on EVERY method call.
+    // The optional's empty state is a flag — the Value is only built on the rare
+    // path below that actually needs one.
+    std::optional<Value> invCopy;
+    const Value* invp = &invIn;
+    // package-relative short name: a bare `Frog` type invocant answers as its
+    // qualified nested class (`Forest::Frog`) when no real class claims the
+    // short name — covers `.new`, `.= new` on typed decls, and user methods
+    if (invIn.t == VT::Type && !invIn.s.empty() && !classes_.count(invIn.s)) {
+        auto ai = classAliases_.find(invIn.s);
+        if (ai != classAliases_.end()) { invCopy = invIn; invCopy->s = ai->second; invp = &*invCopy; }
+    }
+    const Value& inv = *invp;
     // `.perl` IS `.raku` — the old name for the same method. Aliasing once, here,
     // replaces sixteen `|| m == "perl"` clauses scattered down the ladder, each of
     // which had to be remembered by whoever added the next `.raku` arm. It has to
@@ -2158,13 +2181,6 @@ Value Interpreter::methodCallInner(Value inv, const std::string& mName, ValueLis
                           inv.t == VT::Object && inv.obj && inv.obj->cls &&
                           inv.obj->cls->findMethod("perl");
     const MName m{(mName == "perl" && !userPerl) ? kRaku : mName};
-    // package-relative short name: a bare `Frog` type invocant answers as its
-    // qualified nested class (`Forest::Frog`) when no real class claims the
-    // short name — covers `.new`, `.= new` on typed decls, and user methods
-    if (inv.t == VT::Type && !inv.s.empty() && !classes_.count(inv.s)) {
-        auto ai = classAliases_.find(inv.s);
-        if (ai != classAliases_.end()) inv.s = ai->second;
-    }
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     // read the environment ONCE, not on every method call — getenv walks environ
     static const bool kTrace = std::getenv("RAKUPP_TRACE") != nullptr;

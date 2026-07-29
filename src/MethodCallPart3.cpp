@@ -11,7 +11,7 @@
 // "not handled here".
 namespace rakupp {
 
-std::optional<Value> Interpreter::methodCallPart3(Value& inv, const MName& m, ValueList& args,
+std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     (void)rwArgs;
@@ -116,6 +116,11 @@ std::optional<Value> Interpreter::methodCallPart3(Value& inv, const MName& m, Va
             "sech","cosech","csch","cotanh","coth","asech","acosech","acsch","acotanh","acoth",
             "acotan","acot","floor","ceiling","round","truncate","sign","exp","log","log10","log2"};
         if (numMeths.count(m)) {
+            // this arm coerces the invocant (Bridge/Numeric) and then re-dispatches
+            // on the result — a rewrite, so it needs its own copy now that the
+            // dispatch path passes the invocant by const reference
+            Value invLocal = inv;
+            Value& inv = invLocal;
             for (const char* acc : {"Bridge", "Numeric"}) {
                 try { ValueList none; Value nv = methodCall(inv, acc, none);
                       if (nv.isNumeric() || nv.t == VT::Complex) { inv = nv; break; } } catch (...) {}
@@ -363,7 +368,12 @@ std::optional<Value> Interpreter::methodCallPart3(Value& inv, const MName& m, Va
         // level. ASSIGN-POS takes a trailing value, so its last arg is the value.
         size_t nidx = (m == "ASSIGN-POS") ? (args.size() > 1 ? args.size() - 1 : args.size()) : args.size();
         if (nidx > 1) {
-            Value* cur = &inv;
+            // The descent needs a mutable cursor. Copying the invocant is safe and
+            // does not lose the write: the loop always steps at least once (nidx > 1),
+            // so `cur` ends up inside inv.arr — which is a shared_ptr, the same array
+            // object the caller holds. The copy shares it rather than duplicating it.
+            Value invLocal = inv;
+            Value* cur = &invLocal;
             bool oob = false;
             for (size_t d = 0; d + 1 < nidx; d++) { // descend to the innermost array
                 long long ix = args[d].toInt();

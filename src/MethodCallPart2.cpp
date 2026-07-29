@@ -11,11 +11,18 @@
 // "not handled here".
 namespace rakupp {
 
-std::optional<Value> Interpreter::methodCallPart2(Value& inv, const MName& m, ValueList& args,
+std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     (void)rwArgs;
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
+        // This arm REWRITES the invocant (drainSupplyBlock) and then reads it for
+        // the rest of the block. The parameter is a const reference — the dispatch
+        // path stopped copying the invocant on every call — so take the copy here,
+        // where it is paid only by Supply methods. The shadow keeps the rest of the
+        // block exactly as it was.
+        Value invLocal = inv;
+        Value& inv = invLocal;
         // Supply.Promise: a Promise kept with the LAST value the Supply emits when it
         // is done (broken if it quits). Drives the supply via tapSupply. Cro coerces
         // `Promise(supply {…})` here (body parsers).

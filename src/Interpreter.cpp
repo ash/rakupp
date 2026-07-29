@@ -2325,17 +2325,17 @@ int Interpreter::run(Program& prog) {
                                 c.pairVal = std::make_shared<Value>(dv);
                                 global_->vars[ve0->name] = c;
                             } else {
-                                global_->varDefault[ve0->name] = dv;
+                                global_->x().varDefault[ve0->name] = dv;
                                 global_->vars[ve0->name] = dv;
                             }
                         }
                         else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
                                  std::isupper((unsigned char)ve0->declType[0]))
-                            global_->varDefault[ve0->name] = Value::typeObj(ve0->declType);
+                            global_->x().varDefault[ve0->name] = Value::typeObj(ve0->declType);
                         // …and its `is dynamic`, which the skipped declaration would
                         // otherwise never record (a mainline `my $x is dynamic;` with
                         // no initializer is hoisted here and never evaluated)
-                        if (ve0->declDynamic) global_->varDynamic.insert(ve0->name);
+                        if (ve0->declDynamic) global_->x().varDynamic.insert(ve0->name);
                     }
                 }
                 continue;
@@ -2927,9 +2927,9 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok) {
         tctx_.returning = savedRet; tctx_.returnV = std::move(savedRV); tctx_.loopCtl = savedLC;
     }
     // `temp`-saved containers are restored on scope exit (reverse order), after LEAVE blocks.
-    if (tctx_.cur && !tctx_.cur->tempRestores.empty()) {
-        for (auto it = tctx_.cur->tempRestores.rbegin(); it != tctx_.cur->tempRestores.rend(); ++it) (*it)();
-        tctx_.cur->tempRestores.clear();
+    if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->tempRestores.empty()) {
+        for (auto it = tctx_.cur->ex->tempRestores.rbegin(); it != tctx_.cur->ex->tempRestores.rend(); ++it) (*it)();
+        tctx_.cur->ex->tempRestores.clear();
     }
 }
 
@@ -2995,9 +2995,9 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
                     int r = runCatch(e);
                     if (r == 1) continue;                // .resume → next statement
                     runLeavePhasers(b->stmts, /*ok=*/false);
-                    if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
-                        for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
-                        tctx_.cur->letRestores.clear();
+                    if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
+                        for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
+                        tctx_.cur->ex->letRestores.clear();
                     }
                     if (hasNestedSub) breakSelfClosures(blockEnv);
                     tctx_.cur = saved;
@@ -3012,18 +3012,18 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
     } catch (RakuError& e) {
         runLeavePhasers(b->stmts, /*ok=*/false);
         // `let`-saved containers restore only on this UNSUCCESSFUL exit
-        if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
-            for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
-            tctx_.cur->letRestores.clear();
+        if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
+            for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
+            tctx_.cur->ex->letRestores.clear();
         }
         if (hasNestedSub) breakSelfClosures(blockEnv);
         tctx_.cur = saved;
         throw;
     } catch (...) {
         runLeavePhasers(b->stmts, /*ok=*/false);
-        if (tctx_.cur && !tctx_.cur->letRestores.empty()) {
-            for (auto it = tctx_.cur->letRestores.rbegin(); it != tctx_.cur->letRestores.rend(); ++it) (*it)();
-            tctx_.cur->letRestores.clear();
+        if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->letRestores.empty()) {
+            for (auto it = tctx_.cur->ex->letRestores.rbegin(); it != tctx_.cur->ex->letRestores.rend(); ++it) (*it)();
+            tctx_.cur->ex->letRestores.clear();
         }
         if (hasNestedSub) breakSelfClosures(blockEnv);
         tctx_.cur = saved;
@@ -6239,9 +6239,9 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
 
 // run `let` restorations for the current env — only on UNSUCCESSFUL exits
 static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
-    if (!e || e->letRestores.empty()) return;
-    for (auto it = e->letRestores.rbegin(); it != e->letRestores.rend(); ++it) (*it)();
-    e->letRestores.clear();
+    if (!e || !e->ex || e->ex->letRestores.empty()) return;
+    for (auto it = e->ex->letRestores.rbegin(); it != e->ex->letRestores.rend(); ++it) (*it)();
+    e->ex->letRestores.clear();
 }
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
@@ -6717,8 +6717,8 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size()) {
             auto it = env->vars.find(p.name);
             if (it != env->vars.end()) {
-                auto sy = env->rwSynced.find(p.name);
-                bool unchanged = sy != env->rwSynced.end() && valueEqv(it->second, sy->second);
+                auto sy = env->xr().rwSynced.find(p.name);
+                bool unchanged = sy != env->xr().rwSynced.end() && valueEqv(it->second, sy->second);
                 if (!unchanged)
                     try { if (Value* lv = lvalue((*rwArgs)[pi].get())) *lv = it->second; } catch (...) {}
             }
@@ -6737,9 +6737,9 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         if (p.named) continue;
         if (p.slurpy) break;
         if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size()) {
-            env->rwLinks[p.name] = { (*rwArgs)[pi].get(), tctx_.cur };
+            env->x().rwLinks[p.name] = { (*rwArgs)[pi].get(), tctx_.cur };
             auto it = env->vars.find(p.name);
-            env->rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
+            env->x().rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
             anyRwLinks_ = true;
         }
         pi++;
@@ -6758,11 +6758,11 @@ void Interpreter::setupRwSlots(const std::vector<Param>* params, std::shared_ptr
         if (p.slurpy) break;
         if ((p.isRw || p.sigil == '\\') && pi < slots->size()) {
             if (Value* s = (*slots)[pi]) {
-                env->rwDirect[p.name] = s;
+                env->x().rwDirect[p.name] = s;
                 auto it = env->vars.find(p.name);
-                env->rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
+                env->x().rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
             }
-            else env->rwDead.insert(p.name);
+            else env->x().rwDead.insert(p.name);
             anyRwLinks_ = true;
         }
         pi++;
@@ -6780,25 +6780,25 @@ void Interpreter::rwWriteThrough(Expr* target) {
     Env* e = tctx_.cur.get();
     while (e && !e->vars.count(name)) e = e->parent.get();
     if (!e) return;
-    if (e->rwDead.count(name))
+    if (e->ex && e->ex->rwDead.count(name))
         throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable value"};
-    auto dit = e->rwDirect.find(name);
-    if (dit != e->rwDirect.end()) {
+    auto dit = e->xr().rwDirect.find(name);
+    if (dit != e->xr().rwDirect.end()) {
         Value v = e->vars[name];
         *dit->second = v;
-        e->rwSynced[name] = v;
+        e->x().rwSynced[name] = v;
         return;
     }
-    if (e->rwLinks.empty()) return;
-    auto it = e->rwLinks.find(name);
-    if (it == e->rwLinks.end()) return;
+    if (!e->ex || e->ex->rwLinks.empty()) return;
+    auto it = e->ex->rwLinks.find(name);
+    if (it == e->ex->rwLinks.end()) return;
     Value v = e->vars[name];
     auto savedCur = tctx_.cur;
     tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
     try { if (Value* lv = lvalue(it->second.first)) *lv = v; } catch (...) {}
     tctx_.cur = savedCur;
-    e->rwSynced[name] = v;
+    e->x().rwSynced[name] = v;
 }
 
 Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
@@ -7029,11 +7029,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 Value dv = eval(ve->declDefault.get());
                 if (sigil == '@' || sigil == '%') // container stays empty; v is the ELEMENT default
                     init.pairVal = std::make_shared<Value>(dv);
-                else { init = dv; tctx_.cur->varDefault[ve->name] = dv; }
+                else { init = dv; tctx_.cur->x().varDefault[ve->name] = dv; }
             }
             else if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
-                tctx_.cur->varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
-            if (ve->declDynamic) tctx_.cur->varDynamic.insert(ve->name); // `is dynamic`
+                tctx_.cur->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+            if (ve->declDynamic) tctx_.cur->x().varDynamic.insert(ve->name); // `is dynamic`
             tctx_.cur->define(ve->name, std::move(init));
             return &tctx_.cur->vars[ve->name];
         }
@@ -7981,8 +7981,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
             Value dv = Value::any();
             for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                auto di = en->varDefault.find(nm);
-                if (di != en->varDefault.end()) { dv = di->second; break; }
+                auto di = en->xr().varDefault.find(nm);
+                if (di != en->xr().varDefault.end()) { dv = di->second; break; }
                 if (en->vars.count(nm)) break; // owner scope reached, no declared default
             }
             *lv = dv;
@@ -8013,8 +8013,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 };
                 const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
                 for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                    auto di = en->varDefault.find(nm);
-                    if (di != en->varDefault.end()) {
+                    auto di = en->xr().varDefault.find(nm);
+                    if (di != en->xr().varDefault.end()) {
                         if (di->second.t == VT::Type && kChecked.count(di->second.s) &&
                             (isDefined(rhs) ? !rtTypeMatch(rhs, di->second.s)
                                             : !undefOk(di->second.s)) &&
@@ -11409,11 +11409,11 @@ Value Interpreter::evalBinary(Binary* b) {
             ValueList args = evalArgs(c->args);
             args.push_back(src);
             if (!c->name.empty()) {
-                if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args);
+                if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args));
                 auto it = builtins_.find(c->name);
                 if (it != builtins_.end()) return it->second(*this, args);
             }
-            if (c->callee) return callCallable(eval(c->callee.get()), args);
+            if (c->callee) return callCallable(eval(c->callee.get()), std::move(args));
             throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + c->name + "'"};
         }
         // ==> my @target (or an existing container): store the fed value
@@ -12603,8 +12603,8 @@ static std::string normHyperMarkers(std::string s) {
 // generic argument pre-evaluation: `temp $a = 23` must snapshot $a first.
 Value Interpreter::evalTempLet(Call* c) {
     // let = temp that only restores when the scope exits UNSUCCESSFULLY
-    auto& restores = c->name == "let" ? tctx_.cur->letRestores
-                                      : tctx_.cur->tempRestores;
+    auto& restores = c->name == "let" ? tctx_.cur->x().letRestores
+                                      : tctx_.cur->x().tempRestores;
     auto snap = [](Value v) { // detach container storage so later mutation misses the snapshot
         if (v.t == VT::Array && v.arr) v.arr = std::make_shared<ValueList>(*v.arr);
         else if (v.t == VT::Hash && v.hash) v.hash = std::make_shared<std::map<std::string, Value>>(*v.hash);
@@ -12740,7 +12740,10 @@ Value Interpreter::evalCall(Call* c) {
             };
             return code;
         }
-        return callCallable(f, args, &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        // move, not copy: `args` is a local about to die and ValueList is taken BY
+        // VALUE — passing it as an lvalue copied the vector and every Value in it on
+        // every sub call, which is what made evalCall the top allocation site.
+        return callCallable(f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
     }
     if (!c->name.empty()) {
         // bare `::` — the current-scope stash: a Hash of every visible symbol
@@ -12796,7 +12799,7 @@ Value Interpreter::evalCall(Call* c) {
                 if (c->name == "atomic-assign")    { Value v = c->args.size() > 1 ? eval(c->args[1].get()) : Value::any(); *lv = v; return v; }
             }
         }
-        if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args, &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
         // sub-form container mutators AUTOVIVIFY their first argument's slot:
         // `push %h{$k}, $dist` fills the slot with an Array and appends (Rakudo
         // semantics; zef's ecosystem short-name index is built exactly this way).
@@ -14261,7 +14264,7 @@ Value Interpreter::eval(Expr* e) {
                         tctx_.cur->define(ve->name, c);
                         return tctx_.cur->vars[ve->name];
                     }
-                    tctx_.cur->varDefault[ve->name] = dv;
+                    tctx_.cur->x().varDefault[ve->name] = dv;
                     tctx_.cur->define(ve->name, dv);
                     return tctx_.cur->vars[ve->name];
                 }
@@ -14271,10 +14274,10 @@ Value Interpreter::eval(Expr* e) {
                 }
                 if (!ve->declType.empty() || !tctx_.cur->vars.count(ve->name)) {
                     if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
-                        tctx_.cur->varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+                        tctx_.cur->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
                     tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
                 }
-                if (ve->declDynamic) tctx_.cur->varDynamic.insert(ve->name); // `is dynamic`
+                if (ve->declDynamic) tctx_.cur->x().varDynamic.insert(ve->name); // `is dynamic`
                 return tctx_.cur->vars[ve->name];
             }
             if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
@@ -14703,7 +14706,7 @@ Value Interpreter::eval(Expr* e) {
                     const std::string& vn = static_cast<VarExpr*>(dynInv)->name;
                     if (vn.size() > 1 && vn[1] == '*') return Value::boolean(true);
                     for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                        if (en->varDynamic.count(vn)) return Value::boolean(true);
+                        if (en->xr().varDynamic.count(vn)) return Value::boolean(true);
                         if (en->vars.count(vn)) break; // the declaring scope answers
                     }
                     return Value::boolean(false);
@@ -14913,8 +14916,8 @@ Value Interpreter::eval(Expr* e) {
                     (*sc.hash)["name"] = Value::str(ivar->name);
                     Value dv = Value::any();
                     for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
-                        auto di = en->varDefault.find(ivar->name);
-                        if (di != en->varDefault.end()) { dv = di->second; break; }
+                        auto di = en->xr().varDefault.find(ivar->name);
+                        if (di != en->xr().varDefault.end()) { dv = di->second; break; }
                         if (en->vars.count(ivar->name)) break;
                     }
                     (*sc.hash)["default"] = dv;
