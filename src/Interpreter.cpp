@@ -7135,6 +7135,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 }
             }
         }
+        // `Foo::<bar>` names a slot in a package's symbol table, so assigning to
+        // one CREATES it — that is what a symbol table is for. It must land in the
+        // global scope, not the current block, or the symbol vanishes at scope exit.
+        if (ve->pkgSymbol) {
+            auto g = global_ ? global_ : tctx_.cur;
+            if (!g->vars.count(ve->name)) g->define(ve->name, Value::any());
+            return &g->vars[ve->name];
+        }
         if (!isSpecialVar(ve->name) && !noStrict_)
             throw RakuError{Value::typeObj("X::Undeclared"),
                             "Variable '" + ve->name + "' is not declared"};

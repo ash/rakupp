@@ -2623,7 +2623,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // then work on it exactly as they do on `class Foo { }`.
     if (inv.t == VT::Type && m == "new_type" &&
         (inv.s == "Metamodel::ClassHOW" || inv.s == "Metamodel::ParametricRoleHOW" ||
-         inv.s == "Metamodel::ParametricRoleGroupHOW")) {
+         inv.s == "Metamodel::ParametricRoleGroupHOW" ||
+         // A PACKAGE/MODULE/GRAMMAR created at runtime builds the same way here —
+         // rakupp models all of them with ClassInfo, and the HOW only decides what
+         // the type reports about itself. Omitting PackageHOW meant
+         // `Metamodel::PackageHOW.new_type(name => …)` threw "No such method", which
+         // is what stopped roast's packages/S11-modules/lib/RuntimeCreatedPackage
+         // from loading.
+         inv.s == "Metamodel::PackageHOW" || inv.s == "Metamodel::ModuleHOW" ||
+         inv.s == "Metamodel::GrammarHOW")) {
         auto ci = std::make_shared<ClassInfo>();
         ci->name = "<anon|1>";
         for (auto& a : args)

@@ -3280,6 +3280,22 @@ ExprPtr Parser::parsePrimary() {
                     pseudoAngleSymbol(name.substr(0, name.size() - 2),
                                       words.empty() ? "" : words[0]));
             }
+            // `Foo::<bar>` — a slot in a REAL package's symbol table, the same
+            // syntax the pseudo-packages above use. Read and WRITTEN: roast's
+            // TestHOW does `EXPORTHOW::<class> = TestHOW`, and without this the
+            // whole thing parsed as a call to a routine named `EXPORTHOW::`, so
+            // the module would not load. The slot is just the qualified global
+            // `Foo::bar`, which is where `our`-scoped symbols already live.
+            if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
+                !isPseudoPkg(name.substr(0, name.size() - 2)) &&
+                isOp("<") && !cur().spaceBefore) {
+                advance(); // <
+                std::vector<std::string> words = readAngleWords(">");
+                auto ve = std::make_unique<VarExpr>(
+                    name.substr(0, name.size() - 2) + "::" + (words.empty() ? "" : words[0]));
+                ve->pkgSymbol = true; // assignment autovivifies the slot
+                return ve;
+            }
             // parameterized type: `Array[Int]`, `Hash[Int,Str]`, `Foo[Bar]` — a capitalized
             // runtime type parameterization with a variable: array[$T].new / Blob[$T]
             if (!name.empty() && (std::isupper((unsigned char)name[0]) || name == "array") &&
