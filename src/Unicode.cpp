@@ -431,6 +431,23 @@ size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
     return uniGraphemeStarts(cps).size();
 }
 
+GraphemeMap::GraphemeMap(const std::vector<uint32_t>& cps) : ncps_(cps.size()) {
+    // Cheap pre-check. Nothing below U+0300 extends a cluster — the combining
+    // marks start there — with one exception: CR, because CR LF is a single
+    // grapheme (GB3), which is why "a\r\nb".chars is 3. So a string free of both
+    // cannot cluster, and its grapheme indices ARE its codepoint indices.
+    for (uint32_t cp : cps) {
+        if (cp >= 0x300 || cp == 0x0D) { starts_ = uniGraphemeStarts(cps); return; }
+    }
+}
+
+size_t GraphemeMap::graphemeAt(size_t cp) const {
+    if (starts_.empty()) return cp < ncps_ ? cp : ncps_;
+    // the cluster containing `cp` is the last one starting at or before it
+    auto it = std::upper_bound(starts_.begin(), starts_.end(), cp);
+    return (size_t)(it - starts_.begin()) - (it == starts_.begin() ? 0 : 1);
+}
+
 
 // ---- UCA collation (DUCET, allkeys 17.0) — powers `unicmp` / `coll` ----
 namespace {

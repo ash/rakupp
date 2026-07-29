@@ -668,6 +668,28 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         j.arr = std::make_shared<ValueList>(ValueList{inv});
         return j;
     }
+    // Answers that need only the SIZE (or one element) of an Array, taken BEFORE the
+    // copy below. `toList` returns by value and for an Array that is the whole
+    // vector, so the generic segment copied every element — allocating and
+    // destroying 40,000 Values to answer `.elems` — before it had even looked at
+    // which method was called. That made `@a.elems` and `@a[$i]` inside a loop
+    // quadratic in the array's length. Deliberately narrow: the copy also serves as
+    // a snapshot for the arms that mutate the invocant (`reverse` sorts `items` in
+    // place, `push`/`splice` write through `inv.arr`), so only arms that just READ
+    // may be hoisted past it.
+    if (inv.t == VT::Array && inv.arr) {
+        const ValueList& live = *inv.arr;
+        if (m == "elems") return Value::integer((long long)live.size());
+        if (m == "end")   return Value::integer((long long)live.size() - 1);
+        if (m == "Bool")  return Value::boolean(!live.empty());
+        if ((m == "AT-POS" || m == "EXISTS-POS") && !args.empty()) {
+            long long i = args[0].toInt(), n = (long long)live.size();
+            if (i < 0) i += n;
+            bool in = i >= 0 && i < n;
+            if (m == "EXISTS-POS") return Value::boolean(in);
+            return in ? live[(size_t)i] : Value::any();
+        }
+    }
     if (inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Hash) {
         ValueList items = toList(inv);
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction

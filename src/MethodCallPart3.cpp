@@ -1610,7 +1610,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::str(r);
     }
-    if (m == "flip") { auto cps = utf8cp(inv.toStr()); std::string r; for (auto it = cps.rbegin(); it != cps.rend(); ++it) r += cpToUtf8(*it); return Value::str(r); }
+    if (m == "flip") { // reverses GRAPHEMES: a combining mark stays behind its base
+        auto cps = utf8cp(inv.toStr());
+        GraphemeMap gm(cps);
+        std::string r;
+        for (size_t g = gm.count(); g-- > 0; )
+            for (size_t k = gm.cpAt(g), e = gm.cpAt(g + 1); k < e; k++) r += cpToUtf8(cps[k]);
+        return Value::str(r);
+    }
     if (m == "ords") { Value out = Value::array(); for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
     if (m == "chomp") { // a logical newline: "\n", "\r\n" or a lone "\r"
         std::string s = inv.toStr();
@@ -1623,7 +1630,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "trim-trailing") { std::string s = inv.toStr(); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(b == std::string::npos ? "" : s.substr(0, b + 1)); }
     if (m == "substr" || m == "substr-rw") {
         auto cps = utf8cp(inv.toStr());
-        long long n = (long long)cps.size();
+        // Raku indexes by GRAPHEME, so `n` counts clusters and every cut lands on a
+        // cluster boundary. Indexing `cps` directly splits "ŕ̥" into its base and its
+        // combining ring, which is how `substr` and `chars` came to disagree.
+        GraphemeMap gm(cps);
+        long long n = (long long)gm.count();
+        auto slice = [&](long long lo, long long hi) { // [lo, hi) in graphemes
+            std::string r;
+            if (hi <= lo) return r;
+            size_t a = gm.cpAt((size_t)lo), b = gm.cpAt((size_t)hi);
+            for (size_t k = a; k < b; k++) r += cpToUtf8(cps[k]);
+            return r;
+        };
         // a RANGE gives both ends at once: `substr("Long string", 3..6)`
         if (!args.empty() && args[0].t == VT::Range) {
             const Value& rg = args[0];
@@ -1633,8 +1651,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (hi < 0) hi += n;
             if (lo < 0) lo = 0;
             if (hi >= n) hi = n - 1;
-            std::string r; for (long long k = lo; k <= hi && k < n; k++) r += cpToUtf8(cps[k]);
-            return Value::str(r);
+            return Value::str(slice(lo, hi + 1)); // the Range end is INCLUSIVE
         }
         // the START may be a Whatever/WhateverCode too — `*-3` counts from the end
         long long start;
@@ -1660,8 +1677,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (len < 0) len = n - start + len;
         if (len < 0) len = 0;
         if (start + len > n) len = n - start;
-        std::string r; for (long long k = start; k < start + len; k++) r += cpToUtf8(cps[k]);
-        return Value::str(r);
+        return Value::str(slice(start, start + len));
     }
     if (m == "index" || m == "rindex") {
         // splatted multi-needle: index($s, "a", "o", :i) — several positional
@@ -1726,7 +1742,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (imark) { hay = markFold(hay); ndl = markFold(ndl); }
         auto cps = utf8cp(hay); auto ncps = utf8cp(ndl);
         if (icase) { for (auto& c : cps) c = toLowerCp(c); for (auto& c : ncps) c = toLowerCp(c); }
-        long long n = (long long)cps.size(), k = (long long)ncps.size();
+        // Positions are GRAPHEME indices, on the way in (the start argument) and on
+        // the way out (the answer) — and a match must begin on a cluster boundary,
+        // so a lone combining mark does not "find" the inside of a cluster.
+        GraphemeMap hg(cps), ng(ncps);
+        long long n = (long long)hg.count(), k = (long long)ng.count();
         long long from = m == "index" ? 0 : n;
         if (args.size() > 1 && args[1].isNumeric()) {
             double fd = args[1].toNum();
@@ -1747,9 +1767,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             from = args[1].toInt();
             if (m == "rindex" && from > n) from = n; // rindex clamps the rightmost start
         }
-        auto eq = [&](long long at) {
+        auto eq = [&](long long at) { // `at` is a grapheme index into the haystack
             if (at < 0 || at + k > n) return false;
-            for (long long j = 0; j < k; j++) if (cps[at + j] != ncps[j]) return false;
+            size_t ha = hg.cpAt((size_t)at), hb = hg.cpAt((size_t)(at + k));
+            if (hb - ha != ncps.size()) return false; // same cluster count, different codepoints
+            for (size_t j = 0; j < ncps.size(); j++) if (cps[ha + j] != ncps[j]) return false;
             return true;
         };
         if (m == "index") {

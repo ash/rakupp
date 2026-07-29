@@ -16,6 +16,7 @@ static char** rakupp_environ() { return environ; }
 #include "Lexer.h"
 #include "Parser.h"
 #include "Unicode.h"
+#include "BuiltinsShared.h"
 #include <algorithm>
 #include <climits>
 #include <cctype>
@@ -7476,19 +7477,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (invE) {
             Value* bp = lvalue(invE);
             if (bp && bp->t == VT::Str && bp->hashKind.empty()) {
-                // character index -> byte offset
-                auto byteAt = [&](long long ch) -> size_t {
-                    size_t b = 0; long long n = 0;
-                    while (b < bp->s.size() && n < ch) {
+                // GRAPHEME index -> byte offset. Counting codepoints here spliced
+                // into the middle of a cluster: `"ŕ̥tḱos".substr-rw(1,1) = 'X'`
+                // replaced the combining ring rather than the "t".
+                auto cps = utf8cp(bp->s);
+                GraphemeMap gm(cps);
+                long long nch = (long long)gm.count();
+                auto byteAt = [&](long long g) -> size_t {
+                    size_t want = gm.cpAt((size_t)g), b = 0, n = 0;
+                    while (b < bp->s.size() && n < want) {
                         b++;
                         while (b < bp->s.size() && ((unsigned char)bp->s[b] & 0xC0) == 0x80) b++;
                         n++;
                     }
                     return b;
                 };
-                long long nch = 0;
-                for (size_t b = 0; b < bp->s.size(); b++)
-                    if (((unsigned char)bp->s[b] & 0xC0) != 0x80) nch++;
                 long long from = srArgs->size() > argOfs ? eval((*srArgs)[argOfs].get()).toInt() : 0;
                 long long len  = srArgs->size() > argOfs + 1 ? eval((*srArgs)[argOfs + 1].get()).toInt() : nch - from;
                 if (from < 0) from += nch;
@@ -13962,7 +13965,16 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // array/list slice: @a[1..*], @a[0,2,4], @a[@indices]
     if (!idx->isHash && (base.t == VT::Array || base.t == VT::Range || base.t == VT::Str)) {
-        ValueList src = (base.t == VT::Array && base.arr) ? *base.arr : base.flatten();
+        // Read-only below, so bind a REFERENCE to the array rather than copying it.
+        // This path serves every subscript that misses the `@plainvar[int]` fast
+        // path above — which includes `$scalar[$i]` and therefore `$obj.attr[$i]`,
+        // the ordinary way to reach an array held in an object. Copying here made
+        // one subscript O(n), so a loop over an attribute array was quadratic:
+        // 20,000 reads of a 20,000-element array took 12.9 s against 8 ms for the
+        // same loop over a lexical.
+        ValueList built;
+        if (!(base.t == VT::Array && base.arr)) built = base.flatten();
+        const ValueList& src = (base.t == VT::Array && base.arr) ? *base.arr : built;
         long long n = (long long)src.size();
         // a Blob/Buf subscript works on ELEMENTS: `$b[*-1]` / `$b[0..*-2]` need
         // the element count as the resolved length (bytes, or words for blob32)

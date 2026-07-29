@@ -147,7 +147,10 @@ sub read-request($conn --> Str) {
         my $need = (~$0).Int;
         my $sep = $data.index("\r\n\r\n");
         if $sep.defined {
-            my $have = $data.substr($sep + 4).encode('utf-8').bytes;
+            # +2, not +4: "\r\n\r\n" is TWO graphemes, because CR LF is one
+            # (UAX #29 GB3). Raku indexes by grapheme, so the familiar +4 from
+            # byte-oriented languages skips two characters of the body.
+            my $have = $data.substr($sep + 2).encode('utf-8').bytes;
             while $have < $need {
                 my $more = $conn.recv // '';
                 last if $more eq '';
@@ -162,7 +165,7 @@ sub read-request($conn --> Str) {
 sub parse-request(Str $raw) {
     my $sep = $raw.index("\r\n\r\n") // $raw.chars;
     my $head = $raw.substr(0, $sep);
-    my $body = $raw.substr($sep + 4);
+    my $body = $raw.substr($sep + 2);   # two graphemes, see read-request
     my $reqline = $head.lines.head // '';
     my ($method, $path) = $reqline.split(' ');
     ($method // 'GET', $path // '/', $body // '');

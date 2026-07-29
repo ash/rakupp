@@ -2123,10 +2123,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "recv" || m == "read") {
             size_t want = 65536;
             if (!args.empty() && args[0].isNumeric()) want = (size_t)args[0].toInt();
+            // `:bin` asks for BYTES, and `.read` is always binary — both must answer a
+            // Buf, not a Str. Returning a Str made `Buf.new.append($chunk)` append
+            // the string instead: it compiles, runs, and simply never matches, which
+            // is how an HTTP header loop can spin forever with no error anywhere.
+            bool bin = (m == "read");
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal || a.pairVal->truthy();
             std::vector<char> buf(want ? want : 1);
             bool p = gilPark(); ssize_t n = ::recv(fd, buf.data(), buf.size(), 0); gilUnpark(p);
             if (n < 0) return Value::nil();
-            return Value::str(std::string(buf.data(), (size_t)n)); // n==0 => "" (peer closed)
+            Value r = Value::str(std::string(buf.data(), (size_t)n)); // n==0 => "" (peer closed)
+            if (bin) r.hashKind = "Buf";
+            return r;
         }
         if (m == "print" || m == "write" || m == "send" || m == "put") {
             std::string data = args.empty() ? "" : args[0].toStr(); // Blob is a byte-Str
@@ -2487,17 +2496,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Match && (m == "made" || m == "ast")) return inv.pairVal ? *inv.pairVal : Value::nil();
     if (inv.t == VT::Match && m == "Str") return Value::str(inv.s);
+    // The engine records BYTE offsets into the subject, but Raku reports GRAPHEME
+    // offsets — so `"áb" ~~ /b/` must say 1, not 2, and a combining mark must not
+    // shift the answer at all. Converted here on the way out rather than in the
+    // engine, because prematch/postmatch below genuinely want the byte offsets.
+    auto graphemeOff = [](const Value& mv, long byteOff) -> Value {
+        if (byteOff <= 0) return Value::integer(0);
+        // Without the subject there is nothing to count graphemes IN, so answer the
+        // offset unchanged. Falling back to `mv.s` — the MATCHED text — silently
+        // clamped the offset to the match's own length, which turned a submatch's
+        // `.from` into its length.
+        if (!mv.ext) return Value::integer((long long)byteOff);
+        const std::string& orig = *std::static_pointer_cast<std::string>(mv.ext);
+        size_t b = std::min((size_t)byteOff, orig.size());
+        for (size_t i = 0; i < b; i++)             // pure ASCII: byte == grapheme
+            if ((unsigned char)orig[i] >= 0x80)
+                return Value::integer((long long)uniGraphemeCount(utf8cp(orig.substr(0, b))));
+        return Value::integer((long long)b);
+    };
     // A LIST of matches answers the span it covers: `.from` of the first, `.to` of
     // the last. `$/.list.from` is how a :g match reports where its matches start.
     if ((m == "from" || m == "to") && inv.t == VT::Array && inv.arr && !inv.arr->empty()) {
         const Value& end = m == "from" ? inv.arr->front() : inv.arr->back();
-        if (end.t == VT::Match) return Value::integer(m == "from" ? end.rFrom : end.rTo);
+        if (end.t == VT::Match) return graphemeOff(end, m == "from" ? end.rFrom : end.rTo);
     }
-    if (inv.t == VT::Match && (m == "from")) return Value::integer(inv.rFrom);
-    if (inv.t == VT::Match && (m == "to")) return Value::integer(inv.rTo);
+    if (inv.t == VT::Match && (m == "from")) return graphemeOff(inv, inv.rFrom);
+    if (inv.t == VT::Match && (m == "to")) return graphemeOff(inv, inv.rTo);
     // `.pos` is where the engine has got to — meaningful on a match IN PROGRESS
     // (inside a `{…}` block), where it is the end of what has matched so far.
-    if (inv.t == VT::Match && (m == "pos")) return Value::integer(inv.rTo);
+    if (inv.t == VT::Match && (m == "pos")) return graphemeOff(inv, inv.rTo);
     // `.target` is `.orig` under its Cursor-era name
     if (inv.t == VT::Match && (m == "orig" || m == "target" || m == "prematch" || m == "postmatch")) {
         std::string orig = inv.ext ? *std::static_pointer_cast<std::string>(inv.ext) : inv.s;

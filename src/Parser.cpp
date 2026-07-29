@@ -3608,6 +3608,27 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     };
     auto isIdentCont = [](char c) { return rakuIdentCont(c); };
     (void)fF;
+    // How many bytes the UTF-8 sequence at `p` occupies, and its codepoint.
+    auto cpAtRaw = [&](size_t p, size_t& len) -> uint32_t {
+        unsigned char b = (unsigned char)raw[p];
+        len = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
+        if (p + len > raw.size()) len = 1;
+        if (len == 1) return b;
+        uint32_t cp = (uint32_t)(b & (0xFF >> (len + 1)));
+        for (size_t k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)raw[p + k] & 0x3F);
+        return cp;
+    };
+    // Does the character at `p` continue an interpolated variable's name?
+    // Raku identifiers really do take Unicode letters — "$vкнига" is ONE name in
+    // both engines — but treating every non-ASCII BYTE as a name character swept up
+    // punctuation and emoji too, so `"$v…"` printed its own source and `"$v🙂"`
+    // reported an undeclared variable. ID_Continue is the actual rule; U+2026 (Po),
+    // the guillemets (Pi/Pf), U+2013 (Pd) and emoji (So) are none of them.
+    auto identContAt = [&](size_t p, size_t& len) -> bool {
+        if ((unsigned char)raw[p] < 0x80) { len = 1; return isIdentCont(raw[p]); }
+        uint32_t cp = cpAtRaw(p, len);
+        return uniBinaryProp(cp, "ID_Continue") == 1;
+    };
 
     size_t i = 0, n = raw.size();
     while (i < n) {
@@ -3759,7 +3780,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_')) {
             size_t j = i + 1;
             std::string fname;
-            while (j < n && (isIdentCont(raw[j]) || (unsigned char)raw[j] >= 0x80)) fname += raw[j++];
+            for (size_t l; j < n && identContAt(j, l); ) { fname.append(raw, j, l); j += l; }
             while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
                 fname += raw[j++];
                 while (j < n && isIdentCont(raw[j])) fname += raw[j++];
@@ -3788,7 +3809,8 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             (i + 1 < n) && (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
                             raw[i + 1] == '{' || raw[i + 1] == '*' || raw[i + 1] == '!' ||
                             raw[i + 1] == '.' || raw[i + 1] == '^' || colonPh ||
-                            (unsigned char)raw[i + 1] >= 0x80)) {
+                            ((unsigned char)raw[i + 1] >= 0x80 &&
+                             [&]{ size_t l; return identContAt(i + 1, l); }()))) {
             char sig = c;
             size_t j = i + 1;
             std::string var(1, sig);
@@ -3808,7 +3830,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // twigil ($*dyn, $!attr, $.attr, $^placeholder)
             if (raw[j] == '*' || raw[j] == '!' || raw[j] == '.' || raw[j] == '^' ||
                 (raw[j] == ':' && colonPh)) var += raw[j++];
-            while (j < n && (isIdentCont(raw[j]) || (unsigned char)raw[j] >= 0x80)) var += raw[j++];
+            for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
             // hyphen/apostrophe continue the name when followed by an alphanumeric ($foo-bar)
             while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
                 var += raw[j++];
