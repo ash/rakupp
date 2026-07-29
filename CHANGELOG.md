@@ -3,6 +3,80 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## v1.5.1 (2026-07-29) — faster, and smaller files
+
+**No behaviour change at all**: Roast is 196,395 / 217,060 and 625 / 1,462 files
+both before and after, byte for byte. This release is entirely about how the
+interpreter spends its time and how the source is arranged.
+
+| kernel | v1.5.0 | v1.5.1 | |
+|---|---:|---:|---:|
+| fib | 903.3 ms | 744.1 ms | **−17.6%** |
+| strcat | 13.5 ms | 12.3 ms | −8.9% |
+| hash | 41.0 ms | 38.0 ms | −7.3% |
+| streq | 547.2 ms | 509.6 ms | −6.9% |
+| loopsum | 206.0 ms | 197.3 ms | −4.2% |
+
+### Performance
+
+Five candidates were ranked from a profile. Three landed, one was measured and
+abandoned, one was measured and never attempted. The full record — including
+what did *not* work and why — is in
+[docs/dev/PERF-CAMPAIGN.md](docs/dev/PERF-CAMPAIGN.md).
+
+- **A call's argument vector is MOVED, not copied** (−9% on call-heavy code, from
+  four lines). `evalCall` built a `ValueList`, then passed it to `callCallable` —
+  which takes it **by value** — as an lvalue, copying the vector and every
+  376-byte `Value` in it on every sub call, for a local about to die. Found by
+  asking the profile *who allocates*: `evalCall` was 514 of ~580
+  malloc-attributed samples.
+- **The method invocant passes by const reference** (−3.4% dispatch-heavy). It
+  was by value — 376 bytes and up to eleven atomic refcount bumps per method
+  call — to serve four arms out of 352 that rewrite it. Those four take a copy on
+  demand. The compiler now enforces the rest: an arm that quietly mutates the
+  invocant no longer compiles.
+- **`Env`'s rarely-used containers moved behind a lazy pointer** (−2.4%
+  call-heavy), 256 → 72 bytes. Eight associative containers for `is rw`,
+  `temp`/`let`, `is default` and `is dynamic` were constructed and destroyed for
+  every call *and* every block; they are allocated on first write now. Reads stay
+  allocation-free, which matters because the `temp`/`let` checks run on every
+  scope exit.
+
+Measured and **not** adopted, recorded so they are not retried:
+
+- **Shrinking `Value`** — packing its flags removed 23 bytes of padding (376 →
+  360) and ran **2.5% slower** over six alternating rounds, with hot field
+  offsets unchanged. Struct size is not the lever here, and the relationship is
+  not even monotonic. Reverted; the planned ~600-site change was dropped.
+- **Slot-indexed locals** — billed as the biggest architectural win, it measures
+  a **~4% ceiling** (hash lookup 2.8% of `fib`, string ops 1.2%) for the riskiest
+  change on the list. Not attempted.
+- **A hash map or switch for the dispatch chain** — see
+  [docs/dev/METHOD-DISPATCH-EXPERIMENT.md](docs/dev/METHOD-DISPATCH-EXPERIMENT.md).
+  56% of the arms dispatch on the invocant TYPE and cannot be name-indexed, and a
+  map lookup costs what ~19 `MName` comparisons cost.
+
+### Maintainability
+
+- **`methodCallInner` was 9,138 lines** — 61% of `Builtins.cpp` in one function.
+  Split into four files (`Builtins.cpp` 14,979 → 7,876 lines; the function 9,138
+  → 2,095). They are ordered SEGMENTS of one chain, not categories: the chain is
+  order-sensitive, so a new arm belongs where its priority is. `std::optional`
+  return lets every arm keep its original `return`, so nothing inside was
+  rewritten.
+- That also fixed CI: the `linux-gcc` job had crept from 12 to 25 minutes because
+  GCC's optimiser is superlinear in function size (`-O3` on that one file was 88s
+  against clang's 27s). **It now runs in 1m32s.**
+- `t/run.raku` reports *which* regression check failed — it discarded the stderr
+  line naming it, so a CI failure could only say `exit=0 last-line='FAIL'`.
+
+### Process
+
+- **A release can no longer ship a performance regression**:
+  `rakupp tools/perf-guard.raku --check` gates against a recorded baseline and
+  exits non-zero. [docs/dev/RELEASING.md](docs/dev/RELEASING.md) documents all
+  five gates.
+
 ## v1.5.0 (2026-07-29) — narrowing the measured gap with Rakudo
 
 **The goal of this release was to make the differences between Raku++ and Rakudo
