@@ -7107,8 +7107,54 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
 }
 
 Value Interpreter::evalInterp(InterpStr* s) {
+    // Evaluate the parts first: a JUNCTION part autothreads the WHOLE string —
+    // `my $j = 1|2; "v=$j"` is any("v=1", "v=2") in Rakudo, not "v=12".
+    // Interpolation is concatenation, and infix ~ already autothreads; gluing the
+    // eigenstates together instead silently produced text no engine would print.
+    ValueList vals;
+    vals.reserve(s->parts.size());
+    bool anyJ = false;
+    for (auto& p : s->parts) { vals.push_back(eval(p.get())); anyJ = anyJ || isJunction(vals.back()); }
+    if (anyJ) {
+        // Expand one junction per recursion, substituting each eigenstate back in.
+        // The KIND picks the order: all/none thread OUTSIDE any/one, which is how
+        // the general infix autothreader nests `(1|2) + (3&4)` and matches Rakudo.
+        // (Rakudo's `~` with two MIXED kinds nests differently again — an exotic
+        // grouping this deliberately does not chase.)
+        std::function<Value(std::vector<Value>&)> expand = [&](std::vector<Value>& parts) -> Value {
+            size_t idx = parts.size(); bool idxTight = false;
+            for (size_t k = 0; k < parts.size(); k++) {
+                if (!isJunction(parts[k])) continue;
+                bool tight = parts[k].enumName == "all" || parts[k].enumName == "none";
+                if (idx == parts.size() || (tight && !idxTight)) { idx = k; idxTight = tight; }
+                if (idxTight) break; // leftmost all/none wins outright
+            }
+            if (idx == parts.size()) {
+                std::string acc;
+                for (auto& v : parts) acc += strOf(v);
+                return Value::str(nfcNormalize(acc));
+            }
+            Value out = Value::array(); out.isList = true; out.enumName = parts[idx].enumName;
+            Value jv = parts[idx]; // keep the junction alive while we substitute over it
+            for (auto& eig : *jv.arr) {
+                parts[idx] = eig;  // an eigenstate may itself be a junction — recursion finds it
+                Value sub = expand(parts);
+                // Rakudo FLATTENS same-kind nesting in interpolation ("$a$b" with
+                // two any-junctions is any(13, 14, 23, 24)) — though not for
+                // arithmetic infixes, where it keeps any(any(…)) and we match that
+                // separately. Splice same-kind children in.
+                if (isJunction(sub) && sub.enumName == out.enumName)
+                    for (auto& e2 : *sub.arr) out.arr->push_back(e2);
+                else out.arr->push_back(sub);
+            }
+            parts[idx] = jv;
+            return out;
+        };
+        std::vector<Value> parts(vals.begin(), vals.end());
+        return expand(parts);
+    }
     std::string out;
-    for (auto& p : s->parts) out += strOf(eval(p.get())); // honour user `method Str`/`gist`
+    for (auto& v : vals) out += strOf(v); // honour user `method Str`/`gist`
     return Value::str(nfcNormalize(out)); // NFG: combining marks compose across part boundaries
 }
 
@@ -12612,7 +12658,21 @@ Value Interpreter::evalUnary(Unary* u) {
         // `+"a"` is an error, not an undefined value (Rakudo: X::Str::Numeric)
         return v.isNumeric() ? v : (v.t == VT::Str ? numifyStrFailure(v.s) : Value::number(v.toNum()));
     }
-    if (u->op == "~") return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
+    if (u->op == "~") {
+        // prefix ~ is an OPERATOR, so it autothreads over a junction (Rakudo:
+        // `~(1|2)` is any("1", "2")); the .Str METHOD does not, and both engines
+        // agree on that split.
+        if (isJunction(v)) {
+            std::function<Value(const Value&)> thread = [&](const Value& jv) -> Value {
+                if (!isJunction(jv)) return Value::str(strOf(jv));
+                Value out = Value::array(); out.isList = true; out.enumName = jv.enumName;
+                for (auto& eig : *jv.arr) out.arr->push_back(thread(eig));
+                return out;
+            };
+            return thread(v);
+        }
+        return Value::str(strOf(v)); // honour a user Str/gist / Exception .message
+    }
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
     if (u->op == "+^") return Value::integer(~strictInt(v)); // bitwise NOT
