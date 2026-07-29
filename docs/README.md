@@ -51,6 +51,8 @@ point; everything else lives here.
 - **[dev/ROSETTACODE.md](dev/ROSETTACODE.md)** — Raku++ vs Rakudo on real
   [RosettaCode](https://rosettacode.org/wiki/Category:Raku) programs: the
   `tools/rc-compare.raku` harness, results, and the gaps it surfaces.
+- **[dev/PERF-CAMPAIGN.md](dev/PERF-CAMPAIGN.md)** — interpreter performance: where the
+  profile says the time goes, the ranked candidates, and what each attempt measured.
 - **[dev/METHOD-DISPATCH-EXPERIMENT.md](dev/METHOD-DISPATCH-EXPERIMENT.md)** — why the
   interpreter's `if (m == …)` dispatch chain was **not** replaced with a hash map or a
   switch: the measurements, and the direction that would actually pay.
