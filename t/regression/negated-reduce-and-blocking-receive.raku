@@ -36,6 +36,19 @@ my $c = Channel.new;
 start { sleep 0.2; $c.send('late') }
 check($c.receive, 'late', 'blocking-receive');
 
+# ...and it blocks for as long as the producer takes. This used to be a 300 ms
+# cap, which made the line above a RACE that the 0.2 s producer lost on a loaded
+# machine — it flaked the macOS CI job while everything else stayed green, and
+# `.receive` answered Nil silently rather than failing loudly. 0.6 s is twice the
+# old cap, so this assertion fails outright if the deadline ever comes back.
+my $slow = Channel.new;
+start { sleep 0.6; $slow.send('slower-than-the-old-cap') }
+check($slow.receive, 'slower-than-the-old-cap', 'blocking-receive-outlasts-300ms');
+
+# with nothing running that could ever send, it must still answer rather than hang
+my $none = Channel.new;
+check(($none.receive // 'Nil').Str, 'Nil', 'receive-with-no-producer-does-not-hang');
+
 # it still drains what is already queued, in order
 my $q = Channel.new;
 $q.send($_) for 1, 2, 3;

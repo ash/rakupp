@@ -3943,9 +3943,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // could send. With no async engaged nothing ever could, so answer Nil
             // rather than deadlock; likewise once every worker has finished.
             if (q.empty() && !isClosed() && gilHeld_) {
-                auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
-                while (q.empty() && !isClosed() &&
-                       std::chrono::steady_clock::now() < deadline) {
+                // No wall-clock deadline. A 300 ms cap used to stand in for "blocks
+                // until an item arrives", which made the wait a RACE against the
+                // producer: `start { sleep 0.2; $c.send(...) }` lost it whenever
+                // scheduling the worker cost the other 100 ms, and `.receive` then
+                // answered Nil — silently, with the program carrying on. That flaked
+                // the macOS CI job (t/regression/negated-reduce-and-blocking-receive)
+                // on runs that were otherwise green.
+                //
+                // The condition that actually terminates the wait is already here:
+                // once no worker is live and no load is cued, nobody CAN send, so
+                // waiting on is a deadlock rather than patience. While a worker is
+                // live this waits as long as Rakudo would (measured: a 2 s producer
+                // answers at 2005 ms here, 2006 ms there).
+                //
+                // A finer or backing-off quantum was tried and is WORSE — more GIL
+                // churn than the overshoot it saves: S17-channel/stress.t ran 12 s at
+                // 20 ms, 29-42 s at 0.5-2 ms. Leave it at 20 ms.
+                while (q.empty() && !isClosed()) {
                     if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
                     yieldToWorkerFor(0.02);
                 }
