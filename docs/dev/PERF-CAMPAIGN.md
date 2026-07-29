@@ -152,6 +152,61 @@ returns a shared empty instance; only writes call `x()`.
 being that it removes *work* (sixteen container constructor/destructor calls per
 scope), not merely bytes.
 
+## 4. Slot-indexed locals — measured, NOT attempted (2026-07-29)
+
+Profiling `fib(32)`, which is as variable-lookup-heavy as these kernels get:
+
+```
+hash-table lookup    :  66 samples  (2.8%)
+strlen/memcmp/string :  27          (1.2%)
+Env / bindParams     :  60          (2.6%)
+```
+
+**The ceiling is about 4%** — for the riskiest change on the list, one that
+touches scoping, closures, `EVAL`, dynamic `$*vars`, `MY::` introspection,
+`state`, and the `rw` write-through machinery (which is keyed by *name*). It was
+not attempted. If it is ever revisited, note that the ranked list had it as "the
+biggest architectural win", and the measurement says otherwise.
+
+The same profile said where the time really is:
+
+```
+malloc family                    : 567 samples  (24.2%)
+Value ctor / dtor / move-assign  : 433          (18.5%)
+```
+
+So the question became *who allocates*, not *what ought to be slow*. Tallying the
+callers of `operator new` in the sample: **`evalCall`, 514 of ~580**. That is one
+call site, and it led straight to item 5.
+
+## 5. Move the argument vector into a call (2026-07-29)
+
+`evalCall` built a `ValueList args`, then passed it to `callCallable` — which
+takes a `ValueList` **by value** — as an *lvalue*. That copied the vector and
+every `Value` in it on every sub call: one allocation plus N × 376-byte copies,
+for a local about to die. `callCallable` already moved into `callCallableRaw`, so
+the whole copy was at the hand-off.
+
+Four sites, all `return` statements, so the move is safe even where `args`
+appears later in the enclosing function. The two loop sites that reuse `args`
+across iterations are deliberately left alone.
+
+| build | fib(29) |
+|---|---|
+| before | 827 / 844 / 835 ms |
+| after | 764 / 760 / 755 ms |
+
+**−9.0%**, no overlap — the largest win of the campaign, from four lines.
+
+### What this campaign actually taught
+
+The three changes that worked (−3.4% dispatch, −2.4% call, −9% call) all removed
+**work or allocation**. The one that failed removed **bytes** (item 2, a smaller
+`Value` that ran 2.5% slower), and the one with the best reputation going in
+(item 4, slot locals) turned out to have a 4% ceiling.
+
+Ask the profile who allocates. Do not reason from what ought to be expensive.
+
 ## Measuring this kind of change
 
 `perf-guard`'s four kernels (fib/asg/loopsum/hash) are call- and
