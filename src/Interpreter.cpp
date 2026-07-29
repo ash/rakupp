@@ -5354,6 +5354,26 @@ static bool isJunction(const Value& v); // defined below
 // through composable expression forms, never into variables or calls? This is
 // the syntactic test Whatever-currying keys on: `(* * 2).floor` composes,
 // `my $d = * * 2; $d.floor` does not.
+// `»`.method over a container: apply to each TOP-LEVEL element, preserving
+// structure — a Hash keeps its keys and maps its values, and nothing deep-flattens.
+// Shared by the direct `@a».m` path and the closure a `*.attr».m` WhateverCode
+// curries into; the latter used to fall back to a plain method call, which
+// dispatched to the CONTAINER ("No such method 'lang' for invocant of type 'Array'").
+Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, ValueList& args) {
+    if (inv.t == VT::Hash && inv.hash && inv.hashKind.empty()) {
+        Value hout = Value::makeHash();
+        for (auto& kv : *inv.hash) (*hout.hash)[kv.first] = methodCall(kv.second, m, args);
+        return hout;
+    }
+    Value out = Value::array();
+    if (inv.t == VT::Array && inv.arr)
+        for (auto& el : *inv.arr) out.arr->push_back(methodCall(el, m, args));
+    else
+        for (auto& el : inv.flatten()) out.arr->push_back(methodCall(el, m, args));
+    out.isList = true;
+    return out;
+}
+
 bool Interpreter::exprHasWhateverLit(const Expr* e) {
     if (!e) return false;
     switch (e->kind) {
@@ -6688,8 +6708,18 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         "Int", "Num", "Rat", "Complex", "Str", "Bool", "Junction"};
     // a return type that names NOTHING known is an undeclared symbol
     // (checked before the definedness bail: it fires even for empty bodies)
-    if (!kRet.count(c.retType) && !classes_.count(c.retType) &&
-        !subsets_.count(c.retType) && !isKnownTypeName(c.retType))
+    //
+    // Resolve the package-relative short name first. A class declared inside
+    // `unit module M` registers as `M::Thing`, but a routine in that same module
+    // writes the return type as `Thing` — so `sub make(--> Thing)` looked
+    // undeclared from any OTHER compilation unit and died when CALLED, naming a
+    // type the caller had never mentioned. classAliases_ is exactly this mapping,
+    // and the parameter and smartmatch paths already consult it; only the return
+    // check did not. `Thing.new` in the importing scope worked throughout, which
+    // is what made the failure so odd to read.
+    const std::string& retName = resolveClassAlias(c.retType);
+    if (!kRet.count(retName) && !classes_.count(retName) &&
+        !subsets_.count(retName) && !isKnownTypeName(retName))
         throwTyped("X::Undeclared",
                    {{"what", "Type"}, {"symbol", c.retType}},
                    "Type '" + c.retType + "' is not declared");
@@ -14988,7 +15018,8 @@ Value Interpreter::eval(Expr* e) {
                 code.code->isWhateverCode = true;
                 Value self = inv; ValueList margs = args;
                 std::string method = mc->meta ? "^" + mc->method : mc->method; // *.^name keeps its meta form
-                code.code->builtin = [self, method, margs](Interpreter& I, ValueList& a) -> Value {
+                bool hyper = mc->hyper; // `*.attr».m` — the » belongs to the CURRIED call
+                code.code->builtin = [self, method, margs, hyper](Interpreter& I, ValueList& a) -> Value {
                     Value arg = a.empty() ? Value::any() : a[0];
                     Value base = arg;
                     if (self.t != VT::Whatever) {
@@ -14996,24 +15027,13 @@ Value Interpreter::eval(Expr* e) {
                         else base = self;
                     }
                     ValueList ma = margs;
+                    if (hyper) return I.hyperMethodEach(base, method, ma);
                     return I.methodCall(base, method, ma);
                 };
                 return code;
             }
             if (mc->hyper) { // >>.method : apply to each top-level element (structure-preserving, no deep flatten)
-                // a hash invocant keeps its keys: %h».abs maps the VALUES
-                if (inv.t == VT::Hash && inv.hash && inv.hashKind.empty()) {
-                    Value hout = Value::makeHash();
-                    for (auto& kv : *inv.hash)
-                        (*hout.hash)[kv.first] = methodCall(kv.second, mc->method, args);
-                    return hout;
-                }
-                Value out = Value::array();
-                if (inv.t == VT::Array && inv.arr)
-                    for (auto& el : *inv.arr) out.arr->push_back(methodCall(el, mc->method, args));
-                else
-                    for (auto& el : inv.flatten()) out.arr->push_back(methodCall(el, mc->method, args));
-                out.isList = true;
+                Value out = hyperMethodEach(inv, mc->method, args);
                 if (mc->mutate) {
                     // `($a, $b)>>.=meth` writes each result back to that element's own
                     // container; a plain `@a>>.=meth` writes the whole list back to @a.

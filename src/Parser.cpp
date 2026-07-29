@@ -2911,6 +2911,15 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::Ident: {
             std::string name = t.text;
+            // A fat arrow AUTO-QUOTES the identifier on its left, so EVERY identifier
+            // is a valid key — keywords and term-words included. This has to come
+            // before all of them: without it the parser committed to `method`, `sub`,
+            // `for`, `while` and `do` as the start of a declaration and died, and the
+            // error was reported at the NEXT top-level construct's line rather than
+            // the offending one, which made it expensive to find. It also settles
+            // `True => 1` / `False => 1`, whose keys are the strings "True"/"False"
+            // in Rakudo, not Bools. The `=>` infix turns a NameTerm into the key.
+            if (peek().kind == Tok::FatArrow) { advance(); return std::make_unique<NameTerm>(name); }
             if (name == "True") { advance(); return std::make_unique<BoolLit>(true); }
             if (name == "False") { advance(); return std::make_unique<BoolLit>(false); }
             // `Nil` is a TERM, never a routine. Falling through to the general

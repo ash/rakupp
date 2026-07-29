@@ -429,6 +429,8 @@ public:
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // build (don't throw) a typed exception object
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
+    // `»`.method over a container, shared by the direct and the curried paths
+    Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args);
     bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
