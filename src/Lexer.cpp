@@ -332,6 +332,11 @@ static int utf8Len(unsigned char b) {
 // Deliberately excludes math operators (∪∩∈⊆≅ U+22xx), guillemets «» , superscripts
 // (U+00B2/B3/B9, U+2070–209F) and other symbols, which must remain operators.
 static bool isLetterCP(uint32_t cp) {
+    // U+00D7 MULTIPLICATION SIGN and U+00F7 DIVISION SIGN are the two MATH
+    // SYMBOLS embedded inside the Latin-1 letter block — Unicode classes them Sm,
+    // not L. Including them made `»÷»` read as a guillemet word list instead of a
+    // hyper op, and would glue × into identifiers.
+    if (cp == 0x00D7 || cp == 0x00F7) return false;
     return (cp >= 0x00C0 && cp <= 0x024F) ||   // Latin-1 + Latin Extended-A/B
            (cp >= 0x0250 && cp <= 0x02AF) ||   // IPA extensions
            (cp >= 0x0370 && cp <= 0x03FF) ||   // Greek (π α β γ τ …)
@@ -1580,9 +1585,22 @@ Token Lexer::lexOperator(bool termBefore) {
       }
       // Only a *symbolic* inner counts as hyper (`«+»`); an alphanumeric inner is a
       // guillemet word-list (`«x»`, `«ab»`), handled elsewhere — so require the first
-      // inner char to be non-word.
-      if (guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
-          !std::isalnum((unsigned char)peek(2)) && peek(2) != '_' && peek(2) != ' ') {
+      // inner char to be non-word. A MULTIBYTE inner gets the same test by
+      // codepoint: `»÷»` and `«×»` are hyper (÷ is C3 B7, past the old ASCII-only
+      // guard), while `«κνιγα»` stays a word list because κ is a letter.
+      bool uniSymInner = false;
+      { bool ro2;
+        if (guill(0, ro2) && (unsigned char)peek(2) >= 0x80) {
+            size_t save = pos_;
+            advance(); advance(); // opening guillemet
+            bool rc2;
+            uniSymInner = !eof() && !guill(0, rc2) && !unicodeLetterHere();
+            pos_ = save;
+        }
+      }
+      if ((guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
+          !std::isalnum((unsigned char)peek(2)) && peek(2) != '_' && peek(2) != ' ') ||
+          (uniSymInner && guill(0, ro))) {
         size_t save = pos_;
         std::string open = ro ? ">>" : "<<";
         advance(); advance(); // opening guillemet
@@ -1593,6 +1611,15 @@ Token Lexer::lexOperator(bool termBefore) {
         if (!inner.empty() && guill(0, rc)) {
             std::string close = rc ? ">>" : "<<";
             advance(); advance(); // closing guillemet
+            // the top-level tokenizer maps the Unicode aliases to ASCII (÷ → /,
+            // × → *, − → -, ≥ ≤ ≠); the inner was gathered as raw bytes, so give
+            // it the same treatment or `»÷»` reaches the runtime as an operator
+            // nothing implements
+            static const std::pair<const char*, const char*> uniAlias[] = {
+                {"\xC3\xB7", "/"}, {"\xC3\x97", "*"}, {"\xE2\x88\x92", "-"},
+                {"\xE2\x89\xA5", ">="}, {"\xE2\x89\xA4", "<="}, {"\xE2\x89\xA0", "!="}};
+            for (auto& [u, a] : uniAlias)
+                if (inner == u) { inner = a; break; }
             return make(Tok::Op, open + inner + close);
         }
         pos_ = save; // not a hyper — fall through to the generic multibyte op

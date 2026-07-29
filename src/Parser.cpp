@@ -399,7 +399,19 @@ ExprPtr Parser::parseExpr(int minbp) {
     ExprPtr lhs = parsePrefix();
     for (;;) {
         // user-defined infix operator: `4 avg 10`  ==  infix:<avg>(4, 10)
-        if (cur().kind == Tok::Ident && userInfix_.count(cur().text)) {
+        // A SYMBOLIC user infix (`sub infix:<±>`) arrives as Tok::Op, not Ident —
+        // the declaration registered fine, but the use site then died "unexpected
+        // operator in term position". Accept both kinds; the registry only holds
+        // names the program itself declared.
+        // …but only for ops the classifier does NOT already know: a `multi sub
+        // infix:<==>` ADDS a candidate to the built-in, and routing every `==`
+        // here sent Int == Int into the user multi — which then had no matching
+        // candidate (roast's advent2009-day22.t, "Cannot resolve caller
+        // infix:<==>()"). Built-in ops keep their normal parse; the runtime
+        // already tries a user overload first for object operands.
+        if ((cur().kind == Tok::Ident ||
+             (cur().kind == Tok::Op && !classifyInfix(cur()).valid)) &&
+            userInfix_.count(cur().text)) {
             // meta-assignment `$x op= y` — the infix tight against `=`
             if (peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore) {
                 if (BP_ASSIGN < minbp) break;
