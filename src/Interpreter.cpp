@@ -11409,11 +11409,11 @@ Value Interpreter::evalBinary(Binary* b) {
             ValueList args = evalArgs(c->args);
             args.push_back(src);
             if (!c->name.empty()) {
-                if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args);
+                if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args));
                 auto it = builtins_.find(c->name);
                 if (it != builtins_.end()) return it->second(*this, args);
             }
-            if (c->callee) return callCallable(eval(c->callee.get()), args);
+            if (c->callee) return callCallable(eval(c->callee.get()), std::move(args));
             throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + c->name + "'"};
         }
         // ==> my @target (or an existing container): store the fed value
@@ -12740,7 +12740,10 @@ Value Interpreter::evalCall(Call* c) {
             };
             return code;
         }
-        return callCallable(f, args, &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        // move, not copy: `args` is a local about to die and ValueList is taken BY
+        // VALUE — passing it as an lvalue copied the vector and every Value in it on
+        // every sub call, which is what made evalCall the top allocation site.
+        return callCallable(f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
     }
     if (!c->name.empty()) {
         // bare `::` — the current-scope stash: a Hash of every visible symbol
@@ -12796,7 +12799,7 @@ Value Interpreter::evalCall(Call* c) {
                 if (c->name == "atomic-assign")    { Value v = c->args.size() > 1 ? eval(c->args[1].get()) : Value::any(); *lv = v; return v; }
             }
         }
-        if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, args, &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
+        if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);
         // sub-form container mutators AUTOVIVIFY their first argument's slot:
         // `push %h{$k}, $dist` fills the slot with an Array and appends (Rakudo
         // semantics; zef's ecosystem short-name index is built exactly this way).
