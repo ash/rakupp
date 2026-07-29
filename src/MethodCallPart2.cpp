@@ -1304,10 +1304,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Type && (inv.s == "Hash" || inv.s == "Map") && m == "new") {
         Value v = Value::makeHash(); v.ofType = inv.ofType;
         if (inv.s == "Map") v.hashKind = "Map"; // a Map is a distinct (immutable) type
-        ValueList items; // a parenned list arg — Hash.new((a => 1, b => 2)) — spreads
-        for (auto& a : args)
-            if (a.t == VT::Array) { for (auto& x : *a.arr) items.push_back(x); }
-            else items.push_back(a);
+        // The arguments FLATTEN before they are paired up, and they flatten all the
+        // way down — `Hash.new((("a","1"),("b","2")))` is {a => 1, b => 2}, same as
+        // the flat form. Spreading only ONE level left each inner list whole, so the
+        // first became a stringified key and the second its value:
+        // `{"a 1" => $("b","2")}`. That is what scrambled a Hash built from a zip
+        // (`Hash.new: @keys Z @values`) in rakupp#12.
+        //
+        // An ITEMIZED list does not flatten — `Hash.new(($("a","1"),$("b","2")))`
+        // really is `{"a 1" => $("b","2")}` in Rakudo — and a Pair is not a list, so
+        // neither is descended into.
+        ValueList items;
+        std::function<void(const Value&)> spread = [&](const Value& x) {
+            if ((x.t == VT::Array || x.t == VT::Range) && !x.itemized && x.t != VT::Pair) {
+                for (auto& e : toList(x)) spread(e);
+            } else items.push_back(x);
+        };
+        for (auto& a : args) spread(a);
         for (size_t k = 0; k < items.size(); k++) {
             if (items[k].t == VT::Pair) (*v.hash)[items[k].s] = items[k].pairVal ? *items[k].pairVal : Value::any();
             else if (k + 1 < items.size()) { std::string key = items[k].toStr(); (*v.hash)[key] = items[k + 1]; k++; }

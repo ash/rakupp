@@ -5000,7 +5000,12 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
     static const std::set<std::string> natNumTypes = {"num", "num32", "num64"};
     switch (arg.t) {
-        case VT::Int:  return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || natIntTypes.count(type) > 0;
+        // UInt is `subset UInt of Int where * >= 0` — a NON-NEGATIVE Int matches it,
+        // a negative one does not, and neither does a Rat (see the VT::Rat arm,
+        // which deliberately omits it). It was missing here entirely, so any
+        // `UInt $x` parameter rejected every Int it was handed: rakupp#11.
+        case VT::Int:  if (type == "UInt") return !(arg.big ? arg.big->sign < 0 : arg.i < 0);
+                       return type == "Int" || type == "Cool" || type == "Numeric" || type == "Real" || natIntTypes.count(type) > 0;
         case VT::Num:  return type == "Num" || type == "Cool" || type == "Numeric" || type == "Real" || natNumTypes.count(type) > 0;
         case VT::Complex: return type == "Complex" || type == "Cool" || type == "Numeric";
         case VT::Rat:  return type == "Rat" || type == "Cool" || type == "Numeric" || type == "Real";
@@ -9411,6 +9416,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
+                  // UInt is a CONSTRAINED subset of Int, so it cannot be a plain
+                  // name match — ask typeMatchesArg, which owns the rule (rakupp#11)
+                  (r.s == "UInt" && typeMatchesArg(l, "UInt")) ||
                   (l.t == VT::Bool && (r.s == "Int" || r.s == "Real")) || // Bool is an Int-backed enum
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO"));

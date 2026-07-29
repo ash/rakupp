@@ -1292,6 +1292,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return out;
     }
     if (m == "bytes" && inv.t == VT::Str) return Value::integer((long long)inv.s.size());
+    // A List/Array is a Cool, so `.encode` STRINGIFIES first — `(1,2).encode` is
+    // "1 2".encode. `.uc`, `.chars` and friends already worked that way because
+    // they carry no type guard; `.encode` was gated to Str and so died with
+    // "No such method 'encode' for invocant of type 'List'" (rakupp#12), which is
+    // what `[~]($l>>.&bencode.encode)` hits.
+    //
+    // `.decode` is deliberately NOT included: Rakudo rejects it on a List
+    // ("Did you mean 'encode'?"), because decoding a stringified list is nonsense.
+    if (m == "encode" && (inv.t == VT::Array || inv.t == VT::Range) && inv.hashKind.empty()) {
+        ValueList a2 = args;
+        return methodCall(Value::str(inv.toStr()), "encode", a2, nullptr);
+    }
     if ((m == "encode" || m == "decode") && inv.t == VT::Str) {
         // normalize the encoding name: utf8 (default) or latin-1/iso-8859-1
         std::string enc;
@@ -1326,7 +1338,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // the ENCODING names the result type (`"abc".encode` is a utf8, a
             // Blob subtype). Kept in enumName so every `hashKind == "Blob"`
             // check still sees a Blob.
-            if (!latin1) b.enumName = "utf8";
+            // The ENCODING names the result type: utf8 for the default, and
+            // Blob[uint8] for latin-1 — Rakudo reports the latter from `.^name`
+            // and renders it that way in `.raku`, which is what the documented
+            // `(try $blob.decode) // $blob` fallback prints when it keeps the blob.
+            b.enumName = latin1 ? "Blob[uint8]" : "utf8";
             return b;
         }
         // decode: the invocant is a byte string (Buf/Blob)
@@ -1376,7 +1392,40 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             return Value::str(nfcNormalize(out));
         }
-        return Value::str(inv.s); // utf8: bytes are the string
+        // utf8-c8 ("UTF-8 Clean-8") exists precisely to round-trip malformed bytes
+        // without throwing, so it must NOT be validated — validating it killed all
+        // 56 assertions of S32-str/utf8-c8.t.
+        if (norm == "utf8c8") return Value::str(inv.s);
+        // utf8: the bytes ARE the string — but only if they are valid UTF-8.
+        // Returning them unchecked let malformed input through, where it later
+        // rendered as U+FFFD; Rakudo throws, which is what makes the documented
+        // `(try $blob.decode) // $blob` fallback work at all (rakupp#12).
+        {
+            const unsigned char* p = (const unsigned char*)inv.s.data();
+            size_t n = inv.s.size();
+            size_t line = 1, col = 1;
+            for (size_t i = 0; i < n; ) {
+                unsigned char c = p[i];
+                size_t len = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2
+                           : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+                bool ok = len > 0 && i + len <= n;
+                for (size_t k = 1; ok && k < len; k++) if ((p[i + k] & 0xC0) != 0x80) ok = false;
+                if (ok && len == 2 && c < 0xC2) ok = false;                       // overlong
+                if (ok && len == 3 && c == 0xE0 && p[i + 1] < 0xA0) ok = false;   // overlong
+                if (ok && len == 4 && c == 0xF0 && p[i + 1] < 0x90) ok = false;   // overlong
+                if (ok && len == 4 && c > 0xF4) ok = false;                       // > U+10FFFF
+                if (ok && len == 3 && c == 0xED && p[i + 1] >= 0xA0) ok = false;  // surrogate
+                if (!ok) {
+                    char buf[8]; std::snprintf(buf, sizeof buf, "%02x", c);
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Malformed UTF-8 near byte " + std::string(buf) +
+                        " at line " + std::to_string(line) + " col " + std::to_string(col)};
+                }
+                if (c == '\n') { line++; col = 1; } else col++;
+                i += len;
+            }
+        }
+        return Value::str(inv.s);
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
         if (m == "chars") return Value::integer(graphemeCount(inv.toStr())); // graphemes
