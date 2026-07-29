@@ -1,3 +1,4 @@
+#?requires Cro::HTTP::Router
 # Regression: the LIVE Cro hello-world server (batch 10) — a real
 # Cro::HTTP::Server with router, served over real sockets/threads, fetched by
 # a plain IO::Socket::INET client in the same process. Exercises: on-demand

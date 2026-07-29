@@ -2552,12 +2552,18 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             *prog = parser.parseProgram();
             finish = lx.finishData();
         } catch (ParseError& e) {
-            // Non-fatal: the importing program continues without this module.
-            // Grammar slangs (Slang::*) are compile-time grammar mutators rakupp
-            // cannot apply anyway, so ignore them silently.
-            if (name.rfind("Slang::", 0) != 0)
-                std::cerr << "===WARNING=== Module " << name << " parse error at line " << e.line << ": " << e.what() << " (use ignored)\n";
-            return;
+            // A module that will not parse is FATAL, like a missing one: its BEGIN
+            // blocks and exports never happen, so continuing past it runs the rest
+            // of the program against a state nobody designed. It used to warn and
+            // carry on, which is how a broken partial load could masquerade as a
+            // working one.
+            //
+            // Grammar slangs stay exempt: Slang::* are compile-time grammar mutators
+            // that rakupp cannot apply at all, so failing on them would reject
+            // programs it can otherwise run perfectly well.
+            if (name.rfind("Slang::", 0) == 0) return;
+            throw ParseError("Error while compiling module " + name + " (line " +
+                             std::to_string(e.line) + "): " + e.what(), e.line);
         }
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         auto saved = tctx_.cur;
@@ -2636,8 +2642,15 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
             publish();
             tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix;
-            std::cerr << "===WARNING=== Module " << name << " failed during load: " << e.message << "\n";
-            return;
+            // A module that THROWS while loading is fatal, for the same reason a
+            // missing or unparseable one is: its remaining BEGIN blocks and exports
+            // never happen, so what the importer gets is a half-built module that
+            // looks loaded. This warned and continued, and the failure was as
+            // invisible as the other two — t/regression/cro-live-server.raku ran
+            // for weeks against a Cro::HTTP::Router whose LogTimelineSchema had
+            // died, so `route` was never exported and the test only ever checked
+            // that nothing exploded.
+            throw;
         }
         catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; throw; }
         loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
@@ -2722,17 +2735,43 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         loadSource(ss.str());
         return;
     }
-    // module file not found. Pragmas / version literals are expected to have no file;
-    // anything else is a genuinely unresolved dependency — warn (but keep going).
+    // Module file not found. Pragmas / version literals are expected to have no
+    // file; anything else is a genuinely unresolved dependency and is FATAL.
+    //
+    // This used to warn and carry on, which was a divergence with real
+    // consequences. A program whose `use` silently vanished ran on against
+    // whatever was left — and since a module's BEGIN blocks and its exported
+    // symbols never materialised, what followed was arbitrary. It also flattered
+    // every measurement we took: in the module battery, twenty probes "produced
+    // output" under rakupp purely because the load had been skipped, so the
+    // comparison against Rakudo was meaningless for them. Deferring the error to
+    // first USE of an imported symbol would be more in the spirit of the language,
+    // but a module's BEGIN blocks have to run at load time regardless, so there is
+    // no honest way to postpone it.
+    // PRAGMAS have no file to find, so they must not be mistaken for a missing
+    // module now that missing is fatal. This list was short enough to reject real
+    // Raku pragmas: `use newline :lf` and `no precompilation` are both ordinary
+    // language features with no module behind them, and rejecting them cost three
+    // Roast files that Rakudo passes. rakupp ignores the ones it does not
+    // implement, which is right — they change compilation details, not semantics
+    // it can observe — but ignoring them must be a deliberate entry here rather
+    // than a side effect of the lookup failing.
     static const std::set<std::string> pragmas = {
         "strict", "fatal", "lib", "isms", "nqp", "soft", "worries", "experimental",
         "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
         "MONKEY", "MONKEY-GUTS", "Test", "v6", "v6.c", "v6.d", "v6.e",
         "NativeCall",  // its `is native` FFI is handled natively by the compiler
+        // pragmas Rakudo accepts that rakupp does not act on
+        "newline", "precompilation", "trace", "dynamic-scope", "snapper",
+        "invocant", "internals", "parameters", "routines", "subroutines",
+        "absolute", "dispatch", "DEPRECATED",
     };
     bool versionLit = name.size() >= 2 && name[0] == 'v' && std::isdigit((unsigned char)name[1]);
-    if (!pragmas.count(name) && !versionLit && !quiet)
-        std::cerr << "===WARNING=== Could not find module '" << name << "' (use ignored)\n";
+    if (pragmas.count(name) || versionLit || quiet) return;
+    std::string where = "Could not find " + name + " in:";
+    for (auto& b : libPaths_) where += "\n    " + b;
+    for (auto& r : rakuRepoPrefixes()) where += "\n    " + r;
+    throwTyped("X::CompUnit::UnsatisfiedDependency", {{"specification", name}}, where);
 }
 
 Value Interpreter::evalString(const std::string& src, bool mainlinePH) {

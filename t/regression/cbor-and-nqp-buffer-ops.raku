@@ -1,3 +1,4 @@
+#?requires CBOR::Simple
 # Regression: CBOR::Simple works end-to-end (byte-identical to Rakudo), plus the
 # underlying fixes it exercised —
 #   * nqp buffer ops: bitor_i/bitshift, writeuint/readuint tower, elems/atpos on

@@ -28,6 +28,10 @@ sub is(Mu $got, Mu $want, Str $desc) {
     ok($got eq $want, $desc);
     diag("got '$got', expected '$want'") unless $got eq $want;
 }
+sub skip(Str $desc) {   # counts as a pass, but SAYS it did not run
+    $count++;
+    say "ok $count - $desc # SKIP";
+}
 sub diag(Str $m) { note "# $m" }
 sub section(Str $t) { note ""; note "# ── $t ──" }
 
@@ -278,6 +282,23 @@ section('showcase/rakus (a static HTTP file server)');
 # last stdout line. Add new cases as plain files; nothing to register.
 section('t/regression (once broken, must stay fixed)');
 for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
+    # `#?requires Foo::Bar` — a case that needs a module which is not part of this
+    # repo (the Cro dists, CBOR::Simple) declares it, and we probe for it and SKIP
+    # when it is absent. Two cases used to lean on a missing `use` being silently
+    # ignored instead, which meant they passed on every machine that did NOT have
+    # the module — testing nothing, indistinguishably from testing everything. Now
+    # that a failed load is fatal, a declared requirement is the honest way to say
+    # "not applicable here".
+    my $needs = $f.slurp.lines.grep(*.starts-with('#?requires ')).map(*.substr(11).trim);
+    my $missing = $needs.first({
+        my $probe = run($*EXECUTABLE, '-e', "use $_;", :out, :err);
+        $probe.out.slurp(:close); $probe.err.slurp(:close);
+        $probe.exitcode != 0;
+    });
+    with $missing {
+        skip("regression: {$f.basename} (needs $missing)");
+        next;
+    }
     # capture stderr too: a failing case prints WHICH check failed on stderr via
     # `note`, and run-rakupp discards it — so a CI failure used to say only
     # "exit=0 last-line='FAIL'", which is not enough to act on. (Learned the hard
