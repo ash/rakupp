@@ -82,6 +82,76 @@ state is a flag.
 mid-run; re-measured quiet it is 833 ms against 828 baseline. A single failing
 run is not a regression — check the machine, then re-run, before believing it.
 
+## 2. Shrinking `Value` — attempted, abandoned (2026-07-29)
+
+The free part was tried first: `Value`'s flags (`fatRat`, `rExFrom`/`rExTo`/
+`rNum`, `natBits`/`natSigned`/`natFloat`) sat between 8- and 16-byte members and
+forced **23 bytes of padding**. Grouping them took `sizeof(Value)` from 376 to
+**360** with no behaviour change and no risk.
+
+It measured **2.5% SLOWER**, consistently, over six alternating rounds:
+
+| build | runs |
+|---|---|
+| 376 bytes (original) | 2115 / 2103 / 2145 / 2152 ms |
+| 360 bytes (packed) | 2175 / 2166 / 2188 / 2204 ms |
+
+Hot field offsets were *identical* — `t`/`b`/`i`/`n`/`im`/`s`/`hashKind` did not
+move; only `arr` and the pointers after it shifted by 8 bytes, staying in the
+same cache line. So this is not locality. The likeliest cause is the copy
+constructor: `Value` has a user-defined copy (eleven shared_ptrs interleaved with
+scalars), not a memcpy, and reordering changed how that code schedules.
+
+**Reverted.** The useful conclusion is that **struct size is not the lever here**
+— the relationship between `sizeof(Value)` and speed is not even monotonic.
+
+The prize is real, though. Profiling the method-heavy probe:
+
+```
+Value ctor/dtor/assign : 22.0%   (Value::~Value alone is ~10%)
+malloc family          : 21.5%
+```
+
+But the planned route to it — moving rare fields behind a `shared_ptr<Extras>` —
+would touch ~600 access sites and swap five or six null-pointer copies for one
+pointer copy **plus an indirection on every access to those fields**. After the
+reordering result, that is not obviously a win, and it is far too large a change
+to make on a hunch.
+
+If someone picks this up: the profile points at `Value::~Value()` specifically
+(destroying eleven shared_ptrs and five strings, nearly all empty), not at the
+byte count. A discriminated union over the pointers that can never be set
+together — `arr`/`hash`/`code`/`obj` — would cut the destructor's work without
+changing field-access syntax at all. Prototype that narrowly and measure before
+committing to anything wider.
+
+## 3. Lazy `Env` extras (2026-07-29)
+
+`sizeof(Env)` was 256 bytes, 192 of which were eight associative containers that
+are empty in almost every scope — `rwLinks`, `rwSynced`, `rwDirect`, `rwDead`,
+`tempRestores`, `letRestores`, `varDefault`, `varDynamic`. They serve `is rw`
+write-through, `temp`/`let` restoration, `is default` and `is dynamic`. An Env is
+built for every routine call *and* every block, so that was eight container
+constructions and destructions per scope for features most scopes never use.
+
+They moved into an `EnvExtras` allocated on first write: **256 → 72 bytes**.
+
+Reads had to stay allocation-free or the change defeats itself — the `temp`/`let`
+restore checks run on every scope exit. Guards test the pointer directly
+(`e->ex && !e->ex->letRestores.empty()`); other reads go through `xr()`, which
+returns a shared empty instance; only writes call `x()`.
+
+**Measured** on `fib(29)`, which builds an Env per call, alternating builds:
+
+| build | runs |
+|---|---|
+| before | 850 / 844 / 846 ms |
+| after | 831 / 828 / 822 ms |
+
+**−2.4%**, no overlap. Unlike item 2, this one is a straight win — the difference
+being that it removes *work* (sixteen container constructor/destructor calls per
+scope), not merely bytes.
+
 ## Measuring this kind of change
 
 `perf-guard`'s four kernels (fib/asg/loopsum/hash) are call- and
