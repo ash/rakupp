@@ -477,6 +477,12 @@ public:
     // short name always beats the alias). Approximates Rakudo's package-stash
     // lookup (inside `unit class URI`, bare `Path` finds `URI::Path`) in our
     // flat class-table model. Consulted ONLY on a classes_ miss.
+    // `.WHO` stashes, one shared map per package NAME. The stash must be the SAME
+    // map on every call or writing into it mutates a temporary — which is exactly
+    // how `EXPORTHOW.WHO.<grammar> = SomeHOW` used to die "Target is not
+    // assignable" (WHO built a fresh empty Hash each time). Reads re-sync the
+    // package's qualified globals in, so `our`-scoped symbols show up too.
+    std::map<std::string, std::shared_ptr<std::map<std::string, Value>>> pkgStashes_;
     std::unordered_map<std::string, std::string> classAliases_;
     const std::string& resolveClassAlias(const std::string& n) {
         if (classes_.count(n)) return n;

@@ -3296,6 +3296,28 @@ ExprPtr Parser::parsePrimary() {
                 ve->pkgSymbol = true; // assignment autovivifies the slot
                 return ve;
             }
+            // `Foo::{EXPR}` — the same package-stash slot with a RUNTIME key.
+            // Sparrow6 builds its export list this way:
+            //     BEGIN for <&config &bash …> { EXPORT::DEFAULT::{$_} = ::($_) }
+            // Desugars to `Foo.WHO.{EXPR}`: WHO answers the persistent per-package
+            // stash (pkgStashes_), which is assignable through the lvalue path and
+            // coherent with the `Foo::<bar>` form (angle writes land in qualified
+            // globals, which WHO re-syncs in; stash writes are the angle READ
+            // path's fallback).
+            if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
+                !isPseudoPkg(name.substr(0, name.size() - 2)) &&
+                isKind(Tok::LBrace) && !cur().spaceBefore) {
+                advance(); // {
+                auto who = std::make_unique<MethodCall>();
+                who->inv = std::make_unique<NameTerm>(name.substr(0, name.size() - 2));
+                who->method = "WHO";
+                auto ix = std::make_unique<Index>();
+                ix->base = std::move(who);
+                ix->index = parseExpression();
+                ix->isHash = true;
+                expectKind(Tok::RBrace, "}");
+                return ix;
+            }
             // parameterized type: `Array[Int]`, `Hash[Int,Str]`, `Foo[Bar]` — a capitalized
             // runtime type parameterization with a variable: array[$T].new / Blob[$T]
             if (!name.empty() && (std::isupper((unsigned char)name[0]) || name == "array") &&

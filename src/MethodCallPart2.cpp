@@ -2662,7 +2662,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
     }
     if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
-    if (m == "WHO") { Value st = Value::makeHash(); st.hashKind = "Stash"; return st; } // package stash
+    if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
+        std::string pkg = inv.t == VT::Type ? inv.s : inv.typeName();
+        auto& stash = pkgStashes_[pkg];
+        if (!stash) stash = std::make_shared<std::map<std::string, Value>>();
+        if (global_) { // `our`-scoped symbols live as qualified globals; show them
+            std::string pre = pkg + "::";
+            for (auto& kv : global_->vars)
+                if (kv.first.rfind(pre, 0) == 0 &&
+                    kv.first.find("::", pre.size()) == std::string::npos)
+                    (*stash)[kv.first.substr(pre.size())] = kv.second;
+        }
+        Value st; st.t = VT::Hash; st.hash = stash; st.hashKind = "Stash"; st.s = pkg;
+        return st;
+    }
     if (m == "WHICH") return Value::str(whichOf(inv)); // whichOf is the one home for identity
     if (m == "WHERE") { // memory address of the value (an Int)
         const void* p = inv.t == VT::Object && inv.obj ? (const void*)inv.obj.get()

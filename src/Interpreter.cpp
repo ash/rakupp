@@ -7292,6 +7292,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 return &(*dynHandleHold.hash)[mc->method];
             }
         }
+        // `Pkg.WHO.<x> = v` — the stash is a persistent shared map (pkgStashes_),
+        // so evaluating WHO here yields a Hash whose writes land in it. Same hold
+        // pattern as the dynamic-handle case above: the slot pointer must outlive
+        // this call, and the invocant (a type) has no lvalue of its own.
+        if (mc->method == "WHO" && !mc->meta && !mc->methodExpr) {
+            Value invv = eval(mc->inv.get());
+            ValueList none;
+            Value who = methodCall(invv, "WHO", none);
+            if (who.t == VT::Hash && who.hash) {
+                static thread_local Value whoHold;
+                whoHold = who; // shares .hash with the registry entry
+                return &whoHold;
+            }
+        }
         // the invocant is only a route to the real target — a read-only attr is OK here
         Value* base = lvalue(mc->inv.get(), /*asInvocant=*/true);
         // `$failure.handled = True` marks it inert — the one writable accessor
@@ -14363,6 +14377,25 @@ Value Interpreter::eval(Expr* e) {
                 if (Value* p = tctx_.cur->find(ve->name)) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) return *p;
                 }
+            }
+            // `Foo::<bar>` with no qualified global of that name: fall back to the
+            // package's .WHO stash, so a symbol installed via `Foo.WHO.<bar> = v`
+            // reads back through either syntax. (Writes stay split: `Foo::<bar> = v`
+            // creates the qualified global, `.WHO.<bar> = v` writes the stash; both
+            // READ paths consult both, which keeps them coherent.)
+            if (ve->pkgSymbol) {
+                // the qualified GLOBAL first — that is where `Foo::<bar> = v` writes.
+                // (The fast path above never fires for these: name[1] is ':' for a
+                // single-letter package, and the full lookup below is what used to
+                // find the global before this branch existed.)
+                if (Value* p = tctx_.cur->find(ve->name)) return *p;
+                auto sep = ve->name.rfind("::");
+                auto it = pkgStashes_.find(ve->name.substr(0, sep));
+                if (it != pkgStashes_.end()) {
+                    auto sit = it->second->find(ve->name.substr(sep + 2));
+                    if (sit != it->second->end()) return sit->second;
+                }
+                return Value::any(); // an unset slot is undefined, not an error
             }
             // A bare `%` / `@` term is an ANONYMOUS empty Hash / Array — `% .classify-list:
             // …` builds its result in one. (A bare `$` is the anonymous state scalar and

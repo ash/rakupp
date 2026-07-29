@@ -3206,6 +3206,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // Cro's HTTP parsers drive. The decoder is a stateful byte buffer with
     // line-separator-aware consumption; our strings are byte strings, so
     // iso-8859-1/ascii/utf-8 all pass bytes through unchanged.
+    // Rakudo::Internals — platform probes modules use at BEGIN time.
+    // NativeHelpers::Blob picks its libc via `Rakudo::Internals.IS-WIN`.
+    if (inv.t == VT::Type && inv.s == "Rakudo::Internals") {
+        if (m == "IS-WIN") {
+#ifdef _WIN32
+            return Value::boolean(true);
+#else
+            return Value::boolean(false);
+#endif
+        }
+    }
     // Rakudo::Internals::JSON — the built-in JSON codec several modules use at
     // load time (OpenSSL::NativeLib reads libraries.json through it).
     if (inv.t == VT::Type && inv.s == "Rakudo::Internals::JSON") {
