@@ -55,6 +55,10 @@ Value numifyStr(const std::string& in);
 Value numifyStrOrThrow(const std::string& in);
 // The quiet form: a non-numeric string becomes an unthrown Failure (Rakudo's `+"a"`).
 Value numifyStrFailure(const std::string& in);
+// `val()`: a fully-numeric string becomes the matching allomorph (IntStr/RatStr/
+// NumStr/ComplexStr — the number AND its source spelling); anything else passes
+// through unchanged. Shared by the `val` builtin, prompt(), and MAIN's argv.
+Value valAllomorph(const Value& v);
 // Build a shaped array (`my @a[2;3]` / `Array.new(:shape(2;3))`): a fixed row-major
 // structure, optionally filled from a flat list, tagged with its dimensions.
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,

@@ -5113,20 +5113,9 @@ void Interpreter::registerBuiltins() {
     // val(Str) — a fully-numeric string becomes the matching allomorph
     // (IntStr/RatStr/NumStr/ComplexStr: the number AND its source spelling);
     // anything else passes through unchanged. prompt() routes its line here.
-    auto valAllomorph = [](const Value& v) -> Value {
-        if (v.t != VT::Str) return v;
-        if (v.s.find_first_not_of(" \t\n\r\f\v") == std::string::npos) return v; // empty/blank stays Str
-        Value n = numifyStr(v.s);
-        switch (n.t) {
-            case VT::Int:     n.hashKind = "IntStr";     break;
-            case VT::Rat:     n.hashKind = "RatStr";     break;
-            case VT::Num:     n.hashKind = "NumStr";     break;
-            case VT::Complex: n.hashKind = "ComplexStr"; break;
-            default: return v;
-        }
-        n.s = v.s; // the allomorph's Str face is the original spelling
-        return n;
-    };
+    // The definition lives in Interpreter.cpp so MAIN's argv gets the identical
+    // conversion — the two used to differ, and that is issue #11.
+    auto valAllomorph = [](const Value& v) -> Value { return rakupp::valAllomorph(v); };
     B["val"] = [valAllomorph](Interpreter&, ValueList& a) -> Value {
         return a.empty() ? Value::nil() : valAllomorph(a[0]);
     };

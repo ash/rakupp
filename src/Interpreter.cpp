@@ -648,6 +648,21 @@ std::string Interpreter::mainUsage() {
     return out;
 }
 
+Value valAllomorph(const Value& v) {
+    if (v.t != VT::Str) return v;
+    if (v.s.find_first_not_of(" \t\n\r\f\v") == std::string::npos) return v; // empty/blank stays Str
+    Value n = numifyStr(v.s);
+    switch (n.t) {
+        case VT::Int:     n.hashKind = "IntStr";     break;
+        case VT::Rat:     n.hashKind = "RatStr";     break;
+        case VT::Num:     n.hashKind = "NumStr";     break;
+        case VT::Complex: n.hashKind = "ComplexStr"; break;
+        default: return v;
+    }
+    n.s = v.s; // the allomorph's Str face is the original spelling
+    return n;
+}
+
 ValueList rtMainArgs(const std::vector<std::string>& argv) {
     ValueList margs;
     auto named = [](std::string key, Value v) { // --opt args bind to :$named params
@@ -655,19 +670,11 @@ ValueList rtMainArgs(const std::vector<std::string>& argv) {
         p.namedArg = true;
         return p;
     };
-    auto allomorph = [](const std::string& str) { // numeric-looking argv binds Int/Num params too
-        Value v = Value::str(str);
-        if (str.empty()) return v;
-        size_t k = (str[0] == '-' || str[0] == '+') ? 1 : 0;
-        if (k >= str.size()) return v;
-        bool digits = true, dot = false;
-        for (size_t j = k; j < str.size(); j++) {
-            if (str[j] == '.' && !dot) { dot = true; continue; }
-            if (!std::isdigit((unsigned char)str[j])) { digits = false; break; }
-        }
-        if (digits) v.hashKind = "Allomorph";
-        return v;
-    };
+    // Rakudo runs every command-line argument through val(), so a numeric-looking
+    // one arrives as a real IntStr/RatStr and binds Int/Rat/Num params by its
+    // VALUE — which is what makes `UInt` reject `-2` instead of merely inspecting
+    // the spelling. See issue #11.
+    auto allomorph = [](const std::string& str) { return valAllomorph(Value::str(str)); };
     for (auto& a : argv) {
         if (a.rfind("--", 0) == 0 && a.size() > 2) {
             std::string rest = a.substr(2);
@@ -4981,12 +4988,6 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
     // matches exactly that value; the enum TYPE name matches any of its values
     if (!arg.enumName.empty() && (type == arg.enumName || type == arg.enumType ||
         (!arg.enumType.empty() && type == arg.enumType + "::" + arg.enumName))) return true;
-    // command-line allomorphs: a numeric-looking argv string binds Int/Num/Rat
-    // params as well as Str ones (Rakudo passes IntStr/RatStr to MAIN)
-    if (arg.t == VT::Str && arg.hashKind == "Allomorph" &&
-        (type == "Int" || type == "UInt" || type == "Num" || type == "Rat" ||
-         type == "Numeric" || type == "Real"))
-        return arg.s.find('.') == std::string::npos || (type != "Int" && type != "UInt");
     // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params and its own name
     if (arg.isAllomorph() && (type == "Str" || type == "str" || type == "Stringy" ||
                               type == "Cool" || type == arg.typeName()))
