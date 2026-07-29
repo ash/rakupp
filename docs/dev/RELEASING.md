@@ -51,8 +51,24 @@ Two numbers are tracked per kernel:
   that a regression which was once accepted does not quietly become the new
   normal.
 
-If the gate fails, the options are to fix it, or — when the cost is understood
-and deliberate — to re-record the baseline and **say why in the CHANGELOG**:
+The gate has three outcomes, not two:
+
+| exit | meaning |
+|---|---|
+| 0 | no kernel is more than `tolerance-pct` slower |
+| 1 | a regression, confirmed by re-measuring the failing kernels |
+| **2** | **inconclusive** — the machine is loaded, so the timings say nothing |
+
+That third state exists because every false alarm this gate has raised was a
+background process, not the build: Spotlight indexing, `ecosystemanalyticsd`,
+WindowServer, and once four `pandoc` jobs at 50% each. A failing kernel is
+re-measured before the gate believes it, and if the load average is above 60% of
+the core count it reports **inconclusive and exits 2** rather than accusing the
+code. Treat exit 2 as "run it again on an idle machine", never as a pass.
+
+If the gate genuinely fails, the options are to fix it, or — when the cost is
+understood and deliberate — to re-record the baseline and **say why in the
+CHANGELOG**:
 
 ```bash
 rakupp tools/perf-guard.raku --record

@@ -28,6 +28,24 @@ my %kernels =
     loopsum => 'my $t = 0; for 1 .. 1_000_000 { $t += $_ }; say $t;',
     hash    => 'my %c; for 1 .. 100_000 { %c{$_ % 1_000}++ }; say %c.elems;';
 
+
+# The 1-minute load average, and how many cores there are to carry it. A busy
+# machine cannot be judged: absolute times here move by tens of percent when
+# something else is running, so a loaded run is INCONCLUSIVE, not a regression.
+sub machine-load(--> Numeric) {
+    if $*DISTRO.is-win { return 0 }
+    my $p = run('uptime', :out, :err); my $t = $p.out.slurp(:close); $p.err.slurp(:close);
+    return 0 unless $t ~~ / 'average' 's'? ':' \s* $<l>=[<[\d.]>+] /;
+    +$<l>
+}
+sub core-count(--> Int) {
+    my $p = run('sysctl', '-n', 'hw.ncpu', :out, :err);
+    my $t = $p.out.slurp(:close).trim; $p.err.slurp(:close);
+    return +$t if $t ~~ /^\d+$/;
+    my $n = '/proc/cpuinfo'.IO.e ?? '/proc/cpuinfo'.IO.lines.grep(*.starts-with('processor')).elems !! 0;
+    $n || 1
+}
+
 sub measure(Str $code --> Numeric) {
     my $tmp = $*TMPDIR.add("perf-guard-{$*PID}-{1e6.rand.Int}.raku");
     $tmp.spurt($code);
@@ -119,8 +137,44 @@ if $check {
         @bad.push("$k {$d.round(0.1)}% slower than baseline") if $d > $tol;
     }
     say "";
+    # A failing kernel is RE-MEASURED before the gate believes it. Absolute times
+    # on a desktop move by tens of percent when a background daemon wakes up —
+    # during one afternoon this gate reported four regressions of up to +50%,
+    # every one of them Spotlight/analytics/WindowServer rather than the build.
+    # A real regression reproduces; a busy machine usually does not.
     if @bad {
-        note "perf-guard FAILED: @bad.join('; ')";
+        note "perf-guard: {@bad.elems} kernel(s) over tolerance — re-measuring before believing it";
+        my @still;
+        for <fib asg loopsum hash> -> $k {
+            my $base = %b<kernels>{$k}<baseline>;
+            next unless 100 * (%now{$k} - $base) / $base > $tol;
+            my $again = measure(%kernels{$k});
+            my $d = 100 * ($again - $base) / $base;
+            printf "  %-10s re-run %7.1f  (was %.1f)  %+.1f%%\n", $k, $again, %now{$k}, $d;
+            @still.push("$k {$d.round(0.1)}% slower than baseline") if $d > $tol;
+        }
+        @bad = @still;
+        unless @bad {
+            say "";
+            say "perf-guard OK — the first reading did not reproduce (machine noise).";
+            exit 0;
+        }
+    }
+    if @bad {
+        # Confirmed over tolerance twice — but if the machine is loaded, that says
+        # nothing about the build. Report inconclusive (exit 2) rather than
+        # accusing the code. (Every false alarm this gate has raised so far was a
+        # background process, not a regression.)
+        my $load = machine-load(); my $cores = core-count();
+        if $load > $cores * 0.6 {
+            note "";
+            note "perf-guard INCONCLUSIVE — load average {$load.round(0.1)} on {$cores} cores.";
+            note "Something else is using this machine; these timings mean nothing.";
+            note "Kernels over tolerance: @bad.join('; ')";
+            note "Re-run when the machine is idle.";
+            exit 2;
+        }
+        note "perf-guard FAILED (confirmed on re-measure): @bad.join('; ')";
         note "A release must not ship a performance regression. Either fix it, or —";
         note "if the cost is understood and accepted — re-record the baseline with";
         note "`rakupp tools/perf-guard.raku --record` and say why in the CHANGELOG.";
