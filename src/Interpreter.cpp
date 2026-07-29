@@ -8167,6 +8167,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // NFC), so append in place — O(1) amortised, keeping string-building O(n). Only
     // a non-ASCII right-hand side needs a re-normalisation across the join.
     if (!overloaded && binop == "~" && lv->t == VT::Str && rhs.t == VT::Str) {
+        auto bloby = [](const Value& v) {
+            return !v.itemized &&
+                   (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
+        };
+        // `$blob ~= $blob` appends BYTES and yields a Buf, like the binary form.
+        // Normalizing here would corrupt them, and a high byte looks non-ASCII.
+        if (bloby(*lv) && bloby(rhs) && lv->blobElemSize() == rhs.blobElemSize()) {
+            lv->s += rhs.s;
+            lv->hashKind = "Buf";
+            if (lv->ofType.empty()) lv->ofType = rhs.ofType;
+            return sink ? Value::any() : *lv;
+        }
         bool asciiRhs = true;
         for (unsigned char c : rhs.s) if (c >= 0x80) { asciiRhs = false; break; }
         if (asciiRhs) lv->s += rhs.s;
@@ -8672,11 +8684,29 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     }
     if (op == "Z" || (op.size() > 1 && op[0] == 'Z')) { // zip; Z<op> applies op pairwise
         std::string sub = op.substr(1); // "" -> tuples, "=>" -> pairs, else infix op
+        // NOTE: there is a SECOND Z/X implementation further down (the `Z<op>` arm
+        // that uses oneLevel instead of listCtx). Both are reachable; a fix to one
+        // belongs in the other. See docs/dev/DUPLICATION-AUDIT.
+        //
+        // A lazy operand (`7 xx *`) holds only its materialized prefix, so zipping
+        // against one stopped after a single pair. Z ends at the shortest side, so
+        // force the lazy side out to the other's length.
+        // (applyArith is a free function, so it reaches the interpreter through the
+        // same global the NativeCall trampolines use; it is set in the constructor.)
+        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
+        if (g_cbInterp) {
+            if (isLazy(l) && !isLazy(r)) g_cbInterp->materializeLazy(l, listCtx(r).size());
+            else if (isLazy(r) && !isLazy(l)) g_cbInterp->materializeLazy(r, listCtx(l).size());
+        }
         ValueList a = listCtx(l), b = listCtx(r);
         Value out = Value::array(); out.isList = true; out.s = "Seq"; // Rakudo: Z/X are lazy
         for (size_t i = 0; i < a.size() && i < b.size(); i++) {
             if (sub.empty()) { Value t = Value::array({a[i], b[i]}); t.isList = true; out.arr->push_back(t); }
-            else if (sub == "=>") out.arr->push_back(Value::pair(a[i].toStr(), b[i]));
+            else if (sub == "=>") { // `1 Z=> 3` keeps the Int key, not "1"
+                Value pr = Value::pair(a[i].toStr(), b[i]);
+                if (a[i].t != VT::Str) pr.pairKey = std::make_shared<Value>(a[i]);
+                out.arr->push_back(pr);
+            }
             else out.arr->push_back(applyArith(sub, a[i], b[i]));
         }
         return out;
@@ -9220,6 +9250,22 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             Value out = Value::array(); out.s = "Uni";
             for (auto& c : *l.arr) out.arr->push_back(c);
             for (auto& c : *r.arr) out.arr->push_back(c);
+            return out;
+        }
+        // Blob ~ Blob is a BUF of the concatenated bytes. It was falling through to
+        // the Str path below, which both lost the blob-ness (`($a ~ $b).elems` was 1,
+        // not 6) and — worse — NFC-NORMALIZED the result: these are bytes, and
+        // normalizing them corrupts them silently. Digest's HMAC pads its key with
+        // `$key ~= Blob.new: 0 xx ($block-size - +$key)`, so every hash was wrong.
+        // Same element width only; mixing blob8 with blob16 has no meaningful answer.
+        auto bloby = [](const Value& v) {
+            return v.t == VT::Str && !v.itemized &&
+                   (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
+        };
+        if (bloby(l) && bloby(r) && l.blobElemSize() == r.blobElemSize()) {
+            Value out = Value::str(l.s + r.s);
+            out.hashKind = "Buf";                       // Rakudo: utf8 ~ Blob is a Buf
+            out.ofType = l.ofType.empty() ? r.ofType : l.ofType;
             return out;
         }
         // an undefined operand stringifies to "" (Rakudo warns; `Any ~ $x` is $x)
@@ -11079,10 +11125,26 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
                 return v.blobList();
             return ValueList{v};
         };
+        // A LAZY operand (`7 xx *`, an infinite sequence) carries only its
+        // materialized PREFIX in `arr` — usually one element — so a zip against one
+        // stopped after a single pair. Z stops at the shortest side, so force the
+        // lazy side out to the other's length. `@$key Z[+^] $i xx *` is how Digest's
+        // HMAC builds its key pad, and it was yielding one byte.
+        // Cross (X) against an infinite side has no finite answer; leave it alone.
+        auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
+        if (op[0] == 'Z') {
+            if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
+            else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
+        }
         ValueList a = oneLevel(l), bb = oneLevel(r);
         Value out = Value::array(); out.isList = true; out.s = "Seq"; // Z<op>/X<op> are lazy (Rakudo)
         auto emit = [&](const Value& x, const Value& y) {
-            if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
+            // `1 Z=> 3` keeps the Int key — forcing .toStr() made it "1" => 3
+            if (sub == "=>") {
+                Value p = Value::pair(x.toStr(), y);
+                if (x.t != VT::Str) p.pairKey = std::make_shared<Value>(x);
+                out.arr->push_back(p);
+            }
             else if (sub == ",") { // Z, / X, — tuples
                 Value t = Value::array(); t.isList = true;
                 t.arr->push_back(x); t.arr->push_back(y);
@@ -11326,6 +11388,15 @@ Value Interpreter::evalBinary(Binary* b) {
                     return v.blobList(); // `$H Z+ $M` in Digest::SHA1
                 return ValueList{v};
             };
+            // A lazy operand (`7 xx *`) holds only its materialized prefix, so a zip
+            // against one stopped after a single pair; Z ends at the shortest side,
+            // so force the lazy side to the other's length. Cross against an infinite
+            // side has no finite answer, so it is left alone.
+            auto isLazy = [](const Value& v) { return v.t == VT::Array && v.ext; };
+            if (op[0] == 'Z') {
+                if (isLazy(l) && !isLazy(r)) materializeLazy(l, oneLevel(r).size());
+                else if (isLazy(r) && !isLazy(l)) materializeLazy(r, oneLevel(l).size());
+            }
             ValueList a = oneLevel(l), bb = oneLevel(r);
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // Z<op>/X<op> are lazy (Rakudo)
             auto emit = [&](const Value& x, const Value& y) {
@@ -11333,7 +11404,11 @@ Value Interpreter::evalBinary(Binary* b) {
                     Value t = Value::array({x, y}); t.isList = true;
                     out.arr->push_back(t);
                 }
-                else if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
+                else if (sub == "=>") { // `1 Z=> 3` keeps the Int key, not "1"
+                    Value pr = Value::pair(x.toStr(), y);
+                    if (x.t != VT::Str) pr.pairKey = std::make_shared<Value>(x);
+                    out.arr->push_back(pr);
+                }
                 else out.arr->push_back(applyBinOp(sub, x, y));
             };
             if (op[0] == 'Z') { for (size_t i = 0; i < a.size() && i < bb.size(); i++) emit(a[i], bb[i]); }
@@ -12387,6 +12462,16 @@ Value Interpreter::evalUnary(Unary* u) {
     if ((u->op == "+" || u->op == "-") && v.t == VT::Array && v.hashKind == "Capture") {
         ValueList none; Value n = methodCall(v, "Numeric", none);
         return u->op == "-" ? Value::integer(-n.toInt()) : n;
+    }
+    // A Blob/Buf is Positional too, so numeric context is its ELEMENT COUNT, not a
+    // numification of its bytes as text. `+"key".encode` is 3; rakupp was reading
+    // the bytes as the string "key" and throwing "Cannot convert string to number".
+    // Digest's HMAC pads its key with `if +$key < $block-size`, so every HMAC came
+    // out wrong — the padding branch never ran.
+    if ((u->op == "+" || u->op == "-") && v.t == VT::Str && !v.itemized &&
+        (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8")) {
+        long long n = v.blobElems();
+        return Value::integer(u->op == "-" ? -n : n);
     }
     // Numeric context of a list/array/hash/range is its element count —
     // except a Proc / Proc::Async, which numifies to its exit status (+$proc).

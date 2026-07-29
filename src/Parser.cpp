@@ -700,11 +700,22 @@ ExprPtr Parser::parseExpr(int minbp) {
         for (char c : in.op) if (c != 'Z' && c != 'X') { zxStack = false; break; }
         if (zxStack) {
             std::string meta;
+            int metaToks = 2; // Z/X + the trailing op
             if (peek().kind == Tok::FatArrow) meta = "=>";
             else if (peek().kind == Tok::Comma) meta = ","; // Z, / X, — zip/cross into tuples
             else if (peek().kind == Tok::Op) meta = peek().text;
+            // `Z[+]` / `X[*]` — the metaop's operator written in BRACKETS. Without
+            // this the `[+]` was parsed as a REDUCTION of the right operand, so
+            // `@a Z[+] @b` answered a single pair whose second element was the sum of
+            // all of @b. Digest's HMAC XORs its key pad with `@$key Z[+^] $i xx *`,
+            // which is why every HMAC came out wrong.
+            else if (peek().kind == Tok::LBracket && peek(2).kind == Tok::Op &&
+                     peek(3).kind == Tok::RBracket) {
+                meta = peek(2).text;
+                metaToks = 4; // Z/X + [ + op + ]
+            }
             if (!meta.empty() && !peek().spaceBefore) {
-                advance(); advance(); // consume Z/X and the trailing op
+                for (int k = 0; k < metaToks; k++) advance();
                 ExprPtr rhs = parseExpr(in.lbp + 1);
                 auto bin = std::make_unique<Binary>();
                 bin->op = in.op + meta; // "Z=>" / "Z+" / "X*"
@@ -2776,7 +2787,14 @@ ExprPtr Parser::parsePrimary() {
                                           pv.kind == Tok::IntLit || pv.kind == Tok::NumLit ||
                                           pv.kind == Tok::StrLit || pv.kind == Tok::StrInterp ||
                                           pv.kind == Tok::RParen || pv.kind == Tok::RBracket ||
-                                          pv.kind == Tok::RBrace;
+                                          pv.kind == Tok::RBrace ||
+                                          // …and the `>` closing an ANGLE SUBSCRIPT, which ends a
+                                          // term just as `]` does: `%h<k>.Int` and `$<cap>.ast` are
+                                          // method calls on the subscript, not on the topic. Missing
+                                          // it made a hash composer containing one parse as a BLOCK
+                                          // — Cro::Uri's `{ authority => …, $<host>.ast }` came back
+                                          // a Block, so `.<host>` on it failed and no URI parsed.
+                                          (pv.kind == Tok::Op && pv.text == ">");
                         if (!termBefore) { isHash = false; break; }
                     }
                 }
