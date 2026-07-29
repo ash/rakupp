@@ -118,7 +118,7 @@ of your program keeps running. Full guide: **[MODULES.md](docs/MODULES.md)**.
 
 ## Run Raku in the browser — Raku.js
 
-▶ **Try it live: [raku.online](https://raku.online/)** · **Learn it interactively: [tour.raku.online](https://tour.raku.online/)**
+▶ **Try it live: [raku.online](https://raku.online/)** · **Learn it interactively: [raku.online/tour](https://raku.online/tour/)**
 
 **[Raku.js](rakujs/)** is the *same* interpreter compiled to **WebAssembly** with
 Emscripten — the exact semantics as native `rakupp`, running entirely client-side
@@ -166,7 +166,7 @@ course. Build it with `rakujs/build.sh`; details in
 - **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
 - **[HTTPS.md](docs/HTTPS.md)** — the story of getting one real HTTPS request working: the chain of general bugs from "OpenSSL won't load" to `HTTP/1.1 200 OK` over TLS, and the NativeCall surface it exercised.
 - **[DOGFOODING.md](docs/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
-- **[ECOSYSTEM.md](docs/ECOSYSTEM.md)** — the projects built on this interpreter (Raku.js, raku.online, tour.raku.online, spec.raku.online, raku-corpus), how they connect, and the release runbook for rebuilding wasm and redeploying the sites after a new version.
+- **[ECOSYSTEM.md](docs/ECOSYSTEM.md)** — the projects built on this interpreter (Raku.js, raku.online with its tour and spec sub-sites, raku-corpus), how they connect, and the release runbook for rebuilding wasm and redeploying the sites after a new version.
 
 ### Measurements & status
 

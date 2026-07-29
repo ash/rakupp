@@ -10,10 +10,14 @@ Run these in order. Every one must pass **before** the version is bumped.
 ### 1. Roast — no regression
 
 ```bash
-ROAST=/path/to/roast rakupp tools/run-roast.raku --workers=4
+ROAST=/path/to/roast rakupp tools/run-roast.raku --workers=4 | tee roast.txt
 ```
 
 Compare against the previous release's figure in [CHANGELOG.md](../../CHANGELOG.md).
+
+Keep that `roast.txt` — the per-file `[PASS] 3/3 …` lines are what step 5 below
+feeds to `gen-roast-map.raku`, and re-running the suite just to get them back
+costs an hour.
 
 Read the **denominators**, not just the pass count. A file that dies removes its
 tests from *both* sides of "tests that ran", so a real regression can leave the
@@ -113,6 +117,9 @@ Both halves feed <https://raku.online/spec/rules/divergences/>. This is slow
 (~25 min for the types sweep), which is why it runs per release rather than per
 batch.
 
+This leaves `src/data/typerun.raku` and `src/data/matrix.raku` rewritten but
+**unpublished** — step 5 in the next section is what turns them into pages.
+
 The count has a **±5 flap band**: the `Set`/`Bag`/`Mix`/`Map` examples move in
 both directions between runs of identical code, because Rakudo randomizes hash
 iteration order per process. Do not read a ±5 move as progress.
@@ -127,3 +134,44 @@ iteration order per process. Do not read a ±5 move as progress.
    and `docs/ROADMAP.md` — all from **one** run, so they agree with each other.
    `docs/BENCHMARKS.md` too if the benchmarks were re-run.
 4. Tag, and publish.
+5. **Republish the site data** — the graphs and listings under
+   <https://raku.online/spec/> and <https://raku.online/spec/rules/>.
+
+Step 5 is the one that gets forgotten, because the release itself is already
+out by then and everything looks finished. It isn't: gate 5 rewrote the
+conformance data in the raku.online checkout and left it sitting there, so until
+this runs, the site shows the *previous* release's divergences, coverage meters
+and Roast map while announcing the new version.
+
+**After the tag, not before.** `gen-dashboard.raku` mines the rakupp repo's `v*`
+tags and reads `docs/ROAST.md` / `docs/BENCHMARKS.md` *as committed at each one*.
+Run it before tagging and the new release is simply absent from the timeline —
+and since it only collects, never measures, nothing warns you.
+
+```bash
+# in the raku.online checkout, sites/spec
+rakupp tools/gen-roast-map.raku /path/to/roast.txt $(date +%F)  # gate 1's output
+rakupp tools/gen-dashboard.raku --rakupp-repo=/path/to/raku++
+rakupp tools/snapshot.raku --rakupp=/path/to/rakupp --oracle=raku   # always last
+./verify.sh                                    # both sites, every example, publishes nothing
+cd ../.. && ./build.sh spec                    # sites/spec -> www/spec
+```
+
+Then commit `www/` *together with* `sites/spec/src/data/`, and push. The Pages
+workflow publishes `www/` **verbatim** — there is no build step in CI, so
+anything not built and committed locally does not go live, and the regenerated
+data files alone change nothing that a visitor sees.
+
+`snapshot.raku` runs last as a rule. It appends one line to
+`src/data/history.jsonl` describing whatever the other data files say *at that
+moment*, and that file is what the trend chart on
+[/spec/rules/divergences/](https://raku.online/spec/rules/divergences/) draws.
+Snapshot before regenerating and the release's line permanently records the
+previous release's numbers: the file is append-only and nothing ever rewrites an
+earlier line.
+
+If a sweep was skipped, skip its regeneration too rather than re-running an old
+tool against new data — the point of the history is that each line is one
+coherent run. `inventory.raku` and `typedoc.raku` need a Rakudo doc checkout and
+only change when the *documentation* does, not when Raku++ does; they are not
+per-release work.

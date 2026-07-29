@@ -102,8 +102,8 @@ zef populates (see [MODULES.md](MODULES.md)); the goal is breadth and depth.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),
-[spec.raku.online](https://spec.raku.online/),
-[tour.raku.online](https://tour.raku.online/), the raku-corpus differential
+[raku.online/spec](https://raku.online/spec/),
+[raku.online/tour](https://raku.online/tour/), the raku-corpus differential
 target, a `setup-rakupp` GitHub Action, and an OpenBSD release target. The map is
 in [ECOSYSTEM.md](ECOSYSTEM.md).
 

@@ -126,7 +126,7 @@ narrower "of what runs" rate (~69%). The all-declared figure we now headline
 begins on **9 July at ~57%** — but against a wide ~231k denominator; when that
 denominator was redefined the next day the *same* standing read ~73%, so part of
 that first jump is a re-baseline, not progress (the same caveat annotates the
-[dashboard](https://spec.raku.online/dashboard/) chart). From there the gains were
+[dashboard](https://raku.online/spec/dashboard/) chart). From there the gains were
 real: Unicode normalization and UCA collation (below) carried it to ~80.6%,
 `sprintf` corner cases to 80.8%, and the 1.0-campaign standing to **~82% by 11
 July**. The set-operator, typed-diagnostic, and parse-fail campaigns took it to

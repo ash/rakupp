@@ -1,7 +1,7 @@
 # rakupp vs Rakudo divergences found while writing the spec site
 
 Found on 20 July 2026 by cross-checking every runnable example on the
-**[Raku++ Specification](https://spec.raku.online/)** (repo:
+**[Raku++ Specification](https://raku.online/spec/)** (repo:
 [ash/raku.online, sites/spec](https://github.com/ash/raku.online/tree/main/sites/spec)) under `build/rakupp` and
 Rakudo (v2026.06). The spec's generator (`build.raku --verify --oracle=raku`)
 runs each `raku`/`output` example pair through **both** interpreters and fails
@@ -34,7 +34,7 @@ say (-3.5).round;   # Rakudo -3   · rakupp -4
 say (-2.5).round;   # Rakudo -2   · rakupp -3
 say   3.5 .round;   # Rakudo  4   · rakupp  4   (agree)
 ```
-Page: [builtins/rounding](https://spec.raku.online/builtins/rounding.html) · badged **divergent**.
+Page: [builtins/rounding](https://raku.online/spec/builtins/rounding/) · badged **divergent**.
 
 ### 2. ✅ FIXED — `where` constraints are not enforced
 A parameter/`subset` `where` predicate is parsed and lets valid arguments
@@ -46,8 +46,8 @@ say pos(-1);        # Rakudo: dispatch failure · rakupp: -1
 ```
 Also affects `subset` types and value-based multi dispatch. Meaningful: `where`
 can't be used for validation in rakupp.
-Pages: [subs/constraints](https://spec.raku.online/subs/constraints.html),
-[types/subsets](https://spec.raku.online/types/subsets.html) · badged **partial**.
+Pages: [subs/constraints](https://raku.online/spec/subs/constraints/),
+[types/subsets](https://raku.online/spec/types/subsets/) · badged **partial**.
 
 ### 3. ✅ FIXED — `Complex.exp` computes the wrong value
 Real `sin`/`cos`/`exp` are fine; the complex exponential is not.
@@ -78,7 +78,7 @@ my regex ident { <[a..z]>+ }
 "hello123" ~~ /<ident>/;
 say ~$<ident>;      # Rakudo hello · rakupp hello123 (built-in ident ran)
 ```
-Page: [regexes/named-rules](https://spec.raku.online/regexes/named-rules.html).
+Page: [regexes/named-rules](https://raku.online/spec/regexes/named-rules/).
 
 ### 6. ✅ FIXED — `qq{…}` brace-delimited interpolates a nested `{…}` block
 With `{ }` as the *delimiter*, the inner block should be literal text.
@@ -89,7 +89,7 @@ say qq{one and one is {1 + 1}};
 # rakupp: one and one is 2          (interpolated)
 ```
 Workaround: use a non-brace delimiter (`qq[…]`) when you want `{}` interpolation.
-Page: [literals/strings](https://spec.raku.online/literals/strings.html).
+Page: [literals/strings](https://raku.online/spec/literals/strings/).
 
 ---
 
@@ -108,30 +108,30 @@ say (a => 1, b => 2).invert;
 say "hello world".wordcase;   # Rakudo: Hello World · rakupp: hello world
 ```
 (`.tc`/`.tclc`/`.uc`/`.lc` work.)
-Page: [methods/case](https://spec.raku.online/methods/case.html) · **partial**.
+Page: [methods/case](https://raku.online/spec/methods/case/) · **partial**.
 
 ### 9. ✅ FIXED — `Str.split(:skip-empty)`
 ```raku
 say "a1b2c3".split(/\d/, :skip-empty);
 # Rakudo: (a b c)   · rakupp: (a b c )   (trailing empty kept)
 ```
-Page: [methods/split](https://spec.raku.online/methods/split.html) · **partial**.
+Page: [methods/split](https://raku.online/spec/methods/split/) · **partial**.
 
 ### 10. ✅ FIXED — `Str.comb(Int)`
 ```raku
 say "hello".comb(2);          # Rakudo: (he ll o) · rakupp: (h e l l o)
 ```
 (`.comb` with no arg or a regex works.)
-Page: [methods/split](https://spec.raku.online/methods/split.html) · **partial**.
+Page: [methods/split](https://raku.online/spec/methods/split/) · **partial**.
 
 ### 11. ✅ FIXED — `Str.indent`
 ```raku
 say "hi".indent(4);           # Rakudo: "    hi" · rakupp: No such method 'indent'
 ```
-Page: [methods/samecase](https://spec.raku.online/methods/samecase.html).
+Page: [methods/samecase](https://raku.online/spec/methods/samecase/).
 
 ### 12. ✅ FIXED (parents, signature.params) — Metaobject protocol gaps
-On [types/mop](https://spec.raku.online/types/mop.html) (**partial**):
+On [types/mop](https://raku.online/spec/types/mop/) (**partial**):
 - `Type.^parents` — not implemented (errors); Rakudo returns the parent list.
 - `&sub.signature.params` — not implemented (errors). `&sub.arity`/`.count` **do** work.
 - `.^methods` — returns user methods only; Rakudo also lists auto-generated ones
@@ -150,7 +150,7 @@ is strict **class** inheritance.
 ```raku
 say 5.isa(Numeric);   # Rakudo False (a role) · rakupp True
 ```
-Use `~~` for role/type membership in both. Page: [types/mop](https://spec.raku.online/types/mop.html).
+Use `~~` for role/type membership in both. Page: [types/mop](https://raku.online/spec/types/mop/).
 
 ### 14. Native typed arrays are boxed
 Native **scalars** agree (`my int $x` boxes to `Int` in both); native **arrays**
@@ -160,7 +160,7 @@ are the boxed `Array[int]` in rakupp, not the truly-native `array[int]`.
 my int @a = 1, 2, 3;
 say @a.WHAT;          # Rakudo (array[int]) · rakupp (Array[int])
 ```
-Values identical. Page: [types/native](https://spec.raku.online/types/native.html) · **divergent**.
+Values identical. Page: [types/native](https://raku.online/spec/types/native/) · **divergent**.
 
 ### 15. ✅ FIXED — No NFC/NFG normalization
 Grapheme counting is correct (`.chars` agrees), but combining sequences are not
@@ -171,7 +171,7 @@ my $s = "e" ~ "\x[301]";   # e + combining acute
 say $s.chars;              # Rakudo 1 · rakupp 1  (agree — grapheme)
 say $s.codes;              # Rakudo 1 · rakupp 2  (Rakudo precomposes to é)
 ```
-Page: [methods/unicode](https://spec.raku.online/methods/unicode.html) · **divergent**.
+Page: [methods/unicode](https://raku.online/spec/methods/unicode/) · **divergent**.
 
 ### 16. ✅ FIXED — `Map` is a `Hash`
 `Map.new(...)` yields a `Hash`, so there is no distinct immutable `Map` type
@@ -180,7 +180,7 @@ Page: [methods/unicode](https://spec.raku.online/methods/unicode.html) · **dive
 ```raku
 say Map.new("a", 1).^name;   # Rakudo Map · rakupp Hash
 ```
-Page: [methods/hash-ops](https://spec.raku.online/methods/hash-ops.html).
+Page: [methods/hash-ops](https://raku.online/spec/methods/hash-ops/).
 
 ---
 

@@ -18,8 +18,8 @@ it. There is one implementation behind every surface.
 | **Raku++ (rakupp)** | The interpreter + native compiler in C++17. Source of truth for everything below. | [ash/rakupp](https://github.com/ash/rakupp) | native binary, `--exe` |
 | **Raku.js** | `../src` compiled to WebAssembly (Emscripten) — Raku in the browser, no server. Additive: nothing in `../src` is modified. | (part of rakupp, [`rakujs/`](../rakujs/README.md)) | `rakujs.{js,wasm}` |
 | **raku.online** | The public playground built on Raku.js — editor, output pane, share/open links, an embeddable widget (`raku.js`). | [ash/raku.online](https://github.com/ash/raku.online) | [raku.online](https://raku.online/) |
-| **spec** (was `raku-spec`) | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku.online `sites/spec`](https://github.com/ash/raku.online/tree/main/sites/spec) | [spec.raku.online](https://spec.raku.online/) |
-| **tour** (was `raku-tour`) | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec; GitHub Pages CI builds it with the latest **release** binary. | [ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour) | [tour.raku.online](https://tour.raku.online/) |
+| **spec** (was `raku-spec`) | The behavioural spec: one page per feature, every example runnable live (via raku.online's engine). Its generator is written in Raku and run *by* rakupp. | [ash/raku.online `sites/spec`](https://github.com/ash/raku.online/tree/main/sites/spec) | [raku.online/spec](https://raku.online/spec/) |
+| **tour** (was `raku-tour`) | "A Tour of Raku": 18 interactive lessons, every example a live editor (raku.online's engine) with output verified against the interpreter. Same generator pattern as the spec. | [ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour) | [raku.online/tour](https://raku.online/tour/) |
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
@@ -31,8 +31,8 @@ graph TD
     NATIVE["native rakupp<br/>+ --exe compiler"]
     WASM["Raku.js<br/>rakujs.{js,wasm}"]
     ONLINE["raku.online<br/>playground + raku.js widget"]
-    SPEC["spec.raku.online<br/>feature spec, live examples"]
-    TOUR["tour.raku.online<br/>interactive lessons"]
+    SPEC["raku.online/spec<br/>feature spec, live examples"]
+    TOUR["raku.online/tour<br/>interactive lessons"]
     CORPUS["raku-corpus<br/>real-world programs"]
     BREW["Homebrew tap<br/>ash/rakupp"]
     REL["GitHub Release<br/>binaries + wasm zip"]
@@ -45,7 +45,7 @@ graph TD
     NATIVE -->|rakupp build.raku<br/>--verify generator| SPEC
     NATIVE -->|differential run| CORPUS
     SRC -->|tag → release.yml CI| REL
-    REL -->|Pages CI: build + verify<br/>with release binary| TOUR
+    NATIVE -->|rakupp build.raku<br/>--verify generator| TOUR
     REL -->|bump url + sha256| BREW
 ```
 
@@ -55,11 +55,18 @@ Two things are worth internalising because they drive the release runbook:
   version out of [`../CMakeLists.txt`](../CMakeLists.txt)
   (`project(RakuPP VERSION …)`) and bakes it into the WebAssembly build. Bump the
   version there *before* rebuilding wasm and every surface reports it correctly.
-- **Neither spec.raku.online nor tour.raku.online hosts an engine of its own.**
-  Their runnable examples load raku.online's `raku.js`, which `importScripts`
-  the same `rakujs.{js,wasm}`. So **both sites automatically inherit a new
-  interpreter the moment raku.online is redeployed** — updating them is then
-  only about the *content* (new feature pages / lessons), not the engine.
+- **Neither the spec nor the tour hosts an engine of its own.** Their runnable
+  examples load raku.online's `raku.js`, which `importScripts` the same
+  `rakujs.{js,wasm}`. So **both sub-sites automatically inherit a new interpreter
+  the moment raku.online is redeployed** — updating them is then only about the
+  *content* (new feature pages / lessons), not the engine.
+- **One origin, one deploy, no CI build.** The spec and the tour were once
+  separate repos on `spec.raku.online` and `tour.raku.online`, each with its own
+  Pages workflow that downloaded a release binary and built itself. Both repos
+  are gone; the sources live in `raku.online` under `sites/`, and raku.online's
+  Pages workflow publishes `www/` **verbatim**. Whatever is not built locally and
+  committed does not go live. Older notes describing a CI that builds the spec
+  are describing the retired setup.
 
 ---
 
@@ -98,8 +105,8 @@ whenever the release adds or changes user-visible behaviour; D is a safety net.
    commits builds a release from whatever the branch held at that moment, and
    because **`releases/latest` follows publication TIME rather than version
    order**, a wrongly-published release keeps the `Latest` flag even after its
-   tag is deleted — and `Latest` is exactly what spec.raku.online and
-   tour.raku.online download to build with. Deleting the tag is not enough;
+   tag is deleted — and `Latest` is what the Homebrew formula and the
+   `setup-rakupp` Action install. Deleting the tag is not enough;
    delete the *release* (`gh release delete vX.Y.Z`) and confirm with
    `gh release list` that the flag moved. The
    [`release.yml`](../.github/workflows/release.yml) CI then builds the
@@ -167,19 +174,21 @@ publish itself is that repo's push, not anything in this one.
    curl -s https://raku.online/ | grep -o '?v=[0-9a-f]\{8\}' | head -1   # matches the tag deploy.sh printed
    ```
 
-### C. Update spec.raku.online for the new feature list
+### C. Update the spec for the new feature list
 
 The spec uses the engine in **two** places, and they update on different
 schedules — worth keeping straight:
 
 - the **live examples** a reader runs in the browser load raku.online's
   `raku.js`, so they inherit the new engine as soon as Step B ships;
-- the **build-time verification** runs against the binary its CI downloads,
-  which is `releases/latest` (see step 3) — not your local build, and not
-  necessarily the release you just cut.
+- the **build-time verification** runs against whichever binary you point
+  `RAKUPP` at when you build locally — so it is the engine you just cut only if
+  you say so.
 
 What remains for you here is **content** — documenting features the release
-newly supports.
+newly supports. The *data* behind the graphs and listings (conformance,
+divergences, the Roast map, the dashboard timeline) is a separate step, and it
+runs after the tag: see step 5 of [dev/RELEASING.md](dev/RELEASING.md).
 
 1. **Author/update feature pages** — one Markdown-ish file per feature under
    the spec site's `sites/spec/src/pages/<category>/<slug>.md` (categories: `literals`,
@@ -196,23 +205,20 @@ newly supports.
    Every example is executed through rakupp (and the Rakudo oracle, if
    `ORACLE=raku`); **any drift fails the build**, so the spec can never
    contradict the shipped interpreter.
-3. **Commit and push** the raku.online repo. **This is the publish**: like
-   raku.online, spec.raku.online is served by **GitHub Pages**, via its own
-   `pages.yml`. That workflow does not use your local binary — it downloads
-   **`releases/latest`** from this repo and builds with that. So the spec picks
-   up a new engine only once the release for it is published *and* holds the
-   `Latest` flag. If a stale release is still marked Latest, the spec keeps
-   building against it; `gh release list` shows which one holds the flag.
+3. **Assemble and publish** — from the root of the raku.online checkout:
+   ```sh
+   ./build.sh spec        # sites/spec -> www/spec
+   ```
+   then commit `www/` **together with** `sites/spec/`, and push. **That is the
+   publish**: Pages serves `www/` verbatim and builds nothing, so a commit of the
+   sources alone changes nothing a visitor sees. This is the one mistake the
+   split between `sites/` and `www/` invites.
 
-**tour.raku.online** ([ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour)) needs no
-server step at all: its GitHub Pages workflow installs the **latest release
-binary**, re-verifies every lesson, and deploys. It runs on every push — after a
-release with no content change, trigger it once so the lessons re-verify against
-the new interpreter:
-
-```sh
-gh workflow run 'build & deploy' -R ash/raku-tour
-```
+**The tour** ([ash/raku.online `sites/tour`](https://github.com/ash/raku.online/tree/main/sites/tour))
+works exactly the same way — `./build.sh tour`, commit `www/`, push — and
+re-verifies every lesson against your `RAKUPP` as it builds. After a release with
+no content change, rebuild it once anyway so the lessons are re-verified against
+the new interpreter. `./build.sh` with no argument does the whole site.
 
 (The in-browser engine updates with raku.online, same as the spec.)
 
@@ -233,7 +239,7 @@ deploy — nothing to publish, just a signal before (or right after) tagging.
 | example programs (`examples/`) | rebuild wasm so `examples.js` regenerates (**B.2**), redeploy raku.online (**B**) |
 | the playground UI (`rakujs/playground/`) | copy the changed file into `raku.online/www/` and redeploy (**B.3–4**) |
 | a feature's support level or a new feature | write/update its spec page and redeploy the spec (**C**) |
-| a tour lesson | push `ash/raku-tour` — its Pages CI verifies every example and deploys (**C**) |
+| a tour lesson | `./build.sh tour` in the raku.online checkout, commit `www/`, push (**C**) |
 | stat numbers (Roast) | refresh the docs per the doc-sync checklist (**A.4**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
-| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); re-trigger the tour's Pages workflow so its lessons re-verify on the new binary (**C**) |
+| cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](dev/RELEASING.md) step 5**) |
