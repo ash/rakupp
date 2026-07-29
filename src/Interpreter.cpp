@@ -1388,6 +1388,15 @@ Interpreter::Interpreter() {
     // CompUnit::Repository — a role a repository class must fully implement, and the
     // $*REPO instance that does it.
     {
+        // X::Wrapper — Rakudo's core role for exceptions that wrap another
+        // exception. JSON::Class marks its Serialize/Deserialize::Fatal wrappers
+        // with it at trait time (`type.^add_role(::('X::Wrapper'))`). Only the
+        // attribute surface is seeded; the private helper methods matter only on
+        // error-formatting paths.
+        auto xwrap = std::make_shared<ClassInfo>();
+        xwrap->name = "X::Wrapper"; xwrap->isRole = true;
+        { ClassAttr a; a.name = "exception"; a.sigil = '$'; a.pub = true; xwrap->attrs.push_back(a); }
+        classes_["X::Wrapper"] = xwrap;
         auto repoRole = std::make_shared<ClassInfo>();
         repoRole->name = "CompUnit::Repository"; repoRole->isRole = true;
         repoRole->requiredMethods = {"id", "need", "load", "loaded"};
@@ -3613,6 +3622,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return Value::any();
             }
             auto ci = std::make_shared<ClassInfo>();
+            // `is NAME` where NAME is no type may be a USER TRAIT (`trait_mod:<is>`,
+            // e.g. JSON::Class's `is x-wrapper`). It cannot be dispatched here —
+            // the trait body typically does `type.^add_role(...)`, which needs the
+            // class REGISTERED (classes_[clsName], far below) — so unknown parents
+            // are collected and offered to the trait_mod after registration.
+            std::vector<std::string> pendingIsTraits;
             // anonymous `role {…}` / `class {…}` literals get a synthesized name so
             // they can be registered, mixed in (`does`/`but`), and introspected.
             // an unqualified class nested in a class/package body registers under
@@ -3650,11 +3665,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 if (it != classes_.end()) ci->parent = it->second;
                 else if (isKnownTypeName(cd->parent)) ci->nativeParent = cd->parent; // is Str / is Cool / …
-                else if (!cd->isRole && !cd->parentIsDoes && !isKnownTypeName(cd->parent))
-                    // deriving from an undeclared class is a compile-time error
-                    throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
-                        "Class '" + cd->name + "' cannot inherit from '" + cd->parent +
-                        "' because it is unknown"};
+                else if (!cd->isRole && !cd->parentIsDoes)
+                    pendingIsTraits.push_back(cd->parent);
             }
             // additional `is Parent` targets — multiple inheritance
             for (auto& pn : cd->extraParents) {
@@ -3667,8 +3679,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(pn));
                 if (it != classes_.end()) ci->extraParents.push_back(it->second);
                 else if (!isKnownTypeName(pn))
-                    throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
-                        "Class '" + cd->name + "' cannot inherit from '" + pn + "' because it is unknown"};
+                    pendingIsTraits.push_back(pn);
             }
             // -------- role composition helpers --------
             // a stub body is a bare `...` / `!!!` — in a role it declares a
@@ -4050,6 +4061,28 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             noteSymbolMutation("class/role/grammar declaration");
             classes_[clsName] = ci;
+            // now the type resolves, dispatch the collected non-type `is` names to a
+            // user trait_mod:<is>. Only NO-CANDIDATE means "not a trait"; a trait
+            // body that ran and DIED propagates, or its real error would be replaced
+            // by a misleading UnknownParent.
+            for (auto& tn : pendingIsTraits) {
+                bool handled = false;
+                if (Value* tm = tctx_.cur->find("&trait_mod:<is>")) {
+                    if (tm->t == VT::Code) {
+                        Value pr = Value::pair(tn, Value::boolean(true));
+                        pr.namedArg = true;
+                        ValueList ta; ta.push_back(Value::typeObj(clsName)); ta.push_back(pr);
+                        try { callCallable(*tm, ta); handled = true; }
+                        catch (RakuError& te) {
+                            if (te.message.rfind("Cannot resolve caller", 0) != 0) throw;
+                        }
+                    }
+                }
+                if (!handled)
+                    throw RakuError{Value::typeObj("X::Inheritance::UnknownParent"),
+                        "Class '" + cd->name + "' cannot inherit from '" + tn +
+                        "' because it is unknown"};
+            }
             // a qualified name also answers to its TAIL where no real class claims
             // it: `use URI::Path` inside `unit class URI` lets bare `Path` resolve
             // (Rakudo finds it in the URI:: package stash; we alias globally)

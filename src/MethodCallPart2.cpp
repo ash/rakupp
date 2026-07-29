@@ -1453,6 +1453,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (args.size() >= 2) { noteSymbolMutation("runtime .^add_method"); ci->methods[args[0].toStr()] = args[1]; }
                 return args.size() >= 2 ? args[1] : Value::nil();
             }
+            if (m == "add_role" && !args.empty()) { // .^add_role(Role) — runtime composition
+                // The compile-time compose loop also merges multis and detects
+                // conflicts; a runtime add takes the simple child-wins merge, which
+                // is what the trait-time uses in the wild need (JSON::Class tags its
+                // exception wrappers with Rakudo's X::Wrapper this way).
+                std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+                auto rit = classes_.find(rn);
+                if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(rn));
+                if (rit == classes_.end() || !rit->second->isRole)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        rn + " is not a known role, so " + ci->name + " cannot .^add_role it"};
+                noteSymbolMutation("runtime .^add_role");
+                for (auto& kv : rit->second->methods)
+                    if (!ci->methods.count(kv.first)) ci->methods[kv.first] = kv.second;
+                for (auto& at : rit->second->attrs) {
+                    bool have = false;
+                    for (auto& ex : ci->attrs) if (ex.name == at.name) { have = true; break; }
+                    if (!have) ci->attrs.push_back(at);
+                }
+                ci->doneRoles.insert(rn);
+                for (auto& dr : rit->second->doneRoles) ci->doneRoles.insert(dr);
+                return inv;
+            }
             // rakupp composes types eagerly, so .^compose is a no-op returning the
             // type (modules call it after add_method/add_attribute to finalize).
             // These bare metamodel names must NOT shadow a user method of the same

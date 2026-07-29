@@ -3890,14 +3890,19 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return out;
         }
         if (m == "name") return Value::str(nm);
-        // the COMPILER's version is OUR release version (v1.0.0 — from CMake's
-        // PROJECT_VERSION), not a Rakudo release date: rakupp is not Rakudo,
-        // and modules that gate on Rakudo dates (JSON::Class's `>= v2023.12`)
-        // are honestly told so. The LANGUAGE version stays 6.x.
+        // The COMPILER's .version answers in Rakudo's YEAR.MONTH scheme — the era
+        // of the Rakudo we verify byte-identity against (the conformance oracle;
+        // bump when the oracle bumps). This REVERSES an earlier decision to report
+        // rakupp's own release here: ecosystem modules gate with
+        // `$*RAKU.compiler.version < v2023.12` to ask "do I have modern
+        // semantics?", and answering v1.5.x reads as a pre-2000 Rakudo — every
+        // such module refused to load (JSON::Class was the witness). Our own
+        // release stays visible in .release/.id, and .name still says who we are.
 #ifndef RAKUPP_VERSION
 #define RAKUPP_VERSION "0.0.0"
 #endif
-        if (m == "version" || m == "lang-version") { Value v = Value::str(isComp && m == "version" ? RAKUPP_VERSION : langVer); v.hashKind = "Version"; return v; }
+        static const char* kOracleEra = "2026.07"; // Rakudo the battery/spec diff against
+        if (m == "version" || m == "lang-version") { Value v = Value::str(isComp && m == "version" ? kOracleEra : langVer); v.hashKind = "Version"; return v; }
         if (m == "auth" || m == "authority") return Value::str("The Raku Community");
         if (m == "desc") return Value::str("Raku++ — a C++ Raku interpreter");
         if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob

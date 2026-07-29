@@ -4099,6 +4099,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
             p.sigil = '\\';
             if (!p.name.empty()) sigilless_.insert(p.name);
+            // paren sub-signature, same as on a sigilled param below:
+            // `-> \p (:key($k) is raw, :value(@v) is raw)` destructures the Pair
+            // while p stays bound to the whole (JSON::Class's ClassHOW iterates
+            // its role registry exactly this way)
+            if (isKind(Tok::LParen) && cur().spaceBefore) {
+                advance(); // '('
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
+            }
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma)) break;
@@ -4272,6 +4281,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (isKind(Tok::Ident) || isKind(Tok::Var)) p.name = advance().text;
             p.sigil = '\\';
             if (!p.name.empty()) sigilless_.insert(p.name);
+            // paren sub-signature, same as on a sigilled param below:
+            // `-> \p (:key($k) is raw, :value(@v) is raw)` destructures the Pair
+            // while p stays bound to the whole (JSON::Class's ClassHOW iterates
+            // its role registry exactly this way)
+            if (isKind(Tok::LParen) && cur().spaceBefore) {
+                advance(); // '('
+                p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+                if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
+            }
         } else if (isKind(Tok::Var)) {
             // `sub f($0)` — numeric names can't be parameters either
             if (cur().text.size() > 1 && std::isdigit((unsigned char)cur().text[1]))
@@ -4692,10 +4710,24 @@ StmtPtr Parser::parseSubset() {
     // 'subset' already consumed:  subset NAME [of TYPE] [where EXPR] ;
     auto sd = std::make_unique<SubsetDecl>();
     if (isKind(Tok::Ident)) sd->name = advance().text;
-    if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) sd->baseType = advance().text; }
-    // traits may sit between the base type and the where clause:
-    // `subset CookieName of Str is export where /…/` (Cro::HTTP::Cookie)
-    while (isIdent("is")) { advance(); if (isKind(Tok::Ident)) advance(); }
+    // `of` and traits come in EITHER order — Cro writes `of Str is export`,
+    // JSON::Class writes `is export of Mu` — and a trait may carry a tag list
+    // (`is export(:TAG)`), which must be consumed with it or it desyncs the
+    // stream. Loop until neither matches.
+    for (;;) {
+        if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) sd->baseType = advance().text; continue; }
+        if (isIdent("is")) {
+            advance();
+            if (isKind(Tok::Ident)) advance();
+            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                int d = 0;
+                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                while (d > 0 && !isKind(Tok::End));
+            }
+            continue;
+        }
+        break;
+    }
     if (isIdent("where")) { advance(); sd->where = parseExpr(BP_ASSIGN); }
     return sd;
 }
@@ -4852,7 +4884,24 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     while (isIdent("is") || isIdent("does")) {
         bool isDoes = isIdent("does");
         advance();
-        if (!isDoes && isIdent("export")) { advance(); continue; } // trait, not a parent class
+        if (!isDoes && isIdent("export")) { // trait, not a parent class
+            advance();
+            // `is export(:TAG)` — consume the tag list too. Leaving it in the
+            // stream desynced the parse by one statement: JSON::Class::Types'
+            // `class NOT-SET is Nil is export(:NOT-SET) {…}` silently ate the
+            // statement after the class, and the miss surfaced as "Confused"
+            // several lines later. Tags gate selective import, which rakupp
+            // does not implement — parse-only, like the sub-trait handler.
+            if (isKind(Tok::LParen)) {
+                int d = 0;
+                do {
+                    if (isKind(Tok::LParen)) d++;
+                    else if (isKind(Tok::RParen)) d--;
+                    advance();
+                } while (d > 0 && !isKind(Tok::End));
+            }
+            continue;
+        }
         // `is repr("CStruct")` — a VM-representation trait, not a parent class.
         // Capture the name (drives NativeCall struct layout); most reprs our
         // values pick their own storage for and simply ignore.
