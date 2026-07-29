@@ -64,10 +64,12 @@ std::string nfcNormalize(std::string in);
 // SHA-1 as UPPERCASE hex (Interpreter.cpp) — the CURI short-index / content-id scheme.
 std::string sha1hex(const std::string& msg);
 
-struct Env {
-    std::unordered_map<std::string, Value> vars;
-    std::shared_ptr<Env> parent;
-    bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+// The eight containers below are empty in the overwhelming majority of scopes —
+// they exist for `is rw` write-through, `temp`/`let` restoration, `is default`
+// and `is dynamic`. An Env is built for every routine call AND every block, so
+// constructing and destroying eight containers per scope is pure overhead for
+// the ordinary case. They live behind one lazily-allocated pointer instead.
+struct EnvExtras {
     // rw-param write-through: paramName → (caller's argument expr, caller env).
     // An assignment to the param writes through the caller's lvalue IMMEDIATELY
     // (so the caller sees it mid-call); rwSynced records the last value pushed
@@ -86,6 +88,22 @@ struct Env {
     // stores (Int). `$x = Nil` and .VAR.default read it. Empty for most scopes.
     std::map<std::string, Value> varDefault;
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
+};
+
+struct Env {
+    std::unordered_map<std::string, Value> vars;
+    std::shared_ptr<Env> parent;
+    bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+
+    // `x()` materialises the extras (use for WRITES); `xr()` returns a shared
+    // empty instance when there are none (use for READS, so a lookup never
+    // allocates). Checking `ex` directly is fine too where the fast path matters.
+    std::unique_ptr<EnvExtras> ex;
+    EnvExtras& x() { if (!ex) ex = std::make_unique<EnvExtras>(); return *ex; }
+    const EnvExtras& xr() const {
+        static const EnvExtras kEmpty;
+        return ex ? *ex : kEmpty;
+    }
 
     Value* find(const std::string& name) {
         auto it = vars.find(name);
