@@ -37,19 +37,20 @@ there.)
 - **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.6× on
   `arrayops` to 9.6× on `loopsum`, 12.9× on `hash`, and 47.5× on `strcat`.
   Compiling removes interpreter overhead.
-- **Rakudo's JIT keeps two interpreter wins**: `fib` (1.9×) — deep recursion of
-  a tiny body — and `streq` (1.9×; string comparisons walk the interpreter's
+- **Rakudo's JIT keeps two interpreter wins**: `fib` (1.6×) — deep recursion of
+  a tiny body — and `streq` (1.7×; string comparisons walk the interpreter's
   operator-dispatch chain). Compiling flips both: `--exe` puts `fib` 3.0× ahead
-  and `streq` 6.1× ahead (string `eq`/`lt` compile to inline byte-compares — see
+  and `streq` 5.8× ahead (string `eq`/`lt` compile to inline byte-compares — see
   [dev/DISPATCH.md](dev/DISPATCH.md) for the dispatch story).
 - Even the **interpreter** beats Rakudo on 7 of 9 — everything except `fib` and
   `streq`, including the `loopsum` loop kernel (1.3×).
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
-  O(n) rather than O(n²) — 13.7× ahead of Rakudo even interpreted.
+  O(n) rather than O(n²) — 14.8× ahead of Rakudo even interpreted.
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 24.6), measured 2026-07-29 on a lightly loaded
+- **Machine:** macOS (Darwin 24.6), re-measured 2026-07-29 after the performance
+  campaign, on a lightly loaded
   desktop. (Rows are not comparable across doc revisions — absolute times
   shift a few percent with machine state; the Rakudo column, measured every
   time, is the fixed yardstick. A per-iteration `std::function` allocation that
@@ -88,15 +89,15 @@ Rakudo's VM leads on `fib` (tiny-body recursion, a JIT's best case) and on
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| strcat   | 13.5 ms  | 185.3 ms | **Raku++ 13.7×** |
-| bigint   | 33.1 ms  | 255.9 ms | **Raku++ 7.7×** |
-| hash     | 41.0 ms  | 226.5 ms | **Raku++ 5.5×** |
-| sortnums | 71.6 ms  | 257.3 ms | **Raku++ 3.6×** |
-| regex    | 86.1 ms  | 293.4 ms | **Raku++ 3.4×** |
-| arrayops | 117.5 ms | 285.0 ms | **Raku++ 2.4×** |
-| loopsum  | 206.0 ms | 266.9 ms | **Raku++ 1.3×** |
-| streq    | 547.2 ms | 287.6 ms | Rakudo 1.9× |
-| fib      | 903.3 ms | 465.5 ms | Rakudo 1.9× |
+| strcat   | 12.3 ms  | 181.5 ms | **Raku++ 14.8×** |
+| bigint   | 34.0 ms  | 252.1 ms | **Raku++ 7.4×** |
+| hash     | 38.0 ms  | 226.3 ms | **Raku++ 6.0×** |
+| sortnums | 73.4 ms  | 251.1 ms | **Raku++ 3.4×** |
+| regex    | 83.4 ms  | 278.8 ms | **Raku++ 3.3×** |
+| arrayops | 114.5 ms | 281.0 ms | **Raku++ 2.5×** |
+| loopsum  | 197.3 ms | 265.8 ms | **Raku++ 1.3×** |
+| streq    | 509.6 ms | 300.1 ms | Rakudo 1.7× |
+| fib      | 744.1 ms | 456.9 ms | Rakudo 1.6× |
 
 ### Native (`--exe`) vs Rakudo
 
@@ -106,15 +107,15 @@ speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| strcat   | 3.9 ms   | 185.3 ms | **Raku++ 47.5×** | 3.5× |
-| hash     | 17.6 ms  | 226.5 ms | **Raku++ 12.9×** | 2.3× |
-| loopsum  | 27.8 ms  | 266.9 ms | **Raku++ 9.6×**  | 7.4× |
-| bigint   | 30.3 ms  | 255.9 ms | **Raku++ 8.4×**  | 1.1× |
-| streq    | 46.8 ms  | 287.6 ms | **Raku++ 6.1×**  | 11.7× |
-| sortnums | 51.3 ms  | 257.3 ms | **Raku++ 5.0×**  | 1.4× |
-| regex    | 67.8 ms  | 293.4 ms | **Raku++ 4.3×**  | 1.3× |
-| fib      | 152.8 ms | 465.5 ms | **Raku++ 3.0×**  | 5.9× |
-| arrayops | 114.7 ms | 285.0 ms | **Raku++ 2.5×**  | 1.0× |
+| strcat   | 3.8 ms   | 181.5 ms | **Raku++ 47.8×** | 3.2× |
+| hash     | 17.6 ms  | 226.3 ms | **Raku++ 12.9×** | 2.2× |
+| loopsum  | 29.1 ms  | 265.8 ms | **Raku++ 9.1×**  | 6.8× |
+| bigint   | 30.5 ms  | 252.1 ms | **Raku++ 8.3×**  | 1.1× |
+| streq    | 51.3 ms  | 300.1 ms | **Raku++ 5.8×**  | 9.9× |
+| sortnums | 51.7 ms  | 251.1 ms | **Raku++ 4.9×**  | 1.4× |
+| regex    | 67.8 ms  | 278.8 ms | **Raku++ 4.1×**  | 1.2× |
+| fib      | 152.6 ms | 456.9 ms | **Raku++ 3.0×**  | 4.9× |
+| arrayops | 117.0 ms | 281.0 ms | **Raku++ 2.4×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
 hurts — `streq` 12.2× (per-node walking around what is, after the fast path, a
@@ -281,6 +282,23 @@ regression predates it and accreted somewhere across the v1.2.x cycle. Same
 shape as the parse-time drift recorded above — gradual, spread across the
 dispatch path, no single new hotspot. Not yet bisected; the snapshot binaries
 that would localise it are the next step._
+
+_**Post-campaign re-run.** The tables above are this run. Three interpreter
+changes landed — see [dev/PERF-CAMPAIGN.md](dev/PERF-CAMPAIGN.md): the method
+invocant passes by const reference, `Env`'s rarely-used containers moved behind a
+lazy pointer, and a call's argument vector is MOVED rather than copied._
+
+| kernel | before campaign | after | |
+|---|---:|---:|---:|
+| fib | 903.3 ms | 744.1 ms | **−17.6%** |
+| streq | 547.2 ms | 509.6 ms | −6.9% |
+| strcat | 13.5 ms | 12.3 ms | −8.9% |
+| hash | 41.0 ms | 38.0 ms | −7.3% |
+| loopsum | 206.0 ms | 197.3 ms | −4.2% |
+
+_`fib` is the call-heavy kernel and moves most — of that, roughly 9 points came
+from the argument-vector move alone. `sortnums` (+2.5%) drifts the other way,
+inside the ±3% the Rakudo column itself shows across these runs._
 
 _The compiled (`--exe`) column is unaffected — `fib` 161.7 → 152.8 ms, `strcat`
 4.4 → 3.9 — which fits a regression in interpreter dispatch rather than in the

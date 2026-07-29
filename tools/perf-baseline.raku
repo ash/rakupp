@@ -18,14 +18,14 @@
     'tolerance-pct' => 5,     # a build may be this much slower before the gate fails
     'kernels' => {
         # kernel  => { baseline-ms, best-ms, best-version, best-date }
-        'fib'     => { 'baseline' => 827.9, 'best' => 816.3, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
-        'asg'     => { 'baseline' => 501.5, 'best' => 501.5, 'best-version' => 'unreleased', 'best-date' => '2026-07-29' },
-        'loopsum' => { 'baseline' => 200.9, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
-        'hash'    => { 'baseline' => 38.7, 'best' => 38.7, 'best-version' => 'unreleased', 'best-date' => '2026-07-29' },
+        'fib'     => { 'baseline' => 759.6, 'best' => 759.6, 'best-version' => '1.5.1', 'best-date' => '2026-07-29' },
+        'asg'     => { 'baseline' => 512.2, 'best' => 501.5, 'best-version' => '1.5.1', 'best-date' => '2026-07-29' },
+        'loopsum' => { 'baseline' => 201.6, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
+        'hash'    => { 'baseline' => 39.1, 'best' => 38.7, 'best-version' => '1.5.1', 'best-date' => '2026-07-29' },
     },
     # Recorded 2026-07-29 at 625/1462 Roast files. The baseline is deliberately
     # the CURRENT (slower) state rather than `best`: a permanently-red gate gets
     # ignored, so the gate guards against NEW regressions while the `best` column
     # keeps the ~11.6% fib debt since 1.0.0 visible until it is bisected.
-    'recorded' => '2026-07-29',
+    'recorded' => '2026-07-29 (v1.5.1)',
 }
