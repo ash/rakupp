@@ -1,0 +1,65 @@
+#pragma once
+// Helpers shared between Builtins.cpp and the method-dispatch segments split out
+// of it (MethodCallTail.cpp, …). They were file-static in Builtins.cpp; splitting
+// that file is what forced them into a header. Internal to the implementation —
+// nothing outside src/ should include this.
+#include "Value.h"
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+#include <condition_variable>
+#include <mutex>
+#include <set>
+
+namespace rakupp {
+
+std::shared_ptr<Value> baggyKey(const Value& v);
+size_t charToByte(const std::string& s, long long chars);
+size_t codeArity(const Value& code);
+std::string cpToUtf8(uint32_t cp);
+std::string joinValues(const ValueList& items, const std::string& sep);
+Value makeInfArray(long long start);
+std::string markFold(const std::string& in);
+ValueList toList(const Value& v);
+std::vector<uint32_t> utf8cp(const std::string& s);
+
+bool deepEq(const Value& a, const Value& b);
+bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
+uint32_t toLowerCp(uint32_t c);
+std::string typeOfVal(const Value& v);
+// hashEntryKey: the real key of a hash entry — pairKey, object-hash key type,
+// or the plain Str. Defined in Builtins.cpp; see the comment there.
+Value hashEntryKey(const Value& h, const std::string& k, const Value& stored);
+std::string objHashKeyType(const Value& h);
+
+std::string lubType(const std::string& a, const std::string& b);
+
+struct SemaphoreState { std::mutex m; std::condition_variable cv; long count = 0; };
+struct LockState { std::recursive_mutex m; };            // Raku Lock (used reentrantly by protect)
+Value coerceToSigil(Value v, char sigil);
+bool defined(const Value& v);
+bool isCoreTypeName(const std::string& n);
+Value makeSignature(const Callable* c);
+std::shared_ptr<Param> signatureParamCopy(const Param& p);
+const std::vector<std::string>& typeAncestry(const std::string& t);
+std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
+std::string rakuRepr(const Value& v);
+void spawnWithInput(const std::vector<std::string>& argv, const std::string& input,
+                           std::string& out, int& exitCode, Interpreter* gil = nullptr);
+
+bool isBuiltinRole(const std::string& n);
+
+Value complexSqrt(double re, double im);
+const char* quantValueType(const std::string& kind);
+void rejectNulPath(const std::string& path);
+
+long long graphemeCount(const std::string& s);
+[[noreturn]] void throwFailedOpen(const std::string& path);
+
+long long cpCount(const std::string& s);
+std::string mapCase(const std::string& s, int kind, int tcMode);
+bool substSelectKnowsAdverb(const std::string& k);
+uint32_t toUpperCp(uint32_t c);
+
+} // namespace rakupp

@@ -82,7 +82,11 @@ This is the heart. Key pieces:
 | `Value.{h,cpp}` | The universal runtime value (see below), coercions, gist/Str. |
 | `BigInt.{h,cpp}` | Arbitrary-precision integers (base-1e9) for the exact number tower. |
 | `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus the concurrency runtime (a CPython-style GIL, thread-local execution registers, and opt-in true parallelism via `RAKUPP_PARALLEL`; see [ASYNC.md](ASYNC.md)). |
-| `Builtins.cpp` | Named built-ins, the `Test` module (TAP), and the ~big method dispatcher `methodCall`. |
+| `Builtins.cpp` | Named built-ins, the `Test` module (TAP), and the head of the method dispatcher `methodCallInner`. |
+| `MethodCallPart2/3/Tail.cpp` | The rest of that dispatch chain. **Ordered segments, not categories** — the chain is order-sensitive, so an arm belongs where its priority is, not where it reads nicely. Each returns `std::optional<Value>`; `nullopt` means "not handled here". |
+| `MethodCallSegment.h` | The common include prologue those segments share, so one cannot drift from its siblings. |
+| `BuiltinsShared.h` | Helpers that were file-static in `Builtins.cpp` until the split needed them in more than one translation unit. Internal to `src/`. |
+| `MethodName.h` | `MName` — the method name with its length and first eight bytes cached, so most of the several-hundred literal comparisons in the chain are an integer compare. |
 | `Regex.{h,cpp}` | Recursive-descent regex/grammar engine with a backtracking matcher. |
 | `Unicode.*`, `unicode_*_gen.cpp`, `unicode_names.cpp` | The Unicode subsystems: UAX #29 grapheme segmentation, NFC/NFD/NFKC/NFKD normalization, UCA collation (DUCET), names, categories, scripts, properties. All tables generated from pinned UCD/UCA **17.0** data in `tools/ucd/` — the names/categories generator is written in Raku and run by rakupp itself (see [UNICODE.md](UNICODE.md) and [DOGFOODING.md](DOGFOODING.md)). |
 | `IOSpec.cpp` | `IO::Spec::*` path semantics (Unix/Win32). |
