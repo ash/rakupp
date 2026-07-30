@@ -14,7 +14,9 @@
 (define-public rakupp
   (package
    (name "rakupp")
-   (version "1.2.0-git")
+   ;; Tracks project(RakuPP VERSION …) in CMakeLists.txt — the source is the
+   ;; live checkout, so the suffix marks it as a snapshot, not a release.
+   (version "1.5.1-git")
    (source (local-file "../.." "rakupp-checkout"
                        #:recursive? #t
                        #:select? vcs-file?))
@@ -24,7 +26,8 @@
      #:build-type "Release"
      #:configure-flags #~(list "-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
      #:tests? #f))
-   (synopsis "Raku++ — a Raku language interpreter and compiler written from scratch in C++17, validated against the Roast spec suite.")
+   ;; guix lint conventions: short synopsis, no trailing period.
+   (synopsis "Raku language interpreter and compiler written from scratch in C++17")
    (description
     "A from-scratch implementation of the Raku programming language in C++17, with no third-party dependencies — a hand-written lexer, parser, and tree-walking evaluator that runs real Raku (classes, roles, grammars, regexes, multi-dispatch, junctions, lazy sequences, a bignum tower, Unicode-correct strings, and concurrency), can also compile a program to a standalone native binary, and — as Raku.js — runs in the browser via WebAssembly, no server required. It is not a fork of Rakudo and shares no code with it; it targets the language, measured against Roast, the official Raku test suite.")
    (home-page "https://github.com/ash/rakupp")

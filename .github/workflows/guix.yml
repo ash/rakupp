@@ -1,0 +1,51 @@
+name: guix
+
+# Builds the Guix package definition (PR #6: the repo doubles as a Guix
+# channel) on an ubuntu runner and smoke-tests the result. Guix only runs on
+# Linux and `guix build` compiles rakupp from scratch inside the daemon, so
+# this is slower than the normal CI build — the job is therefore path-gated:
+# it runs only when the Guix packaging itself (or this workflow) changes, plus
+# on demand via workflow_dispatch. The regular build matrix in release.yml
+# already covers the C++ side of every push.
+#
+# pullAfterInstall is off: the Guix release that the installer ships is enough
+# to build a plain cmake package, and `guix pull` alone would add ~30 minutes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.guix-channel'
+      - '.guix/**'
+      - '.github/workflows/guix.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.guix-channel'
+      - '.guix/**'
+      - '.github/workflows/guix.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: guix build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Guix
+        uses: PromyLOPh/guix-install-action@v1.6
+        with:
+          pullAfterInstall: false
+
+      - name: Build the package
+        run: guix build -f .guix/modules/rakupp-package.scm
+
+      - name: Smoke-test the built rakupp
+        run: |
+          out=$(guix build -f .guix/modules/rakupp-package.scm)   # cached now; prints the store path
+          echo "store path: $out"
+          "$out/bin/rakupp" --version
+          "$out/bin/rakupp" -e 'my %h = a => 1, b => 2; .say for %h.sort; say [+] %h.values'
+          test -f "$out/lib/rakupp_rt.a" || test -f "$out/lib/librakupp_rt.a"   # the runtime --exe links against

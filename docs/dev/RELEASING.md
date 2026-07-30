@@ -126,7 +126,10 @@ iteration order per process. Do not read a ±5 move as progress.
 
 ## Then
 
-1. Bump `project(RakuPP VERSION …)` in [CMakeLists.txt](../../CMakeLists.txt).
+1. Bump `project(RakuPP VERSION …)` in [CMakeLists.txt](../../CMakeLists.txt),
+   and the matching `(version "X.Y.Z-git")` in
+   [.guix/modules/rakupp-package.scm](../../.guix/modules/rakupp-package.scm)
+   (the Guix package, PR #6).
 2. Write the CHANGELOG entry — measured numbers, not projected, with the
    methodology link. Note anything deliberately left open.
 3. Refresh the figures in README, `docs/ROAST.md`, `docs/COUNTING.md`,

@@ -66,6 +66,29 @@ cmake -S . -B build
 cmake --build build --config Release      # → build/Release/rakupp.exe
 ```
 
+### GNU Guix (Linux)
+
+The repository is also a Guix channel
+([PR #6](https://github.com/ash/rakupp/pull/6), contributed by
+[@4zv4l](https://github.com/4zv4l)). Build directly from a checkout:
+
+```sh
+guix build -f .guix/modules/rakupp-package.scm
+```
+
+or add the channel to `~/.config/guix/channels.scm` and install:
+
+```scm
+(channel
+  (name 'rakupp)
+  (url "https://github.com/ash/rakupp")
+  (branch "main"))
+```
+
+```sh
+guix pull && guix install rakupp
+```
+
 ## Quick start
 
 ```sh
