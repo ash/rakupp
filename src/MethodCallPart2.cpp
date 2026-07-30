@@ -2568,6 +2568,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom, orig.size())));
         return Value::str((size_t)inv.rTo <= orig.size() ? orig.substr(inv.rTo) : "");
     }
+    // Match.join joins the POSITIONAL CAPTURES (a Match is a Capture):
+    // UUID.Str splits the hex run with /(....)(....).../ then .join("-")
+    if (inv.t == VT::Match && m == "join" && inv.arr) {
+        Value lst = Value::array(); lst.isList = true;
+        for (auto& e : *inv.arr) lst.arr->push_back(e);
+        return methodCall(lst, "join", args, rwArgs);
+    }
     if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list" || m == "caps"
                                || m == "hash" || m == "pairs" || m == "kv" || m == "elems")) {
         if (m == "hash") { Value h = Value::makeHash(); if (inv.hash) *h.hash = *inv.hash; return h; }
@@ -2685,8 +2692,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `$t.HOW.add_method($t, …)` — where the `.^` spelling passes it implicitly
     // as the invocant. Named explicitly: a metaclass also answers ORDINARY
     // methods (`.isa`, `.gist`), which must not be forwarded to their argument.
-    if (inv.t == VT::Type && inv.s == "Metamodel::ClassHOW" && !args.empty() &&
-        args[0].t == VT::Type) {
+    if (((inv.t == VT::Type && inv.s == "Metamodel::ClassHOW") ||
+         (inv.t == VT::Object && inv.obj && inv.obj->cls &&
+          [&]{ for (ClassInfo* c = inv.obj->cls.get(); c; c = c->parent.get())
+                   if (c->name == "Metamodel::ClassHOW") return true; return false; }())) &&
+        !args.empty() && args[0].t == VT::Type) {
         static const std::set<std::string> howOps = {
             "add_method", "add_attribute", "add_parent", "add_role", "add_fallback",
             "compose", "compose_repr", "compose_attributes", "set_name", "set_shortname",
@@ -2697,7 +2707,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return methodCall(args[0], "^" + m, rest, rwArgs);
         }
     }
-    if (m == "HOW") return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
+    if (m == "HOW") {
+        // A USER class gets ONE persistent metaobject, so `T.HOW does SomeRole`
+        // mixins stick (Method::Also's AliasableClassHOW). Its class is named
+        // Metamodel::ClassHOW, keeping `~~ Metamodel::ClassHOW` True. Built-ins
+        // keep the plain type object.
+        ClassInfo* hci = nullptr;
+        if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) hci = it->second.get(); }
+        else if (inv.t == VT::Object && inv.obj && inv.obj->cls) hci = inv.obj->cls.get();
+        if (hci) {
+            if (hci->howObj.t != VT::Object) {
+                if (!howClsInfo_) { howClsInfo_ = std::make_shared<ClassInfo>(); howClsInfo_->name = "Metamodel::ClassHOW"; }
+                Value h; h.t = VT::Object; h.obj = std::make_shared<ObjectData>();
+                h.obj->cls = howClsInfo_;
+                h.obj->attrs["__type"] = Value::typeObj(hci->name);
+                hci->howObj = std::move(h);
+            }
+            return hci->howObj;
+        }
+        return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
+    }
     if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
         std::string pkg = inv.t == VT::Type ? inv.s : inv.typeName();
         auto& stash = pkgStashes_[pkg];
@@ -2723,8 +2752,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "DUMP") return Value::str(inv.t == VT::Type ? inv.s : inv.gist()); // debug snapshot (loose form)
     if (m == "does") { // .does(Role/Type) — role/type membership introspection
         if (args.empty()) return Value::boolean(false);
-        // HOW form: `$obj.HOW.does($obj, Role)` — the metaclass takes (object, role)
-        if (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0 && args.size() >= 2)
+        // HOW form: `$obj.HOW.does($obj, Role)` — the metaclass takes (object, role).
+        // The metaclass may be the plain type object OR a persistent .HOW metaobject.
+        bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0);
+        if (!howInv && inv.t == VT::Object && inv.obj && inv.obj->cls)
+            for (ClassInfo* c = inv.obj->cls.get(); c && !howInv; c = c->parent.get())
+                if (c->name.rfind("Metamodel::", 0) == 0) howInv = true;
+        if (howInv && args.size() >= 2)
             return methodCall(args[0], "does", ValueList{args[1]}, rwArgs);
         std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);

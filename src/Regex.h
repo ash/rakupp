@@ -146,6 +146,7 @@ private:
         std::string uprop;               // Unicode property for <:Nd>/<:L>/… (Class node, codepoint-aware)
         bool negate = false;
         bool icase = false;              // case-insensitive at THIS node (scoped inline :i)
+        bool imark = false;              // Lit: :ignoremark — compare base codepoints, consume the whole grapheme
         bool multiline = false;          // AnchorStart/AnchorEnd: `^^`/`$$` (line) vs `^`/`$` (string)
         mutable uint32_t byteset[8];     // per-byte match result (incl. icase+negate), built on first use
         mutable bool bytesetReady = false;
@@ -193,6 +194,7 @@ private:
     std::string obsolete_;               // retired metachar seen (e.g. "\\A"), for X::Obsolete
     bool icase_ = false;
     bool curIcase_ = false; // parse-time adverb state: :i/:!i scoped to the enclosing group
+    bool curImark_ = false; // parse-time adverb state: :m/:ignoremark scoped to the enclosing group
     bool sigspace_ = false;
     bool ratchet_ = false; // `token`/`rule`: quantifiers are possessive, matches commit (no backtracking)
     int assertDepth_ = 0; // >0 while parsing an assertion inner (so parseSeq stops at `>`)
@@ -204,6 +206,7 @@ private:
     NodePtr parseSeq();
     NodePtr parseQuant();
     NodePtr parseAtom();
+    static NodePtr wsWrap(NodePtr inner); // sigspace: Seq(inner, <.ws>)
     void parseClassBodyMember(Node* node);
     void skipWs();
     char peek(size_t o = 0) const { return pos_ + o < pat_.size() ? pat_[pos_ + o] : '\0'; }
@@ -322,6 +325,7 @@ private:
     std::unordered_map<std::string, NameMeta> nameMeta_;    // per-name metadata cache (avoids repeated rules.find)
     std::map<std::string, std::unique_ptr<Regex>> cache_;   // name(+arg values) → compiled
     std::vector<std::map<std::string, std::string>> scope_; // parameterised-rule param bindings
+    mutable std::map<std::string, std::string> mergedParams_; // currentParams() scratch: outer dynamic-var params merged in
     Regex* compiled(const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);
     Regex* compiledFor(const Rule& rule, const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);
     std::string evalArg(const std::string& e) const;

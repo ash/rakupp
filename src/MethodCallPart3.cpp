@@ -1333,6 +1333,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::string bytes;
                 for (uint32_t cp : utf8cp(inv.s)) { if (cp < 0x80) bytes += (char)cp; else bytes += repl; }
                 b = Value::str(bytes);
+            } else if (norm.rfind("utf16", 0) == 0 || norm.rfind("utf32", 0) == 0) {
+                // utf-16: 16-bit code units with surrogate pairs; utf-32: raw codepoints.
+                // Little-endian words in the byte string, ofType carries the width so
+                // .values/.elems/[] see CODE UNITS, not bytes (JSON::Tiny \u-escaping).
+                bool u16 = norm.rfind("utf16", 0) == 0;
+                std::string bytes;
+                auto word = [&](uint32_t u, int w) { for (int i = 0; i < w; i++) bytes += (char)((u >> (8 * i)) & 0xFF); };
+                for (uint32_t cp : utf8cp(inv.s)) {
+                    if (!u16) word(cp, 4);
+                    else if (cp < 0x10000) word(cp, 2);
+                    else { uint32_t v = cp - 0x10000; word(0xD800 | (v >> 10), 2); word(0xDC00 | (v & 0x3FF), 2); }
+                }
+                b = Value::str(bytes);
+                b.ofType = u16 ? "uint16" : "uint32";
+                b.hashKind = "Blob";
+                b.enumName = u16 ? "utf16" : "utf32";
+                return b;
             } else b = Value::str(inv.s); // utf8/ascii: the bytes as stored
             b.hashKind = "Blob";
             // the ENCODING names the result type (`"abc".encode` is a utf8, a
@@ -1345,7 +1362,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             b.enumName = latin1 ? "Blob[uint8]" : "utf8";
             return b;
         }
-        // decode: the invocant is a byte string (Buf/Blob)
+        // decode: the invocant is a byte string (Buf/Blob).
+        // A bare `.decode` on a utf16/utf32 blob decodes with the blob's OWN
+        // encoding (Rakudo ties the default to the blob type) — treating the
+        // 16-bit words as UTF-8 bytes dies on any surrogate (encode.t #32).
+        if (norm.empty()) {
+            if (inv.enumName == "utf16" || inv.ofType == "uint16" || inv.ofType == "int16") norm = "utf16";
+            else if (inv.enumName == "utf32" || inv.ofType == "uint32" || inv.ofType == "int32") norm = "utf32";
+        }
         if (latin1) { // each byte is a codepoint
             std::string out;
             for (unsigned char byte : inv.s) {

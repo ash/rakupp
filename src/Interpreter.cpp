@@ -4003,6 +4003,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             }
             std::set<const void*> ownParams; // this declaration's own method signatures
             for (auto& md : cd->methods) ownParams.insert(&md->params);
+            // methods carrying user `is` traits: dispatched to trait_mod:<is> AFTER the
+            // class registers (the handler may call $*PACKAGE.^add_method / .HOW)
+            std::vector<std::pair<SubDecl*, Value>> methodTraitQueue;
             for (auto& md : cd->methods) {
                 Value code; code.t = VT::Code;
                 code.code = std::make_shared<Callable>();
@@ -4049,6 +4052,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     static_cast<ExprStmt*>(md->body[0].get())->e &&
                     static_cast<ExprStmt*>(md->body[0].get())->e->kind == NK::Whatever;
                 const std::string key = md->isPrivate ? "!" + md->name : md->name;
+                if (!md->traits.empty()) methodTraitQueue.push_back({md.get(), code});
                 if (md->isMulti) {
                     auto it = ci->methods.find(key);
                     if (it != ci->methods.end() && it->second.code && it->second.code->isMultiDispatcher) {
@@ -4193,6 +4197,28 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         "Class '" + cd->name + "' cannot inherit from '" + tn +
                         "' because it is unknown"};
             }
+            // METHOD-level user `is` traits: `method m() is also<mag> {…}` calls
+            // trait_mod:<is>($m, :also<mag>) with $*PACKAGE bound to the class under
+            // declaration (Method::Also registers aliases keyed by $*PACKAGE.^name).
+            if (!methodTraitQueue.empty()) {
+                if (Value* tm = tctx_.cur->find("&trait_mod:<is>")) {
+                    if (tm->t == VT::Code) {
+                        Value* prevPkg = tctx_.cur->find("$*PACKAGE");
+                        Value savedPkg = prevPkg ? *prevPkg : Value::nil();
+                        tctx_.cur->define("$*PACKAGE", Value::typeObj(clsName));
+                        for (auto& mq : methodTraitQueue)
+                            for (auto& st : mq.first->traits) {
+                                Value arg = st.arg ? eval(st.arg.get()) : Value::boolean(true);
+                                Value p = Value::pair(st.name, arg); p.namedArg = true;
+                                ValueList ta; ta.push_back(mq.second); ta.push_back(p);
+                                try { callCallable(*tm, ta); }
+                                catch (RakuError&) {} // no matching candidate: not this handler's trait
+                            }
+                        if (prevPkg) tctx_.cur->define("$*PACKAGE", savedPkg);
+                        else tctx_.cur->vars.erase("$*PACKAGE");
+                    }
+                }
+            }
             // a qualified name also answers to its TAIL where no real class claims
             // it: `use URI::Path` inside `unit class URI` lets bare `Path` resolve
             // (Rakudo finds it in the URI:: package stash; we alias globally)
@@ -4219,6 +4245,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
                 tctx_.cur = saved;
                 tctx_.pkgPrefix = savedPrefix;
+            }
+            // Composition hook: a role mixed into the class's persistent .HOW (via a
+            // method trait — Method::Also's AliasableClassHOW) may define `compose`;
+            // Rakudo's metamodel calls it when the class finishes composing, and the
+            // handler installs the registered method aliases with ^add_method.
+            if (ci->howObj.t == VT::Object && ci->howObj.obj && ci->howObj.obj->cls) {
+                bool userCompose = false;
+                for (ClassInfo* c = ci->howObj.obj->cls.get(); c && !userCompose; c = c->parent.get())
+                    if (c->methods.count("compose")) userCompose = true;
+                if (userCompose) {
+                    ValueList ca; ca.push_back(Value::typeObj(clsName));
+                    try { methodCall(ci->howObj, "compose", ca); }
+                    catch (RakuError&) {} // `nextsame` past the mixin has no next candidate here
+                }
             }
             // evaluate to the type object, so `my class Foo {…}` / anon `role {…}` work as expressions
             return Value::typeObj(clsName);
@@ -5234,7 +5274,8 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
             return type == "Hash" || type == "Map" || type == "Associative" || (arg.hashKind == type);
         case VT::Pair: return type == "Pair";
-        case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub";
+        case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub" ||
+                              (type == "Method" && arg.code && arg.code->isMethod); // a method is a Method, not just a Sub
         case VT::Regex: return type == "Regex";
         case VT::Match: return type == "Match";
         case VT::Range: return type == "Range" || type == "Iterable";
@@ -7789,6 +7830,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
 
     char sigil = '$';
+    if (a->target->kind == NK::MethodCall) {
+        // Assigning through a public @./%. attribute ACCESSOR carries the attribute's
+        // sigil: `$parent.nodes = @nodes` list-assigns the container's contents
+        // (XML::Element builds its tree this way) — itemizing would store [@nodes]
+        // as one element. Invocant limited to a variable/self so evaluating it here
+        // (a second time, cheaply) cannot double a side effect.
+        auto* mc = static_cast<MethodCall*>(a->target.get());
+        if (!mc->meta && !mc->hyper && !mc->bang && mc->args.empty() &&
+            (mc->inv->kind == NK::VarExpr || mc->inv->kind == NK::SelfTerm)) {
+            try {
+                Value invv = eval(mc->inv.get());
+                if (invv.t == VT::Object && invv.obj) {
+                    for (ClassInfo* ci = invv.obj->cls.get(); ci && sigil == '$'; ci = ci->parent.get())
+                        for (auto& at : ci->attrs)
+                            if (at.name == mc->method && at.pub && (at.sigil == '@' || at.sigil == '%')) { sigil = at.sigil; break; }
+                }
+            } catch (...) {}
+        }
+    }
     if (a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         if (!ve->name.empty()) sigil = ve->name[0];
@@ -8484,6 +8544,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (binop == "*" || binop == "**" || binop == "%%") *lv = Value::integer(1);
         else if (binop == "~" || binop == "x") *lv = Value::str("");
         else if (binop == "+" || binop == "-") *lv = Value::integer(0);
+    }
+    // `$s ~= $obj` honours a user-defined Str method, exactly like binary `~`
+    // (XML::Document.Str appends its root element object this way)
+    if (!overloaded && binop == "~" && (lv->t == VT::Object || rhs.t == VT::Object)) {
+        *lv = Value::str(strOf(*lv) + strOf(rhs));
+        return sink ? Value::any() : *lv;
     }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
     // string each step. Appending PURE-ASCII text can never change the NFC form of
@@ -10826,8 +10892,19 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (c.first < 0) v.arrRef().push_back(Value::nil());
             else v.arrRef().push_back(Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
         }
-        for (auto& kv : mm.named)
+        for (auto& kv : mm.named) {
+            // a named capture under a quantifier is LIST-valued: every collated
+            // occurrence becomes one Match ($m<bit>.list in URI::Encode's decoder)
+            auto ch = mm.children.find(kv.first);
+            if (mm.listNames && mm.listNames->count(kv.first) && ch != mm.children.end()) {
+                Value lst = Value::array(); lst.isList = true;
+                for (auto& pn : ch->second)
+                    lst.arrRef().push_back(Value::matchVal(subj.substr(pn.from, pn.to - pn.from), pn.from, pn.to));
+                v.hashRef()[kv.first] = std::move(lst);
+                continue;
+            }
             v.hashRef()[kv.first] = Value::matchVal(subj.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
+        }
         return v;
     };
     auto interp = [&](const std::string& s, const Value& mv) -> std::string {

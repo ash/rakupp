@@ -1219,11 +1219,13 @@ static std::string bigRadixDigits(const BigInt& v, int radix, bool upper) {
 
 // Format an exact decimal-digit string (BigInt) for %d: honors width and the
 // '-', '0', '+', ' ' flags (precision on integers is rare; digits stay exact).
-static std::string fmtBigDec(std::string digits, const std::string& flags, long long width) {
+static std::string fmtBigDec(std::string digits, const std::string& flags, long long width, long long prec = -1) {
     bool neg = !digits.empty() && digits[0] == '-';
     std::string sign = neg ? "-" : (flags.find('+') != std::string::npos ? "+" :
                                     flags.find(' ') != std::string::npos ? " " : "");
     if (neg) digits = digits.substr(1);
+    // integer precision zero-pads the digit run itself (`%32.32x` of a 128-bit value)
+    if (prec > (long long)digits.size()) digits = std::string(prec - digits.size(), '0') + digits;
     std::string body = sign + digits;
     if ((long long)body.size() >= width) return body;
     if (flags.find('-') != std::string::npos) return body + std::string(width - body.size(), ' ');
@@ -1273,10 +1275,10 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 // an arbitrary-precision Int (or a Rat/Num too big for long long)
                 // formats from its exact decimal digits, not a saturated toInt()
                 Value av = nextArg();
-                if (av.t == VT::Int && av.big) { out += fmtBigDec(av.big->toString(), flags, width); break; }
+                if (av.t == VT::Int && av.big) { out += fmtBigDec(av.big->toString(), flags, width, prec); break; }
                 if (av.t == VT::Rat && av.ratN && av.ratD && !av.ratD->isZero()) {
                     BigInt q, r; BigInt::divmod(*av.ratN, *av.ratD, q, r);
-                    if (q.toString().size() > 18) { out += fmtBigDec(q.toString(), flags, width); break; }
+                    if (q.toString().size() > 18) { out += fmtBigDec(q.toString(), flags, width, prec); break; }
                 }
                 out += fmtRadix(av.toInt(), 10, false, flags, width, prec, true); break;
             }
@@ -1293,14 +1295,14 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 }
                 Value av = nextArg();
                 if (av.t == VT::Int && av.big) { // arbitrary-precision: exact digits
-                    out += fmtBigDec(bigRadixDigits(*av.big, radix, upper), flags2, width);
+                    out += fmtBigDec(bigRadixDigits(*av.big, radix, upper), flags2, width, prec);
                     break;
                 }
                 if (av.t == VT::Rat && av.ratN && av.ratD && !av.ratD->isZero()) {
                     BigInt q, r;
                     BigInt::divmod(*av.ratN, *av.ratD, q, r); // truncate toward zero
                     if (q.toString().size() > 18) {
-                        out += fmtBigDec(bigRadixDigits(q, radix, upper), flags2, width);
+                        out += fmtBigDec(bigRadixDigits(q, radix, upper), flags2, width, prec);
                         break;
                     }
                 }
@@ -6613,13 +6615,24 @@ void Interpreter::registerBuiltins() {
     B["__radix-list"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.empty()) return Value::integer(0);
         long long base = a[0].toInt();
+        // accumulate in int64 until the next place-shift would overflow, then
+        // spill to BigInt — :256[16 bytes] is a 128-bit value (UUID.Str)
         long long val = 0;
+        bool big = false; BigInt bval;
+        long long lim = (std::numeric_limits<long long>::max)() / (base > 1 ? base : 2) - base;
+        auto add = [&](long long d) {
+            if (!big) {
+                if (val > lim) { big = true; bval = BigInt(val); }
+                else { val = val * base + d; return; }
+            }
+            bval = bval * BigInt(base) + BigInt(d);
+        };
         for (size_t k = 1; k < a.size(); k++) {
             if (a[k].t == VT::Array && a[k].arr)
-                for (auto& e : *a[k].arr) val = val * base + e.toInt();
-            else val = val * base + a[k].toInt();
+                for (auto& e : *a[k].arr) add(e.toInt());
+            else add(a[k].toInt());
         }
-        return Value::integer(val);
+        return big ? Value::bigint(bval) : Value::integer(val);
     };
     B["__radix"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::integer(0);

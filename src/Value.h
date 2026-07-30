@@ -341,6 +341,7 @@ struct ClassInfo {
     std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
     std::map<std::string, std::vector<std::string>> requiredMultiSigs; // stubbed MULTI candidates: name -> positional-type sig keys that must each be implemented
     std::set<std::string> doneRoles; // names of roles this class/role composes (for ~~ / .does)
+    Value howObj; // persistent .HOW metaobject — `T.HOW does SomeRole` mixins must stick (Method::Also)
     std::shared_ptr<Env> declEnv; // scope the type was declared in (for evaluating attr defaults)
     ClassDecl* decl = nullptr; // the AST declaration (program-lifetime) — carries roleParams for parameterized roles
     // `role R[$x, %h, Bool :$opt]` composed as `does R[42, %(...), :opt]` — the

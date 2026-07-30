@@ -4728,6 +4728,18 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
                     st.arg = parseExpression();
                     expectKind(Tok::RParen, ")");
                 }
+                else if (isOp("<") && !cur().spaceBefore) {
+                    // `is also<mag>` — the angle word list is the trait's argument
+                    // (one word → Str, several → a List, as trait_mod:<is> receives)
+                    advance();
+                    std::vector<std::string> ws = readAngleWords(">");
+                    if (ws.size() == 1) st.arg = std::make_unique<StrLit>(ws[0]);
+                    else {
+                        auto lst = std::make_unique<ListExpr>();
+                        for (auto& w : ws) lst->items.push_back(std::make_unique<StrLit>(w));
+                        st.arg = std::move(lst);
+                    }
+                }
                 s->traits.push_back(std::move(st));
                 continue;
             }
@@ -5272,18 +5284,43 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     std::string pat = isKind(Tok::RegexLit) ? advance().text : "";
                     if (kind == "regex" && !wasProtoMulti)
                         checkNullRegex(pat, cur().line);
-                    // split a captured signature `NAME(Str $indent, …)` → name + param var names
+                    // split a captured signature `NAME(Str $indent, $*STOPPER = '"', …)` →
+                    // name + param entries. Each entry is the var name (twigils kept:
+                    // `$*STOPPER` is a dynamic var) plus, after a \x1f separator, the
+                    // default-value expression text when the signature declares one.
                     std::vector<std::string> params;
                     auto lp = nm.find('(');
                     if (lp != std::string::npos) {
                         std::string sig = nm.substr(lp);
                         nm = nm.substr(0, lp);
-                        for (size_t i = 0; i < sig.size(); i++)
-                            if (sig[i] == '$' || sig[i] == '@' || sig[i] == '%') {
-                                std::string v(1, sig[i]);
-                                for (size_t j = i + 1; j < sig.size() && (std::isalnum((unsigned char)sig[j]) || sig[j] == '_' || sig[j] == '-'); j++) v += sig[j];
-                                if (v.size() > 1) params.push_back(v);
+                        for (size_t i = 0; i < sig.size(); i++) {
+                            if (sig[i] != '$' && sig[i] != '@' && sig[i] != '%') continue;
+                            std::string v(1, sig[i]);
+                            size_t j = i + 1;
+                            if (j < sig.size() && sig[j] == '*') v += sig[j++]; // dynamic-var twigil
+                            for (; j < sig.size() && (std::isalnum((unsigned char)sig[j]) || sig[j] == '_' || sig[j] == '-'); j++) v += sig[j];
+                            if (v.size() == 1 || (v.size() == 2 && v[1] == '*')) continue; // bare sigil
+                            i = j - 1;
+                            // an optional `= EXPR` default, up to a top-level ',' or ')'
+                            while (j < sig.size() && std::isspace((unsigned char)sig[j])) j++;
+                            if (j < sig.size() && sig[j] == '=' && (j + 1 >= sig.size() || sig[j + 1] != '=')) {
+                                j++;
+                                int depth = 0; char q = 0; std::string dflt;
+                                for (; j < sig.size(); j++) {
+                                    char sc2 = sig[j];
+                                    if (q) { dflt += sc2; if (sc2 == q) q = 0; continue; }
+                                    if (sc2 == '\'' || sc2 == '"') { q = sc2; dflt += sc2; continue; }
+                                    if (sc2 == '(' || sc2 == '[' || sc2 == '{') depth++;
+                                    if (sc2 == ')' || sc2 == ']' || sc2 == '}') { if (depth == 0) break; depth--; }
+                                    if (sc2 == ',' && depth == 0) break;
+                                    dflt += sc2;
+                                }
+                                size_t a = dflt.find_first_not_of(" \t"), b2 = dflt.find_last_not_of(" \t");
+                                if (a != std::string::npos) v += '\x1f' + dflt.substr(a, b2 - a + 1);
+                                i = j - 1;
                             }
+                            params.push_back(v);
+                        }
                     }
                     if (!nm.empty()) cd->rules.push_back({nm, pat, kind, params});
                     continue;

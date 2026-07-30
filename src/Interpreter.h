@@ -492,6 +492,7 @@ public:
     // assignable" (WHO built a fresh empty Hash each time). Reads re-sync the
     // package's qualified globals in, so `our`-scoped symbols show up too.
     std::map<std::string, std::shared_ptr<std::map<std::string, Value>>> pkgStashes_;
+    std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::unordered_map<std::string, std::string> classAliases_;
     const std::string& resolveClassAlias(const std::string& n) {
         if (classes_.count(n)) return n;
