@@ -39,9 +39,39 @@ my @cut = @m.splice(1, 2);
 @fail.push("splice: @cut[] / @m[]") unless @cut eqv [1,2] && @m eqv [0,3,4,5];
 my uint8 @nat; @nat.push(300);
 @fail.push("native wrap: @nat[0]") unless @nat[0] == 44;   # 300 mod 256
-# (NOT asserted: `my @L := (1,2,3); @L.push(4)` — Rakudo dies "Cannot resize an
-# immutable List", rakupp allows it. A pre-existing divergence, older than the
-# snapshot skip; left open, recorded here so nobody blames the fast path.)
+# 2b. a BOUND List refuses the resizing mutators — method AND sub form — with
+#     Rakudo's exact messages (X::Immutable; splice is a DISPATCH failure: List
+#     has no splice candidates, only the proto). Formerly the divergence
+#     recorded here as open. Still open: a List bound to a sub's @-param
+#     (`sub f(@x)`) degrades to a mutable Array.
+my @L := (1, 2, 3);
+@fail.push("bound List ^name: {@L.^name}") unless @L.^name eq 'List';
+my &imm = -> $m {
+    my $got = $! ?? $!.message !! 'no throw';
+    @fail.push("List $m: $got") unless $got eq "Cannot call '$m' on an immutable 'List'";
+};
+try @L.push(4);     imm('push');
+try @L.append(4);   imm('append');
+try @L.unshift(0);  imm('unshift');
+try @L.prepend(0);  imm('prepend');
+try @L.pop;         imm('pop');
+try @L.shift;       imm('shift');
+try push @L, 4;     imm('push');
+try pop @L;         imm('pop');
+try shift @L;       imm('shift');
+try unshift @L, 0;  imm('unshift');
+try @L.splice(1, 1);
+my $sp = $! ?? $!.message !! 'no throw';
+@fail.push("List splice: $sp") unless $sp eq
+    'Cannot resolve caller splice(List:D, Int:D, Int:D); Routine does not have any candidates.  Is only the proto defined?';
+try @L[0] = 9;
+my $ea = $! ?? $!.message !! 'no throw';
+@fail.push("List elem assign: $ea") unless $ea eq 'Cannot modify an immutable List ((1 2 3))';
+@fail.push("List untouched: @L[]") unless @L eqv (1, 2, 3);
+# …while a bound [1,2,3] is an ARRAY and mutates freely
+my @A := [1, 2, 3];
+@A.push(4); @A.unshift(0);
+@fail.push("bound Array: {@A.^name} @A[]") unless @A.^name eq 'Array' && @A eqv [0, 1, 2, 3, 4];
 
 # 3. cooperative when/given: every semantic the fast path must keep
 my $v1 = do given 5  { when 5 { 'five' }; when Int { 'int' } };

@@ -4114,7 +4114,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             return out;
         }
-        if (!junctionOwn.count(m)) {
+        // A SLICE-derived junction (`%h{any ^2}` / `@a[any(0,1)]`; s carries the
+        // provenance) takes the resizing mutators on its backing array instead of
+        // autothreading them: each thread would die on an Any eigenstate, where
+        // Rakudo's slice junction threads over CONTAINERS that autovivify —
+        // machinery rakupp does not have. Mutating the temporary keeps it the
+        // soft no-op it always was, not a file-killing death.
+        static const std::set<std::string> sliceResizers = {
+            "push", "append", "pop", "unshift", "prepend", "shift", "splice"};
+        if (!junctionOwn.count(m) && !(inv.s == "slice" && sliceResizers.count(m))) {
             Value out = Value::array(); out.enumName = inv.enumName;
             out.setArr(std::make_shared<ValueList>());
             for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args, rwArgs));
@@ -10888,13 +10896,17 @@ void Interpreter::registerBuiltins() {
         }
         return I.methodCall(list, "first", margs); // one implementation
     };
-    B["push"] = [](Interpreter&, ValueList& a) -> Value {
+    B["push"] = [](Interpreter& I, ValueList& a) -> Value {
+        // a List refuses resizing — the METHOD arm owns the X::Immutable throw
+        if (!a.empty() && a[0].t == VT::Array && a[0].isList) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "push", rest); }
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr()->push_back(a[i]); return a[0]; }
         return Value::any();
     };
     B["pop"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite)
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
+        // a List refuses resizing — the METHOD arm owns the X::Immutable throw
+        if (!a.empty() && a[0].t == VT::Array && a[0].isList) { ValueList none; return I.methodCall(a[0], "pop", none); }
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr()->empty()) { Value v = a[0].arr()->back(); a[0].arr()->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
         // empty: the METHOD's Failure, not a silent Any (see B["shift"])
         if (!a.empty() && a[0].t == VT::Array) { ValueList none; return I.methodCall(a[0], "pop", none); }
@@ -10902,6 +10914,8 @@ void Interpreter::registerBuiltins() {
     };
     B["shift"] = [](Interpreter& I, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite) I.materializeLazy(a[0], 1);
+        // a List refuses resizing — the METHOD arm owns the X::Immutable throw
+        if (!a.empty() && a[0].t == VT::Array && a[0].isList) { ValueList none; return I.methodCall(a[0], "shift", none); }
         if (!a.empty() && a[0].t == VT::Array && !a[0].arr()->empty()) { Value v = a[0].arr()->front(); a[0].arr()->erase(a[0].arr()->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
         // empty: hand off to the METHOD so the sub answers the same Failure
         // (X::Cannot::Empty) instead of a silent Any
@@ -11384,7 +11398,9 @@ void Interpreter::registerBuiltins() {
         for (auto& v : a) out.arr()->push_back(v);
         return out;
     };
-    B["unshift"] = [](Interpreter&, ValueList& a) -> Value {
+    B["unshift"] = [](Interpreter& I, ValueList& a) -> Value {
+        // a List refuses resizing — the METHOD arm owns the X::Immutable throw
+        if (!a.empty() && a[0].t == VT::Array && a[0].isList) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "unshift", rest); }
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = a.size(); i > 1; i--) a[0].arr()->insert(a[0].arr()->begin(), a[i - 1]); return Value::integer((long long)a[0].arr()->size()); }
         return Value::any();
     };

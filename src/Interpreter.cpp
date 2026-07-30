@@ -16746,6 +16746,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             a->value->kind == NK::ListExpr) {
             auto* le = static_cast<ListExpr*>(a->value.get());
             Value b = Value::array();
+            b.isList = true; // what got bound IS a List: ^name, paren gist, resizing mutators refused
             for (auto& it : le->items) {
                 if (it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "|") {
                     Value v = eval(static_cast<Unary*>(it.get())->operand.get());
@@ -26164,6 +26165,7 @@ Value Interpreter::evalIndex(Index* idx) {
             (iv.enumName == "any" || iv.enumName == "all" ||
              iv.enumName == "one" || iv.enumName == "none")) {
             Value out = Value::array(); out.enumName = iv.enumName;
+            out.s = "slice"; // provenance: see the junction mutator gate
             for (auto& k : *iv.arr()) out.arr()->push_back(lookup1(hashSubKey(k, &base)));
             return out;
         }
@@ -26196,6 +26198,7 @@ Value Interpreter::evalIndex(Index* idx) {
         bool isSlice = false;
         bool lazyIdx = false; // `@a[lazy 3..5]` truncates at the array end (no defaulting)
         bool junctionIdx = false; // `@a[any(1,2,3)]` threads: missing indices drop, not default
+        std::string junctionKind; // the junction's flavor (any/all/one/none) — the slice result keeps it
         // `*` / `*-1` resolve against the list length — for Range endpoints AND for
         // every element of a list subscript (`@a[*-1, *-2]`, `@a[@whatever-list]`).
         auto resolveWhat = [&](Value v) -> long long {
@@ -26235,6 +26238,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 isSlice = true;
                 lazyIdx = iv.b; // `lazy` marker set by the lazy() builtin
                 junctionIdx = isJunction(iv); // a junction index autothreads (no defaulting)
+                if (junctionIdx) junctionKind = iv.enumName;
                 // A LAZY index sequence is pulled until it first leaves the array,
                 // which is where Rakudo stops it: `@a[0, 2 ... *]` is every second
                 // element, not the two seeds that happened to be materialised.
@@ -26308,6 +26312,10 @@ Value Interpreter::evalIndex(Index* idx) {
                 return out;
             }
             Value out = Value::array(); out.isList = true;
+            // a junction index autothreads: `@a[any(1,2)]` is a Junction of the
+            // elements (Rakudo's type), not a List
+            out.enumName = junctionKind;
+            if (!junctionKind.empty()) out.s = "slice"; // provenance: see the junction mutator gate
             // a missing slice index reports the element default: a mutable Array
             // yields its typed default (Any / Str / `is default`), a List/Range Nil
             auto missElem = [&]() -> Value {

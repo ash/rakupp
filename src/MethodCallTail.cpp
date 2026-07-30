@@ -2496,6 +2496,26 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         // mutators on real arrays
         if (inv.t == VT::Array && inv.arr()) {
+            // a List (or Slip) has a fixed size — the resizing mutators die.
+            // Rakudo's message names 'List' even for a Slip invocant; splice is
+            // a DISPATCH failure there (List has no splice candidates, only the
+            // proto), so its message differs. Seq/Uni/Junction/Capture-tagged
+            // arrays are excluded — they have their own (unfixed) stories.
+            if (inv.isList && inv.enumName.empty() &&
+                (inv.s.empty() || inv.s == "Slip")) {
+                if (m == "push" || m == "append" || m == "pop" || m == "unshift" ||
+                    m == "prepend" || m == "shift")
+                    throwTyped("X::Immutable", {{"method", m}, {"typename", "List"}},
+                        "Cannot call '" + m + "' on an immutable 'List'");
+                if (m == "splice") {
+                    std::string sig = "splice(List:D";
+                    for (auto& x : args)
+                        sig += ", " + x.typeName() +
+                               (x.t == VT::Type || x.t == VT::Any || x.t == VT::Nil ? ":U" : ":D");
+                    throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller " + sig + "); Routine does not have any candidates.  Is only the proto defined?"};
+                }
+            }
             // a native-typed array (`my str @a`, `my int @a`) rejects a value of the
             // wrong native kind — str takes Str, int/uint/byte take Int, num takes Real
             auto natCheck = [&](const Value& v) {
