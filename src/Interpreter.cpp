@@ -235,6 +235,27 @@ Value numifyStr(const std::string& in) {
     // Unicode MINUS SIGN (U+2212) is accepted as an ASCII '-' in numeric strings
     for (size_t k = 0; (k = s.find("\xE2\x88\x92", k)) != std::string::npos; )
         s.replace(k, 3, "-");
+    // Non-ASCII decimal digits (category Nd: Arabic-Indic, Devanagari, …)
+    // transliterate to ASCII so the ordinary positional parse handles them —
+    // "٤٢".Int is 42, exactly as each digit's Numeric_Value says.
+    if ((unsigned char)s[0] >= 0x80 || s.find_first_of("\x80\xFF") != std::string::npos) {
+        bool anyHigh = false;
+        for (unsigned char c : s) if (c >= 0x80) { anyHigh = true; break; }
+        if (anyHigh) {
+            std::string t2;
+            for (uint32_t cp : utf8cp(s)) {
+                if (cp >= 0x80 && uniGeneralCategory(cp) == "Nd") {
+                    long long num, den;
+                    if (uniNumValue(cp, num, den) && den == 1 && num >= 0 && num <= 9) {
+                        t2 += (char)('0' + num);
+                        continue;
+                    }
+                }
+                t2 += cpToU8(cp);
+            }
+            s = std::move(t2);
+        }
+    }
     // strip underscores that sit between two digits (numeric separators)
     if (s.find('_') != std::string::npos) {
         std::string t;

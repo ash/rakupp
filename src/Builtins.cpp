@@ -1037,6 +1037,14 @@ std::string mapCase(const std::string& s, int kind, int tcMode) {
         std::vector<uint32_t> tail;
         for (size_t i = b; i < e; i++) {
             if (k < 0) { out.push_back(cps[i]); continue; }
+            // Final_Sigma (SpecialCasing): lowercased word-final Σ is ς — preceded
+            // by a letter and not followed by one (case-ignorables approximated)
+            if (k == 0 && cps[i] == 0x03A3) {
+                auto isL = [](uint32_t c) { std::string g = uniGeneralCategory(c); return !g.empty() && g[0] == 'L'; };
+                bool prevL = i > 0 && isL(cps[i - 1]);
+                bool nextL = i + 1 < cps.size() && isL(cps[i + 1]);
+                if (prevL && !nextL) { out.push_back(0x03C2); continue; }
+            }
             auto m = uniCaseMap(cps[i], k);
             out.push_back(m[0]);
             for (size_t j = 1; j < m.size(); j++) tail.push_back(m[j]);

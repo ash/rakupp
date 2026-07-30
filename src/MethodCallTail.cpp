@@ -705,6 +705,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         ValueList items;
         if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()))
             items = toList(inv);
+        // .collate — UCA-ordered sort (the coll infix already implements DUCET;
+        // this just wires the method Rakudo exposes on lists)
+        if (m == "collate") {
+            ValueList sorted = items;
+            std::stable_sort(sorted.begin(), sorted.end(), [&](const Value& a, const Value& b) {
+                return applyArith("coll", a, b).i < 0;
+            });
+            Value outv = Value::array(); outv.isList = true; *outv.arr = std::move(sorted);
+            return outv;
+        }
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction
         if (m == "any" || m == "all" || m == "none" || m == "one") {
             Value j = Value::array(); j.enumName = m;

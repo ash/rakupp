@@ -8,6 +8,29 @@
 #include <cctype>
 #include <set>
 
+// Full case folding for :i matching (CaseFolding.txt F-entries, the common
+// set): one codepoint may fold to SEVERAL — `ß` folds to "ss", so
+// `"Weiß" ~~ m:i/WEISS/` matches. Everything else takes the simple fold
+// (lowercase mapping; ς normalises to σ so both sigmas compare equal).
+static void foldCpPush(uint32_t cp, std::vector<uint32_t>& out) {
+    switch (cp) {
+        case 0x00DF: case 0x1E9E: out.push_back('s'); out.push_back('s'); return;   // ß ẞ
+        case 0xFB00: out.push_back('f'); out.push_back('f'); return;                // ff-ligature
+        case 0xFB01: out.push_back('f'); out.push_back('i'); return;
+        case 0xFB02: out.push_back('f'); out.push_back('l'); return;
+        case 0xFB03: out.push_back('f'); out.push_back('f'); out.push_back('i'); return;
+        case 0xFB04: out.push_back('f'); out.push_back('f'); out.push_back('l'); return;
+        case 0xFB05: case 0xFB06: out.push_back('s'); out.push_back('t'); return;
+        case 0x0149: out.push_back(0x02BC); out.push_back('n'); return;             // ŉ
+        case 0x0130: out.push_back('i'); out.push_back(0x0307); return;             // İ
+        case 0x0390: out.push_back(0x03B9); out.push_back(0x0308); out.push_back(0x0301); return; // ΐ
+        case 0x03B0: out.push_back(0x03C5); out.push_back(0x0308); out.push_back(0x0301); return; // ΰ
+        case 0x03C2: out.push_back(0x03C3); return;                                 // final sigma folds to σ
+        default: break;
+    }
+    for (uint32_t c : rakupp::uniCaseMap(cp, 0)) out.push_back(c);
+}
+
 namespace rakupp {
 
 static int32_t namedCp(const std::string& nm); // \c[NAME] resolver (defined below)
@@ -142,6 +165,22 @@ Regex::NodePtr Regex::parseSeq() {
         seq->kids.push_back(parseQuant());
     }
     if (goalClose) seq->kids.push_back(std::move(goalClose)); // append the deferred CLOSE
+        // Peephole: adjacent single-char literals with identical flags merge into
+    // one Lit node. The fold-aware :i matcher must see a one-to-many case fold
+    // (text ß vs pattern SS) inside ONE node — per-char nodes can never match
+    // it — and byte-run literal matching is faster besides.
+    {
+        std::vector<NodePtr> merged;
+        for (auto& kd : seq->kids) {
+            if (!merged.empty() && kd->k == K::Lit && merged.back()->k == K::Lit &&
+                merged.back()->icase == kd->icase && merged.back()->imark == kd->imark &&
+                !kd->negate && !merged.back()->negate)
+                merged.back()->lit += kd->lit;
+            else
+                merged.push_back(std::move(kd));
+        }
+        seq->kids = std::move(merged);
+    }
     if (seq->kids.size() == 1) return std::move(seq->kids[0]);
     return seq;
 }
@@ -1319,6 +1358,52 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         i += (size_t)lcl;
                         ip = (long)uniClusterEndUtf8(st.s, ip, len);
                     }
+                    return k(ip);
+                }
+            }
+            // :i with non-ASCII on either side takes the FOLD-AWARE path: both
+            // streams expand through full case folding, so a one-to-many fold
+            // (ß → ss) matches across codepoint boundaries. A fold that would
+            // end mid-expansion fails (a match cannot split ß in half).
+            if (n->icase) {
+                bool needFold = false;
+                for (unsigned char c : n->lit) if (c >= 0x80) { needFold = true; break; }
+                if (!needFold)
+                    for (long j = pos; j < len && j < pos + (long)n->lit.size() + 4; j++)
+                        if ((unsigned char)st.s[j] >= 0x80) { needFold = true; break; }
+                if (needFold) {
+                    auto dec = [](const std::string& str, long p, int& cl) -> uint32_t {
+                        unsigned char c0 = (unsigned char)str[p];
+                        if (c0 < 0x80) { cl = 1; return c0; }
+                        cl = (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xE ? 3 : 4;
+                        uint32_t cp = c0 & (0xFF >> (cl + 1));
+                        for (int i2 = 1; i2 < cl && p + i2 < (long)str.size(); i2++) cp = (cp << 6) | ((unsigned char)str[p + i2] & 0x3F);
+                        return cp;
+                    };
+                    std::vector<uint32_t> la, sa;
+                    size_t li = 0, si = 0, i = 0;
+                    long ip = pos;
+                    for (;;) {
+                        if (li == la.size()) {
+                            if (i >= n->lit.size()) break;
+                            la.clear(); li = 0; int cl;
+                            foldCpPush(dec(n->lit, (long)i, cl), la);
+                            i += (size_t)cl;
+                        }
+                        if (si == sa.size()) {
+                            if (ip >= len) return false;
+                            unsigned char c0 = (unsigned char)st.s[ip];
+                            if (c0 >= 0x80 && c0 < 0xC0) return false; // mid-codepoint
+                            sa.clear(); si = 0; int cl;
+                            foldCpPush(dec(st.s, ip, cl), sa);
+                            ip += cl;
+                        }
+                        if (la[li] != sa[si]) return false;
+                        ++li; ++si;
+                    }
+                    if (si != sa.size()) return false; // literal ended inside a fold
+                    if (st.litPrefix < 0) st.litPrefix = st.startPos;
+                    if (st.litPrefix == pos) st.litPrefix = ip;
                     return k(ip);
                 }
             }
