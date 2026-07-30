@@ -161,7 +161,7 @@ static InfixInfo classifyInfix(const Token& t) {
             in.valid = true; in.lbp = BP_ASSIGN; in.rightAssoc = true; in.isAssign = true; return in; // ∩= ∪= …
         }
         if (setCompare.count(o)) { in.valid = true; in.lbp = BP_COMPARE; return in; }
-        if (o == "\xE2\x88\x98") { in.valid = true; in.lbp = BP_MUL; return in; } // ∘ function composition
+        if (o == "\xE2\x88\x98") { in.valid = true; in.lbp = BP_RANGE; return in; } // ∘ function composition
         return in;
     }
     if (t.kind == Tok::Ident) {
@@ -175,7 +175,7 @@ static InfixInfo classifyInfix(const Token& t) {
             in.valid = true; in.lbp = BP_MUL; return in;
         }
         if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
-        if (o == "o") { in.valid = true; in.lbp = BP_MUL; return in; } // ASCII alias for ∘ (function composition)
+        if (o == "o") { in.valid = true; in.lbp = BP_RANGE; return in; } // ASCII alias for ∘ (function composition)
         if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ZIP; return in; } // zip / cross: list infix, looser than comma
         {   // stacked zip/cross metaops: XZ / ZZ / XX (optionally with a tight op after)
             bool allZX = o.size() > 1;
@@ -728,6 +728,14 @@ ExprPtr Parser::parseExpr(int minbp) {
                      peek(3).kind == Tok::RBracket) {
                 meta = peek(2).text;
                 metaToks = 4; // Z/X + [ + op + ]
+            }
+            // `X[R%]` / `Z[R~]` — the bracketed op itself R-reversed
+            // (Digest::MD5 builds its index table with `16 X[R%] ...`)
+            else if (peek().kind == Tok::LBracket && peek(2).kind == Tok::Ident &&
+                     peek(2).text == "R" && peek(3).kind == Tok::Op &&
+                     !peek(3).spaceBefore && peek(4).kind == Tok::RBracket) {
+                meta = "R" + peek(3).text;
+                metaToks = 5; // Z/X + [ + R + op + ]
             }
             if (!meta.empty() && !peek().spaceBefore) {
                 for (int k = 0; k < metaToks; k++) advance();

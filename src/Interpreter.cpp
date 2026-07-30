@@ -6812,9 +6812,15 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             } else {
                 if (k < args.size()) v = args[k];
             }
-            env->define(pn, v);
-            // $^foo / $:foo is also visible as $foo within the block
-            if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':')) env->define(std::string(1, pn[0]) + pn.substr(2), v);
+            // ONE slot, under the BARE name: `$^b` and a later `$b` are the SAME
+            // variable, and Buf/Blob values live by value in the slot — defining
+            // both spellings made two diverging copies (Digest::MD5's padding
+            // block pushes via $^b and reads via $b). Lookups of the caret/colon
+            // spelling translate to the bare name at resolve time.
+            if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':'))
+                env->define(std::string(1, pn[0]) + pn.substr(2), v);
+            else
+                env->define(pn, v);
         }
         env->define("@_", Value::array(slurpyArgs(args)));
         implicitTopic_local = false; // placeholders bound: no implicit topic
@@ -7283,8 +7289,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 std::string key = pn.substr(2);
                 for (auto& a : args) if (a.t == VT::Pair && a.s == key && a.pairVal) { v = *a.pairVal; break; }
             } else if (k < args.size()) v = args[k];
-            env->define(pn, v);
-            if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':')) env->define(std::string(1, pn[0]) + pn.substr(2), v);
+            // one slot under the bare name — see the main binder
+            if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':'))
+                env->define(std::string(1, pn[0]) + pn.substr(2), v);
+            else
+                env->define(pn, v);
         }
         env->define("@_", Value::array(args));
     } else env->define("@_", Value::array(args));
@@ -7439,6 +7448,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (selfp && selfp->t == VT::Object && selfp->obj)
                 return &selfp->obj->attrs[ve->name.substr(2)];
         }
+        // a placeholder's caret/colon spelling resolves to its bare slot
+        if (ve->name.size() > 2 && (ve->name[1] == '^' || ve->name[1] == ':'))
+            if (Value* ph = tctx_.cur->find(std::string(1, ve->name[0]) + ve->name.substr(2)))
+                return ph;
         Value* p = tctx_.cur->find(ve->name);
         if (p) return p;
         // &?BLOCK / &?ROUTINE: not real slots — nothing assignable here
@@ -11658,6 +11671,40 @@ static bool isNumOp(const std::string& op) {
 
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
+    // `LIST Xxx n` / `LIST Zxx n`: the metaop inherits xx's THUNKY left — the
+    // lhs EXPRESSION re-evaluates once per replication (Digest::MD5 builds its
+    // index table from advancing anonymous $++ states exactly this way), and
+    // the replications group ELEMENT-major: ((e1r1 e1r2 …) (e2r1 …) …).
+    // Only the plain numeric-count form takes this road; anything else falls
+    // through to the generic value-based cross/zip.
+    if (op == "Xxx" || op == "Zxx") {
+        Value rv = eval(b->rhs.get());
+        if (rv.t == VT::Int || rv.t == VT::Num) {
+            long long n = rv.toInt();
+            if (n < 0) n = 0;
+            std::vector<ValueList> evals;
+            evals.reserve((size_t)n);
+            size_t width = 0;
+            for (long long k = 0; k < n; k++) {
+                Value lv = eval(b->lhs.get());
+                ValueList row;
+                if (lv.t == VT::Array && lv.arr) row = *lv.arr;
+                else if (lv.t == VT::Range) row = lv.flatten();
+                else row.push_back(std::move(lv));
+                width = std::max(width, row.size());
+                evals.push_back(std::move(row));
+            }
+            Value out = Value::array(); out.isList = true;
+            for (size_t i = 0; i < width; i++) {
+                Value grp = Value::array(); grp.isList = true;
+                for (auto& row : evals) if (i < row.size()) grp.arr->push_back(row[i]);
+                out.arr->push_back(std::move(grp));
+            }
+            return out;
+        }
+        Value lv = eval(b->lhs.get());
+        return applyBinOp(op, lv, rv);
+    }
     // Fast path for plain operators (`+ - * < == …`): skip the ~20 string compares
     // for the special-cased forms below and go straight to eval-both + applyArith.
     // The classification is computed once and cached on the node.
@@ -12851,6 +12898,10 @@ Value Interpreter::evalUnary(Unary* u) {
                 }
             }
         }
+        // S03: postfix ++/-- on an UNDEFINED numeric returns the type's zero
+        // (`my $x; $x++` is 0, and $x becomes 1) — the Bool arm above already
+        // does this for its own type
+        if (u->postfix && oldv.t == VT::Any) return Value::integer(0);
         return u->postfix ? oldv : newv;
     }
     Value v = eval(u->operand.get());
@@ -14774,6 +14825,11 @@ Value Interpreter::eval(Expr* e) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) return *p;
                 }
             }
+            // a placeholder's caret/colon spelling reads its BARE slot ($^b and a
+            // later $b are one variable; the binder defines only the bare name)
+            if (ve->name.size() > 2 && (ve->name[1] == '^' || ve->name[1] == ':'))
+                if (Value* ph = tctx_.cur->find(std::string(1, ve->name[0]) + ve->name.substr(2)))
+                    return *ph;
             // `Foo::<bar>` with no qualified global of that name: fall back to the
             // package's .WHO stash, so a symbol installed via `Foo.WHO.<bar> = v`
             // reads back through either syntax. (Writes stay split: `Foo::<bar> = v`
