@@ -7,9 +7,22 @@
   #:use-module ((guix licenses) #:prefix license:))
 
 (define vcs-file?
-  ;; Return true if the given file is under version control.
-  (or (git-predicate (current-source-directory))
-      (const #t)))
+  ;; Return true if the given file is under version control. git-predicate
+  ;; enumerates the checkout through libgit2, and on some checkouts (the
+  ;; shallow depth-1 clone GitHub Actions makes, notably) that enumeration
+  ;; comes back empty — the predicate then rejects EVERY file and the package
+  ;; gets an empty source tree (CI run 30534305456 failed exactly so, with
+  ;; cmake finding no CMakeLists.txt). So probe the predicate against a file
+  ;; that is certainly tracked; if it rejects it, fall back to accepting
+  ;; everything, which on a pristine checkout is precisely right.
+  (let* ((root (dirname (dirname (current-source-directory))))
+         (pred (git-predicate root)))
+    (if (and pred
+             (false-if-exception
+              (let ((probe (string-append root "/CMakeLists.txt")))
+                (pred probe (lstat probe)))))
+        pred
+        (const #t))))
 
 (define-public rakupp
   (package

@@ -33,11 +33,34 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+        with:
+          # A depth-1 clone made guix's git-predicate select NOTHING — the
+          # package built from an empty source tree (run 30534305456). A full
+          # clone gives libgit2 a normal repository to enumerate; the package
+          # definition additionally self-checks the predicate and falls back
+          # to copying everything, so either layer alone suffices.
+          fetch-depth: 0
 
       - name: Install Guix
         uses: PromyLOPh/guix-install-action@v1.6
         with:
           pullAfterInstall: false
+
+      - name: Probe git-predicate (diagnostic)
+        # Prints what the source-selection predicate does on this runner's
+        # checkout, so a source-selection failure names itself in the log
+        # instead of surfacing as "no CMakeLists.txt" three phases later.
+        run: |
+          guix repl <<'EOF'
+          (use-modules (guix git-download))
+          (let ((pred (git-predicate (getcwd))))
+            (format #t "~%git-predicate: ~a~%"
+                    (if pred "returned a predicate" "#f — not recognised as a checkout"))
+            (when pred
+              (let ((probe (string-append (getcwd) "/CMakeLists.txt")))
+                (format #t "predicate accepts CMakeLists.txt: ~a~%"
+                        (if (pred probe (lstat probe)) "yes" "NO — enumeration is broken")))))
+          EOF
 
       - name: Build the package
         run: guix build -f .guix/modules/rakupp-package.scm
