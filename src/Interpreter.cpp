@@ -1503,18 +1503,37 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, si
             default: break;
         }
     };
+    // `my $x = E if COND` (and the for/with/without/while/until/given/when
+    // modifier forms): the declaration is a COMPILE-TIME effect in Raku — $x
+    // exists in this scope even when the modifier never runs the statement
+    // (`my $a = "u" if False; $a ~= "host"` must give "host", not X::Undeclared).
+    // Hoist declarations out of every modifier wrapper; modifiers chain
+    // (`E if A for B` nests one wrapper inside another), hence the recursion.
+    std::function<void(const Stmt*)> walkModStmt = [&](const Stmt* st) {
+        if (!st) return;
+        auto walkBlock = [&](const Block* b) {
+            if (!b) return;
+            for (auto& bs : b->stmts) {
+                if (bs->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(bs.get())->e.get(), true);
+                else walkModStmt(bs.get());
+            }
+        };
+        switch (st->kind) {
+            case NK::IfStmt: { auto* is = static_cast<const IfStmt*>(st);
+                if (is->modifier) for (auto& br : is->branches) walkBlock(br.second.get());
+                break; }
+            case NK::ForStmt: { auto* fs = static_cast<const ForStmt*>(st);
+                if (fs->modifier) walkBlock(fs->body.get()); break; }
+            case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(st);
+                if (g->modifier) walkBlock(g->body.get()); break; }
+            case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(st);
+                if (w->modifier) walkBlock(w->body.get()); break; }
+            default: break;
+        }
+    };
     for (auto& s : stmts) {
         if (s->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(s.get())->e.get(), false);
-        // `my $x = E if COND` (postfix modifier): $x is declared in THIS scope
-        // regardless of COND — hoist the declaration so a false COND still leaves
-        // $x defined (its own default), matching Rakudo's compile-time declaration.
-        else if (s->kind == NK::IfStmt && static_cast<const IfStmt*>(s.get())->modifier) {
-            auto* is = static_cast<const IfStmt*>(s.get());
-            for (auto& br : is->branches)
-                if (br.second)
-                    for (auto& bs : br.second->stmts)
-                        if (bs->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(bs.get())->e.get(), true);
-        }
+        else walkModStmt(s.get());
     }
     if (cache) *cache = found ? 1 : 0;
 }
@@ -2318,6 +2337,10 @@ int Interpreter::run(Program& prog) {
                 if (e && e->kind == NK::VarExpr) dtype = static_cast<VarExpr*>(e)->declType;
                 else if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e); if (a->target && a->target->kind == NK::VarExpr) dtype = static_cast<VarExpr*>(a->target.get())->declType; } }
             global_->define(nm, typedDefault(dtype, nm[0])); }
+        // the same modifier/ternary-buried declarations the block path hoists
+        // (`my $x = E if COND` at file scope must declare $x even when COND is
+        // false) — the loop above only sees plain top-level ExprStmts
+        hoistExprDecls(prog.stmts, global_.get(), nullptr);
         for (auto* b : beginP) runPhaser(b);                                      // BEGIN: source order
         for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
         for (auto* b : initP) runPhaser(b);                                       // INIT: source order
@@ -4223,7 +4246,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 bool c = boolify(cv);
                 if (ws->isUntil) c = !c;
                 if (!c) break;
-                if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                // postfix `STMT while COND`: no implicit block — run STMT in the
+                // ENCLOSING scope so a `my` in it declares there (never cleared!)
+                if (ws->modifier) scope = tctx_.cur;
+                else if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                 else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
                 if (!ws->var.empty()) scope->define(ws->var, cv); // while EXPR -> $x { }
                 // FIRST runs on the first iteration only; LAST would need lookahead, so it

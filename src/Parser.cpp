@@ -5475,6 +5475,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             advance();
             auto ws = std::make_unique<WhileStmt>();
             ws->isUntil = (kw == "until");
+            ws->modifier = true; // postfix form: a `my` in STMT leaks to the enclosing scope
             ws->cond = parseExpression();
             ws->body = wrapStmt(std::move(s));
             return ws;
@@ -5517,6 +5518,7 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
             auto bin = std::make_unique<Binary>();
             bin->op = "~~"; bin->lhs = std::make_unique<VarExpr>("$_"); bin->rhs = parseExpression();
             auto is = std::make_unique<IfStmt>();
+            is->modifier = true; // postfix form: a `my` in STMT leaks to the enclosing scope
             is->branches.emplace_back(std::move(bin), wrapStmt(std::move(s)));
             return is;
         }

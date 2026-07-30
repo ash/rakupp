@@ -391,6 +391,7 @@ struct WhileStmt : Stmt {
     bool isUntil = false;
     std::string var; // `while EXPR -> $x { }` binds each cond value to $x
     bool asExpr = false; // used in value context: collect each iteration's value into a List
+    bool modifier = false; // `STMT while COND` postfix form — no implicit block (a `my` in STMT leaks out)
     WhileStmt(): Stmt(NK::WhileStmt) {}
 };
 
