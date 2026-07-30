@@ -1552,6 +1552,19 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     int nb = width ? width / 8 : 8;
     if (off < 0)
         throw RakuError{Value::typeObj("X::OutOfRange"), "offset " + std::to_string(off) + " out of range"};
+    // Typed bufs (buf16/32/64): Rakudo addresses `pos` in ELEMENTS — the value
+    // lands at byte pos*W — and grows the buffer to (pos + nb) ELEMENTS,
+    // zero-filled (verified: buf32.new(1,2,3).write-uint64(3, v) puts v in
+    // elems 3..4 and .elems becomes 11). Scale both accordingly; the byte
+    // math below is then unchanged. Digest::MD5 appends its bit-length with
+    // `$b.write-uint64: $b.elems, $bits` on a buf32 and relies on this.
+    int elemW = buf.blobElemSize();
+    if (elemW > 1) {
+        long long growElems = off + nb;           // Rakudo's quirk: nb ELEMENTS, not bytes
+        off *= elemW;
+        if (isWrite && (long long)bytes.size() < growElems * elemW)
+            bytes.resize((size_t)(growElems * elemW), '\0');
+    }
     if (nb > 8) { // int128/uint128: BigInt byte-peeling (the raw[8] fast path below caps at 64 bits)
         if (isWrite) {
             if ((long long)bytes.size() < off + nb) bytes.resize(off + nb, '\0');

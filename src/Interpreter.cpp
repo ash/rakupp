@@ -460,6 +460,12 @@ static Value typedDefault(const std::string& type, char sigil) {
         if (type == "num" || type.rfind("num", 0) == 0) return Value::number(0);
         if (type == "int" || type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0) return Value::integer(0);
         if (type == "str") return Value::str("");
+        // The lowercase Buf/Blob aliases are TYPE names, not native scalars:
+        // `my buf8 $b .= new` needs the (buf8) type object to dispatch .new on
+        // (it was falling through to Any, so `.= new` died "No such method
+        // 'new' for invocant of type 'Any'" — Digest::MD5's first line).
+        if (type.rfind("buf", 0) == 0 || type.rfind("blob", 0) == 0)
+            return Value::typeObj(type);
         if (std::isupper((unsigned char)type[0])) return Value::typeObj(type); // my Int $x -> (Int)
     }
     // typed containers: `my Int @a` -> Array[Int], `my int @a` (native) too
@@ -15502,17 +15508,35 @@ Value Interpreter::eval(Expr* e) {
                     if (s.empty())
                         throw RakuError{Value::typeObj("X::Cannot::Empty"),
                             "Cannot " + mc->method + " from an empty " + inv.hashKind};
-                    unsigned char byte;
-                    if (mc->method == "pop") { byte = (unsigned char)s.back(); s.pop_back(); }
-                    else { byte = (unsigned char)s.front(); s.erase(0, 1); }
-                    return Value::integer(byte);
+                    // typed bufs (buf16/32/64) pop/shift one ELEMENT (LE words)
+                    int ew = inv.blobElemSize();
+                    if ((int)s.size() < ew) ew = (int)s.size();
+                    long long word = 0;
+                    if (mc->method == "pop") {
+                        size_t at = s.size() - (size_t)ew;
+                        for (int bi = ew - 1; bi >= 0; bi--) word = (word << 8) | (unsigned char)s[at + bi];
+                        s.resize(at);
+                    }
+                    else {
+                        for (int bi = ew - 1; bi >= 0; bi--) word = (word << 8) | (unsigned char)s[bi];
+                        s.erase(0, (size_t)ew);
+                    }
+                    return Value::integer(word);
                 }
                 ValueList wargs = evalArgs(mc->args);
                 std::string add;
+                // typed bufs (buf16/32/64) append one ELEMENT per value, little-
+                // endian — a bare `add += one byte` gave buf32.push 14 values
+                // and .elems 3 (14 bytes / 4), which silently truncated
+                // Digest::MD5's padding block
+                int elemW = inv.blobElemSize();
                 std::function<void(const Value&)> collect = [&](const Value& v) {
                     if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) collect(e); }
                     else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) add += v.s;
-                    else add += (char)(unsigned char)(v.toInt() & 0xFF);
+                    else {
+                        long long iv = v.toInt();
+                        for (int bi = 0; bi < elemW; bi++) add += (char)(unsigned char)((iv >> (8 * bi)) & 0xFF);
+                    }
                 };
                 for (auto& a : wargs) collect(a);
                 bool front = mc->method == "prepend" || mc->method == "unshift";
