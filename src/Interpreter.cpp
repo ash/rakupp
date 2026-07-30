@@ -1992,8 +1992,10 @@ void Interpreter::flushOpenWriteHandles() {
         auto cl = h->find("closed"); if (cl != h->end() && cl->second.truthy()) continue;
         auto fl = h->find("flushed"); if (fl != h->end() && fl->second.truthy()) continue;
         std::string mode = (*h)["mode"].toStr();
+        const std::string& buf = (*h)["buffer"].s;
+        if ((mode == "rw" || mode == "update") && buf.empty()) continue; // nothing written — leave the file alone
         std::ofstream out((*h)["path"].toStr(), mode == "a" ? std::ios::app : std::ios::trunc);
-        if (out) out << (*h)["buffer"].toStr();
+        if (out) out << buf;
     }
     openWriteHandles_.clear();
 }
@@ -2280,16 +2282,18 @@ int Interpreter::run(Program& prog) {
     };
     // END phasers run in REVERSE source order, on any exit path.
     auto runEnds = [&]() {
-        for (auto it = endP.rbegin(); it != endP.rend(); ++it) {
-            try { runPhaser(*it); }
-            catch (ExitEx& e) { code = e.code; }  // `exit` in an END block sets the exit status
-            catch (...) {}
-        }
-        // END blocks registered from EVAL'd code, in reverse registration order
+        // Deferred ENDs (modules, EVAL) first, newest registration first — then
+        // the mainline's own, reverse source order. A later-loaded module's
+        // cleanup precedes the mainline END that inspects its results.
         for (auto it = deferredEnds_.rbegin(); it != deferredEnds_.rend(); ++it) {
             auto sc = std::make_shared<Env>(); sc->parent = it->second;
             try { execBlock(it->first, sc); }
             catch (ExitEx& e) { code = e.code; }
+            catch (...) {}
+        }
+        for (auto it = endP.rbegin(); it != endP.rend(); ++it) {
+            try { runPhaser(*it); }
+            catch (ExitEx& e) { code = e.code; }  // `exit` in an END block sets the exit status
             catch (...) {}
         }
     };
@@ -2693,6 +2697,15 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                         if (Value* c = tctx_.cur->find("&" + sd->name))
                             global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
                     continue; // hoisted
+                }
+                // A module's END runs at PROCESS end, not at load (File::Temp
+                // registers its tempfile cleanup this way), capturing the module
+                // scope. Deferred ENDs run before the mainline's own — a module
+                // loaded LATER cleans up EARLIER (LIFO), which is what a test
+                // that checks the module's cleanup from its own END relies on.
+                if (st->kind == NK::Block && static_cast<Block*>(st.get())->phaser == "END") {
+                    deferredEnds_.push_back({static_cast<Block*>(st.get()), tctx_.cur});
+                    continue;
                 }
                 exec(st.get());
             }
@@ -7784,7 +7797,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return sink ? Value::any() : rhs;
         }
     }
-    if (a->op == "=" && a->target->kind == NK::ListExpr) {
+    // Positional list BIND takes the same road as list assign — rakupp
+    // approximates := as assignment for containers throughout (as with
+    // sigilless ); File::Temp's t/03 does `my (&tempfile, &tempdir) := ...`
+    if ((a->op == "=" || a->op == ":=") && a->target->kind == NK::ListExpr) {
         auto* lst = static_cast<ListExpr*>(a->target.get());
         Value rhs = eval(a->value.get());
         // one-level list flattening (Raku): a List/Range spreads, but an itemized

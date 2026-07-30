@@ -979,12 +979,29 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "open") { // returns a buffered file handle
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
         (*h.hash)["path"] = Value::str(inv.toStr());
-        std::string mode = "r";
-        for (auto& a : args) if (a.t == VT::Pair) { if (a.s == "w") mode = "w"; else if (a.s == "a") mode = "a"; else if (a.s == "r") mode = "r"; }
+        std::string mode = "r"; bool excl = false;
+        for (auto& a : args) if (a.t == VT::Pair) {
+            if (a.s == "w") mode = "w"; else if (a.s == "a") mode = "a"; else if (a.s == "r") mode = "r";
+            else if (a.s == "rw") mode = "rw";
+            else if (a.s == "update") mode = "update";
+            else if (a.s == "exclusive" || a.s == "x") excl = true;
+        }
+        if (excl) { // create-new-or-fail — see the open() builtin (File::Temp's claim)
+            std::ifstream probe(inv.toStr());
+            if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
+                "Failed to open file " + inv.toStr() + ": file already exists"};
+            if (mode == "r") mode = "w";
+        }
+        if (mode == "update") {
+            std::ifstream probe(inv.toStr());
+            if (!probe) throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
+                "Failed to open file " + inv.toStr() + ": no such file or directory"};
+        }
         (*h.hash)["mode"] = Value::str(mode);
         (*h.hash)["buffer"] = Value::str("");
         if (mode == "w") { std::ofstream create(inv.toStr(), std::ios::trunc); } // the file exists immediately
-        if (mode == "w" || mode == "a") registerWriteHandle(h.hash); // flush at exit if not closed
+        if (mode == "rw") { std::ofstream create(inv.toStr(), std::ios::app); }  // exists immediately, kept intact
+        if (mode != "r") registerWriteHandle(h.hash); // flush at exit if not closed
         return h;
     }
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
@@ -1067,10 +1084,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "close") {
             std::string mode = (*inv.hash)["mode"].toStr();
-            if (mode == "w" || mode == "a") { // flush write/append handles
+            const std::string& buf = (*inv.hash)["buffer"].s;
+            // rw/update flush only when something was WRITTEN — an untouched
+            // rw handle on an existing file must not wipe it with a trunc
+            if (mode == "w" || mode == "a" || ((mode == "rw" || mode == "update") && !buf.empty())) {
                 std::ofstream out((*inv.hash)["path"].toStr(),
                                   std::ios::binary | (mode == "a" ? std::ios::app : std::ios::trunc));
-                if (out) out << (*inv.hash)["buffer"].toStr();
+                if (out) out << buf;
                 (*inv.hash)["flushed"] = Value::boolean(true); // exit-flush skips it now
             }
             return Value::boolean(true);

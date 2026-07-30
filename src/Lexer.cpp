@@ -1701,8 +1701,21 @@ Token Lexer::lexOperator(bool termBefore) {
         // `+` then a word list and swallow the rest of the line. In TERM position
         // the old follow-set still decides, which is what keeps `+< foo bar >` and
         // `+<3 4>` prefix-plus-wordlist (one-pass-parsing/less-than.t).
+        // A spaced LETTER amount (`x +< n` — Digest::MD5 shifts by a sigilless
+        // param) is also a shift, PROVIDED no `>` closes a word list before the
+        // expression must end — `+< foo bar >` keeps its `>` on the line and
+        // stays a word list. (`(x +< n) > 2` writes the comparison outside the
+        // parens exactly because of this ambiguity.)
+        auto qwCloseAhead = [&]() {
+            for (int j = k; ; j++) {
+                char c = peek(j);
+                if (c == '>') return true;
+                if (c == '\0' || c == '\n' || c == ';' || c == ')' || c == '}') return false;
+            }
+        };
         bool shifty = termBefore
-                    || (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-' || cN == '*'))
+                    || (k > 2 && (std::isdigit((unsigned char)cN) || cN == '$' || cN == '(' || cN == '-' || cN == '*'
+                                  || ((std::isalpha((unsigned char)cN) || cN == '_') && !qwCloseAhead())))
                     || peek(2) == '='; // compound `+<=` is always a shift
         if (shifty) {
             std::string op; op += advance(); op += advance(); // + <

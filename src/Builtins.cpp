@@ -6021,9 +6021,20 @@ void Interpreter::registerBuiltins() {
         std::string path;
         for (auto& x : a) if (x.t != VT::Pair) { path = x.toStr(); break; }
         rejectNulPath(path);
-        std::string mode = "r";
-        for (auto& x : a) if (x.t == VT::Pair) { if (x.s == "w") mode = "w"; else if (x.s == "a") mode = "a"; else if (x.s == "r") mode = "r"; }
-        if (mode == "r") { // reading a nonexistent file fails, like Rakudo's X::IO::DoesNotExist
+        std::string mode = "r"; bool excl = false;
+        for (auto& x : a) if (x.t == VT::Pair) {
+            if (x.s == "w") mode = "w"; else if (x.s == "a") mode = "a"; else if (x.s == "r") mode = "r";
+            else if (x.s == "rw") mode = "rw";           // read/write, create if missing, NO truncate
+            else if (x.s == "update") mode = "update";   // read/write, must exist
+            else if (x.s == "exclusive" || x.s == "x") excl = true; // create-new-or-fail (O_EXCL)
+        }
+        if (excl) { // File::Temp opens `:rw, :exclusive` to claim a fresh name
+            std::ifstream probe(path);
+            if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
+                "Failed to open file " + path + ": file already exists"};
+            if (mode == "r") mode = "w"; // bare :x implies write-create (Rakudo's :x)
+        }
+        if (mode == "r" || mode == "update") { // both need the file to exist
             std::ifstream probe(path);
             if (!probe) throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
                 "Failed to open file " + path + ": no such file or directory"};
@@ -6033,7 +6044,8 @@ void Interpreter::registerBuiltins() {
         (*h.hash)["mode"] = Value::str(mode);
         (*h.hash)["buffer"] = Value::str("");
         if (mode == "w") { std::ofstream create(path, std::ios::trunc); } // the file exists immediately
-        if (mode == "w" || mode == "a") I.registerWriteHandle(h.hash); // flush at exit if not closed
+        if (mode == "rw") { std::ofstream create(path, std::ios::app); }  // exists immediately, kept intact
+        if (mode != "r") I.registerWriteHandle(h.hash); // flush at exit if not closed
         return h;
     };
     B["unlink"] = [](Interpreter&, ValueList& a) -> Value {
