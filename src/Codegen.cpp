@@ -504,7 +504,58 @@ struct Codegen {
         }
     }
 
+    // `is native` sub → a closure that calls the C symbol through the runtime's
+    // own marshaller (RT.callNative — the same code the interpreter uses, with
+    // its per-Callable dlopen/dlsym cache). Compiled here: a literal or absent
+    // library name and no write-back marshalling. Everything else — `is
+    // native(&sub)` / expression libs (the env they need doesn't exist in
+    // compiled code), `is rw` out-params and buffer params (their copy-back
+    // writes through caller LVALUES, which native locals don't have) — raises
+    // CodegenError, so --exe falls back to bundling and stays CORRECT. Before
+    // this, the stub body compiled silently and every native call returned Any.
+    std::string nativeBridgeStmts(SubDecl* d) {
+        if (!d->nativeLibSub.empty()) unsupported("a NativeCall sub with `is native(&sub)`");
+        // `is native(Str)` / any bare type object = the default dlsym namespace;
+        // every other expression needs the module env, which compiled code lacks
+        if (d->nativeLibExpr &&
+            !(d->nativeLibExpr->kind == NK::NameTerm &&
+              isKnownTypeName(static_cast<NameTerm*>(d->nativeLibExpr.get())->name)))
+            unsupported("a NativeCall sub whose library name is an expression");
+        if (d->isMulti)               unsupported("a multi NativeCall sub");
+        for (auto& p : d->params) {
+            if (p.isRw) unsupported("a NativeCall sub with an `is rw` out-parameter");
+            const std::string& t = p.type;
+            if (t == "Buf" || t == "Blob" || t.rfind("Buf[", 0) == 0 || t.rfind("Blob[", 0) == 0 ||
+                t.rfind("blob", 0) == 0 || t.rfind("buf", 0) == 0 || t.rfind("CArray", 0) == 0)
+                unsupported("a NativeCall sub with a buffer/CArray parameter (needs copy-back)");
+        }
+        std::string sym = d->nativeSym.empty() ? d->name : d->nativeSym;
+        std::ostringstream b;
+        b << "    static const std::vector<Param> __np = []{ std::vector<Param> v;\n";
+        for (auto& p : d->params)
+            b << "        { Param p; p.name = " << cesc(p.name) << "; p.sigil = '"
+              << (p.sigil ? p.sigil : '$') << "'; p.type = " << cesc(p.type)
+              << "; v.push_back(std::move(p)); }\n";
+        b << "        return v; }();\n";
+        b << "    static Callable __nc; static const bool __nci = []{ __nc.isNative = true;\n";
+        b << "        __nc.name = " << cesc(d->name) << "; __nc.nativeLib = " << cesc(d->nativeLib) << ";\n";
+        b << "        __nc.nativeSym = " << cesc(sym) << "; __nc.retType = " << cesc(d->retType) << ";\n";
+        b << "        __nc.params = &__np; return true; }(); (void)__nci;\n";
+        b << "    return RT.callNative(__nc, __a, nullptr);\n";
+        return b.str();
+    }
+    std::string nativeSubClosure(SubDecl* d) {
+        return "Value::closure([=](ValueList& __a)->Value{\n" + nativeBridgeStmts(d) + "})";
+    }
+    // Top-level `is native` sub → the same bridge as a named function (matches
+    // the `static Value f(ValueList);` prototype every call site expects).
+    void nativeSubDef(SubDecl* d) {
+        out << "static Value " << mangleSub(d->name) << "(ValueList __a) {\n"
+            << nativeBridgeStmts(d) << "}\n";
+    }
+
     std::string subClosure(SubDecl* d) {
+        if (d->isNative) return nativeSubClosure(d);
         std::set<std::string> params;
         for (auto& p : d->params) if (!p.name.empty()) params.insert(p.name);
         checkClosureCapture(d->body, params); // against the OUTER scope's cells
@@ -2210,7 +2261,10 @@ struct Codegen {
         line(1, "} catch (ReturnEx& __r) { return __r.v; }");
         line(0, "}");
     }
-    void subDef(SubDecl* d) { bodyDef(mangleSub(d->name), d->params, d->body, fastSubs.count(d->name) > 0); }
+    void subDef(SubDecl* d) {
+        if (d->isNative) { nativeSubDef(d); return; }
+        bodyDef(mangleSub(d->name), d->params, d->body, fastSubs.count(d->name) > 0);
+    }
 
     // A multi: emit each candidate, then a dispatcher that tries candidates
     // most-specific first (most type constraints) and picks the first that matches.
@@ -2274,7 +2328,8 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             if (d->isMulti) { multiCands[d->name].push_back(d); g.multiNames.insert(d->name); }
             else {
                 g.userSubs[d->name] = (int)d->params.size(); subs.push_back(d);
-                if (optimize && Codegen::simpleSig(d->params)) g.fastSubs[d->name] = (int)d->params.size();
+                // native subs emit the ValueList bridge only — no fast-sig overload
+                if (optimize && !d->isNative && Codegen::simpleSig(d->params)) g.fastSubs[d->name] = (int)d->params.size();
                 { int pos = 0; std::vector<int> rw;
                   for (auto& p : d->params) { if (p.named || p.slurpy || p.invocant) continue;
                       if (p.isRw) rw.push_back(pos); pos++; }
