@@ -1792,8 +1792,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 out.arr()->push_back(Value::str(key));
                 if (inv.hashKind == "SetHash") inv.hash()->erase(key);
                 else {
-                    long long c = (*inv.hash())[key].toInt() - 1;
-                    if (c <= 0) inv.hash()->erase(key); else (*inv.hash())[key] = Value::integer(c);
+                    // exact decrement — a count past long long must not saturate
+                    Value c = rtSub((*inv.hash())[key], Value::integer(1));
+                    bool pos = c.big() ? c.big()->sign > 0 : c.i > 0;
+                    if (!pos) inv.hash()->erase(key); else (*inv.hash())[key] = std::move(c);
                 }
             }
             if (one) return out.arr()->empty() ? Value::nil() : (*out.arr())[0];

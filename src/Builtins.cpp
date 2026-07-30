@@ -2466,6 +2466,25 @@ std::string baggyKeyStr(const Value& v) {
     if (v.t == VT::Object) return whichOf(v);
     return v.toStr();
 }
+// A Bag count must stay EXACT: the old long-long path saturated weights near
+// 10^19 at LLONG_MAX, so distinct weights collapsed into equal ones and a
+// weighted .roll drew ~uniform. Truncate to an Int through the BigInt tower.
+static Value exactIntWeight(const Value& w) {
+    if (w.t == VT::Int) return w;                        // Int / IntStr — big-capable as is
+    if (w.t == VT::Str && !w.isAllomorph()) {
+        Value nv = numifyStr(w.s);                       // callers pre-validate: this parses
+        return nv.t == VT::Int ? nv : exactIntWeight(nv);
+    }
+    if (w.t == VT::Rat && w.ratN() && w.ratD() && !w.ratD()->isZero()) {
+        BigInt q, r; BigInt::divmod(*w.ratN(), *w.ratD(), q, r);
+        return Value::bigint(q);
+    }
+    double d = w.toNum();                                // Num / Bool / NumStr
+    if (!std::isfinite(d)) return Value::integer(0);     // zero-denominator Rat: old toInt() gave 0
+    if (d >= -9.19e18 && d <= 9.19e18) return Value::integer((long long)d);
+    char buf[440]; std::snprintf(buf, sizeof buf, "%.0f", d); // a double this big is an exact integer
+    return Value::bigint(BigInt::fromString(buf));
+}
 // pairsAsElements: constructors (set()/Set.new) treat a Pair item as ONE element
 // (`set [foo=>1, bar=>2]` has two Pair elements); coercions (.Set/.Bag on a
 // Hash, new-from-pairs) keep the pair→count reading.
@@ -2474,22 +2493,22 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
     h.hashKind = kind;
     bool isSet = kind.find("Set") == 0;
     bool isMix = kind.find("Mix") == 0; // Mix weights keep their full numeric value (2.5 stays a Rat)
-    auto add = [&](const std::string& k, long long cnt, const std::shared_ptr<Value>& tk) {
+    auto add = [&](const std::string& k, const Value& cnt, const std::shared_ptr<Value>& tk) {
         auto it = h.hash()->find(k);
         auto keep = it != h.hash()->end() && it->second.pairKey() ? it->second.pairKey() : tk;
         if (isSet) {
-            if (cnt > 0) { Value b = Value::boolean(true); b.pairKeyM() = keep; (*h.hash())[k] = std::move(b); }
+            if (cnt.big() ? cnt.big()->sign > 0 : cnt.i > 0) { Value b = Value::boolean(true); b.pairKeyM() = keep; (*h.hash())[k] = std::move(b); }
             else h.hash()->erase(k);
             return;
         }
-        long long c = it != h.hash()->end() ? it->second.toInt() : 0;
-        c += cnt;
-        if (c != 0) { Value cv = Value::integer(c); cv.pairKeyM() = keep; (*h.hash())[k] = std::move(cv); }
+        Value c = it != h.hash()->end() ? rtAdd(it->second, cnt) : cnt;
+        bool zero = c.big() ? c.big()->isZero() : c.i == 0;
+        if (!zero) { c.pairKeyM() = keep; (*h.hash())[k] = std::move(c); }
         else h.hash()->erase(k);
     };
     for (auto& v : items) {
         if (v.t == VT::Pair && pairsAsElements) {
-            add(baggyKeyStr(v), 1, std::make_shared<Value>(v)); // the Pair itself is the element
+            add(baggyKeyStr(v), Value::integer(1), std::make_shared<Value>(v)); // the Pair itself is the element
             continue;
         }
         if (v.t == VT::Pair) {
@@ -2525,9 +2544,9 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             }
             // Set membership is the value's TRUTHINESS (`:e<meow>` joins, `:0d`/`:f('')`
             // do not); Bag/Mix use the numeric weight. (typed key travels in pairKey)
-            add(v.s, isSet ? (w.truthy() ? 1 : 0) : w.toInt(), v.pairKey());
+            add(v.s, isSet ? Value::integer(w.truthy() ? 1 : 0) : exactIntWeight(w), v.pairKey());
         }
-        else add(baggyKeyStr(v), 1, baggyKey(v));
+        else add(baggyKeyStr(v), Value::integer(1), baggyKey(v));
     }
     return h;
 }

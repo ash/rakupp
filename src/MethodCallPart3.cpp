@@ -23,13 +23,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (inv.t == VT::Hash && !inv.hashKind.empty()) {
         bool isSet = inv.hashKind.find("Set") == 0;
         if (m == "default") return isSet ? Value::boolean(false) : Value::integer(0);
-        if (m == "total") { // Mix weights may be fractional — sum EXACTLY through
-            // the numeric tower (Rat stays Rat). A double accumulator's rounding
-            // depended on iteration order: 0.3 + 0.5 + … printed 13.6 in one
-            // order and 13.599999999999998 in another. Rakudo is exact here.
+        if (m == "total") { // sum through the exact tower: Bag counts can exceed
+            // long long (10^20-scale weights), and Mix weights may be fractional
+            // — a Rat stays a Rat. A double accumulator's rounding depended on
+            // iteration order: 0.3 + 0.5 + … printed 13.6 in one order and
+            // 13.599999999999998 in another. Rakudo is exact here.
             if (isSet) return Value::integer((long long)inv.hash()->size());
             Value t = Value::integer(0);
-            for (auto& kv : *inv.hash()) t = applyArith("+", t, kv.second);
+            for (auto& kv : *inv.hash()) t = rtAdd(t, kv.second);
             return t;
         }
         if (m == "elems") return Value::integer((long long)inv.hash()->size());
