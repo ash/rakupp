@@ -47,3 +47,4 @@
 .claude/
 .claude-memory/
 build-mingw/
+/result

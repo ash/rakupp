@@ -1,0 +1,50 @@
+name: nix
+
+# Builds the Nix flake (issue #5: NixOS users can't run the generic prebuilt
+# Linux binary, so they build from source through flake.nix) and smoke-tests
+# the result. Path-gated for the same reason guix.yml is: the regular build
+# matrix in release.yml already covers the C++ side of every push, so this
+# job runs only when the Nix packaging itself (or this workflow) changes,
+# plus on demand via workflow_dispatch.
+#
+# No flake.lock is committed, so each run resolves nixos-unstable afresh —
+# that is deliberate: the flake is a leaf package with a single input, and a
+# resolution failure here would mean nixpkgs itself broke cmake/stdenv.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/nix.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'flake.nix'
+      - 'flake.lock'
+      - '.github/workflows/nix.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: nix build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Evaluate the flake
+        run: nix flake check --no-build
+
+      - name: Build the package
+        run: nix build .#default --print-build-logs
+
+      - name: Smoke-test the built rakupp
+        run: |
+          ./result/bin/rakupp --version
+          ./result/bin/rakupp -e 'my %h = a => 1, b => 2; .say for %h.sort; say [+] %h.values'
+          test -f ./result/lib/librakupp_rt.a   # the runtime --exe links against

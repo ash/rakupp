@@ -89,6 +89,22 @@ or add the channel to `~/.config/guix/channels.scm` and install:
 guix pull && guix install rakupp
 ```
 
+### Nix / NixOS
+
+NixOS can't run the generic prebuilt Linux binary (it has no global ELF
+interpreter — [issue #5](https://github.com/ash/rakupp/issues/5)), so build
+from source through the repository's flake:
+
+```sh
+nix run github:ash/rakupp -- -e 'say 42'
+```
+
+```sh
+nix profile install github:ash/rakupp
+```
+
+From a checkout, `nix build` produces `./result/bin/rakupp`.
+
 ## Quick start
 
 ```sh
