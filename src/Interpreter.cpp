@@ -4507,6 +4507,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (oneItem) items.push_back(lv);
                     else if (lv.t == VT::Array && lv.arr) items = *lv.arr;
                     else if (lv.t == VT::Range) items = lv.flatten();
+                    // a non-itemized Blob/Buf iterates its ELEMENTS (see the block
+                    // form below; Digest::MD5's digest loop is this modifier shape)
+                    else if (lv.t == VT::Str && (lv.hashKind == "Blob" || lv.hashKind == "Buf"))
+                        items = lv.blobList();
                     else if (lv.t == VT::Hash && lv.hash &&
                              (lv.hashKind.empty() || lv.hashKind == "Map" ||
                               lv.hashKind == "Set" || lv.hashKind == "SetHash" ||
@@ -4559,6 +4563,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 (listv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
                  && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
+            // A Blob/Buf that is NOT held in a scalar container iterates its
+            // ELEMENTS, like any other Positional: `.say for blob32.new(1,2)`
+            // runs twice (Rakudo), while `for $blob` — itemized — runs once.
+            // Digest::MD5 writes its digest with `… for <the reduce result>`,
+            // and treating that 4-element blob32 as one item produced a 4-byte
+            // digest instead of 16.
+            if (!scalarItem && listv.t == VT::Str &&
+                (listv.hashKind == "Blob" || listv.hashKind == "Buf")) {
+                Value spread = Value::array(); spread.isList = true;
+                *spread.arr = listv.blobList();
+                listv = std::move(spread);
+            }
             // A body using $^a/$^b placeholders is an arity-N block, exactly like
             // `-> $a, $b`: bind them (sorted, per placeholder rules) and batch.
             std::vector<std::string> phVars;
@@ -7516,6 +7532,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
         VarExpr tmp(nm); tmp.line = e->line;
         return lvalue(&tmp);
+    }
+    // `(my $w .= new)[$i] = v` — a parenthesized MUTATING method call is an
+    // lvalue through its invocant, exactly like the parenthesized assignment
+    // below. `.=` is a MethodCall node (mutate), not an Assign, so it needed
+    // its own arm; Digest::SHA2 keeps its message schedule in
+    // `(state buf32 $w .= new)[$j] = …`.
+    if (e->kind == NK::MethodCall && static_cast<MethodCall*>(e)->mutate) {
+        auto* mc = static_cast<MethodCall*>(e);
+        eval(e); // performs the mutation, storing through the invocant
+        if (mc->inv && mc->inv->kind == NK::VarExpr) {
+            auto* ve = static_cast<VarExpr*>(mc->inv.get());
+            if (Value* p = tctx_.cur->find(ve->name)) return p; // the just-built value
+        }
+        return lvalue(mc->inv.get());
     }
     if (e->kind == NK::Assign) {
         // `(my $a = …)<key> = v` — a parenthesized assignment is an lvalue via its target

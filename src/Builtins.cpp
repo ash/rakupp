@@ -6628,6 +6628,14 @@ void Interpreter::registerBuiltins() {
         return rtBChr(I, a.empty() ? Value::integer(0) : a[0]);
     };
     B["ords"] = [](Interpreter& I, ValueList& a) -> Value { Value v = a.empty() ? Value::any() : a[0]; ValueList none; return I.methodCall(v, "ords", none); };
+    // parse-base($str, $radix) — the SUB form of the method (Digest's md5.t
+    // builds its expected digests with `parse-base($hex, 16).polymod(…)`)
+    B["parse-base"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::any();
+        Value v = a[0];
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(v, "parse-base", rest);
+    };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSign(I, a.empty() ? Value::any() : a[0]); };
     B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { return rtBIsPrime(I, a.empty() ? Value::any() : a[0]); };
