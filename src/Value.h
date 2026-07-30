@@ -78,6 +78,8 @@ struct Callable {
     bool isNative = false;                            // `is native` — a C FFI call
     std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
     std::string nativeLibSub;                        // `is native(&sub)` — sub called at runtime for the lib path
+    void* nativeSymCache = nullptr;                   // resolved fn pointer — dlopen/dlsym once, not per call
+                                                      // (5 dlopen candidates per call cost a flat ~67 µs)
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable

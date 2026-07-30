@@ -691,7 +691,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
     }
     if (inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Hash) {
-        ValueList items = toList(inv);
+        // The snapshot below serves the arms that READ the whole list. The
+        // through-the-handle mutators never touch it — their arms operate on
+        // inv.arr alone — yet they paid the O(n) copy per call, which turned
+        // every accumulate loop quadratic: `@a.push($x)` 48k times in cognates'
+        // build-db was ~1.15 billion Value copies, the bulk of its 197 s.
+        // (The Hash `.push` arm has its own gate; lazy arrays are excluded —
+        // their arms materialize through the snapshot machinery.)
+        auto throughHandle = [&]() {
+            return m == "push" || m == "append" || m == "unshift" ||
+                   m == "prepend" || m == "pop" || m == "shift" || m == "splice";
+        };
+        ValueList items;
+        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()))
+            items = toList(inv);
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction
         if (m == "any" || m == "all" || m == "none" || m == "one") {
             Value j = Value::array(); j.enumName = m;

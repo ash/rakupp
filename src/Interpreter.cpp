@@ -2884,6 +2884,7 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH) {
             throw RakuError{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
         }
         if (tctx_.returning) return last; // enclosing routine consumes the flag
+        if (tctx_.givenCtl) return last;  // enclosing given/loop consumes the flag
         if (tctx_.loopCtl) {
             int c = tctx_.loopCtl; tctx_.loopCtl = 0;
             throw RakuError{Value::typeObj("X::ControlFlow"),
@@ -3000,10 +3001,12 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok) {
     for (auto it = leaves.rbegin(); it != leaves.rend(); ++it) {
         bool savedRet = tctx_.returning; Value savedRV = tctx_.returnV;
         int savedLC = tctx_.loopCtl;
-        tctx_.returning = false; tctx_.loopCtl = 0;
+        int savedGC = tctx_.givenCtl; Value savedGV = tctx_.givenV;
+        tctx_.returning = false; tctx_.loopCtl = 0; tctx_.givenCtl = 0;
         auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
         try { execBlock(*it, sc); } catch (...) {}
         tctx_.returning = savedRet; tctx_.returnV = std::move(savedRV); tctx_.loopCtl = savedLC;
+        tctx_.givenCtl = savedGC; tctx_.givenV = std::move(savedGV);
     }
     // `temp`-saved containers are restored on scope exit (reverse order), after LEAVE blocks.
     if (tctx_.cur && tctx_.cur->ex && !tctx_.cur->ex->tempRestores.empty()) {
@@ -3047,6 +3050,8 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
         tctx_.cur->define("$_", exceptionFor(e));
         tctx_.cur->define("$!", exceptionFor(e));
         bool matched = false;
+        uint64_t savedGF = tctx_.curGivenFrame; tctx_.curGivenFrame = 0; // when here must THROW (the loop below detects it by catch)
+        struct GFRestore { ExecContext& t; uint64_t f; ~GFRestore() { t.curGivenFrame = f; } } gfr{tctx_, savedGF};
         try {
             struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
             for (auto& s : catchBlk->stmts) exec(s.get());
@@ -3086,7 +3091,7 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             } else {
                 last = exec(s.get(), sink || i != lastIdx);
             }
-            if (tctx_.returning || tctx_.loopCtl) break; // cooperative return/next/last unwinds native blocks
+            if (tctx_.returning || tctx_.loopCtl || tctx_.givenCtl) break; // cooperative return/next/last/when unwinds native blocks
         }
     } catch (RakuError& e) {
         runLeavePhasers(b->stmts, /*ok=*/false);
@@ -3152,13 +3157,19 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     // this loop is now the innermost native loop for cooperative next/last/redo
     uint64_t savedLoopFrame = tctx_.curLoopFrame;
     tctx_.curLoopFrame = tctx_.frameTop;
+    uint64_t savedGivenFrame = tctx_.curGivenFrame;
+    tctx_.curGivenFrame = tctx_.frameTop;
     struct LoopGuard {
-        ExecContext& t; uint64_t lf;
-        ~LoopGuard() { t.curLoopFrame = lf; }
-    } lguard{tctx_, savedLoopFrame};
+        ExecContext& t; uint64_t lf, gf;
+        // restore both frames; clear a when-flag an exception left unconsumed
+        ~LoopGuard() { t.curLoopFrame = lf; t.curGivenFrame = gf; }
+    } lguard{tctx_, savedLoopFrame, savedGivenFrame};
     for (;;) {
         try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
               if (tctx_.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
+              if (tctx_.givenCtl) { // cooperative when-match in this loop's body: iteration done
+                  tctx_.givenCtl = 0; suppressLoopFirst_ = savedSF; return true;
+              }
               if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
                   int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
                   if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params)
@@ -4565,11 +4576,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                     return r;
                 }
+                uint64_t savedGF = tctx_.curGivenFrame; tctx_.curGivenFrame = tctx_.frameTop;
                 try {
                     if (skip) { if (g->hasElse) r = execBlock(g->elseBody.get(), env); }
                     else r = execBlock(g->body.get(), env);
+                    if (tctx_.givenCtl) { tctx_.givenCtl = 0; r = std::move(tctx_.givenV); } // cooperative when-match
                 } catch (BreakGivenEx& e) { r = e.hasVal ? e.v : Value::any(); }
-                catch (...) { if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_"); throw; }
+                catch (...) {
+                    tctx_.curGivenFrame = savedGF; tctx_.givenCtl = 0;
+                    if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
+                    throw;
+                }
+                tctx_.curGivenFrame = savedGF;
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                 return r;
             }
@@ -4594,8 +4612,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; // Empty
             }
-            try { return execBlock(g->body.get(), scope); }
-            catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); }
+            {
+                uint64_t savedGF = tctx_.curGivenFrame; tctx_.curGivenFrame = tctx_.frameTop;
+                struct GF { ExecContext& t; uint64_t f;
+                            // restore; clear a when-flag an exception left unconsumed
+                            ~GF() { t.curGivenFrame = f; t.givenCtl = 0; } } gf{tctx_, savedGF};
+                try { Value r = execBlock(g->body.get(), scope);
+                      if (tctx_.givenCtl) { tctx_.givenCtl = 0; return std::move(tctx_.givenV); } // cooperative when-match
+                      return r; }
+                catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); }
+            }
         }
         case NK::WhenStmt: {
             auto* w = static_cast<WhenStmt*>(s);
@@ -4616,6 +4642,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 Value bv;
                 try { bv = execBlock(w->body.get(), scope); }
                 catch (ProceedEx&) { return Value::any(); } // `proceed`: try the next when
+                // Same callable frame as the consuming given/loop body → set the
+                // cooperative flag instead of throwing (the throw walks macOS
+                // unwind info under a lock — ruinous per-row inside a bind loop)
+                if (tctx_.curGivenFrame != 0 && tctx_.frameTop == tctx_.curGivenFrame) {
+                    tctx_.givenCtl = 1; tctx_.givenV = bv; return bv;
+                }
                 throw BreakGivenEx{bv, true}; // matched `when` exits the given, carrying its value
             }
             // A `when` that did NOT match evaluates to its smartmatch result — False,
@@ -6210,44 +6242,58 @@ static bool g_cbTableInit = [] { cbFill(g_cbTable, std::make_integer_sequence<in
 // CPointer/CArray/Pointer returns are handled. Not supported: by-value C structs,
 // callbacks, and calls needing more than 8 integer or 8 float register args.
 Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs) {
-    void* handle = RTLD_DEFAULT;
-    // `is native(&sub)`: call the sub now to get the library path (a full path or
-    // bare name). Its result is cached on the Callable so we resolve it once.
-    std::string lib = c.nativeLib;
-    if (lib.empty() && !c.nativeLibSub.empty()) {
-        if (Value* f = tctx_.cur->find("&" + c.nativeLibSub)) {
-            ValueList none; Value r = callCallable(*f, none);
-            lib = r.toStr();
-        }
-    }
-    if (!lib.empty()) {
-        // try the name as-is, then platform-decorated forms
-        const std::string& l = lib;
-        std::string dlerr;
-        for (const std::string& cand : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"}) {
-            if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
-            if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
-                std::string es = e;
-                if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
+    // Resolve the symbol ONCE per Callable and cache the function pointer. This
+    // used to run on every call, and the dlopen candidate loop is the expensive
+    // part: each candidate that does NOT match (e.g. "sqlite3" before
+    // "libsqlite3.dylib" hits) makes dyld scan its whole search path, which came
+    // to a flat ~67 µs per crossing regardless of signature — 131–258× Rakudo
+    // (cognates finding 14: a 250k-crossing import took 197 s vs Rakudo's 5.7 s).
+    // The cache lives on the Callable, which every copy of the sub's Value
+    // shares through its shared_ptr. Benign race: two threads resolving the
+    // same sub store the same pointer. dlclose is never called, so the pointer
+    // stays valid for the life of the process.
+    void* sym = c.nativeSymCache;
+    if (!sym) {
+        void* handle = RTLD_DEFAULT;
+        // `is native(&sub)`: call the sub now to get the library path (a full
+        // path or bare name). Resolved once here, like Rakudo.
+        std::string lib = c.nativeLib;
+        if (lib.empty() && !c.nativeLibSub.empty()) {
+            if (Value* f = tctx_.cur->find("&" + c.nativeLibSub)) {
+                ValueList none; Value r = callCallable(*f, none);
+                lib = r.toStr();
             }
         }
-        if (!handle) throw RakuError{Value::typeObj("X::Libc"),
-            "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
+        if (!lib.empty()) {
+            // try the name as-is, then platform-decorated forms
+            const std::string& l = lib;
+            std::string dlerr;
+            for (const std::string& cand : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"}) {
+                if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
+                if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
+                    std::string es = e;
+                    if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
+                }
+            }
+            if (!handle) throw RakuError{Value::typeObj("X::Libc"),
+                "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
+        }
+        sym = dlsym(handle, c.nativeSym.c_str());
+        if (!sym) {
+            // Some libraries expose a renamed symbol behind a compat macro the header
+            // resolves at C compile time but that isn't a real exported symbol (so a
+            // module's `is native` on the old name can't dlsym it). Fall back to the
+            // known aliases — e.g. OpenSSL 3.x's SSL_get_peer_certificate is now only
+            // SSL_get1_peer_certificate.
+            static const std::map<std::string, std::string> aliases = {
+                {"SSL_get_peer_certificate", "SSL_get1_peer_certificate"},
+            };
+            auto it = aliases.find(c.nativeSym);
+            if (it != aliases.end()) sym = dlsym(handle, it->second.c_str());
+        }
+        if (!sym) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + c.nativeSym + "'"};
+        c.nativeSymCache = sym;
     }
-    void* sym = dlsym(handle, c.nativeSym.c_str());
-    if (!sym) {
-        // Some libraries expose a renamed symbol behind a compat macro the header
-        // resolves at C compile time but that isn't a real exported symbol (so a
-        // module's `is native` on the old name can't dlsym it). Fall back to the
-        // known aliases — e.g. OpenSSL 3.x's SSL_get_peer_certificate is now only
-        // SSL_get1_peer_certificate.
-        static const std::map<std::string, std::string> aliases = {
-            {"SSL_get_peer_certificate", "SSL_get1_peer_certificate"},
-        };
-        auto it = aliases.find(c.nativeSym);
-        if (it != aliases.end()) sym = dlsym(handle, it->second.c_str());
-    }
-    if (!sym) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + c.nativeSym + "'"};
 
     const std::vector<Param>* prm = c.params;
     std::vector<std::string> keep; keep.reserve(args.size()); // keep Str buffers alive across the call
@@ -6256,7 +6302,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // is-rw out-params: backing slots (stable addresses via deque) + copy-back list
     std::deque<long>   rwI;
     std::deque<double> rwD;
-    struct RwBack { size_t arg; const long* i; const double* d; };
+    struct RwBack { size_t arg; const long* i; const double* d; std::string ptrType; };
     std::vector<RwBack> rwbacks;
     struct CABack { size_t arg; size_t keep; }; // byte-backed CArray → copy bytes back
     std::vector<CABack> cabacks;
@@ -6267,9 +6313,21 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         std::string pt = p ? p->type : "";
         bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
         bool fp = isFlt || (pt.empty() && (v.t == VT::Num || v.t == VT::Rat));
-        if (p && p->isRw && w) { // `is rw` scalar → pass a pointer to a backing slot
-            if (isFlt) { rwD.push_back(v.toNum()); g.push_back((long)(intptr_t)&rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back()}); }
-            else       { rwI.push_back(v.toInt()); g.push_back((long)(intptr_t)&rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr}); }
+        bool rwPtr = p && p->isRw && (pt == "Pointer" || pt.rfind("Pointer[", 0) == 0);
+        if (rwPtr) {
+            // `Pointer is rw` out-param (sqlite3_open's sqlite3** shape): the C
+            // function wants a place to WRITE a pointer, so pass the address of a
+            // slot holding the current value — not the value itself, which for a
+            // fresh Pointer is NULL and reads as "ppDb was NULL" (SQLITE_MISUSE).
+            // Copy-back rebuilds a live Pointer from what the callee stored.
+            long cur = 0;
+            if (v.t == VT::Hash && v.hash && v.hash->count("addr")) cur = (long)(*v.hash)["addr"].toInt();
+            rwI.push_back(cur); g.push_back((long)(intptr_t)&rwI.back());
+            rwbacks.push_back({i, &rwI.back(), nullptr, pt});
+        }
+        else if (p && p->isRw && w) { // `is rw` scalar → pass a pointer to a backing slot
+            if (isFlt) { rwD.push_back(v.toNum()); g.push_back((long)(intptr_t)&rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back(), ""}); }
+            else       { rwI.push_back(v.toInt()); g.push_back((long)(intptr_t)&rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, ""}); }
         }
         else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
         else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
@@ -6306,12 +6364,14 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // is-rw copy-back: write each out-param's slot to the caller's lvalue
     for (auto& rb : rwbacks) {
         if (!rwArgs || rb.arg >= rwArgs->size()) continue;
-        Value nv = rb.i ? Value::integer(*rb.i) : Value::number(*rb.d);
+        Value nv = !rb.ptrType.empty() ? ncMakePointer(rb.ptrType, (void*)(intptr_t)*rb.i)
+                 : rb.i                ? Value::integer(*rb.i)
+                                       : Value::number(*rb.d);
         try {
             if (Value* lv = lvalue((*rwArgs)[rb.arg].get())) {
                 int nb = lv->natBits; bool ns = lv->natSigned;
                 *lv = nv;
-                if (nb) wrapNative(*lv, nb, ns);
+                if (nb && rb.ptrType.empty()) wrapNative(*lv, nb, ns);
             }
         } catch (RakuError&) {}
     }
@@ -14863,7 +14923,12 @@ Value Interpreter::eval(Expr* e) {
                 throw RedoEx{};
             }
             if (n == "proceed") throw ProceedEx{};   // leave when, keep matching
-            if (n == "succeed") throw BreakGivenEx{}; // exit the enclosing given
+            if (n == "succeed") { // exit the enclosing given
+                if (tctx_.curGivenFrame != 0 && tctx_.frameTop == tctx_.curGivenFrame) {
+                    tctx_.givenCtl = 1; tctx_.givenV = Value::any(); return Value::any(); // cooperative
+                }
+                throw BreakGivenEx{};
+            }
             if (n == "Nil") return Value::nil();
             if (n == "True" || n == "Bool::True") return Value::boolean(true);
             if (n == "False" || n == "Bool::False") return Value::boolean(false);

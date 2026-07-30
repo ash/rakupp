@@ -224,6 +224,15 @@ struct ExecContext {
     // labelled or cross-frame control still throws NextEx/LastEx/RedoEx.
     int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
     uint64_t curLoopFrame = 0;    // frameTop when the innermost native loop body runs
+    // Cooperative `when`/`default`/`succeed`: a match in the SAME callable frame
+    // as its enclosing given (or loop) body sets givenCtl instead of throwing
+    // BreakGivenEx — the block executors break out and the given/loop consumes
+    // the flag. A when behind a closure/builtin boundary still throws. This is
+    // the hot-path shape (`given $v { when Int {…} … }` per row): on macOS a
+    // C++ throw walks dyld unwind info under a lock, ~tens of µs each.
+    int givenCtl = 0;             // 0 none, 1 when matched (break the given)
+    Value givenV;                 // the matched when-block's value
+    uint64_t curGivenFrame = 0;   // frameTop when a consuming given/loop body runs
     // current callable/routine for the &?BLOCK / &?ROUTINE magicals — raw pointers
     // into the live callCallableRaw frame (resolved lazily at lookup, zero per-call cost)
     const Value* curBlockVal = nullptr;
