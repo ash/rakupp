@@ -21,11 +21,14 @@ my @fail;
 @fail.push('dir-test') unless dir('.', test => /'.'/).elems > 0;
 
 # 3. File::Find works on top of dir() (finds a known file in src/)
-# Guarded: File::Find is an ecosystem module; skip where it isn't installed (a
-# clean CI runner), still fail if it's present but returns the wrong count.
+# Guarded with a RUNTIME require: File::Find is an ecosystem module, absent on a
+# clean CI runner. The old guard put `use` inside the try, which stopped working
+# when a failed `use` became a compile-time error — the file then died before
+# the try existed, on CI only (the module IS installed on the dev machine, which
+# is exactly how the gap hid locally). `require` fails at run time, catchably;
+# the rest of this file's checks keep running everywhere either way.
 {
-    use File::Find;
-    my $n = try { find(dir => 'src', name => 'Value.h').elems };
+    my $n = try { require File::Find; find(dir => 'src', name => 'Value.h').elems };
     with $n     { @fail.push("file-find ($n)") unless $n == 1 }
     else        { note '# File::Find not installed here — skipping find() check' }
 }
