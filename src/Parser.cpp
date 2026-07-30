@@ -4136,6 +4136,23 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
                 if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
             }
+            // traits on the sigilless param — `\key is raw` is how JSON::Class
+            // writes every DELETE-KEY/EXISTS-KEY signature; without this the `is`
+            // fell out of the parameter list ("expected ) (got 'is')")
+            while (isIdent("is") || isIdent("where")) {
+                std::string trait = advance().text;
+                if (trait == "where") { p.whereExpr = parseExpr(BP_ASSIGN + 1); continue; }
+                if (isIdent("rw") || isIdent("copy") || isIdent("raw")) {
+                    p.isRw   = cur().text == "rw";
+                    p.isCopy = cur().text == "copy";
+                    p.isRaw  = cur().text == "raw";
+                }
+                if (isKind(Tok::Ident)) advance();
+                if (isKind(Tok::LParen)) {
+                    int d = 0;
+                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+                }
+            }
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma)) break;
@@ -4206,8 +4223,22 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 if (sm == "D") p.defConstraint = 1; else if (sm == "U") p.defConstraint = 2;
             }
             // `(::?CLASS:U: Bar $b)` — a type-only INVOCANT marker: the bare
-            // colon ends it; nothing binds, move on to the real parameters
-            if (isOp(":")) { advance(); continue; }
+            // colon ends it. The param IS pushed — dropping it here threw away the
+            // :D/:U smiley just parsed into it, so `multi method g(::?CLASS:U:)`
+            // and `(::?CLASS:D:)` were indistinguishable and the first declared
+            // candidate won for every invocant (JSON::Class splits its type-object
+            // and instance behaviour on exactly this).
+            if (isOp(":")) {
+                advance();
+                p.invocant = true; p.type = "Mu"; p.name = ""; p.sigil = '$';
+                params.push_back(std::move(p));
+                continue;
+            }
+            // no invocant colon: `(::?CLASS:U)` is an anonymous POSITIONAL of the
+            // enclosing type (verified against Rakudo — its signature reads
+            // `(D $:: D:U, *%_)`); type it Mu and let the anonymous-typed-param
+            // branch below push it with the smiley kept
+            p.type = "Mu";
         }
         // indirect/symbolic type constraint:  ::(EXPR) $p  (XML::Node uses
         // `method reparent(::(q<XML::Element>) $parent)`). The type is computed at
@@ -4317,6 +4348,23 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 advance(); // '('
                 p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
                 if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
+            }
+            // traits on the sigilless param — `\key is raw` is how JSON::Class
+            // writes every DELETE-KEY/EXISTS-KEY signature; without this the `is`
+            // fell out of the parameter list ("expected ) (got 'is')")
+            while (isIdent("is") || isIdent("where")) {
+                std::string trait = advance().text;
+                if (trait == "where") { p.whereExpr = parseExpr(BP_ASSIGN + 1); continue; }
+                if (isIdent("rw") || isIdent("copy") || isIdent("raw")) {
+                    p.isRw   = cur().text == "rw";
+                    p.isCopy = cur().text == "copy";
+                    p.isRaw  = cur().text == "raw";
+                }
+                if (isKind(Tok::Ident)) advance();
+                if (isKind(Tok::LParen)) {
+                    int d = 0;
+                    do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+                }
             }
         } else if (isKind(Tok::Var)) {
             // `sub f($0)` — numeric names can't be parameters either
@@ -4744,6 +4792,15 @@ StmtPtr Parser::parseSubset() {
     // stream. Loop until neither matches.
     for (;;) {
         if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) sd->baseType = advance().text; continue; }
+        // `will complain { … }` (use experimental :will-complain, 6.e): a custom
+        // type-check MESSAGE. Parse-only — the failure still throws, it just
+        // carries the stock text. JSON::Class hangs one on its AssocOrPos subset.
+        if (isIdent("will")) {
+            advance();
+            if (isKind(Tok::Ident)) advance();      // complain
+            if (isKind(Tok::LBrace)) { auto blk = parseBlock(); (void)blk; }
+            continue;
+        }
         if (isIdent("is")) {
             advance();
             if (isKind(Tok::Ident)) advance();
@@ -5078,6 +5135,10 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     }
                     if (tr == "is" && isIdent("rw")) a.rw = true;
                     if (tr == "is" && isIdent("required")) a.required = true;
+                    // `is built` / `is built(:bind)` — a private attr the default
+                    // constructor may set by name (JSON::Class's $!declarant); the
+                    // generic skip below consumes any (:bind)-style argument
+                    if (tr == "is" && isIdent("built")) a.built = true;
                     // `is required("reason")` — the reason goes into the exception
                     // message. The generic trait-argument skip below used to eat it.
                     if (tr == "is" && isIdent("required") && peek().kind == Tok::LParen) {
@@ -5167,7 +5228,10 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             bool isM = false, isSub = false;
             if (isIdent("method") || isIdent("submethod")) { isSub = isIdent("submethod"); advance(); isM = true; }
             else if (isIdent("sub")) advance();
-            auto s = parseSub(true);
+            // isProto must travel: a bare `{*}` proto METHOD is the group
+            // definition, not a candidate — without the flag it entered dispatch
+            // with its (|) slurpy and beat every invocant-constrained candidate
+            auto s = parseSub(true, multiness == "proto");
             if (static_cast<SubDecl*>(s.get())->name.empty())
                 throw ParseError("Cannot put " + multiness + " on anonymous routine",
                                  cur().line, "X::Anon::Multi",

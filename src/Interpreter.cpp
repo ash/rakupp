@@ -3632,6 +3632,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // class REGISTERED (classes_[clsName], far below) — so unknown parents
             // are collected and offered to the trait_mod after registration.
             std::vector<std::string> pendingIsTraits;
+            // A `unit role`/`unit class` file keeps its `use` statements INSIDE the
+            // body (the body is the rest of the file), but parent/role resolution
+            // below needs those modules loaded NOW: `unit role JX::Attr; use
+            // JX::Descriptor; also does JX::Descriptor;` resolved the parent before
+            // the use ran, silently got null (tolerated for roles), and the
+            // composing class then failed "Attribute $!declarant not declared"
+            // (JSON::Class's whole Attr chain is built this way). Loads are cached,
+            // so the body's own execution of the same `use` later is a no-op.
+            for (auto& bs : cd->body)
+                if (bs && bs->kind == NK::UseStmt) exec(bs.get());
             // anonymous `role {…}` / `class {…}` literals get a synthesized name so
             // they can be registered, mixed in (`does`/`but`), and introspected.
             // an unqualified class nested in a class/package body registers under
@@ -3745,7 +3755,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     else if (!kv.second.code->isStub) { provided[kv.first][""].insert(kv.second.code.get()); providerRoles[kv.first].insert(role->name); }
                 }
             std::set<std::string> conflicted;
-            for (auto& kv : provided) for (auto& sk : kv.second) if (sk.second.size() > 1) conflicted.insert(kv.first);
+            // a conflict needs providers from TWO DIFFERENT roles: one role's own
+            // multi candidates can collide on our sig key (invocant-only sigs like
+            // `(::?CLASS:U:)` vs `(::?CLASS:D:)` both key as "") without being a
+            // conflict at all — JSON::Class's Descriptor tripped this on itself
+            for (auto& kv : provided)
+                for (auto& sk : kv.second)
+                    if (sk.second.size() > 1 && providerRoles[kv.first].size() > 1)
+                        conflicted.insert(kv.first);
             // compose additional `does Role`s: flatten their methods/attrs in (the
             // class's own methods, registered below, override by key). Multi
             // dispatchers are CLONED (never share the role's own dispatcher) and
@@ -3898,6 +3915,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = a.type; ca.requiredWhy = a.requiredWhy;
                 ca.containerIs = a.containerIs;
                 ca.handles = a.handles;
+                ca.built = a.built;
                 ca.defConstraint = a.defConstraint;
                 ca.def = a.def.get();
                 ca.declId = &a;
@@ -3942,6 +3960,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // separate methods in Raku; `self!name` vs `self.name`). Only self!name
                 // dispatch and .^private_methods look here.
                 code.code->isPrivateMethod = md->isPrivate;
+                // a PURE `{*}` proto method is the group definition, not a candidate
+                // — same rule as the sub path. Without this the proto entered the
+                // candidate list with its `(|)` slurpy and WON whenever the real
+                // candidates were invocant-constrained, so `D.g` printed `*`.
+                code.code->isProto = md->isProto && md->body.size() == 1 &&
+                    md->body[0]->kind == NK::ExprStmt &&
+                    static_cast<ExprStmt*>(md->body[0].get())->e &&
+                    static_cast<ExprStmt*>(md->body[0].get())->e->kind == NK::Whatever;
                 const std::string key = md->isPrivate ? "!" + md->name : md->name;
                 if (md->isMulti) {
                     auto it = ci->methods.find(key);
@@ -6970,6 +6996,19 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
                 if (seen) continue;
                 int s = scoreCandidate(cand, as);
+                // the invocant's definedness smiley (`D:U:` / `::?CLASS:D:`): a
+                // constrained invocant REJECTS on mismatch and outranks an
+                // unconstrained candidate on match — this is how a proto splits
+                // its type-object and instance behaviours (JSON::Class everywhere)
+                if (s >= 0 && cand.code && cand.code->params)
+                    for (auto& ip : *cand.code->params) {
+                        if (!ip.invocant || !ip.defConstraint) continue;
+                        bool selfDef = isDefined(selfCopy);
+                        if ((ip.defConstraint == 1 && !selfDef) ||
+                            (ip.defConstraint == 2 && selfDef)) s = -1;
+                        else s += 1000;
+                        break;
+                    }
                 if (s > bestScore) { bestScore = s; best = &cand; }
             }
             if (!best || bestScore < 0) {

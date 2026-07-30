@@ -1782,7 +1782,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& arg : args)
                     if (arg.t == VT::Pair) {
                         const ClassAttr* at = ci->findAttr(arg.s);
-                        if (at && at->pub)
+                        // `is built` opts a PRIVATE attr into construction-by-name —
+                        // that is the trait's whole purpose (JSON::Class binds its
+                        // $!declarant this way)
+                        if (at && (at->pub || at->built))
                             od->attrs[arg.s] = coerceToSigil(arg.pairVal ? *arg.pairVal : Value::any(), at->sigil);
                     }
                 // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
