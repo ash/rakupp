@@ -359,8 +359,11 @@ bool Parser::startsListopArg(const Token& t) const {
                    ((t.text == "%" || t.text == "@") && &t == &cur() &&
                     ((peek().kind == Tok::LParen && !peek().spaceBefore) ||
                      (peek().kind == Tok::Var && !peek().spaceBefore && peek().text.size() > 1))) || // `%(...)` / `@(...)` / `@$x` / `%$h` contextualizers
-                   (t.text == "&" && &t == &cur() &&
-                    peek().kind == Tok::LBracket && !peek().spaceBefore) || // infix-as-value `say &[+](2,3)`
+                   (t.text == "&" && &t == &cur() && !peek().spaceBefore &&
+                    (peek().kind == Tok::LBracket ||   // infix-as-value `say &[+](2,3)`
+                     peek().kind == Tok::LParen ||     // Callable contextualizer `say &(%h<k>)()`
+                     (peek().kind == Tok::Var && peek().text.size() > 1 &&
+                      (peek().text[0] == '%' || peek().text[0] == '@' || peek().text[0] == '$')))) || // `say &%h<k>()`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || // ∞, «qw», <<qww>>
                    userPrefix_.count(t.text) || userCircumfix_.count(t.text); // user prefix / circumfix-open
         case Tok::Ident: {
@@ -2870,6 +2873,17 @@ ExprPtr Parser::parsePrimary() {
                 (peek().text[0] == '%' || peek().text[0] == '@' || peek().text[0] == '$')) {
                 advance(); // &
                 return parsePostfix(parsePrimary());
+            }
+            // `&(EXPR)` — the parenthesised Callable contextualizer: the inner
+            // expression IS the callable and the `&` adds nothing at runtime
+            // (Encode dispatches `&(%encodings{$encoding})($buf)` this way).
+            // parsePostfix attaches the call/subscript that follows.
+            if (t.text == "&" && peek().kind == Tok::LParen && !peek().spaceBefore) {
+                advance(); // &
+                advance(); // (
+                auto inner = parseExpression();
+                expectKind(Tok::RParen, ")");
+                return parsePostfix(std::move(inner));
             }
             if (t.text == "*") { advance(); return std::make_unique<WhateverExpr>(); }
             if (t.text == "**") { advance(); auto w = std::make_unique<WhateverExpr>(); w->hyper = true; return w; } // HyperWhatever (e.g. %h{**})

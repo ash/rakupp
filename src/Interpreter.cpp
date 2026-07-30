@@ -7029,13 +7029,14 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     // copying it back late would re-apply a stale value over the callee's own
     // edits, and lvalue() on an untouched arg can autovivify a missing path.
     bool any = false;
-    for (auto& p : *params) if (p.isRw || p.sigil == '\\') any = true;
+    for (auto& p : *params) if (p.isRw || p.isRaw || p.sigil == '\\') any = true;
     if (!any) return;
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
+        if (p.invocant) continue;  // an explicit `C:U:` invocant consumes no arg slot
         if (p.slurpy) break;
-        if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size()) {
+        if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
             auto it = env->vars.find(p.name);
             if (it != env->vars.end()) {
                 auto sy = env->xr().rwSynced.find(p.name);
@@ -7056,8 +7057,9 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
+        if (p.invocant) continue;  // an explicit `C:U:` invocant consumes no arg slot
         if (p.slurpy) break;
-        if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size()) {
+        if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
             env->x().rwLinks[p.name] = { (*rwArgs)[pi].get(), tctx_.cur };
             auto it = env->vars.find(p.name);
             env->x().rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
@@ -7076,8 +7078,9 @@ void Interpreter::setupRwSlots(const std::vector<Param>* params, std::shared_ptr
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
+        if (p.invocant) continue;  // an explicit `C:U:` invocant consumes no arg slot
         if (p.slurpy) break;
-        if ((p.isRw || p.sigil == '\\') && pi < slots->size()) {
+        if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < slots->size()) {
             if (Value* s = (*slots)[pi]) {
                 env->x().rwDirect[p.name] = s;
                 auto it = env->vars.find(p.name);
@@ -13557,6 +13560,17 @@ Value Interpreter::evalCall(Call* c) {
     // type-object coercion call: Any(x) / Mu(x) / Cool(x) is the value itself
     if ((c->name == "Any" || c->name == "Mu" || c->name == "Cool") && c->args.size() == 1)
         return eval(c->args[0].get());
+    // A user class with CALL-ME is invokable by NAME: `Trap(my $*OUT)` calls the
+    // type object's CALL-ME multi(s). Checked BEFORE the coercion protocol —
+    // Rakudo only coerces when no CALL-ME exists. rwArgs = the call's argument
+    // exprs, so an `is raw`/`is rw` CALL-ME param can write back (Trap assigns
+    // the built object INTO the freshly-declared `my $*OUT` it was handed).
+    {
+        auto cit = classes_.find(c->name);
+        if (cit != classes_.end())
+            if (Value* cm = cit->second->findMethod("CALL-ME"))
+                return invokeMethod(*cm, Value::typeObj(c->name), std::move(args), &c->args);
+    }
     // General type-coercion call `T(x)`: a known type used as a routine coerces its
     // sole argument through the argument's `.T` method (Raku's coercion protocol) —
     // e.g. Promise(supply {…}) == $supply.Promise, Supply($chan) == $chan.Supply.
