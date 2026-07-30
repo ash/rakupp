@@ -485,8 +485,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::vector<std::string> argv;
             auto it = inv.hash->find("argv");
             if (it != inv.hash->end() && it->second.arr) for (auto& x : *it->second.arr) argv.push_back(x.toStr());
+            // run(..., :in, :env(...), :cwd(...)) stashed these on the Proc
+            std::vector<std::string> envKV; bool haveEnv = false;
+            auto ei = inv.hash->find("env-kv");
+            if (ei != inv.hash->end() && ei->second.arr) {
+                haveEnv = true;
+                for (auto& x : *ei->second.arr) envKV.push_back(x.toStr());
+            }
+            std::string cwd;
+            auto ci = inv.hash->find("cwd");
+            if (ci != inv.hash->end()) cwd = ci->second.toStr();
             std::string out; int code;
-            spawnWithInput(argv, input, out, code, this);
+            spawnWithInput(argv, input, out, code, this, haveEnv ? &envKV : nullptr, cwd);
             (*inv.hash)["out-str"] = Value::str(out);      // shared hash: $proc.out.slurp sees this
             (*inv.hash)["exitcode"] = Value::integer(code);
             return Value::boolean(true);

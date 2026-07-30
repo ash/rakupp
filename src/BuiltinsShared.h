@@ -46,7 +46,9 @@ const std::vector<std::string>& typeAncestry(const std::string& t);
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 std::string rakuRepr(const Value& v);
 void spawnWithInput(const std::vector<std::string>& argv, const std::string& input,
-                           std::string& out, int& exitCode, Interpreter* gil = nullptr);
+                           std::string& out, int& exitCode, Interpreter* gil = nullptr,
+                           const std::vector<std::string>* envKV = nullptr,
+                           const std::string& cwd = "");
 
 bool isBuiltinRole(const std::string& n);
 

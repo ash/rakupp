@@ -105,6 +105,20 @@ std::string lubType(const std::string& a, const std::string& b) {
     return "Mu";
 }
 
+#if !defined(_WIN32)
+extern "C" { extern char **environ; } // swapped in the child for run(:env(...)) — a pointer store, async-signal-safe
+#endif
+
+// Build the "K=V\0K=V\0\0" block CreateProcessA wants from a K=V list.
+#if defined(_WIN32)
+static std::string winEnvBlock(const std::vector<std::string>& kvs) {
+    std::string blk;
+    for (auto& kv : kvs) { blk += kv; blk += '\0'; }
+    blk += '\0';
+    return blk;
+}
+#endif
+
 // Spawn a child process, capture its stdout, with an optional wall-clock timeout.
 // `gil` (if non-null) is the interpreter: the GIL is released for the child-process
 // WAIT so sibling worker threads run — and spawn their own children — concurrently.
@@ -113,7 +127,8 @@ std::string lubType(const std::string& a, const std::string& b) {
 static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec,
                          std::string& out, int& exitCode, bool& timedout,
                          Interpreter* gil = nullptr, std::string* errOut = nullptr,
-                         const std::string& cwd = "", long long* pidOut = nullptr) {
+                         const std::string& cwd = "", long long* pidOut = nullptr,
+                         const std::vector<std::string>* envKV = nullptr) {
     out.clear(); exitCode = -1; timedout = false;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
@@ -163,7 +178,8 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     si.hStdError = errOut ? errW : nul;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
-    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+    std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
+    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
     DWORD spawnErr = started ? 0 : GetLastError();
     // Not an .exe? It may be a .bat/.cmd, or a name the command processor knows.
     // CreateProcess cannot start those directly, so retry through COMSPEC — which
@@ -174,7 +190,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         const char* comspec = std::getenv("COMSPEC");
         std::string shellCmd = std::string(comspec && *comspec ? comspec : "cmd.exe") + " /c " + cmd;
         cmdbuf2.assign(shellCmd.begin(), shellCmd.end()); cmdbuf2.push_back('\0');
-        started = CreateProcessA(nullptr, cmdbuf2.data(), nullptr, nullptr, TRUE, 0, nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+        started = CreateProcessA(nullptr, cmdbuf2.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
         if (!started) spawnErr = GetLastError();
     }
     CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
@@ -230,6 +246,14 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     cargv.reserve(argv.size() + 1);
     for (auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
     cargv.push_back(nullptr);
+    // run(:env(...)) — the replacement environment, built BEFORE fork (no malloc
+    // in the child); the child swaps `environ` (a pointer store) before execvp
+    std::vector<char*> cenv;
+    if (envKV) {
+        cenv.reserve(envKV->size() + 1);
+        for (auto& kv : *envKV) cenv.push_back(const_cast<char*>(kv.c_str()));
+        cenv.push_back(nullptr);
+    }
     int pipefd[2], errfd[2];
     if (pipe(pipefd) != 0) return;
     if (errOut && pipe(errfd) != 0) { close(pipefd[0]); close(pipefd[1]); return; }
@@ -243,6 +267,7 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
         close(pipefd[0]); close(pipefd[1]);
         if (errOut) { close(errfd[0]); close(errfd[1]); }
         if (!cwd.empty()) { if (::chdir(cwd.c_str()) != 0) _exit(126); }
+        if (envKV) environ = cenv.data();
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
@@ -301,7 +326,8 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
 // both pipes so it won't deadlock when the child's output exceeds the pipe buffer
 // while we're still writing input (as pandoc can on a large page).
 void spawnWithInput(const std::vector<std::string>& argv, const std::string& input,
-                           std::string& out, int& exitCode, Interpreter* gil) {
+                           std::string& out, int& exitCode, Interpreter* gil,
+                           const std::vector<std::string>* envKV, const std::string& cwd) {
     out.clear(); exitCode = -1;
     if (argv.empty()) return;
 #if defined(_WIN32)
@@ -318,7 +344,8 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     si.hStdInput = inR; si.hStdOutput = outW; si.hStdError = nul;
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
-    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr /* inherit cwd: spawnWithInput has no :cwd */, &si, &pi);
+    std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
+    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
     CloseHandle(inR); CloseHandle(outW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
     if (!started) { CloseHandle(inW); CloseHandle(outR); return; }
     bool parked = gil ? gil->gilPark() : false;
@@ -354,6 +381,12 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     cargv.reserve(argv.size() + 1);
     for (auto& s : argv) cargv.push_back(const_cast<char*>(s.c_str()));
     cargv.push_back(nullptr);
+    std::vector<char*> cenv; // run(:env(...)) — see spawnCapture
+    if (envKV) {
+        cenv.reserve(envKV->size() + 1);
+        for (auto& kv : *envKV) cenv.push_back(const_cast<char*>(kv.c_str()));
+        cenv.push_back(nullptr);
+    }
     int inPipe[2], outPipe[2];
     if (pipe(inPipe) != 0) return;
     if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return; }
@@ -365,6 +398,8 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
         int devnull = open("/dev/null", O_WRONLY);
         if (devnull >= 0) dup2(devnull, STDERR_FILENO);
         close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
+        if (!cwd.empty()) { if (::chdir(cwd.c_str()) != 0) _exit(126); }
+        if (envKV) environ = cenv.data();
         execvp(cargv[0], cargv.data());
         _exit(127);
     }
@@ -5758,11 +5793,21 @@ void Interpreter::registerBuiltins() {
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
+        std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
                 if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0; }
                 else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0; }
                 else if (v.s == "in") wantIn = v.pairVal ? v.pairVal->truthy() : true;
+                else if (v.s == "env" && v.pairVal && v.pairVal->t == VT::Hash && v.pairVal->hash) {
+                    // :env(%h) — the child's ENTIRE environment (Rakudo semantics).
+                    // Silently ignored before: run(..., :env(%(%*ENV, RAKULIB =>
+                    // ...))) inherited the parent env unchanged.
+                    haveEnv = true;
+                    for (auto& kv : *v.pairVal->hash) envKV.push_back(kv.first + "=" + kv.second.toStr());
+                    std::sort(envKV.begin(), envKV.end()); // deterministic; Windows wants sorted blocks
+                }
+                else if (v.s == "cwd" && v.pairVal) cwd = v.pairVal->toStr(); // was silently ignored too
             }
             else argv.push_back(v.toStr());
         }
@@ -5774,6 +5819,8 @@ void Interpreter::registerBuiltins() {
             // Defer spawning: the process runs when its stdin is written via
             // `.in.spurt(...)`, so we can feed input and capture output together.
             (*p.hash)["deferred"] = Value::boolean(true);
+            if (haveEnv) { Value ev = Value::array(); for (auto& kv : envKV) ev.arr->push_back(Value::str(kv)); (*p.hash)["env-kv"] = ev; }
+            if (!cwd.empty()) (*p.hash)["cwd"] = Value::str(cwd);
             (*p.hash)["out-str"] = Value::str("");
             (*p.hash)["err-str"] = Value::str("");
             (*p.hash)["exitcode"] = Value::integer(0);
@@ -5783,7 +5830,8 @@ void Interpreter::registerBuiltins() {
         // :err captures; :!err captures-and-discards (so probes like
         // `zrun('git','--help', :!out, :!err)` stay silent); unspecified inherits.
         long long childPid = 0;
-        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, "", &childPid);
+        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
+                     haveEnv ? &envKV : nullptr);
         if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
         if (errMode == -1) { /* stderr already inherited by the child */ }
         (*p.hash)["exitcode"] = Value::integer(code);
