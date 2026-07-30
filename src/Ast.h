@@ -308,6 +308,9 @@ struct SubDecl : Stmt {
     bool isNative = false;    // `is native` — a C FFI call
     std::string nativeLib;    // `is native('lib')` — "" ⇒ the default namespace (libc etc.)
     std::string nativeLibSub; // `is native(&sub)` — a sub name called at runtime for the lib path
+    ExprPtr nativeLibExpr;    // `is native(EXPR)` — any other argument (a constant,
+                              // %?RESOURCES<libraries/…>), evaluated when the declaration
+                              // executes (module scope = Rakudo's trait-application time)
     std::string nativeSym;    // `is symbol('name')` — "" ⇒ the sub's own name
     SubDecl(): Stmt(NK::SubDecl) {}
 };

@@ -4652,7 +4652,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
             if (peek().kind == Tok::LParen) {
                 advance(); advance(); // native (
                 if (isKind(Tok::StrLit) || isKind(Tok::StrInterp)) s->nativeLib = cur().text;
-                else {
+                else if (cur().text == "&" || (!cur().text.empty() && cur().text[0] == '&')) {
                     // `is native(&gen-lib)`: a code ref whose call yields the lib
                     // path (OpenSSL, many NativeCall modules). Capture the sub name.
                     std::string ref = cur().text;
@@ -4660,6 +4660,17 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
                     else if (!ref.empty() && ref[0] == '&') ref = ref.substr(1);    // `&name` one token
                     if (!ref.empty() && (std::isalpha((unsigned char)ref[0]) || ref[0] == '_'))
                         s->nativeLibSub = ref;
+                }
+                else {
+                    // ANY other argument — `constant SHA1 = %?RESOURCES<libraries/sha1>`
+                    // then `is native(SHA1)` (Digest::SHA1::Native, issue #13), or
+                    // `is native(%?RESOURCES<libraries/x>)` inline. Parse the whole
+                    // expression; it is evaluated when the sub DECLARATION executes,
+                    // in the module's own scope — a call-time eval could not see a
+                    // module-private constant from the caller's env. (A bare type
+                    // object like `is native(Str)` evaluates to undefined ⇒ the
+                    // default dlsym namespace, same as before.)
+                    s->nativeLibExpr = parseExpression();
                 }
                 int d = 1; while (d > 0 && !isKind(Tok::End)) { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
                 continue;

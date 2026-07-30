@@ -2562,7 +2562,34 @@ Value Interpreter::buildSourceResourceMap(const std::string& distRoot) {
         size_t vend = j.find('"', vs + 1);
         if (vend == std::string::npos || vend > rb) break;
         std::string nm = j.substr(vs + 1, vend - vs - 1);
-        Value path = Value::str(distRoot + "/resources/" + nm);
+        // A `libraries/<name>` resource resolves to the PLATFORM library file
+        // (Rakudo: $*VM.platform-library-name) — the file on disk is
+        // resources/libraries/libsha1.dylib, never the literal "sha1"
+        // (Digest::SHA1::Native, issue #13). Probe the decorated candidates and
+        // take the first that exists; with nothing built yet, use the platform-
+        // canonical name so an error message names the file that SHOULD exist.
+        std::string rel = nm;
+        if (nm.rfind("libraries/", 0) == 0) {
+            std::string dir = "libraries/", base = nm.substr(10);
+            size_t sl = base.rfind('/');
+            if (sl != std::string::npos) { dir += base.substr(0, sl + 1); base = base.substr(sl + 1); }
+            std::vector<std::string> cands;
+#if defined(_WIN32)
+            cands = {base + ".dll", "lib" + base + ".dll"};
+#elif defined(__APPLE__)
+            cands = {"lib" + base + ".dylib", "lib" + base + ".so"};
+#else
+            cands = {"lib" + base + ".so", "lib" + base + ".dylib"};
+#endif
+            cands.push_back(base); // a literal file, if the dist ships one
+            rel.clear();
+            for (auto& cnd : cands) {
+                std::ifstream f(distRoot + "/resources/" + dir + cnd);
+                if (f) { rel = dir + cnd; break; }
+            }
+            if (rel.empty()) rel = dir + cands[0];
+        }
+        Value path = Value::str(distRoot + "/resources/" + rel);
         path.hashKind = "IO"; // IO::Path — supports .IO/.slurp/.Str/.e
         (*h.hash)[nm] = path;
         p = vend + 1;
@@ -3342,6 +3369,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
                 if (sd->isNative) { c.code->isNative = true; c.code->nativeLib = sd->nativeLib;
                                     c.code->nativeLibSub = sd->nativeLibSub;
+                    // `is native(EXPR)` — evaluate NOW, in the declaring module's
+                    // scope, where `constant SHA1 = %?RESOURCES<libraries/sha1>`
+                    // is visible (Rakudo's trait-application time). An undefined
+                    // result (`is native(Str)`) keeps the default namespace. If
+                    // the eval dies (forward reference), keep the AST for one
+                    // retry at first call.
+                    if (sd->nativeLibExpr && c.code->nativeLib.empty() && c.code->nativeLibSub.empty()) {
+                        try {
+                            Value r = eval(sd->nativeLibExpr.get());
+                            if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
+                            if (isDefined(r)) c.code->nativeLib = r.toStr();
+                        } catch (RakuError&) {}
+                        // No lib yet? Named subs are HOISTED, so this runs before
+                        // the module's `constant SHA1 = …` statement has executed —
+                        // keep the AST and retry at first call, whose env chain
+                        // includes the module scope (the constant is visible then).
+                        if (c.code->nativeLib.empty())
+                            c.code->nativeLibExpr = sd->nativeLibExpr.get();
+                    }
                                     c.code->nativeSym = sd->nativeSym.empty() ? sd->name : sd->nativeSym; }
                 for (auto& p : *prms) {
                     // a default makes no sense on a slurpy or a required param
@@ -6263,6 +6309,15 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                 ValueList none; Value r = callCallable(*f, none);
                 lib = r.toStr();
             }
+        }
+        if (lib.empty() && c.nativeLibExpr) {
+            // declaration-time eval failed — retry in the caller's env (best
+            // effort: a module-private constant may not be visible here)
+            try {
+                Value r = eval(const_cast<Expr*>(c.nativeLibExpr));
+                if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
+                if (isDefined(r)) lib = r.toStr();
+            } catch (RakuError&) {}
         }
         if (!lib.empty()) {
             // try the name as-is, then platform-decorated forms
