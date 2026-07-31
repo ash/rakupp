@@ -40,6 +40,24 @@ my @a1 = 1, 2 if False;
 my $c1 = 1 if False for 1..2;
 @fail.push('chained') unless ($c1 ~ 'h') eq 'h';
 
+# METHOD bodies hoist too (issue #13's follow-up: the sub path always did,
+# invokeMethod never called hoistExprDecls, so a false condition inside a
+# method left the variable undeclared — the reporter's URI::authority case).
+class Meth {
+    has $!attr;
+    method report {
+        my $auth = "$!attr@" if $!attr;   # attribute is undefined → skipped
+        $auth ~= 'example.com';
+        $auth
+    }
+    method taken {
+        my $v = 'x' if True;
+        $v ~ 'y'
+    }
+}
+@fail.push("method skipped: {Meth.new.report}") unless Meth.new.report eq 'example.com';
+@fail.push("method taken: {Meth.new.taken}")    unless Meth.new.taken eq 'xy';
+
 # the same shapes inside a sub (block-scope hoisting path)
 sub probe {
     my $s1 = 7 while False;

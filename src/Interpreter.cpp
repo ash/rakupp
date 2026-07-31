@@ -7370,6 +7370,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
     } fguard{tctx_, savedFrameTop, savedRoutineFrame};
     Value last = Value::any();
+    // A method body is a routine scope like a sub's: a `my` buried in a
+    // ternary/nqp branch — or under a statement modifier (`my $x = … if …`)
+    // — declares HERE regardless of whether the branch runs. The sub path
+    // (callCallableRaw) has always done this; methods never did, so
+    // `method t { my $auth = … if $cond; $auth ~= … }` died "not declared"
+    // whenever the condition was false (rakupp issue #13's follow-up).
+    if (c.body) hoistExprDecls(*c.body, tctx_.cur.get(), &c.hoistNeed);
     try {
         if (c.body) {
             size_t nst = c.body->size();
