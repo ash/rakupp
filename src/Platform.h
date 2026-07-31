@@ -22,6 +22,7 @@
 #include <process.h>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 
 // MinGW-w64 ships real POSIX-ish headers for much of this — use them and shim
 // only what msvcrt genuinely lacks. The full shims below are MSVC-only.
@@ -116,6 +117,51 @@ inline int closedir(DIR* d) {
 using mode_t = int; // MinGW's sys/types.h already has it
 #endif
 
+// --- symlink/link/readlink: no POSIX equivalents in msvcrt ---
+// Prefixed names rather than POSIX ones: MinGW-w64 ships a real <unistd.h> and
+// which of these it declares varies by version, so a plain `symlink` here could
+// collide there. The call sites use platform_* on every platform.
+inline int platform_symlink(const char* target, const char* linkpath) {
+    DWORD flags = 0;
+    DWORD attr = ::GetFileAttributesA(target);
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
+        flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+    // Developer Mode lets an unprivileged user create symlinks; without it the
+    // call needs SeCreateSymbolicLinkPrivilege. Older Windows rejects the flag,
+    // so fall back to a plain attempt.
+    flags |= 0x2 /* SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE */;
+    if (::CreateSymbolicLinkA(linkpath, target, flags)) return 0;
+    if (::CreateSymbolicLinkA(linkpath, target, flags & ~0x2u)) return 0;
+    errno = (::GetLastError() == ERROR_PRIVILEGE_NOT_HELD) ? EACCES : EINVAL;
+    return -1;
+}
+inline int platform_link(const char* target, const char* linkpath) {
+    if (::CreateHardLinkA(linkpath, target, nullptr)) return 0;
+    DWORD e = ::GetLastError();
+    errno = (e == ERROR_FILE_NOT_FOUND)     ? ENOENT
+          : (e == ERROR_ALREADY_EXISTS)     ? EEXIST
+          : (e == ERROR_ACCESS_DENIED)      ? EACCES : EINVAL;
+    return -1;
+}
+inline long long platform_readlink(const char* path, char* buf, size_t n) {
+    // No raw reparse-point read without DeviceIoControl; resolve the link to its
+    // final target instead. Our symlink() writes an absolute target anyway, so
+    // the answer agrees with the POSIX side for links we created.
+    HANDLE h = ::CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) { errno = ENOENT; return -1; }
+    char tmp[4096];
+    DWORD got = ::GetFinalPathNameByHandleA(h, tmp, (DWORD)sizeof tmp, FILE_NAME_NORMALIZED);
+    ::CloseHandle(h);
+    if (!got || got >= sizeof tmp) { errno = EINVAL; return -1; }
+    const char* p = tmp;
+    if (::strncmp(p, "\\\\?\\", 4) == 0) p += 4;   // strip the \\?\ prefix
+    size_t len = ::strlen(p);
+    if (len > n) len = n;
+    ::memcpy(buf, p, len);
+    return (long long)len;
+}
+
 // --- erand48: POSIX 48-bit LCG (drand48 family), reimplemented for parity ---
 inline double erand48(unsigned short xsubi[3]) {
     unsigned long long x = ((unsigned long long)xsubi[2] << 32) |
@@ -136,6 +182,14 @@ inline double erand48(unsigned short xsubi[3]) {
 #include <poll.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+
+// The POSIX side of the link shims (see the Windows branch for why they carry a
+// prefix rather than their own names).
+inline int platform_symlink(const char* target, const char* linkpath) { return ::symlink(target, linkpath); }
+inline int platform_link(const char* target, const char* linkpath)    { return ::link(target, linkpath); }
+inline long long platform_readlink(const char* path, char* buf, size_t n) {
+    return (long long)::readlink(path, buf, n);
+}
 
 #endif
 

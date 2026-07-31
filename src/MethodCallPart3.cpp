@@ -1,7 +1,4 @@
 #include "MethodCallSegment.h"
-#include <unistd.h>
-#include <cstring>
-#include <cstdlib>
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -910,7 +907,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "readlink") { // the link's own target, unresolved (cf. .resolve)
             std::string p = inv.toStr(); char lbuf[4096];
-            ssize_t n = ::readlink(p.c_str(), lbuf, sizeof lbuf - 1);
+            long long n = platform_readlink(p.c_str(), lbuf, sizeof lbuf - 1);
             if (n < 0) throw RakuError{Value::typeObj("X::IO::Symlink"),
                 "Failed to readlink '" + p + "': " + std::strerror(errno)};
             return asIO(std::string(lbuf, (size_t)n)); // an IO::Path, as in Rakudo

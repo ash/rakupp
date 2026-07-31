@@ -6098,7 +6098,7 @@ void Interpreter::registerBuiltins() {
             char cbuf[4096];
             if (getcwd(cbuf, sizeof cbuf)) target = std::string(cbuf) + "/" + target;
         }
-        if (::symlink(target.c_str(), name.c_str()) != 0)
+        if (platform_symlink(target.c_str(), name.c_str()) != 0)
             throw RakuError{Value::typeObj("X::IO::Symlink"),
                 "Failed to create symlink called '" + name + "' on target '" + target +
                 "': " + std::strerror(errno)};
@@ -6107,7 +6107,7 @@ void Interpreter::registerBuiltins() {
     B["link"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() < 2) return Value::boolean(false);
         std::string target = a[0].toStr(), name = a[1].toStr();
-        if (::link(target.c_str(), name.c_str()) != 0)
+        if (platform_link(target.c_str(), name.c_str()) != 0)
             throw RakuError{Value::typeObj("X::IO::Link"),
                 "Failed to create link called '" + name + "' on target '" + target +
                 "': " + std::strerror(errno)};
