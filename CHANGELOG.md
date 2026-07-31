@@ -3,10 +3,58 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
-## Unreleased
+## v1.7.0 (2026-08-01) — the interpreter gets faster, and two more modules pass
 
-Fixes made after the v1.5.2 tag was cut, so they are **not** in the v1.5.2
-binaries — they ship with the next release.
+Two threads. The interpreter learned to **specialise the shapes hot loops are
+made of**, which is the largest single speed-up since the performance campaign;
+and the module work continued against the standard set in v1.5.2 — a module
+counts as working only when its own `zef` install-time test suite passes.
+
+| | v1.5.2 | v1.7.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 196,568 | **196,590** |
+| Roast files fully passing | 630 | **631** |
+| Distributions passing their own suite | 11 / 59 | **18 / 59** |
+| `fib`, interpreted | 478.6 ms | **422.4 ms** |
+| `$a OP $b` in a loop | 840.8 ms | **686.5 ms** |
+| `@a[$i]` in a loop | 195.3 ms | **178.4 ms** |
+
+### Performance — node specialization
+
+`evalBinary` and `evalIndex` now recognise four syntactic shapes — `$var OP
+literal`, `literal OP $var`, `$var OP $var`, `@arr[$var]`/`@arr[literal]` —
+record that verdict on the node, and take a path that avoids what the general
+one must do for the general case: the variable is read by pointer rather than
+copied out as a 376-byte `Value`, the literal is built once instead of on every
+visit, and the temporal/hyper/zip probes are skipped, none of which can apply to
+two plain scalars.
+
+Measured with a **control kernel** — pure method dispatch, which the change
+cannot touch, and which does not move (−0.3%):
+
+| kernel | before | after |
+|---|---:|---:|
+| `$a OP $b` | 840.8 ms | 686.5 ms (−18.3%) |
+| `$a OP 1` | 728.9 | 600.0 (−17.7%) |
+| `fib` | 478.6 | 422.4 (−11.7%) |
+| `asg` | 395.1 | 349.5 (−11.5%) |
+| `@a[$i]` | 195.3 | 178.4 (−8.7%) |
+
+Only the syntactic *shape* is cached, never the variable or its value: both are
+looked up and type-checked on every evaluation, so a variable that changes type
+mid-loop simply stops taking the fast path. It needs no flag and cannot change
+semantics. Written up, with the guards and the three prototypes that failed, in
+[docs/dev/NODE-SPECIALIZATION.md](docs/dev/NODE-SPECIALIZATION.md).
+
+The measurement that shaped it is worth repeating: classical constant folding,
+the obvious "optimise the AST" move, had **nothing to fold** — 37 sites in
+51,353 nodes across 48 real programs, and zero constant conditions.
+[tools/ast-opportunity.raku](tools/ast-opportunity.raku) reproduces that count.
+
+`--exe` is unchanged. Codegen already kept variables in C++ locals, and with
+`-O` its typed int lane never materialises a `Value` at all.
+
+### Everything else
 
 - **`$*ARGFILES` exists** ([#14](https://github.com/ash/rakupp/issues/14)). It
   was undefined, so the awk-style one-liner
@@ -72,6 +120,16 @@ Together these take File::Find's distribution suite from dying at test 23 to
   $x[1..3]` is three `(Any)`s.
 
 Terminal::ANSI's suite goes 2/8 → 8/8 on these.
+
+### Windows
+
+- **`symlink`, `link` and `.readlink` work on Windows.** The sub forms were
+  added POSIX-only in this cycle, which broke the MSVC build outright; they now
+  map onto `CreateSymbolicLinkA` (directory flag detected from the target,
+  unprivileged-create attempted first so Developer Mode suffices),
+  `CreateHardLinkA`, and `GetFinalPathNameByHandleA`, all in `Platform.h` where
+  the rest of the Win32 shims live, and all setting `errno` so the `X::IO`
+  messages stay truthful.
 
 ## v1.5.2 (2026-07-31) — modules, measured by their own test suites
 
