@@ -1559,6 +1559,17 @@ bool Lexer::trySetOp(Token& out) {
     return false;
 }
 
+// Unicode operator spellings the top-level tokenizer maps to ASCII. A hyper's
+// inner is gathered as raw bytes by BOTH marker forms, so both must apply this
+// or `»÷»` / `>>÷>>` reaches the runtime as an operator nothing implements.
+static void aliasUniOp(std::string& op) {
+    static const std::pair<const char*, const char*> uniAlias[] = {
+        {"\xC3\xB7", "/"}, {"\xC3\x97", "*"}, {"\xE2\x88\x92", "-"},
+        {"\xE2\x89\xA5", ">="}, {"\xE2\x89\xA4", "<="}, {"\xE2\x89\xA0", "!="}};
+    for (auto& [u, a] : uniAlias)
+        if (op == u) { op = a; return; }
+}
+
 Token Lexer::lexOperator(bool termBefore) {
     // hyper metaop with guillemet brackets: »op« / «op» / »op» / «op«  (2-byte UTF-8
     // « = C2 AB, » = C2 BB). Normalise to the ASCII >>op<< form the parser already
@@ -1625,11 +1636,7 @@ Token Lexer::lexOperator(bool termBefore) {
             // × → *, − → -, ≥ ≤ ≠); the inner was gathered as raw bytes, so give
             // it the same treatment or `»÷»` reaches the runtime as an operator
             // nothing implements
-            static const std::pair<const char*, const char*> uniAlias[] = {
-                {"\xC3\xB7", "/"}, {"\xC3\x97", "*"}, {"\xE2\x88\x92", "-"},
-                {"\xE2\x89\xA5", ">="}, {"\xE2\x89\xA4", "<="}, {"\xE2\x89\xA0", "!="}};
-            for (auto& [u, a] : uniAlias)
-                if (inner == u) { inner = a; break; }
+            aliasUniOp(inner);
             return make(Tok::Op, open + inner + close);
         }
         pos_ = save; // not a hyper — fall through to the generic multibyte op
@@ -1653,8 +1660,16 @@ Token Lexer::lexOperator(bool termBefore) {
         size_t save = pos_;
         std::string s; s += advance(); s += advance();
         std::string inner;
-        while (!eof() && peek() != '>' && peek() != '<' && !std::isspace((unsigned char)peek()) && inner.size() < 4)
-            inner += advance();
+        // a MULTIBYTE inner counts (`>>÷>>`, `>><<`), so the byte-wise scan may
+        // run past 4 ASCII chars — cap on codepoints, not bytes
+        int innerCps = 0;
+        while (!eof() && peek() != '>' && peek() != '<' && !std::isspace((unsigned char)peek()) && innerCps < 4) {
+            unsigned char c0 = (unsigned char)peek();
+            int len = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xE ? 3 : 4;
+            for (int k = 0; k < len && !eof(); k++) inner += advance();
+            innerCps++;
+        }
+        aliasUniOp(inner); // ÷ → /, × → *, − → -, ≥ ≤ ≠ (same as the guillemet form)
         // fat-arrow inner: `<<=>>>` is hyper << => >> (the inner scan can't cross '>')
         if (inner == "=" && peek() == '>' && peek(1) == '>' && peek(2) == '>') {
             s += "=>"; advance(); s += advance(); s += advance();

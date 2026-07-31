@@ -11645,7 +11645,11 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     // element slots line up only when flatten() mirrored the raw array
     bool lSlot = wantSlots && l.t == VT::Array && l.arr && l.arr->size() == la.size();
     bool rSlot = wantSlots && r.t == VT::Array && r.arr && r.arr->size() == ra.size();
-    Value out = Value::array(); out.isList = true;
+    // The result MIRRORS the left operand's shape, as Rakudo does: an Array in
+    // gives an Array out (`@a >>+>> @b` gists `[8 10]`), a List in gives a List
+    // (`(6,8) >>+>> @b` gists `(8 10)`). rakupp always answered a List.
+    Value out = Value::array();
+    out.isList = !(l.t == VT::Array && !l.isList);
     for (size_t i = 0; i < n && !la.empty() && !ra.empty(); i++) {
         const Value& x = la[i % la.size()];
         const Value& y = ra[i % ra.size()];
