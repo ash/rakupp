@@ -9898,15 +9898,34 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // string bitwise — per-character on codepoints; the longer string's tail is
     // kept for | and ^, dropped for &
     if (op == "~&" || op == "~|" || op == "~^") {
-        std::string a = l.toStr(), b = r.toStr(), out;
+        std::string a = l.toStr(), b = r.toStr();
         // Blob/Buf extend rightwards for all three; plain Str ~& truncates to the shorter
         bool bufish = (l.t == VT::Str && !l.hashKind.empty()) || (r.t == VT::Str && !r.hashKind.empty());
-        size_t n = (op == "~&" && !bufish) ? std::min(a.size(), b.size()) : std::max(a.size(), b.size());
-        for (size_t k = 0; k < n; k++) {
-            unsigned char ca = k < a.size() ? (unsigned char)a[k] : 0;
-            unsigned char cb = k < b.size() ? (unsigned char)b[k] : 0;
-            out += (char)(op == "~&" ? (ca & cb) : op == "~|" ? (ca | cb) : (ca ^ cb));
+        auto combine = [&](unsigned long long x, unsigned long long y) {
+            return op == "~&" ? (x & y) : op == "~|" ? (x | y) : (x ^ y);
+        };
+        if (bufish) { // binary data: operate on BYTES, which is what a Buf is
+            std::string out;
+            size_t n = std::max(a.size(), b.size());
+            for (size_t k = 0; k < n; k++) {
+                unsigned char ca = k < a.size() ? (unsigned char)a[k] : 0;
+                unsigned char cb = k < b.size() ? (unsigned char)b[k] : 0;
+                out += (char)combine(ca, cb);
+            }
+            return Value::str(out);
         }
+        // A Str combines CODEPOINTS, as Rakudo does — not the UTF-8 bytes. Going
+        // byte-wise agreed for ASCII and was wrong for everything else: it both
+        // produced the wrong values (`"A" ~^ chr(0xFF)` gave two characters
+        // instead of one) and left raw bytes in the string that were not valid
+        // UTF-8, so .ords and the printed bytes disagreed.
+        std::vector<uint32_t> ca = utf8cp(a), cb = utf8cp(b);
+        size_t n = (op == "~&") ? std::min(ca.size(), cb.size())
+                                : std::max(ca.size(), cb.size());
+        std::string out;
+        for (size_t k = 0; k < n; k++)
+            out += cpToUtf8((uint32_t)combine(k < ca.size() ? ca[k] : 0,
+                                              k < cb.size() ? cb[k] : 0));
         return Value::str(out);
     }
     if (op == "gcd") { long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x); }
@@ -13259,10 +13278,23 @@ Value Interpreter::evalUnary(Unary* u) {
     if (u->op == "?") return Value::boolean(boolify(v));
     if (u->op == "+^") return Value::integer(~strictInt(v)); // bitwise NOT
     if (u->op == "?^") return Value::boolean(!boolify(v));
-    if (u->op == "~^") { // string bitwise NOT (byte-wise complement)
-        std::string r = v.toStr();
-        for (auto& ch : r) ch = (char)~(unsigned char)ch;
-        return Value::str(r);
+    if (u->op == "~^") {
+        // On a Blob/Buf this is the byte-wise complement, and Rakudo implements
+        // it: `~^ Buf.new(0x41, 0xFF)` is Buf:0x<BE 00>.
+        if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
+            std::string r = v.s;
+            for (auto& ch : r) ch = (char)~(unsigned char)ch;
+            Value out = Value::str(r); out.hashKind = v.hashKind; return out;
+        }
+        // On a Str, Rakudo declines — and so do we now. Ours used to complement
+        // the UTF-8 BYTES and hand the result back as a Str, which for any input
+        // produced something that was not valid UTF-8: `~^ "1"` reported .ords
+        // of 0x0E while printing the byte 0xCE, and that byte travelled as far
+        // as a generated web page and aborted a build. There is no agreed
+        // meaning for "the complement of a codepoint", so inventing one would
+        // only be a new divergence.
+        throw RakuError{Value::typeObj("X::NYI"),
+                        "prefix:<~^> not yet implemented. Sorry."};
     }
     if (u->op == "^") {
         Value r = Value::range(0, strictInt(v), false, true);

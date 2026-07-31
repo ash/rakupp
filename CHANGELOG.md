@@ -3,6 +3,34 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## Unreleased
+
+Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
+
+- **The string bitwise operators combine CODEPOINTS, not UTF-8 bytes.**
+  `~&`, `~|` and `~^` on a `Str` operated on the encoded bytes, which agrees
+  with Rakudo for ASCII and is wrong for everything else: `"A" ~^ chr(0xFF)`
+  answered two characters (0x82, 0xBF) where Rakudo answers one (0x00BE), and
+  the bytes left behind were not valid UTF-8. A `Buf` still combines bytes,
+  which is what a Buf is.
+- **`prefix:<~^>` declines, as Rakudo does** ("not yet implemented"). It used to
+  complement the UTF-8 bytes and hand back the result as a `Str`, so `~^ "1"`
+  produced a string reporting `.ords` of 0x0E while printing the byte 0xCE.
+  There is no agreed meaning for the complement of a codepoint, so inventing one
+  would only be a new divergence. That stray byte had travelled into a generated
+  page on the website and aborted a build, since BSD sed refuses an illegal byte
+  sequence under a UTF-8 locale.
+
+Documentation corrected in the same pass: the README and `docs/MODULES.md` both
+still promised that *"a missing or broken `use` is a warning, not a fatal
+error — the rest of your program keeps running"*. That stopped being true; a
+`use` that cannot be found or fails to compile is now fatal and exits non-zero,
+as in Rakudo. The old leniency mostly hid real failures — a half-loaded module
+produced phantom output that read as a working program.
+
+Known and not fixed here: `Buf ~^ Buf` answers a `Str` rather than a `Buf`, and
+gets the wrong bytes. Pre-existing and identical before and after this change.
+
 ## v1.7.0 (2026-08-01) — the interpreter gets faster, and two more modules pass
 
 Two threads. The interpreter learned to **specialise the shapes hot loops are

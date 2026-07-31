@@ -52,11 +52,14 @@ pure-Raku modules — `JSON::Fast`, `URI`, `Terminal::ANSIColor`, and more — l
 and run unchanged. See [the module campaign](dev/V2-MODULES-PLAN.md) for what's
 tested and where the current edges are.
 
-> **If a module can't load, your program keeps going.** Raku++ treats a failed
-> or unparseable `use` as a *warning*, not a fatal error:
-> `===WARNING=== Could not find module 'Foo' (use ignored)`. The rest of your
-> program still runs — handy when only one code path needs the module. (Rakudo
-> would die at compile time; this is a deliberate Raku++ difference.)
+> **A `use` that fails is fatal**, as in Rakudo: the program stops and exits
+> non-zero rather than running on without the module. Raku++ used to treat a
+> missing or unparseable `use` as a warning and carry on, which read as
+> convenient — you could run a program whose one unused code path wanted a
+> module you did not have. In practice it mostly hid real failures: a module
+> that half-loaded produced phantom output that looked like a working program,
+> and the module campaign kept mistaking those for passes. Failing loudly costs
+> nothing you cannot get with a `try require`.
 
 ---
 

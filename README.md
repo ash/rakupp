@@ -152,8 +152,9 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 ```
 
 It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
-paths). A missing or broken `use` is a **warning, not a fatal error** — the rest
-of your program keeps running. Full guide: **[MODULES.md](docs/MODULES.md)**.
+paths). A `use` that cannot be found or fails to compile is **fatal**, as in
+Rakudo: the program stops and exits non-zero, rather than carrying on without
+the module. Full guide: **[MODULES.md](docs/MODULES.md)**.
 
 ## Run Raku in the browser — Raku.js
 
