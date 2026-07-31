@@ -129,15 +129,47 @@ untouched; a program that never says `.AST` never executes a line of this.
 
 ### The prerequisite already holds
 
-The re-parsed text has to run in the caller's scope, and our `EVAL` already does
-that — verified against Rakudo:
+A deparsed tree is not self-contained. It came from code that lived somewhere,
+and its text mentions names from that somewhere — deparse any part of
 
-| | rakupp | Rakudo |
-|---|---|---|
-| `EVAL` sees an outer lexical | 42 | 42 |
-| `EVAL` sees an outer sub | 42 | 42 |
-| `EVAL` *writes* an outer lexical | 99 | 99 |
-| `EVAL` inside a sub sees params | 21 | 21 |
+```raku
+sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }
+```
+
+and you get text referring to `$n` and to `fib`. Rakudo's `.EVAL` on a RakuAST
+node compiles it **in the current lexical scope**; if our `EVAL` compiled the
+text in a fresh empty scope instead, every one of those names would be
+undeclared and the bridge would only ever carry literals.
+
+It does not. These four run identically under rakupp and Rakudo — each answer is
+one that is only reachable if the fragment saw the enclosing scope:
+
+```raku
+use MONKEY-SEE-NO-EVAL;
+
+# 1. reads an outer lexical — an empty scope would throw "undeclared", not 42
+my $x = 41;  say EVAL q[$x + 1];                     # 42
+
+# 2. resolution reaches ROUTINES too, not just variables — a deparsed tree is
+#    mostly calls, so this is the case that carries the weight
+sub f($n) { $n * 2 };  say EVAL q[f(21)];            # 42
+
+# 3. the strong one: `say` runs OUTSIDE the EVAL and still sees 99, so the
+#    fragment wrote to the real container — the scope is shared, not a snapshot
+my $y = 1;  EVAL q[$y = 99];  say $y;                # 99
+
+# 4. `$p` is a parameter, a lexical in g's call frame: 7 × 3 proves the capture
+#    works at depth, which is where `.EVAL` gets called from in real code
+sub g($p) { EVAL q[$p * 3] };  say g(7);             # 21
+```
+
+Both engines agreeing is the actual claim — not that 42 is right in the
+abstract, but that we already behave the way the reference implementation does,
+so the design can lean on it with no new work.
+
+Boundary, easy to over-read: this establishes that EVAL of *text* lands in the
+right scope. It says nothing about whether `.DEPARSE` produces *faithful* text.
+That is the next section.
 
 ## Where text leaks, and what to do about it
 
