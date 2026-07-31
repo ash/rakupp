@@ -10205,17 +10205,24 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                    (pat[j] == '-' && j + 1 < pat.size() && std::isalpha((unsigned char)pat[j + 1])))) j++;
             Value* v = tctx_.cur->find("@" + pat.substr(i + 1, j - i - 1));
             if (v && v->t == VT::Array && v->arr && !v->arr->empty()) {
+                // `<@arr>` compiles each element AS A REGEX; a bare `@arr` is an
+                // alternation of LITERALS (issue #15). Same positional rule as
+                // the scalar form.
+                bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
                 std::vector<std::string> els;
                 for (auto& e : *v->arr) els.push_back(e.toStr());
                 std::stable_sort(els.begin(), els.end(),
                     [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+                if (inAngle) out.pop_back();        // drop the '<'
                 out += "[ ";
                 for (size_t k = 0; k < els.size(); k++) {
                     if (k) out += " || ";
-                    out += quoteMetaRx(els[k]);
+                    if (inAngle) { out += "[ "; out += els[k]; out += " ]"; }
+                    else out += quoteMetaRx(els[k]);
                 }
                 out += " ]";
-                i = j - 1; continue;
+                i = inAngle ? j : j - 1;            // skip the '>' in the assertion form
+                continue;
             }
         }
         out += pat[i];
@@ -10328,6 +10335,17 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 size_t j = i + 1;
                 while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
                 Value* v = tctx_.cur->find("$" + pat.substr(i + 1, j - i - 1));
+                // POSITION decides the reading (issue #15): `<$p>` compiles the
+                // string AS A REGEX, a bare `$p` matches it LITERALLY. The
+                // assertion form is `<` immediately before and `>` right after
+                // the variable — anything else keeps the literal meaning.
+                bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
+                if (v && inAngle) {
+                    out.pop_back();                 // drop the '<'
+                    out += "[ " + v->toStr() + " ]"; // group it: alternations stay contained
+                    i = j;                          // skip the '>'
+                    continue;
+                }
                 if (v) { out += quoteMetaRx(v->toStr()); i = j - 1; continue; }
             }
             out += pat[i];
