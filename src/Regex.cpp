@@ -611,6 +611,7 @@ Regex::NodePtr Regex::parseAtom() {
                 return cn;
             }
             bool behind = false;
+            bool lookKw = false; // an explicit `before`/`after` keyword was consumed
             bool savedAdvI = curIcase_, savedAdvS = sigspace_, savedAdvM = curImark_; // adverbs inside an assertion are scoped to it
             // `before`/`after` may be followed by any whitespace (space, newline, tab),
             // not just a literal space — the inner pattern can start on the next line.
@@ -619,8 +620,8 @@ Regex::NodePtr Regex::parseAtom() {
                 char after = pos_ + n < pat_.size() ? pat_[pos_ + n] : '\0';
                 return after == ' ' || after == '\n' || after == '\t' || after == '\r';
             };
-            if (kw("before", 6)) { pos_ += 6; skipWs(); }
-            else if (kw("after", 5)) { pos_ += 5; behind = true; skipWs(); }
+            if (kw("before", 6)) { pos_ += 6; skipWs(); lookKw = true; }
+            else if (kw("after", 5)) { pos_ += 5; behind = true; skipWs(); lookKw = true; }
             else if (std::isalpha((unsigned char)peek()) || peek() == '_' || peek() == '.') {
                 // <?name> / <!name(args)> — zero-width subrule assertion (not a pattern lookahead)
                 if (peek() == '.') pos_++;
@@ -652,8 +653,10 @@ Regex::NodePtr Regex::parseAtom() {
                 return look;
             }
             // <![...]> / <?[...]> — a class assertion: the inner is a CHARACTER CLASS,
-            // not a group (a quote member like <!["]> must not open a string literal)
-            if (!behind && (peek() == '[' || ((peek() == '-' || peek() == '+') && peek(1) == '['))) {
+            // not a group (a quote member like <!["]> must not open a string literal).
+            // Only the keyword-less form is a class: after an explicit `before`/`after`
+            // the bracket is an ordinary non-capturing group (`<?before [ 'a' ]* 'b'>`).
+            if (!behind && !lookKw && (peek() == '[' || ((peek() == '-' || peek() == '+') && peek(1) == '['))) {
                 auto cls = std::make_unique<Node>();
                 cls->k = K::Class; cls->icase = curIcase_;
                 if (peek() == '-') { pos_++; cls->negate = true; }

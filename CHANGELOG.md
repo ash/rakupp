@@ -3,6 +3,103 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## v1.5.2 (2026-07-31) — modules, measured by their own test suites
+
+A behaviour release. The headline is a change of *standard*: a module now counts
+as working only when **its own test suite passes** — the files `zef` runs at
+install time — instead of a one-line API probe. Everything below was found by
+holding real distributions to that bar, and every fix is a general interpreter
+fix, not a module accommodation.
+
+| | v1.5.1 | v1.5.2 |
+|---|---:|---:|
+| Roast assertions (all declared) | 196,395 | **196,568** |
+| Roast files fully passing | 625 | **630** |
+| Regression tests | 149 | **180** |
+
+Roast: 196,568 / 217,060 declared (90.6%), 630 / 1,462 files, from the repeating
+profile of three runs (two identical). Performance is unchanged-to-better on
+every guard kernel against the v1.5.1 baseline (fib −1.7%, loopsum −1.1%,
+hash −1.3%, asg +2.4% — all inside the 5% gate).
+
+### Unicode
+
+- **Multi-digit non-ASCII numerals parse.** `"٤٢".Int` is 42 (it threw before);
+  every category-Nd script works, via each digit's Numeric_Value.
+- **`.lc` applies Final_Sigma.** `"ΣΊΣΥΦΟΣ".lc` is `σίσυφος` — a word-final Σ
+  lowercases to ς, while `ΣΣ.lc` is `σς` and a lone Σ stays σ.
+- **`m:i` does full case folding.** `"Weiß" ~~ m:i/WEISS/` matches, both
+  directions, and a match may not end mid-fold. Needed a fold-aware literal
+  matcher (CaseFolding's F-entries: ß/ẞ, the ff/fi/fl ligatures, ŉ, İ, ΐ, ΰ,
+  ς→σ) and a parser peephole merging adjacent literals — per-character nodes
+  could never span a one-to-many fold. Roast's `ignorecase.t` 76 → 96.
+- **`.collate`** wired to the existing DUCET machinery.
+- A follow-up fix to the folding work: `<?before [ … ]>` reads its bracket as a
+  non-capturing **group** again. The `<?[…]>` / `<![…]>` class-assertion
+  shorthand applies only to the keyword-less form, and treating the
+  keyword form's bracket as a character class broke YAMLish's block-scalar
+  rule.
+
+### Modules
+
+Encode, Trap and File::Temp now pass their full suites; Digest::MD5 computes the
+RFC 1321 vectors byte-for-byte. The general fixes behind that:
+
+- `&(EXPR)` — the parenthesised Callable contextualiser — parses.
+- A class's `CALL-ME` dispatches when the class is called **by name**
+  (`Trap(my $*OUT)`), ahead of the `T(x)` coercion protocol.
+- **`is raw` parameters write back** — they never did, in subs, methods or
+  multis; and an explicit `C:U:` invocant no longer shifts the rw pairing.
+- `open` understands **`:rw`, `:exclusive`, `:update`** (all three were silently
+  dropped, so File::Temp's claim-a-name call failed).
+- **Positional list bind** — `my ($a, $b) := (1, 2)` threw "Target is not
+  assignable"; only `=` and the named form worked.
+- **A module's `END` phaser runs at process end**, not at load, and before the
+  mainline's own — a module loaded later cleans up earlier.
+- Typed **`buf16/32/64` address ELEMENTS, not bytes**, in `.push`/`.pop`/
+  `.shift` and `.write-uintN`; and `my buf8 $b .= new` no longer dies.
+- **`for` over a Blob iterates its elements** unless the value sits in a scalar
+  container (plain itemization, pinned against Rakudo).
+- `(my $x .= new)[$i] = v` is an lvalue (`.=` is a MethodCall, not an Assign).
+- `∘` composition sits at **structural** precedence, not multiplicative;
+  `X[R%]` (a bracketed cross-metaop with a reversed base) fuses; `Xxx` is
+  **thunky**, re-evaluating its left per replication; `parse-base` exists as a
+  sub.
+- Postfix `++`/`--` on an undefined numeric returns the type's **zero**.
+- `$^b` and a later bare `$b` are **one variable**, not two diverging copies.
+
+### Fixes
+
+- **`my $x = … if $cond` declares `$x` even when the condition is false** — a
+  compile-time declaration, as Raku specifies. Fixed for the mainline, blocks
+  and subs, and then ([#13](https://github.com/ash/rakupp/issues/13)) for
+  **method bodies**, which had no declaration hoisting at all. The first fix
+  looked complete because every probe used `$a`, and `$a`/`$b` are exempt from
+  rakupp's undeclared-variable check — a vacuous pass that hid a whole scope.
+- **`run()`'s `:env` and `:cwd` reach the child.** Both were parsed and
+  silently dropped, so any harness isolating a child's environment inherited
+  the parent's instead.
+- **NativeCall symbols resolve once per sub**, not per call: a crossing cost a
+  flat ~67 µs (dyld rescanned its search path for every failed `dlopen`
+  candidate) and now costs 0.2–0.8 µs. A `Pointer is rw` out-parameter arrives
+  as a real slot address rather than NULL. `is native(EXPR)` accepts a constant
+  or `%?RESOURCES<libraries/…>` expression, and `libraries/*` resources resolve
+  to the platform library name.
+- **`--exe` compiles NativeCall subs** instead of silently returning `Any`;
+  shapes it cannot carry fall back to bundling.
+- `when`/`default`/`succeed` match cooperatively instead of throwing a C++
+  exception per row, and Array mutators no longer copy the whole array before
+  dispatch — together these took a real SQLite import from 197 s to 17 s.
+
+### Packaging
+
+- **Nix flake** ([#5](https://github.com/ash/rakupp/issues/5)): NixOS cannot run
+  the generic prebuilt binary, so `nix run github:ash/rakupp` builds from
+  source. Path-gated CI builds and smoke-tests it.
+- **GNU Guix** ([#6](https://github.com/ash/rakupp/pull/6), by @4zv4l): the
+  repository is a Guix channel; CI builds the package and smoke-tests the store
+  output.
+
 ## v1.5.1 (2026-07-29) — faster, and smaller files
 
 **No behaviour change at all**: Roast is 196,395 / 217,060 and 625 / 1,462 files

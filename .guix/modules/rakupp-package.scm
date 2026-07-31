@@ -29,7 +29,7 @@
    (name "rakupp")
    ;; Tracks project(RakuPP VERSION …) in CMakeLists.txt — the source is the
    ;; live checkout, so the suffix marks it as a snapshot, not a release.
-   (version "1.5.1-git")
+   (version "1.5.2-git")
    (source (local-file "../.." "rakupp-checkout"
                        #:recursive? #t
                        #:select? vcs-file?))
