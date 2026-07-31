@@ -51,7 +51,7 @@ there.)
 ## Methodology
 
 - **Machine:** macOS (Darwin 24.6), re-measured 2026-07-31 after the interpreter
-  node-specialization work, on a lightly loaded
+  [node-specialization work](dev/NODE-SPECIALIZATION.md), on a lightly loaded
   desktop. (Rows are not comparable across doc revisions — absolute times
   shift a few percent with machine state; the Rakudo column, measured every
   time, is the fixed yardstick. A per-iteration `std::function` allocation that
