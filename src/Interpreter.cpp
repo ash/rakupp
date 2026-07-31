@@ -5848,6 +5848,33 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
     if (name == "$*EXECUTABLE" || name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
     if (name == "$*OUT" || name == "$*ERR" || name == "$*IN") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash)["std"] = Value::str(name == "$*ERR" ? "err" : name == "$*IN" ? "in" : "out"); return h; }
+    // $*ARGFILES — the files named in @*ARGS as ONE handle (awk/perl style),
+    // or standard input when there are none. Built on ACCESS, not at startup:
+    // a program that never mentions it must not read files (or block on stdin).
+    // The content is captured in memory, which is what makes `.lines` span
+    // every file; `path` carries the first name for the gist.
+    if (name == "$*ARGFILES") {
+        Value h = Value::makeHash(); h.hashKind = "FileHandle";
+        Value argv = getArgs();
+        if (argv.arr && !argv.arr->empty()) {
+            std::string all;
+            for (auto& fn : *argv.arr) {
+                std::ifstream in(fn.toStr(), std::ios::binary);
+                if (!in) continue;                       // an unreadable name is skipped
+                std::ostringstream ss; ss << in.rdbuf();
+                all += ss.str();
+            }
+            (*h.hash)["captured"] = Value::boolean(true);
+            (*h.hash)["buffer"] = Value::str(all);
+            (*h.hash)["path"] = Value::str((*argv.arr)[0].toStr());
+            (*h.hash)["argfiles"] = Value::boolean(true);
+            (*h.hash)["mode"] = Value::str("r");
+            return h;
+        }
+        (*h.hash)["std"] = Value::str("in");             // no arguments: read $*IN
+        (*h.hash)["argfiles"] = Value::boolean(true);
+        return h;
+    }
     if (name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash)["name"] = Value::str("macos"); return h; }
     if (name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash)["name"] = Value::str("darwin"); return h; }
     if (name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }
@@ -14954,6 +14981,7 @@ Value Interpreter::eval(Expr* e) {
                 (*h.hash)["std"] = Value::str(ve->name == "$*ERR" ? "err" : ve->name == "$*IN" ? "in" : "out");
                 return h;
             }
+            if (ve->name == "$*ARGFILES") return dynVar(ve->name);       // built on access — see the resolver
             if (ve->name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash)["name"] = Value::str("macos"); return h; }
             if (ve->name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash)["name"] = Value::str("darwin"); return h; }
             if (ve->name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }

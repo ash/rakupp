@@ -531,6 +531,10 @@ std::string Value::gist() const {
                 std::string q = "\"";
                 for (char c : path) { if (c == '\\' || c == '"') q += '\\'; q += c; }
                 q += "\"";
+                // $*ARGFILES is an IO::ArgFiles, and renders as one
+                if (hash->count("argfiles"))
+                    return path.empty() ? "IO::ArgFiles(opened on $*IN)"
+                                        : "IO::ArgFiles(opened on " + q + ".IO)";
                 return "IO::Handle<" + q + ".IO>(" + (closed ? "closed" : "opened") + ")";
             }
             // A Proc gists as a Proc, not as a dump of its internals. Falling

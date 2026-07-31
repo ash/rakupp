@@ -1159,7 +1159,25 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (start < content.size()) lines.arr->push_back(Value::str(content.substr(start)));
                 } else {
                     std::string line;
-                    if (isStdin) { // $*IN — read standard input
+                    // an IN-MEMORY handle ($*ARGFILES, Proc.out/.err) has its
+                    // whole content in "buffer" — there is no file to reopen
+                    auto capIt = inv.hash->find("captured");
+                    if (capIt != inv.hash->end() && capIt->second.truthy()) {
+                        const std::string& content = (*inv.hash)["buffer"].s;
+                        size_t start = 0;
+                        while (start <= content.size()) {
+                            size_t nl = content.find('\n', start);
+                            if (nl == std::string::npos) {
+                                if (start < content.size()) lines.arr->push_back(Value::str(content.substr(start)));
+                                break;
+                            }
+                            std::string l = content.substr(start, nl - start);
+                            if (!l.empty() && l.back() == '\r') l.pop_back();
+                            lines.arr->push_back(Value::str(l));
+                            start = nl + 1;
+                        }
+                    }
+                    else if (isStdin) { // $*IN — read standard input
                         while (std::getline(std::cin, line)) {
                             if (!line.empty() && line.back() == '\r') line.pop_back();
                             lines.arr->push_back(Value::str(line));

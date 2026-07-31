@@ -70,6 +70,14 @@ RFC 1321 vectors byte-for-byte. The general fixes behind that:
 
 ### Fixes
 
+- **`$*ARGFILES` exists** ([#14](https://github.com/ash/rakupp/issues/14)). It
+  was undefined, so the awk-style one-liner
+  `$*ARGFILES.lines>>.words.classify(*[1])` produced an empty Bag. The handle
+  is built on ACCESS — a program that never mentions it neither reads files nor
+  blocks on stdin — and spans every file in `@*ARGS`, falling back to `$*IN`.
+  Fixing it also fixed in-memory handles generally: the lines/get/words path
+  had no branch for a captured handle, so `run(…, :out).out.lines` had been
+  returning nothing.
 - **`my $x = … if $cond` declares `$x` even when the condition is false** — a
   compile-time declaration, as Raku specifies. Fixed for the mainline, blocks
   and subs, and then ([#13](https://github.com/ash/rakupp/issues/13)) for
