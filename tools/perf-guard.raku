@@ -20,6 +20,15 @@
 
 my $repo   = $*PROGRAM.absolute.IO.parent.parent;
 my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
+# A MISSING binary must stop the run, not pass it. Every kernel then "runs" in
+# under a millisecond and the guard reports a huge speed-up and exits OK — which
+# is exactly what happened when a stale build/ directory was removed and the
+# default path stopped existing.
+unless $RAKUPP.IO.x {
+    note "perf-guard: no runnable binary at $RAKUPP";
+    note "Set RAKUPP=/path/to/rakupp (the default is <repo>/build/rakupp).";
+    exit 2;
+}
 my $RUNS   = 4;   # 1 warm-up (discarded) + 3 measured
 
 my %kernels =

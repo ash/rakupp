@@ -20,6 +20,14 @@ my $tools  = $*PROGRAM.absolute.IO.parent;
 my $repo   = $tools.parent;
 my $bench  = $tools.add('optbench');
 my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
+# A missing binary must stop the run: without this, every program "fails to
+# compile" identically and the comparison looks like a real, reproducible bug
+# (a stale build/ directory once sent a release bisect down exactly that path).
+unless $RAKUPP.IO.x {
+    note "run-optbench: no runnable binary at $RAKUPP";
+    note "Set RAKUPP=/path/to/rakupp (the default is <repo>/build/rakupp).";
+    exit 2;
+}
 my $RAKUDO = %*ENV<RAKUDO> // 'raku';
 my $RUNS   = 6;   # 1 warm-up (discarded) + 5 measured
 
