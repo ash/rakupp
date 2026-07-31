@@ -58,24 +58,83 @@ Re-run the tool before assuming any other classical optimization is worth
 building; the static count is an upper bound on the opportunity and it took two
 minutes to get.
 
-## What is cached — and what is emphatically not
+## What "cached" means here
 
-Only the **shape**, which is a property of the syntax tree and cannot change
-while the program runs. Never the variable, never its value, never its slot.
+"Cache" is a misleading word for this, so be precise about it: in most contexts
+caching means *remembering a computed result so you do not recompute it*.
+**Nothing about the result is remembered.** What is remembered is a fact about
+the source code.
 
-Every evaluation still:
+The entire mechanism is two extra fields on each `Binary` node — one byte and
+one pointer. There is no table, no map, no key, nothing global:
 
-- looks the variable up by name through the current environment, so recursion
-  sees each frame's own `$n` and shadowing resolves normally;
-- re-checks the type guard, so a variable that changes type mid-loop simply
-  stops taking the fast path on the visit where it no longer qualifies.
+```cpp
+mutable signed char fastShape = -1;   // which shape this node is
+mutable const void* litVal = nullptr; // the literal's Value, for shapes 1 and 2
+```
 
-A literal is cached because a literal cannot change.
+Walk one node, `$n - 1`, through its life:
+
+**After parsing** the tree holds a `Binary` whose fields say nothing yet:
+
+```
+op        = "-"
+lhs      -> VarExpr("$n")
+rhs      -> IntLit(1)
+fastShape = -1            <- nobody has looked at this node yet
+litVal    = nullptr
+```
+
+**On the first evaluation** the interpreter asks a question *about the syntax*:
+is the left child a plain lexical, and the right child a scalar literal? Both
+yes, so it writes the answer down:
+
+```
+fastShape = 1             <- "variable, operator, literal"
+litVal   -> Value(1)      <- the 1 from the source text
+```
+
+**On every evaluation after that**, including the millionth, the node reads
+`fastShape == 1` and goes straight to: look up `$n`, check its type, apply the
+operator. It never asks the question again.
+
+So the two fields hold two different kinds of thing:
+
+- **`fastShape` is a classification of the syntax** — "this expression is
+  written as variable-operator-literal". That is a fact about the *text of the
+  program*. It is true before the program starts and stays true until it exits,
+  because source code does not rewrite itself.
+- **`litVal` is the literal's value** — the `1` in `$n - 1`. This is cached in
+  the ordinary sense, but a literal is a constant by definition: if the source
+  says `1`, it is 1 forever.
+
+**`$n` appears in neither field** — not its value, not its address, not the
+scope it was found in. Every evaluation does a fresh lookup by name through the
+current environment and a fresh type check on whatever comes back. Which is why
+all of this behaves normally:
 
 ```raku
 my $v = 1;
-for ^4 { say $v + 1; $v = $v ~~ Int ?? "10" !! 1 }   # 2, 11, 2, 11 — one node
+for ^4 { say $v + 1; $v = $v ~~ Int ?? "10" !! 1 }   # 2, 11, 2, 11 — ONE node
 ```
+
+One AST node, four evaluations, a variable that changes both value and type
+underneath it, and the right answer each time (`1+1`, `"10"+1`, …). The visits
+where `$v` holds a `Str` still take the fast path because `Str` is in the guard;
+had it become a `DateTime`, that visit alone would have fallen through to the
+general path.
+
+Why store anything at all, then? Because the classification is not free — it is
+several branches: check both child node kinds, check the variable name's second
+character, check the literal is not a bignum or a Rat. Asking that once per
+*node* instead of once per *evaluation* is the whole optimization. A `fib(29)`
+run evaluates `$n - 1` about 1.6 million times and answers the question once.
+
+It is less a cache than a **sticky note on the node**, written the first time
+anyone reads that node: "this one is shape 1, and here is the constant." The
+precedent sits directly above it in the struct — `simpleOp` does exactly the
+same thing for "is this a plain operator, or one of the special-cased ones?",
+also decided once, also from the syntax alone.
 
 ## The guards
 
