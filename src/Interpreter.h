@@ -361,7 +361,8 @@ public:
     Value ioEmit(const std::string& s, const char* dynVar, bool toErr);
     Value getArgs(); // @*ARGS as a List value (used by codegen)
     void syncEnvToProcess(); // push %*ENV into the real process environment, so children inherit it
-    Value dynVar(const std::string& name); // $* / $? magical variables (used by codegen)
+    Value dynVar(const std::string& name);
+    Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)

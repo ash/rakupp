@@ -5863,9 +5863,24 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
 }
 
 // $* / $? magical variables, for native codegen (mirrors the VarExpr evaluator).
+// $*RAKU and its .compiler. The object answers everything through
+// methodCallInner, but `say $*RAKU` renders from the Value alone, so leave the
+// name and the version it displays where Value::gist can find them.
+Value Interpreter::rakuIntrospection(bool compiler) {
+    Value r = Value::makeHash();
+    r.hashKind = compiler ? "Compiler" : "Raku";
+    (*r.hash)["name"] = Value::str(compiler ? "Raku++" : "Raku");
+    // The language object shows the language revision; the COMPILER shows its
+    // own version, which is the Rakudo era we verify against (see the note on
+    // kOracleEra in Builtins.cpp) — `rakudo (2026.07)` is the shape Rakudo uses.
+    (*r.hash)["ver"] = Value::str(compiler ? "2026.07"
+                       : (langRev_ == 0 ? "6.c" : langRev_ == 1 ? "6.d" : "6.e"));
+    return r;
+}
+
 Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*CWD") { char buf[4096]; Value p = Value::str(getcwd(buf, sizeof buf) ? buf : "."); p.hashKind = "IO"; return p; }
-    if (name == "$*RAKU" || name == "$*PERL" || name == "$?RAKU" || name == "$?PERL") { Value r = Value::makeHash(); r.hashKind = "Raku"; return r; }
+    if (name == "$*RAKU" || name == "$*PERL" || name == "$?RAKU" || name == "$?PERL") return rakuIntrospection(false);
     if (name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
     if (name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; }
     if (name == "$*PROGRAM-NAME") return Value::str(srcFile_);
@@ -15213,9 +15228,8 @@ Value Interpreter::eval(Expr* e) {
             if (builtinDefault) {
             if (ve->name == "$=pod" || ve->name == "@=pod") { Value a = Value::array(); *a.arr = podDom_; return a; }
             if (ve->name == "$*CWD") { char buf[4096]; Value p = Value::str(getcwd(buf, sizeof buf) ? buf : "."); p.hashKind = "IO"; return p; }
-            if (ve->name == "$*RAKU" || ve->name == "$*PERL" || ve->name == "$?RAKU" || ve->name == "$?PERL") {
-                Value r = Value::makeHash(); r.hashKind = "Raku"; return r;
-            }
+            if (ve->name == "$*RAKU" || ve->name == "$*PERL" || ve->name == "$?RAKU" || ve->name == "$?PERL")
+                return rakuIntrospection(false);
             if (ve->name == "$*PROGRAM") { Value p = Value::str(srcFile_); p.hashKind = "IO"; return p; } // running script, as IO::Path
             if (ve->name == "$*PROGRAM-NAME") return Value::str(srcFile_);
             if (ve->name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }

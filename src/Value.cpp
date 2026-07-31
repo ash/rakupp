@@ -517,6 +517,15 @@ std::string Value::gist() const {
                 std::string nm = hash->count("name") ? hash->at("name").s : "";
                 return (tn.empty() ? "Mu" : tn) + " " + nm;
             }
+            // $*RAKU / $*RAKU.compiler. These carry no data of their own — every
+            // accessor is computed in methodCallInner — so gist fell through to
+            // toStr and `say $*RAKU` printed NOTHING. The constructor now leaves
+            // the two fields the rendering needs, as FileHandle does below.
+            if ((hashKind == "Raku" || hashKind == "Compiler") && hash) {
+                auto n = hash->find("name"), v = hash->find("ver");
+                if (n != hash->end() && v != hash->end())
+                    return n->second.s + " (" + v->second.s + ")";
+            }
             if (hashKind == "Scalar" && hash) { // a .VAR container gists as its value
                 auto it = hash->find("value");
                 return it != hash->end() ? it->second.gist() : "(Any)";

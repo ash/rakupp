@@ -21,6 +21,20 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
   page on the website and aborted a build, since BSD sed refuses an illegal byte
   sequence under a UTF-8 locale.
 
+- **`say $*RAKU` printed nothing.** The object answers every accessor through
+  the method dispatcher, but `say` renders from the Value alone, and a `Raku` /
+  `Compiler` value carried no data at all — so it fell through to an empty
+  string. It now gists as `Raku (6.d)`, following `use v6.c`/`v6.e`, and the
+  compiler as `Raku++ (2026.07)`, which is the shape Rakudo uses (name plus the
+  version *that* object reports, not the language revision in both). `.Str` is
+  the bare name, as in Rakudo.
+- **`dd` renders `.raku` and dispatches it.** It hardcoded `.gist`, so a type
+  with a `.raku` of its own printed a generic rendering — a user class showed
+  `C<obj>` where Rakudo shows its `.raku`, and `dd Any` printed `(Any)` instead
+  of `Any`. `dd $*RAKU` now gives the constructor form.
+- **`$*RAKU.compiler.auth` is the person who wrote the compiler** rather than
+  "The Raku Community", which stays the *language's* authority.
+
 Documentation corrected in the same pass: the README and `docs/MODULES.md` both
 still promised that *"a missing or broken `use` is a warning, not a fatal
 error — the rest of your program keeps running"*. That stopped being true; a
@@ -223,6 +237,13 @@ RFC 1321 vectors byte-for-byte. The general fixes behind that:
   sub.
 - Postfix `++`/`--` on an undefined numeric returns the type's **zero**.
 - `$^b` and a later bare `$b` are **one variable**, not two diverging copies.
+- **`$*RAKU.compiler.version` answers the oracle era** (`v2026.07`) — the Rakudo
+  release Raku++ is verified byte-identical against — **reversing the v1.0.0
+  decision** to report rakupp's own release there. Modules gate with
+  `$*RAKU.compiler.version < v2023.12` to ask *do I have modern semantics?*, and
+  `v1.5.x` compares as a pre-2000 Rakudo, so every such module refused to load.
+  `.name` stays `Raku++` and `.release`/`.id` keep the real rakupp version;
+  identify the engine with `.name`. (Landed in this release, recorded late.)
 
 ### Fixes
 

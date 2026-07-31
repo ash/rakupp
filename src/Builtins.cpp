@@ -3940,7 +3940,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // Language revision the program is running under (6.c/6.d/6.e), from any
         // `use v6.*` pragma; the compiler object keeps its own version string.
         std::string langVer = langRev_ == 0 ? "6.c" : (langRev_ == 1 ? "6.d" : "6.e");
-        if (m == "compiler") { Value c = Value::makeHash(); c.hashKind = "Compiler"; return c; }
+        if (m == "compiler") return rakuIntrospection(true);
         if (m == "backend") return Value::str("cpp"); // rakupp's engine is a C++ tree-walking interpreter, not MoarVM
         if (m == "KERNELnames" || m == "DISTROnames" || m == "VMnames") { // known-platform introspection lists
             Value out = Value::array(); out.isList = true;
@@ -3959,14 +3959,42 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
 #ifndef RAKUPP_VERSION
 #define RAKUPP_VERSION "0.0.0"
 #endif
+        // Documented for users in docs/faq/differences.md + REFERENCE.md §12.
         static const char* kOracleEra = "2026.07"; // Rakudo the battery/spec diff against
         if (m == "version" || m == "lang-version") { Value v = Value::str(isComp && m == "version" ? kOracleEra : langVer); v.hashKind = "Version"; return v; }
-        if (m == "auth" || m == "authority") return Value::str("The Raku Community");
+        // The LANGUAGE's authority is the Raku community; the COMPILER's is
+        // whoever wrote it, which for this one is a person, not a foundation.
+        if (m == "auth" || m == "authority")
+            return Value::str(isComp ? "Andrew Shitov" : "The Raku Community");
         if (m == "desc") return Value::str("Raku++ — a C++ Raku interpreter");
         if (m == "signature") { Value b = Value::str("Raku++"); b.hashKind = "Blob"; return b; } // non-empty Blob
         if (m == "id" || m == "release") return Value::str(RAKUPP_VERSION);
         if (m == "codename") return Value::str("Raku++");
-        if (m == "gist" || m == "Str" || m == "raku") return Value::str(nm + " (" + (isComp ? "6.d" : langVer) + ")");
+        // Rakudo: `Raku (6.d)` for the language, `rakudo (2026.07)` for the
+        // compiler — name plus the version THAT object reports, not the language
+        // revision in both. .Str is the bare name.
+        if (m == "Str") return Value::str(nm);
+        if (m == "gist")
+            return Value::str(nm + " (" + (isComp ? kOracleEra : langVer.c_str()) + ")");
+        // .raku is the constructor form, which is what `dd $*RAKU` shows. Ours
+        // reports real values where Rakudo's are undefined type objects (its
+        // .desc and .signature are Str/Blob), so those fields differ in content
+        // while the shape matches.
+        if (m == "raku") {
+            auto q = [](const std::string& x) { return "\"" + x + "\""; };
+            std::string self = std::string(isComp ? "Compiler" : "Raku") + ".new("
+                + (isComp ? "" : "compiler => " + [&]{ ValueList none;
+                       Value c = rakuIntrospection(true);
+                       return methodCall(c, "raku", none).toStr(); }() + ", ")
+                + "id => " + q(RAKUPP_VERSION) + ", release => " + q(RAKUPP_VERSION)
+                + ", codename => " + q("Raku++")
+                + ", name => " + q(nm)
+                + ", auth => " + q(isComp ? "Andrew Shitov" : "The Raku Community")
+                + ", version => v" + (isComp ? kOracleEra : langVer.c_str())
+                + ", signature => Blob"
+                + ", desc => " + q("Raku++ — a C++ Raku interpreter") + ")";
+            return Value::str(self);
+        }
     }
     if (inv.t == VT::Type && (inv.s == "ThreadPoolScheduler" || inv.s == "CurrentThreadScheduler")) {
         if (m == "new") { Value s = Value::makeHash(); s.hashKind = "Scheduler"; (*s.hash)["name"] = Value::str(inv.s); return s; }
@@ -5247,9 +5275,17 @@ void Interpreter::registerBuiltins() {
 #endif
         return Value::str(outp);
     };
-    B["dd"] = [](Interpreter&, ValueList& a) -> Value {
+    B["dd"] = [](Interpreter& I, ValueList& a) -> Value {
+        // dd renders .raku, not .gist — and it must DISPATCH, so a type with a
+        // .raku of its own (a user class, $*RAKU) shows that rather than a
+        // generic rendering. Plain Str keeps its quoted short form.
         std::string out;
-        for (size_t i = 0; i < a.size(); i++) { if (i) out += ", "; out += (a[i].t == VT::Str ? "\"" + a[i].s + "\"" : a[i].gist()); }
+        for (size_t i = 0; i < a.size(); i++) {
+            if (i) out += ", ";
+            if (a[i].t == VT::Str && a[i].hashKind.empty()) { out += "\"" + a[i].s + "\""; continue; }
+            ValueList none;
+            out += I.methodCall(a[i], "raku", none).toStr();
+        }
         std::cerr << out << "\n";
         return a.empty() ? Value::any() : a[0];
     };
