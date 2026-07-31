@@ -11840,6 +11840,30 @@ static bool isNumOp(const std::string& op) {
     return ops.count(op) > 0;
 }
 
+// --- fast-path shape tests for evalBinary/evalIndex ------------------------
+// A plain lexical: `$x`, `@a`, `%h` — the second character is a letter or an
+// underscore, which excludes every twigilled and special name ($*dyn, $?FILE,
+// $^placeholder, $/ …) and so keeps the fast paths off anything with its own
+// lookup rules.
+static inline bool plainLexVar(const Expr* e) {
+    if (!e || e->kind != NK::VarExpr) return false;
+    auto* ve = static_cast<const VarExpr*>(e);
+    return !ve->declare && ve->name.size() > 1 &&
+           (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_');
+}
+// A literal with no shared payload, so the Value built from it can be reused by
+// reference for the life of the program: no bigint, no Rat, no imaginary part.
+static inline bool plainScalarLit(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: return static_cast<const IntLit*>(e)->big.empty();
+        case NK::NumLit: { auto* n = static_cast<const NumLit*>(e);
+                           return !n->isRat && !n->imaginary; }
+        case NK::StrLit: case NK::BoolLit: return true;
+        default: return false;
+    }
+}
+
 Value Interpreter::evalBinary(Binary* b) {
     const std::string& op = b->op;
     // `LIST Xxx n` / `LIST Zxx n`: the metaop inherits xx's THUNKY left — the
@@ -11889,6 +11913,45 @@ Value Interpreter::evalBinary(Binary* b) {
         b->simpleOp = (rmeta || special.count(op)) ? 0 : 1;
     }
     if (b->simpleOp == 1) {
+        // Specialised shapes: `$n < 2`, `2 * $n`, `$a + $b` — what hot loops are
+        // made of. Each operand that is a plain lexical is read BY POINTER
+        // instead of copying a 376-byte Value out of it, each literal comes from
+        // the node instead of being rebuilt, and the temporal/hyper/zip probes
+        // below are skipped, none of which can apply to two plain scalars.
+        // Everything after this block is untouched, so the general path keeps
+        // its copy elision; anything that fails a check simply falls into it.
+        if (b->fastShape < 0) {
+            bool lvar = plainLexVar(b->lhs.get()), rvar = plainLexVar(b->rhs.get());
+            bool llit = plainScalarLit(b->lhs.get()), rlit = plainScalarLit(b->rhs.get());
+            signed char sh = (lvar && rlit) ? 1 : (llit && rvar) ? 2 : (lvar && rvar) ? 3 : 0;
+            if (sh == 1)      b->litVal = new Value(eval(b->rhs.get()));
+            else if (sh == 2) b->litVal = new Value(eval(b->lhs.get()));
+            b->fastShape = sh;
+        }
+        if (b->fastShape > 0) {
+            // the named lexical, but only while it holds a plain scalar: a
+            // Proxy, a Junction, a DateTime, an undefined value or anything with
+            // a hashKind has its own handling below and must not come here.
+            // Re-checked on EVERY evaluation, so a variable that changes type
+            // mid-loop simply stops taking this path.
+            auto scal = [&](Expr* e) -> const Value* {
+                Value* p = tctx_.cur->find(static_cast<VarExpr*>(e)->name);
+                return (p && p->hashKind.empty() &&
+                        (p->t == VT::Int || p->t == VT::Num ||
+                         p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
+            };
+            const Value* lp = b->fastShape == 2 ? static_cast<const Value*>(b->litVal)
+                                                : scal(b->lhs.get());
+            if (lp) {
+                const Value* rp = b->fastShape == 1 ? static_cast<const Value*>(b->litVal)
+                                                    : scal(b->rhs.get());
+                // tagTemporal is a no-op unless an operand is Instant/Duration,
+                // and both hashKinds are empty here, so the result needs no tag.
+                if (rp) return applyArith(op, *lp, *rp);
+            }
+            // falling through re-reads only variables and cached literals —
+            // neither has side effects, so nothing is evaluated twice
+        }
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
         // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
@@ -14046,6 +14109,47 @@ Value Interpreter::postfixI(Value v) {
 }
 
 Value Interpreter::evalIndex(Index* idx) {
+    // `@arr[$i]` / `@arr[0]` — a plain array read, which is most of what an
+    // index does in a loop. The general path below starts by copying the whole
+    // container into a local Value (376 bytes and a refcount round trip on the
+    // element vector) purely to read one element out of it; this reads the
+    // container by pointer instead. Every guard is re-checked per evaluation,
+    // and anything unusual — a hash subscript, an adverb, a slice, a lazy or
+    // extended array, an out-of-range index — falls straight through.
+    if (idx->fastShape < 0) {
+        signed char sh = 0;
+        if (!idx->isHash && !idx->multiDim && !idx->semicolonSub && idx->adverb.empty() &&
+            plainLexVar(idx->base.get())) {
+            if (plainLexVar(idx->index.get())) sh = 1;
+            else if (idx->index && idx->index->kind == NK::IntLit &&
+                     static_cast<IntLit*>(idx->index.get())->big.empty()) {
+                sh = 2; idx->litIdx = static_cast<IntLit*>(idx->index.get())->v;
+            }
+        }
+        idx->fastShape = sh;
+    }
+    if (idx->fastShape > 0) {
+        if (Value* bp = tctx_.cur->find(static_cast<VarExpr*>(idx->base.get())->name)) {
+            // a plain, fully materialised Array: no lazy/extended state, no
+            // Failure or other kinded value, nothing with its own AT-POS
+            if (bp->t == VT::Array && bp->arr && !bp->ext && bp->hashKind.empty()) {
+                long long i = idx->litIdx;
+                bool have = idx->fastShape == 2;
+                if (!have)
+                    if (Value* ip = tctx_.cur->find(static_cast<VarExpr*>(idx->index.get())->name))
+                        if (ip->t == VT::Int && ip->hashKind.empty()) { i = ip->i; have = true; }
+                // NON-NEGATIVE only. A negative subscript is not "from the end"
+                // here: `my $i = -1; @a[$i]` throws X::OutOfRange, as it must
+                // (Rakudo rejects the spelling outright and wants `*-1`), and
+                // the wrapping seen further down this function belongs to
+                // containers that are not plain Arrays. Anything else, including
+                // out of range, falls through to the general path.
+                if (have && i >= 0 && i < (long long)bp->arr->size())
+                    return (*bp->arr)[i];
+            }
+        }
+    }
+
     // multidim slice @a[X;Y(;Z)] / %h{X;Y;Z}: walk level by level; Whatever
     // selects all elements at its level; scalar/list/range dims select those.
     // (Shared with the adverb block below: `:$off` adverbs still read plainly.)

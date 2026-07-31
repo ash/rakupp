@@ -56,6 +56,11 @@ point; everything else lives here.
 - **[dev/METHOD-DISPATCH-EXPERIMENT.md](dev/METHOD-DISPATCH-EXPERIMENT.md)** — why the
   interpreter's `if (m == …)` dispatch chain was **not** replaced with a hash map or a
   switch: the measurements, and the direction that would actually pay.
+- **[dev/NODE-SPECIALIZATION.md](dev/NODE-SPECIALIZATION.md)** — the interpreter
+  fast paths for `$a OP $b`, `$n OP literal` and `@a[$i]`: what is cached (the
+  syntactic SHAPE, never the variable or its value), the guards that decline it,
+  why it is not a new node kind, the measured numbers with a control kernel, and
+  the three mistakes made getting there.
 - **[dev/RAKUAST-PLAN.md](dev/RAKUAST-PLAN.md)** — how RakuAST would be added
   **without touching the hot path**: why it must be a view built on demand rather
   than our internal tree (measured: 2.2× the nodes, ~1.8× the visits in the fib

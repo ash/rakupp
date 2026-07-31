@@ -128,6 +128,21 @@ struct Binary : Expr {
     // plain operator that goes straight to eval-both-operands + applyArith.
     // (Computed once; a benign same-value race under RAKUPP_PARALLEL.)
     mutable signed char simpleOp = -1;
+    // Fast-path SHAPE, decided once from the syntax and cached here: -1 not yet
+    // looked at, 0 none, 1 `$var OP literal`, 2 `literal OP $var`,
+    // 3 `$var OP $var`. litVal holds the literal's Value for shapes 1 and 2.
+    //
+    // Only the SHAPE is cached — never the variable, never its value. Both are
+    // looked up, and type-checked, on every evaluation. A literal cannot change,
+    // so building it once is safe.
+    //
+    // litVal is a raw pointer that is never freed: the node outlives every
+    // evaluation, so there is nothing to reclaim before exit, and unlike a
+    // re-assigned shared_ptr it cannot be yanked out from under a reader under
+    // RAKUPP_PARALLEL (a racing double-build leaks one Value; it cannot dangle).
+    // void* keeps Value out of Ast.h, the dodge the Rat literal cache uses.
+    mutable signed char fastShape = -1;
+    mutable const void* litVal = nullptr;
     Binary(): Expr(NK::Binary) {}
 };
 
@@ -166,6 +181,13 @@ struct Index : Expr { // base[idx] or base{key}
     bool multiDim = false; // @a[X;Y]: index is a ListExpr of dims, sliced level-by-level
     bool semicolonSub = false; // %h{a;b;c}: a `{; }` multidim brace subscript (parsed as nested Index)
     std::string adverb; // :exists / :delete / :k / :v / :kv / :p  (may start with '!')
+    // Fast-path shape for `@arr[$i]` / `@arr[0]`, decided once from the syntax:
+    // -1 not yet looked at, 0 none, 1 plain lexical base with a plain lexical
+    // index, 2 plain lexical base with an integer literal index. Same rule as
+    // Binary::fastShape — the SHAPE is cached, never the container or the index
+    // value, both of which are read and checked on every evaluation.
+    mutable signed char fastShape = -1;
+    mutable long long litIdx = 0; // the constant subscript, for shape 2
     Index(): Expr(NK::Index) {}
 };
 

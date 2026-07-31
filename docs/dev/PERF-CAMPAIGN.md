@@ -223,3 +223,14 @@ Alternate the two builds round by round rather than measuring one then the other
 — absolute times drift by several percent over minutes. And always sanity-check
 the *output*, not just the timing: a probe that accidentally shadows a real
 method will happily report a large speedup.
+
+Include a **control kernel** — one the change provably cannot touch — in the
+same alternating run. Without it a table of improvements is equally consistent
+with the machine having been quieter the second time.
+
+## Follow-on: node specialization
+
+The largest win since this campaign came from applying its own lesson (remove
+work and allocation, per the profile) to the shapes hot loops are made of:
+`$a OP $b`, `$n OP literal`, `@a[$i]`. Up to −18%, with a flat control.
+Written up separately in [NODE-SPECIALIZATION.md](NODE-SPECIALIZATION.md).

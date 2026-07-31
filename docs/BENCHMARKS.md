@@ -34,23 +34,24 @@ there.)
 - **Startup:** ~2 ms cold on this machine (best of a 200-spawn loop: 1.8 ms) —
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
   small programs it is instant.
-- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.6× on
-  `arrayops` to 9.6× on `loopsum`, 12.9× on `hash`, and 47.5× on `strcat`.
+- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.5× on
+  `arrayops` to 9.6× on `loopsum`, 13.5× on `hash`, and 39.9× on `strcat`.
   Compiling removes interpreter overhead.
-- **Rakudo's JIT keeps two interpreter wins**: `fib` (1.6×) — deep recursion of
-  a tiny body — and `streq` (1.7×; string comparisons walk the interpreter's
-  operator-dispatch chain). Compiling flips both: `--exe` puts `fib` 3.0× ahead
-  and `streq` 5.8× ahead (string `eq`/`lt` compile to inline byte-compares — see
-  [dev/DISPATCH.md](dev/DISPATCH.md) for the dispatch story).
+- **Rakudo's JIT keeps two interpreter wins**, and both narrowed with the
+  interpreter fast paths added on 2026-07-31: `fib` (1.4×, was 1.6×) — deep
+  recursion of a tiny body — and `streq` (1.5×, was 1.7×). Compiling flips both:
+  `--exe` puts `fib` 3.0× ahead and `streq` 6.4× ahead (string `eq`/`lt` compile
+  to inline byte-compares — see [dev/DISPATCH.md](dev/DISPATCH.md) for the
+  dispatch story).
 - Even the **interpreter** beats Rakudo on 7 of 9 — everything except `fib` and
   `streq`, including the `loopsum` loop kernel (1.3×).
 - **String building (`~=`) appends in place** in every mode, so `strcat` is
-  O(n) rather than O(n²) — 14.8× ahead of Rakudo even interpreted.
+  O(n) rather than O(n²) — 12.0× ahead of Rakudo even interpreted.
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 24.6), re-measured 2026-07-29 after the performance
-  campaign, on a lightly loaded
+- **Machine:** macOS (Darwin 24.6), re-measured 2026-07-31 after the interpreter
+  node-specialization work, on a lightly loaded
   desktop. (Rows are not comparable across doc revisions — absolute times
   shift a few percent with machine state; the Rakudo column, measured every
   time, is the fixed yardstick. A per-iteration `std::function` allocation that
@@ -89,15 +90,15 @@ Rakudo's VM leads on `fib` (tiny-body recursion, a JIT's best case) and on
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| strcat   | 12.3 ms  | 181.5 ms | **Raku++ 14.8×** |
-| bigint   | 34.0 ms  | 252.1 ms | **Raku++ 7.4×** |
-| hash     | 38.0 ms  | 226.3 ms | **Raku++ 6.0×** |
-| sortnums | 73.4 ms  | 251.1 ms | **Raku++ 3.4×** |
-| regex    | 83.4 ms  | 278.8 ms | **Raku++ 3.3×** |
-| arrayops | 114.5 ms | 281.0 ms | **Raku++ 2.5×** |
-| loopsum  | 197.3 ms | 265.8 ms | **Raku++ 1.3×** |
-| streq    | 509.6 ms | 300.1 ms | Rakudo 1.7× |
-| fib      | 744.1 ms | 456.9 ms | Rakudo 1.6× |
+| strcat   | 16.0 ms  | 191.3 ms | **Raku++ 12.0×** |
+| bigint   | 34.1 ms  | 266.0 ms | **Raku++ 7.8×** |
+| hash     | 37.9 ms  | 235.0 ms | **Raku++ 6.2×** |
+| sortnums | 70.6 ms  | 265.5 ms | **Raku++ 3.8×** |
+| regex    | 91.8 ms  | 298.9 ms | **Raku++ 3.3×** |
+| arrayops | 118.6 ms | 297.9 ms | **Raku++ 2.5×** |
+| loopsum  | 204.6 ms | 276.0 ms | **Raku++ 1.3×** |
+| fib      | 671.4 ms | 482.4 ms | Rakudo 1.4× |
+| streq    | 460.1 ms | 306.7 ms | Rakudo 1.5× |
 
 ### Native (`--exe`) vs Rakudo
 
@@ -107,15 +108,15 @@ speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| strcat   | 3.8 ms   | 181.5 ms | **Raku++ 47.8×** | 3.2× |
-| hash     | 17.6 ms  | 226.3 ms | **Raku++ 12.9×** | 2.2× |
-| loopsum  | 29.1 ms  | 265.8 ms | **Raku++ 9.1×**  | 6.8× |
-| bigint   | 30.5 ms  | 252.1 ms | **Raku++ 8.3×**  | 1.1× |
-| streq    | 51.3 ms  | 300.1 ms | **Raku++ 5.8×**  | 9.9× |
-| sortnums | 51.7 ms  | 251.1 ms | **Raku++ 4.9×**  | 1.4× |
-| regex    | 67.8 ms  | 278.8 ms | **Raku++ 4.1×**  | 1.2× |
-| fib      | 152.6 ms | 456.9 ms | **Raku++ 3.0×**  | 4.9× |
-| arrayops | 117.0 ms | 281.0 ms | **Raku++ 2.4×**  | 1.0× |
+| strcat   | 4.8 ms   | 191.3 ms | **Raku++ 39.9×** | 3.3× |
+| hash     | 17.4 ms  | 235.0 ms | **Raku++ 13.5×** | 2.2× |
+| loopsum  | 28.9 ms  | 276.0 ms | **Raku++ 9.6×**  | 7.1× |
+| bigint   | 31.2 ms  | 266.0 ms | **Raku++ 8.5×**  | 1.1× |
+| streq    | 48.1 ms  | 306.7 ms | **Raku++ 6.4×**  | 9.6× |
+| sortnums | 51.4 ms  | 265.5 ms | **Raku++ 5.2×**  | 1.4× |
+| regex    | 72.0 ms  | 298.9 ms | **Raku++ 4.2×**  | 1.3× |
+| fib      | 159.6 ms | 482.4 ms | **Raku++ 3.0×**  | 4.2× |
+| arrayops | 118.6 ms | 297.9 ms | **Raku++ 2.5×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
 hurts — `streq` 12.2× (per-node walking around what is, after the fast path, a
@@ -303,3 +304,33 @@ inside the ±3% the Rakudo column itself shows across these runs._
 _The compiled (`--exe`) column is unaffected — `fib` 161.7 → 152.8 ms, `strcat`
 4.4 → 3.9 — which fits a regression in interpreter dispatch rather than in the
 runtime both modes share._
+
+_**2026-07-31 re-snapshot** — the tables above are this run, all three engines
+measured within the same hour. It follows the interpreter **node
+specialization** described in [dev/NODE-SPECIALIZATION.md](dev/NODE-SPECIALIZATION.md):
+fast paths in `evalBinary`/`evalIndex` for `$a OP $b`, `$n OP literal` and
+`@a[$i]`, which read variables by pointer instead of copying a 376-byte `Value`
+and skip probes that cannot apply to plain scalars._
+
+_Read the **ratios**, not the absolute times. This machine measured ~4–7% slower
+across the board than the 2026-07-29 snapshot — Rakudo, which is unaffected by
+anything we changed, moved with it (`fib` 456.9 → 482.4 ms, `hash` 226.3 →
+235.0, `regex` 278.8 → 298.9) — so absolute rows shifted for reasons that have
+nothing to do with the change. Against the previous binary, measured directly
+and alternating on the same machine:_
+
+| benchmark | before | after | |
+|---|---:|---:|---:|
+| streq | 538.2 ms | 455.6 ms | **−15.4%** |
+| fib | 781.2 ms | 683.1 ms | **−12.5%** |
+| arrayops | 124.1 ms | 121.8 ms | −1.8% |
+| strcat | 16.6 ms | 16.5 ms | −0.5% |
+| regex | 94.1 ms | 93.7 ms | −0.5% |
+| loopsum | 211.7 ms | 210.9 ms | −0.4% |
+
+_So the two rows Rakudo led both narrowed — `fib` 1.6× → 1.4×, `streq` 1.7× →
+1.5× — and everything else is unchanged, which is expected: `strcat` and `regex`
+spend their time inside runtime methods and string building, not in the operator
+shapes the fast paths cover. The `--exe` columns are unchanged by this work
+(codegen already kept variables in C++ locals); their movement here is the same
+machine drift. The `-O` table was not re-measured this round._
