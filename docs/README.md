@@ -56,6 +56,11 @@ point; everything else lives here.
 - **[dev/METHOD-DISPATCH-EXPERIMENT.md](dev/METHOD-DISPATCH-EXPERIMENT.md)** — why the
   interpreter's `if (m == …)` dispatch chain was **not** replaced with a hash map or a
   switch: the measurements, and the direction that would actually pay.
+- **[dev/RAKUAST-PLAN.md](dev/RAKUAST-PLAN.md)** — how RakuAST would be added
+  **without touching the hot path**: why it must be a view built on demand rather
+  than our internal tree (measured: 2.2× the nodes, ~1.8× the visits in the fib
+  inner loop), why `.DEPARSE` + the existing parser replaces a RakuAST→AST
+  compiler, and the one case where that text bridge is lossy. Deferred, not built.
 - **[dev/DISPATCH.md](dev/DISPATCH.md)** — call dispatch in `--exe` code: what each
   call shape costs (measured), the cached-builtin/inline-string-compare cuts, and
   what's deliberately left on the table.
