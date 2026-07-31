@@ -80,6 +80,29 @@ on the list.
 **Hash iteration order.** Raku++ iterates sorted; Rakudo's order is its own and
 varies. Neither is guaranteed by the language — sort if you depend on it.
 
+**`$*RAKU.compiler.version` reports a Rakudo era, not the Raku++ release.**
+It answers `v2026.07` — the Rakudo release Raku++ is verified byte-identical
+against — while the rest of the object says who is actually running:
+
+```raku
+say $*RAKU.compiler.name;       # → Raku++      (Rakudo says: rakudo)
+say $*RAKU.compiler.version;    # → v2026.07    (the era tracked, not our release)
+say $*RAKU.compiler.release;    # → 1.7.0       (Rakudo leaves this empty)
+say $*RAKU.compiler.id;         # → 1.7.0       (Rakudo: a commit SHA)
+say $*RAKU.compiler.backend;    # → cpp         (Rakudo: moar)
+```
+
+This is deliberate, and it reverses an earlier decision to report our own
+version there. Modules gate features on `$*RAKU.compiler.version < v2023.12`,
+using the compiler version as a proxy for *do I have modern semantics?* —
+answering `v1.7.0` compares as a pre-2000 Rakudo, and every such module refuses
+to load. JSON::Class was the witness.
+
+So: **detect the engine with `.name`, not with `.version`.** The number answers
+what the language does; the name answers who implements it. The era constant is
+`kOracleEra` in `src/Builtins.cpp`, and it moves when the conformance oracle
+moves — not when Raku++ is released.
+
 ## Keeping yourself portable
 
 If a program must run on both, the reliable habits are:

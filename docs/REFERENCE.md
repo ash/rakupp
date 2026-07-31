@@ -871,12 +871,20 @@ string, `.subparse` allows a partial match. Add an actions class with
 | `$*PID` | process id | `say $*PID > 0` → `True` |
 | `$*KERNEL` | kernel info | `$*KERNEL.name` → `darwin` |
 | `$*DISTRO` | distribution info | `$*DISTRO.name` → `macos` |
-| `$*RAKU` | language object | `$*RAKU.version` → `6.d` |
+| `$*RAKU` | language object | `$*RAKU.version` → `v6.d` |
+| `$*RAKU.compiler` | implementation object | `.name` → `Raku++`, `.backend` → `cpp` |
 | `$*CWD` | current directory | |
 | `$?FILE $?LINE` | compile-time file/line | |
 
 > `$*OS` is **not** populated in `rakupp` (returns `(Any)`); use `$*KERNEL` /
 > `$*DISTRO` instead.
+
+> `$*RAKU.compiler.version` reports the **Rakudo era Raku++ is verified
+> against** (`v2026.07`), not the Raku++ release — modules gate on
+> `$*RAKU.compiler.version < v2023.12` to mean "modern semantics", and answering
+> our own `v1.7.0` reads as a pre-2000 Rakudo. The release is on `.release` and
+> `.id`; identify the engine with `.name` (`Raku++`) or `.backend` (`cpp`). See
+> [faq/differences.md](faq/differences.md).
 
 ---
 

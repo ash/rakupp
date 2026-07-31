@@ -541,6 +541,14 @@ the failing module:
    load — such Rakudo-specific checks are the module's business, and
    JSON::Class is blocked on AttrX::Mooish anyway. The LANGUAGE version stays
    6.x on $*RAKU.version / .lang-version.
+   **REVERSED (215c3e2, v1.5.2): `.version` now answers the ORACLE ERA**
+   (`kOracleEra = "2026.07"` in src/Builtins.cpp — the Rakudo the battery and
+   spec diff against, bumped when that oracle bumps). "The module's business"
+   did not survive contact: the gate is asking *do I have modern semantics?*,
+   and byte-identity against Rakudo 2026.07 is precisely the claim it wants —
+   answering v1.5.x reads as a pre-2000 Rakudo and blocks every such module.
+   `.name` (Raku++) and `.release`/`.id` (the real rakupp version) are how the
+   engine identifies itself; user-facing writeup in docs/faq/differences.md.
 8. **Blob/Buf are not Stringy in dispatch** — a byte buffer no longer binds a
    `Str` param; `multi sha1(Str)`'s `samewith $str.encode` looped forever when
    the Blob re-matched Str instead of the blob8 candidate. blob8..blob64/

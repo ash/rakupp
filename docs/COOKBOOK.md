@@ -264,7 +264,13 @@ say $p.out.slurp(:close).chomp;           # → hi          (capture subprocess 
 
 say $*RAKU.compiler.name;                 # → Raku++
 say $*RAKU.compiler.backend;              # → cpp
+say $*RAKU.compiler.release;              # → 1.7.0    (the Raku++ version)
+say $*RAKU.compiler.version;              # → v2026.07 (the Rakudo era tracked)
 ```
+
+Identify the engine with `.name`, not `.version`: `.version` deliberately reports
+the Rakudo release Raku++ is verified against, because modules use it to gate on
+language semantics. See [faq/differences.md](faq/differences.md).
 
 Call a C function directly with `NativeCall` — integer and floating-point,
 including libc and `<math.h>`:
