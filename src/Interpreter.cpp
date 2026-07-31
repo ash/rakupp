@@ -5860,7 +5860,11 @@ Value Interpreter::dynVar(const std::string& name) {
             std::string all;
             for (auto& fn : *argv.arr) {
                 std::ifstream in(fn.toStr(), std::ios::binary);
-                if (!in) continue;                       // an unreadable name is skipped
+                // An unopenable file is FATAL, as in Rakudo — skipping it
+                // silently turned a mistyped path into an empty result, which
+                // is exactly how issue #14's reporter and I both lost time.
+                if (!in) throw RakuError{Value::typeObj("X::IO::DoesNotExist"),
+                    "Failed to open file " + fn.toStr() + ": No such file or directory"};
                 std::ostringstream ss; ss << in.rdbuf();
                 all += ss.str();
             }

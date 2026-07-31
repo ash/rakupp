@@ -19,11 +19,12 @@ $dir.mkdir;
 my $a = $dir.add('a.txt'); $a.spurt("x\ny\n");
 my $b = $dir.add('b.txt'); $b.spurt("z\n");
 
-sub rp(*@args, :$in) {
+sub rp(*@args, :$in, :$err) {
     my $p = $in
         ?? do { my $q = run($rakupp, |@args, :in, :out, :err); $q.in.print($in); $q.in.close; $q }
         !! run($rakupp, |@args, :out, :err);
-    my $o = $p.out.slurp(:close); $p.err.slurp(:close); $o.chomp
+    my $o = $p.out.slurp(:close); my $e = $p.err.slurp(:close);
+    ($err ?? $e !! $o).chomp
 }
 
 # one file, two files — .lines spans them in order
@@ -46,6 +47,23 @@ sub rp(*@args, :$in) {
 # it must not be built unless used — a program with a file argument that never
 # mentions $*ARGFILES still runs (and @*ARGS keeps the names)
 @fail.push('unused') unless rp('-e', 'say @*ARGS.elems', $a.absolute) eq '1';
+
+# a file that cannot be opened is FATAL, as in Rakudo — silently skipping it
+# turned a mistyped path into an empty result (this is how the issue's reporter
+# and I both chased a phantom for a while)
+@fail.push('missing file must fail')
+    unless rp('-e', 'say $*ARGFILES.lines.elems', '/nonexistent-rakupp-xyz', :err)
+             .contains('Failed to open file');
+
+# an UNDEFINED classify key keeps its gist (Nil, (Any), (Int)) instead of
+# collapsing to the empty string — the `*[1]` classifier on a line with fewer
+# than two words is exactly that case
+@fail.push('classify Nil key')
+    unless rp('-e', 'say (1,2).classify({ Nil }).Bag') eq 'Bag(Nil(2))';
+@fail.push('classify Any key')
+    unless rp('-e', 'say (1,2).classify({ Any }).Bag') eq 'Bag((Any)(2))';
+@fail.push('classify empty-string key stays empty')
+    unless rp('-e', 'say (1,2).classify({ "" }).Bag') eq 'Bag((2))';
 
 # the same in-memory-handle path, through a Proc
 @fail.push('proc.out.lines') unless rp('-e', 'my $p = run("printf", "a\nb\n", :out); say $p.out.lines.join("|")') eq 'a|b';

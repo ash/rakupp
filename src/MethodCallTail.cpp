@@ -1032,8 +1032,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 else if (mapper.t == VT::Hash && mapper.hash) { auto it = mapper.hash->find(v.toStr()); k = it != mapper.hash->end() ? it->second : Value::any(); }
                 else if (mapper.t == VT::Array && mapper.arr) { long long i = v.toInt(); k = (i >= 0 && i < (long long)mapper.arr->size()) ? (*mapper.arr)[i] : Value::any(); }
                 else k = v;
-                if (m == "categorize" && k.t == VT::Array && k.arr) { for (auto& kk : *k.arr) add(kk.toStr(), v); }
-                else add(k.toStr(), v);
+                // An UNDEFINED key keeps its gist — Nil, (Any), (Int) — instead of
+                // collapsing to the empty string. Rakudo shows `Bag(Nil(6))` where
+                // rakupp showed `Bag((6))` for lines a classifier could not key
+                // (issue #14's file: lines with fewer words than the index).
+                auto keyOf = [](const Value& kv) {
+                    return rtIsDefined(kv) ? kv.toStr() : kv.gist();
+                };
+                if (m == "categorize" && k.t == VT::Array && k.arr) { for (auto& kk : *k.arr) add(keyOf(kk), v); }
+                else add(keyOf(k), v);
             }
             if (into) { // :into(%h) — append into an existing hash and return it
                 if (into->t != VT::Hash || !into->hash) *into = Value::makeHash();
