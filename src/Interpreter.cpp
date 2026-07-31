@@ -1411,6 +1411,22 @@ Interpreter::Interpreter() {
         reg("X::AdHoc", {"payload", "message"}); // `die "msg"` — .payload IS the message
         reg("X::Syntax::Reserved", {"reserved", "instead", "pos", "message"});
         reg("Exception", {"message"}); // base class: Exception.new is instantiable
+        // The X::IO family. rakupp's own IO builtins already THROW these (as bare
+        // type objects with a hand-written message); registering them as classes
+        // lets a program CONSTRUCT one too — File::Find's test suite mocks `dir`
+        // with `X::IO::Dir.new(path => …, os-error => …).throw` — and lets
+        // `when X::IO::Dir` match it. `.message` is composed from the attributes
+        // at construction (see the X::IO table in MethodCallPart2.cpp).
+        for (const char* n : {"X::IO::Dir", "X::IO::Rmdir", "X::IO::Unlink",
+                              "X::IO::Chdir", "X::IO::Cwd"})
+            reg(n, {"path", "os-error", "message"});
+        for (const char* n : {"X::IO::Symlink", "X::IO::Link"})
+            reg(n, {"name", "target", "os-error", "message"});
+        for (const char* n : {"X::IO::Rename", "X::IO::Copy", "X::IO::Move"})
+            reg(n, {"from", "to", "os-error", "message"});
+        for (const char* n : {"X::IO::Mkdir", "X::IO::Chmod"})
+            reg(n, {"path", "mode", "os-error", "message"});
+        reg("X::IO::DoesNotExist", {"path", "trying", "message"});
     }
     // CompUnit::Repository — a role a repository class must fully implement, and the
     // $*REPO instance that does it.
@@ -5728,6 +5744,14 @@ bool Interpreter::boolify(const Value& v) {
 }
 
 Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
+    // A WRAPPED builtin (`&dir.wrap({…})`) routes through callCallable so the
+    // wrapper stack runs; unwrapped builtins never pay for the lookup because
+    // the map is empty until someone takes a `&builtin` reference.
+    if (!builtinRefs_.empty()) {
+        auto rit = builtinRefs_.find(name);
+        if (rit != builtinRefs_.end() && rit->second.code && !rit->second.code->wrappers.empty())
+            return callCallable(rit->second, std::move(args));
+    }
     auto it = builtins_.find(name);
     if (it == builtins_.end()) {
         // not a builtin: a module-loaded (or otherwise env-bound) routine?
@@ -6013,6 +6037,16 @@ static Value typedElemDefault(const Value& base) {
     if (first.compare(0, 3, "int") == 0 || first.compare(0, 4, "uint") == 0 || first == "byte")
         return Value::integer(0);
     return Value::nil();
+}
+// Nil STORED into an element container becomes that container's default —
+// `@a[0] = Nil` leaves (Any), `my Int @a` leaves (Int), `is default(9)` leaves 9.
+// Applied wherever a value enters an Array/Hash element: assignment, slice
+// assignment, list initialisation, push/unshift/append/prepend.
+static Value nilElemDefault(const Value& v, const Value& container) {
+    if (v.t != VT::Nil) return v;
+    if (container.pairVal) return *container.pairVal;
+    if (!container.ofType.empty()) return typedElemDefault(container);
+    return Value::any();
 }
 static Value arrayMissingDefault(const Value& base) {
     if (base.pairVal) return *base.pairVal; // `is default(v)`
@@ -8292,7 +8326,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     ValueList ks = keys.flatten();
                     Value rv = evalValueOf(a->value.get());
                     ValueList vs;
-                    if (rv.t == VT::Array || rv.t == VT::Range) vs = rv.flatten();
+                    // ONE level: each element of the RHS fills one key. A nested
+                    // list stays nested — `@c[0..2] = ([1,2],[3,4],Nil)` puts an
+                    // Array in each of the first two slots. Deep-flattening (what
+                    // this used to do) spread [1,2] across two keys instead, which
+                    // is how Terminal::ANSI's screen rows lost a dimension.
+                    if (rv.t == VT::Range) vs = rv.flatten();
+                    else if (rv.t == VT::Array && rv.arr) vs = *rv.arr;
                     else vs.push_back(rv);
                     Value* bp;
                     Value callHold; // `foo()[$b,] = …` — the result shares arr/hash with the container
@@ -8303,7 +8343,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             *bp = ix->isHash ? Value::makeHash() : Value::array();
                         Value out = Value::array(); out.isList = true;
                         for (size_t i = 0; i < ks.size(); i++) {
-                            Value v = i < vs.size() ? vs[i] : Value::any();
+                            Value v = i < vs.size() ? nilElemDefault(vs[i], *bp) : Value::any();
                             if (ix->isHash && bp->t == VT::Hash && bp->hash) {
                                 const std::string& hk = bp->hashKind;
                                 if (hk == "SetHash" || hk == "BagHash" || hk == "MixHash") {
@@ -8481,6 +8521,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             else {
                 Value nv = coerceArray(rhs);
+                if (nv.arr) { // each element enters a container: Nil resets
+                    Value proto; proto.ofType = keepType; proto.pairVal = keepDefault;
+                    for (auto& el : *nv.arr) el = nilElemDefault(el, proto);
+                }
                 // `=` REFILLS the same container (Raku identity): anything bound
                 // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change
                 if (lv->t == VT::Array && lv->arr && nv.arr && lv->arr != nv.arr) {
@@ -8525,6 +8569,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             if (!keepType.empty() && lv->ofType.empty()) lv->ofType = keepType;
             if (keepDefault && !lv->pairVal) lv->pairVal = keepDefault;
+        }
+        else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::Index) {
+            // Storing Nil into an ELEMENT restores that element's default, the
+            // same rule scalars already followed — `@a[0] = Nil` leaves (Any),
+            // not a Nil. (A bare List keeps its Nils; only containers reset.)
+            auto* ix = static_cast<Index*>(a->target.get());
+            Value* bp = ix->base->kind == NK::VarExpr ? lvalue(ix->base.get()) : nullptr;
+            if (bp && bp->pairVal) *lv = *bp->pairVal;          // `is default(…)`
+            else if (bp && !bp->ofType.empty()) *lv = typedElemDefault(*bp);
+            else *lv = Value::any();
         }
         else if (rhs.t == VT::Nil && a->op == "=" && a->target->kind == NK::VarExpr) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
@@ -12123,6 +12177,11 @@ Value Interpreter::evalBinary(Binary* b) {
             args.push_back(src);
             if (!c->name.empty()) {
                 if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args));
+                if (!builtinRefs_.empty()) {
+                    auto rit = builtinRefs_.find(c->name);
+                    if (rit != builtinRefs_.end() && rit->second.code && !rit->second.code->wrappers.empty())
+                        return callCallable(rit->second, std::move(args));
+                }
                 auto it = builtins_.find(c->name);
                 if (it != builtins_.end()) return it->second(*this, args);
             }
@@ -13559,7 +13618,15 @@ Value Interpreter::evalCall(Call* c) {
             }
         }
         auto it = builtins_.find(c->name);
-        if (it != builtins_.end()) return it->second(*this, args);
+        if (it != builtins_.end()) {
+            // a WRAPPED builtin goes the long way so its wrapper stack runs
+            if (!builtinRefs_.empty()) {
+                auto rit = builtinRefs_.find(c->name);
+                if (rit != builtinRefs_.end() && rit->second.code && !rit->second.code->wrappers.empty())
+                    return callCallable(rit->second, std::move(args));
+            }
+            return it->second(*this, args);
+        }
         // enum-type coercion: `Color(1)` -> the enum value whose number is 1
         if (Value* v = tctx_.cur->find(c->name); v && !v->enumType.empty() && v->t == VT::Array && !args.empty()) {
             long long want = args[0].toInt();
@@ -14119,6 +14186,20 @@ Value Interpreter::evalIndex(Index* idx) {
             return out;
         }
         return Value::nil();
+    }
+    // An UNDEFINED base slices like an empty array: `my $x; $x[1..3]` is three
+    // (Any)s, not one. Terminal::ANSI renders its virtual screen by slicing rows
+    // that may not exist yet (`self.chars[$row][1..$w]`) and counting on the
+    // slice's WIDTH; answering a lone (Any) collapsed the row to nothing.
+    if (base.t == VT::Any && idx->index && !idx->multiDim && !idx->isHash) {
+        Value k = eval(idx->index.get());
+        if (k.t == VT::Range || (k.t == VT::Array && k.arr)) {
+            ValueList ks = k.flatten();
+            Value out = Value::array(); out.isList = true;
+            for (size_t j = 0; j < ks.size(); j++) out.arr->push_back(Value::any());
+            return out;
+        }
+        return Value::any();
     }
     // NativeCall CArray / Pointer element read (`$carray[$i]`): byte-backed
     // (CArray.new/allocate stores packed bytes) or a live native pointer.
@@ -14737,6 +14818,7 @@ Value Interpreter::evalIndex(Index* idx) {
             long long from = resolveWhat(eval(re->from.get()));
             long long to = resolveWhat(eval(re->to.get()));
             if (re->exTo) to--;
+            if (re->exFrom) from++; // `@a[1^..3]` starts at 2 — this path read exTo only
             if (from < 0) from += n;
             isSlice = true;
             for (long long k = from; k <= to; k++) indices.push_back(k);
@@ -15163,8 +15245,11 @@ Value Interpreter::eval(Expr* e) {
                 }
                 auto bit = builtins_.find(bare);
                 if (bit != builtins_.end()) {
+                    auto rit = builtinRefs_.find(bare);   // one stable Callable per builtin
+                    if (rit != builtinRefs_.end()) return rit->second;
                     Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->name = bare;
                     code.code->builtin = bit->second;
+                    builtinRefs_[bare] = code;
                     return code;
                 }
             }

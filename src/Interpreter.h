@@ -737,6 +737,11 @@ private:
     std::string todoReason_; // reason for the pending TODO block
     int dieOnFail_ = -1;     // cached RAKU_TEST_DIE_ON_FAIL flag (-1 = not yet read)
     int todoSubtestDepth_ = 0; // inside a TODO-marked subtest: failures neither die nor count
+    // `&builtin` must answer the SAME Callable every time, so `&dir.wrap({…})`
+    // mutates the object the call path consults (File::Find's suite mocks `dir`
+    // exactly this way). Populated lazily; empty for programs that never take a
+    // builtin reference, which keeps the call path's check free.
+    std::map<std::string, Value> builtinRefs_;
     std::vector<std::pair<Block*, std::shared_ptr<Env>>> deferredEnds_; // END blocks from EVAL, run at program end
     bool envFlag(const std::string& name); // truthiness of %*ENV<name>
     std::string envStr(const std::string& name); // %*ENV<name> as a string

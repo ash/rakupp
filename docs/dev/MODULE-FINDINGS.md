@@ -642,3 +642,53 @@ Config still needs IO::Glob+IO::Path::XDG+Log; Date::Names needs Abbreviations.
 Also worth doing: make rakupp's "could not find module" a HARD error under a
 strict flag, so these masked failures surface instead of producing phantom
 output.
+
+## 2026-07-31 — File::Find and Terminal::ANSI cleared under the zef bar
+
+Two more distributions pass their own suites, taking the bar from 16 to 18.
+Every fix below is a general interpreter fix; none touches the modules.
+
+**File::Find** (0/1 → 1/1, 29/29 assertions). Three gaps, in the order the
+suite hit them:
+
+- `symlink` / `link` did not exist as SUBS. Added; `readlink` deliberately
+  stayed a method only, which is where Rakudo has it.
+- `symlink` must ABSOLUTIZE its target. A relative target is read by the OS
+  relative to the LINK's directory, not the cwd, so the suite's
+  `symlink("t/dir1/another_dir", "t/dir2/symdir")` produced a dangling link and
+  the whole symlink section silently took its "this OS cannot" branch — four
+  tests passing vacuously while Rakudo tested the real thing.
+- The `X::IO` exception family could not be CONSTRUCTED. rakupp threw those
+  types from its own IO builtins but had no classes behind them, so the suite's
+  `X::IO::Dir.new(path => …, os-error => …).throw` — how it mocks a directory
+  error — died. All thirteen now exist and compose Rakudo's message text.
+
+A fourth fix came out of the same file: `&dir.wrap(…)` had no effect, because
+`&builtin` minted a fresh Callable per evaluation AND a bare call reaches the
+builtin through a table lookup that consults no Callable at all.
+
+**Terminal::ANSI** (2/8 → 8/8). Five gaps, each one uncovering the next:
+
+- `unit monitor Foo;` did not parse (only the block form of the declarator).
+- `method FALLBACK` was unimplemented.
+- A sigilless `constant` parsed as a listop, so `CSI ~ $str` died "Undefined
+  routine 'CSI'".
+- `@a[1^..3]` ignored the exclusive START (the literal-range subscript path read
+  `..^` only).
+- Slice assignment DEEP-flattened its right-hand side, so the module's
+  `@!chars[$top..$bot] = (|@!chars[$top^..$bot], Nil)` spread a screen row's
+  characters across several row slots instead of moving whole rows.
+- Nil stored into a container element did not restore the element default, so
+  the blanked row rendered as nothing rather than a space.
+
+Method note, again: the last two only became findable by INSTRUMENTING the
+module — dumping the screen buffer from both engines after the same calls —
+not by reconstructing the expression. Three reconstructions in a row (slip
+flattening, exclusive ranges, sparse rows) all reproduced clean.
+
+Two divergences found here and deliberately NOT fixed, both about itemization
+rather than these modules:
+
+- `my $r = 1^..3; @a[$r]` — Rakudo treats the itemized Range as ONE index
+  (numifying it), rakupp slices with it.
+- `Any[1..3]` — Rakudo raises, rakupp answers a slice of undefined values.

@@ -1782,7 +1782,12 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         return ve;
     }
     if (scope == "constant" && isKind(Tok::Ident)) {
-        auto ve = std::make_unique<VarExpr>(advance().text);
+        std::string cname = advance().text;
+        // A sigilless constant is a TERM, so `CSI ~ $s` is an infix concat —
+        // without this the name reads as a listop and swallows the `~` as a
+        // prefix, giving "Undefined routine 'CSI'" (Terminal::ANSI does this).
+        sigilless_.insert(cname);
+        auto ve = std::make_unique<VarExpr>(cname);
         ve->declare = true; ve->declScope = scope;
         skipTraits();
         // `constant foo;` — a constant must be initialized
@@ -5672,12 +5677,17 @@ StmtPtr Parser::parseStatementImpl() {
             }
             return st;
         }
-        // `unit class/role/grammar Foo;` — the rest of the file is the body.
+        // `unit class/role/grammar/monitor Foo;` — the rest of the file is the body.
+        // `monitor` (OO::Monitors) parsed only in its BLOCK form, so a module
+        // written as `unit monitor Foo;` — Terminal::ANSI::Virtual, and Cro's
+        // internals — reached the attribute declarations with no package open
+        // and died "You cannot declare an attribute here".
         if (kw == "unit" && peek().kind == Tok::Ident &&
-            (peek().text == "class" || peek().text == "role" || peek().text == "grammar")) {
+            (peek().text == "class" || peek().text == "role" ||
+             peek().text == "grammar" || peek().text == "monitor")) {
             advance(); // unit
-            std::string what = advance().text; // class/role/grammar
-            return parseClass(what == "role", what == "grammar", false, /*isUnit=*/true);
+            std::string what = advance().text; // class/role/grammar/monitor
+            return parseClass(what == "role", what == "grammar", false, /*isUnit=*/true, what);
         }
         // `has` reaches plain statement parsing either outside any class body
         // (an error) or nested in a block within one, e.g. `has` inside a

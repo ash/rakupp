@@ -1661,6 +1661,40 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     "Cannot look up attributes in a " + inv.s + " type object"};
             }
             if (m == "new" || m == "bless") {
+                // An X::IO exception composes its .message from its attributes,
+                // as Rakudo does — the class carries no method of its own, so the
+                // text is built here, once, at construction.
+                if (ci->name.compare(0, 6, "X::IO:") == 0) {
+                    bool haveMsg = false;
+                    std::map<std::string, std::string> a;
+                    for (auto& g : args)
+                        if (g.t == VT::Pair) {
+                            if (g.s == "message") haveMsg = true;
+                            a[g.s] = g.pairVal ? g.pairVal->toStr() : "";
+                            if (g.s == "mode" && g.pairVal) { // '0o755', octal, 3 digits
+                                char buf[32]; snprintf(buf, sizeof buf, "%03llo",
+                                                       (unsigned long long)g.pairVal->toInt());
+                                a["mode"] = buf;
+                            }
+                        }
+                    const std::string& n = ci->name;
+                    std::string msg;
+                    auto oserr = [&] { return ": " + a["os-error"]; };
+                    if      (n == "X::IO::Dir")     msg = "Failed to get the directory contents of '" + a["path"] + "'" + oserr();
+                    else if (n == "X::IO::Rmdir")   msg = "Failed to remove the directory '" + a["path"] + "'" + oserr();
+                    else if (n == "X::IO::Unlink")  msg = "Failed to remove the file '" + a["path"] + "'" + oserr();
+                    else if (n == "X::IO::Chdir")   msg = "Failed to change the working directory to '" + a["path"] + "'" + oserr();
+                    else if (n == "X::IO::Cwd")     msg = "Failed to get the working directory" + oserr();
+                    else if (n == "X::IO::Symlink") msg = "Failed to create symlink called '" + a["name"] + "' on target '" + a["target"] + "'" + oserr();
+                    else if (n == "X::IO::Link")    msg = "Failed to create link called '" + a["name"] + "' on target '" + a["target"] + "'" + oserr();
+                    else if (n == "X::IO::Rename")  msg = "Failed to rename '" + a["from"] + "' to '" + a["to"] + "'" + oserr();
+                    else if (n == "X::IO::Copy")    msg = "Failed to copy '" + a["from"] + "' to '" + a["to"] + "'" + oserr();
+                    else if (n == "X::IO::Move")    msg = "Failed to move '" + a["from"] + "' to '" + a["to"] + "'" + oserr();
+                    else if (n == "X::IO::Mkdir")   msg = "Failed to create directory '" + a["path"] + "' with mode '0o" + a["mode"] + "'" + oserr();
+                    else if (n == "X::IO::Chmod")   msg = "Failed to set the mode of '" + a["path"] + "' to '0o" + a["mode"] + "'" + oserr();
+                    else if (n == "X::IO::DoesNotExist") msg = "Failed to find '" + a["path"] + "' while trying to do '." + a["trying"] + "'";
+                    if (!haveMsg && !msg.empty()) args.push_back(Value::pair("message", Value::str(msg)));
+                }
                 // NativeCall CStruct: allocate zeroed native memory and set fields
                 // from named args, so the instance can be passed to / read from C.
                 if (ci->repr == "CStruct" || ci->repr == "CPPStruct") {
@@ -1893,6 +1927,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         std::string msg;
         if (Value* mm = inv.obj->cls ? inv.obj->cls->findMethod("message") : nullptr)
             { try { ValueList none; msg = invokeMethod(*mm, inv, none).toStr(); } catch (...) {} }
+        if (msg.empty()) { // no method — a plain `has $.message` attribute still speaks
+            auto ma = inv.obj->attrs.find("message");
+            if (ma != inv.obj->attrs.end() && rtIsDefined(ma->second)) msg = ma->second.toStr();
+        }
         throw RakuError{inv, msg.empty() ? inv.typeName() : msg};
     }
     // user object: dispatch to class methods / public accessors first

@@ -27,6 +27,51 @@ binaries — they ship with the next release.
   Rakudo, at equal and unequal operand lengths. A hyper's result also mirrors
   its left operand's shape (Array in → Array out), where rakupp always
   returned a List.
+- **`.wrap` works on built-in routines.** `&dir.wrap(…)` had no effect: `&dir`
+  minted a fresh `Callable` each time it was evaluated, so the wrapper went onto
+  a throwaway — and a bare `dir(…)` call reaches the builtin through a direct
+  table lookup that consults no `Callable` at all. `&builtin` now answers one
+  cached routine per name, and the three dispatch sites check it for wrappers.
+- **The `X::IO` exception family can be constructed.** rakupp already threw
+  these types from its own IO builtins, but `X::IO::Dir.new(path => …,
+  os-error => …)` said "No such method 'new'". All thirteen now exist, compose
+  Rakudo's message text, and match under `when`. `.throw` also reports a plain
+  `has $.message` attribute instead of falling back to the type name.
+- **`symlink` and `link` exist as subs**, and `symlink` absolutizes its target
+  the way Rakudo does — the OS reads a relative target relative to the *link's*
+  directory, so `symlink("t/a/d", "t/b/link")` used to dangle. `.readlink` is
+  an `IO::Path` method, as in Rakudo (which has no `readlink` sub).
+- **`.resolve` resolves.** It only absolutized the path, leaving symlinks in
+  place: on macOS `$*TMPDIR.resolve` stayed `/var/folders/…` where the kernel
+  reports `/private/var/folders/…`, so any comparison against a real path
+  failed. It now realpaths the longest existing prefix and appends the rest
+  verbatim, matching Rakudo on every probe including missing tails and `..`.
+
+Together these take File::Find's distribution suite from dying at test 23 to
+29/29 on the same branch Rakudo takes.
+
+- **`method FALLBACK`** is implemented: a class may catch every unresolved
+  method, receiving the name first and then the original arguments. It is looked
+  up last, so it never shadows a real method.
+- **`unit monitor Foo;`** parses. Only the block form of OO::Monitors'
+  declarator was recognised, so a module written in the file-scoped form read its
+  attributes with no package open ("You cannot declare an attribute here").
+- **A sigilless `constant` is a term**, not a listop. `CSI ~ $str` was parsed as
+  a call `CSI(~$str)` and died "Undefined routine 'CSI'".
+- **An exclusive START in a range subscript is honoured**: `@a[1^..3]` begins at
+  index 2. The literal-range subscript path read `..^` only.
+- **Slice assignment distributes ONE level.** It deep-flattened the right-hand
+  side, so `@a[0..2] = ([1,2],[3,4],Nil)` spread `[1,2]` across two keys instead
+  of putting an Array in each slot.
+- **Nil stored into a container element restores that element's default** —
+  `(Any)`, the declared element type, or `is default(…)` — which is the rule
+  scalars already followed. It applies to element and slice assignment, list
+  initialisation, and push/unshift/append/prepend. A bare List still keeps its
+  Nils, since a List's elements are not containers.
+- **Slicing an undefined base yields a slice, not a lone value**: `my $x;
+  $x[1..3]` is three `(Any)`s.
+
+Terminal::ANSI's suite goes 2/8 → 8/8 on these.
 
 ## v1.5.2 (2026-07-31) — modules, measured by their own test suites
 

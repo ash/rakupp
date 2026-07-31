@@ -4338,6 +4338,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (auto r = methodCallTail(inv, m, args, rwArgs)) return std::move(*r);
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
+    // FALLBACK: a class may catch every unresolved method itself, receiving the
+    // NAME first and then the original arguments (Terminal::ANSI::OO turns each
+    // colour name into a method this way). Looked up last, so it never shadows
+    // a real method, and skipped for FALLBACK itself to avoid a loop.
+    if (m != "FALLBACK") {
+        ClassInfo* fci = nullptr;
+        if (inv.t == VT::Object && inv.obj) fci = inv.obj->cls.get();
+        else if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) fci = it->second.get(); }
+        if (fci)
+            if (Value* fb = fci->findMethod("FALLBACK")) {
+                ValueList fargs; fargs.reserve(args.size() + 1);
+                fargs.push_back(Value::str(m));
+                for (auto& a : args) fargs.push_back(a);
+                return invokeMethod(*fb, inv, fargs);
+            }
+    }
     if (std::getenv("RAKUPP_TRACE"))
         std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
                   << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";
@@ -6068,6 +6084,34 @@ void Interpreter::registerBuiltins() {
         if (mode == "rw") { std::ofstream create(path, std::ios::app); }  // exists immediately, kept intact
         if (mode != "r") I.registerWriteHandle(h.hash); // flush at exit if not closed
         return h;
+    };
+    // symlink($target, $name) / link($target, $name) — the sub forms Rakudo
+    // exposes (File::Find's suite builds a symlinked directory with the sub form
+    // before walking it). `readlink` is a METHOD only, as in Rakudo.
+    B["symlink"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::boolean(false);
+        std::string target = a[0].toStr(), name = a[1].toStr();
+        // Rakudo absolutizes the TARGET. It matters: a relative target is read
+        // by the OS relative to the LINK's directory, not the cwd, so
+        // `symlink("t/dir1/d", "t/dir2/link")` would otherwise dangle.
+        if (!target.empty() && target[0] != '/') {
+            char cbuf[4096];
+            if (getcwd(cbuf, sizeof cbuf)) target = std::string(cbuf) + "/" + target;
+        }
+        if (::symlink(target.c_str(), name.c_str()) != 0)
+            throw RakuError{Value::typeObj("X::IO::Symlink"),
+                "Failed to create symlink called '" + name + "' on target '" + target +
+                "': " + std::strerror(errno)};
+        return Value::boolean(true);
+    };
+    B["link"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::boolean(false);
+        std::string target = a[0].toStr(), name = a[1].toStr();
+        if (::link(target.c_str(), name.c_str()) != 0)
+            throw RakuError{Value::typeObj("X::IO::Link"),
+                "Failed to create link called '" + name + "' on target '" + target +
+                "': " + std::strerror(errno)};
+        return Value::boolean(true);
     };
     B["unlink"] = [](Interpreter&, ValueList& a) -> Value {
         for (auto& f : a) ::unlink(f.toStr().c_str());

@@ -1,4 +1,7 @@
 #include "MethodCallSegment.h"
+#include <unistd.h>
+#include <cstring>
+#include <cstdlib>
 
 // Segment 3 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -905,9 +908,45 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             return Value::str(out);
         }
-        if (m == "absolute" || m == "resolve" || m == "canonpath" || m == "cleanup") {
+        if (m == "readlink") { // the link's own target, unresolved (cf. .resolve)
+            std::string p = inv.toStr(); char lbuf[4096];
+            ssize_t n = ::readlink(p.c_str(), lbuf, sizeof lbuf - 1);
+            if (n < 0) throw RakuError{Value::typeObj("X::IO::Symlink"),
+                "Failed to readlink '" + p + "': " + std::strerror(errno)};
+            return asIO(std::string(lbuf, (size_t)n)); // an IO::Path, as in Rakudo
+        }
+        if (m == "resolve") {
+            // Rakudo's .resolve FOLLOWS symlinks: it realpaths the longest prefix
+            // that exists and appends whatever is left verbatim (so `..` past a
+            // missing directory stays literal, since it cannot be crossed).
+            // Merely absolutizing, as this used to, made `.resolve` a no-op on
+            // macOS, where $*TMPDIR is /var/… and the kernel reports /private/var/….
             std::string s = inv.toStr();
-            if ((m == "absolute" || m == "resolve") && !s.empty() && s[0] != '/') {
+            if (!s.empty() && s[0] != '/') {
+                char buf[4096]; if (getcwd(buf, sizeof buf)) s = std::string(buf) + "/" + s;
+            }
+            std::vector<std::string> segs;
+            { std::string cur;
+              for (char c : s) { if (c == '/') { if (!cur.empty()) segs.push_back(cur); cur.clear(); } else cur += c; }
+              if (!cur.empty()) segs.push_back(cur); }
+            std::string tail;
+            for (size_t take = segs.size() + 1; take-- > 0; ) {
+                std::string pre = "/";
+                for (size_t k = 0; k < take; k++) { if (k) pre += "/"; pre += segs[k]; }
+                char rbuf[4096];
+                if (realpath(pre.c_str(), rbuf)) {
+                    std::string out = rbuf;
+                    if (!tail.empty()) { if (out != "/") out += "/"; out += tail; }
+                    return asIO(out);
+                }
+                if (take == 0) break;
+                tail = tail.empty() ? segs[take - 1] : segs[take - 1] + "/" + tail;
+            }
+            return asIO(s);
+        }
+        if (m == "absolute" || m == "canonpath" || m == "cleanup") {
+            std::string s = inv.toStr();
+            if (m == "absolute" && !s.empty() && s[0] != '/') {
                 char buf[4096]; if (getcwd(buf, sizeof buf)) s = std::string(buf) + "/" + s;
             }
             if (m == "canonpath" || m == "cleanup") {

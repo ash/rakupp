@@ -2078,8 +2078,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 return v;
             };
+            // a stored Nil resets to the element default, as assignment does
+            auto elemDef = [&](const Value& v) -> Value {
+                if (v.t != VT::Nil) return v;
+                if (inv.pairVal) return *inv.pairVal;
+                if (!inv.ofType.empty()) { bool sg; int b = Value::natWidthOfType(inv.ofType, sg);
+                    if (b > 0) return Value::integer(0);
+                    std::string f = inv.ofType.substr(0, inv.ofType.find(','));
+                    if (!f.empty() && std::isupper((unsigned char)f[0])) return Value::typeObj(f); }
+                return Value::any();
+            };
             // push/unshift add each argument as one element; append/prepend flatten
-            if (m == "push") { for (auto& a : args) inv.arr->push_back(natMask(a)); return inv; } // returns the array (shared storage)
+            if (m == "push") { for (auto& a : args) inv.arr->push_back(elemDef(natMask(a))); return inv; } // returns the array (shared storage)
             // append/prepend follow the single-argument rule: a lone Positional arg is
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
@@ -2088,9 +2098,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     return *args[0].arr;   // one-level: the sole list's own elements
                 return args;               // 2+ args: each as-is
             };
-            if (m == "append") { for (auto& a : appendValues(args)) inv.arr->push_back(a); return inv; }
-            if (m == "unshift") { inv.arr->insert(inv.arr->begin(), args.begin(), args.end()); return inv; }
-            if (m == "prepend") { auto f = appendValues(args); inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return inv; }
+            if (m == "append") { for (auto& a : appendValues(args)) inv.arr->push_back(elemDef(a)); return inv; }
+            if (m == "unshift") { ValueList u; for (auto& a : args) u.push_back(elemDef(a));
+                                  inv.arr->insert(inv.arr->begin(), u.begin(), u.end()); return inv; }
+            if (m == "prepend") { auto f = appendValues(args); for (auto& a : f) a = elemDef(a);
+                                  inv.arr->insert(inv.arr->begin(), f.begin(), f.end()); return inv; }
             // popping/shifting an EMPTY Array yields a FAILURE, not a bare
             // undefined value: it boolifies False — so `while @a.shift -> $x`
             // terminates, which is how Cro's router drains its handler queue —
