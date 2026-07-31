@@ -3,6 +3,31 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
 
+## Unreleased
+
+Fixes made after the v1.5.2 tag was cut, so they are **not** in the v1.5.2
+binaries — they ship with the next release.
+
+- **`$*ARGFILES` exists** ([#14](https://github.com/ash/rakupp/issues/14)). It
+  was undefined, so the awk-style one-liner
+  `$*ARGFILES.lines>>.words.classify(*[1])` produced an empty Bag. The handle
+  is built on ACCESS — a program that never mentions it neither reads files nor
+  blocks on stdin — and spans every file in `@*ARGS`, falling back to `$*IN`.
+  Fixing it also fixed in-memory handles generally: the lines/get/words path
+  had no branch for a captured handle, so `run(…, :out).out.lines` had been
+  returning nothing. An unopenable file is now fatal, as in Rakudo.
+- **Undefined `classify`/`categorize` keys keep their gist** (`Nil`, `(Any)`,
+  `(Int)`) instead of collapsing to the empty string.
+- **`/<$var>/` and `/<@array>/` compile the interpolated text as a REGEX**
+  ([#15](https://github.com/ash/rakupp/issues/15)); the bare `/$var/` and
+  `/@array/` forms stay literal, as they always were.
+- **ASCII hyper markers accept Unicode operators** — `>>÷>>` died where `»÷»`
+  worked, because the ÷→/ ×→* −→- ≥≤≠ aliases were applied only in the
+  guillemet branch. All 8 marker spellings × 6 inner operators now agree with
+  Rakudo, at equal and unequal operand lengths. A hyper's result also mirrors
+  its left operand's shape (Array in → Array out), where rakupp always
+  returned a List.
+
 ## v1.5.2 (2026-07-31) — modules, measured by their own test suites
 
 A behaviour release. The headline is a change of *standard*: a module now counts
@@ -70,14 +95,6 @@ RFC 1321 vectors byte-for-byte. The general fixes behind that:
 
 ### Fixes
 
-- **`$*ARGFILES` exists** ([#14](https://github.com/ash/rakupp/issues/14)). It
-  was undefined, so the awk-style one-liner
-  `$*ARGFILES.lines>>.words.classify(*[1])` produced an empty Bag. The handle
-  is built on ACCESS — a program that never mentions it neither reads files nor
-  blocks on stdin — and spans every file in `@*ARGS`, falling back to `$*IN`.
-  Fixing it also fixed in-memory handles generally: the lines/get/words path
-  had no branch for a captured handle, so `run(…, :out).out.lines` had been
-  returning nothing.
 - **`my $x = … if $cond` declares `$x` even when the condition is false** — a
   compile-time declaration, as Raku specifies. Fixed for the mainline, blocks
   and subs, and then ([#13](https://github.com/ash/rakupp/issues/13)) for
