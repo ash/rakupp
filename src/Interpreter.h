@@ -100,6 +100,12 @@ void precompStoreProgram(const std::string& srcPath, const std::string& src,
                          const std::vector<std::string>& searchPath,
                          const Program& prog, const std::string& finish,
                          const std::vector<std::pair<std::string, std::string>>& deps);
+// Every cached entry: the SOURCE it was built from, its size on disk, and
+// whether this rakupp can still use it (a build from another rakupp, or one
+// whose source has since changed, is listed as stale). Sorted by source.
+struct PrecompEntry { std::string source; unsigned long long bytes; bool usable; };
+std::vector<PrecompEntry> precompCacheList();
+
 // Delete every cached entry. Returns how many files went and how many bytes they
 // held. Always safe: entries are derived data, rebuilt on the next run.
 std::pair<size_t, unsigned long long> precompCacheClear();

@@ -706,19 +706,22 @@ int main(int argc, char** argv) {
                       << " (" << (bytes + 1023) / 1024 << " KB) from " << dir << "\n";
             return 0;
         }
-        size_t n = 0; unsigned long long bytes = 0;
-        std::error_code ec;
-        for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; ++it) {
-            if (!it->is_regular_file(ec)) continue;
-            if (it->path().extension() != ".ast") continue;
-            auto sz = std::filesystem::file_size(it->path(), ec);
-            if (!ec) { n++; bytes += sz; }
-            ec.clear();
-        }
-        std::cout << dir << "\n" << n << " entr" << (n == 1 ? "y" : "ies")
-                  << ", " << (bytes + 1023) / 1024 << " KB\n"
-                  << "(one entry per module file, replaced in place when it changes; "
-                  << "--precomp-clean empties it)\n";
+        auto entries = precompCacheList();
+        unsigned long long bytes = 0, stale = 0;
+        size_t nStale = 0;
+        for (auto& e : entries) { bytes += e.bytes; if (!e.usable) { nStale++; stale += e.bytes; } }
+        std::cout << dir << "\n";
+        if (entries.empty()) std::cout << "empty\n";
+        for (auto& e : entries)
+            std::cout << (e.usable ? "    " : "  ! ") << e.source
+                      << "  (" << (e.bytes + 1023) / 1024 << " KB)\n";
+        std::cout << "\n" << entries.size() << " entr" << (entries.size() == 1 ? "y" : "ies")
+                  << ", " << (bytes + 1023) / 1024 << " KB\n";
+        if (nStale)
+            std::cout << nStale << " marked ! " << (nStale == 1 ? "is" : "are") << " stale ("
+                      << (stale + 1023) / 1024 << " KB): built by another rakupp, or the source "
+                         "has changed since. Each is rewritten in place on next use.\n";
+        std::cout << "(one entry per source file; --precomp-clean empties it)\n";
         return 0;
     }
 

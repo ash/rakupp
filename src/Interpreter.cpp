@@ -3,6 +3,10 @@
 #include <memory>
 #include <cstring>
 #include "Platform.h"
+#include <sys/stat.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>      // _NSGetExecutablePath: the running binary's identity
+#endif
 #ifdef __APPLE__
 #include <crt_externs.h>
 static char** rakupp_environ() { return *_NSGetEnviron(); }
@@ -2751,11 +2755,41 @@ static bool precompEnabled() {
 #ifndef RAKUPP_VERSION
 #define RAKUPP_VERSION "0.0.0"
 #endif
-// Folded into every key: a rakupp built from different sources must never read
-// an entry written by another one.
+// What an entry was built BY. It has to change whenever anything that can affect
+// the parsed tree changes — not just this file. A version string plus this
+// translation unit's compile time does not do that: edit only Parser.cpp, so it
+// produces a different tree for the same source, and neither would move while
+// the cached trees went stale. So the running BINARY's own path, size and mtime
+// go in; any rebuild of any object file changes them.
+//
+// This is VALIDATED INSIDE the entry rather than mixed into the key, which is
+// the same reasoning that made entries path-keyed: in the key, every rebuild of
+// rakupp would orphan the entire cache and leave it there. In the entry, a
+// rebuild simply makes each entry stale, and the next run overwrites it in
+// place. One entry per source file, still.
 static const std::string& precompBuildId() {
-    static const std::string id = std::string(RAKUPP_VERSION) + "/" +
-                                  std::to_string(kAstSerialVersion) + "/" __DATE__ " " __TIME__;
+    static const std::string id = [] {
+        std::string s = std::string(RAKUPP_VERSION) + "/" + std::to_string(kAstSerialVersion);
+        char buf[4096];
+        std::string self;
+#if defined(_WIN32)
+        DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof buf);
+        if (n > 0 && n < sizeof buf) self = buf;
+#elif defined(__APPLE__)
+        uint32_t sz = sizeof buf;
+        if (_NSGetExecutablePath(buf, &sz) == 0) self = buf;
+#else
+        ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+        if (n > 0) { buf[n] = '\0'; self = buf; }
+#endif
+        struct ::stat st;
+        if (!self.empty() && ::stat(self.c_str(), &st) == 0)
+            s += "/" + self + "/" + std::to_string((long long)st.st_size) +
+                 "/" + std::to_string((long long)st.st_mtime);
+        else
+            s += "/" __DATE__ " " __TIME__;   // no self-path: weaker, but not nothing
+        return s;
+    }();
     return id;
 }
 
@@ -2772,45 +2806,75 @@ static std::string precompPath(const std::string& srcPath,
     // CONTENTS is not enough — a different -I selects a different FILE.
     std::string sp;
     for (auto& d : searchPath) { sp += d; sp += '\x01'; }
-    std::string h = sha1hex(abs + std::string(1, '\0') + sp + precompBuildId());
+    std::string h = sha1hex(abs + std::string(1, '\0') + sp);
     // one level of fan-out, so a large cache is not one enormous directory
     return dir + "/" + h.substr(0, 2) + "/" + h.substr(2) + ".ast";
 }
 
-// entry = [40] srcSha [u32 nDeps] { [u32 len] path [40] sha }… [u32 len] finish [blob]
+// entry = [u32] buildId [u32] srcPath [40] srcSha
+//         [u32 nDeps] { [u32] depPath [40] depSha }…  [u32] finish  [blob]
+//
+// srcPath is stored for `--precomp-info`, which would otherwise have nothing to
+// show but hashed filenames.
+struct PrecompHeader {
+    std::string buildId, srcPath, srcSha;
+    std::vector<std::pair<std::string, std::string>> deps;   // path, sha
+    size_t bodyPos = 0;                                      // where finish+blob start
+};
+
+static bool precompParseHeader(const std::string& all, PrecompHeader& h) {
+    size_t pos = 0;
+    auto u32 = [&](uint32_t& v) {
+        if (all.size() - pos < 4) return false;
+        std::memcpy(&v, all.data() + pos, 4); pos += 4; return true;
+    };
+    auto str = [&](std::string& out) {
+        uint32_t len = 0;
+        if (!u32(len) || all.size() - pos < len) return false;
+        out.assign(all, pos, len); pos += len; return true;
+    };
+    if (!str(h.buildId) || !str(h.srcPath)) return false;
+    if (all.size() - pos < 40) return false;
+    h.srcSha.assign(all, pos, 40); pos += 40;
+    uint32_t n = 0;
+    if (!u32(n) || n > 4096) return false;
+    for (uint32_t i = 0; i < n; i++) {
+        std::string dp;
+        if (!str(dp) || all.size() - pos < 40) return false;
+        h.deps.push_back({dp, all.substr(pos, 40)}); pos += 40;
+    }
+    h.bodyPos = pos;
+    return true;
+}
+
 static bool precompRead(const std::string& path, const std::string& src,
                         std::string& blobOut, std::string& finishOut) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
     std::ostringstream ss; ss << in.rdbuf();
     const std::string all = ss.str();
-    size_t pos = 0;
-    if (all.size() < 40 || all.compare(0, 40, sha1hex(src)) != 0) return false; // source changed
-    pos = 40;
-    auto u32 = [&](uint32_t& v) {
-        if (all.size() - pos < 4) return false;
-        std::memcpy(&v, all.data() + pos, 4); pos += 4; return true;
-    };
-    uint32_t n = 0;
-    if (!u32(n) || n > 4096) return false;
-    for (uint32_t i = 0; i < n; i++) {
-        uint32_t len = 0;
-        if (!u32(len) || all.size() - pos < (size_t)len + 40) return false;
-        std::string dep(all, pos, len); pos += len;
-        std::string want(all, pos, 40); pos += 40;
-        std::ifstream df(dep, std::ios::binary);
-        if (!df) return false;                       // dependency moved: miss
+    PrecompHeader h;
+    if (!precompParseHeader(all, h)) return false;
+    if (h.buildId != precompBuildId()) return false;   // a different rakupp wrote it
+    if (h.srcSha != sha1hex(src)) return false;        // the source changed
+    for (auto& d : h.deps) {
+        std::ifstream df(d.first, std::ios::binary);
+        if (!df) return false;                         // dependency moved: miss
         std::ostringstream ds; ds << df.rdbuf();
-        if (sha1hex(ds.str()) != want) return false; // its operators may differ: miss
+        if (sha1hex(ds.str()) != d.second) return false; // its operators may differ: miss
     }
+    size_t pos = h.bodyPos;
     uint32_t flen = 0;
-    if (!u32(flen) || all.size() - pos < flen) return false;
+    if (all.size() - pos < 4) return false;
+    std::memcpy(&flen, all.data() + pos, 4); pos += 4;
+    if (all.size() - pos < flen) return false;
     finishOut.assign(all, pos, flen); pos += flen;
     blobOut.assign(all, pos, std::string::npos);
     return true;
 }
 
-static void precompWrite(const std::string& path, const std::string& src,
+static void precompWrite(const std::string& path, const std::string& srcPath,
+                         const std::string& src,
                          const std::string& blob, const std::string& finish,
                          const std::vector<std::pair<std::string, std::string>>& deps) {
     auto slash = path.rfind('/');
@@ -2826,11 +2890,13 @@ static void precompWrite(const std::string& path, const std::string& src,
         std::ofstream out(tmp, std::ios::binary);
         if (!out) return;
         auto u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+        auto str = [&](const std::string& v) { u32((uint32_t)v.size()); out.write(v.data(), (std::streamsize)v.size()); };
+        str(precompBuildId());
+        str(srcPath);
         { std::string h = sha1hex(src); out.write(h.data(), 40); }
         u32((uint32_t)deps.size());
         for (auto& d : deps) {
-            u32((uint32_t)d.first.size());
-            out.write(d.first.data(), (std::streamsize)d.first.size());
+            str(d.first);
             std::string h = sha1hex(d.second);
             out.write(h.data(), 40);
         }
@@ -2866,8 +2932,35 @@ void precompStoreProgram(const std::string& srcPath, const std::string& src,
     if (!precompEnabled()) return;
     std::string cpath = precompPath(srcPath, searchPath);
     if (cpath.empty()) return;
-    try { precompWrite(cpath, src, serializeAst(prog), finish, deps); }
+    try { precompWrite(cpath, srcPath, src, serializeAst(prog), finish, deps); }
     catch (AstSerialError&) {} // a construct the format can't hold: just don't cache
+}
+
+std::vector<PrecompEntry> precompCacheList() {
+    std::vector<PrecompEntry> out;
+    std::string dir = precompDir();
+    if (dir.empty()) return out;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; ++it) {
+        if (!it->is_regular_file(ec) || it->path().extension() != ".ast") continue;
+        std::ifstream in(it->path(), std::ios::binary);
+        if (!in) continue;
+        std::ostringstream ss; ss << in.rdbuf();
+        PrecompHeader h;
+        auto sz = (unsigned long long)std::filesystem::file_size(it->path(), ec);
+        if (ec) { ec.clear(); sz = 0; }
+        if (!precompParseHeader(ss.str(), h)) { out.push_back({"(unreadable)", sz, false}); continue; }
+        bool usable = h.buildId == precompBuildId();
+        if (usable) { // still current only if the source is unchanged
+            std::ifstream sf(h.srcPath, std::ios::binary);
+            if (!sf) usable = false;
+            else { std::ostringstream s2; s2 << sf.rdbuf(); usable = sha1hex(s2.str()) == h.srcSha; }
+        }
+        out.push_back({h.srcPath, sz, usable});
+    }
+    std::sort(out.begin(), out.end(),
+              [](const PrecompEntry& a, const PrecompEntry& b) { return a.source < b.source; });
+    return out;
 }
 
 std::pair<size_t, unsigned long long> precompCacheClear() {
@@ -2917,7 +3010,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             *prog = parser.parseProgram();
             finish = lx.finishData();
             if (!cpath.empty())
-                try { precompWrite(cpath, src, serializeAst(*prog), finish, parser.opScanned_); }
+                try { precompWrite(cpath, srcPath, src, serializeAst(*prog), finish, parser.opScanned_); }
                 catch (AstSerialError&) {} // a construct the format can't hold: just don't cache
         } catch (ParseError& e) {
             // A module that will not parse is FATAL, like a missing one: its BEGIN
