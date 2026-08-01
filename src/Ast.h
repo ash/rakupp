@@ -514,7 +514,16 @@ void dumpAst(const Program& prog, std::ostream& out);
 // startup and interprets it (no lexing/parsing at run time). Throws AstEmitError
 // on any construct it can't reconstruct (the caller then falls back to bundling).
 struct AstEmitError { std::string msg; };
+struct BundledModule;
 void emitAstProgram(const Program& prog, std::ostream& out,
-                    const std::string& fileName, const std::string& finish);
+                    const std::string& fileName, const std::string& finish,
+                    const std::vector<BundledModule>& mods);
+
+// Emit C++ that registers a compiled binary's embedded modules at startup (see
+// collectModuleGraph). Writes nothing when there are none. Shared by --aot and
+// --exe so a binary from either carries its dependencies the same way.
+struct BundledModule;
+void emitModuleTable(const std::vector<BundledModule>& mods, std::ostream& decls,
+                     std::ostream& calls, bool withSources = false);
 
 } // namespace rakupp

@@ -364,6 +364,186 @@ for <examples tools/bench tools/optbench> -> $dir {
     try unlink $bin;
 }
 
+# ---- compile modes carry their modules ---------------------------------
+# All three compile modes must produce a SELF-SUFFICIENT binary: it has to run
+# with its module tree gone from the machine. Each mode reached this differently
+# and only --exe was ever checked, so --bundle shipped for a while embedding the
+# mainline alone and failing the moment a `use`d module moved.
+#
+# The fixture uses a module that itself `use`s another, so this also pins that
+# the bundler follows the graph rather than the program's own `use` lines, and
+# it exercises an exported sub, class and operator — not merely "the file was
+# found". The module tree is moved aside for the run, which is the only way to
+# prove the binary is not quietly reading it.
+section('compile modes embed their modules (run with the module tree removed)');
+{
+    my $lib   = $ROOT.add('t/fixtures/modlib');
+    my $prog  = $ROOT.add('t/fixtures/uses-modules.raku');
+    my $want  = "outer(inner)\nshape-7\n34\n";
+    my $hide  = $*TMPDIR.add("rakupp-modlib-hidden-$*PID");
+
+    my %bin;
+    for <bundle aot exe> -> $mode {
+        my $bin = $*TMPDIR.add("rakupp-suite-mod-$mode-$*PID").Str;
+        my $p = run($*EXECUTABLE, "--$mode", $prog.Str, '-I', $lib.Str, '-o', $bin, :out, :err);
+        $p.out.slurp(:close); my $err = $p.err.slurp(:close);
+        ok($p.exitcode == 0, "--$mode builds a program that uses modules");
+        diag("--$mode: $err") if $p.exitcode != 0;
+        %bin{$mode} = $bin;
+    }
+
+    # the only honest test: take the modules away
+    rename($lib, $hide);
+    LEAVE { rename($hide, $lib) if $hide.e }
+    for <bundle aot exe> -> $mode {
+        my $p = run(%bin{$mode}, :out, :err);
+        my $got = $p.out.slurp(:close); $p.err.slurp(:close);
+        ok($got eq $want, "--$mode binary runs with its module tree deleted");
+        diag("--$mode got: {$got.raku}") if $got ne $want;
+    }
+    # …and the interpreter must NOT: otherwise the modules are still reachable
+    # and the three checks above proved nothing.
+    {
+        my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :out, :err);
+        my $got = $p.out.slurp(:close); $p.err.slurp(:close);
+        ok($got ne $want, "control: the interpreter cannot run it without the modules");
+    }
+    try unlink %bin{$_} for <bundle aot exe>;
+}
+
+# ---- module loading & the precomp cache --------------------------------
+# Smoke coverage for the module system itself, and specifically for the parsed-
+# AST cache's INVALIDATION. Every bug found in that cache so far — entries
+# accumulating per edit, a stale entry surviving a rakupp rebuild, one script
+# run from two directories sharing an entry — was in deciding WHETHER to reuse
+# an entry, never in the serializer. Round-tripping ASTs proves nothing about
+# any of them, so these drive the real decisions instead.
+#
+# The cache is pointed at a scratch directory: the suite must not read, write or
+# empty the developer's own.
+section('module loading and the precompiled-AST cache');
+{
+    my $work  = $*TMPDIR.add("rakupp-modsmoke-$*PID");
+    my $cache = $work.add('cache');
+    my $lib   = $work.add('lib');
+    mkdir $lib.add('Deep');
+    LEAVE { try { for $work.dir(:!all) { } }; }   # best-effort; $*TMPDIR is transient
+
+    $lib.add('Deep/Leaf.rakumod').spurt: q:to/END/;
+        unit module Deep::Leaf;
+        sub leaf() is export { 'leaf' }
+        END
+    $lib.add('Mid.rakumod').spurt: q:to/END/;
+        unit module Mid;
+        use Deep::Leaf;
+        sub mid() is export { 'mid(' ~ leaf() ~ ')' }
+        END
+    my $prog = $work.add('p.raku');
+    $prog.spurt: q:to/END/;
+        use Mid;
+        say mid();
+        END
+
+    # A properly MERGED environment. `:env(%*ENV, K => v)` builds a list, not a
+    # hash, so the override is silently dropped and the run uses the real cache —
+    # which would make this section both meaningless and destructive, since it
+    # calls --precomp-clean.
+    sub env-with(%extra) {
+        my %e = %*ENV;
+        %e{.key} = .value for %extra;
+        %e
+    }
+    # run with the scratch cache; returns stdout
+    sub cached-run(*@extra) {
+        my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, |@extra, :out, :!err,
+                    :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str })));
+        $p.out.slurp(:close)
+    }
+    # the cache fans out one directory level, so this has to recurse
+    sub all-files($d) {
+        return () unless $d.e;
+        my @out;
+        for $d.dir -> $e { $e.d ?? (@out.append(all-files($e))) !! @out.push($e) }
+        @out
+    }
+    sub entry-count() { +all-files($cache).grep(*.Str.ends-with('.ast')) }
+
+    is(cached-run(), "mid(leaf)\n", 'nested modules load (cold cache)');
+    is(cached-run(), "mid(leaf)\n", 'nested modules load (warm cache)');
+    ok(entry-count() == 3, "one cache entry per source file (got {entry-count()}, want 3)");
+
+    # an edit REPLACES its entry — it must not add one, or a module under
+    # development strands a new file on every save
+    $lib.add('Mid.rakumod').spurt: q:to/END/;
+        unit module Mid;
+        use Deep::Leaf;
+        sub mid() is export { 'MID2(' ~ leaf() ~ ')' }
+        END
+    is(cached-run(), "MID2(leaf)\n", 'editing a module invalidates its entry');
+    ok(entry-count() == 3, "an edit replaces an entry, never adds one (got {entry-count()})");
+
+    # timestamps are not consulted: content is. Backdate an edit far into the
+    # past — the mtime+size scheme this deliberately avoids would miss it.
+    my $mid = $lib.add('Mid.rakumod');
+    $mid.spurt: q:to/END/;
+        unit module Mid;
+        use Deep::Leaf;
+        sub mid() is export { 'MID3(' ~ leaf() ~ ')' }
+        END
+    run('touch', '-t', '197001010000', $mid.Str, :!out, :!err);
+    is(cached-run(), "MID3(leaf)\n", 'an edit backdated to 1970 is still picked up');
+
+    # the cache must never change behaviour
+    my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :out, :!err,
+                :env(env-with({ RAKUPP_NO_PRECOMP => '1' })));
+    is($p.out.slurp(:close), "MID3(leaf)\n", 'RAKUPP_NO_PRECOMP=1 gives the same answer');
+
+    # --precomp-info lists sources; --precomp-clean empties it and leaves no
+    # empty directories behind
+    my $info = run($*EXECUTABLE, '--precomp-info', :out, :!err,
+                   :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str }))).out.slurp(:close);
+    ok($info.contains('Mid.rakumod') && $info.contains('Deep/Leaf.rakumod'),
+       '--precomp-info names the sources it cached');
+    run($*EXECUTABLE, '--precomp-clean', :!out, :!err,
+        :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str })));
+    ok(entry-count() == 0, '--precomp-clean empties the cache');
+    my $left = $cache.e ?? +$cache.dir.grep(*.d) !! 0;
+    ok($left == 0, "--precomp-clean removes its directories too (left $left)");
+
+    # The same script in two directories can `use` DIFFERENT modules, because
+    # `.` and `lib` are in the search path. Sharing one entry between them once
+    # replayed one directory's parse in the other.
+    my $x = $work.add('x'); my $y = $work.add('y');
+    mkdir $x; mkdir $y; mkdir $x.add('lib'); mkdir $y.add('lib');
+    # NB: q:to/END/, not a "…" string — a double-quoted Raku string interpolates
+    # `{ … }`, which silently eats a sub body.
+    $x.add('lib/Same.rakumod').spurt: q:to/END/;
+        unit module Same;
+        sub who() is export { 'X' }
+        END
+    $y.add('lib/Same.rakumod').spurt: q:to/END/;
+        unit module Same;
+        sub who() is export { 'Y' }
+        END
+    my $shared = $work.add('shared.raku');
+    $shared.spurt: q:to/END/;
+        use Same;
+        say who();
+        END
+    sub in-dir($d) {
+        my $p = run($*EXECUTABLE, '../shared.raku', :out, :!err, :cwd($d.Str),
+                    :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str })));
+        $p.out.slurp(:close).trim
+    }
+    my ($x1, $y1, $x2) = in-dir($x), in-dir($y), in-dir($x);
+    ok($x1 eq 'X' && $y1 eq 'Y' && $x2 eq 'X',
+       "the same script keeps its own meaning per directory (got $x1/$y1/$x2)");
+
+    # the serializer itself, over a file with a bit of everything
+    my $rt = run-rakupp('--ast-roundtrip', $ROOT.add('t/fixtures/native-parity.raku').Str);
+    ok($rt[1] == 0, 'the AST survives a serialize/deserialize round trip');
+}
+
 # ---- summary ----------------------------------------------------------
 note "";
 say "1..$count";

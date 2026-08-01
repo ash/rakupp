@@ -35,6 +35,12 @@ int rakuppRunProgram(Program& prog, std::vector<std::string> args,
 int rakuppRunProgramBigStack(Program& prog, std::vector<std::string> args,
                              const std::string& fileName, const std::string& exePath, const std::string& finish);
 
+// The search path the parser/loader will actually use, in order: -I paths first,
+// then the built-in `lib` / `.` / `rakulib`, then RAKULIB. One definition, so the
+// precomp key, the module loader and the --exe/--aot bundler cannot disagree
+// about which file a `use` resolves to.
+std::vector<std::string> effectiveSearchPath(const std::vector<std::string>& dashI);
+
 // Put the Windows console into UTF-8 mode so rakupp's UTF-8 output (the version
 // banner's em-dash, and any Unicode a program prints) renders correctly instead
 // of mojibake. No-op on non-Windows. Call once at the top of an entry point's

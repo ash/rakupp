@@ -19,6 +19,14 @@ struct ParseError : std::runtime_error {
         : std::runtime_error(msg), line(line), exType(std::move(type)), exAttrs(std::move(attrs)) {}
 };
 
+// Module SOURCES compiled into a binary. `--bundle` parses the main program at
+// run time, and that parse has to scan each `use`d module for the operators it
+// declares — otherwise a program using an imported operator does not parse once
+// the module tree is gone. Registered at startup by generated code; read-only
+// afterwards. (`--exe`/`--aot` parse at BUILD time and never need this.)
+void rakuppRegisterModuleSource(const std::string& name, const char* src, size_t len);
+const std::string* rakuppEmbeddedModuleSource(const std::string& name);
+
 class Parser {
 public:
     explicit Parser(std::vector<Token> toks);
@@ -134,6 +142,7 @@ private:
     // `use Foo` where Foo declares operators: find its source and register them,
     // so `$c ◐ 20` parses in the importing file. Defined in Parser.cpp.
     void scanModuleOps(const std::string& module);
+    void scanOpsIn(const std::string& src, const std::string& srcPath); // the scan itself, shared by the disk and embedded paths
     std::set<std::string> scannedMods_;            // modules already scanned for operators
 public:
     // Every module SOURCE scanModuleOps read, as (path, content). A cached parse

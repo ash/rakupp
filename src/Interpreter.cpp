@@ -3002,6 +3002,178 @@ std::pair<size_t, unsigned long long> precompCacheClear() {
     return {n, bytes};
 }
 
+
+// Modules compiled into this binary (see rakuppRegisterModule in Interpreter.h).
+// Written once at startup by generated code, read-only thereafter, so no lock:
+// registration happens before the program — and therefore any thread — runs.
+struct EmbeddedModule { std::string blob, finish; };
+static std::map<std::string, EmbeddedModule>& embeddedModules() {
+    static std::map<std::string, EmbeddedModule> m;
+    return m;
+}
+static const EmbeddedModule* findEmbeddedModule(const std::string& name) {
+    auto& m = embeddedModules();
+    auto it = m.find(name);
+    return it == m.end() ? nullptr : &it->second;
+}
+
+void rakuppRegisterModule(const std::string& name, const char* blob, size_t blobLen,
+                          const std::string& finish) {
+    embeddedModules()[name] = EmbeddedModule{std::string(blob, blobLen), finish};
+}
+
+
+// A `use` name with no file behind it: a pragma, or a version literal (`use
+// v6.d`). Kept at file scope because the module BUNDLER needs the same answer —
+// it must not try to embed `strict`. Sits next to the comment explaining why the
+// list is explicit rather than "whatever failed to resolve".
+//
+// PRAGMAS have no file to find, so they must not be mistaken for a missing
+// module now that missing is fatal. This list was short enough to reject real
+// Raku pragmas: `use newline :lf` and `no precompilation` are both ordinary
+// language features with no module behind them, and rejecting them cost three
+// Roast files that Rakudo passes. rakupp ignores the ones it does not implement,
+// which is right — they change compilation details, not semantics it can observe
+// — but ignoring them must be a deliberate entry here rather than a side effect
+// of the lookup failing.
+static bool isPragmaName(const std::string& name) {
+    static const std::set<std::string> pragmas = {
+        "strict", "fatal", "lib", "isms", "nqp", "soft", "worries", "experimental",
+        "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
+        "MONKEY", "MONKEY-GUTS", "Test", "v6", "v6.c", "v6.d", "v6.e",
+        "NativeCall",  // its `is native` FFI is handled natively by the compiler
+        // pragmas Rakudo accepts that rakupp does not act on
+        "newline", "precompilation", "trace", "dynamic-scope", "snapper",
+        "invocant", "internals", "parameters", "routines", "subroutines",
+        "absolute", "dispatch", "DEPRECATED",
+    };
+    if (pragmas.count(name)) return true;
+    return name.size() >= 2 && name[0] == 'v' && std::isdigit((unsigned char)name[1]);
+}
+
+// ---- module bundling for --exe / --aot ---------------------------------
+//
+// Find a module's SOURCE the way loadModule does: the search path first (trying
+// both <base>/ and <base>/lib/), then the installed zef/Rakudo repositories via
+// their short-name index. Returns false when nothing matches.
+static bool findModuleSourceFor(const std::string& name,
+                                const std::vector<std::string>& searchPath,
+                                std::string& pathOut, std::string& srcOut) {
+    std::string rel = name;
+    for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
+    static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    for (auto& base : searchPath)
+        for (const std::string& dir : {base, base + "/lib"})
+            for (auto ext : exts) {
+                std::ifstream in(dir + "/" + rel + ext);
+                if (!in) continue;
+                std::ostringstream ss; ss << in.rdbuf();
+                pathOut = dir + "/" + rel + ext; srcOut = ss.str();
+                return true;
+            }
+    std::string nameSha = sha1hex(name);
+    for (auto& repo : rakuRepoPrefixes()) {
+        std::string shortDir = repo + "/short/" + nameSha;
+        DIR* dd = opendir(shortDir.c_str());
+        if (!dd) continue;
+        std::string entry;
+        while (struct dirent* e = readdir(dd)) { std::string n = e->d_name; if (n != "." && n != "..") { entry = n; break; } }
+        closedir(dd);
+        if (entry.empty()) continue;
+        std::ifstream meta(shortDir + "/" + entry);
+        std::vector<std::string> lines; std::string ln;
+        while (std::getline(meta, ln)) lines.push_back(ln);
+        if (lines.size() < 4 || lines[3].empty()) continue;
+        std::ifstream src(repo + "/sources/" + lines[3]);
+        if (!src) continue;
+        std::ostringstream ss; ss << src.rdbuf();
+        pathOut = repo + "/sources/" + lines[3]; srcOut = ss.str();
+        return true;
+    }
+    return false;
+}
+
+// Every module name a tree `use`s, at any depth — a `use` can sit inside a
+// class body, a package, or any block, so this walks statements rather than
+// scanning only the top level.
+static void collectUseNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out);
+
+static void collectUseNamesStmt(const Stmt* st, std::vector<std::string>& out) {
+    if (!st) return;
+    switch (st->kind) {
+        case NK::UseStmt: {
+            auto* u = static_cast<const UseStmt*>(st);
+            if (!u->isNo && !u->module.empty()) out.push_back(u->module);
+            break;
+        }
+        case NK::Block: collectUseNames(static_cast<const Block*>(st)->stmts, out); break;
+        case NK::ClassDecl: {
+            auto* c = static_cast<const ClassDecl*>(st);
+            collectUseNames(c->body, out);
+            for (auto& m : c->methods) if (m) collectUseNames(m->body, out);
+            break;
+        }
+        case NK::SubDecl: collectUseNames(static_cast<const SubDecl*>(st)->body, out); break;
+        case NK::IfStmt: {
+            auto* f = static_cast<const IfStmt*>(st);
+            for (auto& br : f->branches) if (br.second) collectUseNames(br.second->stmts, out);
+            if (f->elseBlock) collectUseNames(f->elseBlock->stmts, out);
+            break;
+        }
+        case NK::WhileStmt: if (auto* b = static_cast<const WhileStmt*>(st)->body.get()) collectUseNames(b->stmts, out); break;
+        case NK::ForStmt:   if (auto* b = static_cast<const ForStmt*>(st)->body.get())   collectUseNames(b->stmts, out); break;
+        case NK::LoopStmt:  if (auto* b = static_cast<const LoopStmt*>(st)->body.get())  collectUseNames(b->stmts, out); break;
+        case NK::RepeatStmt:if (auto* b = static_cast<const RepeatStmt*>(st)->body.get())collectUseNames(b->stmts, out); break;
+        case NK::GivenStmt: {
+            auto* g = static_cast<const GivenStmt*>(st);
+            if (g->body) collectUseNames(g->body->stmts, out);
+            if (g->elseBody) collectUseNames(g->elseBody->stmts, out);
+            break;
+        }
+        case NK::WhenStmt: if (auto* b = static_cast<const WhenStmt*>(st)->body.get()) collectUseNames(b->stmts, out); break;
+        default: break;
+    }
+}
+
+static void collectUseNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out) {
+    for (auto& st : stmts) collectUseNamesStmt(st.get(), out);
+}
+
+std::vector<BundledModule> collectModuleGraph(const Program& prog,
+                                              const std::vector<std::string>& searchPath) {
+    std::vector<BundledModule> out;
+    std::set<std::string> seen;
+    std::vector<std::string> queue;
+    collectUseNames(prog.stmts, queue);
+
+    for (size_t qi = 0; qi < queue.size(); qi++) {
+        const std::string name = queue[qi];
+        if (name.empty() || !seen.insert(name).second) continue;
+        if (isPragmaName(name)) continue;                 // no file behind it
+        std::string path, src;
+        if (!findModuleSourceFor(name, searchPath, path, src)) continue;  // load from disk at run time
+        Program mp;
+        std::string finish;
+        try {
+            Lexer lx(src);
+            Parser parser(lx.tokenize());
+            parser.libPaths_ = searchPath;                // its own `use`s resolve like the real load
+            mp = parser.parseProgram();
+            finish = lx.finishData();
+        } catch (ParseError&) { continue; }               // let the run-time loader report it
+        collectUseNames(mp.stmts, queue);                 // depth-first over its dependencies
+        std::string blob;
+        try { blob = serializeAst(mp); }
+        catch (AstSerialError&) { continue; }             // not embeddable: disk fallback
+        out.push_back({name, std::move(blob), std::move(finish), std::move(src)});
+    }
+    // Dependencies first, so a registration order matching load order costs
+    // nothing to reason about (the table is a map, but the emitted code reads
+    // top to bottom and this makes it legible).
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet) {
     if (loadedModules_.count(name)) return;
     noteSymbolMutation("module load (use/need)");
@@ -3016,49 +3188,22 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         return std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now().time_since_epoch()).count();
     };
-    auto loadSource = [&](const std::string& src, const std::string& srcPath) {
-        auto prog = std::make_shared<Program>();
-        std::string finish;
-        double tParse = traceLoad ? nowMs() : 0;
-        std::string cpath = precompEnabled() ? precompPath(srcPath, libPaths_) : std::string();
-        bool cached = false;
-        if (!cpath.empty()) {
-            std::string blob;
-            if (precompRead(cpath, src, blob, finish)) {
-                try { deserializeAst(blob, *prog); cached = true; }
-                catch (AstSerialError&) { prog->stmts.clear(); finish.clear(); } // corrupt: parse instead
-            }
-        }
-        if (!cached) try {
-            Lexer lx(src);
-            Parser parser(lx.tokenize());
-            *prog = parser.parseProgram();
-            finish = lx.finishData();
-            if (!cpath.empty())
-                try { precompWrite(cpath, srcPath, src, serializeAst(*prog), finish, parser.opScanned_); }
-                catch (AstSerialError&) {} // a construct the format can't hold: just don't cache
-        } catch (ParseError& e) {
-            // A module that will not parse is FATAL, like a missing one: its BEGIN
-            // blocks and exports never happen, so continuing past it runs the rest
-            // of the program against a state nobody designed. It used to warn and
-            // carry on, which is how a broken partial load could masquerade as a
-            // working one.
-            //
-            // Grammar slangs stay exempt: Slang::* are compile-time grammar mutators
-            // that rakupp cannot apply at all, so failing on them would reject
-            // programs it can otherwise run perfectly well.
-            if (name.rfind("Slang::", 0) == 0) return;
-            throw ParseError("Error while compiling module " + name + " (line " +
-                             std::to_string(e.line) + "): " + e.what(), e.line);
-        }
-        double parseMs = traceLoad ? nowMs() - tParse : 0, tRun = traceLoad ? nowMs() : 0;
+    // Everything a module load does ONCE THE TREE EXISTS — module scope, hoisting,
+    // executing the top level, publishing to global, the EXPORT protocol. Shared by
+    // all three ways a tree arrives: embedded in the binary, out of the precomp
+    // cache, or freshly parsed.
+    // How the tree arrived, for RAKUPP_TRACE: set by whichever path produced it.
+    double howMs = 0;                       // ms spent getting the tree
+    const char* howLabel = "embedded";
+    auto loadParsed = [&](std::shared_ptr<Program> prog, const std::string& finish) {
+        double tRun = traceLoad ? nowMs() : 0;
         struct TGuard {
             bool on; const std::string& nm; double pms, t0;
             const std::function<double()>& now;
-            const char* how;   // "parse" or "precomp" — which path this load took
+            const char* how;   // "parse", "precomp" or "embedded"
             ~TGuard() { if (on) fprintf(stderr, "[Load] %s %s %.1f ms, run %.1f ms\n",
                                         nm.c_str(), how, pms, now() - t0); }
-        } tg{traceLoad, name, parseMs, tRun, nowMs, cached ? "precomp" : "parse"};
+        } tg{traceLoad, name, howMs, tRun, nowMs, howLabel};
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         auto saved = tctx_.cur;
         std::string savedFinish = finishData_;
@@ -3182,6 +3327,61 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         }
     };
 
+    // Obtain the tree for a module we found on disk — from the precomp cache when
+    // it is still valid, otherwise by parsing — then hand it to loadParsed.
+    auto loadSource = [&](const std::string& src, const std::string& srcPath) {
+        auto prog = std::make_shared<Program>();
+        std::string finish;
+        double t0 = traceLoad ? nowMs() : 0;
+        std::string cpath = precompEnabled() ? precompPath(srcPath, libPaths_) : std::string();
+        bool cached = false;
+        if (!cpath.empty()) {
+            std::string blob;
+            if (precompRead(cpath, src, blob, finish)) {
+                try { deserializeAst(blob, *prog); cached = true; }
+                catch (AstSerialError&) { prog->stmts.clear(); finish.clear(); } // corrupt: parse instead
+            }
+        }
+        if (!cached) try {
+            Lexer lx(src);
+            Parser parser(lx.tokenize());
+            *prog = parser.parseProgram();
+            finish = lx.finishData();
+            if (!cpath.empty())
+                try { precompWrite(cpath, srcPath, src, serializeAst(*prog), finish, parser.opScanned_); }
+                catch (AstSerialError&) {} // a construct the format can't hold: just don't cache
+        } catch (ParseError& e) {
+            // A module that will not parse is FATAL, like a missing one: its BEGIN
+            // blocks and exports never happen, so continuing past it runs the rest
+            // of the program against a state nobody designed.
+            //
+            // Grammar slangs stay exempt: Slang::* are compile-time grammar mutators
+            // that rakupp cannot apply at all, so failing on them would reject
+            // programs it can otherwise run perfectly well.
+            if (name.rfind("Slang::", 0) == 0) return;
+            throw ParseError("Error while compiling module " + name + " (line " +
+                             std::to_string(e.line) + "): " + e.what(), e.line);
+        }
+        howMs = traceLoad ? nowMs() - t0 : 0;
+        howLabel = cached ? "precomp" : "parse";
+        loadParsed(prog, finish);
+    };
+
+
+    // A module compiled INTO this binary needs no file at all — take it before
+    // the search path is even consulted, so a `--exe` binary runs with its
+    // dependencies deleted from the machine.
+    if (const EmbeddedModule* em = findEmbeddedModule(name)) {
+        auto prog = std::make_shared<Program>();
+        bool okEmbedded = true;
+        try { deserializeAst(em->blob, *prog); }
+        catch (AstSerialError&) { okEmbedded = false; } // fall through to the disk
+        if (okEmbedded) {
+            if (traceLoad) fprintf(stderr, "[Load] %s <- embedded in this binary\n", name.c_str());
+            loadParsed(prog, em->finish);
+            return;
+        }
+    }
     std::string rel = name;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
     // 1. local lib paths (project lib, ., rakupp rakulib). A `use lib` may point at a
@@ -3264,18 +3464,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // implement, which is right — they change compilation details, not semantics
     // it can observe — but ignoring them must be a deliberate entry here rather
     // than a side effect of the lookup failing.
-    static const std::set<std::string> pragmas = {
-        "strict", "fatal", "lib", "isms", "nqp", "soft", "worries", "experimental",
-        "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
-        "MONKEY", "MONKEY-GUTS", "Test", "v6", "v6.c", "v6.d", "v6.e",
-        "NativeCall",  // its `is native` FFI is handled natively by the compiler
-        // pragmas Rakudo accepts that rakupp does not act on
-        "newline", "precompilation", "trace", "dynamic-scope", "snapper",
-        "invocant", "internals", "parameters", "routines", "subroutines",
-        "absolute", "dispatch", "DEPRECATED",
-    };
-    bool versionLit = name.size() >= 2 && name[0] == 'v' && std::isdigit((unsigned char)name[1]);
-    if (pragmas.count(name) || versionLit || quiet) return;
+    if (isPragmaName(name) || quiet) return;
     std::string where = "Could not find " + name + " in:";
     for (auto& b : libPaths_) where += "\n    " + b;
     for (auto& r : rakuRepoPrefixes()) where += "\n    " + r;

@@ -231,8 +231,26 @@ int Parser::infixBpOf(const std::string& op) const {
 // operator declarations out of it — a text scan, not a parse: only
 // `sub`/`multi`/`proto`/`only` followed by `<category>:<name>` counts, which keeps a
 // mention in a comment or a string from registering anything.
+static std::map<std::string, std::string>& embeddedModuleSources() {
+    static std::map<std::string, std::string> m;
+    return m;
+}
+void rakuppRegisterModuleSource(const std::string& name, const char* src, size_t len) {
+    embeddedModuleSources()[name] = std::string(src, len);
+}
+const std::string* rakuppEmbeddedModuleSource(const std::string& name) {
+    auto& m = embeddedModuleSources();
+    auto it = m.find(name);
+    return it == m.end() ? nullptr : &it->second;
+}
+
 void Parser::scanModuleOps(const std::string& module) {
     if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
+    // A module compiled into this binary answers before the disk is consulted.
+    if (const std::string* emb = rakuppEmbeddedModuleSource(module)) {
+        scanOpsIn(*emb, "<embedded:" + module + ">");
+        return;
+    }
     std::string rel = module;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
     static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
@@ -251,6 +269,10 @@ void Parser::scanModuleOps(const std::string& module) {
         if (!src.empty()) break;
     }
     if (src.empty()) return;
+    scanOpsIn(src, srcPath);
+}
+
+void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     opScanned_.push_back({srcPath, src});
     // an operator spelled only in ASCII operator characters is almost certainly a
     // REDECLARATION of a built-in (`multi infix:<*>(Color, Real)`); registering it

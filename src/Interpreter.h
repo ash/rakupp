@@ -82,6 +82,29 @@ std::string sha1hex(const std::string& msg);
 // `RAKULIB=a,b` silently stopped importing operators.
 std::vector<std::string> splitSearchPath(const std::string& spec);
 
+// Modules EMBEDDED in a compiled binary. `--exe`/`--aot` resolve the `use` graph
+// at build time and register each module's serialized AST here before the
+// program runs; loadModule consults this before it looks at the disk, so the
+// binary carries its dependencies and needs neither their sources nor a warm
+// precomp cache to start. Registration is additive and happens once, at startup.
+void rakuppRegisterModule(const std::string& name, const char* blob, size_t blobLen,
+                          const std::string& finish);
+
+// One module resolved and parsed ahead of time, ready to embed.
+struct BundledModule { std::string name, blob, finish, src; };
+
+// Resolve `prog`'s TRANSITIVE `use` graph against `searchPath` and return each
+// module's serialized AST, dependencies first. Used by --exe/--aot to make a
+// binary self-sufficient: it carries its modules and needs neither their sources
+// nor a warm precomp cache on the machine that runs it.
+//
+// A module that cannot be found, parsed, or serialized is simply left out rather
+// than failing the build — the binary falls back to loading it from disk, which
+// is also what has to happen for anything only a running program can name
+// (`require ::($x)`, a computed `use lib`). Pragmas are skipped.
+std::vector<BundledModule> collectModuleGraph(const Program& prog,
+                                              const std::vector<std::string>& searchPath);
+
 // Where the precompiled-AST cache lives (see loadModule), "" when disabled.
 std::string precompCacheDir();
 

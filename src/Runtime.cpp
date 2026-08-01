@@ -77,6 +77,11 @@ void rakuppSetDocMode(bool on) { g_docMode = on; } // set by main when --doc is 
 // answer depend on the working directory. Leaving them out gave one entry to two
 // directories, and a script cached where an operator existed was replayed where
 // it did not.
+static std::vector<std::string> precompSearchPath(const std::vector<std::string>&);
+std::vector<std::string> effectiveSearchPath(const std::vector<std::string>& dashI) {
+    return precompSearchPath(dashI);
+}
+
 static std::vector<std::string> precompSearchPath(const std::vector<std::string>& dashI) {
     std::vector<std::string> sp = dashI;
     sp.push_back("lib"); sp.push_back("."); sp.push_back("rakulib");

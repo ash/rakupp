@@ -347,7 +347,10 @@ static std::string defaultOut(const std::string& srcName) {
 // Bundle a Raku program into a standalone native executable: generate a
 // small C++ stub that embeds the program source and calls the runtime, then
 // link it against librakupp_rt.a (statically, so the result needs no rakupp).
-static int compileToExe(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe) {
+static std::string g_bundleModuleCalls;   // filled while emitting the stub
+
+static int compileToExe(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe,
+                        const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
 
@@ -380,8 +383,31 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
         if (src.empty()) stub << "0"; // avoid zero-size array; length tracked separately
         stub << "};\n";
         stub << "static const unsigned long SRC_LEN = " << src.size() << "UL;\n";
+        // …and the modules it uses, as parsed ASTs, so a bundled binary is as
+        // self-sufficient as an --exe or --aot one. Bundling only the mainline
+        // left it needing the module tree at run time, which defeats the point of
+        // a single-file deliverable. A program whose source will not even parse
+        // still bundles (that is this mode's job — it parses at run time), and
+        // then simply carries no modules.
+        {
+            std::vector<BundledModule> mods;
+            try {
+                Lexer lx(src);
+                Parser ps(lx.tokenize());
+                ps.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
+                Program pr = ps.parseProgram();
+                mods = collectModuleGraph(pr, effectiveSearchPath(libPaths));
+            } catch (const ParseError&) {}
+            std::ostringstream decls, calls;
+            emitModuleTable(mods, decls, calls, /*withSources=*/true);
+            stub << decls.str();
+            g_bundleModuleCalls = calls.str();
+        }
+        stub << "namespace rakupp { void rakuppRegisterModule(const std::string&, const char*, unsigned long, const std::string&);\n"
+                "                  void rakuppRegisterModuleSource(const std::string&, const char*, unsigned long); }\n";
         stub << "int main(int argc, char** argv) {\n"
-                "  rakupp::setConsoleUtf8();\n"
+             << g_bundleModuleCalls
+             << "  rakupp::setConsoleUtf8();\n"
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
@@ -412,8 +438,24 @@ static std::string absPath(const std::string& p) {
     return p;
 }
 
+// Splice the embedded-module table into codegen's output: the byte arrays go
+// just above `int main`, the registration calls just inside it, so every module
+// is in place before the program body starts. Codegen owns the shape of that
+// function, so this keys on it rather than on a marker Codegen would have to
+// remember to emit; if it ever stops looking like this, the modules are simply
+// not embedded and the binary loads them from disk.
+static std::string injectModuleTable(const std::string& cpp, const std::string& decls,
+                                     const std::string& calls) {
+    const std::string mainSig = "int main(int argc, char** argv) {";
+    auto at = cpp.find(mainSig);
+    if (at == std::string::npos) return cpp;
+    return cpp.substr(0, at) + decls + "\n" + mainSig + "\n" + calls +
+           cpp.substr(at + mainSig.size());
+}
+
 // back with a clear message if the program uses an unsupported construct.
-static int compileNative(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe, bool optimize = false, const std::string& ccOpt = "-O2") {
+static int compileNative(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe, bool optimize = false, const std::string& ccOpt = "-O2",
+                         const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
 
@@ -421,8 +463,18 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     try {
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
+        parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         Program prog = parser.parseProgram();
         cpp = transpileToCpp(prog, optimize, absPath(srcName));
+        // The program is compiled; its MODULES ride along as parsed ASTs, so the
+        // binary is self-sufficient. (Natively compiling module code is a separate
+        // step — most module files declare a package, which codegen does not take.)
+        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
+        if (!mods.empty()) {
+            std::ostringstream decls, calls;
+            emitModuleTable(mods, decls, calls);
+            cpp = injectModuleTable(cpp, decls.str(), calls.str());
+        }
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
@@ -461,17 +513,23 @@ static int compileNative(const std::string& src, const std::string& srcName, std
 // Real AOT: parse ahead of time, then emit C++ that rebuilds the AST at startup
 // and interprets it (no lexing/parsing in the produced binary). Falls back to
 // source bundling for any construct the AST emitter can't reconstruct.
-static int compileAotAst(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe) {
+static int compileAotAst(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe,
+                         const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
     std::string cpp, finish;
     try {
         Lexer lexer(src);
         Parser parser(lexer.tokenize());
+        parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         finish = lexer.finishData();
         Program prog = parser.parseProgram();
+        // Everything the program `use`s, resolved and parsed NOW, so the binary
+        // carries it. Anything unresolvable is simply absent and falls back to a
+        // run-time load — see collectModuleGraph.
+        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
         std::ostringstream ss;
-        emitAstProgram(prog, ss, baseOf(srcName), finish);
+        emitAstProgram(prog, ss, baseOf(srcName), finish, mods);
         cpp = ss.str();
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
@@ -833,10 +891,15 @@ int main(int argc, char** argv) {
         std::string mode = argc >= 2 ? argv[1] : "";
         if (mode == "--bundle" || mode == "--aot" || mode == "--exe") {
             std::string src, srcName, outPath, ccOpt = "-O2";
+            std::vector<std::string> libPaths;
             bool haveSrc = false, optimize = false;
             for (int i = 2; i < argc; i++) {
                 std::string a = argv[i];
-                if (a == "-o" && i + 1 < argc) { outPath = argv[++i]; }
+                // -I matters at COMPILE time here: it is how the bundler finds the
+                // modules to embed, so a binary built with -I needs nothing at run time.
+                if (a == "-I" && i + 1 < argc) { libPaths.push_back(argv[++i]); }
+                else if (a.rfind("-I", 0) == 0 && a.size() > 2) { libPaths.push_back(a.substr(2)); }
+                else if (a == "-o" && i + 1 < argc) { outPath = argv[++i]; }
                 else if (a.rfind("-o", 0) == 0 && a.size() > 2) { outPath = a.substr(2); }
                 // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/-Ofast/…)
                 // is forwarded to the C++ compiler for the generated binary.
@@ -849,10 +912,10 @@ int main(int argc, char** argv) {
                     std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); srcName = a; haveSrc = true;
                 }
             }
-            if (!haveSrc) { std::cerr << "Usage: rakupp " << mode << " (FILE | -e CODE) [-o OUT] [-O[level]]\n"; return 4; }
-            if (mode == "--exe") return compileNative(src, srcName, outPath, exePath, optimize, ccOpt);
-            if (mode == "--aot") return compileAotAst(src, srcName, outPath, exePath);
-            return compileToExe(src, srcName, outPath, exePath); // --bundle
+            if (!haveSrc) { std::cerr << "Usage: rakupp " << mode << " (FILE | -e CODE) [-o OUT] [-I dir] [-O[level]]\n"; return 4; }
+            if (mode == "--exe") return compileNative(src, srcName, outPath, exePath, optimize, ccOpt, libPaths);
+            if (mode == "--aot") return compileAotAst(src, srcName, outPath, exePath, libPaths);
+            return compileToExe(src, srcName, outPath, exePath, libPaths); // --bundle
         }
     }
 
