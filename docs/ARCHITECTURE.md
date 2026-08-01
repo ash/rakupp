@@ -81,7 +81,7 @@ This is the heart. Key pieces:
 |---|---|
 | `Value.{h,cpp}` | The universal runtime value (see below), coercions, gist/Str. |
 | `BigInt.{h,cpp}` | Arbitrary-precision integers (base-1e9) for the exact number tower. |
-| `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus the concurrency runtime (a CPython-style GIL, thread-local execution registers, and opt-in true parallelism via `RAKUPP_PARALLEL`; see [ASYNC.md](ASYNC.md)). |
+| `Interpreter.{h,cpp}` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus module loading (`loadModule`: each `use`d module is lexed, parsed to its own AST and executed once, in every mode including `--exe`; see [dev/MODULES.md](dev/MODULES.md)) and the concurrency runtime (a CPython-style GIL, thread-local execution registers, and opt-in true parallelism via `RAKUPP_PARALLEL`; see [ASYNC.md](ASYNC.md)). |
 | `Builtins.cpp` | Named built-ins, the `Test` module (TAP), and the head of the method dispatcher `methodCallInner`. |
 | `MethodCallPart2/3/Tail.cpp` | The rest of that dispatch chain. **Ordered segments, not categories** — the chain is order-sensitive, so an arm belongs where its priority is, not where it reads nicely. Each returns `std::optional<Value>`; `nullopt` means "not handled here". |
 | `MethodCallSegment.h` | The common include prologue those segments share, so one cannot drift from its siblings. |

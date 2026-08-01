@@ -3,7 +3,8 @@
 Findings from running battery modules (ash/raku-module-battery pins) under
 rakupp — both rakupp gaps and module-side quirks. Kept here for us; **never
 reported upstream to module authors**. Companion docs: V2-MODULES-PLAN.md,
-ECOSYSTEM-TOP50.md.
+ECOSYSTEM-TOP50.md, and [MODULES.md](MODULES.md) for how the load path itself
+works (finding #2 below is settled there: a failed load is fatal now).
 
 1. **The top-50 is not dependency-closed** (2026-07-22): 12 of 50 dists need
    out-of-set transitive deps (Trap, Hash::Merge, …) or native libraries at

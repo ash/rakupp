@@ -69,6 +69,13 @@ point; everything else lives here.
 - **[dev/DISPATCH.md](dev/DISPATCH.md)** — call dispatch in `--exe` code: what each
   call shape costs (measured), the cached-builtin/inline-string-compare cuts, and
   what's deliberately left on the table.
+- **[dev/MODULES.md](dev/MODULES.md)** — how modules work *inside* the compiler:
+  what `use Foo;` does at parse time (a text scan, for operators only) versus at
+  run time, the `Env` a module lives in during its load and what survives after,
+  why a module's AST is executed once and then kept alive only as storage, why
+  calling into a module is not a distinct operation, and the divergence table —
+  starting with the fact that a module's whole environment is published to the
+  global scope. (The *user-facing* guide is [MODULES.md](MODULES.md).)
 - **[dev/PLAN-gil-removal.md](dev/PLAN-gil-removal.md)** — the design plan for removing the
   GIL and reaching true CPU parallelism (incremental steps, risks, status).
 - **[dev/100.md](dev/100.md)** — what stands between the current pass rate and 100% of Roast.

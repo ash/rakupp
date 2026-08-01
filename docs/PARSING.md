@@ -506,7 +506,12 @@ It is strictly single-pass and produces an AST; that's all. In particular:
   runtime one.)
 
 The **one** parse-time side effect is the operator-table registration described
-above — and that's lexical bookkeeping, not execution. So the pipeline is: a
+above — and that's lexical bookkeeping, not execution. `use Foo` participates in
+exactly that much: `Parser::scanModuleOps` finds the module's source and
+*text-scans* it for `sub`/`multi`/`proto` declarations of `infix:<…>` and
+friends, registering those names so the rest of the importing file parses. It
+does not lex or parse the module, and it has no other compile-time effect — see
+[dev/MODULES.md](dev/MODULES.md). So the pipeline is: a
 single-pass parse to an AST, then the interpreter does its own hoist + phaser
 pass ([RUNTIME.md](RUNTIME.md) and [ARCHITECTURE.md](ARCHITECTURE.md) cover what
 happens next).

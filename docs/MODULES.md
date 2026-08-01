@@ -65,6 +65,12 @@ tested and where the current edges are.
 
 ## How `use` works
 
+> This section is the practical view. For what the compiler actually does — the
+> `Env` a module lives in during its load, why its AST is executed once and then
+> kept only as storage, why calling a module routine is not a distinct
+> operation, and the full list of divergences from Rakudo — see
+> **[dev/MODULES.md](dev/MODULES.md)**.
+
 ```raku
 use Foo;                # load Foo and import what it exports
 ```
@@ -188,13 +194,20 @@ modules pass, tiered by how thoroughly. The load path is deliberately practical
 rather than complete; the notable gaps today:
 
 - **Version/auth selection** (`use Foo:ver<1.2>:auth<…>`) isn't honoured yet —
-  Raku++ loads the first matching install of a name.
-- **A module's `our` subs import by their bare name**, not under a
-  `Foo::name` fully-qualified path; export the names you want callers to use
-  with `is export`.
+  the adverbs are accepted and discarded, and Raku++ loads the first matching
+  install of a name.
+- **Importing is coarser than Rakudo's.** A module's whole scope is published to
+  the importing program, so its `my` subs, its non-exported `our` subs and its
+  classes are all reachable by their bare names — not just what it marked
+  `is export`. Code that works here may need real `is export` markings to work
+  under Rakudo. (One carve-out: a non-exported sub whose name collides with a
+  built-in stays module-private, so it can't shadow the built-in for you.)
+- **There is no precompilation.** Every run re-reads and re-parses every module
+  from source, so startup cost scales with the dependency tree.
 - Modules that rely on **compile-time metaprogramming, slangs, or NativeCall
-  bindings** Raku++ doesn't model may warn and load partially (or be ignored) —
-  the warning tells you which one, and your program continues.
+  bindings** Raku++ doesn't model will fail to load — and a failed load is
+  fatal, by design: a `use` that silently vanished used to leave the program
+  running against a half-built state.
 
 For the bigger map of how Raku++ relates to the wider ecosystem (the browser
 build, the playground, the corpus), see [ECOSYSTEM.md](ECOSYSTEM.md).
