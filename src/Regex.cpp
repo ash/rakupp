@@ -433,15 +433,16 @@ Regex::NodePtr Regex::parseAtom() {
     if (c == '<') {
         pos_++;
         if (peek() == '(') { pos_++; auto n = std::make_unique<Node>(); n->k = K::CapStart; return n; } // <( match-capture start
-        // NOTE: `<|w>` (a zero-width word boundary) is NOT handled here. Reading it
-        // as a boundary is the correct semantics — and it parses and matches like
-        // Rakudo's — but turning it on moves YAMLish from "every scalar is a string"
-        // to "every typed scalar is Any": with the candidate now matching, its
-        // `{ make … }` result is lost somewhere in the schema's
-        // `regex TOP { [ <element> <.ws> || <plain> ] { make $/.values[0].ast } }`.
-        // Left out until that is fixed, rather than trade one wrong answer for a
-        // worse one. The generic assertion reader treats it as an alternation, which
-        // is why the rest of such a rule currently never runs.
+        // `<|w>` — a zero-width WORD boundary: either edge, i.e. `<<` or `>>`.
+        // (`<?|w>`/`<!|w>` route through the assertion reader below.)
+        if (peek() == '|' && peek(1) == 'w' && peek(2) == '>') {
+            pos_ += 3;
+            auto alt = std::make_unique<Node>(); alt->k = K::Alt; alt->firstMatch = true;
+            auto l = std::make_unique<Node>(); l->k = K::WBLeft;
+            auto r = std::make_unique<Node>(); r->k = K::WBRight;
+            alt->kids.push_back(std::move(l)); alt->kids.push_back(std::move(r));
+            return alt;
+        }
         // Enumerated string alternation: `< + - >` / `< foo bar >` (a LEADING space after
         // `<` signals the quoted-word-list form) matches any of the literal words, longest first.
         if (peek() == ' ' || peek() == '\t') {
@@ -467,8 +468,32 @@ Regex::NodePtr Regex::parseAtom() {
         node->k = K::Class; node->icase = curIcase_;
         // char class, possibly composed: `[..]`, `-[..]`, `+[..]`, `<+alpha>`, `<+[A]+alpha>`.
         // (A bare `<-name>` is the negated-subrule branch further down, not this.)
+        // `<-space-[\"]>`: a leading NEGATED builtin class that goes on to compose
+        // with a bracket. The negated-subrule branch below can chain `-name`/`+name`
+        // but has no bracket member, so it would drop the `-[\"]` silently; route it
+        // here instead, where a leading `-` sets `negate` and the bracket subtracts.
+        // A bare `<-space>` (no bracket to follow) keeps the old path.
+        auto negFlagComposes = [&]() -> bool {
+            if (peek() != '-' || !(std::isalpha((unsigned char)peek(1)) || peek(1) == '_')) return false;
+            size_t q = pos_ + 1;
+            std::string nm;
+            while (q < pat_.size() && (std::isalnum((unsigned char)pat_[q]) || pat_[q] == '_' ||
+                                       (pat_[q] == '-' && q + 1 < pat_.size() &&
+                                        (std::isalnum((unsigned char)pat_[q + 1]) || pat_[q + 1] == '_'))))
+                nm += pat_[q++];
+            if (ruleFlag(nm).empty()) return false;
+            while (q < pat_.size() && (pat_[q] == ' ' || pat_[q] == '\t')) q++;
+            if (q < pat_.size() && pat_[q] == '[') return true;
+            if (q + 1 < pat_.size() && (pat_[q] == '+' || pat_[q] == '-')) {
+                size_t r = q + 1;
+                while (r < pat_.size() && (pat_[r] == ' ' || pat_[r] == '\t')) r++;
+                return r < pat_.size() && pat_[r] == '[';
+            }
+            return false;
+        };
         if (peek() == '[' || ((peek() == '+' || peek() == '-') && peek(1) == '[') ||
-            (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.' || peek(1) == ':'))) {
+            (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.' || peek(1) == ':')) ||
+            negFlagComposes()) {
             node->negate = false;
             bool first = true;
             // USER-token parts (`<[\-+.] +uri-alpha +digit>` in the RFC 3986 grammar)
@@ -476,6 +501,14 @@ Regex::NodePtr Regex::parseAtom() {
             //   [ <!minus1> <!-subtracted-bracket> [ base-class | <plus1> | <plus2> ] ]
             std::vector<std::string> plusSubs, minusSubs;
             std::unique_ptr<Node> negBracket; // `- [..]` after the first member: a subtraction
+            // `<-[ab]+[b]>` re-admits `b`: under a NEGATED base a `+member` unions with
+            // the complement, it does not join the set being complemented. Collect those
+            // members separately and offer them as an alternative.
+            std::unique_ptr<Node> posExtra;
+            auto posExtraNode = [&]() {
+                if (!posExtra) { posExtra = std::make_unique<Node>(); posExtra->k = K::Class; posExtra->icase = curIcase_; }
+                return posExtra.get();
+            };
             for (;;) {
                 while (peek() == ' ' || peek() == '\t') pos_++; // blanks between members / before '>'
                 if (!(peek() == '[' || peek() == '+' || peek() == '-')) break;
@@ -490,6 +523,7 @@ Regex::NodePtr Regex::parseAtom() {
                         if (!negBracket) { negBracket = std::make_unique<Node>(); negBracket->k = K::Class; negBracket->icase = curIcase_; }
                         parseClassBodyMember(negBracket.get());
                     }
+                    else if (node->negate) parseClassBodyMember(posExtraNode());
                     else parseClassBodyMember(node.get());
                 }
                 else { // +rule / -rule member (builtin, unicode property, or USER token)
@@ -518,7 +552,12 @@ Regex::NodePtr Regex::parseAtom() {
                         if (nm == ":N" || nm == ":Nd" || nm == ":No" || nm == ":Nl") fl = "d";
                         else if (nm[1] == 'L') fl = "a";
                     }
-                    if (!fl.empty()) { if (op == '+') node->classFlags += fl; else node->negClassFlags += fl; }
+                    if (!fl.empty()) {
+                        if (op == '-' && first) { node->negate = true; node->classFlags += fl; }
+                        else if (op == '-') node->negClassFlags += fl;
+                        else if (node->negate) posExtraNode()->classFlags += fl;
+                        else node->classFlags += fl;
+                    }
                     else if (!nm.empty() && nm[0] != ':')
                         (op == '+' ? plusSubs : minusSubs).push_back(nm); // user-defined token part
                 }
@@ -526,7 +565,7 @@ Regex::NodePtr Regex::parseAtom() {
                 if (eof()) break;
             }
             if (peek() == '>') pos_++;
-            if (plusSubs.empty() && minusSubs.empty() && !negBracket) return node; // plain class (fast path)
+            if (plusSubs.empty() && minusSubs.empty() && !negBracket && !posExtra) return node; // plain class (fast path)
             auto mkSub = [&](const std::string& rn) {
                 auto s = std::make_unique<Node>();
                 s->k = K::Subrule; s->ruleName = rn; s->ruleCapture = false;
@@ -542,9 +581,10 @@ Regex::NodePtr Regex::parseAtom() {
             for (auto& ms : minusSubs) seq->kids.push_back(mkNegLook(mkSub(ms)));
             if (negBracket) seq->kids.push_back(mkNegLook(std::move(negBracket)));
             bool haveBase = node->negate || !node->ranges.empty() || !node->cpRanges.empty() || !node->classFlags.empty();
-            if (plusSubs.empty()) seq->kids.push_back(std::move(node));
+            if (plusSubs.empty() && !posExtra) seq->kids.push_back(std::move(node));
             else {
                 auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true;
+                if (posExtra) altN->kids.push_back(std::move(posExtra)); // union members win over the complement
                 if (haveBase) altN->kids.push_back(std::move(node));
                 for (auto& ps : plusSubs) altN->kids.push_back(mkSub(ps));
                 seq->kids.push_back(std::move(altN));
@@ -745,7 +785,7 @@ Regex::NodePtr Regex::parseAtom() {
                     sr->ruleAlias = nm.substr(0, eq); nm = nm.substr(eq + 1); // <alias=rule>
                     // <alias=.rule> — the dot only suppresses the RULE-NAME capture;
                     // the alias still captures (Cro::MediaType: `<attribute=.token>`)
-                    if (!nm.empty() && nm[0] == '.') nm = nm.substr(1);
+                    if (!nm.empty() && nm[0] == '.') { nm = nm.substr(1); sr->aliasDotted = true; }
                 }
                 // parameterised call <name($x, '')> — peel off the argument list
                 auto lp = nm.find('(');
@@ -757,7 +797,16 @@ Regex::NodePtr Regex::parseAtom() {
                 return sr;
             }
             node->classFlags = fl;
-            return node;
+            // An UNDOTTED built-in class call still CAPTURES: `<xdigit>**2` fills
+            // `$<xdigit>` (YAMLish decodes `\xNN` from it). Compiling straight to a
+            // Class node dropped that; wrap it in a named group. `<.digit>` is dotted
+            // and never reaches here.
+            {
+                auto g = std::make_unique<Node>();
+                g->k = K::Group; g->capIndex = -1; g->capName = name;
+                g->kids.push_back(std::move(node));
+                return g;
+            }
         }
         while (peek() == ' ' || peek() == '\t') pos_++; // allow `<[ … ] >` (space before close)
         if (peek() == '>') pos_++;
@@ -1130,15 +1179,24 @@ bool Regex::classMatch(const Node* n, char ch) const {
             // ASCII-range codepoint entries (\c[LF], \x0A, …) participate too
             if (!pos) for (auto& r : n->cpRanges) if (c >= r.first && c <= r.second) { pos = true; break; }
             if (!pos) for (char f : n->classFlags) if (flagHit(f, c)) { pos = true; break; }
-            if (pos) for (char f : n->negClassFlags) if (flagHit(f, c)) return false; // `-rule` difference
             return pos;
+        };
+        auto subtracted = [&](unsigned char c) -> bool {
+            for (char f : n->negClassFlags) if (flagHit(f, c)) return true;
+            return false;
         };
         for (int i = 0; i < 8; i++) n->byteset[i] = 0;
         for (int v = 0; v < 256; v++) {
             unsigned char c = (unsigned char)v;
             bool in = test(c);
             if (!in && n->icase) in = test((unsigned char)std::tolower(c)) || test((unsigned char)std::toupper(c));
-            if (n->negate ? !in : in) n->byteset[v >> 5] |= (1u << (v & 31));
+            // The class is (base, negated if `<-…>`) MINUS every `-member`: the
+            // subtraction applies to the FINAL set, not to the base. Subtracting
+            // first made `<-[\"]-space>` match a space — it is not in the base, so
+            // the negation let it back in.
+            if (n->negate) in = !in;
+            if (in && subtracted(c)) in = false;
+            if (in) n->byteset[v >> 5] |= (1u << (v & 31));
         }
         n->bytesetReady = true;
     }
@@ -1274,7 +1332,8 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
                 return st.grammar->matchSubMeta(*n->metaCache, n->ruleName, n->ruleArgs,
                                             n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),
-                                            st, pos, k);
+                                            st, pos, k,
+                                            /*alsoBareName=*/n->ruleCapture && !n->ruleAlias.empty() && !n->aliasDotted);
             }
             // <at(N)> — zero-width position assertion: current offset must equal N.
             if (n->ruleName == "at") {
@@ -1498,7 +1557,8 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     for (auto& r : n->ranges)   if (cp >= r.first && cp <= r.second) { in = true; break; }
                     if (!in) for (auto& r : n->cpRanges) if (cp >= r.first && cp <= r.second) { in = true; break; }
                     if (!in) for (char f : n->classFlags)    if (flagHitCp(f, cp)) { in = true; break; }
-                    if (in)  for (char f : n->negClassFlags) if (flagHitCp(f, cp)) { in = false; break; }
+                    bool subtractedCp = false;
+                    for (char f : n->negClassFlags) if (flagHitCp(f, cp)) { subtractedCp = true; break; }
                     // enumerated (range) members are whole-grapheme; property/flag members
                     // test the base and consume the cluster. A multi-codepoint grapheme can
                     // only satisfy a range member when negated.
@@ -1506,6 +1566,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     bool hasFlag = !n->classFlags.empty() || !n->negClassFlags.empty();
                     if (!hasFlag && gEnd != pos + clen) in = false; // multi-cp grapheme vs a pure range class
                     if (n->negate) in = !in;
+                    if (subtractedCp) in = false;   // `-member` subtracts from the FINAL set
                     if (!in) return false;
                     return k(gEnd);
                 }
@@ -2073,7 +2134,8 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
 
 bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string& name,
                                   const std::string& args, const std::string& capKey,
-                                  Regex::MState& st, long pos, const FnRef& k) {
+                                  Regex::MState& st, long pos, const FnRef& k,
+                                  bool alsoBareName) {
     // `<sym>` inside a proto candidate (`token alt:sym<foo> { <sym> }`) matches that
     // candidate's sym literal ("foo"), threaded in via st.curSym.
     if (name == "sym" && args.empty()) {
@@ -2142,10 +2204,33 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                 case 's': ok |= (bool)std::isspace(c); break; case 'u': ok |= (bool)std::isupper(c); break;
                 case 'l': ok |= (bool)std::islower(c); break; case 'x': ok |= (bool)std::isxdigit(c); break;
             }
-            return ok ? k(pos + 1) : false;
+            if (!ok) return false;
+            if (capKey.empty()) return k(pos + 1);
+            // A capturing built-in class inside a GRAMMAR records $<name> too — the
+            // plain-regex path already did, this one dropped it, so YAMLish's
+            // `x <xdigit>**2` saw an empty `$<xdigit>` and never decoded \xNN.
+            ParseNode pn; pn.name = name; pn.from = pos; pn.to = pos + 1;
+            bool hadSpan = st.named.count(capKey);
+            auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long,long>{-1,-1};
+            st.named[capKey] = {pos, pos + 1};
+            st.children[capKey].push_back(std::move(pn));
+            if (k(pos + 1)) return true;
+            st.children[capKey].pop_back();
+            if (st.children[capKey].empty()) st.children.erase(capKey);
+            if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
+            return false;
         }
         return false; // unknown subrule
     }
+    // `<alias=rule>` captures under BOTH names in Rakudo: `<tags=tag-directive>`
+    // fills `$<tags>` AND `$<tag-directive>`, which is how YAMLish's directives
+    // action (`@<tag-directive>».ast`) reads the very captures the grammar aliased.
+    // The DOTTED form `<alias=.rule>` is the opt-out — YAMLish's map-entry writes
+    // `<key=.element(…)>` next to a real `<element(…)>`, and doubling that up would
+    // turn `$<element>` into a two-element list.
+    // "\x01…" keys are internal sentinels and never double up.
+    const bool alsoRuleName = alsoBareName && !capKey.empty() && capKey != name && capKey[0] != '\x01';
+
     // Inline single-character rules (space, break, …): a bare char test, no memo/record
     // machinery. These are the overwhelming majority of subrule calls.
     if (meta.singleChar && args.empty()) {
@@ -2155,12 +2240,20 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // capturing <name>: record a leaf node spanning the one char, then continue
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = np;
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long,long>{-1,-1};
+        bool hadSpan2 = alsoRuleName && st.named.count(name);
+        auto savedSpan2 = hadSpan2 ? st.named[name] : std::pair<long,long>{-1,-1};
         st.named[capKey] = {pos, np};
+        if (alsoRuleName) { st.named[name] = {pos, np}; st.children[name].push_back(pn); }
         st.children[capKey].push_back(std::move(pn));
         if (k(np)) return true;
         st.children[capKey].pop_back();
         if (st.children[capKey].empty()) st.children.erase(capKey);
         if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
+        if (alsoRuleName) {
+            st.children[name].pop_back();
+            if (st.children[name].empty()) st.children.erase(name);
+            if (hadSpan2) st.named[name] = savedSpan2; else st.named.erase(name);
+        }
         return false;
     }
     bool ratchet = meta.ratchet; // token/rule commit + memoize
@@ -2184,12 +2277,20 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         pn.listNames = std::move(listNames);
         pn.listCaps = std::move(listCaps); pn.capReps = std::move(capReps);
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
+        bool hadSpan2 = alsoRuleName && st.named.count(name);
+        auto savedSpan2 = hadSpan2 ? st.named[name] : std::pair<long, long>{-1, -1};
         st.named[capKey] = {cf, ct};
+        if (alsoRuleName) { st.named[name] = {cf, ct}; st.children[name].push_back(pn); } // `<alias=rule>` answers to both
         st.children[capKey].push_back(std::move(pn)); // collate repeated captures into a list
         if (k(end)) return true;
         st.children[capKey].pop_back();               // backtrack: drop this occurrence
         if (st.children[capKey].empty()) st.children.erase(capKey);
         if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
+        if (alsoRuleName) {
+            st.children[name].pop_back();
+            if (st.children[name].empty()) st.children.erase(name);
+            if (hadSpan2) st.named[name] = savedSpan2; else st.named.erase(name);
+        }
         return false;
     };
 

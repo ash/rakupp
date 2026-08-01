@@ -170,6 +170,7 @@ private:
         std::string ruleName;
         std::string ruleArgs;            // raw args of a parameterised call <name($x, '')>
         std::string ruleAlias;           // capture key for <alias=rule> (else = ruleName)
+        bool aliasDotted = false;        // <alias=.rule> — the alias captures, the rule name does NOT
         bool ruleCapture = true;         // <name> captures as $<name>; <.name> does not
         mutable const GrammarRuleMeta* metaCache = nullptr; // per-node name resolution (grammar path)
         // Look: zero-width assertion — kids[0] is the inner pattern; `negate` = <!…>,
@@ -291,7 +292,8 @@ public:
                   Regex::MState& st, long pos, const FnRef& k);
     // Same, with the name already resolved (call sites cache the meta on the AST node).
     bool matchSubMeta(const GrammarRuleMeta& meta, const std::string& name, const std::string& args,
-                      const std::string& capKey, Regex::MState& st, long pos, const FnRef& k);
+                      const std::string& capKey, Regex::MState& st, long pos, const FnRef& k,
+                      bool alsoBareName = false);
 
     // The parameter bindings of the rule currently being matched (for code-block access).
     const std::map<std::string, std::string>& currentParams() const;

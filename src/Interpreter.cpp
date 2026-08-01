@@ -1514,7 +1514,15 @@ Interpreter::Interpreter() {
 void Interpreter::setMatchVar(Value v) {
     for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
         auto it = e->vars.find("$/");
-        if (it != e->vars.end()) { it->second = std::move(v); return; } // update the visible $/
+        if (it != e->vars.end()) {
+            // A READONLY `$/` is a routine PARAMETER — an action method's
+            // `method plain($/)`. Rakudo leaves it standing: a `~~`, `.subst` or
+            // `.match` in the body does not overwrite the match that was passed
+            // in. Clobbering it made YAMLish's `$value.=subst(…)` wipe `$/`, so
+            // the `$<properties>` read on the next line saw an empty Match.
+            if (it->second.readonly) return;
+            it->second = std::move(v); return; // update the visible $/
+        }
         if (e->routineFrame || !e->parent) { e->vars["$/"] = std::move(v); return; } // scope to the routine (or program top)
     }
 }
@@ -3887,9 +3895,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // its QUALIFIED name (`class GenericActions` inside `class Cro::Uri`
             // is Cro::Uri::GenericActions, as in Rakudo); the tail alias keeps the
             // short name resolvable
+            // A COMPOUND name nests the same way: `grammar Schema::Core` inside
+            // `unit module YAMLish` is YAMLish::Schema::Core, so an importer can
+            // reach it. (Only a name that already carries the prefix is left alone.)
             std::string clsName = cd->name.empty()
                 ? "<anon|" + std::to_string(++anonTypeCounter_) + ">"
-                : (!tctx_.pkgPrefix.empty() && cd->name.find("::") == std::string::npos
+                : (!tctx_.pkgPrefix.empty() && cd->name.rfind(tctx_.pkgPrefix, 0) != 0
                     ? tctx_.pkgPrefix + cd->name : cd->name);
             ci->name = clsName;
             ci->pod = cd->pod;
@@ -5385,11 +5396,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // parameter binding is not assignment: an ITEMIZED Array (`$[1,2]`,
             // `@m[0]`) binds to an `@` param as the Positional it is, where
             // `my @a = $[1,2]` would have nested it
+            // Binding is not assignment: `sub f(@a) {…}` / `sub f(%h) {…}` bind the
+            // CALLER'S container, so pushing or keying through the parameter is
+            // visible outside. Only `is copy` (and a List/itemized/lazy source,
+            // which has to be materialised) makes a fresh buffer.
             if (p.sigil == '@') {
                 if (v.t == VT::Array && v.itemized) { Value u = v; u.itemized = false; v = coerceArray(u); }
+                else if (v.t == VT::Array && !p.isCopy && !v.isList && !v.ext) { /* bind: share the buffer */ }
                 else v = coerceArray(v);
             }
-            else if (p.sigil == '%') v = coerceHash(v);
+            else if (p.sigil == '%') {
+                if (!(v.t == VT::Hash && v.hash && !p.isCopy)) v = coerceHash(v);
+            }
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
             if (p.coerce && !p.type.empty() && v.typeName() != p.type)
@@ -7302,6 +7320,18 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 for (auto& s : catchBlk->stmts) exec(s.get());
             } catch (BreakGivenEx&) { matched = true; /* a when/default matched */ }
             catch (ResumeEx&) { matched = true; /* .resume: absorbed; body can't re-enter, treat as handled */ }
+            catch (ReturnEx& r) {
+                // `fail` (and an explicit `return`) inside a CATCH leaves the
+                // enclosing ROUTINE with that value: the exception IS handled.
+                // Letting it fly through the catch-all below unwound past this
+                // frame instead, so `sub f { …die…; CATCH { fail "x" } }` ended
+                // the program silently.
+                if (c.body) runLeavePhasers(*c.body);
+                restore();
+                if (!isRoutine) throw;
+                copyOutRw(c.params, env, rwArgs, false);
+                return c.retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
+            }
             catch (...) { if (c.body) runLeavePhasers(*c.body, /*ok=*/false); restore(); throw; } // die/rethrow from CATCH
             // Only a matching when/default handles the exception (R1): a CATCH
             // whose clauses matched none — or with no clauses at all — rethrows.
@@ -11983,25 +12013,39 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (std::getenv("RAKUPP_DEBUG_MAKE"))
             fprintf(stderr, "[make] node=%s span=%ld..%ld queued=%s\n", pn.name.c_str(), pn.from, pn.to,
                     mc != pendingMakeCode->end() && !mc->second.empty() ? mc->second.front().c_str() : "(none)");
+        size_t makePick = 0;
         if (mc != pendingMakeCode->end() && !mc->second.empty()) {
             const std::string* rulePat = g ? g->findRule(
                 pn.actualRule.empty() ? pn.name : pn.actualRule) : nullptr;
-            if (rulePat && rulePat->find(mc->second.front()) == std::string::npos) {
+            // Pick the queued block that belongs to THIS rule. Several rules can
+            // share one span — a parent and its only child, and (under LTM) every
+            // protoregex candidate that matched, not just the winner. A blind FIFO
+            // pop then hands a node a loser's block and drops the node's own:
+            // YAMLish's `element:<int>`/`<float>` both match "42", so TOP's
+            // `make $/.values[0].ast` was discarded and every number came out Nil.
+            auto ownedBy = [&](const std::string& code) {
+                if (rulePat && rulePat->find(code) != std::string::npos) return true;
                 // a proto's tree node keeps the PROTO name while the make block
                 // lives in the winning `name:sym<…>` candidate — accept it if
                 // any candidate's pattern contains the code
-                bool inCandidate = false;
                 std::string prefix = pn.name + ":";
-                for (const ClassInfo* ci = g; ci && !inCandidate; ci = ci->parent.get())
+                for (const ClassInfo* ci = g; ci; ci = ci->parent.get())
                     for (auto& rk : ci->rules)
                         if (rk.first.rfind(prefix, 0) == 0 &&
-                            rk.second.find(mc->second.front()) != std::string::npos) { inCandidate = true; break; }
-                if (!inCandidate) mc = pendingMakeCode->end();
+                            rk.second.find(code) != std::string::npos) return true;
+                return false;
+            };
+            if (!rulePat) makePick = 0; // no pattern to match against — keep the FIFO order
+            else {
+                makePick = (size_t)-1;
+                for (size_t i = 0; i < mc->second.size(); i++)
+                    if (ownedBy(mc->second[i])) { makePick = i; break; }
+                if (makePick == (size_t)-1) mc = pendingMakeCode->end();
             }
         }
         if (mc != pendingMakeCode->end() && !mc->second.empty()) {
-            std::string code = mc->second.front();
-            mc->second.erase(mc->second.begin());
+            std::string code = mc->second[makePick];
+            mc->second.erase(mc->second.begin() + makePick);
             if (auto prog = parseCode(code)) {
                 Value* slot = tctx_.cur->find("$/"); Value saved = slot ? *slot : Value::nil();
                 setMatchVar(mv);
