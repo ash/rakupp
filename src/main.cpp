@@ -568,7 +568,7 @@ int main(int argc, char** argv) {
 "  rakupp --version, -V         Show the version\n"
 "\n"
 "Environment:\n"
-"  RAKULIB=dir1:dir2            Extra module search dirs (like -I)\n"
+"  RAKULIB=dir1,dir2            Extra module search dirs (like -I); ',' or ':'\n"
 "  RAKUPP_PARALLEL=1            Run start/worker threads on all cores (true CPU\n"
 "                               parallelism; default coordinates under a GIL)\n"
 "  RAKUPP_DUMPTOKENS=1          Dump the lexer token stream before running\n"

@@ -126,7 +126,7 @@ lowest:
 |---|---|---|
 | `use lib` in the program | `use lib 'my/libs';` | added to the front, wins over everything |
 | `-I` on the command line | `rakupp -I lib app.raku` | Rakudo-compatible |
-| `RAKULIB` environment variable | `RAKULIB=libs:more rakupp app.raku` | colon-separated, like a `PATH` |
+| `RAKULIB` environment variable | `RAKULIB=libs,more rakupp app.raku` | `,` (as Rakudo does) or `:`, like a `PATH` — both accepted |
 | the current directory | `lib/`, `.`, `rakulib/` | the defaults, relative to where you run from |
 | installed zef/Rakudo modules | `~/.raku`, Homebrew Rakudo | the store described above |
 

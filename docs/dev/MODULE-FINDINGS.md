@@ -13,8 +13,10 @@ works (finding #2 below is settled there: a failed load is fatal now).
    at compile time. Good for exploration, wrong for conformance — rakupp
    needs a strict mode (or default) that dies like Rakudo; harness counts
    such loads as PARTIAL meanwhile.
-3. **rakupp splits RAKULIB on colon; Rakudo on comma** — phase-1 fix: accept
-   the comma form (with `file#`/`inst#` prefixes) in rakupp.
+3. **rakupp splits RAKULIB on colon; Rakudo on comma** — RESOLVED 2026-08-01.
+   rakupp now accepts BOTH `,` and `:`, so one setting serves both engines
+   (a `:` after a lone leading drive letter stays part of the path, for
+   Windows). Rakudo's `file#`/`inst#` repo-spec prefixes are still not read.
 4. **JSON::Fast 0.19 does not parse under rakupp** — RESOLVED 2026-07-22.
    The blame initially fell on `Q/\u/` at Fast.pm6:130, but Q// was innocent
    (and my "proof" was zsh's echo expanding \t itself — always probe with

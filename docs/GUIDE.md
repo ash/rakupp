@@ -177,13 +177,14 @@ plus `-o OUT` — see [Four ways to run a program](#four-ways-to-run-a-program) 
 
 | Environment variable | Meaning |
 |---|---|
-| `RAKULIB=dir1:dir2` | Extra module search dirs (like `-I`), colon-separated |
+| `RAKULIB=dir1,dir2` | Extra module search dirs (like `-I`); separate with `,` (as Rakudo does) or `:` |
 | `RAKUPP_PARALLEL=1` | True CPU parallelism for `start`/worker threads (default: GIL) — see [ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism) |
 | `RAKUPP_DUMPTOKENS=1` | Dump the lexer token stream before running |
 
 `-I <path>` (or `-I<path>`, repeatable) prepends directories to the module
 search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's
-`-I`. `RAKULIB` (colon-separated) does the same via the environment.
+`-I`. `RAKULIB` does the same via the environment, separating paths with `,`
+(the spelling Rakudo uses) or `:` — both are accepted.
 
 To inspect how a program parses, dump its AST as an indented text tree:
 

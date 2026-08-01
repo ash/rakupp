@@ -1403,12 +1403,28 @@ Interpreter::Interpreter() {
     tctx_.cur = global_;
     // Module search paths. "lib"/"."/"rakulib" are relative to the CWD; the rest
     // come from the environment so a checkout works anywhere:
-    //   RAKULIB  colon-separated extra module dirs
+    //   RAKULIB  extra module dirs, separated by ',' (Rakudo's spelling) or ':'
     //   ROAST    a Roast checkout, adds its Test-Helpers lib (for the test suite)
     if (const char* rl = std::getenv("RAKULIB")) {
+        // BOTH separators are accepted. Rakudo splits on ',' and rakupp used to
+        // split only on ':', so the same RAKULIB meant different things to the
+        // two engines — and getting it wrong doesn't error, it silently drops
+        // every path but one, which reads as a module incompatibility. That cost
+        // real time in the module battery, where the runner has to know which
+        // engine it is invoking.
         std::string s = rl, cur;
-        for (char c : s) {
-            if (c == ':') { if (!cur.empty()) libPaths_.push_back(cur); cur.clear(); }
+        for (size_t i = 0; i < s.size(); i++) {
+            char c = s[i];
+            // `C:\lib` — a ':' right after a lone drive letter at the start of a
+            // segment is part of the path, not a separator. (Windows is a
+            // supported target; ',' has no such ambiguity.)
+            bool driveLetter = c == ':' && cur.size() == 1 &&
+                               std::isalpha((unsigned char)cur[0]) &&
+                               i + 1 < s.size() && (s[i + 1] == '\\' || s[i + 1] == '/');
+            if ((c == ':' && !driveLetter) || c == ',') {
+                if (!cur.empty()) libPaths_.push_back(cur);
+                cur.clear();
+            }
             else cur += c;
         }
         if (!cur.empty()) libPaths_.push_back(cur);
