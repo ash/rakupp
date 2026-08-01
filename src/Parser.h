@@ -135,6 +135,13 @@ private:
     // so `$c ◐ 20` parses in the importing file. Defined in Parser.cpp.
     void scanModuleOps(const std::string& module);
     std::set<std::string> scannedMods_;            // modules already scanned for operators
+public:
+    // Every module SOURCE scanModuleOps read, as (path, content). A cached parse
+    // of this file is only valid while those still say what they said: an
+    // imported module that gains or loses an operator changes how THIS file
+    // parses, without this file changing at all. See Interpreter::loadModule.
+    std::vector<std::pair<std::string, std::string>> opScanned_;
+private:
     // Token index of the last `}` that closed a BLOCK. A block-closing brace at
     // end of line ENDS the statement (Rakudo's rule), so an infix on the next line
     // starts a new statement instead of continuing the expression:

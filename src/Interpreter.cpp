@@ -26,6 +26,8 @@ static char** rakupp_environ() { return environ; }
 #include <cstdlib>
 #include <cstdio>
 #include <chrono>
+#include <filesystem>
+#include "AstSerial.h"
 #include <thread>
 #include <ctime>
 #include <fstream>
@@ -2709,6 +2711,148 @@ Value Interpreter::buildSourceResourceMap(const std::string& distRoot) {
     return h;
 }
 
+
+// ---- precompiled-module cache -------------------------------------------
+//
+// A module's parse is cached on disk as a serialized AST (see AstSerial.h).
+// Roughly 70% of what `use Foo` costs is lexing and parsing the same unchanged
+// text on every run; this removes that in EVERY mode — the interpreter, and an
+// `--exe` binary too, since a compiled `use` still comes through loadModule.
+//
+// One entry PER SOURCE FILE, keyed by its resolved path. Editing a module
+// overwrites its entry; it never leaves a new one behind. That is the whole
+// reason the key is not the source hash: content-keying looked elegant, but a
+// module under active development would strand a fresh orphan on every save,
+// and no eviction policy makes that feel right.
+//
+// Content is still what VALIDATES the entry — the stored SHA-1 of the source
+// must match the file on disk — so a touched-but-unchanged file is a hit and a
+// backdated edit is a miss. Timestamps are never consulted. An entry also
+// records every module source scanModuleOps read, because an imported module's
+// OPERATORS change how this file parses without this file changing at all.
+//
+// Anything unexpected — missing, truncated, wrong version, source changed, a
+// dependency that moved — is a cache MISS, never an error. The source is there.
+static std::string precompDir() {
+    if (const char* d = std::getenv("RAKUPP_PRECOMP_DIR")) return d;
+    std::string base;
+    if (const char* x = std::getenv("XDG_CACHE_HOME")) base = x;
+    else if (const char* h = std::getenv("HOME")) base = std::string(h) + "/.cache";
+    else return "";
+    return base + "/rakupp/precomp";
+}
+
+static bool precompEnabled() {
+    static int on = -1;
+    if (on < 0) on = (std::getenv("RAKUPP_NO_PRECOMP") == nullptr && !precompDir().empty()) ? 1 : 0;
+    return on == 1;
+}
+
+#ifndef RAKUPP_VERSION
+#define RAKUPP_VERSION "0.0.0"
+#endif
+// Folded into every key: a rakupp built from different sources must never read
+// an entry written by another one.
+static const std::string& precompBuildId() {
+    static const std::string id = std::string(RAKUPP_VERSION) + "/" +
+                                  std::to_string(kAstSerialVersion) + "/" __DATE__ " " __TIME__;
+    return id;
+}
+
+static std::string precompPath(const std::string& srcPath) {
+    std::string dir = precompDir();
+    if (dir.empty() || srcPath.empty()) return "";
+    std::error_code ec;
+    std::string abs = std::filesystem::absolute(srcPath, ec).lexically_normal().string();
+    if (ec) abs = srcPath;
+    std::string h = sha1hex(abs + std::string(1, '\0') + precompBuildId());
+    // one level of fan-out, so a large cache is not one enormous directory
+    return dir + "/" + h.substr(0, 2) + "/" + h.substr(2) + ".ast";
+}
+
+// entry = [40] srcSha [u32 nDeps] { [u32 len] path [40] sha }… [u32 len] finish [blob]
+static bool precompRead(const std::string& path, const std::string& src,
+                        std::string& blobOut, std::string& finishOut) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss; ss << in.rdbuf();
+    const std::string all = ss.str();
+    size_t pos = 0;
+    if (all.size() < 40 || all.compare(0, 40, sha1hex(src)) != 0) return false; // source changed
+    pos = 40;
+    auto u32 = [&](uint32_t& v) {
+        if (all.size() - pos < 4) return false;
+        std::memcpy(&v, all.data() + pos, 4); pos += 4; return true;
+    };
+    uint32_t n = 0;
+    if (!u32(n) || n > 4096) return false;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t len = 0;
+        if (!u32(len) || all.size() - pos < (size_t)len + 40) return false;
+        std::string dep(all, pos, len); pos += len;
+        std::string want(all, pos, 40); pos += 40;
+        std::ifstream df(dep, std::ios::binary);
+        if (!df) return false;                       // dependency moved: miss
+        std::ostringstream ds; ds << df.rdbuf();
+        if (sha1hex(ds.str()) != want) return false; // its operators may differ: miss
+    }
+    uint32_t flen = 0;
+    if (!u32(flen) || all.size() - pos < flen) return false;
+    finishOut.assign(all, pos, flen); pos += flen;
+    blobOut.assign(all, pos, std::string::npos);
+    return true;
+}
+
+static void precompWrite(const std::string& path, const std::string& src,
+                         const std::string& blob, const std::string& finish,
+                         const std::vector<std::pair<std::string, std::string>>& deps) {
+    auto slash = path.rfind('/');
+    if (slash != std::string::npos) {
+        std::error_code ec;
+        std::filesystem::create_directories(path.substr(0, slash), ec);
+        if (ec) return;
+    }
+    // write to a unique temp then rename: a concurrent reader sees either the old
+    // entry or the complete new one, never a half-written file
+    std::string tmp = path + "." + std::to_string((long)::getpid()) + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary);
+        if (!out) return;
+        auto u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+        { std::string h = sha1hex(src); out.write(h.data(), 40); }
+        u32((uint32_t)deps.size());
+        for (auto& d : deps) {
+            u32((uint32_t)d.first.size());
+            out.write(d.first.data(), (std::streamsize)d.first.size());
+            std::string h = sha1hex(d.second);
+            out.write(h.data(), 40);
+        }
+        u32((uint32_t)finish.size());
+        out.write(finish.data(), (std::streamsize)finish.size());
+        out.write(blob.data(), (std::streamsize)blob.size());
+        if (!out) { out.close(); std::remove(tmp.c_str()); return; }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec); // atomic: replaces this file's previous entry
+    if (ec) std::remove(tmp.c_str());
+}
+
+std::string precompCacheDir() { return precompEnabled() ? precompDir() : std::string(); }
+
+std::pair<size_t, unsigned long long> precompCacheClear() {
+    size_t n = 0; unsigned long long bytes = 0;
+    std::string dir = precompDir();
+    if (dir.empty()) return {0, 0};
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; ++it) {
+        if (!it->is_regular_file(ec)) continue;
+        auto sz = std::filesystem::file_size(it->path(), ec);
+        if (ec) { ec.clear(); continue; }
+        if (std::filesystem::remove(it->path(), ec)) { n++; bytes += sz; }
+    }
+    return {n, bytes};
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet) {
     if (loadedModules_.count(name)) return;
     noteSymbolMutation("module load (use/need)");
@@ -2723,15 +2867,27 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         return std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now().time_since_epoch()).count();
     };
-    auto loadSource = [&](const std::string& src) {
+    auto loadSource = [&](const std::string& src, const std::string& srcPath) {
         auto prog = std::make_shared<Program>();
         std::string finish;
         double tParse = traceLoad ? nowMs() : 0;
-        try {
+        std::string cpath = precompEnabled() ? precompPath(srcPath) : std::string();
+        bool cached = false;
+        if (!cpath.empty()) {
+            std::string blob;
+            if (precompRead(cpath, src, blob, finish)) {
+                try { deserializeAst(blob, *prog); cached = true; }
+                catch (AstSerialError&) { prog->stmts.clear(); finish.clear(); } // corrupt: parse instead
+            }
+        }
+        if (!cached) try {
             Lexer lx(src);
             Parser parser(lx.tokenize());
             *prog = parser.parseProgram();
             finish = lx.finishData();
+            if (!cpath.empty())
+                try { precompWrite(cpath, src, serializeAst(*prog), finish, parser.opScanned_); }
+                catch (AstSerialError&) {} // a construct the format can't hold: just don't cache
         } catch (ParseError& e) {
             // A module that will not parse is FATAL, like a missing one: its BEGIN
             // blocks and exports never happen, so continuing past it runs the rest
@@ -2750,9 +2906,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         struct TGuard {
             bool on; const std::string& nm; double pms, t0;
             const std::function<double()>& now;
-            ~TGuard() { if (on) fprintf(stderr, "[Load] %s parse %.1f ms, run %.1f ms\n",
-                                        nm.c_str(), pms, now() - t0); }
-        } tg{traceLoad, name, parseMs, tRun, nowMs};
+            const char* how;   // "parse" or "precomp" — which path this load took
+            ~TGuard() { if (on) fprintf(stderr, "[Load] %s %s %.1f ms, run %.1f ms\n",
+                                        nm.c_str(), how, pms, now() - t0); }
+        } tg{traceLoad, name, parseMs, tRun, nowMs, cached ? "precomp" : "parse"};
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         auto saved = tctx_.cur;
         std::string savedFinish = finishData_;
@@ -2906,7 +3063,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 distStack_.push_back(buildDistribution(distRoot));
                 struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
                 struct DGuard { std::vector<Value>& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
-                loadSource(ss.str());
+                loadSource(ss.str(), dir + "/" + rel + ext);
                 return;
             }
         }
@@ -2934,7 +3091,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // id) so BEGIN-time `%?RESOURCES<x>.slurp` resolves. Pop after loading.
         resourceStack_.push_back(buildResourceMap(repo, entry));
         struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
-        loadSource(ss.str());
+        loadSource(ss.str(), repo + "/sources/" + lines[3]);
         return;
     }
     // Module file not found. Pragmas / version literals are expected to have no

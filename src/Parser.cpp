@@ -236,14 +236,14 @@ void Parser::scanModuleOps(const std::string& module) {
     std::string rel = module;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
     static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
-    std::string src;
+    std::string src, srcPath;
     for (auto& base : libPaths_) {
         for (const std::string& dir : {base, base + "/lib"}) {
             for (auto ext : exts) {
                 std::ifstream in(dir + "/" + rel + ext);
                 if (!in) continue;
                 std::ostringstream ss; ss << in.rdbuf();
-                src = ss.str();
+                src = ss.str(); srcPath = dir + "/" + rel + ext;
                 break;
             }
             if (!src.empty()) break;
@@ -251,6 +251,7 @@ void Parser::scanModuleOps(const std::string& module) {
         if (!src.empty()) break;
     }
     if (src.empty()) return;
+    opScanned_.push_back({srcPath, src});
     // an operator spelled only in ASCII operator characters is almost certainly a
     // REDECLARATION of a built-in (`multi infix:<*>(Color, Real)`); registering it
     // as a user op would give it the default precedence and silently reshape every

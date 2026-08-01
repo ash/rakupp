@@ -4,6 +4,8 @@
 #include "Codegen.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "AstSerial.h"
+#include "Interpreter.h"
 #include "Lint.h"
 #include "Highlight.h"
 #include <cstdlib>
@@ -560,6 +562,9 @@ int main(int argc, char** argv) {
 "                               variables, unreachable code, redeclarations, etc.\n"
 "                               (exit 1 if any warning; -q suppresses the summary)\n"
 "  rakupp --ast SRC             Print the parsed AST as an indented tree\n"
+"  rakupp --ast-roundtrip SRC   Check the AST survives the precomp cache format\n"
+"  rakupp --precomp-info        Where the parsed-module cache is, and how big\n"
+"  rakupp --precomp-clean       Empty it (entries are derived data — always safe)\n"
 "  rakupp --cpp SRC [-O]        Print the C++ that --exe would transpile to\n"
 "                               (add -O to print the optimized codegen instead)\n"
 "  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
@@ -639,6 +644,81 @@ int main(int argc, char** argv) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
         }
+        return 0;
+    }
+
+    // --ast-roundtrip FILE : parse, serialize, deserialize, and prove the tree
+    // survived. Two independent checks, because they fail differently:
+    //   * re-serializing the rebuilt tree must give BYTE-IDENTICAL output —
+    //     catches a field the reader skips or misorders;
+    //   * dumpAst of both trees must match — catches a field the WRITER never
+    //     writes, which the byte check alone cannot see.
+    // Neither is redundant. This is the tool to run over a corpus after touching
+    // Ast.h; the precompiled-module cache is only as trustworthy as it.
+    if (argc >= 3 && std::string(argv[1]) == "--ast-roundtrip") {
+        std::ifstream in(argv[2]);
+        if (!in) { std::cerr << "Cannot open file: " << argv[2] << "\n"; return 4; }
+        std::ostringstream ss; ss << in.rdbuf();
+        Program prog;
+        try {
+            Lexer lexer(ss.str());
+            Parser parser(lexer.tokenize());
+            prog = parser.parseProgram();
+        } catch (const ParseError& e) {
+            std::cerr << "PARSE " << argv[2] << ": " << e.what() << "\n";
+            return 3; // not a serializer failure — the file does not parse at all
+        }
+        try {
+            std::string blob = serializeAst(prog);
+            Program back;
+            deserializeAst(blob, back);
+            std::string blob2 = serializeAst(back);
+            if (blob != blob2) {
+                std::cerr << "ROUNDTRIP-BYTES " << argv[2] << " (" << blob.size()
+                          << " vs " << blob2.size() << ")\n";
+                return 1;
+            }
+            std::ostringstream d1, d2;
+            dumpAst(prog, d1); dumpAst(back, d2);
+            if (d1.str() != d2.str()) { std::cerr << "ROUNDTRIP-DUMP " << argv[2] << "\n"; return 1; }
+            std::cout << "ok " << argv[2] << "  (" << blob.size() << " bytes)\n";
+        } catch (const AstSerialError& e) {
+            std::cerr << "SERIAL " << argv[2] << ": " << e.msg << "\n";
+            return 1;
+        }
+        return 0;
+    }
+
+    // --precomp-info / --precomp-clean : the parsed-module cache. Entries are keyed
+    // by SOURCE CONTENT, so a stale one can never be served — but an edited module
+    // orphans its old entry, and those want a way out that is not "know the path".
+    if (argc >= 2 && (std::string(argv[1]) == "--precomp-info" ||
+                      std::string(argv[1]) == "--precomp-clean")) {
+        std::string dir = precompCacheDir();
+        if (dir.empty()) {
+            std::cout << "precompiled-module cache: disabled"
+                      << (std::getenv("RAKUPP_NO_PRECOMP") ? " (RAKUPP_NO_PRECOMP)" : " (no HOME)") << "\n";
+            return 0;
+        }
+        if (std::string(argv[1]) == "--precomp-clean") {
+            auto [n, bytes] = precompCacheClear();
+            std::cout << "removed " << n << " entr" << (n == 1 ? "y" : "ies")
+                      << " (" << (bytes + 1023) / 1024 << " KB) from " << dir << "\n";
+            return 0;
+        }
+        size_t n = 0; unsigned long long bytes = 0;
+        std::error_code ec;
+        for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; ++it) {
+            if (!it->is_regular_file(ec)) continue;
+            if (it->path().extension() != ".ast") continue;
+            auto sz = std::filesystem::file_size(it->path(), ec);
+            if (!ec) { n++; bytes += sz; }
+            ec.clear();
+        }
+        std::cout << dir << "\n" << n << " entr" << (n == 1 ? "y" : "ies")
+                  << ", " << (bytes + 1023) / 1024 << " KB\n"
+                  << "(one entry per module file, replaced in place when it changes; "
+                  << "--precomp-clean empties it)\n";
         return 0;
     }
 

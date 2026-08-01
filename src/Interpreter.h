@@ -82,6 +82,12 @@ std::string sha1hex(const std::string& msg);
 // `RAKULIB=a,b` silently stopped importing operators.
 std::vector<std::string> splitSearchPath(const std::string& spec);
 
+// Where the precompiled-AST cache lives (see loadModule), "" when disabled.
+std::string precompCacheDir();
+// Delete every cached entry. Returns how many files went and how many bytes they
+// held. Always safe: entries are derived data, rebuilt on the next run.
+std::pair<size_t, unsigned long long> precompCacheClear();
+
 struct EnvExtras {
     // rw-param write-through: paramName → (caller's argument expr, caller env).
     // An assignment to the param writes through the caller's lvalue IMMEDIATELY
