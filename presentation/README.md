@@ -5,7 +5,7 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 in a browser, or serve the directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
-12-page PDF export — download it and flip through in any PDF viewer (the text
+13-page PDF export — download it and flip through in any PDF viewer (the text
 stays selectable). GitHub's inline blob viewer is unreliable with PDFs, so
 download it rather than expecting a preview. The interactive `index.html` is the
 real thing: keyboard navigation, a light/dark toggle, hover states. Regenerate
@@ -27,10 +27,12 @@ gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/prepress \
   rail, or the on-screen arrows.
 - **Theme:** light/dark toggle, top-right (follows the OS setting by default).
 
-Twelve slides: what it is → Roast conformance → language breadth → the five ways
-to run → interpreter speed → native (`--exe`) speed → the ecosystem → showcase
-programs → dogfooding → roadmap → install. Every figure is drawn from the docs
-in [`../docs`](../docs) (README, HIGHLIGHTS, ECOSYSTEM, BENCHMARKS, CHANGELOG).
+Thirteen slides: what it is → Roast conformance → language breadth → the five
+ways to run → interpreter speed → native (`--exe`) speed → the ecosystem →
+showcase programs → ecosystem modules → dogfooding → roadmap → install. Every
+figure is drawn from the docs in [`../docs`](../docs) (ROAST, BENCHMARKS,
+ECOSYSTEM, MODULES, MILESTONES) and from [`../CHANGELOG.md`](../CHANGELOG.md) —
+when a release moves a number there, move it here too.
 
 ## Write-ups
 
@@ -40,3 +42,4 @@ Longer-form articles about Raku++:
 - [Raku++: The Long Read](https://andrewshitov.com/2026/07/15/raku-the-long-read/)
 - [Raku: a Language Where 0.1 + 0.2 is 0.3](https://andrewshitov.com/2026/07/18/raku-a-language-where-0-1-0-2-is-0-3/)
 - [Raku in a Browser](https://andrewshitov.com/2026/07/20/raku-in-a-browser/)
+- [Raku — the Language That Speaks Unicode](https://andrewshitov.com/2026/07/30/raku-the-language-with-unicode-support/)

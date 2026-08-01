@@ -191,7 +191,7 @@
   .eco-src { font-family: var(--font-mono); font-weight: 600; font-size: 15px; color: var(--ink); background: var(--bg-2); border: 1.5px solid var(--accent); border-radius: 10px; padding: 12px 22px; box-shadow: var(--shadow); }
   .eco-src span { color: var(--accent); }
   .eco-stem { width: 1px; height: 26px; background: var(--line-2); }
-  .eco-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: clamp(10px, 1.2vw, 16px); width: 100%; }
+  .eco-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: clamp(9px, 1vw, 14px); width: 100%; }
   .eco-node { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; position: relative; }
   .eco-node::before { content: ""; position: absolute; top: -26px; left: 50%; width: 1px; height: 26px; background: var(--line-2); }
   .eco-node h4 { margin: 0 0 4px; font-family: var(--font-mono); font-size: 13px; font-weight: 650; color: var(--ink); }
@@ -277,22 +277,23 @@
 
   <!-- 1 · TITLE -->
   <section class="slide title-slide" data-sect="Raku++">
-    <div class="gutter"><div class="num">01<small>/12</small></div><div class="sect">Overview</div></div>
+    <div class="gutter"><div class="num">01<small>/13</small></div><div class="sect">Overview</div></div>
     <div class="stage">
       <div class="wordmark">Raku<span class="pp">++</span><span class="cursor"></span></div>
       <div class="title-sub">A from-scratch <span class="q">Raku, hand-written in C++17.</span></div>
       <div class="title-meta">
         <span class="chip"><b>Interpreter</b> + native compiler</span>
         <span class="chip">runs in the <b>browser</b> via WebAssembly</span>
+        <span class="chip">runs <b>zef-installed</b> modules</span>
         <span class="chip"><b>Zero</b> third-party dependencies</span>
-        <span class="chip mono">v1.0.0</span>
+        <span class="chip mono">v1.7.0</span>
       </div>
     </div>
   </section>
 
   <!-- 2 · WHAT IT IS -->
   <section class="slide" data-sect="What it is">
-    <div class="gutter"><div class="num">02<small>/12</small></div><div class="sect">What it is</div></div>
+    <div class="gutter"><div class="num">02<small>/13</small></div><div class="sect">What it is</div></div>
     <div class="stage">
       <div class="eyebrow">not a Rakudo fork — shares no code with it</div>
       <h2>One implementation of the <span class="accent">language</span>,<br>from lexer to native binary.</h2>
@@ -307,22 +308,22 @@
 
   <!-- 3 · THE NUMBERS -->
   <section class="slide" data-sect="Conformance">
-    <div class="gutter"><div class="num">03<small>/12</small></div><div class="sect">Conformance</div></div>
+    <div class="gutter"><div class="num">03<small>/13</small></div><div class="sect">Conformance</div></div>
     <div class="stage">
-      <div class="eyebrow">graded against Roast · v1.0.0's 90% target, reached</div>
+      <div class="eyebrow">graded against Roast · measured on v1.7.0</div>
       <h2>How much Raku actually runs.</h2>
       <div class="stats">
-        <div class="stat"><div class="n">90<small>%</small></div><div class="l"><b>194,506 / 216,066</b> declared tests pass — 97.4% of the tests that actually run.</div></div>
-        <div class="stat t"><div class="n">584<small>/ 1,462</small></div><div class="l">files pass on the strict <b>all-or-nothing</b> bar — every assertion in the file must pass (~39%).</div></div>
-        <div class="stat a"><div class="n">~3½<small>min</small></div><div class="l">to run the whole suite through a <b>self-hosted harness</b> — written in Raku, run by Raku++ itself.</div></div>
+        <div class="stat"><div class="n">90<small>%</small></div><div class="l"><b>196,590 / 217,055</b> declared tests pass — 98% of the tests that actually run.</div></div>
+        <div class="stat t"><div class="n">631<small>/ 1,462</small></div><div class="l">files pass on the strict <b>all-or-nothing</b> bar — every assertion in the file must pass (~43%).</div></div>
+        <div class="stat a"><div class="n">100<small>%</small></div><div class="l">of <b>S15</b> — Unicode, strings, NFG — <b>91,752 / 91,752</b> assertions, closed completely for v1.1.</div></div>
       </div>
-      <p class="lede" style="margin-top:clamp(20px,3vh,32px)">Every release is gated on the full suite with <strong>zero fully-passing-file regressions</strong>. Numbers are measured on each tag, never projected.</p>
+      <p class="lede" style="margin-top:clamp(20px,3vh,32px)">Every release is gated on the full suite with <strong>zero fully-passing-file regressions</strong> — and, since v1.5.0, on <strong>performance</strong> too. Numbers are measured on each tag, never projected; the whole suite runs in ~3½ minutes through a harness written in Raku and run by Raku++ itself.</p>
     </div>
   </section>
 
   <!-- 4 · THE LANGUAGE -->
   <section class="slide" data-sect="Language">
-    <div class="gutter"><div class="num">04<small>/12</small></div><div class="sect">Language</div></div>
+    <div class="gutter"><div class="num">04<small>/13</small></div><div class="sect">Language</div></div>
     <div class="stage">
       <div class="eyebrow">the breadth of what's implemented</div>
       <h2>Big-language Raku, most corners lit.</h2>
@@ -341,7 +342,7 @@
 
   <!-- 5 · WAYS TO RUN -->
   <section class="slide" data-sect="Execution">
-    <div class="gutter"><div class="num">05<small>/12</small></div><div class="sect">Execution</div></div>
+    <div class="gutter"><div class="num">05<small>/13</small></div><div class="sect">Execution</div></div>
     <div class="stage">
       <div class="eyebrow">one source, five targets</div>
       <h2>Four ways to run — and a fifth in the browser.</h2>
@@ -352,34 +353,35 @@
         <div class="run"><code>--exe&nbsp;-o prog</code><span><b>Transpile to C++ and compile native</b> — anything unsupported falls back to <code>--bundle</code> automatically.</span></div>
         <div class="run"><code>Raku.js&nbsp;→&nbsp;WASM</code><span><b>In the browser</b> — same semantics as native, client-side, no server, with an embeddable playground.</span></div>
       </div>
+      <div class="bench-note" style="margin-top:clamp(14px,2.2vh,22px)">Opt-in, off by default: <code>--precomp-modules=on</code> caches the parsed form of everything a program <code>use</code>s — <code>use XML</code> (10 files, 1,110 lines) goes 16.0 ms → 5.7 ms cold-to-warm. Nothing is written to disk until you ask.</div>
     </div>
   </section>
 
   <!-- 6 · SPEED -->
   <section class="slide" data-sect="Speed">
-    <div class="gutter"><div class="num">06<small>/12</small></div><div class="sect">Speed</div></div>
+    <div class="gutter"><div class="num">06<small>/13</small></div><div class="sect">Speed</div></div>
     <div class="stage">
       <div class="eyebrow">interpreter · × vs Rakudo v2026.06 · byte-identical output gate</div>
       <h2>Fast to start, fast to run.</h2>
       <div class="bench" id="benchBars"></div>
-      <div class="bench-note">~2 ms cold start (best 1.8 ms of a 200-spawn loop) — a tiny native binary, no VM to spin up. Even <span class="accent-2">interpreted</span>, Raku++ wins 7 of 9 kernels; the two it trails on — <code>streq</code>, <code>fib</code> — the next slide compiles away.</div>
+      <div class="bench-note">~2 ms cold start (best 1.8 ms of a 200-spawn loop) — a tiny native binary, no VM to spin up. Even <span class="accent-2">interpreted</span>, Raku++ wins 7 of 9 kernels; the two it trails on — <code>streq</code> 1.5×, <code>fib</code> 1.4×, both narrowed by node specialization in v1.7.0 — the next slide compiles away.</div>
     </div>
   </section>
 
   <!-- 7 · NATIVE -->
   <section class="slide" data-sect="Native">
-    <div class="gutter"><div class="num">07<small>/12</small></div><div class="sect">Native</div></div>
+    <div class="gutter"><div class="num">07<small>/13</small></div><div class="sect">Native</div></div>
     <div class="stage">
       <div class="eyebrow">rakupp --exe · transpiled to C++, compiled native · × vs Rakudo</div>
       <h2>Compiled, it wins <span class="accent-2">every</span> kernel.</h2>
       <div class="bench" id="benchBarsNative"></div>
-      <div class="bench-note"><code>--exe</code> strips the tree-walk: every benchmark lands <span class="accent-2">2.6× to 47.9×</span> ahead of Rakudo — <code>streq</code> and <code>fib</code>, the interpreter's only two losses, now included. Anything the compiler can't lower falls back to bundling automatically.</div>
+      <div class="bench-note"><code>--exe</code> strips the tree-walk: every benchmark lands <span class="accent-2">2.5× to 39.9×</span> ahead of Rakudo — <code>streq</code> and <code>fib</code>, the interpreter's only two losses, now included. Anything the compiler can't lower falls back to bundling automatically.</div>
     </div>
   </section>
 
   <!-- 8 · ECOSYSTEM -->
   <section class="slide" data-sect="Ecosystem">
-    <div class="gutter"><div class="num">08<small>/12</small></div><div class="sect">Ecosystem</div></div>
+    <div class="gutter"><div class="num">08<small>/13</small></div><div class="sect">Ecosystem</div></div>
     <div class="stage">
       <div class="eyebrow">one interpreter behind every surface</div>
       <h2>A small constellation, one source of truth.</h2>
@@ -387,20 +389,21 @@
         <div class="eco-src"><span>src/</span> — the C++ interpreter</div>
         <div class="eco-stem"></div>
         <div class="eco-row">
-          <div class="eco-node"><h4>native</h4><p>The binary + <code>--exe</code> compiler.</p><span class="arrow">brew · releases</span></div>
+          <div class="eco-node"><h4>native</h4><p>The binary + <code>--exe</code> compiler.</p><span class="arrow">brew · releases · CI action</span></div>
           <div class="eco-node"><h4>Raku.js</h4><p>src/ compiled to WebAssembly (Emscripten).</p><span class="arrow">rakujs.{js,wasm}</span></div>
           <div class="eco-node"><h4>raku.online</h4><p>Public playground — editor, share links, widget.</p><span class="arrow">embeds the wasm</span></div>
           <div class="eco-node"><h4>the spec</h4><p>Behavioural spec; examples verified live.</p><span class="arrow">raku.online/spec</span></div>
+          <div class="eco-node"><h4>the tour</h4><p>18 lessons, every example a live editor.</p><span class="arrow">raku.online/tour</span></div>
           <div class="eco-node"><h4>raku-corpus</h4><p>Real programs as a beyond-Roast test target.</p><span class="arrow">differential run</span></div>
         </div>
       </div>
-      <p class="lede" style="margin-top:clamp(18px,2.6vh,26px);max-width:70ch">Everything downstream ships the <em>same</em> interpreter — the wasm, the two sites, the Homebrew tap, and the release binaries all trace back to <code>src/</code>. The spec inherits a new engine for free the moment the playground redeploys.</p>
+      <p class="lede" style="margin-top:clamp(18px,2.6vh,26px);max-width:70ch">Everything downstream ships the <em>same</em> interpreter — the wasm, the sub-sites, the Homebrew tap, and the release binaries all trace back to <code>src/</code>. Neither the spec nor the tour hosts an engine of its own, so both inherit a new one for free the moment the playground redeploys.</p>
     </div>
   </section>
 
   <!-- 9 · SHOWCASE -->
   <section class="slide" data-sect="Showcase">
-    <div class="gutter"><div class="num">09<small>/12</small></div><div class="sect">Showcase</div></div>
+    <div class="gutter"><div class="num">09<small>/13</small></div><div class="sect">Showcase</div></div>
     <div class="stage">
       <div class="eyebrow">mid-size programs, each leaning on a different part of the language</div>
       <h2>Real programs, written <span class="accent">in</span> Raku.</h2>
@@ -414,13 +417,29 @@
         <div class="scard a"><div class="st">Key-value store</div><div class="sd">Its own wire protocol.</div><div class="sk">sockets</div></div>
         <div class="scard a"><div class="st">rakus</div><div class="sd">A static-file HTTP server.</div><div class="sk">sockets</div></div>
       </div>
-      <p class="lede" style="margin-top:clamp(16px,2.4vh,24px);max-width:72ch">Plus larger experiments — a <strong>JavaScript/TypeScript</strong> interpreter, a <strong>Perl 5</strong> interpreter (Raku parsing its own ancestor), and a <strong>raytracer</strong>. Every one of the 24 bundled <code>examples/</code> also compiles natively with <code>--exe</code>, byte-for-byte identical.</p>
+      <p class="lede" style="margin-top:clamp(16px,2.4vh,24px);max-width:74ch">Plus three interpreters for <em>other</em> languages, each written in Raku: <strong>JavaScript/TypeScript</strong>, <strong>Perl 5</strong> (Raku parsing its own ancestor), and <strong>Python 3</strong> — off-side rule included, via a CPython-style INDENT/DEDENT tokenizer — with examples byte-identical to <code>node</code>, <code>perl</code> and <code>python3</code>. And a <strong>raytracer</strong>. Every one of the 24 bundled <code>examples/</code> also compiles natively with <code>--exe</code>, byte-for-byte identical.</p>
     </div>
   </section>
 
-  <!-- 10 · DOGFOODING -->
+  <!-- 10 · MODULES -->
+  <section class="slide" data-sect="Modules">
+    <div class="gutter"><div class="num">10<small>/13</small></div><div class="sect">Modules</div></div>
+    <div class="stage">
+      <div class="eyebrow">the v2.0 campaign — what people actually <code>use</code></div>
+      <h2>Modules from the ecosystem, <span class="accent">as installed</span>.</h2>
+      <p class="lede">Raku++ ships no package manager. It reads the <strong>same store zef already populates</strong> — install a module the normal way, then <code>use</code> it from Raku++ with no flags and no reinstall.</p>
+      <div class="grid g3">
+        <div class="card"><span class="tag">the bar</span><h3>18 / 59 distributions</h3><p>pass <em>their own</em> test suites — the files zef runs at install time, not a one-line API probe. 11 → 18 in one release.</p></div>
+        <div class="card"><span class="tag">the set</span><h3>Top 50 by reverse-deps</h3><p>JSON::Fast, XML, YAMLish, URI, File::Temp, File::Find, Terminal::ANSIColor, Digest, Encode — ranked over the ecosystem archive, version-pinned.</p></div>
+        <div class="card"><span class="tag">the method</span><h3>Every fix is general</h3><p>No module accommodations: <code>is raw</code> write-back, <code>CALL-ME</code> by name, <code>method FALLBACK</code>, <code>END</code> at process exit — all landed as interpreter fixes.</p></div>
+      </div>
+      <p class="lede" style="margin-top:clamp(14px,2.2vh,22px);max-width:74ch">Far end of the same road: a live <strong><code>HTTP/1.1 200 OK</code> over TLS</strong> — Cro's client on <code>IO::Socket::Async::SSL</code>, talking to the system OpenSSL through Raku++'s own NativeCall. Getting there was a chain of ~13 bugs, and nearly every one was a general correctness bug.</p>
+    </div>
+  </section>
+
+  <!-- 11 · DOGFOODING -->
   <section class="slide" data-sect="Dogfooding">
-    <div class="gutter"><div class="num">10<small>/12</small></div><div class="sect">Dogfooding</div></div>
+    <div class="gutter"><div class="num">11<small>/13</small></div><div class="sect">Dogfooding</div></div>
     <div class="stage">
       <div class="eyebrow">beyond what Roast's unit granularity exercises</div>
       <h2>Real applications run <span class="accent">unmodified</span>.</h2>
@@ -436,25 +455,26 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
     </div>
   </section>
 
-  <!-- 11 · ROADMAP -->
+  <!-- 12 · ROADMAP -->
   <section class="slide" data-sect="Roadmap">
-    <div class="gutter"><div class="num">11<small>/12</small></div><div class="sect">Roadmap</div></div>
+    <div class="gutter"><div class="num">12<small>/13</small></div><div class="sect">Roadmap</div></div>
     <div class="stage">
       <div class="eyebrow">honest about the edges</div>
       <h2>Not there yet.</h2>
       <ul class="plain">
-        <li><span class="m">▹</span><span><b>Macros / RakuAST / slangs</b> — compile-time metaprogramming and pluggable syntax.</span></li>
-        <li><span class="m">▹</span><span><b>libffi-grade NativeCall</b> — structs and callbacks (basic C FFI to libc / <code>&lt;math.h&gt;</code> already works, without libffi).</span></li>
-        <li><span class="m">▹</span><span>Some <b>IO</b> and <b>POD</b> corners.</span></li>
-        <li><span class="m">▹</span><span><b>Lock-free parallel atomics.</b></span></li>
+        <li><span class="m">▹</span><span><b>Macros / RakuAST / slangs</b> — compile-time metaprogramming and pluggable syntax. Deliberately deferred, with the scope measured first.</span></li>
+        <li><span class="m">▹</span><span><b>libffi-grade NativeCall</b> — structs, callbacks, mixed int/float args. Integer, pointer, <code>Str</code> and float FFI already works via <code>dlsym</code>, with no libffi at all — enough for OpenSSL.</span></li>
+        <li><span class="m">▹</span><span><b>Regex code blocks under backtracking</b> — <code>/(\d) { say $0 }/</code> re-fires its side effects; the fix has to defer them to the accepted path.</span></li>
+        <li><span class="m">▹</span><span>Some <b>IO</b> and <b>POD</b> corners; <b>lock-free parallel atomics</b>.</span></li>
+        <li><span class="m">▹</span><span>The remaining <b>41 of 59</b> distributions, and <b>zef itself</b> running under Raku++ — the v2.0 flagship.</span></li>
       </ul>
-      <p class="lede">Early-stage and growing test-first — the direction is more of Roast, passing file by file, with every release gated on no regressions.</p>
+      <p class="lede">The cheap Roast wins are spent; moving the count now takes whole features — parse, runtime and dispatch together. Every release stays gated on no regressions, in conformance <em>and</em> in speed.</p>
     </div>
   </section>
 
-  <!-- 12 · GET IT -->
+  <!-- 13 · GET IT -->
   <section class="slide" data-sect="Get it">
-    <div class="gutter"><div class="num">12<small>/12</small></div><div class="sect">Get it</div></div>
+    <div class="gutter"><div class="num">13<small>/13</small></div><div class="sect">Get it</div></div>
     <div class="stage">
       <div class="eyebrow">macOS · Linux · Windows · the browser</div>
       <h2>Try <span class="accent">Raku<span style="font-family:var(--font-mono)">++</span></span> today.</h2>
@@ -467,6 +487,7 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
         <a href="https://github.com/ash/rakupp" target="_blank" rel="noopener">github.com/ash/rakupp</a>
         <a href="https://raku.online" target="_blank" rel="noopener">raku.online</a>
         <a href="https://raku.online/spec/" target="_blank" rel="noopener">raku.online/spec</a>
+        <a href="https://raku.online/tour/" target="_blank" rel="noopener">raku.online/tour</a>
       </div>
       <p class="lede" style="margin-top:22px">Prebuilt archives on every GitHub Release — macOS universal, Linux static, Windows static-CRT — plus the WebAssembly bundle. No runtime dependencies, anywhere.</p>
     </div>
@@ -491,9 +512,9 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
   // benchmark data (interpreter vs Rakudo v2026.06)
   // [name, interp × vs Rakudo, win/lose, native --exe × vs Rakudo]
   var bench = [
-    ['strcat', 15.3, 'win', 47.9], ['bigint', 8.1, 'win', 8.5], ['hash', 5.9, 'win', 13.4],
-    ['sortnums', 3.6, 'win', 4.7], ['regex', 3.3, 'win', 4.2], ['arrayops', 2.6, 'win', 2.6],
-    ['loopsum', 1.3, 'win', 9.7], ['streq', 2.0, 'lose', 6.2], ['fib', 1.7, 'lose', 2.9]
+    ['strcat', 12.0, 'win', 39.9], ['bigint', 7.8, 'win', 8.5], ['hash', 6.2, 'win', 13.5],
+    ['sortnums', 3.8, 'win', 5.2], ['regex', 3.3, 'win', 4.2], ['arrayops', 2.5, 'win', 2.5],
+    ['loopsum', 1.3, 'win', 9.6], ['streq', 1.5, 'lose', 6.4], ['fib', 1.4, 'lose', 3.0]
   ];
   function renderBars(el, rows, maxv) {
     if (!el) return;
@@ -508,14 +529,14 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
   renderBars(document.getElementById('benchBars'), bench.map(function (b) {
     return { name: b[0], val: b[1], cls: b[2],
       label: (b[2] === 'win' ? 'Raku++ ' : 'Rakudo ') + b[1].toFixed(1) + '×' };
-  }), 15.3);
+  }), 12.0);
   // native --exe — sorted fastest-first, all wins → all green
   renderBars(document.getElementById('benchBarsNative'),
     bench.map(function (b) { return { name: b[0], val: b[3] }; })
       .sort(function (a, b) { return b.val - a.val; })
       .map(function (r) { return { name: r.name, val: r.val, cls: 'win',
         label: 'Raku++ ' + r.val.toFixed(1) + '×' }; }),
-    47.9);
+    39.9);
 
   // build rail
   slides.forEach(function (s, idx) {

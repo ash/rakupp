@@ -25,9 +25,11 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-07-28 | **v1.2.6** | Proc rendering — `say shell(…)` no longer prints its output twice |
 | 2026-07-29 | **v1.5.0** | **the measured gap with Rakudo, halved** — 202 → 152 divergences; a performance gate on every release |
 | 2026-07-29 | **v1.5.1** | **fib −17.6%** — argument vectors moved not copied; the 9,138-line dispatcher split into four files (CI's GCC job 25m → 1m32s) |
+| 2026-07-31 | **v1.5.2** | **a module counts as working only when its own test suite passes** — 630 Roast files, 180 regression tests |
+| 2026-08-01 | **v1.7.0** | **node specialization** — the largest single interpreter speed-up since the performance campaign (`$a OP $b` −18.3%); **18 / 59 distributions** pass their own suites (from 11) |
 | 2026-07-22 → | *(in progress)* | **v2.0** — running the ecosystem's zef modules |
 
-**By the numbers:** v0.1.0 → v1.5.1 in 27 days (2026-07-02 to 2026-07-29).
+**By the numbers:** v0.1.0 → v1.7.0 in 30 days (2026-07-02 to 2026-08-01).
 
 ---
 
@@ -85,6 +87,25 @@ A pause in the module work to close S15 (Unicode / strings / NFG) completely.
   files fully passing, 194,506 → 194,904 assertions**, no regressions. See
   [UNICODE.md](UNICODE.md).
 
+## Conformance, then speed — v1.2.0 → v1.5.1 (Jul 26–29)
+
+Two measured campaigns back to back, each with its own yardstick.
+
+- **Documentation conformance (v1.2.0 → v1.2.5).** Every runnable example in the
+  official docs, executed on both engines and classified three ways: **596 → 835
+  → 936 byte-identical**. The sweep also started the semantic-duplication audit —
+  the same rule implemented twice in the C++ source, diverging.
+- **Jul 29 — v1.5.0: the measured gap with Rakudo, halved.** 202 → 152
+  divergences across the documentation sweep and the operator behaviour matrix
+  (833 expressions over 121 operators). The other half of the release was
+  turning properties we care about into **gates that fail a release** rather than
+  numbers someone has to remember to check — performance among them.
+- **Jul 29 — v1.5.1: no behaviour change at all**, Roast byte-for-byte identical
+  before and after. Five candidates ranked from a profile; three landed, one was
+  measured and abandoned, one measured and never attempted (**fib −17.6%**, from
+  moving a call's argument vector instead of copying it). The 9,138-line
+  dispatcher split into four files took CI's GCC job from 25m to 1m32s.
+
 ## The road to modules — v2.0 (Jul 22 → ongoing)
 
 The current campaign: **run the programs people actually write — the ones that
@@ -94,10 +115,28 @@ zef populates (see [MODULES.md](MODULES.md)); the goal is breadth and depth.
 - The `nqp::` compatibility subset (zero-cost when unused) unblocks modules that
   lean on it; package version adverbs (`module M:ver<…>`) parse, unblocking
   JSON::Fast and friends.
+- **Jul 24 — a live `HTTP/1.1 200 OK` over TLS**, through `IO::Socket::Async::SSL`
+  and the system OpenSSL on Raku++'s own NativeCall. "Get HTTPS working" was
+  never one feature: it was a chain of ~13 independent bugs, each hidden behind
+  the last, and nearly every one a *general* correctness bug — the Roast numbers
+  went up the whole way. The story is in [HTTPS.md](HTTPS.md).
 - Real modules load and run today — JSON::Fast, URI, Terminal::ANSIColor, … —
   and the top-50 working set is being worked tier by tier (loads clean → usage
   matches Rakudo → own test suite passes). Progress and triage live in
   [V2-MODULES-PLAN.md](dev/V2-MODULES-PLAN.md).
+- **Jul 31 — v1.5.2 changed the standard.** A module counts as working only when
+  **its own test suite passes** — the files zef runs at install time — instead of
+  a one-line API probe. Encode, Trap, File::Temp and Digest::MD5 cleared the new
+  bar, and every fix behind them was a general interpreter fix (`is raw`
+  write-back, `CALL-ME` by name, `open :rw/:exclusive/:update`, a module's `END`
+  at process end), not a module accommodation.
+- **Aug 1 — v1.7.0: 11 → 18 of 59 distributions** past that bar, on ten more
+  general fixes (`$*ARGFILES`, `method FALLBACK`, `.resolve`, `symlink`/`link`,
+  the `X::IO` family, one-level slice assignment). The same release added
+  **node specialization** — the interpreter recognises the four syntactic shapes
+  hot loops are made of and takes a path that skips what the general case must
+  do: `$a OP $b` −18.3%, `fib` −11.7%, against a control kernel that does not
+  move. Only the shape is cached, never the variable or its value.
 - Stretch flagship: **zef itself running under rakupp**.
 
 Beyond the interpreter, the same source feeds a small constellation —
