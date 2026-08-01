@@ -10,13 +10,22 @@
 # Contract: exit 0 + last line PASS.
 my @fail;
 
-# 1. accumulate loop: 60k pushes. Quadratic = minutes; linear = well under 1 s.
+# 1. accumulate loop: 60k pushes. Quadratic = minutes; linear ≈ 0.1 s.
+#
+# The wall-clock bounds here and in §4 are QUADRATIC DETECTORS, not performance
+# assertions — the regression they exist for turned ~0.1 s into ~130 s. They are
+# therefore set far above the linear cost, because a shared CI runner is several
+# times slower than a developer machine and a bound that merely doubles the
+# local time is a flake generator: §4's was 10 s against a 4.4 s local baseline,
+# and it failed three CI runs in a row at 10.4, 10.6 and 10.8 s while the code it
+# guards was provably unchanged (an older snapshot measured identically).
+# If you tighten these, measure both machines first.
 my $t0 = now;
 my @acc;
 @acc.push($_) for ^60_000;
 my $push-s = now - $t0;
 @fail.push("push result: {@acc.elems}/{@acc[*-1]}") unless @acc.elems == 60_000 && @acc[*-1] == 59_999;
-@fail.push("push too slow: {$push-s.round(0.1)} s") if $push-s > 10;
+@fail.push("push too slow: {$push-s.round(0.1)} s") if $push-s > 30;   # linear ≈ 0.1 s
 
 # 2. mutator semantics survive the snapshot skip
 my @m = 1, 2;
@@ -70,7 +79,7 @@ for ^100_000 {
 my $when-s = now - $t0;
 # ^100_000 by residue: 33334 zeros ×1 + 33333 ones ×2 + 33333 twos ×3
 @fail.push("when loop result: $n") unless $n == 199_999;
-@fail.push("when loop too slow: {$when-s.round(0.1)} s") if $when-s > 10;
+@fail.push("when loop too slow: {$when-s.round(0.1)} s") if $when-s > 60;  # linear ≈ 4.4 s
 
 if @fail { note "FAILED:\n" ~ @fail.join("\n"); say 'FAIL' }
 else     { say 'PASS' }
