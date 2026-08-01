@@ -74,6 +74,32 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
               const std::string& fileName, const std::string& exePath,
               const std::vector<std::string>& libPaths) {
     try {
+        // The main program gets the same precompiled-AST cache its modules do —
+        // keyed on this file's path, validated against its contents. A cache hit
+        // skips the lexer and parser outright; everything after this point sees a
+        // Program indistinguishable from a freshly parsed one. `-e` code has no
+        // file behind it, so it is never cached.
+        {
+            std::vector<std::string> sp = libPaths;
+            if (const char* rl = std::getenv("RAKULIB"))
+                for (auto& d : splitSearchPath(rl)) sp.push_back(d);
+            Program cachedProg;
+            std::string cachedFinish;
+            if (fileName != "-e" && !fileName.empty() &&
+                precompLoadProgram(fileName, src, sp, cachedProg, cachedFinish)) {
+                Interpreter interp;
+                interp.setArgs(std::move(args));
+                interp.finishData_ = cachedFinish;
+                interp.podData_ = Lexer(src).podData();   // pod is cheap and rarely wanted
+                interp.podDom_ = parsePod(src);
+                interp.docMode_ = g_docMode;
+                interp.srcFile_ = fileName;
+                interp.srcFileAbs_ = absSrcPath(fileName);
+                interp.execPath_ = exePath;
+                interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+                return interp.run(cachedProg);
+            }
+        }
         Lexer lexer(src);
         auto tokens = lexer.tokenize();
         if (std::getenv("RAKUPP_DUMPTOKENS")) {
@@ -95,6 +121,13 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         if (const char* rl = std::getenv("RAKULIB"))
             for (auto& d : splitSearchPath(rl)) parser.libPaths_.push_back(d);
         Program prog = parser.parseProgram();
+        {
+            std::vector<std::string> sp = libPaths;
+            if (const char* rl = std::getenv("RAKULIB"))
+                for (auto& d : splitSearchPath(rl)) sp.push_back(d);
+            if (fileName != "-e" && !fileName.empty())
+                precompStoreProgram(fileName, src, sp, prog, finish, parser.opScanned_);
+        }
         Interpreter interp;
         interp.setArgs(std::move(args));
         interp.finishData_ = finish;

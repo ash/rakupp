@@ -2759,13 +2759,20 @@ static const std::string& precompBuildId() {
     return id;
 }
 
-static std::string precompPath(const std::string& srcPath) {
+static std::string precompPath(const std::string& srcPath,
+                               const std::vector<std::string>& searchPath) {
     std::string dir = precompDir();
     if (dir.empty() || srcPath.empty()) return "";
     std::error_code ec;
     std::string abs = std::filesystem::absolute(srcPath, ec).lexically_normal().string();
     if (ec) abs = srcPath;
-    std::string h = sha1hex(abs + std::string(1, '\0') + precompBuildId());
+    // The search path is part of the key: it decides which file a `use` resolves
+    // to when the parser scans for operators, so the same source under a
+    // different -I may legitimately parse differently. Recording the dependency
+    // CONTENTS is not enough — a different -I selects a different FILE.
+    std::string sp;
+    for (auto& d : searchPath) { sp += d; sp += '\x01'; }
+    std::string h = sha1hex(abs + std::string(1, '\0') + sp + precompBuildId());
     // one level of fan-out, so a large cache is not one enormous directory
     return dir + "/" + h.substr(0, 2) + "/" + h.substr(2) + ".ast";
 }
@@ -2839,6 +2846,30 @@ static void precompWrite(const std::string& path, const std::string& src,
 
 std::string precompCacheDir() { return precompEnabled() ? precompDir() : std::string(); }
 
+bool precompLoadProgram(const std::string& srcPath, const std::string& src,
+                        const std::vector<std::string>& searchPath,
+                        Program& out, std::string& finishOut) {
+    if (!precompEnabled()) return false;
+    std::string cpath = precompPath(srcPath, searchPath);
+    if (cpath.empty()) return false;
+    std::string blob;
+    if (!precompRead(cpath, src, blob, finishOut)) return false;
+    try { deserializeAst(blob, out); }
+    catch (AstSerialError&) { out.stmts.clear(); finishOut.clear(); return false; }
+    return true;
+}
+
+void precompStoreProgram(const std::string& srcPath, const std::string& src,
+                         const std::vector<std::string>& searchPath,
+                         const Program& prog, const std::string& finish,
+                         const std::vector<std::pair<std::string, std::string>>& deps) {
+    if (!precompEnabled()) return;
+    std::string cpath = precompPath(srcPath, searchPath);
+    if (cpath.empty()) return;
+    try { precompWrite(cpath, src, serializeAst(prog), finish, deps); }
+    catch (AstSerialError&) {} // a construct the format can't hold: just don't cache
+}
+
 std::pair<size_t, unsigned long long> precompCacheClear() {
     size_t n = 0; unsigned long long bytes = 0;
     std::string dir = precompDir();
@@ -2871,7 +2902,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         auto prog = std::make_shared<Program>();
         std::string finish;
         double tParse = traceLoad ? nowMs() : 0;
-        std::string cpath = precompEnabled() ? precompPath(srcPath) : std::string();
+        std::string cpath = precompEnabled() ? precompPath(srcPath, libPaths_) : std::string();
         bool cached = false;
         if (!cpath.empty()) {
             std::string blob;

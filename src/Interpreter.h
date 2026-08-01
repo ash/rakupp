@@ -84,6 +84,22 @@ std::vector<std::string> splitSearchPath(const std::string& spec);
 
 // Where the precompiled-AST cache lives (see loadModule), "" when disabled.
 std::string precompCacheDir();
+
+// The same cache, for the MAIN program — Python never caches __main__, but our
+// entries live in a central content-validated directory rather than beside the
+// source, so the objection does not apply and a big script gets the same saving
+// its modules do. `searchPath` is folded into the key because it decides which
+// file a `use` resolves to for operator scanning: the same source under a
+// different -I can legitimately parse differently.
+// Both are no-ops (false / nothing stored) when the cache is disabled or the
+// source has no file behind it, as with -e.
+bool precompLoadProgram(const std::string& srcPath, const std::string& src,
+                        const std::vector<std::string>& searchPath,
+                        Program& out, std::string& finishOut);
+void precompStoreProgram(const std::string& srcPath, const std::string& src,
+                         const std::vector<std::string>& searchPath,
+                         const Program& prog, const std::string& finish,
+                         const std::vector<std::pair<std::string, std::string>>& deps);
 // Delete every cached entry. Returns how many files went and how many bytes they
 // held. Always safe: entries are derived data, rebuilt on the next run.
 std::pair<size_t, unsigned long long> precompCacheClear();
