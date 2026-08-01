@@ -1276,6 +1276,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `.new` on a scalar built-in type object → that type's default value. This is
     // what real Raku does (Str.new → "", Int.new → 0) and lets `augment class Str {…}`
     // methods be reached via `Str.new.themethod`.
+    // $?DISTRIBUTION — the compiling module's distribution. `.meta` is the parsed
+    // META6.json (zef reads <version>/<ver>/<api>/<auth> from it), `.prefix` the
+    // checkout root; `.content` reads a file listed in the meta.
+    if (inv.t == VT::Hash && inv.hashKind == "Distribution" && inv.hash) {
+        if (m == "meta") { auto it = inv.hash->find("meta"); return it != inv.hash->end() ? it->second : Value::makeHash(); }
+        if (m == "prefix") { auto it = inv.hash->find("prefix"); return it != inv.hash->end() ? it->second : Value::any(); }
+        if (m == "name" || m == "Str" || m == "gist") {
+            auto it = inv.hash->find("meta");
+            if (it != inv.hash->end() && it->second.hash) {
+                auto n = it->second.hash->find("name");
+                if (n != it->second.hash->end()) return Value::str(n->second.toStr());
+            }
+            return Value::str("Distribution");
+        }
+    }
     if (inv.t == VT::Type && inv.s == "Failure" && m == "new") {
         // Failure.new (no args) picks up the current $! as its exception.
         Value ex; bool haveEx = false;
@@ -1364,6 +1379,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         };
         for (auto& a : args) spread(a);
         for (size_t k = 0; k < items.size(); k++) {
+            // a HASH argument contributes its own pairs (`Hash.new({ :$curi, :@dists })`
+            // and `Hash.new(%other)` — zef's list-installed builds its rows that way);
+            // it used to be paired up as a KEY, so the hash came back empty
+            if (items[k].t == VT::Hash && items[k].hash && !items[k].itemized) {
+                for (auto& kv : *items[k].hash) (*v.hash)[kv.first] = kv.second;
+                continue;
+            }
             if (items[k].t == VT::Pair) (*v.hash)[items[k].s] = items[k].pairVal ? *items[k].pairVal : Value::any();
             else if (k + 1 < items.size()) { std::string key = items[k].toStr(); (*v.hash)[key] = items[k + 1]; k++; }
         }
@@ -1424,6 +1446,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (m == "compose" || m == "publish_method_cache" || m == "invalidate_method_caches")
                 return inv;
+        }
+        // `.^ver` / `.^auth` / `.^api` on a PACKAGE (`module Zef:ver(…):auth(…)`) —
+        // a package has no ClassInfo, so its adverbs come from pkgMeta_. Everything
+        // else answers Rakudo's defaults for a type that declares none: "" for auth,
+        // the language version for ver. zef's plugin loader reads all three.
+        if (m == "ver" || m == "auth" || m == "api") {
+            auto pit = pkgMeta_.find(inv.s);
+            std::string v = pit == pkgMeta_.end() ? std::string()
+                          : (m == "ver" ? pit->second.ver : m == "auth" ? pit->second.auth : pit->second.api);
+            if (!classes_.count(inv.s) || pit != pkgMeta_.end()) {
+                if (m == "auth") return Value::str(v);
+                if (v.empty() && m == "ver") { Value ver = Value::str("6.c"); ver.hashKind = "Version"; return ver; }
+                if (v.empty()) return Value::any();
+                if (m == "ver") { if (v[0] == 'v') v.erase(0, 1); Value ver = Value::str(v); ver.hashKind = "Version"; return ver; }
+                return Value::str(v);
+            }
         }
         auto cit = classes_.find(inv.s);
         if (cit != classes_.end()) {

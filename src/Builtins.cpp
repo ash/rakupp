@@ -2212,6 +2212,12 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
 // by type name), and the native ancestry is walked so augmenting Cool/Any reaches
 // Int/Str too. Native values and type objects consult this ahead of the built-in
 // method table.
+Value jsonParseDoc(const std::string& text) {
+    size_t i = 0; Value out;
+    if (!jsonParseValue(text, i, out)) return Value::any();
+    return out;
+}
+
 Value* Interpreter::builtinExtMethod(const Value& inv, const std::string& m) {
     if (builtinExt_.empty() || inv.t == VT::Object) return nullptr;
     std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
@@ -2327,8 +2333,31 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // for 'core' (rakupp has no CORE dist) and keeps zef's ignore list empty.
                 Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
             }
+            // `$curi.installed` — the distributions written under this repo. Each
+            // `dist/<id>` file is the dist's META as JSON (that is what .install
+            // writes), so the listing is those, parsed, as Distribution objects.
+            // zef's `list --installed` walks this; answering an empty list made it
+            // print nothing at all.
             if (m == "installed") {
-                Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
+                Value e = Value::array(); e.isList = true; e.s = "Seq";
+                if (DIR* dd = opendir((prefix + "/dist").c_str())) {
+                    while (struct dirent* de = readdir(dd)) {
+                        std::string n = de->d_name;
+                        if (n == "." || n == "..") continue;
+                        std::ifstream in(prefix + "/dist/" + n);
+                        if (!in) continue;
+                        std::ostringstream ss; ss << in.rdbuf();
+                        Value meta = jsonParseDoc(ss.str());
+                        if (meta.t != VT::Hash) continue;
+                        Value d = Value::makeHash(); d.hashKind = "Distribution";
+                        (*d.hash)["meta"] = meta;
+                        Value p2 = Value::str(prefix); p2.hashKind = "IO";
+                        (*d.hash)["prefix"] = p2;
+                        e.arr->push_back(d);
+                    }
+                    closedir(dd);
+                }
+                return e;
             }
             // `.files($name, :$ver, :$auth, :$api)` looks up an INSTALLED file (a
             // `bin/` script or a `resources/` entry) across the repo's distributions.
@@ -2337,6 +2366,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // already handles with `// "Nada"`, not a missing method.
             if (m == "files") {
                 Value e = Value::array(); e.isList = true; e.s = "Seq"; return e;
+            }
+            // `$*REPO.need($dep-spec)` — LOAD the named module, the way `use` does,
+            // and answer a CompUnit for it (Nil if it will not load, so zef's
+            // `unless try $*REPO.need($spec)` skips the plugin). zef 1.x loads every
+            // one of its own backends through this instead of `require ::($name)`.
+            if (m == "need" || m == "resolve") {
+                std::string want;
+                if (!args.empty()) {
+                    if (args[0].t == VT::Str) want = args[0].s;
+                    else if (args[0].t == VT::Hash && args[0].hash) {
+                        auto it = args[0].hash->find("short-name");
+                        if (it != args[0].hash->end()) want = it->second.toStr();
+                    }
+                }
+                if (want.empty()) return Value::nil();
+                if (m == "need") loadModule(want);            // throws if it cannot load
+                Value cu = Value::makeHash(); cu.hashKind = "CompUnit";
+                (*cu.hash)["short-name"] = Value::str(want);
+                (*cu.hash)["repo"] = inv;
+                return cu;
             }
             if (m == "install") {
                 // $cur.install($dist, :$force) — write the CURI layout under `prefix`

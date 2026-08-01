@@ -727,8 +727,14 @@ public:
     // %?RESOURCES for the module currently being loaded (dist resource files);
     // a stack because module loads nest (a module can `use` another).
     std::vector<Value> resourceStack_;
+    std::vector<Value> distStack_; // $?DISTRIBUTION of the module being compiled
+    // `module Zef:ver(…):auth(…):api(…)` — a PACKAGE has no ClassInfo, so its name
+    // adverbs live here (name → ver/auth/api) for .^ver/.^auth/.^api to answer.
+    struct PkgMeta { std::string ver, auth, api; };
+    std::map<std::string, PkgMeta> pkgMeta_;
     Value buildResourceMap(const std::string& repo, const std::string& distId); // dist files → resource Hash
     Value buildSourceResourceMap(const std::string& distRoot); // source checkout META6 `resources` → resource Hash
+    Value buildDistribution(const std::string& distRoot);      // source checkout META6 → $?DISTRIBUTION
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     Value bufSplice(Value& buf, ValueList& args); // Buf.splice — mutates in place, answers the removed bytes

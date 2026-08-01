@@ -5075,14 +5075,15 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             auto ws = readAngleWords(">");
             val = ws.empty() ? std::string() : ws[0];
         }
-        else if (isKind(Tok::LParen)) {     // :adverb(expr) — skip balanced
-            int d = 0;
-            do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
-            while (d > 0 && !isKind(Tok::End));
+        ExprPtr valExpr;
+        if (isKind(Tok::LParen)) {          // :adverb(EXPR) — evaluated at declaration
+            advance();
+            if (!isKind(Tok::RParen)) valExpr = parseExpression();
+            expectKind(Tok::RParen, ")");
         }
-        if (adv == "ver") cd->ver = val;
-        else if (adv == "auth") cd->auth = val;
-        else if (adv == "api") cd->api = val;
+        if (adv == "ver") { cd->ver = val; cd->verExpr = std::move(valExpr); }
+        else if (adv == "auth") { cd->auth = val; cd->authExpr = std::move(valExpr); }
+        else if (adv == "api") { cd->api = val; cd->apiExpr = std::move(valExpr); }
     }
     if (isRole && isKind(Tok::LBracket)) {
         // parameterized role: `role R[$x, Bool :$opt = False] { … $x … $opt … }`.

@@ -369,7 +369,10 @@ struct ClassDecl : Stmt {
     bool isStubDecl = false;
     std::string pod; // `#|` leading declarator pod (.WHY)       // body was a bare `...` — a forward declaration, redeclarable
     bool parameterized = false;    // role R[T] — parameterizations coexist by name
-    std::string ver, auth, api;    // name adverbs: class Foo:ver<1.2>:auth<zef:x>:api<2>
+    std::string ver, auth, api;
+    // `module Zef:ver($?DISTRIBUTION.meta<version> // '*')` — the adverb may be an
+    // EXPRESSION, evaluated when the declaration runs (zef computes all three).
+    ExprPtr verExpr, authExpr, apiExpr;    // name adverbs: class Foo:ver<1.2>:auth<zef:x>:api<2>
     std::string repr;              // `is repr("CStruct")` — native memory layout (NativeCall)
     std::vector<Param> roleParams; // `role R[$x, Bool :$opt]` — value/type parameters
     std::vector<std::pair<std::string, std::vector<ExprPtr>>> roleArgs; // `does R[args]` per composed role

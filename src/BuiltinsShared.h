@@ -58,6 +58,9 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
 bool isBuiltinRole(const std::string& n);
 
 Value complexSqrt(double re, double im);
+// Parse a JSON document into a Value (the codec lives in Builtins.cpp); returns
+// Any when the text is not valid JSON.
+Value jsonParseDoc(const std::string& text);
 const char* quantValueType(const std::string& kind);
 void rejectNulPath(const std::string& path);
 

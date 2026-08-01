@@ -2614,6 +2614,23 @@ Value Interpreter::buildResourceMap(const std::string& repo, const std::string& 
 // each to an IO::Path at <distRoot>/resources/<name>. Rakudo resolves resources
 // from META6 even when running uninstalled, so `%?RESOURCES<x>.IO` must work from
 // source too (zef's Zef::Config reads its resources/config.json this way).
+// $?DISTRIBUTION — the distribution the module being compiled belongs to. zef 1.x
+// writes `use Zef:ver($?DISTRIBUTION.meta<version> // …)` at the top of every one
+// of its modules, so an undefined value there stops the load dead. Built from the
+// source checkout's META6.json; the `meta` hash is what callers actually read.
+Value Interpreter::buildDistribution(const std::string& distRoot) {
+    std::ifstream meta(distRoot + "/META6.json");
+    if (!meta) return Value::any();
+    std::ostringstream ss; ss << meta.rdbuf();
+    Value m = jsonParseDoc(ss.str());
+    if (m.t != VT::Hash) return Value::any();
+    Value d = Value::makeHash(); d.hashKind = "Distribution";
+    (*d.hash)["meta"] = m;
+    Value pfx = Value::str(distRoot); pfx.hashKind = "IO";
+    (*d.hash)["prefix"] = pfx;
+    return d;
+}
+
 Value Interpreter::buildSourceResourceMap(const std::string& distRoot) {
     Value h = Value::makeHash(); h.hashKind = "";
     std::ifstream meta(distRoot + "/META6.json");
@@ -2714,6 +2731,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // called later, after the load-time resourceStack_ entry has been popped.
         if (!resourceStack_.empty())
             moduleEnv->define("%?RESOURCES", resourceStack_.back());
+        // …and $?DISTRIBUTION, which is lexical to the compiling module in the same way
+        if (!distStack_.empty() && distStack_.back().t != VT::Any)
+            moduleEnv->define("$?DISTRIBUTION", distStack_.back());
         std::set<std::string> exported;
         // `is export` subs may sit inside a BRACED module/package body
         // (Cro::HTTP::Router exports `get`/`post`/… from `module … { }`) —
@@ -2844,7 +2864,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                 else if (distRoot.size() > 4 && distRoot.compare(distRoot.size() - 4, 4, "/lib") == 0)
                     distRoot = distRoot.substr(0, distRoot.size() - 4);
                 resourceStack_.push_back(buildSourceResourceMap(distRoot));
+                distStack_.push_back(buildDistribution(distRoot));
                 struct RGuard { std::vector<Value>& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
+                struct DGuard { std::vector<Value>& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
                 loadSource(ss.str());
                 return;
             }
@@ -3724,6 +3746,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return Value::typeObj(cd->name);
             }
             if (cd->isPackage) {
+                // name adverbs, literal or computed: `module Zef:ver($?DISTRIBUTION…)`
+                if (!cd->name.empty() &&
+                    (!cd->ver.empty() || !cd->auth.empty() || !cd->api.empty() ||
+                     cd->verExpr || cd->authExpr || cd->apiExpr)) {
+                    PkgMeta pm;
+                    pm.ver  = cd->verExpr  ? eval(cd->verExpr.get()).toStr()  : cd->ver;
+                    pm.auth = cd->authExpr ? eval(cd->authExpr.get()).toStr() : cd->auth;
+                    pm.api  = cd->apiExpr  ? eval(cd->apiExpr.get()).toStr()  : cd->api;
+                    pkgMeta_[tctx_.pkgPrefix + cd->name] = pm;
+                    if (!tctx_.pkgPrefix.empty()) pkgMeta_[cd->name] = pm;
+                }
                 // file-scoped `unit module Foo;` (empty body): register the name and
                 // set the package prefix so the rest of the file's `our sub`s / `our`
                 // vars publish under qualified names (Foo::name). The prefix persists
@@ -6054,6 +6087,16 @@ Value Interpreter::dynVar(const std::string& name) {
         return defaultScheduler_; // shared .hash: attr writes (uncaught_handler) persist
     }
     if (name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
+    // $*HOME — the user's home directory as an IO::Path (Any when the environment
+    // does not say, which is Rakudo's rule). zef reaches its config through it.
+    if (name == "$*HOME") {
+        const char* h = std::getenv("HOME");
+        if (!h || !*h) h = std::getenv("USERPROFILE"); // Windows
+        if (!h || !*h) return Value::any();
+        std::string d = h;
+        while (d.size() > 1 && d.back() == '/') d.pop_back();
+        Value p = Value::str(d); p.hashKind = "IO"; return p;
+    }
     // anything else: resolve from the live env chain (covers %*ENV, $*REPO,
     // program-declared dynamics, $!, $/ — used by native codegen)
     if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
@@ -15513,6 +15556,10 @@ Value Interpreter::eval(Expr* e) {
                 if (Value* p = tctx_.cur->find("%?RESOURCES")) return *p;
                 return resourceStack_.empty() ? Value::makeHash() : resourceStack_.back();
             }
+            if (ve->name == "$?DISTRIBUTION") { // same lexical rule as %?RESOURCES
+                if (Value* p = tctx_.cur->find("$?DISTRIBUTION")) return *p;
+                return distStack_.empty() ? Value::any() : distStack_.back();
+            }
             if (ve->name == "$?LINE") return Value::integer(ve->line);
             if (ve->name == "$?FILE") return Value::str(srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
             // Built-in magic dynamic vars ($*OUT, $*CWD, …). A user binding
@@ -15555,6 +15602,7 @@ Value Interpreter::eval(Expr* e) {
             if (ve->name == "&?BLOCK" && tctx_.curBlockVal) return *tctx_.curBlockVal;
             if (ve->name == "&?ROUTINE" && tctx_.curRoutineVal) return *tctx_.curRoutineVal;
             if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
+            if (ve->name == "$*HOME") return dynVar("$*HOME");
             }
             if (ve->declare) {
                 if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
