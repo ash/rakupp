@@ -7921,6 +7921,18 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 (base->hashKind == "Set" || base->hashKind == "Bag" || base->hashKind == "Mix"))
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
                     "Cannot modify an immutable " + base->hashKind + " (" + base->gist() + ")"};
+            // `$obj<key> = v` on an OBJECT whose class defines AT-KEY: ask the class
+            // for the element's container and assign through THAT (XML::Document's
+            // `method AT-KEY($k) is rw { $.root{$k} }` hands back a Proxy). Without
+            // this the object was overwritten with an empty Hash — the invocant of
+            // every later method call became that Hash.
+            if (base->t == VT::Object && base->obj && base->obj->cls &&
+                base->obj->cls->findMethod("AT-KEY")) {
+                static thread_local Value atKeyHold;
+                Value k = eval(idx->index.get());
+                atKeyHold = methodCall(*base, "AT-KEY", ValueList{k});
+                return &atKeyHold;
+            }
             if (base->t != VT::Hash) *base = Value::makeHash();
             std::string key = eval(idx->index.get()).toStr();
             return &(*base->hash)[key];
@@ -8150,6 +8162,28 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
     }
     for (auto& it : le->items) slots.push_back(lvalue(it.get()));
     return true;
+}
+
+// A Proxy is a CONTAINER: reading it as a value runs its FETCH. That already
+// happened for one held in a variable, but not for one handed back by a method —
+// `$elem<id>`, where AT-KEY returns a Proxy (XML::Element's attributes), came back
+// as the Proxy's own guts. Assignment targets go through lvalue() and never here.
+Value Interpreter::deproxy(Value v) {
+    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash) {
+        auto it = v.hash->find("FETCH");
+        if (it != v.hash->end()) return callCallable(it->second, { v });
+    }
+    return v;
+}
+
+// `$proxy = v` runs STORE. Rakudo hands the container in as well, so a
+// `sub ($, $v)` STORE — the spelling every module uses — takes the value in its
+// SECOND parameter; a one-parameter STORE still gets just the value.
+Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
+    auto it = proxy.hash->find("STORE");
+    if (it == proxy.hash->end()) return v;
+    return codeArity(it->second) >= 2 ? callCallable(it->second, { proxy, v })
+                                      : callCallable(it->second, { v });
 }
 
 bool Interpreter::objListItems(const Value& v, ValueList& out) {
@@ -8793,8 +8827,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value* lv = lvalue(a->target.get());
         // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
         if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
-            auto it = lv->hash->find("STORE");
-            if (it != lv->hash->end()) { Value r = callCallable(it->second, { rhs }); return sink ? Value::any() : r; }
+            if (lv->hash->count("STORE")) { Value r = proxyStore(*lv, rhs); return sink ? Value::any() : r; }
         }
         int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
         if (sigil == '@') {
@@ -9050,7 +9083,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             Value nv = (bop == "^^" || bop == "xor")
                 ? (cur.truthy() ? (rhs.truthy() ? Value::nil() : cur) : rhs)
                 : applyBinOp(bop, cur, rhs);
-            callCallable(sit->second, { nv });
+            proxyStore(*lv, nv);
             return sink ? Value::any() : nv;
         }
     }
@@ -12364,6 +12397,10 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
+        // An operand that is a Proxy is being READ: run its FETCH, or the operator
+        // sees the container instead of the value it stands for.
+        if (l.hashKind == "Proxy") l = deproxy(l);
+        if (r.hashKind == "Proxy") r = deproxy(r);
         // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
         // not the hash's numeric coercion (which would be 0).
         {
@@ -13491,7 +13528,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 }
                 else if (oldp.t == VT::Bool) newp = Value::boolean(u->op == "++");
                 else newp = applyArith(u->op == "++" ? "+" : "-", oldp, Value::integer(1));
-                callCallable(sit->second, { newp });
+                proxyStore(*lv, newp);
                 return u->postfix ? oldp : newp;
             }
         }
@@ -13745,6 +13782,10 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             else args.push_back(v);
         } else {
             Value v = eval(a.get());
+            // A Proxy reaching a routine as an argument is READ: run its FETCH.
+            // (Not at the subscript — `$.root{$k}` inside an `is rw` AT-KEY has to
+            // hand back the container itself, which is how a write reaches STORE.)
+            if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash) v = deproxy(v);
             // Only a syntactic pair (k=>v / :k(v), i.e. a NK::Pair expression) whose key
             // is a bare identifier is a NAMED argument; a Pair value from a variable/
             // call/list — or with a non-identifier key (`3 => 4`) — is positional.

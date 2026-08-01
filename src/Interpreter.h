@@ -400,6 +400,10 @@ public:
     // What an object contributes when assigned to a `%` container: its own
     // `.list`/`.iterator` (declared or `handles`-delegated), if it has one.
     bool objListItems(const Value& v, ValueList& out);
+    // A Proxy read as a VALUE answers its FETCH. See the definition in Interpreter.cpp.
+    Value deproxy(Value v);
+    // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
+    Value proxyStore(const Value& proxy, const Value& v);
     // The hash behind `for values %h` — see the definition in Interpreter.cpp.
     std::shared_ptr<std::map<std::string, Value>> valuesAliasSource(Expr* listExpr);
     // The array behind `for @$x` — likewise; the topic aliases its elements.
