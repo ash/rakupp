@@ -1310,16 +1310,41 @@ static Value coerceArray(const Value& v) {
     return a;
 }
 
-static Value coerceHash(const Value& v) {
+// Assigning an OBJECT to a `%` container asks the object what it holds: Rakudo's
+// hash store walks the right-hand side's `.list`, and the default `Any.list` is
+// built on `.iterator` — so a class that supplies either one (declared, or
+// delegated with `handles`) fills the hash with its own pairs instead of landing
+// in it as a single value. zef's config object is exactly that shape
+// (`class :: { has %.hash handles <AT-KEY … iterator list kv keys values> }`
+// assigned into Zef::Client's `has %.config`). Set by the Interpreter, because
+// answering the question means calling a user method. Declared in BuiltinsShared.h
+// — `has %.h = $obj` takes the same route through coerceToSigil.
+std::function<bool(const Value&, ValueList&)> g_objListItems;
+
+// `store` = this is an ASSIGNMENT into a %-container, not a binding. The two differ
+// for QuantHashes: `my %h = set <a b>` copies the set's pairs into a plain Hash
+// ({a=>True, b=>True}), while `sub f(%h)` binds the Set itself and %h.^name stays Set.
+static Value coerceHash(const Value& v, bool store = false) {
     if (v.t == VT::Hash) { // already a hash: copy entries (value semantics for my %h = %other)
-        Value h = Value::makeHash(); h.hashKind = v.hashKind;
-        if (v.hash) *h.hash = *v.hash;
+        bool quant = v.hashKind.rfind("Set", 0) == 0 || v.hashKind.rfind("Bag", 0) == 0 ||
+                     v.hashKind.rfind("Mix", 0) == 0;
+        Value h = Value::makeHash();
+        if (!(store && quant)) h.hashKind = v.hashKind;
+        if (v.hash) {
+            if (store && quant) {
+                bool setty = v.hashKind.rfind("Set", 0) == 0; // a Set's weights are all True
+                for (auto& kv : *v.hash)
+                    (*h.hash)[kv.first] = setty ? Value::boolean(true) : kv.second;
+            }
+            else *h.hash = *v.hash;
+        }
         return h;
     }
     Value h = Value::makeHash();
     ValueList items;
     if (v.t == VT::Array) items = *v.arr;
     else if (v.t == VT::Pair) items.push_back(v);
+    else if (v.t == VT::Object && g_objListItems && g_objListItems(v, items)) { /* filled above */ }
     else if (v.t != VT::Nil && v.t != VT::Any) items.push_back(v);
     for (size_t i = 0; i < items.size(); i++) {
         if (items[i].t == VT::Pair) {
@@ -1361,6 +1386,7 @@ Interpreter::Interpreter() {
     g_cbInterp = this; // NativeCall callback trampolines dispatch through here
     g_matchClasses = &classes_;
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
+    g_objListItems = [this](const Value& v, ValueList& out) { return objListItems(v, out); };
     g_subsetCheck = [this](const std::string& name, const Value& v, bool& out) {
         if (!subsets_.count(name)) return false;
         out = subsetMatches(name, v);
@@ -3373,9 +3399,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 else langRev_ = 2; // v6 / v6.e / future -> latest semantics
             }
             else if (u->module == "lib") {
-                std::string path = u->arg;
-                if (path.empty() && u->argExpr) path = eval(u->argExpr.get()).toStr();
-                if (!path.empty()) libPaths_.insert(libPaths_.begin(), path);
+                // `use lib` takes ONE path or a list of them (`use lib <lib t/lib>`);
+                // each is prepended, so the last written wins the search order.
+                std::vector<std::string> paths;
+                if (!u->arg.empty()) paths.push_back(u->arg);
+                else if (u->argExpr) {
+                    Value pv = eval(u->argExpr.get());
+                    if (pv.t == VT::Array && pv.arr && !pv.itemized)
+                        for (auto& e : *pv.arr) paths.push_back(e.toStr());
+                    else paths.push_back(pv.toStr());
+                }
+                for (auto& p : paths)
+                    if (!p.empty()) libPaths_.insert(libPaths_.begin(), p);
             }
             else if (!u->module.empty()) loadModule(u->module, u->importArgs, !u->isNeed);
             return Value::any();
@@ -3753,6 +3788,26 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                                     if (it != pkgEnv->vars.end())
                                         tctx_.cur->define(it->first, it->second);
                                 }
+                            }
+                            // `enum LEVEL is export <FATAL ERROR …>` inside the braced
+                            // body: the importer must get the VALUES, not just the type.
+                            // Without this the names still resolved — as bare type
+                            // objects — so `DEBUG <= INFO` compared two undefined things
+                            // and answered True, which is how zef's log filter let every
+                            // DEBUG message through (Zef.rakumod declares its LEVEL/
+                            // STAGE/PHASE enums inside `package Zef { … }`).
+                            else if (st->kind == NK::EnumDecl) {
+                                auto* ed = static_cast<EnumDecl*>(st.get());
+                                if (!ed->isExport || ed->name.empty()) continue;
+                                auto tv = pkgEnv->vars.find(ed->name);
+                                if (tv == pkgEnv->vars.end()) continue;
+                                tctx_.cur->define(ed->name, tv->second);
+                                if (tv->second.t == VT::Array && tv->second.arr)
+                                    for (auto& p : *tv->second.arr) {
+                                        auto vi = pkgEnv->vars.find(p.s);
+                                        if (vi != pkgEnv->vars.end())
+                                            tctx_.cur->define(p.s, vi->second);
+                                    }
                             }
                         }
                     };
@@ -4505,7 +4560,32 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 bool rw = lv.t == VT::Array && lv.arr && fs->list->kind == NK::VarExpr &&
                           !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                           static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
-                if (rw) {
+                auto derefArr = rw ? nullptr : derefArrayAlias(fs->list.get());
+                if (derefArr) { lv.arr = derefArr; rw = true; }
+                std::vector<Value*> aliasSlots;
+                if (!rw && scalarListAlias(fs->list.get(), aliasSlots)) {
+                    for (size_t i = 0; i < aliasSlots.size(); i++) {
+                        if (aliasSlots[i]) env->vars["$_"] = *aliasSlots[i];
+                        bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0,
+                                                i + 1 == aliasSlots.size(), col);
+                        if (aliasSlots[i]) *aliasSlots[i] = env->vars["$_"];
+                        if (!cont) break;
+                    }
+                    if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
+                    return forResult();
+                }
+                auto valueAlias = rw ? nullptr : valuesAliasSource(fs->list.get());
+                if (valueAlias) {
+                    size_t i = 0, n = valueAlias->size();
+                    for (auto& kv : *valueAlias) {
+                        env->vars["$_"] = kv.second;
+                        bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == n, col);
+                        kv.second = env->vars["$_"];
+                        i++;
+                        if (!cont) break;
+                    }
+                }
+                else if (rw) {
                     auto arr = lv.arr;
                     for (size_t i = 0; i < arr->size(); i++) {
                         env->vars["$_"] = (*arr)[i];
@@ -4628,6 +4708,38 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     }
                     return forResult();
                 }
+                // `for $a, $b { $_ = … }` writes back into each container
+                {
+                    std::vector<Value*> aliasSlots;
+                    if ((fs->vars.empty() || fs->rwVars) &&
+                        scalarListAlias(fs->list.get(), aliasSlots)) {
+                        for (size_t i = 0; i < aliasSlots.size(); i++) {
+                            freshScope();
+                            if (aliasSlots[i]) scope->define(var, *aliasSlots[i]);
+                            bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
+                                                    i + 1 == aliasSlots.size(), col);
+                            auto it = scope->vars.find(var);
+                            if (aliasSlots[i] && it != scope->vars.end()) *aliasSlots[i] = it->second;
+                            if (!cont) break;
+                        }
+                        return forResult();
+                    }
+                }
+                // `for values %h { $_ = … }` writes back into the hash, same as
+                // `for @a` does into the array
+                if (auto valueAlias = valuesAliasSource(fs->list.get())) {
+                    size_t i = 0, n = valueAlias->size();
+                    for (auto& kv : *valueAlias) {
+                        freshScope();
+                        scope->define(var, kv.second);
+                        bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == n, col);
+                        auto it = scope->vars.find(var);
+                        if (it != scope->vars.end()) kv.second = it->second;
+                        i++;
+                        if (!cont) break;
+                    }
+                    return forResult();
+                }
                 if (listv.t == VT::Array && listv.arr) {
                     auto arr = listv.arr; // share, don't copy the elements
                     // `$_` is rw-aliased to the elements when the source is a mutable
@@ -4636,6 +4748,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     bool rw = (fs->vars.empty() || fs->rwVars) && fs->list->kind == NK::VarExpr &&
                               !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                               static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
+                    if (!rw && (fs->vars.empty() || fs->rwVars))
+                        if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
                     for (size_t i = 0; i < arr->size(); i++) {
                         freshScope();
                         scope->define(var, (*arr)[i]);
@@ -5412,7 +5526,10 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     for (auto& p : params) {
         if (p.named) continue;
         if (p.invocant) continue; // the invocant (`Foo:D:`) is matched by the dispatch, not a positional arg
-        if (p.slurpy) { slurpy = true; if (!p.named) slurpyParam = &p; continue; }
+        // a `*%named` slurpy collects NAMED arguments only — it must not make the
+        // candidate swallow extra POSITIONALS (`multi method new(Real:D :$r, …, *%c)`
+        // was matching `Color.new(2)`, and a 4-positional candidate was taking six)
+        if (p.slurpy) { if (p.sigil != '%') { slurpy = true; slurpyParam = &p; } continue; }
         positional.push_back(&p);
         total++;
         if (!p.optional && !p.defaultVal) required++;
@@ -5565,6 +5682,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (supplied) break;
         }
         if (p.required && !supplied) return -1;
+        // An ABSENT named binds its TYPE OBJECT, which cannot satisfy a `:D` smiley:
+        // `multi method new(Real:D :$r, Real:D :$g, …)` must not match a call that
+        // passes none of them (Color's rgba candidate was swallowing every
+        // constructor call, so a malformed tuple produced a black colour instead of
+        // an error).
+        if (!supplied && p.defConstraint == 1 && !p.defaultVal) return -1;
         if (supplied) {
             // a supplied named must TYPE-match its declared constraint, or the
             // candidate is out — `(Bool:D :$pad!)` does not bind `:pad('')`
@@ -6793,6 +6916,14 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     }
                     return out;
                 }
+                // A user `multi infix:<+>(Color, Color)` EXTENDS the operator, it does
+                // not replace it: when no user candidate fits, the built-in one still
+                // has to answer. That matters for the by-name call form
+                // (`::('&infix:<' ~ $op ~ '>')($a, $b)` — how Color's own arithmetic
+                // helper reaches +/-/*//), which finds only the user's candidates.
+                if (as.size() == 2 && c.name.size() > 8 && c.name.back() == '>' &&
+                    c.name.rfind("infix:<", 0) == 0)
+                    return applyBinOp(c.name.substr(7, c.name.size() - 8), as[0], as[1]);
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                                 "Cannot resolve caller " + c.name + "(); no matching multi candidate"};
             }
@@ -7297,7 +7428,8 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     return r;
 }
 
-Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame) {
+Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
+                                Value* selfBack) {
     if (codeVal.t != VT::Code || !codeVal.code) return Value::any();
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code;
@@ -7473,16 +7605,23 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 }
             }
         }
-    } catch (ReturnEx& r) { tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true); return r.v; }
+    } catch (ReturnEx& r) { tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
+                            if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
+                            return r.v; }
     catch (BreakGivenEx& b) {
         // a matched `when` in the method body: the routine is its topicalizer,
         // so it exits the method with the when-block's value (mirrors callCallable)
         tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
+        if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
         return b.hasVal ? b.v : last;
     }
     catch (...) { tctx_.cur = saved; throw; }
     tctx_.cur = saved;
     copyOutRw(c.params, env, rwArgs, true);
+    // `self = …` in a method on a VALUE type (an `augment`ed Hash/Array/Str) has to
+    // reach the caller's container — the invocant is passed by value, so the frame's
+    // final `self` is copied back to the slot the call site named.
+    if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
     return last;
 }
 
@@ -7873,6 +8012,114 @@ Value Interpreter::iterationSourceOf(Value v) {
     return it.t == VT::Array || it.t == VT::Range ? it : v;
 }
 
+// The values an object contributes when it is assigned to a `%` container —
+// see g_objListItems. `.list` wins over `.iterator` (that is the order Rakudo
+// reaches them in), and an attribute's `handles` counts as supplying either:
+// delegation is how a wrapper class says "my contents are that attribute's".
+// `handles *` deliberately does NOT count — it is a fallback for methods that do
+// not otherwise exist, and every object already has a `.list`.
+// `for values %h { … }` iterates the hash's values AS CONTAINERS: writing to the
+// topic writes into the hash (Color clips its channels with
+// `clip-to 0, $_, 255 for values %r`, an `is rw` sub that assigns to $_).
+// Returns the hash's storage when the loop's source is exactly that shape —
+// `values %h` or `%h.values` over a %-variable — and null otherwise.
+std::shared_ptr<std::map<std::string, Value>> Interpreter::valuesAliasSource(Expr* listExpr) {
+    if (!listExpr) return nullptr;
+    Expr* hashArg = nullptr;
+    if (listExpr->kind == NK::Call) {
+        auto* c = static_cast<Call*>(listExpr);
+        if (c->name == "values" && c->args.size() == 1) hashArg = c->args[0].get();
+    }
+    else if (listExpr->kind == NK::MethodCall) {
+        auto* mc = static_cast<MethodCall*>(listExpr);
+        if (mc->method == "values" && mc->args.empty() && !mc->meta && !mc->hyper)
+            hashArg = mc->inv.get();
+    }
+    if (!hashArg || hashArg->kind != NK::VarExpr) return nullptr;
+    auto* ve = static_cast<VarExpr*>(hashArg);
+    if (ve->name.empty() || ve->name[0] != '%') return nullptr;
+    Value* hv = tctx_.cur->find(ve->name);
+    if (!hv || hv->t != VT::Hash || !hv->hash || !hv->hashKind.empty()) return nullptr;
+    return hv->hash;
+}
+
+// `for @$rgb { … }` / `for @($rgb)` iterates the ARRAY BEHIND the scalar, and the
+// topic aliases its elements the same way `for @a` does — Color clips a colour
+// tuple in place with `clip-to 0, $_, 255 for @$rgb`. The list-context operator
+// itself copies (`@(…)` decontainerises), so the loop has to reach the container.
+std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
+    if (!listExpr || listExpr->kind != NK::Unary) return nullptr;
+    auto* u = static_cast<Unary*>(listExpr);
+    if (u->op != "ctx@" || !u->operand || u->operand->kind != NK::VarExpr) return nullptr;
+    auto* ve = static_cast<VarExpr*>(u->operand.get());
+    if (ve->name.empty() || ve->name[0] != '$') return nullptr;
+    Value* v = tctx_.cur->find(ve->name);
+    if (!v || v->t != VT::Array || !v->arr || v->isList) return nullptr; // a List is immutable
+    return v->arr;
+}
+
+// `for $c, $m, $y, $k { … }` — every item is a CONTAINER, so the topic aliases it
+// and a writing body updates all four (Color clamps a CMYK tuple with
+// `clip-to 0, $_, 1 for $c, $m, $y, $k`). Only a list made ENTIRELY of scalar
+// variables qualifies; anything else is a plain list of values.
+bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
+    if (!listExpr || listExpr->kind != NK::ListExpr) return false;
+    auto* le = static_cast<ListExpr*>(listExpr);
+    if (le->items.empty()) return false;
+    for (auto& it : le->items) {
+        if (!it || it->kind != NK::VarExpr) return false;
+        auto* ve = static_cast<VarExpr*>(it.get());
+        if (ve->name.size() < 2 || ve->name[0] != '$' || ve->declare) return false;
+        if (!tctx_.cur->find(ve->name)) return false;
+    }
+    for (auto& it : le->items) slots.push_back(lvalue(it.get()));
+    return true;
+}
+
+bool Interpreter::objListItems(const Value& v, ValueList& out) {
+    if (v.t != VT::Object || !v.obj || !v.obj->cls) return false;
+    std::string which;
+    if (v.obj->cls->findMethod("list")) which = "list";
+    else if (v.obj->cls->findMethod("iterator")) which = "iterator";
+    else {
+        for (ClassInfo* c = v.obj->cls.get(); c && which != "list"; c = c->parent.get())
+            for (auto& a : c->attrs)
+                for (auto& hn : a.handles) {
+                    if (hn == "list") { which = "list"; break; }
+                    if (hn == "iterator" && which.empty()) which = "iterator";
+                }
+    }
+    if (which.empty()) return false;
+    Value r = methodCall(v, which, {});
+    if (which == "iterator") {
+        if (r.t == VT::Object && r.obj && r.obj->cls) {
+            Value* po = r.obj->cls->findMethod("pull-one");
+            if (!po) return false;
+            for (;;) {
+                ValueList none;
+                Value item = invokeMethod(*po, r, none);
+                if (item.t == VT::Type && item.s == "IterationEnd") break;
+                out.push_back(item);
+            }
+            return true;
+        }
+        if (r.t == VT::Hash && r.hashKind == "Iterator" && r.hash) {
+            auto items = r.hash->find("items");
+            if (items == r.hash->end() || items->second.t != VT::Array || !items->second.arr)
+                return false;
+            long long pos = 0;
+            auto p = r.hash->find("pos");
+            if (p != r.hash->end()) pos = p->second.toInt();
+            for (size_t k = (size_t)std::max(0LL, pos); k < items->second.arr->size(); k++)
+                out.push_back((*items->second.arr)[k]);
+            return true;
+        }
+    }
+    if (r.t == VT::Array && r.arr) { out = *r.arr; return true; }
+    if (r.t == VT::Hash && r.hash) { Value ps = hashToPairs(r); out = *ps.arr; return true; }
+    return false;
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `my @a is List` makes the container immutable — reassigning it throws (the
     // declaration's own initialiser, declare=true, still runs; only later `@a = …` dies)
@@ -7948,7 +8195,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
                 Value* lv = lvalue(it.get());
                 if (ve->name[0] == '@') *lv = coerceArray(v);
-                else if (ve->name[0] == '%') *lv = coerceHash(v);
+                else if (ve->name[0] == '%') *lv = coerceHash(v, /*store=*/true);
                 else *lv = v;
             }
             return sink ? Value::any() : rhs;
@@ -8575,7 +8822,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 lv->ofType = keyT;
             }
             else {
-                Value nv = coerceHash(rhs);
+                // `=` STORES (a Set's pairs land in a plain Hash); `:=` BINDS the
+                // right-hand side itself, so `my %s := set <a b>` stays a Set
+                Value nv = coerceHash(rhs, /*store=*/a->op == "=");
                 if (lv->t == VT::Hash && lv->hash && nv.hash && lv->hash != nv.hash) {
                     *lv->hash = *nv.hash; // refill in place, keep container identity
                     nv.hash = lv->hash;
@@ -10053,9 +10302,31 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             res = go(0, 0);
             return Value::boolean(op == "~~" ? res : !res);
         }
+        // Smartmatching against a MATCH answers that match, not a comparison of its
+        // text: `when $_ ~~ $regex` (Abbreviations' test-regex) nests a smartmatch
+        // inside a `when`, and the inner Match has to stay truthy for the outer one.
+        if (r.t == VT::Match) return op == "~~" ? r : Value::boolean(!r.truthy());
         if (!r.enumType.empty() && r.t == VT::Array) {
             // $val ~~ EnumType : the enum type object is a tagged pair-list
             res = (!l.enumType.empty() && l.enumType == r.enumType) || l.typeName() == r.enumType;
+            return Value::boolean(op == "~~" ? res : !res);
+        }
+        // ITERABLE ~~ LIST is ELEMENT-WISE, not deep equality: same length, and each
+        // element smartmatched against the pattern in the same position. That is what
+        // makes a signature guard like `$_ ~~ [Real, Real, Real]` (Color's `.new(:$rgb)`)
+        // a shape test rather than a value comparison — and it lets regexes, type
+        // objects and nested patterns sit in the list. Junctions (Arrays tagged with a
+        // junction kind) are not lists and are handled long before here.
+        if ((l.t == VT::Array || l.t == VT::Range) && r.t == VT::Array && r.arr &&
+            l.enumName.empty() && r.enumName.empty()) {
+            ValueList xs = l.t == VT::Range ? l.flatten() : (l.arr ? *l.arr : ValueList{});
+            const ValueList& ps = *r.arr;
+            res = xs.size() == ps.size();
+            // per element, the FULL matcher (regexes and callables in the pattern
+            // list have to run) — applyArith alone cannot match a Regex
+            for (size_t i = 0; res && i < xs.size(); i++)
+                res = g_cbInterp ? matcherAccepts(*g_cbInterp, xs[i], ps[i])
+                                 : applyArith("~~", xs[i], ps[i]).truthy();
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (r.t == VT::Range) {
@@ -10269,7 +10540,18 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
 // Escape regex metacharacters so an interpolated string matches literally.
 static std::string quoteMetaRx(const std::string& s) {
     std::string out;
-    for (char c : s) { if (std::strchr(".?*+^$()[]{}|\\<>-", c)) out += '\\'; out += c; }
+    for (char c : s) {
+        // WHITESPACE is insignificant in a regex, so an interpolated string
+        // containing spaces has to escape them or it silently matches the
+        // squashed text: `/$msg/` with $msg = 'info test message' was matching
+        // "infotestmessage" (Log's test writes exactly that).
+        if (c == '\n') { out += "\\n"; continue; }
+        if (c == '\t') { out += "\\t"; continue; }
+        if (c == '\r') { out += "\\r"; continue; }
+        if (c == ' ')  { out += "\\ "; continue; }
+        if (std::strchr(".?*+^$()[]{}|\\<>-", c)) out += '\\';
+        out += c;
+    }
     return out;
 }
 
@@ -12288,7 +12570,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // ==> my @target (or an existing container): store the fed value
         Value* lv = lvalue(dstE);
         char sig = (dstE->kind == NK::VarExpr && !static_cast<VarExpr*>(dstE)->name.empty()) ? static_cast<VarExpr*>(dstE)->name[0] : '$';
-        *lv = sig == '@' ? coerceArray(src) : sig == '%' ? coerceHash(src) : src;
+        *lv = sig == '@' ? coerceArray(src) : sig == '%' ? coerceHash(src, /*store=*/true) : src;
         return *lv;
     }
     if (op == "..." || op == "...^" || op == "^..." || op == "^...^") {
@@ -14155,6 +14437,23 @@ Value Interpreter::postfixI(Value v) {
     return Value::complex(0.0, v.toNum());
 }
 
+// A `%h{…}` subscript names MANY keys when the index is a list or a range —
+// `%h<a b>`, `%h{@keys}`, `%h{1..3}`. A value that arrives in a SCALAR does not,
+// however list-shaped it is: `%h{$w}` is the single key `$w.Str` even when $w
+// holds an array, because Rakudo's slice test is Iterable-ness and a Scalar
+// container is not Iterable. Abbreviations keys its result hash by an
+// array-valued `$w` from `%abbrevs.kv`, and every such lookup used to slice —
+// so the reads came back one-element lists and the pushes mutated a temporary.
+bool Interpreter::keySubscriptIsSlice(const Expr* ixExpr, const Value& iv) {
+    if (!(iv.t == VT::Array || iv.t == VT::Range)) return false;
+    if (iv.itemized) return false;
+    if (ixExpr && ixExpr->kind == NK::VarExpr) {
+        auto* ve = static_cast<const VarExpr*>(ixExpr);
+        if (!ve->name.empty() && ve->name[0] == '$') return false;
+    }
+    return true;
+}
+
 Value Interpreter::evalIndex(Index* idx) {
     // `@arr[$i]` / `@arr[0]` — a plain array read, which is most of what an
     // index does in a loop. The general path below starts by copying the whole
@@ -14770,7 +15069,8 @@ Value Interpreter::evalIndex(Index* idx) {
         // `@a[*]` / `%h{*}` — and the zen slice `@a[]`, which parses to `[*]` —
         // with an adverb select EVERY element.
         bool allElems = iv.t == VT::Whatever;
-        bool slice = allElems || iv.t == VT::Array || iv.t == VT::Range;
+        bool slice = allElems || (idx->isHash ? keySubscriptIsSlice(idx->index.get(), iv)
+                                              : (iv.t == VT::Array || iv.t == VT::Range));
         ValueList sliceKeys;
         if (allElems) {
             if (idx->isHash && base.t == VT::Hash && base.hash)
@@ -14922,7 +15222,7 @@ Value Interpreter::evalIndex(Index* idx) {
             return Value::any();
         };
         // hash slice: %h{'a','b'} / %h<a b> — multiple keys yield a list of values
-        if (iv.t == VT::Array || iv.t == VT::Range) {
+        if (keySubscriptIsSlice(idx->index.get(), iv)) {
             Value out = Value::array(); out.isList = true;
             for (auto& k : iv.flatten()) out.arr->push_back(lookup1(k.toStr()));
             return out;
@@ -15911,6 +16211,21 @@ Value Interpreter::eval(Expr* e) {
                 ValueList wargs = evalArgs(mc->args);
                 Value fresh = Value::str(""); fresh.hashKind = "Buf";
                 return bufBitOp(fresh, mc->method, wargs);
+            }
+            // A method `augment`-ed onto a BUILT-IN type may assign to `self`
+            // (`augment class Hash { method merge(%h) { self = merge-hash(self, %h) } }`
+            // — Hash::Merge). The invocant is a value, so the call site's container is
+            // handed in and the frame's final `self` copied back into it.
+            if (!mc->meta && !mc->methodExpr && !mc->bang && !mc->hyper && inv.t != VT::Object) {
+                if (Value* f = builtinExtMethod(inv, mc->method)) {
+                    Value* lv = nullptr;
+                    try { lv = lvalue(mc->inv.get(), /*asInvocant=*/true); } catch (...) {}
+                    if (lv) {
+                        ValueList as = evalArgs(mc->args);
+                        return invokeMethod(*f, *lv, std::move(as), &mc->args,
+                                            /*ownFrame=*/false, /*selfBack=*/lv);
+                    }
+                }
             }
             // mutators autovivify an undefined container: `my $x; $x.push(1)` → [1],
             // `%h<k>.push(v)` fills the slot. Rakudo: Any.push vivifies an Array.

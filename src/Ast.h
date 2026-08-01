@@ -396,6 +396,7 @@ struct Block : Stmt {
 struct EnumDecl : Stmt {
     std::string name;   // may be empty (anonymous enum)
     ExprPtr values;     // expression evaluating to words / pairs
+    bool isExport = false; // `is export` — importers of a braced module see the value names
     EnumDecl(): Stmt(NK::EnumDecl) {}
 };
 

@@ -548,7 +548,13 @@ Value coerceToSigil(Value v, char sigil) {
         if (v.t == VT::Hash) return v;
         if (v.t == VT::Nil || v.t == VT::Any) return v;
         Value h = Value::makeHash();
-        ValueList items = v.t == VT::Array && v.arr ? *v.arr : ValueList{v};
+        ValueList items;
+        if (v.t == VT::Array && v.arr) items = *v.arr;
+        // an object that says what it holds (`.list`/`.iterator`, declared or
+        // delegated) spreads its pairs here rather than vanishing — a `%` attribute
+        // initialised from such a wrapper is how zef hands its config around
+        else if (!(v.t == VT::Object && g_objListItems && g_objListItems(v, items)))
+            items = ValueList{v};
         for (auto& e : items)
             if (e.t == VT::Pair) (*h.hash)[e.s] = e.pairVal ? *e.pairVal : Value::any();
         return h;
@@ -2202,6 +2208,25 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
 
 
 
+// A method `augment`-ed onto a BUILT-IN type: they are parked in builtinExt_ (keyed
+// by type name), and the native ancestry is walked so augmenting Cool/Any reaches
+// Int/Str too. Native values and type objects consult this ahead of the built-in
+// method table.
+Value* Interpreter::builtinExtMethod(const Value& inv, const std::string& m) {
+    if (builtinExt_.empty() || inv.t == VT::Object) return nullptr;
+    std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
+    auto lookup = [&](const std::string& t) -> Value* {
+        auto ti = builtinExt_.find(t);
+        if (ti == builtinExt_.end()) return nullptr;
+        auto mi = ti->second.find(m);
+        return mi == ti->second.end() ? nullptr : &mi->second;
+    };
+    if (Value* f = lookup(tn)) return f;
+    for (const std::string& anc : typeAncestry(tn))
+        if (anc != tn) if (Value* f = lookup(anc)) return f;
+    return nullptr;
+}
+
 Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs) {
     // The invocant arrives BY REFERENCE. It used to be by value, which cost a
     // 376-byte copy and up to eleven atomic refcount bumps on every method call —
@@ -2572,18 +2597,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // builtinExt_ (keyed by type name). Consult it — walking the native ancestry,
     // so augmenting Cool/Any reaches Int/Str too — for native values and type
     // objects, ahead of the built-in method table.
-    if (!builtinExt_.empty() && inv.t != VT::Object) {
-        std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
-        auto lookup = [&](const std::string& t) -> Value* {
-            auto ti = builtinExt_.find(t);
-            if (ti == builtinExt_.end()) return nullptr;
-            auto mi = ti->second.find(m);
-            return mi == ti->second.end() ? nullptr : &mi->second;
-        };
-        if (Value* f = lookup(tn)) return invokeMethod(*f, inv, std::move(args), rwArgs);
-        for (const std::string& anc : typeAncestry(tn))
-            if (anc != tn) if (Value* f = lookup(anc)) return invokeMethod(*f, inv, std::move(args), rwArgs);
-    }
+    if (Value* f = builtinExtMethod(inv, m)) return invokeMethod(*f, inv, std::move(args), rwArgs);
     // Any is not Cool: string methods on an UNDEFINED invocant die in Rakudo
     // ("Cannot resolve caller split(Any:U: …)"), typically after `prompt`/`get`
     // hit EOF. Everything else on Any stays lenient.
@@ -5318,6 +5332,9 @@ void Interpreter::registerBuiltins() {
             else if (x.t == VT::Str && x.s == "skip-all") skipAll = true;
         }
         if (skipAll) { I.planned_ = 0; std::cout << "1..0 # SKIP " << reason << "\n" << std::flush; throw ExitEx{0}; }
+        // `plan *` means "no plan" — the count comes from done-testing, and nothing
+        // is printed up front (File::Which's suite opens with it)
+        if (!a.empty() && a[0].t == VT::Whatever) return Value::boolean(true);
         if (!a.empty()) { I.planned_ = a[0].toInt(); std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.planned_ << "\n"; }
         return Value::boolean(true);
     };
@@ -5466,7 +5483,10 @@ void Interpreter::registerBuiltins() {
     B["dies-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool died = false;
         if (!a.empty() && a[0].t == VT::Code) {
-            try { I.callCallable(a[0], {}); }
+            // the block's value is SUNK, and sinking an unhandled Failure throws it —
+            // `dies-ok { $c.to-string('bogus') }` over a routine that `fail`s (Color)
+            try { Value r = I.callCallable(a[0], {});
+                  if (r.t == VT::Hash && r.hashKind == "Failure") died = true; }
             catch (RakuError&) { died = true; }
             // a loop-control exception with no enclosing loop is a death (X::ControlFlow)
             catch (NextEx&) { died = true; }
@@ -5478,7 +5498,11 @@ void Interpreter::registerBuiltins() {
     };
     B["lives-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         bool lived = true;
-        if (!a.empty() && a[0].t == VT::Code) { try { I.callCallable(a[0], {}); } catch (RakuError&) { lived = false; } }
+        if (!a.empty() && a[0].t == VT::Code) {
+            try { Value r = I.callCallable(a[0], {});
+                  if (r.t == VT::Hash && r.hashKind == "Failure") lived = false; } // sunk Failure throws
+            catch (RakuError&) { lived = false; }
+        }
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");
         return Value::boolean(lived);
     };
@@ -5488,6 +5512,19 @@ void Interpreter::registerBuiltins() {
         try { I.loadModule(mod); } catch (...) { ok = false; }
         I.emitTest(ok, a.size() > 1 ? a[1].toStr() : ("The module can be use-d ok: " + mod));
         return Value::boolean(ok);
+    };
+    B["can-ok"] = [](Interpreter& I, ValueList& a) -> Value {
+        // can-ok($obj, 'method', $desc?) — the default description names the type
+        // and the method, the way Rakudo's Test does
+        bool c = false;
+        std::string meth = a.size() > 1 ? a[1].toStr() : "";
+        if (a.size() >= 2) c = I.methodCall(a[0], "can", ValueList{Value::str(meth)}).truthy();
+        std::string desc = a.size() > 2 ? a[2].toStr()
+                                        : "An object of type '" +
+                                          (a.empty() ? std::string() : a[0].typeName()) +
+                                          "' can do the method '" + meth + "'";
+        I.emitTest(c, desc);
+        return Value::boolean(c);
     };
     B["does-ok"] = [](Interpreter& I, ValueList& a) -> Value {
         // does-ok($obj, Role, $desc?) — role/type membership via .does
@@ -6716,6 +6753,64 @@ void Interpreter::registerBuiltins() {
         ValueList rest(a.begin() + 1, a.end());
         return I.methodCall(v, "parse-base", rest);
     };
+    // `pack TEMPLATE, @items` (use experimental :pack) — the inverse of Buf.unpack,
+    // sharing its directive set: A/a/Z text, C/c bytes, S/v/n 16-bit, L/V/N 32-bit,
+    // Q 64-bit, H hex digits, x a null byte. S/L/Q are native (little-endian here),
+    // v/V little and n/N big. MIME::Base64's test suite builds UTF-16 input with it.
+    B["pack"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.empty()) { Value b = Value::str(""); b.hashKind = "Buf"; return b; }
+        std::string tmpl = a[0].toStr();
+        ValueList items;
+        for (size_t i = 1; i < a.size(); i++)
+            for (auto& x : toList(a[i])) items.push_back(x);
+        std::string out;
+        size_t ai = 0;
+        auto next = [&]() -> Value { return ai < items.size() ? items[ai++] : Value::integer(0); };
+        auto putLE = [&](unsigned long long v, int w) { for (int k = 0; k < w; k++) out += (char)((v >> (8 * k)) & 0xFF); };
+        auto putBE = [&](unsigned long long v, int w) { for (int k = w - 1; k >= 0; k--) out += (char)((v >> (8 * k)) & 0xFF); };
+        for (size_t k = 0; k < tmpl.size(); k++) {
+            char dir = tmpl[k];
+            if (std::isspace((unsigned char)dir)) continue;
+            bool all = false; long long cnt = 1;
+            if (k + 1 < tmpl.size() && tmpl[k + 1] == '*') { all = true; k++; }
+            else if (k + 1 < tmpl.size() && std::isdigit((unsigned char)tmpl[k + 1])) {
+                size_t j = k + 1; std::string num;
+                while (j < tmpl.size() && std::isdigit((unsigned char)tmpl[j])) num += tmpl[j++];
+                cnt = std::stoll(num); k = j - 1;
+            }
+            if (dir == 'A' || dir == 'a' || dir == 'Z') {
+                std::string t = next().toStr();
+                long long w = all ? (long long)t.size() + (dir == 'Z' ? 1 : 0) : cnt;
+                for (long long i2 = 0; i2 < w; i2++)
+                    out += i2 < (long long)t.size() ? t[i2] : (dir == 'A' ? ' ' : '\0');
+            }
+            else if (dir == 'H') {
+                std::string t = next().toStr();
+                long long w = all ? (long long)t.size() : cnt;
+                auto hv = [](char c) { return c >= '0' && c <= '9' ? c - '0'
+                                            : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                            : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0; };
+                for (long long i2 = 0; i2 < w; i2 += 2) {
+                    int hi = i2 < (long long)t.size() ? hv(t[i2]) : 0;
+                    int lo = i2 + 1 < w && i2 + 1 < (long long)t.size() ? hv(t[i2 + 1]) : 0;
+                    out += (char)((hi << 4) | lo);
+                }
+            }
+            else if (dir == 'x') { for (long long i2 = 0; i2 < (all ? 1 : cnt); i2++) out += '\0'; }
+            else {
+                int w = (dir == 'C' || dir == 'c') ? 1
+                      : (dir == 'S' || dir == 'v' || dir == 'n') ? 2
+                      : (dir == 'Q' || dir == 'q') ? 8 : 4;
+                bool bigEnd = (dir == 'n' || dir == 'N');
+                long long r = all ? (long long)(items.size() - ai) : cnt;
+                for (long long i2 = 0; i2 < r; i2++) {
+                    unsigned long long v = (unsigned long long)next().toInt();
+                    if (bigEnd) putBE(v, w); else putLE(v, w);
+                }
+            }
+        }
+        Value b = Value::str(out); b.hashKind = "Buf"; return b;
+    };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSign(I, a.empty() ? Value::any() : a[0]); };
     B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { return rtBIsPrime(I, a.empty() ? Value::any() : a[0]); };
@@ -6759,15 +6854,38 @@ void Interpreter::registerBuiltins() {
         if (a.size() < 2) return Value::integer(0);
         int base = (int)a[0].toInt();
         std::string s = a[1].toStr();
-        long long val = 0;
-        for (char c : s) {
-            if (c == '_') continue;
+        // Every character has to be a digit OF THAT BASE (or a separating `_`, or the
+        // one radix point): `:16<fo>` is X::Str::Numeric, not 15. Stopping at the first
+        // bad character silently turned a malformed colour like 'foobar' into a number
+        // — which is how Color.new('foobar') "worked".
+        auto bad = [&](const std::string& why) -> Value {
+            throw RakuError{Value::typeObj("X::Str::Numeric"),
+                "Cannot convert string to number: " + why + " in ':" + std::to_string(base) +
+                "<" + s + ">'"};
+        };
+        long long val = 0, den = 0; // den = digits after the radix point (0 = none yet)
+        bool any = false;
+        for (size_t i = 0; i < s.size(); i++) {
+            char c = s[i];
+            if (c == '_') {
+                if (i == 0 || i + 1 == s.size()) return bad("'_' must be between digits");
+                continue;
+            }
+            if (c == '.') {
+                if (den) return bad("more than one radix point");
+                den = 1; continue;
+            }
             int d = (c >= '0' && c <= '9') ? c - '0'
                   : (c >= 'a' && c <= 'z') ? c - 'a' + 10
                   : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : -1;
-            if (d < 0 || d >= base) break;
+            if (d < 0 || d >= base)
+                return bad("base-" + std::to_string(base) + " number must begin with valid digits or '.'");
             val = val * base + d;
+            if (den) den *= base;
+            any = true;
         }
+        if (!any) return bad("base-" + std::to_string(base) + " number must begin with valid digits or '.'");
+        if (den > 1) return Value::rat(BigInt(val), BigInt(den));
         return Value::integer(val);
     };
     // split(SEP, STR, …) is the sub form of STR.split(SEP, …)

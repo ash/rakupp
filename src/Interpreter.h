@@ -387,7 +387,19 @@ public:
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
     std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
-    Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false);
+    Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false,
+                       Value* selfBack = nullptr); // selfBack: copy the frame's `self` out (rw invocant)
+    // A method `augment`-ed onto a BUILT-IN type, if there is one for this invocant.
+    Value* builtinExtMethod(const Value& inv, const std::string& m);
+    // What an object contributes when assigned to a `%` container: its own
+    // `.list`/`.iterator` (declared or `handles`-delegated), if it has one.
+    bool objListItems(const Value& v, ValueList& out);
+    // The hash behind `for values %h` — see the definition in Interpreter.cpp.
+    std::shared_ptr<std::map<std::string, Value>> valuesAliasSource(Expr* listExpr);
+    // The array behind `for @$x` — likewise; the topic aliases its elements.
+    std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
+    // The containers behind `for $a, $b, $c` — likewise.
+    bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
     // Invoke method `name` found from `startCls`, pushing a redispatch context so
     // callsame/nextsame reach the same method on the owning class's parent (recursively).
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
@@ -784,6 +796,8 @@ private:
     Value evalCall(Call* c);
     Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation
     Value evalIndex(Index* idx);
+    // Does a `{…}` subscript name MANY keys? See the definition in Interpreter.cpp.
+    static bool keySubscriptIsSlice(const Expr* ixExpr, const Value& iv);
     Value evalInterp(InterpStr* s);
 
     Value makeClosure(BlockExpr* be);

@@ -89,6 +89,17 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         Parser parser(std::move(tokens));
         parser.declPod_ = lexer.declPod_; // `#=` param descriptions (drives $*USAGE)
         parser.leadPod_ = lexer.leadPod_; // `#|` leading declarator pod (.WHY)
+        // the same search path the Interpreter will use, so a `use`d module's
+        // operator declarations are found while this file is still being parsed
+        parser.libPaths_.insert(parser.libPaths_.begin(), libPaths.begin(), libPaths.end());
+        if (const char* rl = std::getenv("RAKULIB")) {
+            std::string s = rl, cur;
+            for (char c : s) {
+                if (c == ':') { if (!cur.empty()) parser.libPaths_.push_back(cur); cur.clear(); }
+                else cur += c;
+            }
+            if (!cur.empty()) parser.libPaths_.push_back(cur);
+        }
         Program prog = parser.parseProgram();
         Interpreter interp;
         interp.setArgs(std::move(args));

@@ -25,6 +25,9 @@ public:
     Program parseProgram();
     void checkRedeclarations(const std::vector<StmtPtr>& stmts); // same-scope dup subs/types
     ExprPtr parseExpressionPublic() { return parseExpression(); }
+    // Module search path, for finding the operators a `use`d module declares —
+    // filled by the runtime from -I/RAKULIB before parsing. See scanModuleOps.
+    std::vector<std::string> libPaths_{"lib", ".", "rakulib"};
     // pre-declare a user-defined operator (so EVAL'd code can parse custom infixes)
     void declareUserOp(const std::string& kind, const std::string& name) {
         if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;
@@ -127,6 +130,18 @@ private:
     bool startsTermToken(const Token& t) const;
     bool startsListopArg(const Token& t) const;
     int infixBpOf(const std::string& op) const;    // binding power of a named infix (builtin or user)
+    // `use Foo` where Foo declares operators: find its source and register them,
+    // so `$c ◐ 20` parses in the importing file. Defined in Parser.cpp.
+    void scanModuleOps(const std::string& module);
+    std::set<std::string> scannedMods_;            // modules already scanned for operators
+    // Token index of the last `}` that closed a BLOCK. A block-closing brace at
+    // end of line ENDS the statement (Rakudo's rule), so an infix on the next line
+    // starts a new statement instead of continuing the expression:
+    //   ($r,$g,$b) = (…).map: { … }      <- statement ends here
+    //   %(r => $r, …)                    <- a new statement, not `} % (…)`
+    // A subscript's `}` does not count (`%h{'a'}\n + 3` really is a continuation),
+    // which is why this records the position rather than testing the token kind.
+    size_t lastBlockClose_ = (size_t)-1;
     bool matchOp(const std::string& s);
     bool matchKind(Tok k);
     void expectKind(Tok k, const char* what);

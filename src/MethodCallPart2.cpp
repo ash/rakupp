@@ -108,6 +108,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // .comb/.words/.lines all concatenate the stream FIRST and then run the Str
         // method. Applied per MESSAGE instead, `.words` over "Hello Word!".comb
         // yielded one "word" per character.
+        // `.lines` on a PROCESS stream is a stream of lines, not a value to render:
+        // it marks the Supply, and the split happens when the tap is fed (below).
+        if (m == "lines" && !listy && inv.hash->count("proc")) {
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            *s.hash = *inv.hash;
+            (*s.hash)["split"] = Value::str("lines");
+            return s;
+        }
         if ((m == "comb" || m == "words" || m == "lines") && listy) {
             std::string all; for (auto& v : vals()) all += v.toStr();
             Value res = methodCall(Value::str(all), m, args, rwArgs);
@@ -211,12 +219,36 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         inv.hash->count("quit-message") ? (*inv.hash)["quit-message"].toStr() : "Supply quit"};
                 }
                 else if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
-            } else if (!args.empty() && args[0].t == VT::Code) {
+            } else if (!args.empty() && args[0].t == VT::Code && inv.hash->count("proc")) {
                 // register per-stream: stdout taps under "taps", stderr under "taps-err"
                 Value proc = (*inv.hash)["proc"];
                 const char* key = (*inv.hash)["stream"].toStr() == "stderr" ? "taps-err" : "taps";
                 if (!proc.hash->count(key)) (*proc.hash)[key] = Value::array();
-                (*proc.hash)[key].arr->push_back(args[0]);
+                Value cb = args[0];
+                // `$proc.stdout.lines` — the process's output arrives as ONE chunk, so
+                // the line split happens here, at the tap: the block runs once per
+                // line, without the trailing newline. (zef's test/build/fetch backends
+                // are all written as `whenever $proc.stdout.lines { … }`.)
+                if (inv.hash->count("split") && (*inv.hash)["split"].toStr() == "lines") {
+                    Value w; w.t = VT::Code; w.code = std::make_shared<Callable>();
+                    w.code->builtin = [cb](Interpreter& I, ValueList& a) -> Value {
+                        std::string data = a.empty() ? "" : a[0].toStr();
+                        for (size_t start = 0; start < data.size();) {
+                            size_t nl = data.find('\n', start);
+                            std::string line = nl == std::string::npos ? data.substr(start)
+                                                                       : data.substr(start, nl - start);
+                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                            try { I.callCallable(cb, ValueList{Value::str(line)}); }
+                            catch (NextEx&) {}
+                            catch (LastEx&) { break; }
+                            if (nl == std::string::npos) break;
+                            start = nl + 1;
+                        }
+                        return Value::any();
+                    };
+                    cb = w;
+                }
+                (*proc.hash)[key].arr->push_back(cb);
             }
             Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
         }
@@ -1648,8 +1680,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 bool useCustom = um != nullptr;
                 if (um && um->code && um->code->isMultiDispatcher) {
                     useCustom = false;
-                    for (auto& cand : um->code->candidates)
+                    bool hasProto = false;
+                    for (auto& cand : um->code->candidates) {
+                        if (cand.code && cand.code->isProto) { hasProto = true; continue; }
                         if (scoreCandidate(cand, args) >= 0) { useCustom = true; break; }
+                    }
+                    // A class that writes its own `proto method new(|)` REPLACES the
+                    // default constructor: with no candidate matching, the call is an
+                    // error, not a default construction. (Without a proto the multis
+                    // only ADD to Mu.new, which still takes named attributes.)
+                    if (!useCustom && hasProto) return invokeMethod(*um, inv, args, rwArgs);
                 }
                 if (useCustom) return invokeMethod(*um, inv, args, rwArgs);
             } else if (ci->findMethod(m)) {
@@ -1965,6 +2005,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.obj->attrs.find(m);
             return it != inv.obj->attrs.end() ? it->second : Value::any();
         }
+        // `has %.h handles <iterator list …>` — a NAMED delegation is a real method
+        // on the class in Rakudo, so it outranks every universal fallback below.
+        // It has to be decided here and not in the tail (where `handles *` still
+        // lives): names like .iterator/.list/.Str exist for every object, so a
+        // delegation of one would never be reached if the built-in answered first.
+        // That is what left zef's config wrapper — `class :: { has %.hash handles
+        // <… iterator list …> }` — iterating as a single opaque object.
+        for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+            for (auto& a : c->attrs)
+                for (auto& hn : a.handles)
+                    if (hn == m) {
+                        auto ait = inv.obj->attrs.find(a.name);
+                        Value target = ait != inv.obj->attrs.end() ? ait->second : Value::any();
+                        if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
+                            target = Value::typeObj(a.type); // an unset typed attr delegates to its type object
+                        return methodCall(target, m, std::move(args), rwArgs);
+                    }
         // Real-role bridge: numeric coercions/methods the class doesn't define
         // dispatch through .Bridge BEFORE the generic Cool handlers (else `.Int`
         // would numify the object itself to 0)

@@ -1747,6 +1747,15 @@ Token Lexer::lexOperator(bool termBefore) {
             if (peek(k) != s[k]) { ok = false; break; }
         }
         if (ok) {
+            // Inside a bare `< … >` word list an operator must never swallow the
+            // CLOSING angle: `<AAAAAA=>` is the one word "AAAAAA=", not a fat arrow
+            // that eats the `>` and leaves the list unterminated (Base64's list of
+            // invalid encodings). Cut the operator before the '>' and let
+            // readAngleWords glue the pieces into words.
+            if (angleWords_ > 0) {
+                size_t gt = s.find('>', 1);
+                if (gt != std::string::npos) s = s.substr(0, gt);
+            }
             for (size_t k = 0; k < s.size(); k++) advance();
             if (s == "=>") return make(Tok::FatArrow, s);
             // bitwise/shift compound assigns: +|= +&= +^= ?^= +<= +>= …
@@ -1826,7 +1835,17 @@ static bool angleTermContext(const std::vector<Token>& out) {
                 "for", "say", "print", "put", "note", "return", "take", "die",
                 "is", "ok", "nok", "isnt", "like", "unlike", "and", "or", "not", "so", "dd",
             };
-            return kw.count(pv.text) > 0;
+            if (kw.count(pv.text) > 0) return true;
+            // `use lib <./t/Utils>` / `use Foo <import args>`: after the module name
+            // of a use/no/need, a `<…>` is a word list — never a comparison. Without
+            // this the content is lexed as code, and `/t/` in a path becomes a
+            // REGEX literal, so the path silently loses its slashes.
+            if (out.size() >= 2) {
+                const Token& pp = out[out.size() - 2];
+                if (pp.kind == Tok::Ident &&
+                    (pp.text == "use" || pp.text == "no" || pp.text == "need")) return true;
+            }
+            return false;
         }
         case Tok::IntLit:
             // radix colonpair `:16<2_F_A_C_E_D>` / `:2<1.1*10**10>`: the angle

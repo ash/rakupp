@@ -2239,13 +2239,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // Real numification protocol: built-in numerics answer .Bridge with a Num
     if (m == "Bridge" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Bool))
         return Value::number(inv.toNum());
-    // `has $.b handles <m1 m2>` — an unknown method listed in an attribute's
-    // handles trait is delegated to that attribute's value.
+    // `has $.b handles *` — the CATCH-ALL delegation, and only that: it is a
+    // fallback for names nothing else answers, so it belongs at the end of the
+    // ladder. Named delegations (`handles <m1 m2>`) are real methods and are
+    // resolved up front, in methodCallPart2's user-object block.
     if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
         for (ClassInfo* c = inv.obj->cls.get(); c; c = c->parent.get()) {
             for (auto& a : c->attrs)
                 for (auto& h : a.handles)
-                    if (h == m || h == "*") { // `handles *` delegates any unknown method
+                    if (h == "*") {
                         auto ait = inv.obj->attrs.find(a.name);
                         Value target = ait != inv.obj->attrs.end() ? ait->second : Value::any();
                         // an unset typed attr delegates to its type object

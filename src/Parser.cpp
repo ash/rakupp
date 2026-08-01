@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 #include <sstream>
+#include <fstream>
 #include "Lexer.h"
 #include "Unicode.h"
 #include <cctype>
@@ -223,6 +224,81 @@ int Parser::infixBpOf(const std::string& op) const {
     return BP_ADD; // unknown reference → additive default
 }
 
+// An operator declared in another file still has to be known HERE, at parse time,
+// or `$c ◐ 20` is a syntax error before the module is ever loaded. Rakudo gets this
+// from compiling the module during compilation of the importer; rakupp parses the
+// whole program up front, so on `use Foo` we find Foo's source and read its
+// operator declarations out of it — a text scan, not a parse: only
+// `sub`/`multi`/`proto`/`only` followed by `<category>:<name>` counts, which keeps a
+// mention in a comment or a string from registering anything.
+void Parser::scanModuleOps(const std::string& module) {
+    if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
+    std::string rel = module;
+    for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
+    static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    std::string src;
+    for (auto& base : libPaths_) {
+        for (const std::string& dir : {base, base + "/lib"}) {
+            for (auto ext : exts) {
+                std::ifstream in(dir + "/" + rel + ext);
+                if (!in) continue;
+                std::ostringstream ss; ss << in.rdbuf();
+                src = ss.str();
+                break;
+            }
+            if (!src.empty()) break;
+        }
+        if (!src.empty()) break;
+    }
+    if (src.empty()) return;
+    // an operator spelled only in ASCII operator characters is almost certainly a
+    // REDECLARATION of a built-in (`multi infix:<*>(Color, Real)`); registering it
+    // as a user op would give it the default precedence and silently reshape every
+    // expression in the importing file
+    auto asciiOnlyOp = [](const std::string& n) {
+        if (n.empty()) return true;
+        for (unsigned char c : n)
+            if (c > 127 || std::isalnum(c)) return false;
+        return true;
+    };
+    for (const char* cat : {"infix", "prefix", "postfix", "circumfix", "postcircumfix"}) {
+        std::string needle = std::string(cat) + ":<";
+        for (size_t pos = src.find(needle); pos != std::string::npos;
+             pos = src.find(needle, pos + 1)) {
+            size_t b = pos;
+            while (b > 0 && std::isspace((unsigned char)src[b - 1])) b--;
+            bool isDecl = false;
+            for (const char* kw : {"sub", "multi", "proto", "only"}) {
+                size_t kl = std::strlen(kw);
+                if (b >= kl && src.compare(b - kl, kl, kw) == 0 &&
+                    (b == kl || !std::isalnum((unsigned char)src[b - kl - 1]))) { isDecl = true; break; }
+            }
+            if (!isDecl) continue;
+            size_t close = src.find('>', pos + needle.size());
+            if (close == std::string::npos) continue;
+            std::string name = src.substr(pos + needle.size(), close - pos - needle.size());
+            if (name.empty()) continue;
+            std::string c1 = cat;
+            if (c1 == "circumfix" || c1 == "postcircumfix") {
+                size_t sp = name.find(' ');
+                if (sp == std::string::npos) continue;
+                if (c1 == "circumfix") regMap('c', userCircumfix_, name.substr(0, sp), name.substr(sp + 1));
+                else regMap('C', userPostcircumfix_, name.substr(0, sp), name.substr(sp + 1));
+                continue;
+            }
+            if (asciiOnlyOp(name)) continue;
+            if (c1 == "infix") {
+                Token t; t.text = name; t.kind = Tok::Op;
+                bool builtin = classifyInfix(t).valid;
+                if (!builtin) { t.kind = Tok::Ident; builtin = classifyInfix(t).valid; }
+                if (!builtin && !userInfix_.count(name)) regInfix(name, BP_ADD);
+            }
+            else if (c1 == "prefix") regSet('p', userPrefix_, name);
+            else regSet('P', userPostfix_, name);
+        }
+    }
+}
+
 // A loop used in value context (`(for … {…})`, `do while … {…}`) collects each
 // iteration's value into a List — flag the parsed loop statement so exec knows.
 static void markLoopAsExpr(Stmt* s) {
@@ -344,6 +420,11 @@ bool Parser::startsListopArg(const Token& t) const {
                       (userInfix_.count(peek().text) ||
                        peek().text == "min" || peek().text == "max" || peek().text == "gcd" ||
                        peek().text == "lcm" || peek().text == "div" || peek().text == "mod")))) || // `*..1` / `* quack 5` / `* min 2`
+                   // `plan *;` — a bare Whatever argument. Infix `*` would need a
+                   // term after it, and the statement ends instead.
+                   (t.text == "*" && &t == &cur() &&
+                    (peek().kind == Tok::Semicolon || peek().kind == Tok::RParen ||
+                     peek().kind == Tok::Comma || peek().kind == Tok::End)) ||
                    t.text == "^" || // prefix `^N` (upto) as a listop arg: `flat ^15, 49`
                    // `foo **` — a bare HyperWhatever argument. Infix `**` would
                    // need a term after it, and the statement ends instead.
@@ -401,6 +482,10 @@ ExprPtr Parser::parseExpression() { return parseExpr(0); }
 ExprPtr Parser::parseExpr(int minbp) {
     ExprPtr lhs = parsePrefix();
     for (;;) {
+        // a block-closing `}` at end of line ends the statement: whatever is on the
+        // next line is a new one, not an infix continuation (see lastBlockClose_)
+        if (pos_ > 0 && pos_ - 1 == lastBlockClose_ && cur().line != toks_[pos_ - 1].line)
+            break;
         // user-defined infix operator: `4 avg 10`  ==  infix:<avg>(4, 10)
         // A SYMBOLIC user infix (`sub infix:<±>`) arrives as Tok::Op, not Ident —
         // the declaration registered fine, but the use site then died "unexpected
@@ -3674,6 +3759,11 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
     // an inner `<` opens a nested group whose `>` is content, not the closer
     int depth = 0;
     while (!(isOp(close) && depth == 0) && !isKind(Tok::End)) {
+        // `<Zm8=>` — the lexer fused the word's trailing `=` with the closing angle
+        // into a FAT ARROW. Inside a word list it is just those two characters, so
+        // demote it to an operator token and let the end-glue rule below split it.
+        if (close == ">" && cur().kind == Tok::FatArrow && cur().text == "=>")
+            toks_[pos_].kind = Tok::Op;
         if (close == ">" && cur().kind == Tok::Op && cur().text == "<") depth++;
         else if (close == ">" && depth > 0 && cur().kind == Tok::Op && cur().text == ">") depth--;
         // The closing delimiter may be glued to a following operator by the lexer:
@@ -3815,8 +3905,18 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 while (p < body.size()) {
                     size_t comma = body.find(',', p);
                     std::string tok = body.substr(p, comma == std::string::npos ? std::string::npos : comma - p);
-                    size_t a = tok.find_first_not_of(" \t"), b = tok.find_last_not_of(" \t");
+                    // A character name may be WRAPPED across lines in the source
+                    // (MIME::Base64's test writes `\c[\nNEITHER LESS-THAN …]`), so a
+                    // newline counts as whitespace: trim the ends, collapse the rest.
+                    size_t a = tok.find_first_not_of(" \t\r\n"), b = tok.find_last_not_of(" \t\r\n");
                     if (a != std::string::npos) tok = tok.substr(a, b - a + 1);
+                    { std::string flat; bool sp = false;
+                      for (char ch : tok) {
+                          if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') { sp = true; continue; }
+                          if (sp && !flat.empty()) flat += ' ';
+                          sp = false; flat += ch;
+                      }
+                      tok = flat; }
                     if (!tok.empty()) {
                         if (std::isdigit((unsigned char)tok[0])) emitCp(strtol(tok.c_str(), nullptr, 10));
                         else { int32_t cp = uniCharByName(tok); if (cp >= 0) emitCp(cp); }
@@ -4049,6 +4149,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     }
     checkRedeclarations(blk->stmts);
     monkeyScopes_.pop_back();
+    lastBlockClose_ = pos_; // this `}` closes a BLOCK — see the note on the field
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
     return blk;
@@ -4875,6 +4976,7 @@ StmtPtr Parser::parseEnum() {
     while (isIdent("is")) {
         advance();
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
+            if (cur().text == "export") ed->isExport = true;
             advance();
             // trait argument: `is export(:sort-list)` (Text::Utils)
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
@@ -5373,6 +5475,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         if (st && !bareStub &&
             (st->kind == NK::ClassDecl || st->kind == NK::EnumDecl || st->kind == NK::SubDecl ||
              st->kind == NK::VarDecl || st->kind == NK::ExprStmt ||
+             // a `subset` declared in the body is a real type the class's own
+             // signatures use (`subset ValidRGB of Real where 0 <= $_ <= 255` in
+             // Color, then `multi method alpha(ValidRGB $a)`); dropping it left
+             // every such signature unmatchable
+             st->kind == NK::SubsetDecl ||
              st->kind == NK::UseStmt)) // `use X` inside a class body loads at declaration (URI does this after `unit class URI`)
             cd->body.push_back(std::move(st));
     }
@@ -5826,6 +5933,7 @@ StmtPtr Parser::parseStatementImpl() {
                 return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
+            if (!u->isNo) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
                 monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)
             if (u->module == "lib" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
@@ -5834,6 +5942,13 @@ StmtPtr Parser::parseStatementImpl() {
             } else {
                 // capture first string argument, e.g. `use lib 'lib'`
                 while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) {
+                    // `use Mod <a b>` — a bare angle list is lexed as words (see
+                    // angleTermContext), so read it here as the EXPORT arguments
+                    if (isKind(Tok::Op) && cur().text == "<") {
+                        advance();
+                        for (auto& w : readAngleWords(">")) u->importArgs.push_back(w);
+                        continue;
+                    }
                     if (isKind(Tok::QwList)) { // `use Mod <immutable !pretty>` — EXPORT args
                         std::string ws = cur().text, w;
                         for (char c : ws) {
