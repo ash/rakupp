@@ -79,13 +79,16 @@ an entry ignores it rather than misreading it.
 
 The **settings** go in `$XDG_CONFIG_HOME/rakupp/rakupp.config`, else
 `~/.config/rakupp/rakupp.config` (override with `RAKUPP_CONFIG`). It is a plain
-`key = value` file you can edit or check into a dotfiles repo:
+`key = value` file you can edit or check into a dotfiles repo. It does not exist
+until you set something; this is what it looks like after
+`rakupp --precomp-modules=on`:
 
 ```
 # rakupp settings. See `rakupp --precomp-info` and docs/CACHING.md.
 precomp-modules = on
-precomp-files = off
 ```
+
+A key that is absent takes its default, which for both of these is off.
 
 The **entries** go in `$XDG_CACHE_HOME/rakupp/precomp`, else
 `~/.cache/rakupp/precomp` (override with `RAKUPP_PRECOMP_DIR`).

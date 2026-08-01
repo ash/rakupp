@@ -93,17 +93,18 @@ subscripts and hyperslices (`@a[$a;$b;$c]:delete`, `%h{**}`), pseudo-packages
 - **Gaps:** `Metamodel::*` construction, submethod-not-inherited
 
 ## Regexes & Grammars
-- `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`
+- `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`, and **composed** classes that add and subtract members: `<+alpha-[b]>`, `<-space-[\"]>`, `<-[ab]+[b]>` (a `-member` subtracts from the final set, so it applies after a leading `-` negates)
 - Unicode property classes: general category short + long (`<:Nd>`/`<:L>`/`<:UppercaseLetter>`), `<:LC>`/`<:Assigned>`, **blocks** `<:InArabic>` (real 16.0 table), and **binary props** `<:Math>`/`<:Alphabetic>`/`<:Soft_Dotted>`/`<:White_Space>`/`<:Other_*>` (DerivedCoreProperties + PropList); negated `<:!…>` and inverted `<-:…>`
 - Script classes `<:Latin> <:Syriac> <:Canadian_Aboriginal> …` (real 16.0 Scripts.txt) and `Bidi_Class` `<:bc<L>>`/`<:bc<EN>>`; zero-width property assertions `<?:prop>`/`<!:prop>`
-- Anchors `^ $ ^^`, quantifiers `* + ? ** {n..m}`, alternation `|`/`||`, **conjunction `A & B` / `A && B`** (all terms match at the same position; the match spans the last term), groups, named captures
+- Anchors `^ $ ^^`, word boundaries `<< >>` / `« »` and either-edge `<|w>`, quantifiers `* + ? ** {n..m}`, alternation `|`/`||`, **conjunction `A & B` / `A && B`** (all terms match at the same position; the match spans the last term), groups, named captures
 - Repeated named captures under a quantifier collate into a list (`@<content>`, `$<x>[1]`)
 - **Capture aliases**: numbered `$7=(…)` (sets the capture index, auto-numbering resumes at N+1), named `$<x>=(…)`, list-valued `@<x>=(…)` (each occurrence → an Array element), hash-valued `%<x>=(…)` (matched strings become Hash keys)
 - Subrules, grammars (`token`/`rule`/`regex`, `.parse`/`.subparse`/`.parsefile`), `$/ $0…`, actions
+- **Subrule aliases** `<alias=rule>` capture under *both* names (`$<alias>` and `$<rule>`); the dotted form `<alias=.rule>` captures under the alias only
 - Capture interpolation `"$0/$1"`, callable `.subst` (`.subst(/…/, *.uc)`), non-mutating `S///`
 - `Match` accessors: `.from`/`.to`, `.orig`, `.prematch`/`.postmatch`, `.made`/`.ast`
 - Match adverbs `:g(lobal) :ex(haustive)` (every match at every position and length) `:x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
-- **Gaps:** backtracking control, `:ratchet`; `<:Block(…)>` block-by-name and nested sub-rule capture aliases
+- **Gaps:** backtracking control, `:ratchet`; `<:Block(…)>` block-by-name; an alias on a BUILT-IN class captures under the alias only (`<a=digit>` fills `$<a>`, where Rakudo also fills `$<digit>` — an alias on a user rule does fill both); subtraction directly after a bare property class is read as part of the property NAME, so `<:L-[b]>` matches anything — write `<+:L-[b]>`, which is correct
 
 ## Unicode (generated from UCD/UCA 17.0 — see [UNICODE.md](UNICODE.md))
 - Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni`/`NFC`/`NFD` types; `Uni.new(…).Str` is NFC (NFG semantics) — all `nf*-*.t` + `mass-equality.t` pass

@@ -841,6 +841,27 @@ class, `<-[abc]>` negated, `+ * ? **N **N..M` quantifiers, `|` alternation, `( )
 capture, `[ ]` non-capture group, `<name>` subrule, `<?before>`/`<?after>`
 look-around, anchors `^ $ « »`.
 
+Char classes **compose**: members are added with `+` and removed with `-`, and a
+`-member` subtracts from the finished set, so it still applies when a leading `-`
+has negated the class.
+
+```raku
+say ('a-b' ~~ /^ <-space-[\"]>+ $/).so;   # → True    not a space, and not a quote
+say ('b'   ~~ /^ <+alpha-[b]> $/).so;     # → False   a letter, except b
+say ('42'  ~~ /^ \d+ <|w> $/).so;         # → True    <|w> is a word boundary, either edge
+```
+
+A subrule can be captured under a different name, and answers to **both**:
+
+```raku
+grammar G { token TOP { <a=b> }; token b { \d+ } }
+my $m = G.parse('42');
+say $m.hash.keys.sort;    # → (a b)     `<a=b>` fills $<a> AND $<b>
+say ~$m<a>, ~$m<b>;       # → 4242
+```
+
+Write `<a=.b>` for the alias alone.
+
 ### Grammars
 
 ```raku

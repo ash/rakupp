@@ -110,7 +110,11 @@ say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
 - Regex property classes: `<:Lu>`, `<:Latin>`, `<:Script<Greek>>`,
   `<:bc<L>>` (bidi class), `<:InBasicLatin>` (blocks), and the binary
   properties from `PropList.txt`/`DerivedCoreProperties.txt`
-  (`<:Math>`, `<:Soft_Dotted>`, …).
+  (`<:Math>`, `<:Soft_Dotted>`, …). They compose with the ordinary class
+  operators when the class is written in `+`/`-` form — `<+:L-[b]>` is every
+  letter but `b`. **Caveat:** subtraction written straight after a *bare*
+  property (`<:L-[b]>`) is currently swallowed into the property name and
+  matches anything; use the `+` form.
 
 ```raku
 say "🦋".uniname;            # BUTTERFLY

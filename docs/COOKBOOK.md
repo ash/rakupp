@@ -206,8 +206,15 @@ say S/cat/dog/ given "cat food";          # → dog food     (non-mutating S///)
 say "abcДЕФ".comb(/<:Latin>/).join;       # → abc          (script property)
 say "αβγabc".comb(/<:Greek>/).join;       # → αβγ
 
+say "a,b;c".comb(/<-[,;]>/).join;         # → abc          (negated char class)
+say ("cat42" ~~ /^ <+alpha-[x]>+ \d+ <|w> $/).so;
+                                          # → True         (composed class; <|w> word boundary)
+
 grammar G { token TOP { \d+ } }
 say G.parse("123").defined;               # → True
+
+grammar H { token TOP { <a=b> }; token b { \d+ } }
+say H.parse("42").hash.keys.sort;         # → (a b)        (an alias captures under both names)
 ```
 
 ## Unicode
