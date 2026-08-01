@@ -476,21 +476,6 @@ section('module loading and the precompiled-AST cache');
         say mid();
         END
 
-    # A properly MERGED environment. `:env(%*ENV, K => v)` builds a list, not a
-    # hash, so the override is silently dropped and the run uses the real cache —
-    # which would make this section both meaningless and destructive, since it
-    # calls --precomp-clean.
-    sub env-with(%extra) {
-        my %e = %*ENV;
-        %e{.key} = .value for %extra;
-        %e
-    }
-    # run with the scratch cache; returns stdout
-    sub cached-run(*@extra) {
-        my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, |@extra, :out, :!err,
-                    :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str })));
-        $p.out.slurp(:close)
-    }
     # the cache fans out one directory level, so this has to recurse
     sub all-files($d) {
         return () unless $d.e;
@@ -499,6 +484,45 @@ section('module loading and the precompiled-AST cache');
         @out
     }
     sub entry-count() { +all-files($cache).grep(*.Str.ends-with('.ast')) }
+
+    # A properly MERGED environment. `:env(%*ENV, K => v)` builds a list, not a
+    # hash, so the override is silently dropped and the run uses the real cache —
+    # which would make this section both meaningless and destructive, since it
+    # calls --precomp-clean.
+    #
+    # Caching is OFF by default, so every run here opts in explicitly. That also
+    # keeps the suite from depending on whatever the developer has configured.
+    sub env-with(%extra) {
+        my %e = %*ENV;
+        %e<RAKUPP_PRECOMP_DIR>     = $cache.Str;
+        %e<RAKUPP_PRECOMP_MODULES> = '1';
+        %e<RAKUPP_PRECOMP_FILES>   = '1';
+        %e<RAKUPP_CONFIG>          = $work.add('rakupp.config').Str;  # never the real one
+        %e{.key} = .value for %extra;
+        %e
+    }
+    # run with the scratch cache; returns stdout
+    sub cached-run(*@extra) {
+        my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, |@extra, :out, :!err,
+                    :env(env-with({})));
+        $p.out.slurp(:close)
+    }
+
+    # OFF BY DEFAULT: a plain run must not write anything. rakupp does not put
+    # files on a user's disk until asked, and this is the check that keeps it so.
+    {
+        my $virgin = $work.add('virgin-cache');
+        my %e = %*ENV;
+        %e<RAKUPP_PRECOMP_DIR> = $virgin.Str;
+        %e<RAKUPP_CONFIG>      = $work.add('none.config').Str;   # no settings at all
+        %e<RAKUPP_PRECOMP_MODULES>:delete;
+        %e<RAKUPP_PRECOMP_FILES>:delete;
+        %e<RAKUPP_NO_PRECOMP>:delete;
+        my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :out, :!err, :env(%e));
+        is($p.out.slurp(:close), "mid(leaf)\n", 'runs fine with caching off (the default)');
+        my $wrote = $virgin.e ?? +all-files($virgin) !! 0;
+        ok($wrote == 0, "nothing is cached until asked (wrote $wrote files)");
+    }
 
     is(cached-run(), "mid(leaf)\n", 'nested modules load (cold cache)');
     is(cached-run(), "mid(leaf)\n", 'nested modules load (warm cache)');
@@ -533,11 +557,11 @@ section('module loading and the precompiled-AST cache');
     # --precomp-info lists sources; --precomp-clean empties it and leaves no
     # empty directories behind
     my $info = run($*EXECUTABLE, '--precomp-info', :out, :!err,
-                   :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str }))).out.slurp(:close);
+                   :env(env-with({}))).out.slurp(:close);
     ok($info.contains('Mid.rakumod') && $info.contains('Deep/Leaf.rakumod'),
        '--precomp-info names the sources it cached');
     run($*EXECUTABLE, '--precomp-clean', :!out, :!err,
-        :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str })));
+        :env(env-with({})));
     ok(entry-count() == 0, '--precomp-clean empties the cache');
     my $left = $cache.e ?? +$cache.dir.grep(*.d) !! 0;
     ok($left == 0, "--precomp-clean removes its directories too (left $left)");
@@ -564,7 +588,7 @@ section('module loading and the precompiled-AST cache');
         END
     sub in-dir($d) {
         my $p = run($*EXECUTABLE, '../shared.raku', :out, :!err, :cwd($d.Str),
-                    :env(env-with({ RAKUPP_PRECOMP_DIR => $cache.Str })));
+                    :env(env-with({})));
         $p.out.slurp(:close).trim
     }
     my ($x1, $y1, $x2) = in-dir($x), in-dir($y), in-dir($x);

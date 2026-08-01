@@ -2746,11 +2746,79 @@ static std::string precompDir() {
     return base + "/rakupp/precomp";
 }
 
-static bool precompEnabled() {
-    static int on = -1;
-    if (on < 0) on = (std::getenv("RAKUPP_NO_PRECOMP") == nullptr && !precompDir().empty()) ? 1 : 0;
-    return on == 1;
+// WHAT GETS CACHED — off unless asked for, and the two halves are independent
+// because they pay off very differently:
+//
+//   modules   a dependency tree is a lot of source, and caching it is a clear
+//             win: `use XML` (10 files) goes 16.0 -> 5.7 ms.
+//   files     a script's own parse is already sub-millisecond. Caching the main
+//             program costs a one-off write (+0.6 ms at 50 lines) to save about
+//             as much later; it only starts to matter for big single files
+//             (20k lines: 159 -> 67 ms).
+//
+// Nothing is cached by default: rakupp does not write to a user's disk unasked.
+// Turn a half on with `rakupp --precomp-modules=on` / `--precomp-files=on`,
+// which persists to the config file; RAKUPP_PRECOMP_MODULES / _FILES override it
+// for one invocation and RAKUPP_NO_PRECOMP=1 forces both off.
+static std::string configPath() {
+    if (const char* c = std::getenv("RAKUPP_CONFIG")) return c;
+    std::string base;
+    if (const char* x = std::getenv("XDG_CONFIG_HOME")) base = x;
+    else if (const char* h = std::getenv("HOME")) base = std::string(h) + "/.config";
+    else return "";
+    return base + "/rakupp/rakupp.config";
 }
+
+// `key = value` lines; `#` comments. Tiny by design — this is a handful of
+// switches, not a settings system.
+static std::string configGet(const std::string& key) {
+    std::string p = configPath();
+    if (p.empty()) return "";
+    std::ifstream in(p);
+    if (!in) return "";
+    std::string line;
+    while (std::getline(in, line)) {
+        auto hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        auto trim = [](std::string v) {
+            auto a = v.find_first_not_of(" \t\r\n");
+            auto b = v.find_last_not_of(" \t\r\n");
+            return a == std::string::npos ? std::string() : v.substr(a, b - a + 1);
+        };
+        if (trim(line.substr(0, eq)) == key) return trim(line.substr(eq + 1));
+    }
+    return "";
+}
+
+static bool truthySetting(const std::string& v) {
+    return v == "on" || v == "1" || v == "true" || v == "yes";
+}
+
+// source of the answer, for --precomp-info
+static const char* precompHalfSource(const char* envName, const char* key) {
+    if (std::getenv("RAKUPP_NO_PRECOMP")) return "RAKUPP_NO_PRECOMP";
+    if (std::getenv(envName)) return envName;
+    return configGet(key).empty() ? "default" : "config";
+}
+
+static bool precompHalf(const char* envName, const char* key) {
+    if (precompDir().empty()) return false;                 // nowhere to put it
+    if (std::getenv("RAKUPP_NO_PRECOMP")) return false;
+    if (const char* e = std::getenv(envName)) return truthySetting(e);
+    return truthySetting(configGet(key));
+}
+
+static bool precompModulesEnabled() {
+    static bool v = precompHalf("RAKUPP_PRECOMP_MODULES", "precomp-modules");
+    return v;
+}
+static bool precompProgramEnabled() {
+    static bool v = precompHalf("RAKUPP_PRECOMP_FILES", "precomp-files");
+    return v;
+}
+static bool precompEnabled() { return precompModulesEnabled(); }   // the module half
 
 #ifndef RAKUPP_VERSION
 #define RAKUPP_VERSION "0.0.0"
@@ -2925,12 +2993,68 @@ static void precompWrite(const std::string& path, const std::string& srcPath,
     if (ec) std::remove(tmp.c_str());
 }
 
-std::string precompCacheDir() { return precompEnabled() ? precompDir() : std::string(); }
+// The two switches, for --precomp-info and --precomp-modules=/--precomp-files=.
+bool precompModulesOn() { return precompModulesEnabled(); }
+bool precompFilesOn()   { return precompProgramEnabled(); }
+std::string precompModulesSource() { return precompHalfSource("RAKUPP_PRECOMP_MODULES", "precomp-modules"); }
+std::string precompFilesSource()   { return precompHalfSource("RAKUPP_PRECOMP_FILES", "precomp-files"); }
+std::string precompConfigPath()    { return configPath(); }
+
+// Rewrite one key in the config, leaving every other line as the user wrote it —
+// including comments and anything a later version adds.
+bool precompSetSetting(const std::string& key, bool on) {
+    if (!(key == "precomp-modules" || key == "precomp-files")) return false;
+    std::string path = configPath();
+    if (path.empty()) return false;
+    auto slash = path.rfind('/');
+    if (slash != std::string::npos) {
+        std::error_code ec;
+        std::filesystem::create_directories(path.substr(0, slash), ec);
+        if (ec) return false;
+    }
+    std::vector<std::string> lines;
+    bool replaced = false;
+    { std::ifstream in(path);
+      std::string line;
+      while (std::getline(in, line)) {
+          std::string probe = line;
+          auto hash = probe.find('#');
+          if (hash != std::string::npos) probe.erase(hash);
+          auto eq = probe.find('=');
+          bool isKey = false;
+          if (eq != std::string::npos) {
+              std::string k = probe.substr(0, eq);
+              auto a = k.find_first_not_of(" \t");
+              auto b = k.find_last_not_of(" \t");
+              isKey = a != std::string::npos && k.substr(a, b - a + 1) == key;
+          }
+          if (isKey) { lines.push_back(key + " = " + (on ? "on" : "off")); replaced = true; }
+          else lines.push_back(line);
+      } }
+    if (!replaced) {
+        if (lines.empty())
+            lines.push_back("# rakupp settings. See `rakupp --precomp-info` and docs/CACHING.md.");
+        lines.push_back(key + " = " + (on ? "on" : "off"));
+    }
+    std::string tmp = path + ".tmp";
+    { std::ofstream out(tmp);
+      if (!out) return false;
+      for (auto& l : lines) out << l << "\n";
+      if (!out) return false; }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) { std::remove(tmp.c_str()); return false; }
+    return true;
+}
+
+// Where entries WOULD go, regardless of whether either switch is on — reporting
+// needs to name the location even when nothing is being cached.
+std::string precompCacheDir() { return precompDir(); }
 
 bool precompLoadProgram(const std::string& srcPath, const std::string& src,
                         const std::vector<std::string>& searchPath,
                         Program& out, std::string& finishOut) {
-    if (!precompEnabled()) return false;
+    if (!precompProgramEnabled()) return false;
     std::string cpath = precompPath(srcPath, searchPath);
     if (cpath.empty()) return false;
     std::string blob;
@@ -2944,7 +3068,7 @@ void precompStoreProgram(const std::string& srcPath, const std::string& src,
                          const std::vector<std::string>& searchPath,
                          const Program& prog, const std::string& finish,
                          const std::vector<std::pair<std::string, std::string>>& deps) {
-    if (!precompEnabled()) return;
+    if (!precompProgramEnabled()) return;
     std::string cpath = precompPath(srcPath, searchPath);
     if (cpath.empty()) return;
     try { precompWrite(cpath, srcPath, src, serializeAst(prog), finish, deps); }

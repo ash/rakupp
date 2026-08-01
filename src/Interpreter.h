@@ -117,6 +117,19 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
 // module-private. loadModule uses it to publish, codegen to emit the call.
 void collectExportedSubNames(const std::vector<StmtPtr>& stmts, std::set<std::string>& out);
 
+// The two independent caching switches, both OFF unless turned on. `modules`
+// caches the parse of every module a program `use`s; `files` caches the main
+// program's own parse. Persisted in the config file (precompConfigPath), which
+// `precompSetSetting` rewrites a key at a time; RAKUPP_PRECOMP_MODULES /
+// RAKUPP_PRECOMP_FILES override for one invocation, RAKUPP_NO_PRECOMP=1 forces
+// both off. The *Source functions say where the answer came from, for reporting.
+bool precompModulesOn();
+bool precompFilesOn();
+std::string precompModulesSource();
+std::string precompFilesSource();
+std::string precompConfigPath();
+bool precompSetSetting(const std::string& key, bool on);
+
 // Where the precompiled-AST cache lives (see loadModule), "" when disabled.
 std::string precompCacheDir();
 

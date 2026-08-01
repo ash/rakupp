@@ -65,9 +65,9 @@ tested and where the current edges are.
 
 ## How `use` works
 
-> Modules are **cached after their first parse**, so the second run of a program
-> skips re-parsing anything unchanged. It needs no setup; see
-> [CACHING.md](CACHING.md) if you want to inspect or disable it.
+> Raku++ can **cache a module's parse** so later runs skip it (`use XML` goes
+> 16.0 ms to 5.7 ms). It is off by default — turn it on with
+> `rakupp --precomp-modules=on`; see [CACHING.md](CACHING.md).
 
 > This section is the practical view. For what the compiler actually does — the
 > `Env` a module lives in during its load, why its AST is executed once and then
@@ -207,7 +207,7 @@ rather than complete; the notable gaps today:
   under Rakudo. (One carve-out: a non-exported sub whose name collides with a
   built-in stays module-private, so it can't shadow the built-in for you.)
 - **A module's `BEGIN` blocks and top-level code run on every run.** The *parse*
-  is cached ([CACHING.md](CACHING.md)), which is most of the cost, but Rakudo
+  can be cached ([CACHING.md](CACHING.md)), which is most of the cost, but Rakudo
   additionally serialises what its compile-time code produced and Raku++ does
   not.
 - Modules that rely on **compile-time metaprogramming, slangs, or NativeCall

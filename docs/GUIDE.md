@@ -169,7 +169,9 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 | `--ast SRC` | Print the parsed AST as an indented tree |
 | `--ast-roundtrip SRC` | Check that file's AST survives the cache format — see [below](#checking-the-ast-serializer) |
 | `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to; with `-O`, the *optimized* codegen |
-| `--precomp-info` | Where the parsed-AST cache is, what it holds — see [CACHING.md](CACHING.md) |
+| `--precomp-modules=on\|off` | Cache the parse of `use`d modules (**off** by default) |
+| `--precomp-files=on\|off` | Cache the main program's own parse (**off** by default) |
+| `--precomp-info` | What is cached, where, and what it holds — see [CACHING.md](CACHING.md) |
 | `--precomp-clean` | Empty that cache (entries are derived data — always safe) |
 | `--highlight [SRC]` | Syntax-highlight Raku — `--html` (default) or `--ansi`; a `pygmentize` drop-in |
 | `--help`, `-h` | Show help |
@@ -185,8 +187,10 @@ program `use`s are found and embedded, so the binary needs nothing at run time.
 | `RAKULIB=dir1,dir2` | Extra module search dirs (like `-I`); separate with `,` or `:` |
 | `RAKUPP_PARALLEL=1` | True CPU parallelism for `start`/worker threads (default: GIL) — see [ASYNC.md](ASYNC.md#the-two-modes-gil-default-and-true-parallelism) |
 | `RAKUPP_DUMPTOKENS=1` | Dump the lexer token stream before running |
-| `RAKUPP_NO_PRECOMP=1` | Parse everything from source, ignoring the cached parse — see [CACHING.md](CACHING.md) |
-| `RAKUPP_PRECOMP_DIR=…` | Put that cache somewhere other than `~/.cache/rakupp/precomp` |
+| `RAKUPP_NO_PRECOMP=1` | Force both caches off for this run — see [CACHING.md](CACHING.md) |
+| `RAKUPP_PRECOMP_MODULES=1`, `RAKUPP_PRECOMP_FILES=1` | Turn a half on for this run only, without saving it |
+| `RAKUPP_PRECOMP_DIR=…` | Put the cache somewhere other than `~/.cache/rakupp/precomp` |
+| `RAKUPP_CONFIG=…` | Use a different settings file than `~/.config/rakupp/rakupp.config` |
 | `RAKUPP_TRACE=1` | Report every module as it loads: where it came from, and whether it parsed or came from the cache |
 
 `-I <path>` (or `-I<path>`, repeatable) prepends directories to the module
@@ -194,11 +198,18 @@ search path, so `use Foo` finds `<path>/Foo.rakumod` — the same as Rakudo's
 `-I`. `RAKULIB` does the same via the environment, separating paths with `,`
 or `:` — both are accepted.
 
-Modules and the main program are **cached after their first parse**, so a second
-run skips re-parsing anything unchanged (`use XML` costs 16.0 ms cold, 5.7 ms
-warm). It needs no setup. `rakupp --precomp-info` shows what is cached and
-`rakupp --precomp-clean` empties it; [CACHING.md](CACHING.md) covers exactly what
-invalidates an entry.
+Raku++ can cache the parsed form of what it runs, so a later run skips
+re-parsing anything unchanged. It is **off by default**, with two switches:
+
+```sh
+rakupp --precomp-modules=on   # `use XML` 16.0 ms -> 5.7 ms
+rakupp --precomp-files=on     # only pays for LARGE single files
+```
+
+Caching modules is worth it as soon as a program `use`s anything. Caching the
+main program's own parse is worth it only for big files — a script-sized one
+parses in under a millisecond. [CACHING.md](CACHING.md) has the measurements and
+exactly what invalidates an entry.
 
 To inspect how a program parses, dump its AST as an indented text tree:
 

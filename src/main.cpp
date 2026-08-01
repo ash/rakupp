@@ -627,6 +627,8 @@ int main(int argc, char** argv) {
 "  rakupp --ast-roundtrip SRC   Check the AST survives the precomp cache format\n"
 "  rakupp --precomp-info        Where the parsed-module cache is, and how big\n"
 "  rakupp --precomp-clean       Empty it (entries are derived data — always safe)\n"
+"  rakupp --precomp-modules=on|off   Cache the parse of `use`d modules (default off)\n"
+"  rakupp --precomp-files=on|off     Cache the main program's own parse (default off)\n"
 "  rakupp --cpp SRC [-O]        Print the C++ that --exe would transpile to\n"
 "                               (add -O to print the optimized codegen instead)\n"
 "  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
@@ -754,12 +756,35 @@ int main(int argc, char** argv) {
     // --precomp-info / --precomp-clean : the parsed-module cache. Entries are keyed
     // by SOURCE CONTENT, so a stale one can never be served — but an edited module
     // orphans its old entry, and those want a way out that is not "know the path".
+    // --precomp-modules=on|off / --precomp-files=on|off : persist a switch.
+    // Both are off out of the box — rakupp does not write to a user's disk
+    // unasked — and they are separate because they earn their keep differently:
+    // caching a module tree is a clear win, caching a small script's own parse
+    // is roughly a wash. See docs/CACHING.md for the measurements.
+    if (argc >= 2 && (std::string(argv[1]).rfind("--precomp-modules=", 0) == 0 ||
+                      std::string(argv[1]).rfind("--precomp-files=", 0) == 0)) {
+        std::string a = argv[1];
+        auto eq = a.find('=');
+        std::string key = a.substr(2, eq - 2), val = a.substr(eq + 1);
+        bool on = (val == "on" || val == "1" || val == "true" || val == "yes");
+        if (!on && !(val == "off" || val == "0" || val == "false" || val == "no")) {
+            std::cerr << "Usage: rakupp --" << key << "=on|off\n";
+            return 4;
+        }
+        if (!precompSetSetting(key, on)) {
+            std::cerr << "Cannot write " << precompConfigPath() << "\n";
+            return 5;
+        }
+        std::cout << key << " = " << (on ? "on" : "off")
+                  << "   (saved in " << precompConfigPath() << ")\n";
+        return 0;
+    }
     if (argc >= 2 && (std::string(argv[1]) == "--precomp-info" ||
                       std::string(argv[1]) == "--precomp-clean")) {
         std::string dir = precompCacheDir();
         if (dir.empty()) {
-            std::cout << "precompiled-module cache: disabled"
-                      << (std::getenv("RAKUPP_NO_PRECOMP") ? " (RAKUPP_NO_PRECOMP)" : " (no HOME)") << "\n";
+            std::cout << "precompiled-parse caching unavailable: no HOME, so there is "
+                         "nowhere to put a cache\n";
             return 0;
         }
         if (std::string(argv[1]) == "--precomp-clean") {
@@ -772,7 +797,12 @@ int main(int argc, char** argv) {
         unsigned long long bytes = 0, stale = 0;
         size_t nStale = 0;
         for (auto& e : entries) { bytes += e.bytes; if (!e.usable) { nStale++; stale += e.bytes; } }
-        std::cout << dir << "\n";
+        std::cout << dir << "\n"
+                  << "  modules: " << (precompModulesOn() ? "on " : "off")
+                  << "  (" << precompModulesSource() << ")\n"
+                  << "  files:   " << (precompFilesOn() ? "on " : "off")
+                  << "  (" << precompFilesSource() << ")\n"
+                  << "  config:  " << precompConfigPath() << "\n\n";
         if (entries.empty()) std::cout << "empty\n";
         for (auto& e : entries)
             std::cout << (e.usable ? "    " : "  ! ") << e.source

@@ -1,36 +1,56 @@
 # Caching — the precompiled parse
 
-Raku++ caches the **parsed form** of every file it runs, so the second run of a
-program does not re-read and re-parse text that has not changed. It is on by
-default and needs no configuration; this page is for when you want to look
-inside it, turn it off, or understand what it can and cannot get wrong.
+Raku++ can cache the **parsed form** of the files it runs, so a later run does
+not re-read and re-parse text that has not changed. It is **off by default** and
+has two independent switches, because the two halves are worth very different
+amounts.
 
 ```bash
-rakupp --precomp-info      # where the cache is, and what is in it
-rakupp --precomp-clean     # empty it (always safe)
+rakupp --precomp-modules=on    # cache the parse of `use`d modules
+rakupp --precomp-files=on      # cache the main program's own parse
+rakupp --precomp-info          # what is on, where it lives, what it holds
+rakupp --precomp-clean         # empty it (always safe)
 ```
+
+Both settings persist in `~/.config/rakupp/rakupp.config`.
 
 ---
 
-## What it buys
+## Which switch is worth turning on
 
-Parsing is roughly 70% of what loading a module costs; running its declarations
-is the rest. The cache removes the parsing.
+Measured with `min` of 15 runs on an otherwise idle machine, comparing a run with
+nothing cached against a run with a warm cache.
 
-| | without | with |
+**`--precomp-modules`** — worth it as soon as a program `use`s anything. A
+dependency tree is a lot of source, and none of it changes between runs:
+
+| | no cache | cached |
 |---|---:|---:|
-| `use XML` (10 files, 1110 lines), interpreted | 16.0 ms | **5.7 ms** |
-| the same from an `--exe` binary | 19.0 ms | **6.6 ms** |
-| a 120-line main program | 24.6 ms | **18.1 ms** |
-| `use XML` + that mainline, end to end | 34.6 ms | **21.3 ms** |
+| `use XML` (10 files, 1110 lines) | 16.0 ms | **5.7 ms** |
 
-A single module makes the point: `XML::Element` takes 6.2 ms to parse and
-0.7 ms to load from cache.
+**`--precomp-files`** — worth it only for *large* single files. A script's own
+parse is already sub-millisecond, and the ~4 ms floor of a small program is
+process startup, not parsing:
 
-Compiled binaries benefit too. `--exe` compiles your *program*, but a `use` in
-it still goes through the normal module loader at run time, so it pays the same
-parse — and now the same saving. (Embedding modules **into** the binary is a
-separate, unbuilt idea; see [dev/MODULES.md](dev/MODULES.md).)
+| bare file, no modules | no cache | cached | saved |
+|---|---:|---:|---:|
+| 50 lines | 2.8 ms | 2.4 ms | 0.4 ms |
+| 200 lines | 3.8 ms | 2.8 ms | 1.0 ms |
+| 1 000 lines | 10.0 ms | 5.1 ms | 4.9 ms |
+| 5 000 lines | 40.3 ms | 17.8 ms | 22.5 ms |
+| 20 000 lines | 158.8 ms | 66.5 ms | **92.3 ms** |
+
+Across the 22 fastest programs in [`examples/`](../examples) — 12 to 106 lines
+each — turning `files` on made **no measurable difference at all** (−1%, inside
+the noise). Those programs are dominated by process startup.
+
+There is also a cost on the run that *writes* an entry: +0.6 ms at 50 lines,
++1.5 ms at 1 000, +22 ms at 20 000. So for a script you run once, `files`
+caching is a small net loss; for one you run repeatedly, it pays from about a
+thousand lines up.
+
+**A reasonable default is `modules` on, `files` off**, and that is the shape the
+two switches exist to express.
 
 ---
 
@@ -41,8 +61,9 @@ walking that tree, so the tree already *is* its compiled form; there is nothing
 further to compile it into. A loaded tree is indistinguishable from a freshly
 parsed one, and nothing about how your program runs changes.
 
-Both the **modules** you `use` and the **main program** are cached. `-e` code
-has no file behind it and is never cached.
+Either half can be cached: the **modules** a program `use`s (`--precomp-modules`)
+and the **main program's own** parse (`--precomp-files`), independently. `-e`
+code has no file behind it and is never cached.
 
 The format is versioned and self-describing. A rakupp that does not understand
 an entry ignores it rather than misreading it.
@@ -51,18 +72,30 @@ an entry ignores it rather than misreading it.
 
 ## Where it lives
 
-| | |
-|---|---|
-| `RAKUPP_PRECOMP_DIR=…` | if set, wins outright |
-| `$XDG_CACHE_HOME/rakupp/precomp` | if that is set |
-| `~/.cache/rakupp/precomp` | otherwise — the usual case |
-| no `HOME` at all | caching silently off |
+The **settings** go in `$XDG_CONFIG_HOME/rakupp/rakupp.config`, else
+`~/.config/rakupp/rakupp.config` (override with `RAKUPP_CONFIG`). It is a plain
+`key = value` file you can edit or check into a dotfiles repo:
+
+```
+# rakupp settings. See `rakupp --precomp-info` and docs/CACHING.md.
+precomp-modules = on
+precomp-files = off
+```
+
+The **entries** go in `$XDG_CACHE_HOME/rakupp/precomp`, else
+`~/.cache/rakupp/precomp` (override with `RAKUPP_PRECOMP_DIR`).
 
 Nothing is ever written next to your sources. Read-only module trees, a
-zef-populated `~/.raku`, and a checkout you do not own all work, and your
-project directory stays clean.
+zef-populated `~/.raku`, and a checkout you do not own all work, and your project
+directory stays clean. `rm -rf ~/.cache/rakupp` is safe at any moment —
+everything in it is derived data.
 
-`rm -rf ~/.cache/rakupp` is safe at any moment. Everything in it is derived data.
+For one invocation, without touching the saved settings:
+
+```bash
+RAKUPP_PRECOMP_MODULES=1 rakupp app.raku     # this run only
+RAKUPP_NO_PRECOMP=1      rakupp app.raku     # force both off
+```
 
 ---
 
@@ -126,12 +159,13 @@ Removes every entry and the directories they lived in, leaving the cache root.
 ## Turning it off
 
 ```bash
-RAKUPP_NO_PRECOMP=1 rakupp app.raku
+rakupp --precomp-modules=off
+rakupp --precomp-files=off
+RAKUPP_NO_PRECOMP=1 rakupp app.raku    # one run, both halves
 ```
 
-Everything is parsed from source. Worth reaching for if you suspect the cache is
-involved in a problem: if behaviour differs with and without this set, that is a
-bug in Raku++ — please report it with both outputs.
+The cache must never change behaviour. If a program behaves differently with and
+without it, that is a bug in Raku++ — please report it with both outputs.
 
 ---
 
@@ -142,12 +176,15 @@ bug in Raku++ — please report it with both outputs.
 | unit cached | serialised bytecode + the objects `BEGIN` produced | bytecode | the parsed AST |
 | where | `.precomp/` in the repository | `__pycache__/` beside the source | one central cache directory |
 | invalidated by | dependency graph + versions | mtime + size (content hash opt-in) | content hash, always |
-| main program | not precompiled | not cached (`__main__` is recompiled every run) | **cached** |
+| main program | not precompiled | not cached (`__main__` is recompiled every run) | cached, if `files` is on |
+| on by default | yes | yes | **no** |
 
-The main-program difference is worth a note: Python's reason for skipping
-`__main__` is largely that writing a `.pyc` next to a one-off script is
-unwelcome. A central, content-validated cache does not have that problem, so a
-large script gets the same saving its modules do.
+Two differences are worth a note. Raku++ can cache the main program, which
+Python does not: CPython's reason for skipping `__main__` is largely that
+writing a `.pyc` next to a one-off script is unwelcome, and a central cache does
+not have that problem — but the measurements above show why it is still not on
+by default. And nothing here is enabled without being asked for, where both
+Rakudo and Python cache as a matter of course.
 
 The `BEGIN` difference cuts the other way, and is the honest limit of this
 cache. Rakudo precompiles a module by *running* its compile-time code and

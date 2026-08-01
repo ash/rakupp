@@ -199,10 +199,12 @@ hang — but the second module will see a *partially loaded* first one.
 
 ### Is there precompilation / a module cache?
 
-**Yes, for the parse.** The AST a module parses to is cached on disk and reused
-while the source, the rakupp binary, the operators of anything it `use`s, and
-the search path all stay put — see **[CACHING.md](../CACHING.md)**. `use XML`
-costs 16.0 ms cold and 5.7 ms warm. The main program is cached the same way.
+**Optionally, for the parse.** With `rakupp --precomp-modules=on` the AST a
+module parses to is cached on disk and reused while the source, the rakupp
+binary, the operators of anything it `use`s, and the search path all stay put —
+see **[CACHING.md](../CACHING.md)**. `use XML` costs 16.0 ms cold and 5.7 ms
+warm. The main program can be cached the same way (`--precomp-files=on`), but
+that only pays for large files. Both are OFF by default.
 
 What is *not* cached is the second half of a load: a module's top-level
 declarations and its `BEGIN` blocks still execute on every run, which is the
