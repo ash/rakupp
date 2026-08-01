@@ -1,9 +1,12 @@
 # Caching — the precompiled parse
 
 Raku++ can cache the **parsed form** of the files it runs, so a later run does
-not re-read and re-parse text that has not changed. It is **off by default** and
-has two independent switches, because the two halves are worth very different
-amounts.
+not re-read and re-parse text that has not changed. It is **off by default** —
+nothing is written to your disk until you ask — with two independent switches,
+because the two halves are worth very different amounts:
+
+- **modules.** Caching the parse of everything a program `use`s.
+- **files.** Caching the main program's own parse.
 
 ```bash
 rakupp --precomp-modules=on    # cache the parse of `use`d modules
@@ -12,7 +15,8 @@ rakupp --precomp-info          # what is on, where it lives, what it holds
 rakupp --precomp-clean         # empty it (always safe)
 ```
 
-Both settings persist in `~/.config/rakupp/rakupp.config`.
+Either setting persists in `~/.config/rakupp/rakupp.config`. If you turn on only
+one, make it `modules` — the numbers are below.
 
 ---
 
@@ -49,8 +53,9 @@ There is also a cost on the run that *writes* an entry: +0.6 ms at 50 lines,
 caching is a small net loss; for one you run repeatedly, it pays from about a
 thousand lines up.
 
-**A reasonable default is `modules` on, `files` off**, and that is the shape the
-two switches exist to express.
+So if you enable one, enable **`modules`**. That difference is why these are two
+switches rather than one, and `modules` is the one likely to become a default in
+a later release.
 
 ---
 
@@ -179,12 +184,12 @@ without it, that is a bug in Raku++ — please report it with both outputs.
 | main program | not precompiled | not cached (`__main__` is recompiled every run) | cached, if `files` is on |
 | on by default | yes | yes | **no** |
 
-Two differences are worth a note. Raku++ can cache the main program, which
-Python does not: CPython's reason for skipping `__main__` is largely that
-writing a `.pyc` next to a one-off script is unwelcome, and a central cache does
-not have that problem — but the measurements above show why it is still not on
-by default. And nothing here is enabled without being asked for, where both
-Rakudo and Python cache as a matter of course.
+Two rows are worth a note. Raku++ *can* cache the main program, which Python does
+not — CPython's reason for skipping `__main__` is largely that writing a `.pyc`
+next to a one-off script is unwelcome, and a central cache does not have that
+problem; the measurements above are why it is nonetheless the half not worth
+enabling for script-sized files. And nothing here is enabled without being asked
+for, where both Rakudo and Python cache as a matter of course.
 
 The `BEGIN` difference cuts the other way, and is the honest limit of this
 cache. Rakudo precompiles a module by *running* its compile-time code and

@@ -508,8 +508,11 @@ section('module loading and the precompiled-AST cache');
         $p.out.slurp(:close)
     }
 
-    # OFF BY DEFAULT: a plain run must not write anything. rakupp does not put
-    # files on a user's disk until asked, and this is the check that keeps it so.
+    # THE DEFAULTS, with nothing configured: nothing cached at all. rakupp does
+    # not put files on a user's disk until asked. `modules` is the switch likely
+    # to become a default later — on the measurements it is a clear win — so this
+    # counts what was written rather than merely asserting the program ran, and
+    # will say exactly what changed when that day comes.
     {
         my $virgin = $work.add('virgin-cache');
         my %e = %*ENV;
@@ -519,9 +522,17 @@ section('module loading and the precompiled-AST cache');
         %e<RAKUPP_PRECOMP_FILES>:delete;
         %e<RAKUPP_NO_PRECOMP>:delete;
         my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :out, :!err, :env(%e));
-        is($p.out.slurp(:close), "mid(leaf)\n", 'runs fine with caching off (the default)');
-        my $wrote = $virgin.e ?? +all-files($virgin) !! 0;
-        ok($wrote == 0, "nothing is cached until asked (wrote $wrote files)");
+        is($p.out.slurp(:close), "mid(leaf)\n", 'runs with the default settings');
+        my @wrote = $virgin.e ?? all-files($virgin).grep(*.Str.ends-with('.ast')) !! ();
+        ok(+@wrote == 0, "nothing is cached until asked (wrote {+@wrote} entries)");
+
+        # …and RAKUPP_NO_PRECOMP still silences everything
+        my $silent = $work.add('silent-cache');
+        %e<RAKUPP_PRECOMP_DIR> = $silent.Str;
+        %e<RAKUPP_NO_PRECOMP>  = '1';
+        run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :!out, :!err, :env(%e));
+        my $n = $silent.e ?? +all-files($silent) !! 0;
+        ok($n == 0, "RAKUPP_NO_PRECOMP=1 writes nothing at all (wrote $n)");
     }
 
     is(cached-run(), "mid(leaf)\n", 'nested modules load (cold cache)');

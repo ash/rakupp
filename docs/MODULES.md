@@ -66,8 +66,8 @@ tested and where the current edges are.
 ## How `use` works
 
 > Raku++ can **cache a module's parse** so later runs skip it (`use XML` goes
-> 16.0 ms to 5.7 ms). It is off by default — turn it on with
-> `rakupp --precomp-modules=on`; see [CACHING.md](CACHING.md).
+> 16.0 ms to 5.7 ms). Off by default — `rakupp --precomp-modules=on` enables it;
+> see [CACHING.md](CACHING.md).
 
 > This section is the practical view. For what the compiler actually does — the
 > `Env` a module lives in during its load, why its AST is executed once and then

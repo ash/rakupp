@@ -757,10 +757,11 @@ int main(int argc, char** argv) {
     // by SOURCE CONTENT, so a stale one can never be served — but an edited module
     // orphans its old entry, and those want a way out that is not "know the path".
     // --precomp-modules=on|off / --precomp-files=on|off : persist a switch.
-    // Both are off out of the box — rakupp does not write to a user's disk
-    // unasked — and they are separate because they earn their keep differently:
-    // caching a module tree is a clear win, caching a small script's own parse
-    // is roughly a wash. See docs/CACHING.md for the measurements.
+    // Both default off: rakupp does not write to a user's disk unasked. They are
+    // separate switches because they earn their keep very differently — caching a
+    // module tree is a clear win, caching a small script's own parse is a wash —
+    // so `modules` is the one likely to become a default later. See
+    // docs/CACHING.md for the measurements.
     if (argc >= 2 && (std::string(argv[1]).rfind("--precomp-modules=", 0) == 0 ||
                       std::string(argv[1]).rfind("--precomp-files=", 0) == 0)) {
         std::string a = argv[1];

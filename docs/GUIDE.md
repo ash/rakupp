@@ -206,10 +206,10 @@ rakupp --precomp-modules=on   # `use XML` 16.0 ms -> 5.7 ms
 rakupp --precomp-files=on     # only pays for LARGE single files
 ```
 
-Caching modules is worth it as soon as a program `use`s anything. Caching the
-main program's own parse is worth it only for big files — a script-sized one
-parses in under a millisecond. [CACHING.md](CACHING.md) has the measurements and
-exactly what invalidates an entry.
+If you enable one, enable `modules`: it is worth it as soon as a program `use`s
+anything, whereas the main program's own parse only matters for big files — a
+script-sized one parses in under a millisecond. [CACHING.md](CACHING.md) has the
+measurements and exactly what invalidates an entry.
 
 To inspect how a program parses, dump its AST as an indented text tree:
 

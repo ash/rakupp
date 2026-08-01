@@ -2803,19 +2803,26 @@ static const char* precompHalfSource(const char* envName, const char* key) {
     return configGet(key).empty() ? "default" : "config";
 }
 
-static bool precompHalf(const char* envName, const char* key) {
+static bool precompHalf(const char* envName, const char* key, bool dflt) {
     if (precompDir().empty()) return false;                 // nowhere to put it
     if (std::getenv("RAKUPP_NO_PRECOMP")) return false;
     if (const char* e = std::getenv(envName)) return truthySetting(e);
-    return truthySetting(configGet(key));
+    std::string v = configGet(key);
+    return v.empty() ? dflt : truthySetting(v);
 }
 
+// BOTH OFF for now. On the measurements, `modules` is a clear win and turning it
+// on by default would be defensible — but nothing writes to a user's disk until
+// they ask, and this cache is young: every bug found in it so far has been in
+// deciding whether to REUSE an entry, which is precisely the kind of thing a
+// default makes everyone's problem. Flipping this one argument to `true` is the
+// whole change when that confidence is there.
 static bool precompModulesEnabled() {
-    static bool v = precompHalf("RAKUPP_PRECOMP_MODULES", "precomp-modules");
+    static bool v = precompHalf("RAKUPP_PRECOMP_MODULES", "precomp-modules", false);
     return v;
 }
 static bool precompProgramEnabled() {
-    static bool v = precompHalf("RAKUPP_PRECOMP_FILES", "precomp-files");
+    static bool v = precompHalf("RAKUPP_PRECOMP_FILES", "precomp-files", false);
     return v;
 }
 static bool precompEnabled() { return precompModulesEnabled(); }   // the module half
