@@ -14,6 +14,7 @@ point; everything else lives here.
 - **[UNICODE.md](UNICODE.md)** — Unicode support: graphemes, normalization, UCA collation, character introspection.
 - **[ASYNC.md](ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
+- **[CACHING.md](CACHING.md)** — the precompiled parse: modules and the main program are cached after their first parse. What is stored (the AST, not bytecode), where it lives, exactly what invalidates an entry, `--precomp-info` / `--precomp-clean`, and how it compares with Rakudo's `.precomp` and Python's `__pycache__`.
 - **[PARSING.md](PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (and other in-program grammar tweaks) are handled in a single pass.
 - **[RUNTIME.md](RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — what a `Value` is, how variables and containers relate, calls and dispatch, and lazy/infinite sequences.
 - **[MEMORY.md](MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.

@@ -181,6 +181,7 @@ course. Build it with `rakujs/build.sh`; details in
 
 - **[FEATURES.md](docs/FEATURES.md)** — inventory of supported language features, by theme.
 - **[MODULES.md](docs/MODULES.md)** — working with modules: how `use` finds modules installed by zef, the search-path order, and writing your own. ([dev/MODULES.md](docs/dev/MODULES.md) is the internals companion: what `use` does inside the compiler, and where it diverges from Rakudo.)
+- **[CACHING.md](docs/CACHING.md)** — the precompiled parse: modules and the main program are cached after their first parse; what invalidates an entry, and how to inspect or disable it.
 - **[REFERENCE.md](docs/REFERENCE.md)** — exhaustive lookup sheet: every operator, built-in subroutine, and method, each with a verified example.
 - **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
 - **[faq/](docs/faq/)** — short answers to questions people actually ask ("how do I capture a command's output?"), every snippet verified against both Raku++ and Rakudo, with the differences called out.

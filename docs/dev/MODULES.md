@@ -199,10 +199,20 @@ hang — but the second module will see a *partially loaded* first one.
 
 ### Is there precompilation / a module cache?
 
-**No.** There is no `.precomp`, no serialised AST, no on-disk cache of any kind.
-Every run re-reads and re-parses every module from source. This is why a Raku++
-program's startup cost scales with the size of its dependency tree, and why
-there is no staleness or precomp-conflict class of bug.
+**Yes, for the parse.** The AST a module parses to is cached on disk and reused
+while the source, the rakupp binary, the operators of anything it `use`s, and
+the search path all stay put — see **[CACHING.md](../CACHING.md)**. `use XML`
+costs 16.0 ms cold and 5.7 ms warm. The main program is cached the same way.
+
+What is *not* cached is the second half of a load: a module's top-level
+declarations and its `BEGIN` blocks still execute on every run, which is the
+~30% of load time that is not parsing. Rakudo goes further and serialises the
+objects its compile-time code produced; matching that would mean serialising
+live runtime state.
+
+The cache stores the tree the parser built, so a loaded module behaves exactly
+as a freshly parsed one — everything else on this page is unchanged by it.
+`RAKUPP_NO_PRECOMP=1` turns it off.
 
 ### What about `--exe` (native codegen)?
 
@@ -278,7 +288,7 @@ differently under Raku++ than under Rakudo even when nothing is "broken".
 | 1 | **`publish()` copies the module's whole env to `global_`.** A module's `my sub`, its non-exported `our sub`, and its classes are all visible bare to the importer. | Only `is export` symbols are imported; everything else needs the qualified name, or is invisible. |
 | 2 | `need Foo` still makes Foo's symbols visible (same `publish()`). | `need` loads without importing. |
 | 3 | Types are resolved **at run time** via `classes_`. `NoSuchType.new` is a run-time "No such method", after the program has already produced output. | `Undeclared name` at compile time, before anything runs. |
-| 4 | No precompilation. | `.precomp` caching; a module's `BEGIN` runs once per *compile*, not once per run. |
+| 4 | The PARSE is cached ([CACHING.md](../CACHING.md)); declarations and `BEGIN` still run every time. | `.precomp` caches the parse *and* the objects compile-time code produced, so `BEGIN` runs once per *compile*. |
 | 5 | A module's operators reach the importer by **text scan**, so only declaration syntax the scanner recognises is honoured. | Real lexical export of the operator's `sub` into the importer's grammar. |
 | 6 | One flat `classes_` map — no per-compunit type isolation. Two modules declaring the same unqualified class name collide. | Each compunit has its own stash. |
 | 7 | `use Foo:ver<…>:auth<…>` adverbs are accepted and **discarded** — `UseStmt` has no version field, and the first match on the search path wins. (`:ver`/`:auth`/`:api` on a *declaration* are kept, in `pkgMeta_`, and answer `.^ver`/`.^auth`/`.^api`.) | Full version/auth/api resolution against the installed repos. |
@@ -318,6 +328,7 @@ Demonstration (`lib/Demo.rakumod` declaring `my sub private-sub`,
 
 | Concern | Location |
 |---|---|
+| Precompiled-AST cache | `AstSerial.{h,cpp}`; `loadModule` (modules) and `rakuppRun` (mainline) — see [CACHING.md](../CACHING.md) |
 | `use`/`no`/`need` execution, pragmas, `use lib` | `Interpreter.cpp` `exec(NK::UseStmt)` ≈ line 3421 |
 | Module resolution + load + publish | `Interpreter.cpp` `loadModule` ≈ line 2698 |
 | Installed-repo (`~/.raku`) prefixes | `Interpreter.cpp` `rakuRepoPrefixes` ≈ line 2563 |

@@ -2983,12 +2983,22 @@ std::pair<size_t, unsigned long long> precompCacheClear() {
     std::string dir = precompDir();
     if (dir.empty()) return {0, 0};
     std::error_code ec;
+    std::vector<std::filesystem::path> dirs;
     for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end; ++it) {
+        if (it->is_directory(ec)) { dirs.push_back(it->path()); continue; }
         if (!it->is_regular_file(ec)) continue;
         auto sz = std::filesystem::file_size(it->path(), ec);
         if (ec) { ec.clear(); continue; }
         if (std::filesystem::remove(it->path(), ec)) { n++; bytes += sz; }
     }
+    // …and the fan-out directories the entries lived in. Deepest first, so a
+    // nested one is gone before its parent is tried; plain remove() declines a
+    // directory that still holds something, which is the check we want. The
+    // cache root itself stays — it is where the next entry goes.
+    std::sort(dirs.begin(), dirs.end(), [](const std::filesystem::path& a, const std::filesystem::path& b) {
+        return a.string().size() > b.string().size();
+    });
+    for (auto& d : dirs) { ec.clear(); std::filesystem::remove(d, ec); }
     return {n, bytes};
 }
 

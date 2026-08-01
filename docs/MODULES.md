@@ -65,6 +65,10 @@ tested and where the current edges are.
 
 ## How `use` works
 
+> Modules are **cached after their first parse**, so the second run of a program
+> skips re-parsing anything unchanged. It needs no setup; see
+> [CACHING.md](CACHING.md) if you want to inspect or disable it.
+
 > This section is the practical view. For what the compiler actually does — the
 > `Env` a module lives in during its load, why its AST is executed once and then
 > kept only as storage, why calling a module routine is not a distinct
@@ -202,8 +206,10 @@ rather than complete; the notable gaps today:
   `is export`. Code that works here may need real `is export` markings to work
   under Rakudo. (One carve-out: a non-exported sub whose name collides with a
   built-in stays module-private, so it can't shadow the built-in for you.)
-- **There is no precompilation.** Every run re-reads and re-parses every module
-  from source, so startup cost scales with the dependency tree.
+- **A module's `BEGIN` blocks and top-level code run on every run.** The *parse*
+  is cached ([CACHING.md](CACHING.md)), which is most of the cost, but Rakudo
+  additionally serialises what its compile-time code produced and Raku++ does
+  not.
 - Modules that rely on **compile-time metaprogramming, slangs, or NativeCall
   bindings** Raku++ doesn't model will fail to load — and a failed load is
   fatal, by design: a `use` that silently vanished used to leave the program
