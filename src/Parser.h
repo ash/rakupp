@@ -74,6 +74,7 @@ private:
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     bool lastIsDynamic_ = false;  // `is dynamic` captured by skipTraits, same way
+    bool lastIsExport_ = false;   // `is export` on a variable declaration, same way
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
     int anonStateN_ = 0;          // unique ids for bare-`$` anonymous state vars
     bool useNqp_ = false;         // saw `use nqp` — enables the nqp:: op subset
@@ -189,7 +190,9 @@ private:
     ExprPtr parsePrimary();
     ExprPtr parseDeclarator(const std::string& scope);
     void skipTraits(bool onVarDecl = false, ExprPtr* defaultOut = nullptr);
-    ExprPtr parseColonPair();                     // :name / :!name / :name(x) / :$var
+    ExprPtr parseColonPair();
+    // adverbs written after a call's `)`: `f($x):12size` passes `size => 12`
+    void takeTrailingAdverbs(std::vector<ExprPtr>& args);                     // :name / :!name / :name(x) / :$var
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
     ExprPtr parseEmbeddedExpr(const std::string& src); // parse a `{…}`/`$()` interpolation, inheriting user operators

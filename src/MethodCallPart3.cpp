@@ -738,6 +738,46 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "rmdir") { // $path.IO.rmdir — remove the (empty) directory
         return Value::boolean(::rmdir(inv.toStr().c_str()) == 0);
     }
+    // `$path.IO.copy($to, :$createonly)` / `.rename($to)` / `.move($to)` — file
+    // moves and copies (Shell::Command's cp/mv are thin wrappers over these).
+    // rename() is one syscall but only within a filesystem; fall back to a copy +
+    // unlink so a cross-device move still works, which is what Rakudo does.
+    if ((m == "copy" || m == "rename" || m == "move") && !args.empty()) {
+        std::string from = inv.toStr(), to = args[0].toStr();
+        bool createonly = false;
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.s == "createonly") createonly = !a.pairVal || a.pairVal->truthy();
+        if (createonly && std::ifstream(to).good())
+            throw RakuError{Value::typeObj("X::IO::Copy"),
+                "Failed to copy '" + from + "' to '" + to + "': target already exists"};
+        auto copyFile = [&]() -> bool {
+            std::ifstream in(from, std::ios::binary);
+            if (!in) return false;
+            std::ostringstream buf; buf << in.rdbuf();
+            std::ofstream out(to, std::ios::binary | std::ios::trunc);
+            if (!out) return false;
+            // NB: read the source into memory rather than `out << in.rdbuf()` —
+            // inserting an EMPTY streambuf sets failbit, so copying a zero-length
+            // file reported failure while having done exactly the right thing.
+            const std::string& data = buf.str();
+            if (!data.empty()) out.write(data.data(), (std::streamsize)data.size());
+            out.flush();
+            return out.good();
+        };
+        if (m == "copy") {
+            if (!copyFile())
+                throw RakuError{Value::typeObj("X::IO::Copy"),
+                    "Failed to copy '" + from + "' to '" + to + "': " + std::strerror(errno)};
+            return Value::boolean(true);
+        }
+        if (::rename(from.c_str(), to.c_str()) == 0) return Value::boolean(true);
+        if (!copyFile())
+            throw RakuError{Value::typeObj(m == "move" ? "X::IO::Move" : "X::IO::Rename"),
+                "Failed to " + std::string(m == "move" ? "move" : "rename") + " '" + from +
+                "' to '" + to + "': " + std::strerror(errno)};
+        ::unlink(from.c_str());
+        return Value::boolean(true);
+    }
     if (m == "path") {
         if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
             auto st = inv.hash->find("std"); // standard streams: an IO::Special

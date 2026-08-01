@@ -1511,6 +1511,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 auto c = std::make_unique<Call>();
                 c->callee = std::move(base);
                 c->args = parseCallArgs();
+                takeTrailingAdverbs(c->args);
                 base = std::move(c);
                 continue;
             }
@@ -1579,7 +1580,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             // `$x.'foo'()` is legal, bare `$x.'foo'` is not (S12).
             if (indirectName && !isKind(Tok::LParen))
                 error("indirect method call requires parentheses: $obj.'name'()");
-            if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); } // .method(args) — tight only; `.doit ()` is Confused (use unspace)
+            if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace)
             else if (isOp(":") && (startsTermToken(peek()) ||
                      (peek().kind == Tok::Ident && (peek().text == "my" || peek().text == "our" || peek().text == "state")))) {
                 // colon method-args:  @x.sort: -*.value   ==  @x.sort(-*.value)
@@ -1634,6 +1635,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (base->kind == NK::NameTerm) c->name = static_cast<NameTerm*>(base.get())->name;
             else c->callee = std::move(base);
             c->args = parseCallArgs();
+            takeTrailingAdverbs(c->args);
             base = std::move(c);
         } else {
             break;
@@ -1664,6 +1666,7 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
             bool wasContainer = wasIs && containers.count(cur().text);
             if (wasContainer) lastContainerIs_ = cur().text; // my %h is Set / my @a is List
             if (wasIs && cur().text == "dynamic") lastIsDynamic_ = true; // my $x is dynamic
+            if (wasIs && cur().text == "export") lastIsExport_ = true;   // our %x is export
             advance(); // trait name / type
             if (wasContainer && isKind(Tok::LBracket)) { // is Bag[Int] — key-type parameter
                 advance();
@@ -1857,10 +1860,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // Hash[valueType,keyType] — an object hash with no explicit value type is
         // Hash[Any, KeyType], so a missing key answers Any (Rakudo)
         if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
-        lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false;
+        lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false;
         skipTraits(scope != "has", &ve->declDefault);
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
         if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
+        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
         // `my $a is default(42) where * == 42` — constraint parsed, not yet enforced
         if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN + 1); }
@@ -1945,6 +1949,19 @@ static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& 
 }
 
 static ExprPtr angleWordNumeric(const std::string& w); // defined below
+
+// A colon-pair written directly after a call's closing paren is one of that
+// call's ARGUMENTS: `blob-from-carray($au):12size` passes `size => 12`
+// (NativeHelpers::Blob). It has to be tight — a spaced `:foo` starts something
+// else — and stacking is allowed (`f($x):a:b`).
+void Parser::takeTrailingAdverbs(std::vector<ExprPtr>& args) {
+    while (isOp(":") && !cur().spaceBefore &&
+           (peek().kind == Tok::Ident || peek().kind == Tok::IntLit ||
+            (peek().kind == Tok::Op && peek().text == "!" && peek(2).kind == Tok::Ident)) &&
+           !peek().spaceBefore) {
+        args.push_back(parseColonPair());
+    }
+}
 
 ExprPtr Parser::parseColonPair() {
     // ':' already current
@@ -2369,6 +2386,28 @@ ExprPtr Parser::parsePrimary() {
         sr->pkg = head.substr(1); // "" for the bare-sigil form
         while (!sr->pkg.empty() && sr->pkg.back() == ':') sr->pkg.pop_back();
         advance(); advance();       // :: (
+        if (cur().kind != Tok::RParen) sr->nameExpr = parseExpression();
+        expectKind(Tok::RParen, "expected ')' after sigil::(");
+        parseSymSegs(sr.get());
+        return sr;
+    }
+    // `$::Foo::Bar::($name)` — a sigil, then `::`, then a PACKAGE PATH, then the
+    // runtime name. The lexer splits that into `$` `::` `Foo::Bar::` `(`, so the
+    // rule above (one Var token carrying the whole qualifier) never matched it and
+    // the package path was parsed as a term that the parens then tried to CALL.
+    // Date::Names walks its own tables with `$::Date::Names::en::($n)`.
+    if (cur().kind == Tok::Var && cur().text.size() == 1 &&
+        std::strchr("$@%&", cur().text[0]) &&
+        peek().kind == Tok::Op && peek().text == "::" &&
+        peek(2).kind == Tok::Ident && peek(3).kind == Tok::LParen &&
+        peek(2).text.size() > 2 &&
+        peek(2).text.compare(peek(2).text.size() - 2, 2, "::") == 0) {
+        auto sr = std::make_unique<SymbolicRef>();
+        sr->sigil = advance().text;   // $ / @ / % / &
+        advance();                    // ::
+        sr->pkg = advance().text;     // Foo::Bar::
+        while (!sr->pkg.empty() && sr->pkg.back() == ':') sr->pkg.pop_back();
+        advance();                    // (
         if (cur().kind != Tok::RParen) sr->nameExpr = parseExpression();
         expectKind(Tok::RParen, "expected ')' after sigil::(");
         parseSymSegs(sr.get());
@@ -3287,6 +3326,11 @@ ExprPtr Parser::parsePrimary() {
                     // statement prefixes take a whole expression incl. assignment:
                     // `try target = values` is try(target = values), not (try target) = values
                     u->operand = parseExpr(BP_ASSIGN);
+                    // …and a trailing statement MODIFIER belongs to that expression:
+                    // `do EXPR for LIST` collects one value per iteration, which is how
+                    // JSON::Fast's test builds a list (`List.new(|do … for 10 ... 1)`).
+                    // Without this the `for` ended the argument and the parse died.
+                    u->operand = applyExprModifiers(std::move(u->operand));
                 }
                 return u;
             }
@@ -3428,9 +3472,22 @@ ExprPtr Parser::parsePrimary() {
                 isOp("<") && !cur().spaceBefore) {
                 advance(); // <
                 std::vector<std::string> words = readAngleWords(">");
-                return std::make_unique<VarExpr>(
-                    pseudoAngleSymbol(name.substr(0, name.size() - 2),
-                                      words.empty() ? "" : words[0]));
+                std::string sym = pseudoAngleSymbol(name.substr(0, name.size() - 2),
+                                                    words.empty() ? "" : words[0]);
+                // `MY::<&foo>:exists` asks whether the symbol is DECLARED, which is
+                // how a module's export list is usually tested (Test::Output's suite).
+                // MY:: only — `SETTING::<$x>` asks about the SETTING, where a
+                // program's own lexical is absent however visible it is here.
+                if (name.compare(0, 4, "MY::") == 0 &&
+                    isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                    peek().text == "exists") {
+                    advance(); advance();
+                    auto c = std::make_unique<Call>();
+                    c->name = "__sym-exists";
+                    c->args.push_back(std::make_unique<StrLit>(sym));
+                    return c;
+                }
+                return std::make_unique<VarExpr>(sym);
             }
             // `Foo::<bar>` — a slot in a REAL package's symbol table, the same
             // syntax the pseudo-packages above use. Read and WRITTEN: roast's
@@ -3565,6 +3622,7 @@ ExprPtr Parser::parsePrimary() {
                 auto c = std::make_unique<Call>();
                 c->name = name;
                 c->args = std::move(callArgs);
+                takeTrailingAdverbs(c->args); // `f($x):12size`
                 return c;
             }
             // list-op style call without parens

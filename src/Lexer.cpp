@@ -1096,6 +1096,24 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (adverbs.find(":to ") != std::string::npos || adverbs.find(":heredoc ") != std::string::npos) {
         heredocMarker_ = raw;
         heredocInterp_ = (w == "qq");
+        // A heredoc may carry interpolation adverbs of its own: `qq:!c:to/CODE/`
+        // interpolates variables but NOT `{…}` blocks — Test::Output's suite builds
+        // Raku source that way, and running those blocks while merely BUILDING the
+        // string is the difference between a test and a syntax-shaped accident.
+        heredocFeats_.clear();
+        if (heredocInterp_) {
+            std::string feats = "sahfcb";
+            auto drop = [&](const char* nm, char f) {
+                if (adverbs.find(":!" + std::string(nm) + " ") != std::string::npos) {
+                    size_t at = feats.find(f);
+                    if (at != std::string::npos) feats.erase(at, 1);
+                }
+            };
+            drop("s", 's'); drop("scalar", 's'); drop("a", 'a'); drop("array", 'a');
+            drop("h", 'h'); drop("hash", 'h'); drop("f", 'f'); drop("function", 'f');
+            drop("c", 'c'); drop("closure", 'c'); drop("b", 'b'); drop("backslash", 'b');
+            if (feats != "sahfcb") heredocFeats_ = feats;
+        }
         out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, ""); // body filled at line end
         return true;
     }
@@ -1816,6 +1834,21 @@ static bool prevIsClearTerm(const std::vector<Token>& out) {
     }
 }
 
+// May a `(op)` set operator be glued to what we just lexed? Only after a metaop
+// letter (`Z(|)`) or another operator — never after a name, where the parens are
+// that name's argument list.
+static bool setOpFollows(const std::vector<Token>& out) {
+    if (out.empty()) return true;
+    const Token& pv = out.back();
+    if (pv.kind == Tok::Ident) {
+        if (pv.text.empty() || pv.text.size() > 2) return false;
+        for (char c : pv.text) if (c != 'Z' && c != 'X' && c != 'R' && c != 'S') return false;
+        return true;
+    }
+    return pv.kind == Tok::Op || pv.kind == Tok::Comma || pv.kind == Tok::LParen ||
+           pv.kind == Tok::LBracket || pv.kind == Tok::LBrace;
+}
+
 static bool angleTermContext(const std::vector<Token>& out) {
     if (out.empty()) return true;
     const Token& pv = out.back();
@@ -2019,7 +2052,12 @@ std::vector<Token> Lexer::tokenize() {
             } else {
                 t = lexIdentOrVar();
             }
-        } else if (c == '(' && trySetOp(t)) { /* t set by trySetOp */ }
+        // `(cont)`/`(elem)`/`(|)`… are INFIX set operators. Glued to a NAME, `(…)`
+        // is an argument list instead: `.^isa(cont)` passes a sigilless `\cont`,
+        // and lexing that as set-containment broke the whole file (AttrX::Mooish).
+        // The exception is a metaop letter — `Z(|)`, `X(&)`, `R(-)` are written
+        // tight — so a preceding bare Z/X/R still opens an operator.
+        } else if (c == '(' && (spaced || setOpFollows(out)) && trySetOp(t)) { /* t set by trySetOp */ }
         else if (c == '(') { advance(); t = make(Tok::LParen, "("); }
         else if (c == ')') { advance(); t = make(Tok::RParen, ")"); }
         else if (c == '{') { advance(); t = make(Tok::LBrace, "{"); }
@@ -2097,6 +2135,7 @@ std::vector<Token> Lexer::tokenize() {
         out.push_back(t);
         if (!heredocMarker_.empty()) { // a q:to/MARKER/ was just lexed
             pendingHeredocs_.emplace_back(heredocMarker_, out.size() - 1, heredocInterp_);
+            pendingHeredocFeats_.push_back(heredocFeats_);
             heredocMarker_.clear();
         }
     }
@@ -2135,6 +2174,12 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
         }
         out[idx].text = body;
     }
+    for (size_t k = 0; k < pendingHeredocs_.size() && k < pendingHeredocFeats_.size(); k++) {
+        if (pendingHeredocFeats_[k].empty()) continue;
+        size_t idx2 = std::get<1>(pendingHeredocs_[k]);
+        out[idx2].text = "\x02" + pendingHeredocFeats_[k] + "\x02" + out[idx2].text;
+    }
+    pendingHeredocFeats_.clear();
     pendingHeredocs_.clear();
 }
 

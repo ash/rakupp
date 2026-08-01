@@ -3434,7 +3434,22 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 for (auto& p : paths)
                     if (!p.empty()) libPaths_.insert(libPaths_.begin(), p);
             }
-            else if (!u->module.empty()) loadModule(u->module, u->importArgs, !u->isNeed);
+            else if (!u->module.empty()) {
+                loadModule(u->module, u->importArgs, !u->isNeed);
+                // `use Mod <name:alias>` — import that routine under a second name.
+                // (rakupp imports a module's whole export set; the alias is the part
+                // that has to be honoured, or the name simply is not there.)
+                for (auto& ia : u->importArgs) {
+                    size_t c = ia.find(':');
+                    if (c == std::string::npos || c == 0 || c + 1 >= ia.size()) continue;
+                    std::string orig = "&" + ia.substr(0, c), alias = "&" + ia.substr(c + 1);
+                    Value* src = tctx_.cur ? tctx_.cur->find(orig) : nullptr;
+                    if (!src && global_) { auto it = global_->vars.find(orig); if (it != global_->vars.end()) src = &it->second; }
+                    if (!src) continue;
+                    if (tctx_.cur) tctx_.cur->define(alias, *src);
+                    if (global_) global_->define(alias, *src);
+                }
+            }
             return Value::any();
         }
         case NK::Block: {
@@ -4387,6 +4402,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 hoistSubs(cd->body); // class-body subs visible to earlier body statements too
                 try { for (auto& st : cd->body) exec(st.get()); }
                 catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
+                // `sub … is export` in a CLASS body still exports: in a `unit class`
+                // the whole file IS the body, which is where several dists keep
+                // their helper subs (XML::Entity's decode-xml-entities). Lift them
+                // into the package env so the module-load republish carries them.
+                if (loadingModuleDepth_ > 0 && curPkgEnv_ && curPkgEnv_ != bodyEnv)
+                    for (auto& st : cd->body)
+                        if (st->kind == NK::SubDecl) {
+                            auto* sd = static_cast<SubDecl*>(st.get());
+                            if (!sd->isExport || sd->name.empty()) continue;
+                            auto it = bodyEnv->vars.find("&" + sd->name);
+                            if (it != bodyEnv->vars.end()) curPkgEnv_->define(it->first, it->second);
+                        }
                 tctx_.cur = saved;
                 tctx_.pkgPrefix = savedPrefix;
             }
@@ -7143,6 +7170,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     tctx_.cur = env;
     tctx_.curStateEnv = c.stateEnv.get();
     tctx_.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
+    // callframe(N) walks these; RAII, because this function has many exit paths
+    tctx_.callFrames.push_back({curLine_, &codeVal});
+    struct CFGuard { ExecContext& t; ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); } } cfG{tctx_};
     // restore() puts the caller's scope back; called on every exit path. (ENTER
     // phasers now run inside the try, and the CATCH body is wrapped, so a throw
     // from either restores instead of leaking dynStack / bleeding scope.)
@@ -7607,7 +7637,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // CALLER's env so `$*CRO-ROUTE-SET`-style dynamics set in a calling sub stay
     // visible through method calls (Cro's route -> definition-complete -> plugin)
     tctx_.dynStack.push_back(saved ? saved.get() : global_.get());
-    struct DynGuard { ExecContext& t; ~DynGuard() { t.dynStack.pop_back(); } } dynG{tctx_};
+    tctx_.callFrames.push_back({curLine_, &codeVal}); // for callframe(N)
+    struct DynGuard { ExecContext& t;
+        ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); }
+    } dynG{tctx_};
     // callsame/nextsame scope: this activation sees only frames pushed FOR it
     // (ownFrame) — never the caller's (a frameless bottom method must not
     // re-enter its caller's chain; that was an infinite nextsame loop)
@@ -8187,6 +8220,14 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 std::string qual = ve->name.substr(0, 1) + tctx_.pkgPrefix + ve->name.substr(1);
                 noteSymbolMutation("our-declaration publish");
                 global_->define(qual, *p);
+                // `our %x is export` — the importer sees the BARE name too. In a
+                // `unit class` the declaration lives in the CLASS body, so the
+                // module-load republish never saw it (Date::Names keeps its
+                // language tables that way).
+                if (ve->declExport) {
+                    if (curPkgEnv_) curPkgEnv_->define(ve->name, *p);
+                    global_->define(ve->name, *p);
+                }
             }
         }
     }
@@ -10456,7 +10497,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 if (!baseOk) { // numeric/string tower (Int -> Real -> Numeric -> Cool -> Any -> Mu)
                     static const std::map<std::string, std::vector<std::string>> tower = {
                         {"Int", {"Real", "Numeric", "Cool"}}, {"Num", {"Real", "Numeric", "Cool"}},
-                        {"Rat", {"Real", "Numeric", "Cool"}}, {"Complex", {"Numeric", "Cool"}},
+                        {"Rat", {"Rational", "Real", "Numeric", "Cool"}},
+                        {"FatRat", {"Rational", "Rat", "Real", "Numeric", "Cool"}},
+                        {"Complex", {"Numeric", "Cool"}},
                         {"Str", {"Stringy", "Cool"}}, {"Bool", {"Cool"}},
                     };
                     auto tw = tower.find(ln);
@@ -10790,25 +10833,33 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         Regex sub(it->second, flags);
         return sub.matchAt(subj, pos, out, resolver, &lexNames);
     };
+    // Every Match — the top one and each capture — reports the WHOLE subject as
+    // its .orig; only from/pos say which part matched. Sharing one string keeps
+    // `.raku`/.prematch/.postmatch right on captures too, at one allocation.
+    auto origStr = std::make_shared<std::string>(subject);
+    auto mk = [&](long from, long to) {
+        Value mv = Value::matchVal(subject.substr(from, to - from), from, to);
+        mv.ext = origStr;
+        return mv;
+    };
     auto build = [&](const RxMatch& m) {
-        Value v = Value::matchVal(subject.substr(m.from, m.to - m.from), m.from, m.to);
-        v.ext = std::make_shared<std::string>(subject); // the original, for .prematch/.postmatch/.orig
+        Value v = mk(m.from, m.to);
         for (size_t ci = 0; ci < m.caps.size(); ci++) {
             if (m.listCaps.count((int)ci)) { // `(…)+`/`(…)*`/`(…)**n` → $ci is an Array of every occurrence
                 Value lst = Value::array();
                 auto it = m.capReps.find((int)ci);
                 if (it != m.capReps.end())
-                    for (auto& o : it->second) lst.arrRef().push_back(Value::matchVal(subject.substr(o.first, o.second - o.first), o.first, o.second));
+                    for (auto& o : it->second) lst.arrRef().push_back(mk(o.first, o.second));
                 v.arrRef().push_back(lst);
                 continue;
             }
             auto& c = m.caps[ci];
             if (c.first < 0) v.arrRef().push_back(Value::nil());
-            else v.arrRef().push_back(Value::matchVal(subject.substr(c.first, c.second - c.first), c.first, c.second));
+            else v.arrRef().push_back(mk(c.first, c.second));
         }
         for (auto& kv : m.named)
             if (!m.children.count(kv.first))
-                v.hashRef()[kv.first] = Value::matchVal(subject.substr(kv.second.first, kv.second.second - kv.second.first), kv.second.first, kv.second.second);
+                v.hashRef()[kv.first] = mk(kv.second.first, kv.second.second);
         for (auto& kv : m.children) {
             // `%<name>=…` — each occurrence's matched text is a Hash KEY (value undefined)
             if (m.hashNames && m.hashNames->count(kv.first)) {
@@ -13686,6 +13737,11 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             }
             else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
             else if (v.t == VT::Hash && v.hash) { for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); } }
+            // `|` on a PAIR passes it as a NAMED argument (`f(1, |(:tee<OUT>))`,
+            // and the conditional form `|(:tee<OUT> if $on)` Test::Output uses).
+            // A pair inside a slipped LIST stays positional — that is Rakudo's
+            // split, and it decides which multi candidate a call reaches.
+            else if (v.t == VT::Pair) { Value pr = v; pr.namedArg = true; args.push_back(std::move(pr)); }
             else args.push_back(v);
         } else {
             Value v = eval(a.get());

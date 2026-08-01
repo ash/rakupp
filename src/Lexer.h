@@ -65,6 +65,8 @@ private:
     void processHeredocs(std::vector<Token>& out);          // fill q:to/MARKER/ bodies at line end
     // pending heredocs: (marker, token index in out, interpolating?)
     std::vector<std::tuple<std::string, size_t, bool>> pendingHeredocs_;
+    std::string heredocFeats_; // interpolation features of a `qq:!c:to/…/` heredoc ("" = all)
+    std::vector<std::string> pendingHeredocFeats_; // one per pendingHeredocs_ entry
     std::string heredocMarker_;  // set by tryQuoteForm when a :to form is seen
     bool heredocInterp_ = false;
     bool warnedLeadingZero_ = false; // emit the leading-0-isn't-octal warning once

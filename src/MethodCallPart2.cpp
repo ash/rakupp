@@ -1276,6 +1276,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `.new` on a scalar built-in type object → that type's default value. This is
     // what real Raku does (Str.new → "", Int.new → 0) and lets `augment class Str {…}`
     // methods be reached via `Str.new.themethod`.
+    // A CallFrame (from `callframe`): .file / .line / .code, and `<unit>` as the
+    // code's name at mainline, where there is no enclosing routine.
+    if (inv.t == VT::Hash && inv.hashKind == "CallFrame" && inv.hash) {
+        if (m == "file" || m == "line") {
+            auto it = inv.hash->find(m.s);
+            return it != inv.hash->end() ? it->second : Value::any();
+        }
+        if (m == "code" || m == "callframe" || m == "my" || m == "annotations") {
+            auto it = inv.hash->find("code");
+            if (m == "code") {
+                if (it != inv.hash->end()) return it->second;
+                Value u; u.t = VT::Code; u.code = std::make_shared<Callable>();
+                u.code->name = "<unit>";        // the mainline is not a routine
+                return u;
+            }
+            return Value::makeHash();
+        }
+        if (m == "gist" || m == "Str") {
+            auto fl = inv.hash->find("file"); auto ln = inv.hash->find("line");
+            return Value::str((fl != inv.hash->end() ? fl->second.toStr() : "") + " at line " +
+                              (ln != inv.hash->end() ? ln->second.toStr() : "0"));
+        }
+    }
     // $?DISTRIBUTION — the compiling module's distribution. `.meta` is the parsed
     // META6.json (zef reads <version>/<ver>/<api>/<auth> from it), `.prefix` the
     // checkout root; `.content` reads a file listed in the meta.
@@ -1290,6 +1313,30 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return Value::str("Distribution");
         }
+    }
+    // `Match.new(:orig(…), :from(…), :pos(…), :list(…), :hash(…))` — the inverse of
+    // Match.raku, so a match round-trips through EVAL (S05-match/raku.t does exactly
+    // that). Every part is optional; what is absent is simply empty.
+    if (inv.t == VT::Type && inv.s == "Match" && m == "new") {
+        std::string orig; long long from = 0, pos = 0;
+        Value list, hash;
+        for (auto& a : args) {
+            if (a.t != VT::Pair || !a.pairVal) continue;
+            if (a.s == "orig") orig = a.pairVal->toStr();
+            else if (a.s == "from") from = a.pairVal->toInt();
+            else if (a.s == "pos" || a.s == "to") pos = a.pairVal->toInt();
+            else if (a.s == "list") list = *a.pairVal;
+            else if (a.s == "hash") hash = *a.pairVal;
+        }
+        if (from < 0) from = 0;
+        if (pos < from) pos = from;
+        std::string text = (size_t)from <= orig.size()
+                         ? orig.substr((size_t)from, (size_t)(pos - from)) : std::string();
+        Value mv = Value::matchVal(text, (long)from, (long)pos);
+        mv.ext = std::make_shared<std::string>(orig);
+        if (list.t == VT::Array && list.arr) *mv.arr = *list.arr;
+        if (hash.t == VT::Hash && hash.hash) *mv.hash = *hash.hash;
+        return mv;
     }
     if (inv.t == VT::Type && inv.s == "Failure" && m == "new") {
         // Failure.new (no args) picks up the current $! as its exception.
@@ -1530,7 +1577,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return um ? *um : Value::nil();
             }
             if (m == "add_method") { // .^add_method($name, $code)
-                if (args.size() >= 2) { noteSymbolMutation("runtime .^add_method"); ci->methods[args[0].toStr()] = args[1]; }
+                if (args.size() >= 2) {
+                    noteSymbolMutation("runtime .^add_method");
+                    Value add = args[1];
+                    // Adding a bare PROTO under a second name (Method::Also aliases a
+                    // `proto method … is also<…>`) must alias the whole multi GROUP,
+                    // or the alias runs the proto body — `{ * }` — instead of
+                    // dispatching. Rakudo re-adds each candidate with
+                    // ^add_multi_method; here the dispatcher already holds them, so
+                    // install that.
+                    if (add.t == VT::Code && add.code && add.code->isProto)
+                        for (auto& kv : ci->methods) {
+                            if (!(kv.second.t == VT::Code && kv.second.code &&
+                                  kv.second.code->isMultiDispatcher)) continue;
+                            bool holdsIt = false;
+                            for (auto& cand : kv.second.code->candidates)
+                                if (cand.code == add.code) { holdsIt = true; break; }
+                            if (holdsIt) { add = kv.second; break; }
+                        }
+                    ci->methods[args[0].toStr()] = add;
+                }
                 return args.size() >= 2 ? args[1] : Value::nil();
             }
             if (m == "add_role" && !args.empty()) { // .^add_role(Role) — runtime composition

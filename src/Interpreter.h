@@ -237,6 +237,11 @@ struct ExecContext {
     // into the live callCallableRaw frame (resolved lazily at lookup, zero per-call cost)
     const Value* curBlockVal = nullptr;
     const Value* curRoutineVal = nullptr;
+    // One entry per live routine activation: the line its CALL was written on, and
+    // the routine itself. `callframe(N)` walks it (Log::Async stamps every message
+    // with `callframe(1)`). Pushed next to dynStack, which every call already pays.
+    struct CallSite { int line; const Value* code; };
+    std::vector<CallSite> callFrames;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -337,6 +342,7 @@ public:
     Value cglobal(const std::string& lib, const std::string& sym, const std::string& type); // C global variable
     long runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5); // NativeCall callback dispatch
     Value spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever Promise.in(N)` timer
+    Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the

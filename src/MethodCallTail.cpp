@@ -690,6 +690,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return in ? live[(size_t)i] : Value::any();
         }
     }
+    // A MATCH is Positional over its captures, so the list methods work on it:
+    // `$0.flatmap({…})` / `$m.map(…)` (URI::Escape unescapes that way). Route it
+    // through the list arms as its capture list rather than duplicating them.
+    if (inv.t == VT::Match) {
+        static const std::set<std::string> listy = {
+            "map", "flatmap", "grep", "first", "reduce", "sort", "reverse",
+            "join", "kv", "pairs", "antipairs", "head", "tail", "skip", "rotor",
+            "classify", "categorize", "unique", "squish", "sum", "min", "max",
+            "combinations", "permutations", "batch", "produce", "tree"};
+        if (listy.count(m.s)) {
+            Value l = Value::array(); l.isList = true;
+            if (inv.arr) *l.arr = *inv.arr;
+            return methodCall(l, m, std::move(args), rwArgs);
+        }
+    }
     if (inv.t == VT::Array || inv.t == VT::Range || inv.t == VT::Hash) {
         // The snapshot below serves the arms that READ the whole list. The
         // through-the-handle mutators never touch it — their arms operate on

@@ -67,10 +67,11 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
     static const std::map<std::string, std::vector<std::string>> A = {
         {"Int",     {"Int","Real","Numeric","Cool","Any","Mu"}},
         {"IntStr",  {"IntStr","Int","Real","Numeric","Cool","Any","Mu"}},
-        {"RatStr",  {"RatStr","Rat","Real","Numeric","Cool","Any","Mu"}},
+        {"RatStr",  {"RatStr","Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
         {"NumStr",  {"NumStr","Num","Real","Numeric","Cool","Any","Mu"}},
-        {"Rat",     {"Rat","Real","Numeric","Cool","Any","Mu"}},
-        {"FatRat",  {"FatRat","Rat","Real","Numeric","Cool","Any","Mu"}},
+        {"Rat",     {"Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
+        {"FatRat",  {"FatRat","Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
+        {"Rational",{"Rational","Real","Numeric","Cool","Any","Mu"}},
         {"Num",     {"Num","Real","Numeric","Cool","Any","Mu"}},
         {"Complex", {"Complex","Numeric","Cool","Any","Mu"}},
         {"Real",    {"Real","Numeric","Cool","Any","Mu"}},
@@ -731,6 +732,32 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
                 else g += "e0";
             }
             return g;
+        }
+        case VT::Match: {
+            // Rakudo's Match.raku is a constructor call, not the ｢…｣ gist: the
+            // positional captures come back as :list and the named ones as :hash.
+            std::string o = "Match.new(:orig(" +
+                (v.ext ? rakuStrLit(*std::static_pointer_cast<std::string>(v.ext)) : rakuStrLit(v.s)) +
+                "), :from(" + std::to_string(v.rFrom) + "), :pos(" + std::to_string(v.rTo) + ")";
+            if (v.arr && !v.arr->empty()) {
+                o += ", :list((";
+                for (size_t k = 0; k < v.arr->size(); k++) {
+                    if (k) o += ", ";
+                    o += rakuRepr((*v.arr)[k], depth + 1, seen);
+                }
+                o += (v.arr->size() == 1 ? ",))" : "))");
+            }
+            if (v.hash && !v.hash->empty()) {
+                o += ", :hash(Map.new((";
+                bool first = true;
+                for (auto& kv : *v.hash) {
+                    if (!first) o += ", ";
+                    first = false;
+                    o += ":" + kv.first + "(" + rakuRepr(kv.second, depth + 1, seen) + ")";
+                }
+                o += ")))";
+            }
+            return o + ")";
         }
         case VT::Regex:
             return v.s.find('/') == std::string::npos ? "rx/" + v.s + "/" : "rx{" + v.s + "}";
@@ -4761,6 +4788,58 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
 }
 
+// `whenever $channel { … }` — a react source that runs the block once per value
+// the channel receives, and completes when the channel closes. A worker does the
+// waiting so the main thread's react loop stays free; without this the block ran
+// ONCE, with the channel object itself as the topic.
+Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx) {
+    engageGil();
+    if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
+    liveWorkers_++;
+    reapFinishedWorkers();
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    workers_.push_back({BigStackThread([self, chan, blk, ctx, fin, spawnScope]() mutable {
+        t_isWorker = true;
+        self->gil_.lock();
+        ExecContext wctx; self->loadCtx(wctx);
+        tctx_.cur = spawnScope;
+        tctx_.dynStack.push_back(spawnScope.get());
+        if (ctx) self->reactStack_.push_back(ctx);
+        auto closed = [&] {
+            if (!chan.hash) return true;
+            auto c = chan.hash->find("closed");
+            return c != chan.hash->end() && c->second.truthy();
+        };
+        auto queue = [&]() -> ValueList* {
+            if (!chan.hash) return nullptr;
+            auto q = chan.hash->find("queue");
+            return q != chan.hash->end() && q->second.arr ? q->second.arr.get() : nullptr;
+        };
+        for (;;) {
+            if (ctx && ctx->closed) break;
+            ValueList* q = queue();
+            if (!q) break;
+            if (q->empty()) {
+                if (closed()) break;
+                self->yieldToWorkerFor(0.02);
+                continue;
+            }
+            Value v = q->front(); q->erase(q->begin());
+            ValueList one{v};
+            try { self->callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) { break; } catch (...) {}
+            if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->closed) break; }
+        }
+        if (ctx) self->reactStack_.pop_back();
+        if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+        self->gilYieldNotify();
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin});
+    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+}
+
 Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value doneCb,
                              std::shared_ptr<ReactCtx> reactCtx) {
     engageGil();
@@ -6239,6 +6318,22 @@ void Interpreter::registerBuiltins() {
         for (auto& f : a) ::unlink(f.toStr().c_str());
         return Value::boolean(true);
     };
+    // sub forms of the IO::Path methods (Shell::Command calls them this way)
+    B["copy"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::boolean(false);
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "copy", rest);
+    };
+    B["rename"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::boolean(false);
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "rename", rest);
+    };
+    B["move"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.size() < 2) return Value::boolean(false);
+        ValueList rest(a.begin() + 1, a.end());
+        return I.methodCall(a[0], "move", rest);
+    };
     B["close"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: close($fh)
         if (a.empty()) return Value::boolean(true);
         return I.methodCall(a[0], "close", {});
@@ -6860,6 +6955,37 @@ void Interpreter::registerBuiltins() {
         }
         Value b = Value::str(out); b.hashKind = "Buf"; return b;
     };
+    // callframe($level) — the caller's frame $level steps up: its .file, the LINE
+    // the call was written on, and .code (the routine it sits in, `<unit>` at
+    // mainline). Log::Async stamps every log message with `callframe(1)`.
+    B["callframe"] = [](Interpreter& I, ValueList& a) -> Value {
+        long long lvl = a.empty() ? 0 : a[0].toInt();
+        if (lvl < 0) lvl = 0;
+        auto& fr = I.tctx_.callFrames;
+        Value f = Value::makeHash(); f.hashKind = "CallFrame";
+        (*f.hash)["file"] = Value::str(I.srcFileAbs_.empty() ? I.srcFile_ : I.srcFileAbs_);
+        // level 0 is where we are now (the current statement's line); each further
+        // level steps out one activation, taking that call's own line with it
+        size_t idx = fr.size();                 // frames_[idx-1] is the innermost
+        long long line = I.curLine_;
+        const Value* code = nullptr;
+        for (long long k = 0; k < lvl; k++) {
+            if (idx == 0) break;
+            line = fr[idx - 1].line;            // the line THIS activation was called from
+            idx--;
+        }
+        if (idx > 0) code = fr[idx - 1].code;
+        (*f.hash)["line"] = Value::integer(line);
+        if (code) (*f.hash)["code"] = *code;
+        return f;
+    };
+    // `MY::<&foo>:exists` — is that symbol declared in the current scope chain?
+    B["__sym-exists"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::boolean(false);
+        const std::string n = a[0].toStr();
+        if (I.tctx_.cur && I.tctx_.cur->find(n)) return Value::boolean(true);
+        return Value::boolean(false);
+    };
     B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
     B["sign"] = [](Interpreter& I, ValueList& a) -> Value { return rtBSign(I, a.empty() ? Value::any() : a[0]); };
     B["is-prime"] = [](Interpreter& I, ValueList& a) -> Value { return rtBIsPrime(I, a.empty() ? Value::any() : a[0]); };
@@ -7198,6 +7324,12 @@ void Interpreter::registerBuiltins() {
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
                 ValueList ta{blk}; return I.methodCall(s, "tap", ta); // from-list: eager
+            }
+            // `whenever $channel { … }` — one run per received value, completing when
+            // the channel closes (Log::Async's tests pump their output through one)
+            if (s.t == VT::Hash && s.hashKind == "Channel") {
+                std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                return I.spawnChannelWhenever(s, blk, ctx);
             }
             // whenever Promise.in(N) { … } — a timer: fire once after the real delay
             // as a react source, so it doesn't defeat a timeout guard by firing at t=0.
