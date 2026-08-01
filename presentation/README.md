@@ -12,15 +12,23 @@ real thing: keyboard navigation, a light/dark toggle, hover states. Regenerate
 the PDF from the deck:
 
 ```sh
-# 1. force the dark theme, print one slide per 1280x720 landscape page
+# force the dark theme, print one slide per 1280x720 landscape page
 sed 's/<html lang="en">/<html lang="en" data-theme="dark">/' index.html > /tmp/deck-print.html
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --headless=new --no-pdf-header-footer --virtual-time-budget=4000 \
-  --print-to-pdf="/tmp/deck-chrome.pdf" "file:///tmp/deck-print.html"
+  --print-to-pdf="rakupp-presentation.pdf" "file:///tmp/deck-print.html"
+```
 
-# 2. normalise to PDF 1.4 — smaller and widely compatible, text preserved
-gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/prepress \
-   -dNOPAUSE -dBATCH -dQUIET -sOutputFile="rakupp-presentation.pdf" /tmp/deck-chrome.pdf
+Chrome already emits PDF 1.4 with the text selectable, so that single step is the
+whole recipe. **Do not pipe it through Ghostscript.** A `gs -sDEVICE=pdfwrite`
+pass used to run here to shave the file from 811 KB to 604 KB, and it silently
+dropped the `fib` gradient bar on slide 7 — one shading out of eighteen, at every
+`-dPDFSETTINGS` level and at both compatibility 1.4 and 1.5, while the identical
+bars above and below it survived. Check the export before committing it, since
+nothing else will:
+
+```sh
+pdftoppm -f 7 -l 7 -r 60 -png rakupp-presentation.pdf /tmp/deck-p7   # then look at it
 ```
 
 - **Navigate:** `←` / `→` (also PageUp/PageDown, Space), `Home` / `End`, the dot
