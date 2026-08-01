@@ -70,6 +70,21 @@ void bigStackClose(std::uintptr_t h) { ::CloseHandle((HANDLE)h); }
 static bool g_docMode = false;
 void rakuppSetDocMode(bool on) { g_docMode = on; } // set by main when --doc is passed
 
+// The search path the PARSER will actually use, in order — which is what decides
+// the file a `use` resolves to when scanned for operators, and so belongs in the
+// precomp key. It must match how parser.libPaths_ is assembled below, defaults
+// included: `.` and `lib` are relative, so they are precisely what makes the
+// answer depend on the working directory. Leaving them out gave one entry to two
+// directories, and a script cached where an operator existed was replayed where
+// it did not.
+static std::vector<std::string> precompSearchPath(const std::vector<std::string>& dashI) {
+    std::vector<std::string> sp = dashI;
+    sp.push_back("lib"); sp.push_back("."); sp.push_back("rakulib");
+    if (const char* rl = std::getenv("RAKULIB"))
+        for (auto& d : splitSearchPath(rl)) sp.push_back(d);
+    return sp;
+}
+
 int rakuppRun(const std::string& src, std::vector<std::string> args,
               const std::string& fileName, const std::string& exePath,
               const std::vector<std::string>& libPaths) {
@@ -80,9 +95,7 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
         // Program indistinguishable from a freshly parsed one. `-e` code has no
         // file behind it, so it is never cached.
         {
-            std::vector<std::string> sp = libPaths;
-            if (const char* rl = std::getenv("RAKULIB"))
-                for (auto& d : splitSearchPath(rl)) sp.push_back(d);
+            std::vector<std::string> sp = precompSearchPath(libPaths);
             Program cachedProg;
             std::string cachedFinish;
             if (fileName != "-e" && !fileName.empty() &&
@@ -122,9 +135,7 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
             for (auto& d : splitSearchPath(rl)) parser.libPaths_.push_back(d);
         Program prog = parser.parseProgram();
         {
-            std::vector<std::string> sp = libPaths;
-            if (const char* rl = std::getenv("RAKULIB"))
-                for (auto& d : splitSearchPath(rl)) sp.push_back(d);
+            std::vector<std::string> sp = precompSearchPath(libPaths);
             if (fileName != "-e" && !fileName.empty())
                 precompStoreProgram(fileName, src, sp, prog, finish, parser.opScanned_);
         }

@@ -2793,19 +2793,34 @@ static const std::string& precompBuildId() {
     return id;
 }
 
+// Paths in a cache entry and in its key must be ABSOLUTE. Relative ones mean
+// something different from every directory, and a cache is read from all of
+// them: a stored "1.raku" cannot be told apart in a listing, and re-resolves
+// against whatever the current directory happens to be when validated.
+static std::string precompAbs(const std::string& p) {
+    if (p.empty()) return p;
+    std::error_code ec;
+    std::string a = std::filesystem::absolute(p, ec).lexically_normal().string();
+    return ec ? p : a;
+}
+
 static std::string precompPath(const std::string& srcPath,
                                const std::vector<std::string>& searchPath) {
     std::string dir = precompDir();
     if (dir.empty() || srcPath.empty()) return "";
-    std::error_code ec;
-    std::string abs = std::filesystem::absolute(srcPath, ec).lexically_normal().string();
-    if (ec) abs = srcPath;
+    std::string abs = precompAbs(srcPath);
     // The search path is part of the key: it decides which file a `use` resolves
     // to when the parser scans for operators, so the same source under a
     // different -I may legitimately parse differently. Recording the dependency
     // CONTENTS is not enough — a different -I selects a different FILE.
+    //
+    // Each entry is ABSOLUTIZED first, which is what makes the key depend on the
+    // working directory. It has to: `.` and `lib` sit in the search path by
+    // default, so the very same script run from two directories can legitimately
+    // `use` two different modules. Keying on the literal strings gave both runs
+    // one entry and made them fight over it.
     std::string sp;
-    for (auto& d : searchPath) { sp += d; sp += '\x01'; }
+    for (auto& d : searchPath) { sp += precompAbs(d); sp += '\x01'; }
     std::string h = sha1hex(abs + std::string(1, '\0') + sp);
     // one level of fan-out, so a large cache is not one enormous directory
     return dir + "/" + h.substr(0, 2) + "/" + h.substr(2) + ".ast";
@@ -2892,11 +2907,11 @@ static void precompWrite(const std::string& path, const std::string& srcPath,
         auto u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
         auto str = [&](const std::string& v) { u32((uint32_t)v.size()); out.write(v.data(), (std::streamsize)v.size()); };
         str(precompBuildId());
-        str(srcPath);
+        str(precompAbs(srcPath));
         { std::string h = sha1hex(src); out.write(h.data(), 40); }
         u32((uint32_t)deps.size());
         for (auto& d : deps) {
-            str(d.first);
+            str(precompAbs(d.first));
             std::string h = sha1hex(d.second);
             out.write(h.data(), 40);
         }
