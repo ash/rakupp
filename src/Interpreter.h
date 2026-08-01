@@ -73,6 +73,15 @@ std::string sha1hex(const std::string& msg);
 // and `is dynamic`. An Env is built for every routine call AND every block, so
 // constructing and destroying eight containers per scope is pure overhead for
 // the ordinary case. They live behind one lazily-allocated pointer instead.
+// Split a search-path environment variable (RAKULIB) into directories. BOTH ','
+// and ':' separate; a ':' right after a lone leading drive letter is part of the
+// path (`C:\proj\lib`), not a separator. Shared so the PARSER's copy of the
+// search path — which is what finds a `use`d module's operator declarations
+// while the importing file is still being parsed — cannot drift from the
+// interpreter's. It did: the interpreter learned ',' and the parser did not, so
+// `RAKULIB=a,b` silently stopped importing operators.
+std::vector<std::string> splitSearchPath(const std::string& spec);
+
 struct EnvExtras {
     // rw-param write-through: paramName → (caller's argument expr, caller env).
     // An assignment to the param writes through the caller's lvalue IMMEDIATELY
