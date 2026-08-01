@@ -3139,8 +3139,22 @@ static void collectUseNames(const std::vector<StmtPtr>& stmts, std::vector<std::
     for (auto& st : stmts) collectUseNamesStmt(st.get(), out);
 }
 
+void collectExportedSubNames(const std::vector<StmtPtr>& stmts, std::set<std::string>& out) {
+    for (auto& st : stmts) {
+        if (!st) continue;
+        if (st->kind == NK::SubDecl) {
+            auto* sd = static_cast<SubDecl*>(st.get());
+            if (sd->isExport && !sd->name.empty()) out.insert(sd->name);
+        } else if (st->kind == NK::ClassDecl)
+            // `is export` subs may sit inside a BRACED module/package body
+            // (Cro::HTTP::Router exports `get`/`post`/… from `module … { }`)
+            collectExportedSubNames(static_cast<ClassDecl*>(st.get())->body, out);
+    }
+}
+
 std::vector<BundledModule> collectModuleGraph(const Program& prog,
-                                              const std::vector<std::string>& searchPath) {
+                                              const std::vector<std::string>& searchPath,
+                                              std::set<std::string>* exportsOut) {
     std::vector<BundledModule> out;
     std::set<std::string> seen;
     std::vector<std::string> queue;
@@ -3162,6 +3176,10 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
             finish = lx.finishData();
         } catch (ParseError&) { continue; }               // let the run-time loader report it
         collectUseNames(mp.stmts, queue);                 // depth-first over its dependencies
+        // Before the embeddability checks below: a module that is loaded from
+        // DISK at run time still exports these names, and a compiled call site
+        // has to resolve them the same way either way.
+        if (exportsOut) collectExportedSubNames(mp.stmts, *exportsOut);
         std::string blob;
         try { blob = serializeAst(mp); }
         catch (AstSerialError&) { continue; }             // not embeddable: disk fallback
@@ -3224,21 +3242,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // …and $?DISTRIBUTION, which is lexical to the compiling module in the same way
         if (!distStack_.empty() && distStack_.back().t != VT::Any)
             moduleEnv->define("$?DISTRIBUTION", distStack_.back());
+        // Which subs may shadow a built-in for the importer — the same scan
+        // codegen runs over the module graph, so `--exe` agrees with this.
         std::set<std::string> exported;
-        // `is export` subs may sit inside a BRACED module/package body
-        // (Cro::HTTP::Router exports `get`/`post`/… from `module … { }`) —
-        // recurse so a builtin-colliding name like `get` still publishes
-        std::function<void(const std::vector<StmtPtr>&)> scanExports =
-            [&](const std::vector<StmtPtr>& stmts) {
-            for (auto& st : stmts) {
-                if (st->kind == NK::SubDecl) {
-                    auto* sd = static_cast<SubDecl*>(st.get());
-                    if (sd->isExport && !sd->name.empty()) exported.insert(sd->name);
-                } else if (st->kind == NK::ClassDecl)
-                    scanExports(static_cast<ClassDecl*>(st.get())->body);
-            }
-        };
-        scanExports(prog->stmts);
+        collectExportedSubNames(prog->stmts, exported);
         tctx_.cur = moduleEnv;
         auto savedPkg = curPkgEnv_; curPkgEnv_ = moduleEnv; // `our sub` in the module installs here, not main's global
         // A `unit module Foo;` sets pkgPrefix for the rest of the file so its
@@ -6500,6 +6507,13 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
         throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + name + "'"};
     }
     return it->second(*this, args);
+}
+
+Value Interpreter::callEnvFirst(const std::string& name, ValueList args) {
+    Value* p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
+    if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
+    if (p) return callCallable(*p, std::move(args));
+    return callBuiltin(name, std::move(args));
 }
 
 Value Interpreter::getArgs() {

@@ -1,5 +1,6 @@
 #pragma once
 #include "Ast.h"
+#include <set>
 #include <string>
 
 namespace rakupp {
@@ -14,6 +15,11 @@ struct CodegenError { std::string msg; };
 // Throws CodegenError on any unsupported construct.
 // With optimize=true, fixed-arity positional subs get direct `Value` parameters
 // (skipping the per-call ValueList heap allocation) — the `-O` codegen pass.
-std::string transpileToCpp(Program& prog, bool optimize = false, const std::string& srcPath = "");
+// `moduleExports` are the `is export` sub names of the modules the program
+// `use`s (collectModuleGraph fills them). A call to one of those names is
+// resolved through the run-time environment instead of the builtin table, so an
+// exported sub shadows a same-named built-in here as it does in the interpreter.
+std::string transpileToCpp(Program& prog, bool optimize = false, const std::string& srcPath = "",
+                           const std::set<std::string>& moduleExports = {});
 
 }

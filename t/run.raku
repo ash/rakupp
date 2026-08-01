@@ -411,6 +411,38 @@ section('compile modes embed their modules (run with the module tree removed)');
     try unlink %bin{$_} for <bundle aot exe>;
 }
 
+# ---- a module export vs a same-named built-in --------------------------
+# The interpreter resolves a call through the environment BEFORE the builtin
+# table, so an `is export`ed `sub val` wins over the built-in `val` (and a
+# non-exported one deliberately does not — loadModule's publish carve-out).
+# `--exe` resolved calls by NAME at compile time and emitted a cached builtin
+# pointer for anything in the table, so the env lookup never happened and the
+# binary printed the built-in's answer where the interpreter printed the
+# module's. -O is checked too: its direct named-builtin calls (`lc` is one)
+# bypass even that pointer. Rakudo agrees with the expected output.
+section('an exported module sub shadows a built-in (every compile mode)');
+{
+    my $lib  = $ROOT.add('t/fixtures/shadowlib');
+    my $prog = $ROOT.add('t/fixtures/shadows-builtin.raku');
+    my $want = "export-wins\nab\nprivate-lc(X)\n";
+
+    my $p = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :out, :err);
+    my $got = $p.out.slurp(:close); $p.err.slurp(:close);
+    is($got, $want, 'interpreter: the export wins, the private sub does not');
+
+    for ('bundle',), ('aot',), ('exe',), ('exe', '-O') -> @mode {
+        my $desc = @mode.join(' ');
+        my $bin  = $*TMPDIR.add("rakupp-suite-shadow-{@mode.join('')}-$*PID").Str;
+        my $c = run($*EXECUTABLE, "--@mode[0]", |@mode[1..*], $prog.Str, '-I', $lib.Str, '-o', $bin, :out, :err);
+        $c.out.slurp(:close); my $err = $c.err.slurp(:close);
+        unless $c.exitcode == 0 { ok(False, "--$desc builds the shadowing program"); diag("--$desc: $err"); next }
+        my $r = run($bin, :out, :err);   # the binary carries the module: no -I
+        my $out = $r.out.slurp(:close); $r.err.slurp(:close);
+        is($out, $want, "--$desc agrees with the interpreter on built-in shadowing");
+        try unlink $bin;
+    }
+}
+
 # ---- module loading & the precomp cache --------------------------------
 # Smoke coverage for the module system itself, and specifically for the parsed-
 # AST cache's INVALIDATION. Every bug found in that cache so far — entries

@@ -102,8 +102,20 @@ struct BundledModule { std::string name, blob, finish, src; };
 // than failing the build — the binary falls back to loading it from disk, which
 // is also what has to happen for anything only a running program can name
 // (`require ::($x)`, a computed `use lib`). Pragmas are skipped.
+//
+// `exportsOut`, when given, collects the `is export` sub names of every module
+// in the graph — including ones left out of the returned table. Codegen needs
+// them: a compiled call is resolved by name at compile time, so it has to know
+// which names a module is about to take over (see collectExportedSubNames).
 std::vector<BundledModule> collectModuleGraph(const Program& prog,
-                                              const std::vector<std::string>& searchPath);
+                                              const std::vector<std::string>& searchPath,
+                                              std::set<std::string>* exportsOut = nullptr);
+
+// The `is export` sub names declared by `stmts` (recursing into braced
+// module/package bodies). This is the scan that decides whether a module sub may
+// shadow a built-in for its importer: an exported one wins, a plain one stays
+// module-private. loadModule uses it to publish, codegen to emit the call.
+void collectExportedSubNames(const std::vector<StmtPtr>& stmts, std::set<std::string>& out);
 
 // Where the precompiled-AST cache lives (see loadModule), "" when disabled.
 std::string precompCacheDir();
@@ -409,6 +421,12 @@ public:
     // chain has finished (head/first reached its limit) so `done` should fire.
     ValueList applyTapChain(Value& tap, const Value& in, bool& complete);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
+    // Same, but with the INTERPRETER's resolution order: a routine bound in the
+    // environment wins over the built-in of that name (evalCall's
+    // `find("&"+name)` before the builtin table). Codegen emits this for the
+    // names a `use`d module exports — an `is export`ed `sub val` has to beat the
+    // built-in `val` in compiled code exactly as it does in the interpreter.
+    Value callEnvFirst(const std::string& name, ValueList args);
     // Resolve a builtin's function once (at compiled-program startup) so call
     // sites can go through the pointer directly, skipping callBuiltin's
     // per-call name hash + map lookup. Null when the name is not a registered

@@ -151,6 +151,34 @@ Verified: `t/run.raku` 55/55; 20 deterministic examples byte-identical across
 interp / `--exe` / `--exe -O`; tagged-value edge cases (Version `eq`, enum
 `eq`, junctions, `Int eq Str` coercion) match the interpreter.
 
+## The correctness constraint on resolving names at compile time
+
+Both cuts above decide *at compile time* that a name is a built-in — the cached
+pointer and, under `-O`, a direct `rtBLc(…)` call. A `use`d module can take that
+name away:
+
+```raku
+# lib/OnlySub.rakumod
+unit module OnlySub;
+sub val() is export { 'from-module' }
+```
+
+The interpreter's `evalCall` looks the name up in the environment
+(`find("&val")`) **before** the builtin table, so the export wins. Compiled code
+never did that lookup, and printed the built-in `val`'s `Nil` instead — a silent
+divergence, and the reason `--exe` cannot resolve a name from the builtin table
+alone.
+
+So codegen now takes the module graph's exported names (`collectModuleGraph`'s
+`exportsOut`, the same `is export` scan `loadModule` uses to decide what may
+shadow) and emits `RT.callEnvFirst("val", …)` for those — env first, built-in as
+the fallback — while skipping the `fastB` table for them. Everything else keeps
+the cached pointer, so the cost lands only on names a module actually claims.
+The rule is the interpreter's, carve-out included: a **non**-exported module sub
+of a built-in's name stays module-private (`loadModule`'s `publish`), so the
+importer still reaches the built-in while the module's own code sees its own.
+`--aot`/`--bundle` interpret, and were never affected.
+
 ## What's deliberately not done (and what it would buy)
 
 - **The `ValueList` per call** — the actual dominant cost of the calling

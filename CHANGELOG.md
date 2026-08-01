@@ -34,6 +34,18 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
   of `Any`. `dd $*RAKU` now gives the constructor form.
 - **`$*RAKU.compiler.auth` is the person who wrote the compiler** rather than
   "The Raku Community", which stays the *language's* authority.
+- **A module's exported sub beats a built-in of the same name under `--exe`.**
+  `sub val() is export` in a module, `say val()` in the program: the interpreter
+  printed the module's answer and the compiled binary printed the built-in's
+  `Nil`. Native codegen resolves a call by name at compile time and emitted a
+  cached builtin pointer for anything in the builtin table, so the run-time
+  environment lookup that finds the module's `&val` never happened — while the
+  interpreter checks that environment *before* the table. Codegen now knows
+  which names the `use`d modules export and routes those calls through the
+  environment (`-O`'s direct named-builtin calls too). The deliberate carve-out
+  is unchanged: a **non**-exported module sub of a built-in's name stays
+  module-private, so the importer still gets the built-in. `--aot`/`--bundle`
+  interpret and were never affected.
 
 Documentation corrected in the same pass: the README and `docs/MODULES.md` both
 still promised that *"a missing or broken `use` is a warning, not a fatal

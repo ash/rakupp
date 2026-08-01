@@ -115,7 +115,19 @@ struct Codegen {
     // `__bfN` declarations and the one-time resolution after all code has
     // been generated. rtCallB falls back to the by-name path on null.
     std::map<std::string, int> usedBuiltins_; // name -> __bfN id
+
+    // Names a `use`d module exports (`is export`). Resolving a call by name at
+    // compile time is exactly what a module export defeats: the interpreter's
+    // evalCall checks the environment BEFORE the builtin table, so an exported
+    // `sub val` wins over the built-in `val` — while compiled code called the
+    // built-in, because the cached pointer meant the env lookup never happened.
+    // Calls to these names go through callEnvFirst instead (and skip -O's direct
+    // named-builtin calls, which bypass even the pointer).
+    std::set<std::string> moduleExports_;
+
     std::string builtinCall(const std::string& name, const std::string& vl) {
+        if (moduleExports_.count(name))
+            return "RT.callEnvFirst(" + cesc(name) + ", " + vl + ")";
         auto it = usedBuiltins_.emplace(name, (int)usedBuiltins_.size()).first;
         return "rtCallB(RT, __bfp" + std::to_string(it->second) + ", " + cesc(name) + ", " + vl + ")";
     }
@@ -1055,7 +1067,8 @@ struct Codegen {
                 // lambda; the hot path of rtBAbs inlines at the call site).
                 // Only for a plain single positional arg; anything else takes
                 // the generic cached-pointer path below.
-                if (optimize_ && c->args.size() == 1 && simpleArgs(c->args)) {
+                if (optimize_ && c->args.size() == 1 && simpleArgs(c->args) &&
+                    !moduleExports_.count(c->name)) {   // a module export owns this name
                     static const std::map<std::string, const char*> fastB = {
                         {"abs", "rtBAbs"}, {"chr", "rtBChr"}, {"ord", "rtBOrd"},
                         {"say", "rtBSay"}, {"print", "rtBPrint"}, {"put", "rtBPut"}, {"note", "rtBNote"},
@@ -2311,9 +2324,11 @@ struct Codegen {
 
 } // namespace
 
-std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcPath) {
+std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcPath,
+                           const std::set<std::string>& moduleExports) {
     Codegen g;
     g.optimize_ = optimize;
+    g.moduleExports_ = moduleExports;
     // pre-pass: collect top-level sub declarations (for forward refs) and enum
     // values (bound as globals so subs can see them).
     std::vector<SubDecl*> subs;

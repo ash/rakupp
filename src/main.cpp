@@ -465,11 +465,15 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         Parser parser(lexer.tokenize());
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         Program prog = parser.parseProgram();
-        cpp = transpileToCpp(prog, optimize, absPath(srcName));
         // The program is compiled; its MODULES ride along as parsed ASTs, so the
         // binary is self-sufficient. (Natively compiling module code is a separate
         // step — most module files declare a package, which codegen does not take.)
-        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
+        // The graph is walked BEFORE transpiling because codegen needs the names
+        // those modules export: it resolves calls by name, so an exported sub that
+        // collides with a built-in has to be known to reach it at all.
+        std::set<std::string> moduleExports;
+        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports);
+        cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports);
         if (!mods.empty()) {
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls);
@@ -870,8 +874,12 @@ int main(int argc, char** argv) {
         try {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
+            parser.libPaths_ = effectiveSearchPath({});
             Program prog = parser.parseProgram();
-            std::cout << transpileToCpp(prog, optimize, absPath(fname));
+            // same module scan as --exe, so what this prints is what --exe compiles
+            std::set<std::string> moduleExports;
+            collectModuleGraph(prog, effectiveSearchPath({}), &moduleExports);
+            std::cout << transpileToCpp(prog, optimize, absPath(fname), moduleExports);
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
