@@ -873,7 +873,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             return out;
         }
-        if (m == "join") return Value::str(joinValues(items, args.empty() ? "" : a0().toStr()));
+        if (m == "join") {
+            // each element through ITS OWN .Str, so a user `method Str` is honoured
+            const std::string sep = args.empty() ? "" : a0().toStr();
+            std::string out;
+            for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += strOf(items[k]); }
+            return Value::str(out);
+        }
         if (m == "fmt") {
             std::string fmt = args.empty() ? "%s" : a0().toStr();
             std::string sep = args.size() > 1 ? args[1].toStr() : " ";

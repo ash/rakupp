@@ -433,6 +433,15 @@ Regex::NodePtr Regex::parseAtom() {
     if (c == '<') {
         pos_++;
         if (peek() == '(') { pos_++; auto n = std::make_unique<Node>(); n->k = K::CapStart; return n; } // <( match-capture start
+        // NOTE: `<|w>` (a zero-width word boundary) is NOT handled here. Reading it
+        // as a boundary is the correct semantics — and it parses and matches like
+        // Rakudo's — but turning it on moves YAMLish from "every scalar is a string"
+        // to "every typed scalar is Any": with the candidate now matching, its
+        // `{ make … }` result is lost somewhere in the schema's
+        // `regex TOP { [ <element> <.ws> || <plain> ] { make $/.values[0].ast } }`.
+        // Left out until that is fixed, rather than trade one wrong answer for a
+        // worse one. The generic assertion reader treats it as an alternation, which
+        // is why the rest of such a rule currently never runs.
         // Enumerated string alternation: `< + - >` / `< foo bar >` (a LEADING space after
         // `<` signals the quoted-word-list form) matches any of the literal words, longest first.
         if (peek() == ' ' || peek() == '\t') {
@@ -1752,6 +1761,25 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     // also collate the occurrence (empty name = plain capture, not a rule),
                     // so a capture repeated under a quantifier yields a list like Rakudo's
                     ParseNode leaf; leaf.from = pos; leaf.to = np;
+                    // `$<value>=<value-sq>` — a named group wrapping a SUBRULE keeps that
+                    // subrule's own tree, so `$<value><val>` still reaches inside. A bare
+                    // span would drop it: XML's attribute rule captures single-quoted
+                    // values exactly this way.
+                    // The wrapped subrule recorded its own node over exactly this span;
+                    // find it by span rather than by walking the AST, which the sigspace
+                    // forms wrap in a Seq.
+                    for (auto& ce : st.children) {
+                        if (ce.first == cn || ce.second.empty()) continue;
+                        const ParseNode& sub = ce.second.back();
+                        if (sub.from != pos || sub.to != np) continue;
+                        if (!sub.kids && sub.named.empty() && sub.caps.empty()) continue;
+                        leaf.name = cn;   // it stands for a rule now, not a bare span
+                        leaf.kids = sub.kids;
+                        leaf.named = sub.named;
+                        leaf.caps = sub.caps;
+                        leaf.listNames = sub.listNames;
+                        break;
+                    }
                     st.children[cn].push_back(std::move(leaf));
                 }
                 if (k(np)) return true;

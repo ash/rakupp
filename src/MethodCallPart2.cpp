@@ -2089,7 +2089,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const ClassAttr* at0 = ci->findAttr(m);
                 stubOverAttr = at0 && at0->pub;
             }
-            if (!stubOverAttr) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
+            // `self.new(:$name)` from inside a method, where the class writes only
+            // `multi method new(Str $xml)`: with no proto those multis ADD to the
+            // default constructor rather than replacing it, so a call none of them
+            // takes falls through to it. (The type-object path already knows this;
+            // the instance path was throwing before it got there.)
+            bool passToDefault = false;
+            if (m == "new" && um0->t == VT::Code && um0->code && um0->code->isMultiDispatcher) {
+                passToDefault = true;
+                for (auto& cand : um0->code->candidates) {
+                    if (cand.code && cand.code->isProto) { passToDefault = false; break; }
+                    if (scoreCandidate(cand, args) >= 0) { passToDefault = false; break; }
+                }
+            }
+            if (!stubOverAttr && !passToDefault)
+                return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
         }
         if (m == "clone") { // shallow copy, with :name(val) attribute overrides
             Value nv = inv; auto ni = std::make_shared<ObjectData>();

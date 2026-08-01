@@ -2283,6 +2283,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto ai = classAliases_.find(invIn.s);
         if (ai != classAliases_.end()) { invCopy = invIn; invCopy->s = ai->second; invp = &*invCopy; }
     }
+    // A method called ON a Proxy is a READ of what it stands for: FETCH first.
+    // (`$doc.root[0].name` — AT-POS hands back a Proxy, and every method after it
+    // was landing on the container.) `.VAR` deliberately still sees the Proxy.
+    if (invIn.t == VT::Hash && invIn.hashKind == "Proxy" && invIn.hash &&
+        mName != "VAR" && mName != "FETCH" && mName != "STORE" && mName != "WHERE") {
+        if (invIn.hash->count("FETCH")) {
+            Value fetched = deproxy(invIn);
+            if (!(fetched.t == VT::Hash && fetched.hashKind == "Proxy"))
+                return methodCallInner(fetched, mName, std::move(args), rwArgs);
+        }
+    }
     const Value& inv = *invp;
     // `.perl` IS `.raku` — the old name for the same method. Aliasing once, here,
     // replaces sixteen `|| m == "perl"` clauses scattered down the ladder, each of
@@ -2513,6 +2524,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return Value::makeHash();
     if (m == "pairup" && (inv.t == VT::Any || inv.t == VT::Type || inv.t == VT::Nil)) {
         Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; // :U invocant
+    }
+    // `.Str` / `.gist` / `~` on a LIST goes through each element's own .Str, so a
+    // list of objects with a user `method Str` renders as those strings (see strOf).
+    if (inv.t == VT::Array && inv.arr && inv.enumName.empty() &&
+        (m == "Str" || m == "Stringy")) {
+        bool anyObj = false;
+        for (auto& e : *inv.arr) if (e.t == VT::Object) { anyObj = true; break; }
+        if (anyObj) return Value::str(strOf(inv));
     }
     // a binary buffer has no string semantics: .Str is an error (use .decode)
     if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
@@ -5518,7 +5537,14 @@ void Interpreter::registerBuiltins() {
     };
     // An object argument (e.g. an exception in `is $!, 'msg'`) compares by its Str —
     // which for an Exception is its .message, matching `~$!` (via strOf).
-    auto isStrify = [](Interpreter& I, Value& v) { if (v.t == VT::Object) v = Value::str(I.strOf(v)); };
+    // …and a LIST of objects compares by the same rule, element by element:
+    // `is $elem.contents, 'text'` where .contents is a list of XML::Text nodes.
+    auto isStrify = [](Interpreter& I, Value& v) {
+        if (v.t == VT::Object) { v = Value::str(I.strOf(v)); return; }
+        if (v.t == VT::Array && v.arr && v.enumName.empty())
+            for (auto& e : *v.arr)
+                if (e.t == VT::Object) { v = Value::str(I.strOf(v)); return; }
+    };
     B["is"] = [isEq, isStrify](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();
         Value exp = a.size() > 1 ? a[1] : Value::any();

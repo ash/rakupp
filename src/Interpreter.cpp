@@ -5393,7 +5393,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
             if (p.coerce && !p.type.empty() && v.typeName() != p.type)
-                v = methodCall(v, p.type, ValueList{});
+                v = coerceToType(v, p.type);
             else if (p.sigil == '$' && !p.invocant && !p.type.empty())
                 typeCheckBind(p, v); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
@@ -5704,16 +5704,28 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
                                                        // (so multi f(Int) beats multi f(Numeric) for an Int)
         }
         if (p->whereExpr) {
+            // A COERCION parameter's `where` sees the COERCED value:
+            // `IO::Path(Str) $src where :f` asks whether the PATH is a file, and a
+            // string that is not one simply loses the candidate (XML's open-xml
+            // multi picks the Str one instead) rather than failing the bind.
+            Value wv = pos[i];
+            if (p->coerce && !p->type.empty() && wv.typeName() != p->type) {
+                try { wv = coerceToType(wv, p->type); } catch (...) { return -1; }
+            }
             auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
-            if (!p->name.empty()) env->define(p->name, pos[i]);
-            env->define("$_", pos[i]);
+            if (!p->name.empty()) env->define(p->name, wv);
+            env->define("$_", wv);
             auto saved = tctx_.cur; tctx_.cur = env;
             bool ok = false;
             try {
                 Value cv = eval(p->whereExpr.get());
-                // `where EXPR` is a smartmatch: a WhateverCode/Code constraint is called with the value
-                if (cv.t == VT::Code && cv.code) cv = callCallable(cv, ValueList{pos[i]});
-                ok = boolify(cv);
+                // `where EXPR` is a SMARTMATCH, not a boolification: a Code is called
+                // with the value, anything else is matched against it. Boolifying
+                // instead made every non-Code constraint pass — `where :f` on a Pair
+                // is always truthy — so a candidate that should have been skipped won
+                // the dispatch and then died in the bind (XML's open-xml).
+                if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{wv}));
+                else ok = boolify(applyBinOp("~~", wv, cv));
             } catch (...) { tctx_.cur = saved; return -1; }
             tctx_.cur = saved;
             if (!ok) return -1;
@@ -7937,6 +7949,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             std::string key = eval(idx->index.get()).toStr();
             return &(*base->hash)[key];
         } else {
+            // `$obj[$i] = v` on an OBJECT whose class defines AT-POS: assign through
+            // the container that returns (XML::Element hands back a Proxy). Same rule
+            // as the AT-KEY branch above — without it the object was replaced by an
+            // empty Array.
+            if (base->t == VT::Object && base->obj && base->obj->cls &&
+                base->obj->cls->findMethod("AT-POS")) {
+                static thread_local Value atPosHold;
+                Value k = eval(idx->index.get());
+                atPosHold = methodCall(*base, "AT-POS", ValueList{k});
+                return &atPosHold;
+            }
             // a List ((1,3,5) held in a scalar) is immutable — element assignment dies
             if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty())
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
@@ -8168,10 +8191,37 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
 // happened for one held in a variable, but not for one handed back by a method —
 // `$elem<id>`, where AT-KEY returns a Proxy (XML::Element's attributes), came back
 // as the Proxy's own guts. Assignment targets go through lvalue() and never here.
+// `T($v)` — the coercion a `T() $param` or `my T() $x` asks for. Rakudo tries the
+// value's own method named T first and falls back to the type's COERCE/new; a
+// QUALIFIED name has no matching method on a built-in (Str has `.IO`, not
+// `.IO::Path`), which is what `IO::Path() :$filename` in XML's from-xml-file hits.
+Value Interpreter::coerceToType(const Value& v, const std::string& type) {
+    try { return methodCall(v, type, ValueList{}); }
+    catch (RakuError&) {}
+    if (type == "IO::Path") return methodCall(v, "IO", ValueList{});
+    // a user type coerces through its own COERCE — and only that: `.new` is NOT a
+    // coercion route (`-> Foo() $x {…}("42")` is an error in Rakudo when Foo says
+    // nothing about coercing, and answering `Foo.new("42")` would hide it)
+    auto ci = classes_.find(type);
+    if (ci != classes_.end() && ci->second->findMethod("COERCE"))
+        return methodCall(Value::typeObj(type), "COERCE", ValueList{v});
+    if (size_t sep = type.rfind("::"); sep != std::string::npos) {
+        try { return methodCall(v, type.substr(sep + 2), ValueList{}); }
+        catch (RakuError&) {}
+    }
+    throw RakuError{Value::typeObj("X::Coerce::Impossible"),
+        "Impossible coercion from '" + v.typeName() + "' into '" + type + "'"};
+}
+
 Value Interpreter::deproxy(Value v) {
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash) {
         auto it = v.hash->find("FETCH");
-        if (it != v.hash->end()) return callCallable(it->second, { v });
+        if (it == v.hash->end()) return v;
+        // FETCH may be written as a `method` — XML::Element's is — in which case the
+        // Proxy is its INVOCANT, not its first positional.
+        if (it->second.t == VT::Code && it->second.code && it->second.code->isMethod)
+            return invokeMethod(it->second, v, {});
+        return callCallable(it->second, { v });
     }
     return v;
 }
@@ -8182,6 +8232,10 @@ Value Interpreter::deproxy(Value v) {
 Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
     auto it = proxy.hash->find("STORE");
     if (it == proxy.hash->end()) return v;
+    // `method ($val)` takes the Proxy as its invocant; `sub ($, $v)` takes it as the
+    // first positional. Both spellings appear in the wild — XML uses the method form.
+    if (it->second.t == VT::Code && it->second.code && it->second.code->isMethod)
+        return invokeMethod(it->second, proxy, { v });
     return codeArity(it->second) >= 2 ? callCallable(it->second, { proxy, v })
                                       : callCallable(it->second, { v });
 }
@@ -8822,7 +8876,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (a->op == "=" && a->target->kind == NK::VarExpr) {
             const std::string& ct = static_cast<VarExpr*>(a->target.get())->declCoerce;
-            if (!ct.empty()) { ValueList none; rhs = methodCall(rhs, ct, none); }
+            if (!ct.empty()) rhs = coerceToType(rhs, ct);
         }
         Value* lv = lvalue(a->target.get());
         // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
@@ -12172,6 +12226,15 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (op == "xor" || op == "^^")
         return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
     if (op == "=>") return Value::pair(l.toStr(), r); // `.key <<=>>> .value` — hyper over the pair op
+    // A FILETEST adverb as a matcher — `$path ~~ :f`, and `where :f` on a parameter,
+    // which is checked through this entry point rather than evalBinary's.
+    if ((op == "~~" || op == "!~~") && r.t == VT::Pair && !r.s.empty() &&
+        l.hashKind == "IO") {
+        bool actual = false;
+        try { actual = boolify(methodCall(l, r.s, {})); } catch (RakuError&) { actual = false; }
+        bool want = r.pairVal ? boolify(*r.pairVal) : true;
+        return Value::boolean((actual == want) == (op == "~~"));
+    }
     // zip/cross with an inner op (Z&& / Zand / X~) — resolve the inner via applyBinOp
     if (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) {
         std::string sub = op.substr(1);
@@ -12614,6 +12677,8 @@ Value Interpreter::evalBinary(Binary* b) {
     if (op == "~") {
         // string concat coerces via .Str; honour a user-defined `method Str`/`gist`
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
+        if (l.hashKind == "Proxy") l = deproxy(l);
+        if (r.hashKind == "Proxy") r = deproxy(r);
         if (l.t == VT::Object || r.t == VT::Object) return Value::str(strOf(l) + strOf(r));
         return applyArith("~", l, r);
     }
@@ -13903,6 +13968,18 @@ std::string Interpreter::strOf(const Value& v) {
     if (v.t == VT::Hash && (v.hashKind == "DateTime" || v.hashKind == "Date") &&
         v.hash && v.hash->count("formatter"))
         return methodCall(v, "Str", {}).toStr();
+    // A LIST stringifies its elements space-separated, and each element through
+    // ITS OWN .Str — a list of objects with a user `method Str` must not come out
+    // as `T<obj> T<obj>` (XML::Element.contents is a list of XML::Text).
+    if (v.t == VT::Array && v.arr && v.enumName.empty()) {
+        bool anyObj = false;
+        for (auto& e : *v.arr) if (e.t == VT::Object) { anyObj = true; break; }
+        if (anyObj) {
+            std::string out;
+            for (size_t k = 0; k < v.arr->size(); k++) { if (k) out += " "; out += strOf((*v.arr)[k]); }
+            return out;
+        }
+    }
     if (v.t == VT::Object && v.obj && v.obj->cls) {
         for (const char* nm : {"Str", "gist", "Stringy"}) // ~$o uses .Stringy, print uses .Str
             if (Value* m = v.obj->cls->findMethod(nm)) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
@@ -14733,6 +14810,10 @@ Value Interpreter::evalIndex(Index* idx) {
         }
     }
     Value base = eval(idx->base.get());
+    // Indexing INTO a Proxy reads it: `$xml[1]<en>` — AT-POS handed back a Proxy,
+    // and the subscript was landing on the container. (Writes go through lvalue(),
+    // which keeps the container so STORE still runs.)
+    if (base.hashKind == "Proxy") base = deproxy(base);
     // Indexing an unhandled Failure propagates it (`@a[-1][0]` keeps the Failure
     // from the out-of-range outer index rather than reading through it).
     if (base.t == VT::Hash && base.hashKind == "Failure") return base;

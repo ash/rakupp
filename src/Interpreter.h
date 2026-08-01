@@ -402,6 +402,8 @@ public:
     bool objListItems(const Value& v, ValueList& out);
     // A Proxy read as a VALUE answers its FETCH. See the definition in Interpreter.cpp.
     Value deproxy(Value v);
+    // `T($v)` coercion — see the definition in Interpreter.cpp.
+    Value coerceToType(const Value& v, const std::string& type);
     // Run a Proxy's STORE for `$proxy = v`. See the definition in Interpreter.cpp.
     Value proxyStore(const Value& proxy, const Value& v);
     // The hash behind `for values %h` — see the definition in Interpreter.cpp.
