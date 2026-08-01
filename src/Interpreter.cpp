@@ -2716,9 +2716,19 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     noteSymbolMutation("module load (use/need)");
     loadedModules_.insert(name);
 
+    // RAKUPP_TRACE also reports where a module's load time went: `parse` is the
+    // lex+parse of its source, `run` is executing its top level (declarations,
+    // BEGIN blocks, side effects). The split is what decides whether caching a
+    // parsed AST would be worth anything for a given dependency tree.
+    const bool traceLoad = std::getenv("RAKUPP_TRACE") != nullptr;
+    auto nowMs = [] {
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
     auto loadSource = [&](const std::string& src) {
         auto prog = std::make_shared<Program>();
         std::string finish;
+        double tParse = traceLoad ? nowMs() : 0;
         try {
             Lexer lx(src);
             Parser parser(lx.tokenize());
@@ -2738,6 +2748,13 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             throw ParseError("Error while compiling module " + name + " (line " +
                              std::to_string(e.line) + "): " + e.what(), e.line);
         }
+        double parseMs = traceLoad ? nowMs() - tParse : 0, tRun = traceLoad ? nowMs() : 0;
+        struct TGuard {
+            bool on; const std::string& nm; double pms, t0;
+            const std::function<double()>& now;
+            ~TGuard() { if (on) fprintf(stderr, "[Load] %s parse %.1f ms, run %.1f ms\n",
+                                        nm.c_str(), pms, now() - t0); }
+        } tg{traceLoad, name, parseMs, tRun, nowMs};
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         auto saved = tctx_.cur;
         std::string savedFinish = finishData_;
