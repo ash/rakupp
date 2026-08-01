@@ -82,18 +82,16 @@ run as part of this — there is no separate compile phase for them to run in.
 
 | Source | Position | Notes |
 |---|---|---|
-| `RAKULIB` env var | appended | `,` **or** `:` — both accepted, so one setting works for both engines |
+| `RAKULIB` env var | appended | paths separated by `,` or `:` — both accepted |
 | `ROAST` env var | appended | adds `$ROAST/packages/Test-Helpers/lib` |
 | `-I dir` on the command line | prepended | last one written wins |
 | `use lib '…'` at run time | prepended | takes a single path or a list |
 
-`RAKULIB` accepts **both** `,` and `:` as separators, so the same value works
-under `rakupp` and `raku`. It did not always: Raku++ split on `:` only and
-Rakudo splits on `,`, and using the wrong one does not error — it silently
-collapses the list to a single path, which reads as a module incompatibility.
-That cost real time in the module battery. The one carve-out is a Windows drive
-letter: a `:` directly after a lone leading letter and before a slash
-(`C:\proj\lib`) is part of the path, not a separator.
+`RAKULIB` accepts **both** `,` and `:` as separators. The one carve-out is a
+Windows drive letter: a `:` directly after a lone leading letter and before a
+slash (`C:\proj\lib`) is part of the path, not a separator — so a relative
+directory named with a single letter cannot be followed by a `:` separator
+(`x:/b/lib` is one path). `,` has no such ambiguity.
 
 For each base, both `<base>/` and `<base>/lib/` are tried (so `-I` pointing at a
 distribution *root* works, which is how Rakudo resolves it via `META6.json`),
@@ -307,8 +305,8 @@ Demonstration (`lib/Demo.rakumod` declaring `my sub private-sub`,
    bug" reports are the wrong copy of the module being picked up, usually
    because `.` is on `libPaths_` or because an installed copy shadowed a
    checkout.
-2. **`RAKULIB` takes `,` or `:`** under `rakupp`, but only `,` under `raku` —
-   so write `,` if the same value has to serve both.
+2. **`RAKULIB` takes `,` or `:`.** If the same value also has to drive
+   `raku`, write `,`.
 3. **Instrument the real module, not a reduction.** Copy its `lib/` to a
    scratch dir, add `note` calls, and run it under both engines. Reductions of
    grammar/module behaviour have repeatedly *passed* while the real module
