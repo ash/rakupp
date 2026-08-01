@@ -78,12 +78,13 @@ runnable snippets in [COOKBOOK.md](COOKBOOK.md), complete programs in
   true CPU parallelism with `RAKUPP_PARALLEL=1`. (See [ASYNC.md](ASYNC.md).)
 - **I/O & system** — files, `IO::Path`, `run`/`shell` subprocesses, and a
   **NativeCall** C FFI (`is native` via `dlsym`) covering libc + `<math.h>`
-  (integer and floating-point scalars, no `libffi`).
+  (scalars incl. mixed int+float, `CArray`, `CStruct`, `is rw` out-params and
+  synchronous callbacks; no `libffi`, so varargs and by-value structs are out).
 - **Tooling** — a parse-aware syntax highlighter (`--highlight`, HTML + ANSI) and
   a self-hosted Roast harness written in Raku and run *by* Raku++.
 
 **Not there yet:** macros / `RakuAST` / slangs, `libffi`-grade NativeCall
-(structs / callbacks / mixed int+float signatures), some `IO`/`POD` corners, and
+(variadic C functions / by-value structs), some `IO`/`POD` corners, and
 true lock-free parallel atomics.
 
 ## Four ways to run a program
