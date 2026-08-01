@@ -167,13 +167,18 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 | `--aot SRC -o OUT` | Compile: parse ahead of time, embed the AST |
 | `--exe SRC -o OUT` | Native-compile to C++ (fastest; falls back to bundling) |
 | `--ast SRC` | Print the parsed AST as an indented tree |
+| `--ast-roundtrip SRC` | Check that file's AST survives the cache format — see [below](#checking-the-ast-serializer) |
 | `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to; with `-O`, the *optimized* codegen |
+| `--precomp-info` | Where the parsed-AST cache is, what it holds — see [CACHING.md](CACHING.md) |
+| `--precomp-clean` | Empty that cache (entries are derived data — always safe) |
 | `--highlight [SRC]` | Syntax-highlight Raku — `--html` (default) or `--ansi`; a `pygmentize` drop-in |
 | `--help`, `-h` | Show help |
 | `--version`, `-V` | Show the version |
 
 The compile modes (`--bundle` / `--aot` / `--exe`) each accept `FILE` or `-e CODE`
 plus `-o OUT` — see [Four ways to run a program](#four-ways-to-run-a-program) below.
+They also take `-I`, and it matters at *compile* time: it is how the modules the
+program `use`s are found and embedded, so the binary needs nothing at run time.
 
 | Environment variable | Meaning |
 |---|---|
@@ -203,6 +208,28 @@ build/rakupp --ast -e 'say 2 + 2 * 3'
 ```
 
 (`RAKUPP_DUMPTOKENS=1` similarly dumps the lexer's token stream.)
+
+### Checking the AST serializer
+
+The parsed AST is what the [precompiled-parse cache](CACHING.md) stores and what
+`--aot`/`--exe` embed in a binary, so a field that fails to survive being written
+and read back is a program that behaves subtly differently. `--ast-roundtrip`
+parses a file, serializes it, rebuilds it, and proves nothing was lost:
+
+```sh
+rakupp --ast-roundtrip t/fixtures/native-parity.raku
+```
+
+```
+ok t/fixtures/native-parity.raku  (905 bytes)
+```
+
+It asserts two things, which fail differently and are both needed: re-serializing
+the rebuilt tree must be **byte-identical** (catching a reader that skips a
+field), and the two trees' `--ast` dumps must **match** (catching a writer that
+never writes one). Run it over a corpus after changing `src/Ast.h`; exit status
+is 0 for a clean round trip, 1 for a failure, and 3 when the file does not parse
+at all (not a serializer problem).
 
 To inspect the C++ that `--exe` would compile, print it with `--cpp` instead of
 building a binary. `--cpp` accepts the same `-O` flag as `--exe`, so running it
