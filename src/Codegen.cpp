@@ -545,8 +545,14 @@ struct Codegen {
         std::ostringstream b;
         b << "    static const std::vector<Param> __np = []{ std::vector<Param> v;\n";
         for (auto& p : d->params)
+            // `slurpy` has to travel too: it is what marks where C's `...`
+            // begins, and without it the compiled bridge prepares a variadic
+            // call as a fixed one — which the interpreter gets right and the
+            // binary gets wrong, on exactly the ABIs that pass `...` on the
+            // stack.
             b << "        { Param p; p.name = " << cesc(p.name) << "; p.sigil = '"
               << (p.sigil ? p.sigil : '$') << "'; p.type = " << cesc(p.type)
+              << (p.slurpy ? "; p.slurpy = true" : "")
               << "; v.push_back(std::move(p)); }\n";
         b << "        return v; }();\n";
         b << "    static Callable __nc; static const bool __nci = []{ __nc.isNative = true;\n";

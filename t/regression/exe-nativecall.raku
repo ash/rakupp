@@ -38,18 +38,41 @@ sub compile-and-run(Str $name, Str $src, Bool :$expect-native) {
 sub sqlite3_libversion(--> Str) is native('sqlite3') {*}
 my $have-sqlite = so try sqlite3_libversion();
 
-# 1. default-namespace + literal-lib subs → true native compile, right answers
+# 1. default-namespace + literal-lib subs → true native compile, right answers.
+#    The num32/9-argument/variadic lines are the libffi-era shapes: the bridge
+#    rebuilds the parameter list in generated C++, and it once dropped `slurpy`,
+#    so a variadic call the interpreter got right came out WRONG in the binary
+#    (prepared as a fixed call, whose `...` arguments land in registers instead
+#    of on the stack). They are also the check that a compiled binary finds and
+#    uses libffi at all — it links the same runtime, so it must.
+#    They need the libffi backend, so they are appended only when it is live —
+#    with RAKUPP_FFI=0, or on a platform with no libffi to load, those same
+#    calls are expected to throw and the compiled binary would exit non-zero.
+sub ldexpf(num32, int32 --> num32) is native {*}
+my $have-ffi = ?(try ldexpf(3e0, 2) == 12e0);
+
 my $src1 = q:to/P/;
     use NativeCall;
     sub getpid(--> int32) is native(Str) {*}
     say getpid() > 0;
+    P
+$src1 ~= q:to/P/ if $have-ffi;
+    sub ldexpf(num32, int32 --> num32) is native {*}
+    say ldexpf(3e0, 2);
+    sub nine(int32,int32,int32,int32,int32,int32,int32,int32,int32 --> int32)
+        is native is symbol('abs') {*}
+    say nine(-7,1,2,3,4,5,6,7,8);
+    sub snprintf(Str, size_t, Str, *@args --> int32) is native {*}
+    say snprintf(Str, 0, "%d-%s", 42, "hi");   # measures "42-hi" without writing
     P
 $src1 ~= q:to/P/ if $have-sqlite;
     sub sqlite3_libversion(--> Str) is native('sqlite3') {*}
     say so sqlite3_libversion() ~~ /^\d+\.\d+/;
     P
 my $out1 = compile-and-run('nc-native', $src1, :expect-native);
-my $want1 = $have-sqlite ?? "True\nTrue" !! "True";
+my $want1 = "True";
+$want1 ~= "\n12\n7\n5" if $have-ffi;
+$want1 ~= "\nTrue"     if $have-sqlite;
 @fail.push("native bridge: $out1") unless $out1 eq $want1;
 
 # 2. an `is rw` out-param → CodegenError → bundling fallback, still correct
