@@ -1,0 +1,27 @@
+{
+  "auth": "zef:fixture",
+  "authors": [
+    "Fixture Author"
+  ],
+  "depends": [
+  ],
+  "description": "The base library every other fixture distribution builds on",
+  "license": "Artistic-2.0",
+  "meta-version": 0,
+  "name": "Corelib",
+  "provides": {
+    "Corelib": "lib/Corelib.rakumod",
+    "Corelib::Util": "lib/Corelib/Util.rakumod"
+  },
+  "raku": "6.*",
+  "resources": [
+  ],
+  "source-url": "https://example.invalid/fixture/Corelib.git",
+  "tags": [
+    "fixture",
+    "core"
+  ],
+  "test-depends": [
+  ],
+  "version": "1.2.0"
+}

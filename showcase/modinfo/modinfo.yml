@@ -1,0 +1,20 @@
+# modinfo configuration.
+#
+# Read through Config, which gives dotted-path access (`report.width`), with
+# the layers merged by Hash::Merge: these values override the built-in
+# defaults, and anything given on the command line overrides these.
+#
+# The file is parsed by the Config::Parser::YAMLish class defined inside
+# modinfo.raku, which is a YAMLish back end for Config's parser interface.
+
+scan:
+  path: fixtures/dists
+  installed: false
+
+report:
+  format: table
+  width: 92
+  color: true
+
+rank:
+  top: 20

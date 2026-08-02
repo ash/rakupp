@@ -1,0 +1,26 @@
+{
+  "auth": "zef:fixture",
+  "authors": [
+    "Fixture Author"
+  ],
+  "depends": [
+    "Corelib:ver<1.2.0+>:auth<zef:fixture>"
+  ],
+  "description": "A widget layer over Corelib",
+  "license": "Artistic-2.0",
+  "meta-version": 0,
+  "name": "Widget",
+  "provides": {
+    "Widget": "lib/Widget.rakumod"
+  },
+  "raku": "6.*",
+  "resources": [
+  ],
+  "source-url": "https://example.invalid/fixture/Widget.git",
+  "tags": [
+    "fixture"
+  ],
+  "test-depends": [
+  ],
+  "version": "0.4.1"
+}

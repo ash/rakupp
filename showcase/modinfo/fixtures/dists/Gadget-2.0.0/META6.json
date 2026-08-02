@@ -1,0 +1,33 @@
+{
+  "auth": "zef:fixture",
+  "authors": [
+    "Fixture Author",
+    "Second Author"
+  ],
+  "build-depends": [
+  ],
+  "depends": [
+    "Corelib:ver<1.2.0+>:auth<zef:fixture>",
+    "Widget",
+    "JSON::Fast:ver<0.19+>"
+  ],
+  "description": "A gadget that pulls in an out-of-set dependency, so the graph has an external edge",
+  "license": "Artistic-2.0",
+  "meta-version": 0,
+  "name": "Gadget",
+  "provides": {
+    "Gadget": "lib/Gadget.rakumod",
+    "Gadget::Panel": "lib/Gadget/Panel.rakumod"
+  },
+  "raku": "6.*",
+  "resources": [
+  ],
+  "source-url": "https://example.invalid/fixture/Gadget.git",
+  "tags": [
+    "fixture"
+  ],
+  "test-depends": [
+    "Test::When"
+  ],
+  "version": "2.0.0"
+}

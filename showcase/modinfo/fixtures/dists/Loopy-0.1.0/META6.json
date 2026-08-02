@@ -1,0 +1,27 @@
+{
+  "auth": "zef:fixture",
+  "authors": [
+    "Fixture Author"
+  ],
+  "depends": [
+    "Knot"
+  ],
+  "description": "Half of a deliberate dependency cycle",
+  "license": "Artistic-2.0",
+  "meta-version": 0,
+  "name": "Loopy",
+  "provides": {
+    "Loopy": "lib/Loopy.rakumod"
+  },
+  "raku": "6.*",
+  "resources": [
+  ],
+  "source-url": "https://example.invalid/fixture/Loopy.git",
+  "tags": [
+    "fixture",
+    "cycle"
+  ],
+  "test-depends": [
+  ],
+  "version": "0.1.0"
+}

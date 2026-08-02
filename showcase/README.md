@@ -16,6 +16,7 @@ together they answer "what can it actually build?"
 | [**rakus/**](rakus/) | Deployable — a general static HTTP file server | point it at a folder, open it in a browser |
 | [**chat/**](chat/) | Concurrency — many clients, one thread each | TCP chat server you connect to with `nc` |
 | [**kvstore/**](kvstore/) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
+| [**modinfo/**](modinfo/) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -251,6 +252,43 @@ HELP                     -> the command list
 ```
 
 Commands: `SET GET DEL EXISTS INCR DECR APPEND KEYS DBSIZE FLUSHALL PING QUIT`.
+
+## modinfo — the ecosystem story
+
+Every other showcase is self-contained: the language and its runtime, nothing
+else. **modinfo** is the opposite — a distribution inspector in which almost
+nothing below the argument parser is hand-rolled. Seventeen distributions from
+the ecosystem's most-depended-on list do the work: JSON::Fast reads the
+`META6.json` files, XML and YAMLish write the reports, Config and Hash::Merge
+layer the settings, IO::Glob and File::Find walk the tree, Digest and
+MIME::Base64 fingerprint the sources, Abbreviations resolves short names, Color
+paints the counts.
+
+```sh
+build/rakupp showcase/modinfo/modinfo.raku list          # every distribution
+build/rakupp showcase/modinfo/modinfo.raku deps Gadget   # dependency tree
+build/rakupp showcase/modinfo/modinfo.raku graph         # build order + cycles
+build/rakupp showcase/modinfo/modinfo.raku check         # validate META6.json
+build/rakupp showcase/modinfo/modinfo.raku export --format=xml
+```
+
+Point it at a directory of unpacked distributions with `--path`, or at Rakudo's
+own installation database with `--installed`. `rank` reproduces the
+reverse-dependency measurement that produces an ecosystem's "most depended-on"
+list — the one that picked the modules it is built from.
+
+The bundled `fixtures/dists/` is a six-distribution corpus with a deliberate
+dependency cycle and one deliberately broken `META6.json`, so the interesting
+paths are exercised on every run:
+
+```sh
+RAKUPP=build/rakupp sh showcase/modinfo/compare.sh
+```
+
+runs all thirteen commands under Rakudo and under Raku++ and diffs STDOUT —
+byte-identical, and byte-identical again over the 61 real distributions of the
+module battery. See [`modinfo/README.md`](modinfo/README.md) for the module map
+and what each fixture is for.
 
 ## In the browser — [`web/`](web/)
 

@@ -1,0 +1,27 @@
+{
+  "auth": "zef:fixture",
+  "authors": [
+    "Fixture Author"
+  ],
+  "depends": [
+    "Loopy"
+  ],
+  "description": "The other half of the deliberate dependency cycle",
+  "license": "Artistic-2.0",
+  "meta-version": 0,
+  "name": "Knot",
+  "provides": {
+    "Knot": "lib/Knot.rakumod"
+  },
+  "raku": "6.*",
+  "resources": [
+  ],
+  "source-url": "https://example.invalid/fixture/Knot.git",
+  "tags": [
+    "fixture",
+    "cycle"
+  ],
+  "test-depends": [
+  ],
+  "version": "0.1.0"
+}

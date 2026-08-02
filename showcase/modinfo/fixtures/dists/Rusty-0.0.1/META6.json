@@ -1,0 +1,21 @@
+{
+  "authors": [
+  ],
+  "depends": [
+    "Corelib",
+    "Corelib",
+    "Rusty"
+  ],
+  "meta-version": 0,
+  "name": "Rusty",
+  "provides": {
+    "Rusty": "lib/Rusty.rakumod",
+    "Rusty::Missing": "lib/Rusty/Missing.rakumod"
+  },
+  "resources": [
+    "data/table.csv"
+  ],
+  "tags": [
+  ],
+  "version": "*"
+}
