@@ -178,7 +178,7 @@ private:
     void checkVirtualCallInDefault(size_t defStart); // `has $.x = $.y` is illegal
     static void checkNullRegex(const std::string& pat, int line,
                                bool branches = true); // `/ /`; branches: `/a|/` too
-    StmtPtr parseSub(bool isMulti, bool isProto = false);
+    StmtPtr parseSub(bool isMulti, bool isProto = false, bool asMethod = false);
     StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false, bool isUnit = false,
                        const std::string& kindKw = "");
     int classDepth_ = 0; // >0 while parsing inside a class/role/grammar body

@@ -580,6 +580,10 @@ public:
     // What a `for` walks: an object with its own `.iterator` decides for itself.
     Value iterationSourceOf(Value v);
     std::thread::id mainThreadId() const { return mainThread_; } // `exit` ends the process from any thread
+    // Resolve `$var` atoms inside a regex SOURCE (regex splice / literal text).
+    std::string interpRegexPattern(const std::string& in);
+    // Bake regex-valued variables into an `rx//` source at construction time.
+    std::string spliceRegexVars(const std::string& pat);
     Value regexMatch(const std::string& subject, const std::string& pattern,
                      const Value* rxVal = nullptr);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation
@@ -613,7 +617,24 @@ public:
     const std::string& resolveClassAlias(const std::string& n) {
         if (classes_.count(n)) return n;
         auto it = classAliases_.find(n);
-        return it != classAliases_.end() ? it->second : n;
+        if (it != classAliases_.end()) return it->second;
+        // A nested type named by a PARTIAL path from inside its own package:
+        // `Globber::Match` inside `unit class IO::Glob` is IO::Glob::Globber::Match.
+        // Rakudo resolves it lexically; here the registry is flat, so accept the
+        // unique registered name that ends with `::n`. Only qualified names take
+        // this road — a bare `Match` must not silently find a nested one.
+        if (n.find("::") != std::string::npos) {
+            const std::string suffix = "::" + n;
+            const std::string* hit = nullptr;
+            for (auto& kv : classes_) {
+                if (kv.first.size() <= suffix.size()) continue;
+                if (kv.first.compare(kv.first.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
+                if (hit) return n;   // ambiguous — leave it alone
+                hit = &kv.first;
+            }
+            if (hit) return classAliases_.emplace(n, *hit).first->second;
+        }
+        return n;
     }
     // `augment class Int {…}` on a built-in type: extra methods keyed by type name.
     // methodCall consults this for native values whose type has been augmented.

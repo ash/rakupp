@@ -1013,12 +1013,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "is-relative") return Value::boolean(inv.toStr().empty() || inv.toStr()[0] != '/');
         if (m == "contents" || m == "dir") {
+            // `:test` filters on the BASENAME, smart-matched: a Regex, a Callable,
+            // or any object with an ACCEPTS (IO::Glob passes a glob object). The
+            // sub form `dir($path, :test)` already honoured it; the method form
+            // silently returned everything.
+            Value test; bool haveTest = false;
+            for (auto& x : args)
+                if (x.t == VT::Pair && x.s == "test" && x.pairVal) { test = *x.pairVal; haveTest = true; }
+
             Value out = Value::array(); out.isList = true;
             std::string base = inv.toStr();
             if (DIR* d = opendir(base.c_str())) {
                 while (struct dirent* e = readdir(d)) {
                     std::string nm = e->d_name;
                     if (nm == "." || nm == "..") continue;
+                    if (haveTest && !matcherAccepts(*this, Value::str(nm), test)) continue;
                     out.arr->push_back(asIO(base + (base.empty() || base.back() == '/' ? "" : "/") + nm));
                 }
                 closedir(d);
@@ -1958,7 +1967,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string subj = inv.toStr();
         // `/@alpha/` — array elements as a longest-first literal alternation
         // (Base64 decodes via `$str.comb(/@alpha/)`); match/subst interpolate later
-        std::string pat = rxInterpArrays(args[rxIdx].s);
+        // `$var` atoms in the pattern resolve here too — `.split(/$d+/)`,
+        // `.comb(/$sep/)`, `.subst(/$old/, …)` all compile a raw regex source, and
+        // without this pass they matched the literal text "$d".
+        std::string pat = rxInterpArrays(interpRegexPattern(args[rxIdx].s));
         // the replacement is the first positional (non-Pair) arg that isn't the regex
         Value* replArg = nullptr;
         for (size_t i = 0; i < args.size(); i++)
@@ -2234,7 +2246,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value d0 = a0();
         struct Delim { bool isRx; std::string str; };
         std::vector<Delim> delims;
-        auto add = [&](const Value& d) { if (d.t == VT::Regex) delims.push_back({true, d.s}); else delims.push_back({false, d.toStr()}); };
+        // A regex delimiter's source still carries its `$var` atoms: `.split(/$d+/)`
+        // must resolve $d the same way `~~ /$d+/` does. Compiling the raw source
+        // instead matched a literal "$d" and split nothing.
+        auto add = [&](const Value& d) {
+            if (d.t == VT::Regex) delims.push_back({true, interpRegexPattern(d.s)});
+            else delims.push_back({false, d.toStr()});
+        };
         if (d0.t == VT::Array) { for (auto& e : *d0.arr) add(e); } else add(d0);
         // `:v`/`:k`/`:kv`/`:p` interleave the SEPARATORS with the pieces — as the
         // matched text, the matching delimiter's INDEX in the delimiter list, both,

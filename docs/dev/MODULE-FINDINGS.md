@@ -703,3 +703,114 @@ rather than these modules:
 - `my $r = 1^..3; @a[$r]` — Rakudo treats the itemized Range as ONE index
   (numifying it), rakupp slices with it.
 - `Any[1..3]` — Rakudo raises, rakupp answers a slice of undefined values.
+
+## 2026-08-02 — the modinfo showcase: 17 distributions in one program
+
+`showcase/modinfo/` is an ecosystem app rather than a probe: a distribution
+inspector (dependency graph, META validation, SHA-1 fingerprints, table/JSON/
+YAML/XML reports) whose every layer below the argument parser is an ecosystem
+module. Building it surfaced **sixteen general interpreter bugs**, none of them
+about the modules themselves. All are fixed in `src/`; Roast 196,937→196,959
+(baseline spread ±6, so a small net gain), `t/run.raku` 271/271.
+
+The app is byte-identical under Rakudo and rakupp across all thirteen commands
+(`showcase/modinfo/compare.sh`), on the bundled fixture corpus AND on the
+battery's 61 real distributions.
+
+Bugs found, in the order the program hit them:
+
+1. **`<# a b>`** — `#` started a comment inside a bare `< … >` word list, so the
+   closing `>` and the rest of the line were swallowed. Rakudo reads it as the
+   three words `#`, `a`, `b`. (Lexer: skip the comment branch while
+   `angleWords_ > 0`.)
+2. **`ª`, `µ`, `º` are letters** — the identifier whitelist started at U+00C0,
+   so the three Latin-1 letters below it were rejected. Font::AFM keys its
+   encoding table on them (`:ª("ordfeminine")`). Same for the **Lm runs of the
+   Spacing Modifier Letters block** (ˆ ˇ) — added exactly the Lm sub-ranges, not
+   the Sk ones.
+3. **`my ::?CLASS:U $x`** — signatures accepted `::?CLASS`; declarations did
+   not, and stopped at the `::`. Also skips the `:D`/`:U` smiley after either
+   `::T` form.
+4. **`/a/ ff /b/`** — a `/` after the flip-flop operator was read as division,
+   not as a regex. All eight spellings added to the regex-context keyword set.
+5. **`method dispatch:<.?>`** — rejected as an unknown operator category. Rakudo
+   accepts the `dispatch` category on a METHOD (and rejects it on a sub, which
+   rakupp still does).
+6. **`%h.Hash`** — only `.hash` existed. A Hash answers itself; a Map answers a
+   mutable copy.
+7. **A `%h` / `@a` parameter is a TYPE CONSTRAINT.** Multi dispatch ignored the
+   sigil entirely, so `multi f(%d)`, `multi f(@p)` and `multi f($s)` were
+   indistinguishable and whichever was declared first took every call. This is
+   why `Config.new.read(%data)` routed a Hash into Config's `IO() $path` file
+   candidate. The sigil now scores above a blanket coercion.
+8. **A bare `proto`/`multi` in a class body is a SUB**, not a method — only
+   `multi method`/`submethod` declares one. `proto glob(|) is export {*}` inside
+   `unit class IO::Glob` was becoming an unreachable method, so `glob` never
+   reached the importer.
+9. **`with A {…} elsif B {…} else {…}`** — with/without take part in the
+   if-chain; only the `orwith` continuation was handled.
+10. **Named destructuring from a CAPTURE** — `my (:$path, :@globbers) :=
+    @list.shift` read Hash right-hand sides only, so every name bound Any.
+11. **`$x ~~ $obj` never called the object's `ACCEPTS`** — the hook every
+    matcher type in Raku is built on. Added for `~~` and for the
+    `.grep`/`.first` matcher path; `$x ~~ SomeClass` stays a type check.
+12. **`make` inside a protoregex candidate was stolen by `<sym>`.** A built-in
+    assertion has no rule pattern to compare against, so the FIFO fallback handed
+    it the candidate's block and the candidate got none — `$<match>.made` came
+    back empty for every `token x:sym<y> { <sym> { make … } }`.
+13. **A nested type named by a partial path** — `Globber::Match` inside
+    `unit class IO::Glob` is `IO::Glob::Globber::Match`. The class registry is
+    flat, so a qualified name now also resolves against a unique registered
+    suffix. Bare names deliberately do not.
+14. **Regex composition.** `rx/$base$tail/` where the variables hold REGEXES
+    spliced them as literal TEXT. Now a regex value splices as a sub-pattern, and
+    a pattern that composes another regex is baked at `rx//` construction time —
+    deferring it re-reads the names in the scope of the eventual match, which
+    breaks the moment the result is fed back into the same variable, as IO::Glob
+    does when it folds a glob's terms into one matcher.
+15. **`.split(/$d+/)` never interpolated** — the regex-method path compiled the
+    raw source. The `$var` resolution is now one shared routine used by `~~` and
+    by every builtin that compiles a pattern.
+16. **`.dir(:test)` ignored its matcher** in the METHOD form (the sub form
+    honoured it). Also: an exported **sigilless `constant`** was invisible to the
+    importing file's parser (`SPACE ~ $word` parsed as a listop call), which
+    needed the module search path to reach module parsers; **`sub rule(…)`** was
+    lexed as a grammar rule declaration, swallowing the routine and everything
+    after it; **`[|@a, $x]`** did not flatten the slip; and a hash composer with
+    a COMPUTED key (`{ $d.name => True }`) parsed as a block.
+
+The last one is the cautionary tale of the batch: the first version of the
+composed-key heuristic accepted any `=>` ahead of the closing brace, which turned
+`dies-ok { dt month => 0 }` into a hash and cost 486 Roast assertions. The rule
+that works is strictly a postfix chain — a term, then `.name`/`!name`/subscripts,
+then the arrow. Two terms in a row is a listop call, not a hash.
+
+Battery note: `Font::AFM 1.24.10` and `AlgorithmsIT 0.0.4` were vendored (both
+pure Raku, no further deps) — Text::Utils needs both, and neither is in the
+top-50 set.
+
+**Scope note, measured 2026-08-02.** "modinfo runs byte-identically" is not the
+same as "these 17 distributions work." Of the 17, **14 needed no fixes at all**
+(JSON::Fast, YAMLish, XML, Hash::Merge, the four File::* dists, Digest,
+MIME::Base64, Abbreviations, Terminal::ANSIColor, Color, Data::Dump). Nine of
+the sixteen bugs belong to **IO::Glob** alone, four to **Font::AFM** (pulled in
+by Text::Utils), one to **Config**; the rest were hit by modinfo's own code.
+
+And IO::Glob is still not finished. Its own suite, run against the vendored
+copy under both engines:
+
+| file | Rakudo | before | after |
+|---|--:|--:|--:|
+| absolute.t | 4 | 4 | 4 |
+| dir.t | 19 | 0 | 4 |
+| double-star.t | 6 | 0 | 2 |
+| iterator.t | 9 | 0 | 0 |
+| path-dir.t | 13 | 0 | 6 |
+| smart-match.t | 21 | 0 | **21** |
+| sqlish.t | 18 | 0 | 13 |
+| **total** | **90** | **4** | **50** |
+
+smart-match.t is complete (the ACCEPTS + regex-composition work). The gap is
+the recursive `**` descent, the iterator protocol, and the rest of `dir`, which
+modinfo never exercises — it asks for `*/META6.json` and a flat `*` and nothing
+else. Next IO::Glob batch starts at iterator.t.

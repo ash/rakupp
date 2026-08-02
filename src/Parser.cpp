@@ -320,6 +320,34 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             else regSet('P', userPostfix_, name);
         }
     }
+
+    // A SIGILLESS `constant` the module exports is a TERM here, not a listop:
+    // `SPACE ~ $word` is a concatenation, and without this it parsed as a call to
+    // `SPACE` taking `~ $word` — "Undefined routine 'SPACE'" the moment the
+    // importer ran (Text::Utils imports SPACE/EMPTY from Text::Utils::Vars).
+    for (size_t pos = src.find("constant"); pos != std::string::npos;
+         pos = src.find("constant", pos + 8)) {
+        if (pos && (std::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '-' ||
+                    src[pos - 1] == '_')) continue;                       // part of a longer word
+        size_t i = pos + 8;
+        if (i >= src.size() || !std::isspace((unsigned char)src[i])) continue;
+        while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) i++;
+        if (i >= src.size() || !(std::isalpha((unsigned char)src[i]) || src[i] == '_')) continue;
+        size_t b = i;
+        while (i < src.size() && (std::isalnum((unsigned char)src[i]) || src[i] == '_' ||
+                                  (src[i] == '-' && i + 1 < src.size() &&
+                                   std::isalpha((unsigned char)src[i + 1])))) i++;
+        std::string name = src.substr(b, i - b);
+        // The initializer has to be on the same line, and between the name and
+        // the `=` only traits may appear — anything else means we misread the
+        // declaration (a type name, say), so leave it alone.
+        size_t eq = src.find('=', i), nl = src.find('\n', i);
+        if (eq == std::string::npos || (nl != std::string::npos && nl < eq)) continue;
+        std::string between = src.substr(i, eq - i);
+        if (between.find_first_not_of(" \t") != std::string::npos &&
+            between.find("is ") == std::string::npos) continue;
+        sigilless_.insert(name);
+    }
 }
 
 // A loop used in value context (`(for … {…})`, `do while … {…}`) collects each
@@ -1725,9 +1753,23 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
           (peek().kind == Tok::LBrace ||
            (peek().kind == Tok::Ident && peek(2).kind == Tok::LBrace)))))
         return parsePrefix();
-    // type-capture declaration:  my ::T $x  (binds T to the type of $x; we just parse it)
-    if (isOp("::") && peek().kind == Tok::Ident) { advance(); advance(); }
     std::string type, coerceTo;
+    bool indirectType = false;
+    // type-capture declaration:  my ::T $x  (binds T to the type of $x; we just parse it)
+    if (isOp("::") && peek().kind == Tok::Ident) { advance(); advance(); indirectType = true; }
+    // compile-time enclosing type as the declared type: `my ::?CLASS:U $c = …`
+    // (Font::AFM). Signatures already accepted `::?CLASS`; declarations did not,
+    // and stopped at the `::` with "expected variable after declarator".
+    else if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" &&
+             peek(2).kind == Tok::Ident) {
+        advance(); advance(); advance(); // :: ? CLASS
+        type = typeStack_.empty() ? "Mu" : typeStack_.back();
+        indirectType = true;
+    }
+    // the `:D` / `:U` / `:_` smiley that may follow either form
+    if (indirectType && isOp(":") && peek().kind == Tok::Ident &&
+        (peek().text == "D" || peek().text == "U" || peek().text == "_"))
+    { advance(); advance(); }
     if (isKind(Tok::Ident)) {
         bool looksType = peek().kind == Tok::Var || peek().kind == Tok::LParen ||
                          peek().kind == Tok::LBracket ||
@@ -2953,6 +2995,48 @@ ExprPtr Parser::parsePrimary() {
             else if (a.kind == Tok::Var && !a.text.empty() && a.text[0] == '%' &&
                      (b.kind == Tok::RBrace || b.kind == Tok::Comma))
                 isHash = true;
+            // A key that is a COMPUTED term still composes a hash: `{ $d.name => 1 }`,
+            // `{ %h<k> => 1 }`. Only a plain postfix chain counts — a term followed by
+            // `.name`, a subscript or a call, and then the fat arrow. Anything else
+            // (a listop, an operator, a second statement) leaves it a block.
+            else if (a.kind == Tok::Var || a.kind == Tok::Ident) {
+                // Strictly a POSTFIX chain: `.name`, `!name`, or a bracket group,
+                // repeated, and then the arrow. Two terms in a row would be a
+                // listop call instead — `{ dt month => 0 }` is a block calling
+                // `dt`, not a hash — so the chain stops there.
+                size_t li = &t - &toks_[0];
+                size_t k = li + 2;                    // past `{` and the first term
+                while (k < toks_.size()) {
+                    const Token& tk = toks_[k];
+                    if (tk.kind == Tok::FatArrow) { isHash = true; break; }
+                    if (tk.kind == Tok::Op && (tk.text == "." || tk.text == "!")) {
+                        if (k + 1 >= toks_.size()) break;
+                        Tok nk = toks_[k + 1].kind;
+                        if (nk != Tok::Ident && nk != Tok::Var) break;
+                        k += 2;
+                        continue;
+                    }
+                    if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
+                        (tk.kind == Tok::Op && tk.text == "<")) {
+                        int d2 = 0;
+                        size_t j = k;
+                        for (; j < toks_.size(); j++) {
+                            Tok kk = toks_[j].kind;
+                            bool open = kk == Tok::LParen || kk == Tok::LBracket ||
+                                        (kk == Tok::Op && toks_[j].text == "<");
+                            bool close = kk == Tok::RParen || kk == Tok::RBracket ||
+                                         (kk == Tok::Op && toks_[j].text == ">");
+                            if (kk == Tok::End) break;
+                            if (open) d2++;
+                            else if (close && --d2 == 0) { j++; break; }
+                        }
+                        if (j <= k) break;
+                        k = j;
+                        continue;
+                    }
+                    break;
+                }
+            }
             // …but a composer that USES THE TOPIC is a block after all: `{3 => 4, :b}`
             // is a Hash while `{3 => 4, :b($_)}` and `{3 => 4, :b(.Num)}` are Blocks.
             // Anything that reads `$_`, a placeholder parameter, or calls a method on
@@ -4742,7 +4826,7 @@ std::vector<Param> Parser::parsePointyParams() {
     return parseSignature(Tok::LBrace);
 }
 
-StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
+StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // 'sub' already consumed by caller
     auto s = std::make_unique<SubDecl>();
     s->pod = leadingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line); // `#|` above the decl
@@ -4758,7 +4842,16 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto) {
     // an unknown extension category (`sub twigil:<@>`) cannot be added
     static const std::set<std::string> kCats = {
         "infix", "prefix", "postfix", "circumfix", "postcircumfix", "trait_mod", "term"};
-    if (!s->name.empty() && !kCats.count(s->name) && isOp(":") &&
+    // `method dispatch:<.?>` / `dispatch:<.=>` — the metamodel's dispatch hooks.
+    // Rakudo accepts the `dispatch` category on a METHOD (and rejects it on a
+    // sub), so keep the name whole and let it be an ordinary named method.
+    if (asMethod && s->name == "dispatch" && isOp(":") && !peek().spaceBefore &&
+        peek().kind == Tok::Op && peek().text == "<") {
+        advance(); advance(); // : <
+        std::vector<std::string> w = readAngleWords(">");
+        s->name += ":<" + (w.empty() ? std::string() : w[0]) + ">";
+    }
+    else if (!s->name.empty() && !kCats.count(s->name) && isOp(":") &&
         !peek().spaceBefore &&
         peek().kind == Tok::Op && (peek().text == "<" || peek().text == "<<"))
         throw ParseError("Cannot add tokens of category '" + s->name + "'",
@@ -5448,7 +5541,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             bool sub = isIdent("submethod");
             int ln = cur().line;
             advance();
-            auto s = parseSub(false);
+            auto s = parseSub(false, false, true);
             static_cast<SubDecl*>(s.get())->isMethod = true;
             static_cast<SubDecl*>(s.get())->isSubmethod = sub;
             if (s->line == 0) s->line = ln; // diagnostics (undeclared-attr location)
@@ -5465,7 +5558,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             // isProto must travel: a bare `{*}` proto METHOD is the group
             // definition, not a candidate — without the flag it entered dispatch
             // with its (|) slurpy and beat every invocant-constrained candidate
-            auto s = parseSub(true, multiness == "proto");
+            auto s = parseSub(true, multiness == "proto", isM);
             if (static_cast<SubDecl*>(s.get())->name.empty())
                 throw ParseError("Cannot put " + multiness + " on anonymous routine",
                                  cur().line, "X::Anon::Multi",
@@ -5473,6 +5566,12 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                                   {"routine-type", isM ? "method" : "sub"}});
             static_cast<SubDecl*>(s.get())->isMethod = isM;
             static_cast<SubDecl*>(s.get())->isSubmethod = isSub;
+            // Only `multi method` / `submethod` declares a method. A bare
+            // `proto`/`multi` in a class body is a SUB, as it is anywhere else —
+            // it belongs in the body scope, so `proto glob(|) is export {*}` in
+            // `unit class IO::Glob` reaches the importer instead of becoming an
+            // unreachable method.
+            if (!isM) { cd->body.push_back(std::move(s)); continue; }
             cd->methods.push_back(std::unique_ptr<SubDecl>(static_cast<SubDecl*>(s.release())));
             continue;
         }
@@ -6127,6 +6226,17 @@ StmtPtr Parser::parseStatementImpl() {
             if (g->defGuard && (isIdent("orwith") || isIdent("orwithout"))) {
                 auto blk = std::make_unique<Block>();
                 blk->stmts.push_back(parseStatement());
+                g->hasElse = true; g->elseBody = std::move(blk);
+                return g;
+            }
+            // `with A {…} elsif B {…} else {…}` — with/without take part in the
+            // if-chain, so an elsif after the body continues it. Rewritten as
+            // `else { if B {…} else {…} }`, the same shape as the orwith chain
+            // above. IO::Glob picks its grammar with exactly this.
+            if (g->defGuard && isIdent("elsif")) {
+                advance();
+                auto blk = std::make_unique<Block>();
+                blk->stmts.push_back(parseIf(false));
                 g->hasElse = true; g->elseBody = std::move(blk);
                 return g;
             }

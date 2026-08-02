@@ -3483,6 +3483,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (!cached) try {
             Lexer lx(src);
             Parser parser(lx.tokenize());
+            // The module's own `use`s resolve on the SAME search path, so its
+            // imported operators and sigilless constants are known while its body
+            // parses (Text::Utils reads SPACE from Text::Utils::Vars).
+            parser.libPaths_ = libPaths_;
             *prog = parser.parseProgram();
             finish = lx.finishData();
             if (!cpath.empty())
@@ -6375,6 +6379,22 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (av.ofType != p->type) return -1;
             score += 2;
         }
+        // A bare `@a` / `%h` parameter IS a type constraint: the sigil means
+        // Positional / Associative. Without this the sigil said nothing, so
+        // `multi f(%d)`, `multi f(@p)` and `multi f($s)` were indistinguishable
+        // and whichever was declared first took every call — Config.read routed
+        // a Hash argument into its `IO() $path` file candidate.
+        else if ((p->sigil == '@' || p->sigil == '%') &&
+                 (p->type.empty() || p->type == "Any" || p->type == "Mu")) {
+            const Value& av = pos[i];
+            bool ok = p->sigil == '@'
+                          ? (typeMatchesArg(av, "Positional") || av.t == VT::Range)
+                          : typeMatchesArg(av, "Associative");
+            if (!ok) return -1;
+            // Outranks a coercion parameter, which scores 2 by accepting anything
+            // convertible: `read(@paths)` must beat `read(IO() $path)` for a list.
+            score += 3;
+        }
         else if (!typeMatchesArg(pos[i], p->type)) return -1;
         // type smiley: :D requires a defined arg, :U requires an undefined one
         if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
@@ -8791,7 +8811,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r);
 // OBJECT, not an immediate match against $_ — so `:err(/pat/)` and `my $rx = /pat/`
 // store a Regex that can be smartmatched later.
 Value Interpreter::evalValueOf(Expr* e) {
-    if (e && e->kind == NK::RegexLit) return Value::regex(static_cast<RegexLit*>(e)->pattern);
+    if (e && e->kind == NK::RegexLit) return Value::regex(spliceRegexVars(static_cast<RegexLit*>(e)->pattern));
     return eval(e);
 }
 
@@ -9065,6 +9085,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (rhs.t == VT::Hash && rhs.hash) {
                     auto hit = rhs.hash->find(bare);
                     if (hit != rhs.hash->end()) v = hit->second;
+                }
+                // …or from a CAPTURE's named part: `my (:$path, :@globbers) :=
+                // @open-list.shift` over `\(:path($p), :@globbers)`. A capture is
+                // an Array tagged "Capture" whose named entries are Pairs; only
+                // Hash right-hand sides were read, so every name bound Any and
+                // IO::Glob's depth-first walk `take`-ed undefined paths.
+                else if (rhs.t == VT::Array && rhs.hashKind == "Capture" && rhs.arr) {
+                    for (auto& el : *rhs.arr)
+                        if (el.t == VT::Pair && el.s == bare) {
+                            v = el.pairVal ? *el.pairVal : Value::any();
+                            break;
+                        }
                 }
                 Value* lv = lvalue(it.get());
                 if (ve->name[0] == '@') *lv = coerceArray(v);
@@ -11474,6 +11506,110 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
     return out;
 }
 
+// `rx/$base$tail/` where $base and $tail hold REGEXES composes them. In Rakudo
+// the regex closes over those variables; here a Regex value is its source text,
+// so the composition is baked in when the `rx//` term is evaluated — with the
+// variables that are in scope at that moment. Deferring it to match time
+// re-reads the names against whatever they mean *then*, which is wrong as soon
+// as the result is fed back into the same variable, as IO::Glob does when it
+// folds a glob's terms into one matcher. Str-valued variables are left for the
+// match-time path, where they still interpolate literally.
+// The `$var` atoms of a regex SOURCE, resolved against the current scope: a
+// Regex value splices as a sub-pattern, anything else interpolates as literal
+// text. Repeated until stable, because a spliced regex may name more of them.
+// Shared by `~~` and by every builtin that compiles a raw pattern (`.split`).
+std::string Interpreter::interpRegexPattern(const std::string& in) {
+    std::string pat = in;
+    for (int pass = 0; pass < 8 && pat.find('$') != std::string::npos && tctx_.cur; pass++) {
+        std::string out;
+        bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
+        int braces = 0;    // inside `{…}` / `<?{…}>` / `**{…}`: CODE, not pattern — a
+                           // `$var` there is the block's own variable and must reach the
+                           // block verbatim, or `{ $c = $¢ }` arrives as `1 = $¢`.
+        for (size_t i = 0; i < pat.size(); i++) {
+            if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
+            if (pat[i] == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || pat[i + 1] == '-')) {
+                // a character class: copy it through so a literal `{` inside cannot
+                // open a false code span
+                size_t j = i;
+                while (j + 1 < pat.size() && !(pat[j] == ']' && pat[j + 1] == '>')) out += pat[j++];
+                while (j < pat.size() && pat[j] != '>') out += pat[j++];
+                if (j < pat.size()) out += pat[j];
+                i = j; continue;
+            }
+            if (pat[i] == '{') { braces++; out += pat[i]; continue; }
+            if (pat[i] == '}') { if (braces) braces--; out += pat[i]; continue; }
+            if (pat[i] == '\'' && !braces) { inSq = !inSq; out += pat[i]; continue; }
+            if (inSq || braces) { out += pat[i]; continue; }
+            if (pat[i] == '$' && i + 1 < pat.size() && (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
+                size_t j = i + 1;
+                while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
+                Value* v = tctx_.cur->find("$" + pat.substr(i + 1, j - i - 1));
+                // POSITION decides the reading (issue #15): `<$p>` compiles the
+                // string AS A REGEX, a bare `$p` matches it LITERALLY. The
+                // assertion form is `<` immediately before and `>` right after
+                // the variable — anything else keeps the literal meaning.
+                bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
+                if (v && inAngle) {
+                    out.pop_back();                 // drop the '<'
+                    out += "[ " + v->toStr() + " ]"; // group it: alternations stay contained
+                    i = j;                          // skip the '>'
+                    continue;
+                }
+                // A variable holding a REGEX splices as a sub-pattern, not as
+                // literal text — `rx/$base$match/` composes two regexes, which is
+                // how IO::Glob assembles a glob out of per-term matchers. Only a
+                // Str value keeps the quote-it-literally reading.
+                if (v && v->t == VT::Regex) {
+                    out += "[ " + v->s + " ]";
+                    i = j - 1;
+                    continue;
+                }
+                if (v) { out += quoteMetaRx(v->toStr()); i = j - 1; continue; }
+            }
+            out += pat[i];
+        }
+        if (out == pat) break;
+        pat = out;
+    }
+    return pat;
+}
+
+std::string Interpreter::spliceRegexVars(const std::string& pat) {
+    if (pat.find('$') == std::string::npos || !tctx_.cur) return pat;
+    std::string out;
+    bool inSq = false, sawRegex = false;
+    int braces = 0;
+    for (size_t i = 0; i < pat.size(); i++) {
+        char c = pat[i];
+        if (c == '\\' && i + 1 < pat.size()) { out += c; out += pat[i + 1]; i++; continue; }
+        if (c == '{') { braces++; out += c; continue; }
+        if (c == '}') { if (braces) braces--; out += c; continue; }
+        if (c == '\'' && !braces) { inSq = !inSq; out += c; continue; }
+        if (inSq || braces) { out += c; continue; }
+        if (c == '$' && i + 1 < pat.size() &&
+            (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
+            size_t j = i + 1;
+            while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
+            // `<$p>` is the assertion form: it already compiles the value as a
+            // regex at match time, so leave it alone.
+            bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
+            Value* v = tctx_.cur->find("$" + pat.substr(i + 1, j - i - 1));
+            if (v && !inAngle) {
+                if (v->t == VT::Regex) { out += "[ " + v->s + " ]"; sawRegex = true; }
+                else out += quoteMetaRx(v->toStr());
+                i = j - 1;
+                continue;
+            }
+        }
+        out += c;
+    }
+    // Only a pattern that actually composes another REGEX is baked. Everything
+    // else keeps the existing behaviour, where a `$var` atom is read at match
+    // time — that is what a plain `rx/$word/` over a changing $word expects.
+    return sawRegex ? out : pat;
+}
+
 Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern,
                               const Value* rxVal) {
     // wired mode: an anonymous `regex {…}` value — its code blocks and
@@ -11554,48 +11690,10 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // special vars, escaped \$, and the end-anchor $ untouched.
     // (wired mode: no textual interpolation — $vars inside code blocks belong
     // to the code, and pattern atoms resolve at match time via the str hook)
-    if (!wired && pat.find('$') != std::string::npos && tctx_.cur) {
-        std::string out;
-        bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
-        int braces = 0;    // inside `{…}` / `<?{…}>` / `**{…}`: CODE, not pattern — a
-                           // `$var` there is the block's own variable and must reach the
-                           // block verbatim, or `{ $c = $¢ }` arrives as `1 = $¢`.
-        for (size_t i = 0; i < pat.size(); i++) {
-            if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
-            if (pat[i] == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || pat[i + 1] == '-')) {
-                // a character class: copy it through so a literal `{` inside cannot
-                // open a false code span
-                size_t j = i;
-                while (j + 1 < pat.size() && !(pat[j] == ']' && pat[j + 1] == '>')) out += pat[j++];
-                while (j < pat.size() && pat[j] != '>') out += pat[j++];
-                if (j < pat.size()) out += pat[j];
-                i = j; continue;
-            }
-            if (pat[i] == '{') { braces++; out += pat[i]; continue; }
-            if (pat[i] == '}') { if (braces) braces--; out += pat[i]; continue; }
-            if (pat[i] == '\'' && !braces) { inSq = !inSq; out += pat[i]; continue; }
-            if (inSq || braces) { out += pat[i]; continue; }
-            if (pat[i] == '$' && i + 1 < pat.size() && (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
-                size_t j = i + 1;
-                while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
-                Value* v = tctx_.cur->find("$" + pat.substr(i + 1, j - i - 1));
-                // POSITION decides the reading (issue #15): `<$p>` compiles the
-                // string AS A REGEX, a bare `$p` matches it LITERALLY. The
-                // assertion form is `<` immediately before and `>` right after
-                // the variable — anything else keeps the literal meaning.
-                bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
-                if (v && inAngle) {
-                    out.pop_back();                 // drop the '<'
-                    out += "[ " + v->toStr() + " ]"; // group it: alternations stay contained
-                    i = j;                          // skip the '>'
-                    continue;
-                }
-                if (v) { out += quoteMetaRx(v->toStr()); i = j - 1; continue; }
-            }
-            out += pat[i];
-        }
-        pat = out;
-    }
+    // Repeated until stable: splicing a regex VALUE inserts that regex's own
+    // source, which may itself name further regexes (`rx/$lit$lit/` spliced into
+    // `rx/^$two$/`). The pass count is a guard against a self-referential value.
+    if (!wired) pat = interpRegexPattern(pat);
     if (!wired) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
     std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
@@ -12706,7 +12804,22 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                             rk.second.find(code) != std::string::npos) return true;
                 return false;
             };
-            if (!rulePat) makePick = 0; // no pattern to match against — keep the FIFO order
+            // Is this block the body of some rule the grammar actually declares?
+            auto ownedBySomeRule = [&](const std::string& code) {
+                for (const ClassInfo* ci = g; ci; ci = ci->parent.get())
+                    for (auto& rk : ci->rules)
+                        if (rk.second.find(code) != std::string::npos) return true;
+                return false;
+            };
+            if (!rulePat) {
+                // No pattern to compare against: this node is a BUILT-IN assertion
+                // (`<sym>`, a char class), not a declared rule. Keep FIFO order
+                // only for a block no declared rule claims — otherwise `<sym>`
+                // inside `token match:sym<*> { <sym> { make … } }` swallowed the
+                // candidate's own block, and `$<match>.made` came out empty.
+                if (ownedBySomeRule(mc->second.front())) mc = pendingMakeCode->end();
+                else makePick = 0;
+            }
             else {
                 makePick = (size_t)-1;
                 for (size_t i = 0; i < mc->second.size(); i++)
@@ -12721,7 +12834,14 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 Value* slot = tctx_.cur->find("$/"); Value saved = slot ? *slot : Value::nil();
                 setMatchVar(mv);
                 tctx_.makeTargets.push_back(&mv);
-                try { for (auto& s : prog->stmts) exec(s.get()); } catch (...) {}
+                try { for (auto& s : prog->stmts) exec(s.get()); }
+                catch (const RakuError& e) {
+                    if (std::getenv("RAKUPP_DEBUG_MAKE"))
+                        fprintf(stderr, "[make] threw: %s\n", e.message.c_str());
+                }
+                catch (...) {
+                    if (std::getenv("RAKUPP_DEBUG_MAKE")) fprintf(stderr, "[make] threw (non-Raku)\n");
+                }
                 tctx_.makeTargets.pop_back();
                 if (Value* s2 = tctx_.cur->find("$/")) *s2 = saved;
             }
@@ -13649,6 +13769,23 @@ Value Interpreter::evalBinary(Binary* b) {
             ValueList one{lTopic};
             bool ok = boolify(methodCall(r, "ACCEPTS", one));
             return Value::boolean(op == "~~" ? ok : !ok);
+        }
+        // `$x ~~ $obj` where $obj's class defines ACCEPTS — the general hook every
+        // matcher type in Raku is built on. Only a DEFINED instance takes this
+        // road; `$x ~~ SomeClass` stays a type check. Without it a custom matcher
+        // object silently answered False (IO::Glob's `"f.txt" ~~ glob("*.txt")`,
+        // and every `.grep($matcher)` over one).
+        if (r.t == VT::Object && r.obj && r.obj->cls) {
+            bool hasAccepts = false;
+            for (ClassInfo* ci = r.obj->cls.get(); ci && !hasAccepts; ci = ci->parent.get())
+                if (ci->methods.count("ACCEPTS")) hasAccepts = true;
+            if (hasAccepts) {
+                ValueList one{lTopic};
+                Value m = methodCall(const_cast<Value&>(r), "ACCEPTS", one);
+                if (op == "~~" && m.t == VT::Match) return m;
+                bool ok = boolify(m);
+                return Value::boolean(op == "~~" ? ok : !ok);
+            }
         }
         return applyArith(op, lTopic, r); // generic smartmatch on the already-evaluated operands
     }
@@ -16373,7 +16510,7 @@ Value Interpreter::eval(Expr* e) {
                 return v;
             }
             // rx// is always the Regex object; bare /…/ and m// match against $_
-            if (rl->isRx) return Value::regex(rl->pattern);
+            if (rl->isRx) return Value::regex(spliceRegexVars(rl->pattern));
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
             return regexMatch(topic.toStr(), rl->pattern);
         }
@@ -16855,7 +16992,12 @@ Value Interpreter::eval(Expr* e) {
                 // one-arg rule: `[<a b>».Str]` (a SINGLE list-valued item) spreads —
                 // even a hyper result; with several members the comma rules apply.
                 bool oneArgSpread = l->items.size() == 1 && v.t == VT::Array && v.isList && !v.itemized;
-                bool flatten = oneArgSpread ||
+                // A `|` slip splices whatever the surrounding list looks like —
+                // that is the whole point of the operator. `[|@a, @a[0]]` was
+                // keeping the slip whole because the enclosing comma list
+                // suppressed flattening, so the array came out nested.
+                bool isSlip = v.t == VT::Array && v.s == "Slip";
+                bool flatten = oneArgSpread || isSlip ||
                                (!isHyper &&
                                ((it->kind == NK::VarExpr && !static_cast<VarExpr*>(it.get())->name.empty() &&
                                  static_cast<VarExpr*>(it.get())->name[0] == '@') ||

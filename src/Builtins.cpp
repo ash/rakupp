@@ -974,6 +974,16 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
         return hits == 0;                                     // none
     }
     if (mt.t == VT::Code) return I.callCallable(const_cast<Value&>(mt), ValueList{v}).truthy();
+    // A matcher OBJECT (one whose class defines ACCEPTS) is what `.grep`/`.first`
+    // get handed when the pattern is a custom matcher — `.grep(glob("*.txt"))`.
+    // applyArith knows nothing about ACCEPTS, so those greps came back empty.
+    if (mt.t == VT::Object && mt.obj && mt.obj->cls) {
+        for (ClassInfo* ci = mt.obj->cls.get(); ci; ci = ci->parent.get())
+            if (ci->methods.count("ACCEPTS")) {
+                ValueList one{v};
+                return I.methodCall(const_cast<Value&>(mt), "ACCEPTS", one).truthy();
+            }
+    }
     return applyArith("~~", v, mt).truthy();
 }
 

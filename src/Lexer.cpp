@@ -337,8 +337,18 @@ static bool isLetterCP(uint32_t cp) {
     // not L. Including them made `»÷»` read as a guillemet word list instead of a
     // hyper op, and would glue × into identifiers.
     if (cp == 0x00D7 || cp == 0x00F7) return false;
+    // The three Latin-1 letters that sit BELOW the U+00C0 run: ª (Lo), µ (Ll)
+    // and º (Lo). All are Alphabetic, so Raku accepts them in identifiers and
+    // as colonpair keys — Font::AFM writes `:ª("ordfeminine")`, `:µ("mu")`.
+    // Their neighbours ²³¹ (No) and the punctuation stay excluded.
+    if (cp == 0x00AA || cp == 0x00B5 || cp == 0x00BA) return true;
     return (cp >= 0x00C0 && cp <= 0x024F) ||   // Latin-1 + Latin Extended-A/B
            (cp >= 0x0250 && cp <= 0x02AF) ||   // IPA extensions
+           // Spacing Modifier Letters: the Lm runs only. The Sk members of the
+           // block (U+02C2–02C5, U+02D2–02DF, …) are symbols, not letters, and
+           // stay out. Font::AFM keys its encoding table on ˆ and ˇ.
+           (cp >= 0x02B0 && cp <= 0x02C1) || (cp >= 0x02C6 && cp <= 0x02D1) ||
+           (cp >= 0x02E0 && cp <= 0x02E4) || cp == 0x02EC || cp == 0x02EE ||
            (cp >= 0x0370 && cp <= 0x03FF) ||   // Greek (π α β γ τ …)
            (cp >= 0x0400 && cp <= 0x04FF) ||   // Cyrillic
            (cp >= 0x0531 && cp <= 0x058F) ||   // Armenian
@@ -444,7 +454,10 @@ void Lexer::skipWhitespaceAndComments() {
                 continue;
             }
         }
-        if (c == '#') {
+        // Inside a bare `< … >` word list there are no comments: `<# name ver>`
+        // is the three words "#", "name", "ver". Treating the `#` as a comment
+        // swallowed the closing `>` and the rest of the line.
+        if (c == '#' && angleWords_ == 0) {
             // embedded comment #`( ... ) / #`[ ... ] / #`{ ... }: skip the balanced
             // bracket group only — the rest of the line still parses. The declarator
             // comments #|[ ... ] / #=[ ... ] take the same multi-line bracket forms.
@@ -1409,6 +1422,12 @@ Token Lexer::lexIdentOrVar() {
 bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     // method-call position (.token) is not a rule declaration
     if (!out.empty() && out.back().kind == Tok::Op && out.back().text == ".") return false;
+    // Nor is it one after a routine declarator: in `sub rule($n) {…}` the word is
+    // the routine's NAME. Reading it as a rule declaration swallowed the signature
+    // and body, and every routine declared after it went missing.
+    if (!out.empty() && out.back().kind == Tok::Ident &&
+        (out.back().text == "sub" || out.back().text == "method" ||
+         out.back().text == "submethod")) return false;
     size_t save = pos_;
     std::string kw;
     while (!eof() && std::isalpha((unsigned char)peek())) kw += advance();
@@ -1545,6 +1564,10 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
                 "comb", "join", "for", "elsif", "where", "die", "warn", "dd",
                 // junction constructors take matchers: `.grep(none /a/)`
                 "any", "all", "one", "none",
+                // both sides of a flip-flop are usually regexes:
+                // `if /^Start/ ff /^End/` (Font::AFM). All eight spellings, since
+                // the `^` marks lex as part of the operator token.
+                "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^", "^fff^",
             };
             return kw.count(pv.text) > 0;
         }

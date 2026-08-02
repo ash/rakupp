@@ -1833,6 +1833,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return h;
         }
         if (m == "hash" && inv.t == VT::Hash) return inv;   // %h.hash is the hash itself
+        // %h.Hash — a Hash is already one, so it answers itself; a Map (immutable)
+        // answers a mutable Hash copy. Only `.hash` was implemented, so the
+        // idiomatic `(%meta<provides> // {}).Hash` died with "No such method".
+        if (m == "Hash" && inv.t == VT::Hash) {
+            if (inv.hashKind.empty() || inv.hashKind == "Hash") return inv;
+            Value h = Value::makeHash();
+            if (inv.hash) *h.hash = *inv.hash;
+            return h;
+        }
         if (m == "Map" && inv.t == VT::Hash) { // %h.Map — an immutable view (detached copy)
             Value h = Value::makeHash();
             if (inv.hash) *h.hash = *inv.hash;
