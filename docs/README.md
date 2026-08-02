@@ -32,6 +32,7 @@ point; everything else lives here, in four places:
 - **[guide/UNICODE.md](guide/UNICODE.md)** — Unicode support: graphemes, normalization, UCA collation, character introspection.
 - **[guide/ASYNC.md](guide/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
 - **[guide/NETWORKING.md](guide/NETWORKING.md)** — TCP over `IO::Socket::Async`, graceful shutdown with `signal()`, and TLS through the system OpenSSL.
+- **[guide/FFI.md](guide/FFI.md)** — NativeCall: calling C from Raku++. Whether you need to install libffi (no — it is found at run time, and there is a fallback when it is missing), whether it works compiled as well as interpreted (yes, one marshaller serves both), the type map, structs and unions, callbacks, and variadic C functions — which Rakudo cannot call at all.
 - **[guide/HTTPS.md](guide/HTTPS.md)** — the story of one real HTTPS request, from "OpenSSL won't even load" to a live `HTTP/1.1 200 OK` over TLS.
 - **[guide/MODULES.md](guide/MODULES.md)** — working with modules: the ones you write, and the ones zef installs from the ecosystem.
 - **[guide/LINT.md](guide/LINT.md)** — `rakupp --lint`: the static-analysis rules that run over the AST without executing the program.

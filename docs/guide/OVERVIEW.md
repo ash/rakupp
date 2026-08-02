@@ -77,15 +77,17 @@ runnable snippets in [COOKBOOK.md](COOKBOOK.md), complete programs in
   `Supply`/`react`/`whenever`, `Channel`, `Thread`, `Lock`, `atomicint`. Opt into
   true CPU parallelism with `RAKUPP_PARALLEL=1`. (See [ASYNC.md](ASYNC.md).)
 - **I/O & system** — files, `IO::Path`, `run`/`shell` subprocesses, and a
-  **NativeCall** C FFI (`is native` via `dlsym`) covering libc + `<math.h>`
-  (scalars incl. mixed int+float, `CArray`, `CStruct`, `is rw` out-params and
-  synchronous callbacks; no `libffi`, so varargs and by-value structs are out).
+  **NativeCall** C FFI (`is native` via `dlsym`, marshalled by a `libffi` that
+  is `dlopen`ed at runtime rather than linked): scalars at their declared width,
+  mixed int+float, any argument count, variadics, `CArray`, `CStruct`, `CUnion`,
+  `is rw` out-params and typed synchronous callbacks. Structs passed or returned
+  BY VALUE are still out.
 - **Tooling** — a parse-aware syntax highlighter (`--highlight`, HTML + ANSI) and
   a self-hosted Roast harness written in Raku and run *by* Raku++.
 
-**Not there yet:** macros / `RakuAST` / slangs, `libffi`-grade NativeCall
-(variadic C functions / by-value structs), some `IO`/`POD` corners, and
-true lock-free parallel atomics.
+**Not there yet:** macros / `RakuAST` / slangs, C structs passed or returned
+by value, callbacks fired from a thread the C library owns, some `IO`/`POD`
+corners, and true lock-free parallel atomics.
 
 ## Four ways to run a program
 

@@ -24,8 +24,10 @@ The user-facing documentation is one level up, in [../](../README.md).
   inner loop), why `.DEPARSE` + the existing parser replaces a RakuAST→AST
   compiler, and the one case where that text bridge is lossy. Deferred, not built.
 - **[plans/LIBFFI-PLAN.md](plans/LIBFFI-PLAN.md)** — moving NativeCall onto
-  `libffi`: where NativeCall is today, what libffi would buy, and the measurements
-  behind the proposal. Proposal, nothing implemented.
+  `libffi`: where NativeCall was, what libffi bought, and the measurements behind
+  each decision (why `dlopen` rather than link or vendor, why one marshaller
+  rather than a fast path). Implemented — the file records what landed and the
+  one item deliberately left open.
 
 ## ecosystem/ — the v2.0 campaign
 

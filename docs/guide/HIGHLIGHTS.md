@@ -46,8 +46,9 @@
 - **Phasers & control** — `BEGIN` / `END` / `ENTER` / `LEAVE` / `FIRST` /
   `NEXT` / `LAST` / `CATCH` / `CONTROL`, labeled loops, `temp` / `let`.
 - **System & FFI** — files and `IO::Path`, `run` / `shell` subprocesses,
-  NativeCall C FFI (`is native`) for libc / `<math.h>` without libffi —
-  `CArray`, `CStruct`, `is rw` out-params and synchronous callbacks included.
+  NativeCall C FFI (`is native`) marshalled by `libffi`, loaded at runtime so
+  the binary stays dependency-free — `CArray`, `CStruct`, `CUnion`, variadics,
+  `is rw` out-params and typed synchronous callbacks included.
 
 ## Four ways to run a program
 
@@ -114,7 +115,7 @@ no server, with an embeddable in-page playground.
 
 ## Not there yet
 
-- Macros / `RakuAST` / slangs; `libffi`-grade NativeCall (variadic C functions,
-  by-value structs);
+- Macros / `RakuAST` / slangs; C structs passed or returned by value;
+  callbacks a C library fires from its own thread;
   some `IO` / POD corners; lock-free parallel atomics. The plan:
   [ROADMAP.md](../status/ROADMAP.md).

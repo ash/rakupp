@@ -33,11 +33,13 @@ NativeCall (Raku's `is native` FFI). None of that stack was ready.
 
 **1. NativeCall had to grow up.** OpenSSL is pure FFI, so the whole `is native`
 surface came first: `is rw` out-parameters, mixed integer/float arguments
-(without libffi — using one over-wide function-pointer signature that exploits
-the independent integer and float register banks on the SysV-AMD64 and AArch64
-ABIs), `nativecast`, `cglobal`, `Pointer[T]`, `CArray` returns, CStruct field
-layout and access, and callbacks (a Raku sub handed to C as a function pointer,
-via a small trampoline pool). See [NATIVE.md](NATIVE.md).
+(at the time without libffi — using one over-wide function-pointer signature
+that exploits the independent integer and float register banks on the
+SysV-AMD64 and AArch64 ABIs), `nativecast`, `cglobal`, `Pointer[T]`, `CArray`
+returns, CStruct field layout and access, and callbacks (a Raku sub handed to C
+as a function pointer, via a small trampoline pool). That marshaller has since
+moved onto `libffi`; the over-wide prototype survives as the fallback for
+platforms with no libffi to load. See [FFI.md](FFI.md).
 
 **2. The distribution plumbing.** `OpenSSL::NativeLib` reads a bundled
 `libraries.json` to find `libssl`'s path — so `%?RESOURCES` (a distribution's

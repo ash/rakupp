@@ -1,11 +1,23 @@
 # NativeCall on `libffi` — implementation plan
 
-Status: proposal, nothing implemented. Measurements below were taken on
-2026-08-02 with `build-arm64/rakupp` on macOS/arm64 and the system `libffi`.
+**Status: implemented on 2026-08-02**, except by-value structs (§6), which are
+deliberately still open. What landed, and what each decision cost, is recorded
+in §9 at the end; the body below is the plan as written before the work, kept
+because the reasoning is what makes the result reviewable.
+
+Measurements were taken with `build-arm64/rakupp` on macOS/arm64 and the system
+`libffi`.
 
 ---
 
 ## 1. Where NativeCall is today
+
+> **Outcome:** every row of the table below is fixed except the by-value struct
+> one — which turns out to be something Rakudo cannot express either, so it is
+> new surface rather than a gap (§6). The `explicitly-manage` half of the
+> `CUnion` row is also still absent.
+> The user-facing description of what the FFI does *now* is
+> [guide/FFI.md](../../guide/FFI.md).
 
 The FFI is `dlsym` plus **one over-wide prototype**
 (`src/Interpreter.cpp:7209`), called from `Interpreter::callNative`
@@ -62,6 +74,10 @@ libffi adds ~16 ns to a ~487 ns crossing — about 3%. **Conclusion: no dual
 fast path.** One marshaller, everything through libffi when it is available.
 Re-run the same probe on x86-64 Linux before committing to this.
 
+> **Outcome:** the conclusion held, the *reasoning* was incomplete. The
+> measured end cost is ~23 ns/crossing (157 ms vs 150 ms per 300k, best of 3),
+> but getting there needed a fix this section did not predict — see §9.
+
 ---
 
 ## 3. Decision 1 — how the binary gets libffi
@@ -91,6 +107,11 @@ Mechanics:
   ever pass the pointer.
 - `FFI_DEFAULT_ABI` is a per-target enum value (1 on aarch64 SysV and on
   x86-64 UNIX64; different on Win64) — one small table in one header.
+  > **Outcome: no table.** This bullet is wrong, and finding out how wrong is
+  > the single most useful thing the self-test did. The value depends on the
+  > libffi *release* as well as the target, and on this one machine arm64 wants
+  > 1 while the x86-64 slice wants **2** — so the shipped loader probes
+  > candidates and keeps the first that passes the self-test.
 - **Load-time self-test, and this is what makes a hand-declared ABI safe:**
   prep and call `abs(-3) == 3`, `ldexp(3,2) == 12`, `ldexpf(3f,2) == 12`, and
   a small struct return. Any failure, or a non-zero `ffi_prep_cif` status,
@@ -98,6 +119,8 @@ Mechanics:
 - `RAKUPP_FFI=0` kill switch; `RAKUPP_FFI=/path/to/libffi.so` to point at one;
   the live backend must be reportable (`--version` line or a debug flag) —
   bug reports and the CI matrix both need it.
+  > **Outcome:** all three shipped. The report is its own flag, `--ffi-info`,
+  > rather than a `--version` line, so nothing that parses `--version` moves.
 
 The fallback is the **current code, unchanged**, and stays permanently for
 WASM (no `dlopen`-able libffi under Emscripten), Windows without
@@ -115,6 +138,12 @@ with a second prototype family taking `float`s; cheap, and worth measuring.)
 
 This batch is independently valuable, testable today, and defines exactly what
 the fallback must do after libffi lands.
+
+> **Outcome: landed, but folded into batch 2 rather than shipped first.** The
+> reason is worth recording: the list of things the fallback cannot express is
+> not knowable until the marshalling pass has classified the arguments, so the
+> check belongs in the same pass. Doing it separately would have meant writing
+> that classification twice.
 
 ---
 
@@ -134,6 +163,12 @@ Each batch is gated on the Roast run, `t/regression`, and `perf-guard --check`
 | 6 | By-value struct/union arguments and returns, `CUnion` (see §6) | M |
 | 7 | Variadics via `ffi_prep_cif_var` (see §6) | S–M |
 | 8 | Docs: `FEATURES.md:139`, `HIGHLIGHTS.md:49,113`, `OVERVIEW.md:81,85`, the `MODULE-WISHLIST.md` "silently wrong" table, `CHANGELOG`, `MILESTONES`, the divergence log, and the spec site | S |
+
+> **Outcome per batch is in §9.** Short version: 0–4, 7 and 8 landed as
+> written; 5 landed partly (`CUnion` yes, embedded structs no — rakupp already
+> matches Rakudo there); 6 is deliberately open. Batch 8 also gained
+> [guide/FFI.md](../../guide/FFI.md), which did not exist when this was
+> written — the feature turned out to need a page, not a bullet.
 
 ---
 
@@ -156,6 +191,13 @@ its runtime `Value` under C's default argument promotions (`Int`→`sint64`,
 Both spellings are Raku++ extensions: they go in the divergence log and the
 spec site, and neither may change the meaning of a signature that works today.
 
+> **Outcome: the slurpy spelling shipped; `is variadic(N)` did not.** One way to
+> say a thing is enough, and the slurpy carries the arity itself, so the trait
+> would only have been a second spelling of the same fact. The compiled (`--exe`)
+> bridge rebuilds the parameter list in generated C++ and initially dropped
+> `slurpy`, which made variadic calls right in the interpreter and wrong in the
+> binary; `t/regression/exe-nativecall.raku` now covers it.
+
 ### By-value structs
 
 **Verify before designing.** As far as I can determine, Rakudo's NativeCall
@@ -164,8 +206,21 @@ Rakudo-parity surface, it is new. A local Rakudo probe of a by-value struct
 return (`div(7,2) --> DivT`) had not returned after several minutes; finish
 that check before committing to a syntax.
 
+> **Outcome: verified, and the guess was right.** Not by the probe — that never
+> answered — but by reading Rakudo's own `NativeCall.rakumod`, both the 2021
+> checkout and the installed **2026.07** sources. A `CStruct`-repr type maps to
+> exactly one type code (`"cstruct"`); there is no by-value variant, and the
+> string "by value" does not appear in the module at all. So a Rakudo user has
+> no way to ask for it, and by-value here would be a Raku++ extension needing an
+> invented syntax. Still deferred — but now for a stated reason rather than an
+> unanswered question.
+
 Pointer-passing must remain the default for `CStruct`-typed parameters — the
 existing tests depend on it — with by-value behind an explicit marker.
+
+> **Outcome: not built, on purpose.** The verification this section asks for
+> never completed — the Rakudo probe hung twice without answering — so the
+> premise the syntax rests on is still unconfirmed. See §9.
 
 **So the headline libffi feature is not the main win here.** The wins, in
 order of value: scalar-width correctness, unlimited arity, typed callbacks,
@@ -178,6 +233,9 @@ variadics. By-value structs are a bonus.
 - **Hand-declared ABI on an untested target.** Mitigated by the load-time
   self-test plus fallback. CI must gain a leg running the whole suite with
   `RAKUPP_FFI=0`.
+  > **Materialised, and the mitigation worked.** Two of the two architectures
+  > tried wanted different ABI numbers, neither of them the documented one. The
+  > `RAKUPP_FFI=0` leg is run and green (273/273).
 - **Two paths = the semantic-duplication problem** from the duplication audit.
   Mitigated by: the fallback being the *unchanged* old code, every native
   regression test running under both backends, and any case libffi handles but
@@ -188,14 +246,28 @@ variadics. By-value structs are a bonus.
 - **W^X policies** (macOS hardened runtime, SELinux, grsec) can make
   `ffi_closure_alloc` return NULL. The closure path must degrade to the
   existing trampoline pool rather than fail.
+  > **Did not materialise on either architecture here; the degrade path is
+  > implemented regardless, and is the reason the 64-slot pool was kept rather
+  > than deleted.**
 - **`--exe`.** Compiled binaries call the same `RT.callNative` and inherit
   everything, but `Codegen.cpp:529-543` still refuses `is native(&sub)`,
   expression libraries, `is rw` out-params and buffer parameters. This work
   does not change that; say so in the docs rather than implying otherwise.
+  > **"Inherit everything" was too optimistic and this risk bullet is why it
+  > got checked.** The bridge does not pass the `Callable` through — it rebuilds
+  > the parameter list as generated C++ — so it inherits only the fields that
+  > rebuild copies, and `slurpy` was not one of them. Variadic calls were right
+  > interpreted and wrong compiled until that was fixed. The refusal list is
+  > unchanged and is documented in [guide/FFI.md](../../guide/FFI.md).
 
 ---
 
 ## 8. Test plan
+
+> **Outcome:** landed as `t/regression/nativecall-libffi.raku`, with one
+> addition the plan did not anticipate: rather than skipping when libffi is
+> absent, the file asserts the *other* half of the contract there (that the same
+> calls throw), so it is a real test in both CI legs instead of a hole in one.
 
 - Extend the five existing `t/regression/nativecall-*.raku` files, and add:
   widths (`int8/16/32/uint*`, `num32` round trip), a 12-argument call, variadic
@@ -208,3 +280,87 @@ variadics. By-value structs are a bonus.
   Where it does not (variadics, by-value structs), the test is Raku++-only and
   the divergence log records why.
 - CI: the full suite twice — `RAKUPP_FFI` unset, and `RAKUPP_FFI=0`.
+
+---
+
+## 9. What landed (2026-08-02)
+
+New: `src/Ffi.h` / `src/Ffi.cpp` (the loader, ABI probe, self-test and type
+registry). Everything else is in `Interpreter::callNative` and its helpers.
+
+| # | batch | outcome |
+|---|---|---|
+| 0 | Loud fallback | done — folded into batch 2 rather than landed first, because the neutral marshalling pass is what knows which cases the fallback cannot express |
+| 1 | `Ffi.h`/`Ffi.cpp` | done |
+| 2 | Scalar correctness, unlimited arity | done |
+| 3 | Cif cached per `Callable` | done |
+| 4 | `ffi_closure` callbacks | done |
+| 5 | Struct layout | partly — `CUnion` landed, along with two layout bugs it turned up (below). Embedded structs (`HAS`) did not: rakupp already matches Rakudo's default, where a struct-typed field is a pointer |
+| 6 | By-value structs | **not done — deliberately.** See below |
+| 7 | Variadics | done |
+| 8 | Tests + docs | done — `t/regression/nativecall-libffi.raku`, which asserts the *other* half of the contract (that the same calls throw) when the backend is off, so it is meaningful in both CI legs |
+
+### The two predictions that were wrong
+
+**"ffi_prep_cif is the per-call cost."** It is not. Caching the cif changed
+nothing measurable; the ~97 ns/crossing regression was two `std::vector` heap
+allocations for libffi's argument arrays. Stack-first arrays (heap only past 16
+arguments) took it to ~23 ns, which is close to the 16 ns `ffi_call` itself
+costs. The cif cache stayed anyway — it is correct, and it is free.
+
+**"FFI_DEFAULT_ABI can be a per-target table."** The plan already refused to
+hardcode it, and that was right for a reason better than the one given: this
+machine's arm64 libffi wants ABI 1 and its x86-64 slice wants ABI **2**, which
+is neither the 8 that current libffi headers imply nor the 1 that older ones do.
+A table built from any single libffi release would have been wrong on one of the
+two architectures of the same machine.
+
+### Verified on two ABIs
+
+The full suite passes on arm64 (ABI 1) and on the x86-64 build (ABI 2), and the
+whole 273-check suite passes with `RAKUPP_FFI=0` as well. Roast is unchanged:
+628/1462 files fully passing before and after, with a byte-identical sorted list
+of fully-passing files.
+
+### Why by-value structs are still open
+
+The plan said to verify against Rakudo first. The probe route failed — a Rakudo
+program calling a by-value struct return did not return, twice — but the
+question is now **answered from Rakudo's source** (`lib/NativeCall.rakumod`, in
+both a 2021 checkout and the installed 2026.07 core sources): a `CStruct`-repr
+type maps to the single type code `"cstruct"`, there is no by-value variant, and
+"by value" appears nowhere in the module. A Rakudo user cannot ask for it.
+
+So by-value is confirmed to be **new surface, not parity**, and it needs a
+spelling that does not exist yet: `is by-value` on a parameter is easy enough,
+but a return type has no trait slot, so the return case needs a second idea. It
+stays deferred — now because the design question is open, not because the facts
+were. Everything it would have bought is otherwise available: the four wins the
+plan ranked above it — scalar widths, arity, typed callbacks, variadics — all
+landed, and a struct return of up to 8 bytes can still be taken as `int64` and
+unpacked by hand.
+
+### Bugs found on the way
+
+The first two predate this work; the third was introduced by it and caught while
+writing [guide/FFI.md](../../guide/FFI.md). All three are fixed here:
+
+- `nativesizeof` answered from a private table that disagreed with the
+  marshaller placing the value — `int` was 4 bytes there and 8 everywhere else
+  — and returned a flat 8 for any `CStruct` class instead of its real size.
+- C's `bool` was 8 bytes wide in the type table, so every `CArray[bool]` stride
+  was wrong and a one-byte return was read as a whole register.
+- The `--exe` bridge rebuilds a native sub's parameter list as generated C++ and
+  did not copy `slurpy`, so a **variadic call was correct interpreted and wrong
+  compiled** — prepared as a fixed call, with the `...` arguments in registers
+  instead of on the stack. It surfaced only because documenting "does this work
+  compiled as well as interpreted?" meant actually running both and diffing:
+  `snprintf(Str, 0, "%d-%s", 42, "hi")` answered 5 interpreted and 8 compiled.
+  Covered now by `t/regression/exe-nativecall.raku`.
+
+### Where to read about the result
+
+- Users: [guide/FFI.md](../../guide/FFI.md) — how the FFI works, whether you
+  need to install anything (no), and whether it works compiled (yes).
+- Inventory: [guide/FEATURES.md](../../guide/FEATURES.md) NativeCall entry.
+- Release notes: `CHANGELOG.md`, Unreleased.

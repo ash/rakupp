@@ -7,6 +7,58 @@ methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/CO
 
 Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
 
+- **NativeCall now marshals through `libffi`.** The library is `dlopen`ed at
+  runtime, never linked and never vendored, so the binary keeps its
+  no-dependency property and platforms with no libffi to load fall back to the
+  previous fixed-prototype path. `rakupp --ffi-info` reports which backend is
+  live; `RAKUPP_FFI=0` forces the fallback, and `RAKUPP_FFI=/path/to/lib` picks
+  a specific library. `FFI_DEFAULT_ABI`'s numeric value differs per target *and*
+  per libffi release, so it is probed rather than hardcoded: candidates are
+  tried until one passes a self-test of real calls (`strlen`, `abs`, `ldexp`,
+  `ldexpf`), and if none does the backend disables itself. That probe earned its
+  keep immediately — this machine's arm64 libffi wants ABI 1 and its x86-64
+  slice wants ABI 2, and neither matches the value a table built from current
+  libffi headers would have used. What it fixes:
+  - **`num32` arguments and returns were silently wrong.** A C `float` was
+    passed and read as a `double`: `ldexpf(3e0, 2)` answered `0` and
+    `strtof("2.5")` answered `5.3e-315`. Both are now exact.
+  - **Variadic C functions were silently wrong.** A slurpy now marks where C's
+    `...` begins — `sub snprintf(Buf, size_t, Str, *@args --> int32)` — and each
+    variadic argument is typed from its runtime value under C's default argument
+    promotions. `snprintf($b, 64, "%d and %s and %.2f", 42, "hi", 3.5e0)`
+    produced `"0"` before and produces `42 and hi and 3.50` now. Rakudo has no
+    variadic NativeCall, so the spelling is a Raku++ extension.
+  - **More than 8 integer or 8 float arguments** was a clean `X::NYI`; there is
+    no cap now.
+  - **Callbacks are `ffi_closure`s.** Parameters are typed from the `Callable`'s
+    own signature instead of arriving as six raw `long`s, the return is typed,
+    the arity is unbounded, and so is the number of distinct callbacks (the old
+    trampoline pool held 64 and silently handed back a null pointer past that).
+    A callback arriving on a thread the interpreter never entered is now
+    detected and ignored with a warning instead of being run without a scope to
+    run in. A W^X policy that refuses `ffi_closure_alloc` falls back to the pool.
+  - **Without libffi, the cases the fallback cannot express now throw** rather
+    than computing garbage.
+  - **`--exe` gave a different answer than the interpreter for a variadic
+    call.** The compiled bridge rebuilds a native sub's parameter list as
+    generated C++ and did not carry `slurpy`, so the binary prepared a variadic
+    call as a fixed one and put the `...` arguments in registers instead of on
+    the stack: `snprintf(Str, 0, "%d-%s", 42, "hi")` answered 5 interpreted and
+    8 compiled.
+  - New guide: [docs/guide/FFI.md](docs/guide/FFI.md) — whether you need to
+    install libffi (no), whether it works compiled as well as interpreted (yes),
+    the type map, and the variadic story.
+- **`is repr('CUnion')` works** — every field at offset 0, the type as wide as
+  its widest member.
+- **`nativesizeof` answered from its own private table** and disagreed with the
+  marshaller that had to place the value: it said `int` was 4 bytes where every
+  call passed 8, and it answered a flat 8 for a `CStruct` class rather than the
+  struct's real size (24 for `int32`/`num64`/`uint8`). It now answers from the
+  same width table the marshaller uses, and lays out CStruct/CUnion classes.
+- **C's `bool` is one byte**, not a machine word. The width table said 8, which
+  made every `CArray[bool]` stride wrong and read a whole register back from a
+  one-byte return.
+
 - **The string bitwise operators combine CODEPOINTS, not UTF-8 bytes.**
   `~&`, `~|` and `~^` on a `Str` operated on the encoded bytes, which agrees
   with Rakudo for ASCII and is wrong for everything else: `"A" ~^ chr(0xFF)`

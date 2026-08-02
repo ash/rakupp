@@ -37,26 +37,24 @@ Supply was taken from the actual Raku ecosystem, not from memory:
 
 ## The constraint that should drive the choice
 
-Raku++'s NativeCall resolves symbols with `dlsym` and calls them through a
-fixed 8-integer/8-float prototype, relying on the platform ABI to place
-arguments in the right registers. There is no `libffi`. Measured against the
-binary on 2026-08-02 (`docs/guide/FEATURES.md` understates this — mixed args and
-callbacks do work):
+Raku++'s NativeCall resolves symbols with `dlsym` and marshals them with
+`libffi`, which is `dlopen`ed at runtime rather than linked or vendored, so the
+binary gains no dependency and platforms without one fall back to the older
+fixed-prototype path. Measured against the binary on 2026-08-02:
 
-- **Works:** integer/pointer/float args, mixed int+float, `Str`→`char*`,
-  `CArray`, `CStruct`/`CPointer` handles, `is rw` out-params with copy-back,
-  synchronous callbacks (a 64-slot trampoline pool), and struct-by-value
-  returns up to 8 bytes if you declare them as `int64` and unpack by hand.
-- **Clean error:** more than 8 integer or 8 float register arguments.
-- **Silently wrong:** variadic C functions. `snprintf(buf, 16, "%d", 42)`
-  yields `"0"`, not `"42"` — variadic arguments go on the stack on the Apple
-  ARM64 ABI, and the fixed prototype puts them in registers.
-- **Unsupported:** by-value struct *arguments*, struct returns larger than a
-  register pair, and callbacks that C stores and fires later from another
-  thread.
+- **Works:** integer/pointer/float args at their declared width (`num32` is a
+  real C `float`), mixed int+float, any argument count, `Str`→`char*`,
+  `CArray`, `CStruct`/`CPointer`/`CUnion` handles, `is rw` out-params with
+  copy-back, variadics (a slurpy marks where `...` begins), and synchronous
+  callbacks with typed parameters and returns, any arity, any number of them.
+- **Unsupported:** structs passed or returned BY VALUE, and callbacks that C
+  stores and fires later from a thread of its own (those are detected and
+  ignored, not run).
+- **Without libffi:** everything in that first list except `num32`, variadics
+  and >8 register arguments, which throw `X::NYI` instead of guessing.
 
-So the ABI ceiling is lower than the *deployment* ceiling, and it is the
-latter that should drive this list — see below.
+The ABI ceiling is no longer the binding constraint — the *deployment* ceiling
+is, and it is what should drive this list. See below.
 
 At least 10% of the current fez ecosystem is C bindings by self-description,
 and that 10% is concentrated precisely in the infrastructure categories:
@@ -82,8 +80,9 @@ cannot call these libraries (mostly it can; most C APIs are pointer-based, and
 those work today). It is that a native binding turns "install Raku++ and run"
 into "install Raku++, then find libxml2 / libsodium / notcurses / libgsl for
 your platform, in a compatible version". Raku++'s value proposition is a
-single portable binary, and every native dependency spends it. Adding `libffi`
-would raise the ABI ceiling but would not change this at all.
+single portable binary, and every native dependency spends it. Moving onto
+`libffi` raised the ABI ceiling and did not change this at all — which is
+exactly why it is `dlopen`ed rather than linked.
 
 Every Tier A candidate below is pure-Raku-feasible.
 
