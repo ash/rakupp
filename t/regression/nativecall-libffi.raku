@@ -51,6 +51,17 @@ unless $ffi {
         my $threw = ?(try { $try(); False } // True);
         @fail.push("no-libffi: $what should throw") unless $threw;
     }
+    # The 65th distinct callback used to be handed to C as a NULL function
+    # pointer — `qsort` with a null comparator HANGS the process, far from the
+    # line that caused it. It must be an exception like the other three.
+    sub qsort0(CArray[int32], size_t, size_t, &cmp (Pointer, Pointer --> int32)) is native('') is symbol('qsort') {*}
+    my $arr = CArray[int32].new(3, 1, 2);
+    my $over = False;
+    for ^70 {
+        my &c = -> $x, $y { 0 };
+        $over = True unless try { qsort0($arr, 1, 4, &c); True };   # 1 element: cmp never fires
+    }
+    @fail.push('no-libffi: the 65th callback should throw, not pass C a null pointer') unless $over;
     if @fail { note "FAILED: @fail[]"; say 'FAIL' } else { say 'PASS' }
     exit;
 }
@@ -108,5 +119,14 @@ my $err = $p.err.slurp(:close); $p.out.slurp(:close);
 $child.unlink;
 @fail.push("fallback-loud ({$err.lines.head // 'no error'})")
     unless $err.contains('num32') && $err.contains('libffi');
+
+# 6. RAKUPP_FFI naming a library that cannot be loaded must NOT fall through to
+#    whatever the system ships — naming one is a request, not a hint.
+%*ENV<RAKUPP_FFI> = '/nonexistent/libffi.so';
+my $q = run($*EXECUTABLE.absolute, '--ffi-info', :out, :err);
+my $info = $q.out.slurp(:close); $q.err.slurp(:close);
+%*ENV<RAKUPP_FFI>:delete;
+@fail.push("explicit-path ({$info.trim})")
+    unless $info.contains('unavailable') && $info.contains('/nonexistent/libffi.so');
 
 if @fail { note "FAILED: @fail[]"; say 'FAIL' } else { say 'PASS' }

@@ -137,6 +137,21 @@ bool resolve(void* h) {
            g.t_uint64 && g.t_sint64 && g.t_float && g.t_double && g.t_pointer;
 }
 
+// Try one candidate all the way through: load, resolve, and find a calling
+// convention that passes the self-test. Leaves `g` usable only on success.
+bool tryLoad(const std::string& c) {
+    void* h = dlopen(c.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+    if (!h) return false;
+    if (!resolve(h)) { g.why = "loaded " + c + " but its entry points are missing"; return false; }
+    for (int abi : abiCandidates()) {
+        if (!selfTest(abi)) continue;
+        g.abi = abi; g.path = c; g.ok = true;
+        return true;
+    }
+    g.why = "loaded " + c + " but no calling convention passed the self-test";
+    return false;
+}
+
 void load() {
     const char* env = std::getenv("RAKUPP_FFI");
     if (env && (!*env || !std::strcmp(env, "0") || !std::strcmp(env, "off") ||
@@ -144,21 +159,18 @@ void load() {
         g.why = "disabled by RAKUPP_FFI";
         return;
     }
-    std::vector<std::string> cands;
-    if (env) cands.push_back(env);                       // an explicit path wins
-    for (const char* c : kCandidates) cands.push_back(c);
-
-    for (const std::string& c : cands) {
-        void* h = dlopen(c.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-        if (!h) continue;
-        if (!resolve(h)) { g.why = "loaded " + c + " but its entry points are missing"; continue; }
-        for (int abi : abiCandidates()) {
-            if (!selfTest(abi)) continue;
-            g.abi = abi; g.path = c; g.ok = true;
-            return;
-        }
-        g.why = "loaded " + c + " but no calling convention passed the self-test";
+    if (env) {
+        // An explicit path is a REQUEST, not a hint. Somebody who names a
+        // libffi has a reason for that one — a newer build, a musl build, one
+        // outside the loader path — so a failure here must not silently
+        // substitute whatever the system happens to ship.
+        if (tryLoad(env)) return;
+        std::string detail = g.why.empty() ? "could not be loaded" : g.why;
+        g.why = "RAKUPP_FFI=" + std::string(env) + ": " + detail;
+        g.ok = false;
+        return;
     }
+    for (const char* c : kCandidates) if (tryLoad(c)) return;
     if (g.why.empty()) g.why = "no libffi found";
     g.ok = false;
 }

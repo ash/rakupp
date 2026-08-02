@@ -7531,7 +7531,13 @@ static void* ncCallbackPtr(const Value& v) {
     }
     for (size_t s = 0; s < g_cbSlots.size(); s++)
         if (g_cbSlots[s].code == v.code) return g_cbTable[s];
-    if (g_cbSlots.size() >= 64) return nullptr;
+    if (g_cbSlots.size() >= 64)
+        // Handing C a null function pointer is not a degraded service, it is a
+        // trap: the library calls it, and the program crashes or hangs a long
+        // way from here with nothing to point at. Say which limit was hit.
+        throw RakuError{Value::typeObj("X::NYI"),
+            "NativeCall: more than 64 distinct callbacks needs libffi, which is not available ("
+            + F.why + ")"};
     g_cbSlots.push_back(v);
     return g_cbTable[g_cbSlots.size() - 1];
 }

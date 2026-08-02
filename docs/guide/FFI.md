@@ -58,14 +58,25 @@ RAKUPP_FFI=/opt/lib/libffi.so.8 rakupp myprogram.raku
 
 ### What happens when there is no libffi
 
-Calls fall back to a fixed prototype that hands eight integer and eight
-floating-point arguments to the platform ABI and lets it place them. That is
-correct for a large majority of real C signatures — pointers, `Str`, integers of
-every width, `num64`, `CArray`, `CStruct` handles, `is rw` out-parameters and
-synchronous callbacks all still work.
+**Not everything keeps working — be clear-eyed about this.** The fallback is a
+narrower FFI, not a transparent substitute.
 
-What it cannot express **throws** rather than quietly computing the wrong
-answer:
+Calls go through a fixed prototype that hands eight integer and eight
+floating-point arguments to the platform ABI and lets it place them. That is
+correct for a large majority of real C signatures: pointers, `Str`, integers of
+every width, `num64`, `CArray`, `CStruct` and `CUnion` handles, `is rw`
+out-parameters, `nativecast`, `cglobal` and synchronous callbacks all behave
+exactly as they do with libffi. Most programs genuinely will not notice.
+
+Four things it cannot do, and each **throws at the point of the call** rather
+than computing the wrong answer:
+
+| | |
+|---|---|
+| a `num32` argument or return | a real C `float` cannot be placed by the fixed prototype |
+| a variadic signature (`*@args`) | needs `ffi_prep_cif_var` to tell the ABI where `...` begins |
+| more than 8 integer or 8 float arguments | the prototype is that wide and no wider |
+| more than 64 **distinct** callbacks in one program | the trampoline pool holds 64 |
 
 ```
 $ RAKUPP_FFI=0 rakupp ldexpf.raku
@@ -75,10 +86,15 @@ $ RAKUPP_FFI=0 rakupp printf.raku
 NativeCall: a variadic native call needs libffi, which is not available (disabled by RAKUPP_FFI)
 ```
 
-The three cases are `num32` (a real C `float`), variadics, and more than eight
-integer or eight floating-point arguments. `RAKUPP_FFI=0` forces this path on
-purpose, which is how the test suite exercises it — the whole suite is run twice,
-once each way.
+The failure is a normal Raku exception, so it is catchable — a module that wants
+to adapt can `try` the fast path and pick another route. But it is a *runtime*
+failure at the first such call, not something the compiler warns about up front,
+so a program that only hits the path on an unusual branch will only fail there.
+If your program needs any of the four, treat libffi as a requirement and check
+`rakupp --ffi-info` in your install steps.
+
+`RAKUPP_FFI=0` forces this path on purpose, which is how the test suite
+exercises it: the whole suite is run twice, once each way.
 
 ---
 
@@ -301,7 +317,7 @@ ignored with a warning on stderr, rather than run anyway.
 |---|---|
 | `rakupp --ffi-info` | which backend is live, or why none is |
 | `RAKUPP_FFI=0` | force the no-libffi fallback (used by the second CI leg) |
-| `RAKUPP_FFI=/path/to/lib` | use a specific libffi |
+| `RAKUPP_FFI=/path/to/lib` | use a specific libffi — and *only* that one. If it cannot be loaded, Raku++ reports it and runs on the fallback rather than silently substituting whatever the system ships, because naming a library is a request, not a hint |
 
 When reporting a NativeCall bug, `--ffi-info` is the first line to include: the
 answer differs per architecture even on one machine.

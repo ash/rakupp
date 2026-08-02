@@ -38,7 +38,14 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
     detected and ignored with a warning instead of being run without a scope to
     run in. A W^X policy that refuses `ffi_closure_alloc` falls back to the pool.
   - **Without libffi, the cases the fallback cannot express now throw** rather
-    than computing garbage.
+    than computing garbage. That is four cases: `num32`, variadics, more than 8
+    integer or 8 float arguments, and more than 64 distinct callbacks. The last
+    one used to hand C a **null function pointer** — `qsort` with a null
+    comparator hung the process, a long way from the line that caused it.
+  - **`RAKUPP_FFI=/path/to/libffi` that cannot be loaded is no longer silently
+    ignored.** It fell through to the built-in candidate list and used whatever
+    the system shipped, which is the opposite of what naming a library asks
+    for. It now reports the failure and runs on the fallback.
   - **`--exe` gave a different answer than the interpreter for a variadic
     call.** The compiled bridge rebuilds a native sub's parameter list as
     generated C++ and did not carry `slurpy`, so the binary prepared a variadic
