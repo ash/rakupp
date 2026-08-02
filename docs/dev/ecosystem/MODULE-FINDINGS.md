@@ -1048,3 +1048,45 @@ line of URI was touched, and Roast rose across the whole run: 196,937 →
 197,023. `t/run.raku` 273/273, perf-guard OK, modinfo still byte-identical.
 
 The prerequisite for `HTTP::Simple` is met.
+
+## 2026-08-02 — HTTP::Simple v0.0.1, and two more general fixes
+
+The first module written in [ash/raku-modules](https://github.com/ash/raku-modules)
+rather than borrowed from the ecosystem. It is a real client — the seven
+methods, query and form encoding, JSON, basic and bearer auth, redirects with
+history and RFC method rewriting, connect and total timeouts, chunked decoding,
+a cookie jar, and opt-in retries — and its 81 assertions pass identically under
+Rakudo and rakupp, against an HTTP server the test suite runs in-process.
+
+Writing it walked into two engine bugs, both found the same way as everything
+else this campaign: run the real code, read the real error.
+
+21. **`next without $x` read `without` as a loop label.** The loop controls
+    accept an optional label (`last OUTER`), and the guard for it excluded
+    `kBlockKeywords` — which does not contain `with`/`without`, because in every
+    other position those start a term. So `next without $x` parsed as
+    `next OUTER-style-label` plus a stray `$x` statement, and the NextEx carried
+    a label no loop answered to: *"next without loop construct"*. The loop
+    controls now consult their own `kStmtModifiers` list. Affects `last`, `next`
+    and `redo`, with both `with` and `without`.
+22. **`Buf.new($blob)` stored the blob's element COUNT.** A Blob is Positional,
+    and the constructor's flattener knew about Array and Range but not about a
+    Buf/Blob, so it fell through to `toInt()` — `Buf.new(Buf.new(1,2,3))` came
+    out as `Buf.new(3)`. Silent, and exactly the shape that eats an HTTP body.
+    Measured against Rakudo rather than assumed: a Blob is accepted only as the
+    *sole* argument (the copy candidate); mixed in with plain bytes it is a type
+    error, and rakupp now says so too.
+
+Not an engine bug, but worth recording next to them, because it is a trap the
+module hit first and the test server hit second: **`"\r\n"` is a single grapheme
+in a Raku string**, so a character offset from `.index("\r\n\r\n")` is out of
+step with the wire by one position per CRLF. Splitting an HTTP response has to
+be done in bytes. Both engines agree; the bug was mine.
+
+Pinned in `t/regression/http-simple-cluster.raku`. Roast 197,023 → 197,025,
+`t/run.raku` 275/275, modinfo still byte-identical.
+
+The `https` path is the one part with no test behind it:
+`IO::Socket::Async::SSL` is not installed on either engine here, so the client
+`require`s it on demand and throws a clear transport error when it is absent,
+instead of failing to load at all.

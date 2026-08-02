@@ -4093,6 +4093,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         std::function<void(const Value&)> add = [&](const Value& v) {
             if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) add(e); }
             else if (v.t == VT::Range) { for (auto& e : v.flatten()) add(e); } // Buf.new(^10)
+            // Buf.new($blob) — the copy candidate — takes the bytes; numifying the
+            // Blob here would silently store its element COUNT as the one byte.
+            // Rakudo accepts it only as the SOLE argument: anything else goes to
+            // `new(*@codes)`, where each element must be a uint8, and a Blob is not.
+            else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
+                if (args.size() == 1) bytes += v.s;
+                else throw RakuError{Value::typeObj("X::TypeCheck"),
+                    "Type check failed in initializing an element of " + inv.s +
+                    "; expected uint8 but got " + v.hashKind};
+            }
             else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
         };
         for (auto& a : args) add(a);

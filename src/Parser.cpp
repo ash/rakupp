@@ -63,6 +63,14 @@ static const std::unordered_set<std::string> kBlockKeywords = {
     "xor", "not",
 };
 
+// every keyword that can follow a statement as a modifier — `with` and `without`
+// are deliberately NOT in kBlockKeywords (they start a term there), so the loop
+// controls need their own list to keep `next without $x` from reading `without`
+// as a loop label
+static const std::unordered_set<std::string> kStmtModifiers = {
+    "if", "unless", "while", "until", "for", "given", "when", "with", "without",
+};
+
 struct InfixInfo {
     bool valid = false;
     int lbp = 0;
@@ -6304,6 +6312,7 @@ StmtPtr Parser::parseStatementImpl() {
             // optional loop label:  `last OUTER`
             std::string tgt;
             if (cur().kind == Tok::Ident && !kBlockKeywords.count(cur().text) &&
+                !kStmtModifiers.count(cur().text) &&
                 peek().kind != Tok::Op) { tgt = cur().text; advance(); }
             StmtPtr cs;
             if (kw == "last") { auto c = std::make_unique<LastStmt>(); c->target = tgt; cs = std::move(c); }
