@@ -1841,7 +1841,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 // NativeCall CStruct: allocate zeroed native memory and set fields
                 // from named args, so the instance can be passed to / read from C.
-                if (ci->repr == "CStruct" || ci->repr == "CPPStruct") {
+                if (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion") {
                     long long size = Interpreter::ncStructSize(ci.get());
                     void* mem = calloc(1, size ? (size_t)size : 1);
                     auto od = std::make_shared<ObjectData>();

@@ -82,6 +82,10 @@ struct Callable {
                                                      // retried once at first call (AST outlives the interpreter)
     void* nativeSymCache = nullptr;                   // resolved fn pointer — dlopen/dlsym once, not per call
                                                       // (5 dlopen candidates per call cost a flat ~67 µs)
+    void* nativeCifCache = nullptr;                   // prepared libffi call interface, built once per signature.
+                                                      // ffi_prep_cif is ~80 ns — 20% of a whole crossing — so it
+                                                      // must not run per call. Opaque here; see ncFreeCif.
+    ~Callable();
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable

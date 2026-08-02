@@ -431,6 +431,10 @@ public:
     static long long ncRawAddr(const Value& v); // extract a raw pointer from a native value (0 if none)
     Value cglobal(const std::string& lib, const std::string& sym, const std::string& type); // C global variable
     long runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5); // NativeCall callback dispatch
+    void runFfiClosure(void* closure, void* ret, void** args); // NativeCall ffi_closure dispatch
+    // False on a thread the interpreter never entered — i.e. one the C library
+    // made for itself. Such a thread has no lexical scope to run Raku in.
+    bool onRakuThread() const { return (bool)tctx_.cur; }
     Value spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever Promise.in(N)` timer
     Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block

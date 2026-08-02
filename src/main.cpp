@@ -7,6 +7,7 @@
 #include "AstSerial.h"
 #include "Interpreter.h"
 #include "Lint.h"
+#include "Ffi.h"
 #include "Highlight.h"
 #include <cstdlib>
 #include <cstring>
@@ -635,6 +636,7 @@ int main(int argc, char** argv) {
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in\n"
 "  rakupp --help, -h            Show this help\n"
 "  rakupp --version, -V         Show the version\n"
+"  rakupp --ffi-info            Show which FFI backend NativeCall will use\n"
 "\n"
 "Environment:\n"
 "  RAKULIB=dir1,dir2            Extra module search dirs (like -I); ',' or ':'\n"
@@ -643,6 +645,8 @@ int main(int argc, char** argv) {
 "  RAKUPP_DUMPTOKENS=1          Dump the lexer token stream before running\n"
 "  RAKUPP_HOME=dir              Where --exe finds its runtime (dir/lib + dir/include/rakupp);\n"
 "                               only needed if rakupp is moved away from its build/install tree\n"
+"  RAKUPP_FFI=0 | /path/to/lib  Disable NativeCall's libffi backend, or point at a\n"
+"                               specific libffi (default: found at runtime, see --ffi-info)\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
 "  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n";
@@ -656,6 +660,10 @@ int main(int argc, char** argv) {
                          " — a Raku interpreter and compiler in C++ (implements Raku 6.d, with 6.e features)\n";
             return 0;
         }
+        // Which FFI backend NativeCall will use. The first question to ask of a
+        // native-call bug report, and how the test suite tells its two CI legs
+        // apart, so it is worth a flag of its own.
+        if (a1 == "--ffi-info") { std::cout << ffi::describe() << "\n"; return 0; }
     }
 
     // --highlight [--html|--ansi] [FILE | -e CODE | -]  : syntax-highlight Raku

@@ -17,6 +17,7 @@ extern char** environ;
 static char** rakupp_environ() { return environ; }
 #endif
 #include "Regex.h"
+#include "Ffi.h"
 #include "Lexer.h"
 #include "Parser.h"
 #include "Unicode.h"
@@ -7240,7 +7241,11 @@ static int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
     if (t == "int32" || t == "long32") return 4;
     if (t == "uint32") { sign = false; return 4; }
     if (t == "int" || t == "int64" || t == "long" || t == "longlong" || t == "ssize_t" || t == "Int") return 8;
-    if (t == "uint" || t == "uint64" || t == "ulong" || t == "ulonglong" || t == "size_t" || t == "bool" || t == "Bool") { sign = false; return 8; }
+    if (t == "uint" || t == "uint64" || t == "ulong" || t == "ulonglong" || t == "size_t") { sign = false; return 8; }
+    // C's `bool` is ONE byte, not a machine word. It used to answer 8 here,
+    // which made `nativesizeof(bool)` and every CArray[bool] stride wrong and
+    // read a whole register back from a one-byte return.
+    if (t == "bool" || t == "Bool") { sign = false; return 1; }
     return 0;
 }
 
@@ -7319,23 +7324,28 @@ void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long lo
 // C struct layout for a `repr('CStruct')` class: byte offset of `field` (with its
 // type), plus the total padded struct size. Natural alignment (align == size,
 // capped at 8); non-scalar fields (Str/Pointer/CArray/CStruct) are pointer-sized.
+// A `repr('CUnion')` class lays every field at offset 0 and is as big as its
+// widest member — C's union, which is what NativeCall's CUnion means.
 long long Interpreter::ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type) {
+    const bool uni = (ci->repr == "CUnion");
     long long off = 0;
     for (auto& a : ci->attrs) {
         bool sgn, isF; int w = ncScalarWidth(a.type, sgn, isF); if (w == 0) w = 8;
-        off = (off + w - 1) / w * w;
+        if (!uni) off = (off + w - 1) / w * w;
         std::string an = a.name; if (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%')) an = an.substr(1);
         if (!an.empty() && (an[0]=='!'||an[0]=='.')) an = an.substr(1);
-        if (an == field) { type = a.type.empty() ? "int64" : a.type; return off; }
-        off += w;
+        if (an == field) { type = a.type.empty() ? "int64" : a.type; return uni ? 0 : off; }
+        if (!uni) off += w;
     }
     return -1;
 }
 long long Interpreter::ncStructSize(ClassInfo* ci) {
+    const bool uni = (ci->repr == "CUnion");
     long long off = 0, maxA = 1;
     for (auto& a : ci->attrs) {
         bool sgn, isF; int w = ncScalarWidth(a.type, sgn, isF); if (w == 0) w = 8;
         if (w > maxA) maxA = w;
+        if (uni) { if (w > off) off = w; continue; }   // a union is as wide as its widest member
         off = (off + w - 1) / w * w; off += w;
     }
     return off ? (off + maxA - 1) / maxA * maxA : 0;
@@ -7388,13 +7398,180 @@ template<int... Is> static void cbFill(void** t, std::integer_sequence<int, Is..
 static void* g_cbTable[64];
 static bool g_cbTableInit = [] { cbFill(g_cbTable, std::make_integer_sequence<int, 64>{}); return true; }();
 
-// NativeCall (`is native`): resolve the C symbol via dlsym and call it. Arguments
-// and the return are classified by their *declared* type — integer/pointer
-// (`Str`→`char*`, the `int*`/`uint*`/`size_t`/`bool`/`Pointer`/CArray/CStruct
-// family → 64-bit) or floating-point (`num`/`num32`/`num64`). Mixed int+float
-// args, `is rw` out-params (marshalled as `T*` with copy-back), and CStruct/
-// CPointer/CArray/Pointer returns are handled. Not supported: by-value C structs,
-// callbacks, and calls needing more than 8 integer or 8 float register args.
+static ffi::Type* ncFfiRetType(const std::string& rt); // defined with the call marshalling below
+
+// ---- callbacks, mark two: ffi_closure --------------------------------------
+// A Raku Callable handed to C as a function pointer. The closure's signature
+// comes from the Callable's own parameter list — declared native types where
+// the user wrote them, pointer-sized integers where they didn't — which is
+// strictly more than the fixed pool above can express: floats, arbitrary
+// arity, and a typed return instead of `long`.
+struct NcClosure {
+    Value                    fn;        // holds the Callable alive; also the map key's owner
+    std::vector<ffi::Type*>  atypes;
+    std::vector<std::string> ptypes;    // declared Raku types, for boxing the arguments
+    ffi::Type*               rtype = nullptr;
+    ffi::Cif                 cif;
+    void*                    writable = nullptr;  // ffi_closure_alloc's writable mapping
+    void*                    code     = nullptr;  // its executable alias — this is what C gets
+};
+// One closure per Callable, for the life of the process: a C library that
+// stores a callback must keep seeing the same address, and it can fire at any
+// later point, so these are deliberately never reclaimed.
+static std::map<Callable*, NcClosure*> g_ncClosures;
+
+// A callback parameter's declared Raku type → its libffi type. An undeclared
+// parameter is a pointer-sized integer, which is what the old trampoline pool
+// always assumed.
+static ffi::Type* ncFfiCbParamType(const std::string& pt) {
+    const ffi::Lib& F = ffi::lib();
+    if (pt.empty()) return F.t_sint64;
+    if (pt == "Str" || pt == "Pointer" || pt.rfind("Pointer[", 0) == 0 ||
+        pt == "CArray" || pt.rfind("CArray[", 0) == 0) return F.t_pointer;
+    bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
+    if (w) return ffi::scalar(w, sgn, isFlt);
+    return F.t_pointer; // a CStruct/CPointer class
+}
+// A callback's return type. An undeclared one stays pointer-sized-integer, as
+// the old pool's `long` return was — a C caller that wanted `void` simply
+// ignores the register.
+static ffi::Type* ncFfiCbRetType(const std::string& rt) {
+    const ffi::Lib& F = ffi::lib();
+    if (rt.empty()) return F.t_sint64;
+    if (rt == "void" || rt == "Nil") return F.t_void;
+    return ncFfiRetType(rt);
+}
+
+static void ncClosureTramp(void*, void* ret, void** args, void* user) {
+    if (g_cbInterp) g_cbInterp->runFfiClosure(user, ret, args);
+    else if (ret)   std::memset(ret, 0, sizeof(long long));
+}
+
+void Interpreter::runFfiClosure(void* user, void* ret, void** args) {
+    NcClosure* cl = (NcClosure*)user;
+    const ffi::Lib& F = ffi::lib();
+    auto zero = [&] { if (ret && cl->rtype != F.t_void) std::memset(ret, 0, sizeof(long long)); };
+    if (!onRakuThread()) {
+        // The C library stored this callback and is firing it from a thread of
+        // its own. There is no interpreter state to run in; returning zero is
+        // wrong, but it is a great deal less wrong than running anyway.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            std::fputs("NativeCall: a callback fired from a thread Raku does not own — ignored "
+                       "(only synchronous callbacks are supported)\n", stderr);
+        }
+        zero(); return;
+    }
+    ValueList as;
+    for (size_t i = 0; i < cl->atypes.size(); i++) {
+        ffi::Type* t = cl->atypes[i];
+        const std::string& pt = cl->ptypes[i];
+        if (t == F.t_float)       { float x;  std::memcpy(&x, args[i], 4); as.push_back(Value::number(x)); }
+        else if (t == F.t_double) { double x; std::memcpy(&x, args[i], 8); as.push_back(Value::number(x)); }
+        else if (t == F.t_pointer) {
+            void* p = nullptr; std::memcpy(&p, args[i], sizeof p);
+            if (pt == "Str")                     as.push_back(p ? Value::str((const char*)p) : Value::any());
+            else if (pt.rfind("CArray", 0) == 0) as.push_back(ncMakeLiveCArray(pt, p));
+            else                                 as.push_back(ncMakePointer(pt.empty() ? "Pointer" : pt, p));
+        }
+        else {
+            long long x = 0;
+            size_t n = t->size > 8 ? 8 : t->size;
+            std::memcpy(&x, args[i], n);
+            if (n < 8 && (t->type == ffi::T_SINT8 || t->type == ffi::T_SINT16 || t->type == ffi::T_SINT32)) {
+                unsigned long long mask = (1ULL << (n * 8)) - 1;          // sign-extend to the full width
+                unsigned long long u = (unsigned long long)x & mask;
+                x = (u & (1ULL << (n * 8 - 1))) ? (long long)(u | ~mask) : (long long)u;
+            }
+            as.push_back(Value::integer(x));
+        }
+    }
+    Value r;
+    try { r = callCallable(cl->fn, as); } catch (...) { zero(); return; }
+    if (!ret || cl->rtype == F.t_void) return;
+    if (cl->rtype == F.t_float)        { float x = (float)r.toNum();  std::memcpy(ret, &x, 4); }
+    else if (cl->rtype == F.t_double)  { double x = r.toNum();        std::memcpy(ret, &x, 8); }
+    else if (cl->rtype == F.t_pointer) { void* p = (void*)(intptr_t)ncRawAddr(r); std::memcpy(ret, &p, sizeof p); }
+    else { // libffi's closure contract: integers narrower than ffi_arg are written full-width
+        long long x = r.toInt(); std::memcpy(ret, &x, sizeof(long long));
+    }
+}
+
+// A Raku Callable passed where C wants a function pointer.
+static void* ncCallbackPtr(const Value& v) {
+    const ffi::Lib& F = ffi::lib();
+    if (F.ok && F.closure_alloc && F.prep_closure_loc && v.code) {
+        auto it = g_ncClosures.find(v.code.get());
+        if (it != g_ncClosures.end()) return it->second->code;
+        auto* cl = new NcClosure();
+        cl->fn = v;
+        const std::vector<Param>* ps = v.code->params;
+        // No signature at all: assume the two-argument comparator shape, which
+        // is what the fixed pool defaulted to and covers qsort/bsearch.
+        size_t arity = ps ? ps->size() : 2;
+        for (size_t i = 0; i < arity; i++) {
+            std::string pt = (ps && i < ps->size()) ? (*ps)[i].type : "";
+            cl->ptypes.push_back(pt);
+            cl->atypes.push_back(ncFfiCbParamType(pt));
+        }
+        cl->rtype = ncFfiCbRetType(v.code->retType);
+        cl->writable = F.closure_alloc(512, &cl->code);
+        if (cl->writable && cl->code && cl->rtype &&
+            F.prep(cl->cif.buf, F.abi, (unsigned)cl->atypes.size(), cl->rtype,
+                   cl->atypes.empty() ? nullptr : cl->atypes.data()) == 0 &&
+            F.prep_closure_loc(cl->writable, cl->cif.buf, ncClosureTramp, cl, cl->code) == 0) {
+            g_ncClosures[v.code.get()] = cl;
+            return cl->code;
+        }
+        // A W^X policy (hardened runtime, SELinux) can refuse the executable
+        // mapping. Fall through to the fixed pool rather than fail the call.
+        if (cl->writable && F.closure_free) F.closure_free(cl->writable);
+        delete cl;
+    }
+    for (size_t s = 0; s < g_cbSlots.size(); s++)
+        if (g_cbSlots[s].code == v.code) return g_cbTable[s];
+    if (g_cbSlots.size() >= 64) return nullptr;
+    g_cbSlots.push_back(v);
+    return g_cbTable[g_cbSlots.size() - 1];
+}
+
+// A libffi call interface prepared once and reused for every call with the same
+// signature. It owns `atypes` because the prepared cif points into it.
+struct NcCif {
+    std::vector<ffi::Type*> atypes;
+    ffi::Type*              rtype    = nullptr;
+    bool                    variadic = false;
+    unsigned                nfixed   = 0;
+    ffi::Cif                cif;
+};
+Callable::~Callable() { delete (NcCif*)nativeCifCache; }
+
+// Declared Raku return type → the libffi type of the C return value. Null when
+// libffi is unavailable (the caller then takes the fixed-prototype path).
+static ffi::Type* ncFfiRetType(const std::string& rt) {
+    const ffi::Lib& F = ffi::lib();
+    if (!F.ok) return nullptr;
+    if (rt.empty() || rt == "void" || rt == "Nil")     return F.t_void;
+    if (rt == "Str")                                   return F.t_pointer;
+    if (rt == "Pointer" || rt.rfind("Pointer[", 0) == 0 ||
+        rt == "CArray"  || rt.rfind("CArray[", 0)  == 0) return F.t_pointer;
+    bool sgn, isFlt; int w = ncScalarWidth(rt, sgn, isFlt);
+    if (w) return ffi::scalar(w, sgn, isFlt);
+    return F.t_pointer; // a CStruct/CPointer class, or an opaque handle
+}
+
+// NativeCall (`is native`): resolve the C symbol via dlsym and call it.
+// Arguments and the return are classified by their *declared* type and passed
+// through libffi (src/Ffi.h — loaded at runtime, never linked). That gives
+// exact argument widths, real `num32`, and any number of arguments.
+//
+// Where no libffi can be loaded the call falls back to one over-wide fixed
+// prototype, which places arguments correctly only while they all fit the
+// integer and float register banks; anything outside that throws rather than
+// calling wrongly. `is rw` out-params are marshalled as `T*` with copy-back,
+// and CStruct/CPointer/CArray/Pointer returns are boxed as live handles.
+// Still unsupported on both paths: C structs passed or returned BY VALUE.
 Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs) {
     // Resolve the symbol ONCE per Callable and cache the function pointer. This
     // used to run on every call, and the dlopen candidate loop is the expensive
@@ -7460,8 +7637,6 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
 
     const std::vector<Param>* prm = c.params;
     std::vector<std::string> keep; keep.reserve(args.size()); // keep Str buffers alive across the call
-    std::vector<long>   g;  // integer/pointer args, in declaration order
-    std::vector<double> f;  // float args, in declaration order
     // is-rw out-params: backing slots (stable addresses via deque) + copy-back list
     std::deque<long>   rwI;
     std::deque<double> rwD;
@@ -7470,8 +7645,64 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     struct CABack { size_t arg; size_t keep; }; // byte-backed CArray → copy bytes back
     std::vector<CABack> cabacks;
 
+    // ONE marshalling pass feeds both call tails. Every argument becomes a slot
+    // holding the raw bytes at its DECLARED width (what libffi reads) plus the
+    // value the fixed-prototype fallback would push (always widened to
+    // long/double). `needFfi` names the first thing the fallback cannot
+    // express, so that without libffi we throw instead of computing garbage.
+    const ffi::Lib& F = ffi::lib();
+    struct NcSlot {
+        alignas(8) unsigned char raw[16] = {};
+        ffi::Type* type = nullptr;
+        long   fbInt   = 0;
+        double fbNum   = 0;
+        bool   fbFloat = false;
+    };
+    std::vector<NcSlot> slots(args.size());
+    std::string needFfi;
+
+    // A slurpy in a native signature marks where C's `...` begins:
+    //     sub snprintf(Blob, size_t, Str, *@args --> int32) is native {*}
+    // Everything before it is fixed; everything after is a variadic argument,
+    // typed from its runtime value under C's default argument promotions (which
+    // is what the marshalling loop below already does for an undeclared
+    // parameter). Rakudo has no variadic NativeCall, so this spelling is a
+    // Raku++ extension — but without it a variadic call is silently wrong on
+    // every ABI that passes `...` arguments on the stack, Apple ARM64 included.
+    int nfixed = -1;
+    if (prm) for (size_t i = 0; i < prm->size(); i++) if ((*prm)[i].slurpy) { nfixed = (int)i; break; }
+    const bool variadic = nfixed >= 0;
+    if (variadic) needFfi = "a variadic native call";
+
+    auto putPtr = [&F](NcSlot& s, const void* p) {
+        void* q = const_cast<void*>(p);
+        std::memcpy(s.raw, &q, sizeof q);
+        s.type  = F.t_pointer;
+        s.fbInt = (long)(intptr_t)q;
+    };
+    auto putInt = [](NcSlot& s, long long v, int w, bool sgn) {
+        if (w == 0) { w = 8; sgn = true; }
+        switch (w) { // narrow to the declared width — libffi reads exactly `w` bytes
+            case 1: { int8_t  x = (int8_t)v;  std::memcpy(s.raw, &x, 1); break; }
+            case 2: { int16_t x = (int16_t)v; std::memcpy(s.raw, &x, 2); break; }
+            case 4: { int32_t x = (int32_t)v; std::memcpy(s.raw, &x, 4); break; }
+            default:{ std::memcpy(s.raw, &v, 8); break; }
+        }
+        s.type  = ffi::scalar(w, sgn, false);
+        s.fbInt = (long)v;
+    };
+    auto putNum = [&F, &needFfi](NcSlot& s, double v, int w) {
+        if (w == 4) { // a real 32-bit float: the fallback would pass a double
+            float x = (float)v; std::memcpy(s.raw, &x, 4); s.type = F.t_float;
+            if (needFfi.empty()) needFfi = "a num32 argument";
+        }
+        else { std::memcpy(s.raw, &v, 8); s.type = F.t_double; }
+        s.fbNum = v; s.fbFloat = true;
+    };
+
     for (size_t i = 0; i < args.size(); i++) {
         Value& v = args[i];
+        NcSlot& s = slots[i];
         const Param* p = (prm && i < prm->size()) ? &(*prm)[i] : nullptr;
         std::string pt = p ? p->type : "";
         bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
@@ -7485,44 +7716,123 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // Copy-back rebuilds a live Pointer from what the callee stored.
             long cur = 0;
             if (v.t == VT::Hash && v.hash && v.hash->count("addr")) cur = (long)(*v.hash)["addr"].toInt();
-            rwI.push_back(cur); g.push_back((long)(intptr_t)&rwI.back());
+            rwI.push_back(cur); putPtr(s, &rwI.back());
             rwbacks.push_back({i, &rwI.back(), nullptr, pt});
         }
         else if (p && p->isRw && w) { // `is rw` scalar → pass a pointer to a backing slot
-            if (isFlt) { rwD.push_back(v.toNum()); g.push_back((long)(intptr_t)&rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back(), ""}); }
-            else       { rwI.push_back(v.toInt()); g.push_back((long)(intptr_t)&rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, ""}); }
+            if (isFlt) { rwD.push_back(v.toNum()); putPtr(s, &rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back(), ""}); }
+            else       { rwI.push_back(v.toInt()); putPtr(s, &rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, ""}); }
         }
-        else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
+        else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
         else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
             // a Buf/blob8 is a mutable native buffer: pass its bytes and copy back
             // after the call (BIO_read/SSL_read/recv fill it in place).
-            keep.push_back(v.s); g.push_back((long)(intptr_t)keep.back().data());
+            keep.push_back(v.s); putPtr(s, keep.back().data());
             if (v.hashKind == "Buf") cabacks.push_back({i, keep.size() - 1});
         }
-        else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { keep.push_back(v.toStr()); g.push_back((long)(intptr_t)keep.back().c_str()); }
-        else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) g.push_back((long)v.obj->attrs["__native_ptr"].toInt());
+        else if (v.t == VT::Str || (v.t == VT::Hash && v.hashKind == "IO")) { keep.push_back(v.toStr()); putPtr(s, keep.back().c_str()); }
+        else if (v.t == VT::Object && v.obj && v.obj->attrs.count("__native_ptr")) putPtr(s, (void*)(intptr_t)v.obj->attrs["__native_ptr"].toInt());
         else if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") && v.hash->count("addr"))
-            g.push_back((long)(*v.hash)["addr"].toInt()); // live Pointer / CArray handle
-        else if (v.t == VT::Code) { // Raku callback → C function pointer (trampoline)
-            int slot = -1;
-            for (size_t s = 0; s < g_cbSlots.size(); s++) if (g_cbSlots[s].code == v.code) { slot = (int)s; break; }
-            if (slot < 0 && g_cbSlots.size() < 64) { slot = (int)g_cbSlots.size(); g_cbSlots.push_back(v); }
-            g.push_back(slot >= 0 ? (long)(intptr_t)g_cbTable[slot] : 0);
-        }
-        else if (fp) f.push_back(v.toNum());
-        else         g.push_back(v.toInt());
+            putPtr(s, (void*)(intptr_t)(*v.hash)["addr"].toInt()); // live Pointer / CArray handle
+        else if (v.t == VT::Code) putPtr(s, ncCallbackPtr(v)); // Raku callback → C function pointer
+        else if (fp) putNum(s, v.toNum(), w == 4 ? 4 : 8);
+        else         putInt(s, v.toInt(), w, sgn);
     }
-    if (g.size() > 8 || f.size() > 8)
-        throw RakuError{Value::typeObj("X::NYI"), "NativeCall: too many register arguments (max 8 integer + 8 float)"};
-
-    long G[8] = {0}; for (size_t k = 0; k < g.size(); k++) G[k] = g[k];
-    double D[8] = {0}; for (size_t k = 0; k < f.size(); k++) D[k] = f[k];
 
     const std::string& rt = c.retType;
-    bool retFP = ncIsFloatType(rt);
+    bool retFP  = ncIsFloatType(rt);
+    bool retF32 = (rt == "num32");
+    if (retF32 && needFfi.empty()) needFfi = "a num32 return value";
+    ffi::Type* rtype = ncFfiRetType(rt);
     long ri = 0; double rd = 0;
-    if (retFP) rd = ((NcFnD)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
-    else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+
+    bool useFfi = F.ok && rtype;
+    if (useFfi) for (auto& s : slots) if (!s.type) { useFfi = false; break; }
+
+    if (useFfi) {
+        // Stack-first: a heap allocation costs about as much as the C call, and
+        // native signatures are short. Only a freakishly wide one pays for one.
+        const size_t na = slots.size();
+        ffi::Type* atStack[16]; void* avStack[16];
+        std::vector<ffi::Type*> atHeap; std::vector<void*> avHeap;
+        ffi::Type** atypes = atStack; void** avalues = avStack;
+        if (na > 16) {
+            atHeap.resize(na); avHeap.resize(na);
+            atypes = atHeap.data(); avalues = avHeap.data();
+        }
+        for (size_t k = 0; k < na; k++) { atypes[k] = slots[k].type; avalues[k] = slots[k].raw; }
+        // Prepare the cif ONCE per signature and hang it off the Callable, the
+        // same way the resolved symbol is cached: ffi_prep_cif costs about as
+        // much as the call itself, so per-call preparation shows up as a flat
+        // ~20% on a native-call-heavy loop. A sub whose parameters are all
+        // declared always presents the same signature, so the first call's cif
+        // serves every later one; anything else (untyped parameters typed from
+        // the runtime value) falls back to a stack cif.
+        unsigned char* cifp = nullptr;
+        if (variadic && !F.prep_var)
+            throw RakuError{Value::typeObj("X::NYI"),
+                "NativeCall: a variadic call needs ffi_prep_cif_var, which " + F.path + " does not export"};
+        // Preparing a cif is `prep` for a fixed signature and `prep_var` for a
+        // variadic one — the two are NOT interchangeable: an ABI that passes
+        // `...` arguments differently (Apple ARM64) only learns about it here.
+        auto prepInto = [&](unsigned char* buf, ffi::Type** at) {
+            return variadic ? F.prep_var(buf, F.abi, (unsigned)nfixed, (unsigned)na, rtype, na ? at : nullptr)
+                            : F.prep(buf, F.abi, (unsigned)na, rtype, na ? at : nullptr);
+        };
+        NcCif* cached = (NcCif*)c.nativeCifCache;
+        if (cached && cached->rtype == rtype && cached->variadic == variadic &&
+            cached->nfixed == (unsigned)(variadic ? nfixed : 0) &&
+            cached->atypes.size() == na &&
+            std::equal(cached->atypes.begin(), cached->atypes.end(), atypes))
+            cifp = cached->cif.buf;
+        if (!cifp && !c.nativeCifCache) {
+            auto* nc = new NcCif();
+            nc->atypes.assign(atypes, atypes + na); nc->rtype = rtype;
+            nc->variadic = variadic; nc->nfixed = (unsigned)(variadic ? nfixed : 0);
+            if (prepInto(nc->cif.buf, nc->atypes.data()) == 0) {
+                c.nativeCifCache = nc;   // published once; a racing thread stores the same shape
+                cifp = nc->cif.buf;
+            }
+            else delete nc;
+        }
+        ffi::Cif local;   // only touched on a cache miss — its 512 zeroed bytes
+        if (!cifp) {      // are not worth memsetting on every crossing
+            if (prepInto(local.buf, atypes) != 0)
+                throw RakuError{Value::typeObj("X::NYI"),
+                    "NativeCall: libffi cannot describe the signature of '" + c.nativeSym + "'"};
+            cifp = local.buf;
+        }
+        // The return buffer must be at least ffi_arg wide: libffi widens any
+        // integer return narrower than that before storing it.
+        alignas(16) unsigned char rbuf[32] = {};
+        F.call(cifp, (void (*)(void))sym, rbuf, na ? avalues : nullptr);
+        if (retFP) {
+            if (retF32) { float x; std::memcpy(&x, rbuf, 4); rd = x; }
+            else        std::memcpy(&rd, rbuf, 8);
+        }
+        else if (rtype != F.t_void) {
+            unsigned long long u = 0;
+            std::memcpy(&u, rbuf, sizeof(void*) >= 8 ? 8 : 4);
+            ri = (long)u;
+        }
+    }
+    else {
+        // No libffi: the fixed over-wide prototype. It cannot place arguments
+        // that are not register-sized, so say so rather than call wrongly.
+        if (!needFfi.empty())
+            throw RakuError{Value::typeObj("X::NYI"),
+                "NativeCall: " + needFfi + " needs libffi, which is not available (" + F.why + ")"};
+        std::vector<long>   g;  // integer/pointer args, in declaration order
+        std::vector<double> f;  // float args, in declaration order
+        for (auto& s : slots) { if (s.fbFloat) f.push_back(s.fbNum); else g.push_back(s.fbInt); }
+        if (g.size() > 8 || f.size() > 8)
+            throw RakuError{Value::typeObj("X::NYI"),
+                "NativeCall: too many register arguments (max 8 integer + 8 float) — more needs libffi, which is not available (" + F.why + ")"};
+        long G[8] = {0}; for (size_t k = 0; k < g.size(); k++) G[k] = g[k];
+        double D[8] = {0}; for (size_t k = 0; k < f.size(); k++) D[k] = f[k];
+        if (retFP) rd = ((NcFnD)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+        else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+    }
 
     // is-rw copy-back: write each out-param's slot to the caller's lvalue
     for (auto& rb : rwbacks) {
@@ -9077,7 +9387,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (mc->args.empty() && !mc->meta && !mc->hyper && mc->inv->kind == NK::VarExpr) {
             Value inv = eval(mc->inv.get());
             if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
-                (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct") &&
+                (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct" ||
+                 inv.obj->cls->repr == "CUnion") &&
                 inv.obj->attrs.count("__native_ptr") && !inv.obj->cls->findMethod(mc->method)) {
                 std::string type; long long off = ncFieldOffset(inv.obj->cls.get(), mc->method, type);
                 if (off >= 0) {

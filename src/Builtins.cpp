@@ -3339,7 +3339,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // assignment path.) Only for a repr('CStruct') class the accessor doesn't
     // otherwise define a real method for.
     if (inv.t == VT::Object && inv.obj && inv.obj->cls &&
-        (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct") &&
+        (inv.obj->cls->repr == "CStruct" || inv.obj->cls->repr == "CPPStruct" ||
+         inv.obj->cls->repr == "CUnion") &&
         inv.obj->attrs.count("__native_ptr") && !inv.obj->cls->findMethod(m)) {
         std::string type; long long off = Interpreter::ncFieldOffset(inv.obj->cls.get(), m, type);
         if (off >= 0) {
@@ -7836,14 +7837,20 @@ void Interpreter::registerBuiltins() {
         return p;
     };
     // NativeCall helpers: size of a native type; cglobal is a stub (0)
-    B["nativesizeof"] = [](Interpreter&, ValueList& a) -> Value {
-        std::string t = a.empty() ? "" : a[0].t == VT::Type ? a[0].s : a[0].toStr();
-        long long sz = (t == "int8" || t == "uint8" || t == "byte" || t == "bool") ? 1
-                     : (t == "int16" || t == "uint16") ? 2
-                     : (t == "int64" || t == "uint64" || t == "long" || t == "longlong" ||
-                        t == "num64" || t == "size_t" || t == "ssize_t" || t == "Pointer") ? 8
-                     : (t == "num32" || t == "int32" || t == "uint32" || t == "int" || t == "uint") ? 4 : 8;
-        return Value::integer(sz);
+    // nativesizeof(T) — bytes T occupies in native memory. Scalars answer from
+    // the SAME width table the marshaller uses (an independent one here used to
+    // say `int` was 4 bytes while every call passed it as 8), and a
+    // CStruct/CUnion class or instance answers its real laid-out size instead
+    // of a flat pointer-width guess.
+    B["nativesizeof"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::integer(8);
+        ClassInfo* ci = nullptr;
+        if (a[0].t == VT::Object && a[0].obj) ci = a[0].obj->cls.get();
+        else if (a[0].t == VT::Type) { auto it = I.classes_.find(a[0].s); if (it != I.classes_.end()) ci = it->second.get(); }
+        if (ci && (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion"))
+            return Value::integer(Interpreter::ncStructSize(ci));
+        std::string t = a[0].t == VT::Type ? a[0].s : a[0].toStr();
+        return Value::integer(Interpreter::ncElemSize(t));
     };
     // parameterized native type name: `CArray[uint8]` is Type{s="CArray",
     // ofType="uint8"} — rebuild the "Name[elem]" string the FFI helpers expect.
