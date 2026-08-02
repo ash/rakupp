@@ -26,8 +26,10 @@ The user-facing documentation is one level up, in [../](../README.md).
 - **[plans/LIBFFI-PLAN.md](plans/LIBFFI-PLAN.md)** — moving NativeCall onto
   `libffi`: where NativeCall was, what libffi bought, and the measurements behind
   each decision (why `dlopen` rather than link or vendor, why one marshaller
-  rather than a fast path). Implemented — the file records what landed and the
-  one item deliberately left open.
+  rather than a fast path). Implemented — the file records what landed, and the
+  two things deliberately left open: by-value structs (§6) and statically
+  linking libffi instead of loading it (§10), which is what would give the
+  Windows binaries a full FFI.
 
 ## ecosystem/ — the v2.0 campaign
 

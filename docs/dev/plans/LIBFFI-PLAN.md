@@ -1,8 +1,9 @@
 # NativeCall on `libffi` — implementation plan
 
-**Status: implemented on 2026-08-02**, except by-value structs (§6), which are
-deliberately still open. What landed, and what each decision cost, is recorded
-in §9 at the end; the body below is the plan as written before the work, kept
+**Status: implemented on 2026-08-02.** Two things are deliberately left open:
+by-value structs (§6) and linking libffi rather than loading it (**§10** — the
+one that matters on Windows). What landed, and what each decision cost, is
+recorded in §9; the body below is the plan as written before the work, kept
 because the reasoning is what makes the result reviewable.
 
 Measurements were taken with `build-arm64/rakupp` on macOS/arm64 and the system
@@ -364,3 +365,75 @@ writing [guide/FFI.md](../../guide/FFI.md). All three are fixed here:
   need to install anything (no), and whether it works compiled (yes).
 - Inventory: [guide/FEATURES.md](../../guide/FEATURES.md) NativeCall entry.
 - Release notes: `CHANGELOG.md`, Unreleased.
+
+---
+
+## 10. Deferred: linking libffi instead of loading it
+
+Raised 2026-08-02, postponed the same day. Not built — recorded so the analysis
+does not have to be redone.
+
+### The gap it would close
+
+`dlopen` at run time is the right default and costs nothing on macOS or Linux,
+where a libffi is essentially always present. **Windows is the exception, and it
+is not a small one.** The release matrix ships two Windows binaries (MSVC x64
+and MinGW-w64); stock Windows has no `libffi-8.dll` anywhere, so both are
+*permanently* on the fallback path — no `num32`, no variadics, no more than 8
+register arguments, no more than 64 distinct callbacks — and a user has no way
+to change that short of sourcing a DLL from somewhere. Static musl / `scratch`
+containers are the same shape, smaller.
+
+Note what this does *not* rescue: a program binding `libsqlite3` needs sqlite3
+on the target regardless, so libffi is a marginal addition to a dependency that
+already exists. The programs this actually rescues are the ones calling **libc**
+— `printf`, `snprintf`, `open` with a mode, `ioctl` — which is precisely the
+variadic surface.
+
+### It is a build option, not an `--exe` flag
+
+The question arrived as "should `--exe` get a static-link option". It should
+not, for two reasons:
+
+1. `--exe` links the same static runtime (`librakupp_rt.a` / `rakupp_rt.lib`)
+   that `rakupp` itself is built from, so a runtime built against libffi is
+   inherited by `--exe` output for free — no new flag needed.
+2. An `--exe`-only flag would fix half the problem. `rakupp.exe` *interpreting*
+   a script has exactly the same gap.
+
+So: a CMake option, `RAKUPP_LINK_FFI=ON`, **off by default** so the ordinary
+build keeps needing nothing.
+
+### Sketch
+
+Under a `RAKUPP_STATIC_FFI` define, `ffi::load()` fills the same `ffi::Lib`
+table with `&ffi_prep_cif` and friends and `FFI_DEFAULT_ABI` from `<ffi.h>`,
+instead of `dlsym`ing them — and then still runs `selfTest()`, which stops
+validating a *probe* and starts validating the header's constant, which is
+worth as much. Nothing downstream changes: same struct, same marshaller, so
+this does not reintroduce the two-implementations problem the design avoided.
+Roughly 30 lines plus a CMake block. `--ffi-info` should then say "built in"
+rather than a path. `libffi.a` is ~43 KB.
+
+### Where the real cost is
+
+Not in `Ffi.cpp`. It is the **Windows CI plumbing**: vcpkg for the MSVC leg, an
+MSYS2 package for MinGW, and libffi's Windows build wanting a particular
+assembler path. Treat that as a separate follow-up from the code, which can be
+validated locally in an hour against any Homebrew/`-dev` `libffi.a`.
+
+Also real, if smaller: libffi is MIT-licensed, so static linking is fine but
+carries an attribution obligation — a line in `LICENSE` and in the release
+notes of any binary that ships it.
+
+### The two questions that decide it
+
+1. **Are there Windows NativeCall users?** If FFI on Windows is theoretical, this
+   is cost without payoff, and the honest position is the current one:
+   `--ffi-info` and [guide/FFI.md](../../guide/FFI.md) tell a Windows user
+   exactly what they do not have.
+2. Is anyone shipping Raku++ in a `scratch`/musl container *and* calling libc
+   variadically?
+
+Until one of those is a yes, the dependency-free default is worth more than the
+four features it costs on one platform.
