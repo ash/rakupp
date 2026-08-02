@@ -97,6 +97,46 @@ Two further rules follow from the same constraint:
 
 ---
 
+## Naming: no `RakuPP::` universe (decided 2026-08-02)
+
+Everything on this list ships under its **functional** name — `HTTP::Simple`,
+`Data::Schema`, `Terminal::Rich` — not under a `RakuPP::` prefix. The aim is for
+Raku++ to work everywhere Rakudo does, so a module we write is a module for
+Raku, developed and tested on both engines.
+
+`RakuPP::` is reserved for things where the coupling to this engine is *real* —
+where a portable module could not express the same thing at all:
+
+- variadic C calls, which Rakudo's NativeCall cannot make;
+- driving `--exe` from a program;
+- the precompiled-AST cache controls;
+- the WebAssembly surface.
+
+The test is: **would this module mean anything under Rakudo?** If yes, it gets a
+functional name, and any Raku++-only behaviour in it is an engine bug to fix. If
+no, `RakuPP::` is the honest prefix.
+
+We explicitly do NOT reimplement modules that already exist — no `RakuPP::XML`,
+no `RakuPP::LibXML`. The reason is not politeness, it is that the ecosystem
+modules are the best test oracle the project has: seventeen of them, used
+unchanged to build `showcase/modinfo`, produced sixteen general interpreter
+fixes and zero module workarounds, nine of them from IO::Glob alone. A
+reimplementation would have shipped a working glob and left those nine bugs to
+surface later, in someone else's module, further from the cause. Forking the
+modules deletes the oracle.
+
+Where a module genuinely cannot be made to work by fixing the engine — needing
+MoarVM internals, say — a narrow API-compatible shim under `RakuPP::` is the
+fallback. That bar has not been reached yet: every case in
+[MODULE-FINDINGS.md](MODULE-FINDINGS.md) that looked unfixable turned out to be
+a general bug.
+
+The user-facing counterpart to this decision is publishing the **compatibility
+data** rather than parallel modules: which distributions work on Raku++, kept
+current per release, so that a user knows before they hit a gap.
+
+---
+
 ## Tier A — high cross-language demand, real gap in Raku
 
 Twelve modules. These are the ones where every other ecosystem has an obvious
