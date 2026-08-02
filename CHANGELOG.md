@@ -61,9 +61,10 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
     cannot separate a crossing the program asked for from one the runtime made.
   - New guide: [docs/guide/FFI.md](docs/guide/FFI.md) — whether you need to
     install libffi (no), whether it works compiled as well as interpreted (yes),
-    the type map, the variadic story, how to *prove* a call reached C (the
-    obvious test subjects — `strlen`, `sqrt`, `abs` — are Raku builtins too, so
-    they prove nothing), and how to trace calls live.
+    the type map, the variadic story, how to *prove* a call reached C (pick the
+    test subject with care — `sqrt` and `abs` are Raku builtins and print the
+    same either way, while `strlen` is not in the language at all and so is
+    evidence by itself), and how to trace calls live.
 - **`is repr('CUnion')` works** — every field at offset 0, the type as wide as
   its widest member.
 - **`nativesizeof` answered from its own private table** and disagreed with the

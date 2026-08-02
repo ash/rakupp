@@ -7,11 +7,18 @@ Rakudo.
 ```raku
 use NativeCall;
 sub strlen(Str --> size_t) is native {*}
-sub sqrt(num64 --> num64) is native {*}
+sub hypot(num64, num64 --> num64) is native {*}
 
-say strlen("hello");   # 5
-say sqrt(2e0);         # 1.4142135623730951
+say strlen("hello");     # 5
+say hypot(3e0, 4e0);     # 5
 ```
+
+Neither name is deliberate decoration: **Raku has no `strlen` and no `hypot`**
+— the language spells the first `.chars`, and has no second at all — so both
+lines are already evidence. Drop the `is native` and you get `Undefined routine
+'strlen'`, not an answer from somewhere else. Beware of testing with `sqrt` or
+`abs`, which *are* Raku builtins and so print the same thing either way; see
+[Proving a call really reached C](#proving-a-call-really-reached-c).
 
 Every example on this page was run with the `rakupp` in this repository.
 
@@ -327,10 +334,18 @@ answer differs per architecture even on one machine.
 
 ## Proving a call really reached C
 
-`is native` declares a sub that *looks* like any other, and some of the obvious
-things to test it with — `strlen`, `sqrt`, `abs` — are Raku builtins too, so
-they would print the same answer if the declaration silently did nothing. Four
-checks that cannot pass by accident:
+`is native` declares a sub that *looks* like any other, so it is worth knowing
+how to tell a working one from a decorative one.
+
+Choose the test subject carefully. `sqrt` and `abs` are Raku builtins, so they
+print the same answer whether or not the declaration did anything — useless as
+evidence. `strlen` is a much better subject precisely because **Raku has no
+`strlen`**: it is not in the language (the docs have no such routine; Raku
+spells it `.chars`), so there is nothing for a broken declaration to fall back
+to. Without a working `is native` you get `Undefined routine 'strlen'`, or the
+`Any` that a silently-compiled stub used to return — never 5.
+
+That much proves *something* was called. These four go further and prove *what*:
 
 ```raku
 use NativeCall;
