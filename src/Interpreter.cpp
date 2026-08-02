@@ -6278,7 +6278,13 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (arg.obj && arg.obj->hasBoxed) return typeMatchesArg(arg.obj->boxed, type);
             return false;
         }
-        default: return true; // Nil/Any/Type/unknown subset/enum: lenient
+        // The undefined value conforms to Any and Mu only — both already answered
+        // true above — so it does NOT satisfy a specific constraint. Being lenient
+        // here let it win a candidate meant for a real value: `uri-escape(Any)`
+        // picked the `Match $s` overload instead of the general one and returned
+        // "" where Rakudo returns Any.
+        case VT::Any: return false;
+        default: return true; // Nil/Type/unknown subset/enum: lenient
     }
 }
 
@@ -10145,7 +10151,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // `=` assignment flattens iterables into the array; `:=` BINDS — the
             // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
             // elements: a Range, a List, an Array — not their union).
-            if (a->op == ":=" && rhs.t == VT::Array) { Value b = rhs; b.isList = false; *lv = b; }
+            // …and a bound LIST stays a List: `@!segments := @segments.List` is how
+            // URI::Path publishes an immutable segment list, and `is-deeply` against
+            // `('x','y','z')` compares the type. Only a non-List Array is demoted,
+            // which is what stops the bound items from being flattened together.
+            if (a->op == ":=" && rhs.t == VT::Array) { *lv = rhs; }
             // `my @a := SubclassOfArray.new` BINDS the object itself — coercing
             // it to a plain Array would throw away the class, and with it every
             // method the subclass adds (`.iterator` above all)
@@ -12210,6 +12220,40 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                     out.from = pos;
                     out.to = pos + (long)m.s.size();   // Match.s is the matched text
                     out.matched = true;
+                    // Carry the rule's OWN captures back as spans. Returning only
+                    // the extent threw away everything the rule matched inside —
+                    // URI::Path reads `$path<segment>` / `$path<segment-nz>` off
+                    // exactly this match to build its segment list, and without
+                    // them every mutated path had one empty segment.
+                    std::function<void(const Value&, ParseNode&)> fill =
+                        [&](const Value& mv, ParseNode& node) {
+                        node.from = pos + mv.rFrom;
+                        node.to   = pos + mv.rTo;
+                        if (!mv.hash) return;
+                        auto kids = std::make_shared<ChildMap>();
+                        auto lists = std::make_shared<std::set<std::string>>();
+                        for (auto& kv : *mv.hash) {
+                            auto addOne = [&](const Value& one) {
+                                if (one.t != VT::Match) return;
+                                ParseNode child; child.name = kv.first;
+                                fill(one, child);
+                                node.named[kv.first] = {child.from, child.to};
+                                (*kids)[kv.first].push_back(std::move(child));
+                            };
+                            if (kv.second.t == VT::Array && kv.second.arr) {
+                                lists->insert(kv.first);          // a quantified capture stays a list
+                                for (auto& e : *kv.second.arr) addOne(e);
+                            }
+                            else addOne(kv.second);
+                        }
+                        if (!kids->empty()) node.kids = kids;
+                        if (!lists->empty()) node.listNames = lists;
+                    };
+                    ParseNode root;
+                    fill(m, root);
+                    out.named = root.named;
+                    if (root.kids) out.children = *root.kids;
+                    if (root.listNames) out.listNames = root.listNames;
                     return true;
                 }
             }

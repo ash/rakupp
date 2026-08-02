@@ -975,3 +975,37 @@ comes back `["", ""]` after a path mutation. `query` (4): `$q<foo> = '5', '6'`
 keeps only the first element — a list on the right of a subscript assignment.
 `authority` (2): an authority-less URI gists `foo://` where Rakudo gives `foo:`.
 `escape` (1): `uri-escape(Any)` should return Any.
+
+## 2026-08-02 (cont) — URI 205 → 207, and where it stops
+
+12. **A qualified rule's own captures now come back.** The resolver returned only
+    the matched EXTENT, so everything the grammar rule captured inside was
+    thrown away. URI::Path reads `$path<segment>` / `$path<segment-nz>` off
+    exactly that match to build its segment list, so every mutated path had one
+    empty segment. The Match value is now walked back into span form, one level
+    of children at a time, with quantified captures kept list-valued.
+13. **`@a := <a List>` BINDS — the List stays a List.** The bind path cleared the
+    list flag to stop the bound items being flattened together, which also
+    demoted a genuine List to an Array. Only a non-List Array is demoted now.
+    `URI::Path` binds `@!segments := @segments.List` precisely so the list is
+    immutable, and `is-deeply` against `('x','y','z')` compares the type.
+14. **An undefined value satisfies no specific type.** `Any` conforms to `Any`
+    and `Mu` only, but the type test answered a blanket true for it, so it could
+    win a candidate written for a real value: `uri-escape(Any)` picked the
+    `Match $s` overload and returned `""` where Rakudo returns `Any`.
+
+**Where this stops: 15 assertions, four independent causes.**
+
+- `path` (5), `escape` (1): a TYPE OBJECT still satisfies any constraint —
+  `uri-escape(Str)` picks the `Match $s` overload. The `~~` operator already has
+  full type-object conformance (the `typeDoes` table, the numeric/string tower
+  and the class ancestry walk, around Interpreter.cpp:11790); dispatch has its
+  own, laxer test. Factoring the two together is the fix, and is the right size
+  for its own batch rather than the tail of this one.
+- `query` (4): `$q<foo> = '5', '6'` keeps only the first element. A list on the
+  right of a subscript assignment reaches ASSIGN-KEY as its first item.
+- `mutate` (3): a query mutated to a True value re-serialises its old pairs.
+- `authority` (2): an authority-less URI gists `foo://` where Rakudo gives `foo:`.
+
+Net for the day: URI 88 → 207 of 222, fourteen general interpreter fixes, no
+module touched.
