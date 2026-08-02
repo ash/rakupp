@@ -251,23 +251,14 @@ void Parser::scanModuleOps(const std::string& module) {
         scanOpsIn(*emb, "<embedded:" + module + ">");
         return;
     }
-    std::string rel = module;
-    for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
-    static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
+    // The SAME resolution the loader performs: the lib search path first, then
+    // the installed CompUnit repositories. Searching only lib paths here meant a
+    // zef-INSTALLED module was never scanned, so the operators and the sigilless
+    // constants it exports stayed invisible to the file that `use`s it — which is
+    // the normal case, not the exotic one. (`SPACE ~ $word` in an installed
+    // Text::Utils parsed as a call to `SPACE`.)
     std::string src, srcPath;
-    for (auto& base : libPaths_) {
-        for (const std::string& dir : {base, base + "/lib"}) {
-            for (auto ext : exts) {
-                std::ifstream in(dir + "/" + rel + ext);
-                if (!in) continue;
-                std::ostringstream ss; ss << in.rdbuf();
-                src = ss.str(); srcPath = dir + "/" + rel + ext;
-                break;
-            }
-            if (!src.empty()) break;
-        }
-        if (!src.empty()) break;
-    }
+    if (!rakuppFindModuleSource(module, libPaths_, srcPath, src)) return;
     if (src.empty()) return;
     scanOpsIn(src, srcPath);
 }

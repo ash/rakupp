@@ -26,6 +26,13 @@ struct ParseError : std::runtime_error {
 // afterwards. (`--exe`/`--aot` parse at BUILD time and never need this.)
 void rakuppRegisterModuleSource(const std::string& name, const char* src, size_t len);
 const std::string* rakuppEmbeddedModuleSource(const std::string& name);
+// Resolve a module's SOURCE exactly as the loader does — the lib search path
+// first, then the installed CompUnit repositories. Defined in Interpreter.cpp;
+// the parser needs it to scan a `use`d module for operators and for the
+// sigilless constants it exports.
+bool rakuppFindModuleSource(const std::string& name,
+                            const std::vector<std::string>& searchPath,
+                            std::string& pathOut, std::string& srcOut);
 
 class Parser {
 public:

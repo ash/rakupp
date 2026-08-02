@@ -3224,6 +3224,16 @@ static bool findModuleSourceFor(const std::string& name,
     return false;
 }
 
+// Same resolution the loader uses, exposed for the PARSER: a module that is
+// installed (zef) rather than sitting on a lib path must still be scanned at
+// parse time, or its exported operators and sigilless constants are invisible
+// to the file that `use`s it.
+bool rakuppFindModuleSource(const std::string& name,
+                            const std::vector<std::string>& searchPath,
+                            std::string& pathOut, std::string& srcOut) {
+    return findModuleSourceFor(name, searchPath, pathOut, srcOut);
+}
+
 // Every module name a tree `use`s, at any depth — a `use` can sit inside a
 // class body, a package, or any block, so this walks statements rather than
 // scanning only the top level.

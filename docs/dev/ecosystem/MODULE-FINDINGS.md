@@ -773,8 +773,9 @@ Bugs found, in the order the program hit them:
     by every builtin that compiles a pattern.
 16. **`.dir(:test)` ignored its matcher** in the METHOD form (the sub form
     honoured it). Also: an exported **sigilless `constant`** was invisible to the
-    importing file's parser (`SPACE ~ $word` parsed as a listop call), which
-    needed the module search path to reach module parsers; **`sub rule(…)`** was
+    importing file's parser (`SPACE ~ $word` parsed as a listop call) — see the
+    correction below, the first fix for this covered only half the cases;
+    **`sub rule(…)`** was
     lexed as a grammar rule declaration, swallowing the routine and everything
     after it; **`[|@a, $x]`** did not flatten the slip; and a hash composer with
     a COMPUTED key (`{ $d.name => True }`) parsed as a block.
@@ -814,3 +815,35 @@ smart-match.t is complete (the ACCEPTS + regex-composition work). The gap is
 the recursive `**` descent, the iterator protocol, and the rest of `dir`, which
 modinfo never exercises — it asks for `*/META6.json` and a flat `*` and nothing
 else. Next IO::Glob batch starts at iterator.t.
+
+## 2026-08-02 — CORRECTION: the parser could not see INSTALLED modules
+
+The sigilless-`constant` fix above (finding 16) was tested only against modules
+on a lib path — the vendored battery, reached through `RAKULIB`. Run the same
+program against the same modules **installed by zef**, which is the ordinary
+case, and it still failed:
+
+    $ rakupp showcase/modinfo/modinfo.raku about
+    Undefined routine 'SPACE'
+
+Two resolvers existed and only one of them knew about installed distributions.
+`findModuleSourceFor` (the loader) searches the lib path and *then* the
+installed CompUnit repositories — `short/<sha1(name)>` for the dist entry, then
+`sources/<sha1>` for the text. `Parser::scanModuleOps` — which is what reads a
+`use`d module at parse time to learn its operators and its exported sigilless
+constants — had a hand-rolled copy of only the lib-path half. So for an
+installed `Text::Utils`, the parser never found `Text::Utils::Vars`, never
+learned that `SPACE` is a term, and compiled `SPACE ~ $word` as a call.
+
+Fixed by deleting the duplicate: the loader's resolver is now exported as
+`rakuppFindModuleSource` and the parser calls it, so both paths resolve a
+module the same way. Gate: Roast 196,965, `t/run.raku` 272/272, perf-guard OK,
+and modinfo is byte-identical across both engines **on the zef-installed
+modules**, not only on the vendored copies.
+
+The lesson is the one the duplication audit already made: a second
+implementation of "find a module" will drift from the first, and the half that
+gets exercised in testing is not the half users hit. It also says something
+about how the showcase was verified — every run in the session that built it
+set `RAKULIB` at the vendored dists, so the ordinary invocation was never
+actually tried until a user typed it.
