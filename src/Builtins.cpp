@@ -648,6 +648,10 @@ static bool rakuIdentKey(const std::string& s) {
     return true;
 }
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
+    // `.raku` of a Proxy shows the VALUE it holds, not its FETCH/STORE pair —
+    // URI::Query hands back lists of Proxy containers to keep them immutable.
+    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash && g_deproxy)
+        return rakuRepr(g_deproxy(v), depth, seen);
     // Guard against self-referential / deeply-nested data (`$foo<b> = $foo`): recursing
     // blindly builds an unbounded string and exhausts memory. Detect a revisited
     // container (a cycle) and stop; a large depth cap backstops pathological nesting.
@@ -1446,6 +1450,13 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 }
 
 bool deepEq(const Value& a, const Value& b) {
+    // A Proxy is a container: compare what it HOLDS, at any depth. URI::Query
+    // hands back lists of Proxy containers to keep them immutable, so
+    // `is-deeply $q<foo>, $('1','3')` was comparing containers with strings.
+    if (a.t == VT::Hash && a.hashKind == "Proxy" && a.hash && g_deproxy)
+        return deepEq(g_deproxy(a), b);
+    if (b.t == VT::Hash && b.hashKind == "Proxy" && b.hash && g_deproxy)
+        return deepEq(a, g_deproxy(b));
     // the undefined value (VT::Any) and the `Any` type object are the same thing
     auto anyish = [](const Value& v) { return v.t == VT::Any || (v.t == VT::Type && v.s == "Any"); };
     if (anyish(a) && anyish(b)) return true;
@@ -4538,6 +4549,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return invokeMethod(*fb, inv, fargs);
             }
     }
+    // A grammar's RULE is also a method: `G.new.some-rule` is legal Raku. With no
+    // string to match it starts on an empty cursor and fails, so Rakudo hands back
+    // a falsy Cursor. Answer an undefined Match, which is falsy and matches
+    // nothing — URI's suite asserts exactly that with
+    // `nok 'foo' ~~ IETF::RFC_Grammar::URI.new().TOP-non-empty`.
+    {
+        ClassInfo* gci = inv.t == VT::Object && inv.obj ? inv.obj->cls.get()
+                       : inv.t == VT::Type ? (classes_.count(inv.s) ? classes_[inv.s].get() : nullptr)
+                       : nullptr;
+        for (ClassInfo* c = gci; c; c = c->parent.get())
+            if (c->isGrammar && c->findRule(m)) {
+                // With no argument the rule runs on an EMPTY cursor, and the result
+                // is that failed-or-successful Cursor. Smart-matching a string
+                // against it yields the cursor's own truthiness, whatever the
+                // string — which is why `'#foo' ~~ G.new.URI-reference` is True
+                // (URI-reference matches "") and `'foo' ~~ G.new.absolute-URI` is
+                // False (absolute-URI does not).
+                return grammarParse(c, "", /*subparse=*/false, m, Value());
+            }
+    }
     if (std::getenv("RAKUPP_TRACE"))
         std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
                   << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";
@@ -5587,10 +5618,14 @@ void Interpreter::registerBuiltins() {
     // …and a LIST of objects compares by the same rule, element by element:
     // `is $elem.contents, 'text'` where .contents is a list of XML::Text nodes.
     auto isStrify = [](Interpreter& I, Value& v) {
-        if (v.t == VT::Object) { v = Value::str(I.strOf(v)); return; }
+        // …a Proxy too: it is a container, and `is` compares the value it holds.
+        auto proxyish = [](const Value& e) {
+            return e.t == VT::Hash && e.hashKind == "Proxy" && e.hash;
+        };
+        if (v.t == VT::Object || proxyish(v)) { v = Value::str(I.strOf(v)); return; }
         if (v.t == VT::Array && v.arr && v.enumName.empty())
             for (auto& e : *v.arr)
-                if (e.t == VT::Object) { v = Value::str(I.strOf(v)); return; }
+                if (e.t == VT::Object || proxyish(e)) { v = Value::str(I.strOf(v)); return; }
     };
     B["is"] = [isEq, isStrify](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();

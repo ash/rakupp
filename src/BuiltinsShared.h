@@ -48,6 +48,7 @@ bool isCoreTypeName(const std::string& n);
 Value makeSignature(const Callable* c);
 std::shared_ptr<Param> signatureParamCopy(const Param& p);
 const std::vector<std::string>& typeAncestry(const std::string& t);
+extern std::function<Value(const Value&)> g_deproxy; // reads a Proxy container
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 std::string rakuRepr(const Value& v);
 void spawnWithInput(const std::vector<std::string>& argv, const std::string& input,

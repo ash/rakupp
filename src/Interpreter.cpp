@@ -198,7 +198,15 @@ static bool isSpecialVar(const std::string& n) {
     return false;
 }
 
+extern std::function<Value(const Value&)> g_deproxy;
 static bool valueEqv(const Value& a, const Value& b) {
+    // A Proxy is a container: compare what it HOLDS. `is-deeply $q<foo>, $('1','3')`
+    // over URI::Query's list of Proxy containers compared containers against
+    // strings and failed on type alone.
+    if (a.t == VT::Hash && a.hashKind == "Proxy" && a.hash && g_deproxy)
+        return valueEqv(g_deproxy(a), b);
+    if (b.t == VT::Hash && b.hashKind == "Proxy" && b.hash && g_deproxy)
+        return valueEqv(a, g_deproxy(b));
     // eqv is type-aware: 42 eqv 42.0 is False (Int vs Num/Rat), unlike ==
     if (a.t != b.t) return false;
     // …and an allomorph is its own type: `42 eqv <42>` is False although both are
@@ -1385,6 +1393,10 @@ static std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* g_matchClass
 // subset check for free-function ~~ (`5 ~~ Five`): returns true and sets `out`
 // when the RHS names a live subset; the newest interpreter instance wins
 std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
+// A Proxy is a CONTAINER: anything that renders a value has to read it first.
+// rakuRepr is a free function with no interpreter to call FETCH with, so the
+// interpreter publishes one here — same shape as g_subsetCheck above.
+std::function<Value(const Value&)> g_deproxy;
 
 void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
                     const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
@@ -1414,6 +1426,7 @@ Interpreter::Interpreter() {
     g_matchClasses = &classes_;
     rtSetAliasView(&classAliases_, &classes_); // package-relative short names for the type matchers
     g_objListItems = [this](const Value& v, ValueList& out) { return objListItems(v, out); };
+    g_deproxy = [this](const Value& v) -> Value { return deproxy(v); };
     g_subsetCheck = [this](const std::string& name, const Value& v, bool& out) {
         if (!subsets_.count(name)) return false;
         out = subsetMatches(name, v);
@@ -9825,6 +9838,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
+        // `$obj<k> = v` / `$obj[i] = v` on a class that implements the container
+        // protocol calls its ASSIGN-KEY / ASSIGN-POS. Without this the assignment
+        // fell through to the generic container path and silently did nothing —
+        // every URI::Query mutation (`$q<qux> = '4'`) was a no-op.
+        if (a->op == "=" && a->target->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(a->target.get());
+            if (ix->index && !ix->multiDim && ix->adverb.empty() &&
+                (ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm)) {
+                Value* bp = nullptr;
+                try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                if (bp && bp->t == VT::Object && bp->obj && bp->obj->cls) {
+                    const char* meth = ix->isHash ? "ASSIGN-KEY" : "ASSIGN-POS";
+                    bool has = false;
+                    for (ClassInfo* c = bp->obj->cls.get(); c && !has; c = c->parent.get())
+                        if (c->methods.count(meth)) has = true;
+                    if (has) {
+                        Value k = eval(ix->index.get());
+                        Value v = evalValueOf(a->value.get());
+                        methodCall(*bp, meth, ValueList{k, v});
+                        return v;
+                    }
+                }
+            }
+        }
         // quanthash element assignment: $sh<k> = False deletes from a SetHash,
         // $bh<k> = 0 deletes from a BagHash/MixHash; true/nonzero (re)sets.
         // A SLICE subscript falls through to the slice branch below, which applies
@@ -15261,6 +15298,21 @@ static void failureDetonate(const Value& v) {
 }
 std::string Interpreter::gistOf(const Value& v) {
     failureDetonate(v);
+    // Gisting a container READS it, so a Proxy runs FETCH — `say $q<baz>` must
+    // show the value, not the Proxy's own FETCH/STORE pair. The subscript path
+    // still hands back the container so a write can reach STORE.
+    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash) return gistOf(deproxy(v));
+    // …and so does a Proxy sitting inside a list.
+    if (v.t == VT::Array && v.arr && v.enumName.empty()) {
+        bool anyProxy = false;
+        for (auto& e : *v.arr) if (e.t == VT::Hash && e.hashKind == "Proxy") { anyProxy = true; break; }
+        if (anyProxy) {
+            Value copy = v;
+            copy.arr = std::make_shared<ValueList>();
+            for (auto& e : *v.arr) copy.arr->push_back(deproxy(e));
+            return gistOf(copy);
+        }
+    }
     // a DateTime/Date carrying a :formatter gists through .Str (which runs it) —
     // `say DateTime.now(formatter => …)` shows the formatted form
     if (v.t == VT::Hash && (v.hashKind == "DateTime" || v.hashKind == "Date") &&
@@ -17186,9 +17238,20 @@ Value Interpreter::eval(Expr* e) {
                                " used where no 'self' is available");
                 if (selfp && selfp->t == VT::Object && selfp->obj) {
                     std::string an = ve->name.substr(2);
+                    // `$.name` is `self.name`: a METHOD call, always. The attribute
+                    // read is only a shortcut for the generated accessor, so it must
+                    // not win when a real method of that name exists — URI::Query
+                    // has a private `$!query` beside `multi method query`, and
+                    // reading the attribute returned the stale cache the method was
+                    // written to recompute. `$!name` stays a direct attribute read.
+                    if (ve->name[1] == '.' && selfp->obj->cls) {
+                        bool hasMethod = false;
+                        for (ClassInfo* c = selfp->obj->cls.get(); c && !hasMethod; c = c->parent.get())
+                            if (c->methods.count(an)) hasMethod = true;
+                        if (hasMethod) return methodCall(*selfp, an, {});
+                    }
                     auto it = selfp->obj->attrs.find(an);
                     if (it != selfp->obj->attrs.end()) return it->second;
-                    // `$.name` is `self.name` — call the method when it's not an attribute
                     if (ve->name[1] == '.') return methodCall(*selfp, an, {});
                 }
                 return defaultFor(sigil);

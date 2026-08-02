@@ -938,3 +938,40 @@ Gate: Roast 196,937 → **197,004**, `t/run.raku` 273/273, perf-guard OK, modinf
 byte-identical on both engines. Remaining URI gaps, in size order: query (16),
 november-urlencoded (12), directory (8), path (8), mutate (7), escape (5),
 missing-components (4), 01 (23 — mostly `.query` and `.segments` behaviour).
+
+## 2026-08-02 (cont) — URI 188 → 205, six more
+
+8. **A grammar RULE is callable as a method.** `G.new.some-rule` with no
+   argument runs the rule on an EMPTY cursor and hands back that
+   failed-or-successful Cursor; smart-matching a string against it yields the
+   cursor's own truthiness, whatever the string. URI's suite asserts exactly
+   this (`nok 'foo' ~~ …TOP-non-empty`, `ok '#foo' ~~ …URI-reference` — the
+   difference is whether the rule matches ""). rakupp threw "No such method".
+   First implemented as an anchored match of the rule against the operand,
+   which looked more sensible and was wrong on two of the four assertions —
+   measuring Rakudo's actual answers is what settled it.
+9. **Proxy is a container, so everything that RENDERS or COMPARES a value must
+   read it.** `strOf`, `gistOf`, `rakuRepr`, `valueEqv`, `deepEq` and Test's
+   `is` each needed it, including for a Proxy nested in a list. `rakuRepr` is a
+   free function with no interpreter to call FETCH with, so the interpreter now
+   publishes a `g_deproxy` hook, mirroring the existing `g_subsetCheck`.
+   URI::Query returns lists of Proxy containers to keep them immutable.
+10. **`$obj<k> = v` never called `ASSIGN-KEY`.** A class implementing the
+    container protocol got its reads dispatched (AT-KEY/EXISTS-KEY/DELETE-KEY)
+    but not its writes — the assignment fell through to the generic container
+    path and silently did nothing, so every URI::Query mutation was a no-op.
+11. **`$.name` is `self.name` — a method call, always.** The attribute read is
+    only a shortcut for the generated accessor, and it was winning over a real
+    method of the same name. URI::Query has a private `$!query` cache beside
+    `multi method query`, so `$.query` returned the stale cache the method
+    exists to recompute — and after a mutation cleared it, the empty string.
+    This one is worth 10 assertions on its own.
+
+Gate: Roast 197,010, `t/run.raku` 273/273, perf-guard OK (fib −12%, asg −12%),
+modinfo byte-identical.
+
+**Still open, 17 assertions in 5 files.** `path`/`mutate` (10): `.segments`
+comes back `["", ""]` after a path mutation. `query` (4): `$q<foo> = '5', '6'`
+keeps only the first element — a list on the right of a subscript assignment.
+`authority` (2): an authority-less URI gists `foo://` where Rakudo gives `foo:`.
+`escape` (1): `uri-escape(Any)` should return Any.
