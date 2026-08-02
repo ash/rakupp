@@ -1038,6 +1038,15 @@ size_t asciiRun(const std::string& s, size_t limit) {
 }
 bool allAscii(const std::string& s) { return asciiRun(s, s.size()) == s.size(); }
 
+// True when a BYTE index into `s` is also a GRAPHEME index — which is what Raku
+// string positions actually are. Needs two things: every byte ASCII (so one byte
+// is one codepoint), and no CR, because CR LF is the one ASCII sequence that
+// clusters (GB3, which is why "a\r\nb".chars is 3). When it holds, .chars is a
+// byte count and .substr is a byte slice, with nothing to decode.
+bool byteIsGraphemeIndex(const std::string& s) {
+    return allAscii(s) && std::memchr(s.data(), '\r', s.size()) == nullptr;
+}
+
 // Drop every combining mark, keeping ONE base character per grapheme — the
 // folding `:ignoremark` compares through. Character positions survive it, so an
 // index into the folded text is an index into the original.
@@ -1119,7 +1128,10 @@ std::string mapCase(const std::string& s, int kind, int tcMode) {
     for (uint32_t c : out) r += cpToUtf8(c);
     return nfcNormalize(r); // a case change is NFG-normalised (Ι+◌̈ composes to Ϊ)
 }
-long long cpCount(const std::string& s) { return (long long)utf8cp(s).size(); }
+long long cpCount(const std::string& s) {
+    if (allAscii(s)) return (long long)s.size();   // one byte, one codepoint
+    return (long long)utf8cp(s).size();
+}
 
 // NFC-normalise a UTF-8 string — Raku stores strings in NFG (NFC of graphemes),
 // so `"e" ~ "\x[301]"` composes to "é" (1 codepoint). Pure-ASCII is already NFC
@@ -1138,7 +1150,13 @@ std::string nfcNormalize(std::string s) { // by value: the ASCII fast path moves
 
 // Unicode combining marks (Mn/Mc/Me — the common ranges) — they attach to the preceding grapheme.
 // Count grapheme clusters via the full UAX #29 algorithm (emoji/flags/Hangul-aware).
-long long graphemeCount(const std::string& s) { return (long long)uniGraphemeCount(utf8cp(s)); }
+long long graphemeCount(const std::string& s) {
+    // `.chars` on a long ASCII string was the worst of the quadratics: called
+    // once per character it decoded the whole text AND ran the full UAX #29 walk
+    // over it, 11.5 s for a 30k scan. A byte count answers it outright.
+    if (byteIsGraphemeIndex(s)) return (long long)s.size();
+    return (long long)uniGraphemeCount(utf8cp(s));
+}
 
 // Rakudo dies opening a missing file for reading ("Failed to open file
 // /abs/path: No such file or directory") — match it, absolute path included.

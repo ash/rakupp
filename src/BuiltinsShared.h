@@ -28,6 +28,9 @@ std::vector<uint32_t> utf8cp(const std::string& s);
 // index and a byte index are the same thing, so utf8cp() can be skipped.
 size_t asciiRun(const std::string& s, size_t limit);
 bool allAscii(const std::string& s);
+// True when a byte index into `s` is also a grapheme index — ASCII and CR-free,
+// so Raku's grapheme-indexed string methods can work on bytes without decoding.
+bool byteIsGraphemeIndex(const std::string& s);
 
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);

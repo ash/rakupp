@@ -1776,16 +1776,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "trim-leading") { std::string s = inv.toStr(); size_t a = s.find_first_not_of(" \t\n\r"); return Value::str(a == std::string::npos ? "" : s.substr(a)); }
     if (m == "trim-trailing") { std::string s = inv.toStr(); size_t b = s.find_last_not_of(" \t\n\r"); return Value::str(b == std::string::npos ? "" : s.substr(0, b + 1)); }
     if (m == "substr" || m == "substr-rw") {
-        auto cps = utf8cp(inv.toStr());
         // Raku indexes by GRAPHEME, so `n` counts clusters and every cut lands on a
-        // cluster boundary. Indexing `cps` directly splits "ŕ̥" into its base and its
-        // combining ring, which is how `substr` and `chars` came to disagree.
-        GraphemeMap gm(cps);
-        long long n = (long long)gm.count();
+        // cluster boundary. Indexing codepoints directly splits "ŕ̥" into its base
+        // and its combining ring, which is how `substr` and `chars` came to
+        // disagree. But when a byte index IS a grapheme index — ASCII, no CR —
+        // none of that machinery is needed, and skipping it is what stops a
+        // `.substr($i, 1)` loop being quadratic in the string. Only these two
+        // primitives differ; every argument shape below is decided once.
+        const std::string raw = inv.toStr();
+        const bool plain = byteIsGraphemeIndex(raw);
+        std::vector<uint32_t> cps;
+        std::unique_ptr<GraphemeMap> gm;
+        if (!plain) { cps = utf8cp(raw); gm.reset(new GraphemeMap(cps)); }
+        long long n = plain ? (long long)raw.size() : (long long)gm->count();
         auto slice = [&](long long lo, long long hi) { // [lo, hi) in graphemes
             std::string r;
             if (hi <= lo) return r;
-            size_t a = gm.cpAt((size_t)lo), b = gm.cpAt((size_t)hi);
+            if (plain) return raw.substr((size_t)lo, (size_t)(hi - lo));
+            size_t a = gm->cpAt((size_t)lo), b = gm->cpAt((size_t)hi);
             for (size_t k = a; k < b; k++) r += cpToUtf8(cps[k]);
             return r;
         };
@@ -1887,6 +1895,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
         std::string hay = inv.toStr(), ndl = a0().toStr();
         if (imark) { hay = markFold(hay); ndl = markFold(ndl); }
+        // Plain needle in a plain haystack, no folding: positions are byte
+        // positions and std::string::find is the whole algorithm. Worth taking
+        // before the decode, since a scan over a long string calls this per
+        // character. `from` is still parsed below in the general path.
+        if (!icase && !imark && byteIsGraphemeIndex(hay) && byteIsGraphemeIndex(ndl) &&
+            (args.size() <= 1 || !args[1].isNumeric())) {
+            size_t at = m == "index" ? hay.find(ndl) : hay.rfind(ndl);
+            return at == std::string::npos ? Value::nil() : Value::integer((long long)at);
+        }
         auto cps = utf8cp(hay); auto ncps = utf8cp(ndl);
         if (icase) { for (auto& c : cps) c = toLowerCp(c); for (auto& c : ncps) c = toLowerCp(c); }
         // Positions are GRAPHEME indices, on the way in (the start argument) and on
@@ -2233,7 +2250,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::boolean(a1.toStr() == b1.toStr());
     }
 
-    if (m == "ord") { auto c = utf8cp(inv.toStr()); return c.empty() ? Value::nil() : Value::integer(c[0]); }
+    if (m == "ord") {
+        // Only the FIRST character is wanted; decoding the rest was pure waste,
+        // and it made `$s.substr($i,1).ord` in a loop quadratic in $s.
+        const std::string s = inv.toStr();
+        if (s.empty()) return Value::nil();
+        auto c = utf8cp(s.substr(0, 4));   // a codepoint is at most 4 bytes
+        return Value::integer(c[0]);
+    }
     if (m == "chr") {
         long long cp = inv.big ? LLONG_MAX : inv.toInt(); // BigInt is certainly out of bounds
         if (cp < 0 || cp > 0x10FFFF)
