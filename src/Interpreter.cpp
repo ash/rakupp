@@ -12225,12 +12225,39 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             // and a quantified name is a list even with a single occurrence
             bool asList = kv.second.size() > 1
                        || (m.listNames && m.listNames->count(kv.first));
+            // A child carries its OWN captures — build it recursively rather than
+            // as a bare span. `my regex ps { $<pr> = <Grammar::rule> }` matched
+            // through `<ps>` produced a Match with an empty .hash, so URI::Path
+            // could not tell which alternative had matched.
+            std::function<Value(const ParseNode&)> childMatch = [&](const ParseNode& c) -> Value {
+                Value cv = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
+                for (size_t ci = 0; ci < c.caps.size(); ci++) {
+                    auto& p = c.caps[ci];
+                    cv.arrRef().push_back(p.first < 0 ? Value::nil()
+                        : Value::matchVal(subject.substr(p.first, p.second - p.first), p.first, p.second));
+                }
+                for (auto& nm : c.named)
+                    if (!c.kids || !c.kids->count(nm.first))
+                        cv.hashRef()[nm.first] = Value::matchVal(
+                            subject.substr(nm.second.first, nm.second.second - nm.second.first),
+                            nm.second.first, nm.second.second);
+                if (c.kids) for (auto& ck : *c.kids) {
+                    bool many = ck.second.size() > 1 ||
+                                (c.listNames && c.listNames->count(ck.first));
+                    if (!many) cv.hashRef()[ck.first] = childMatch(ck.second[0]);
+                    else {
+                        Value a2 = Value::array(); a2.isList = true;
+                        for (auto& g : ck.second) a2.arr->push_back(childMatch(g));
+                        cv.hashRef()[ck.first] = a2;
+                    }
+                }
+                return cv;
+            };
             if (!asList) {
-                auto& c = kv.second[0];
-                v.hashRef()[kv.first] = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
+                v.hashRef()[kv.first] = childMatch(kv.second[0]);
             } else {
                 Value arr = Value::array(); arr.isList = true;
-                for (auto& c : kv.second) arr.arr->push_back(Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to));
+                for (auto& c : kv.second) arr.arr->push_back(childMatch(c));
                 v.hashRef()[kv.first] = arr;
             }
         }

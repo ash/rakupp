@@ -1425,6 +1425,16 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 ParseNode leaf; leaf.name = cn; leaf.from = sub.from; leaf.to = sub.to;
                 for (auto& kv : sub.named) leaf.named[kv.first] = kv.second;
                 leaf.caps = sub.caps;
+                // …and the sub-match TREE. A `my regex` whose body captures through
+                // subrules records children, not just named spans; dropping them left
+                // `$<ps>.hash` empty, so URI::Path could not find which of
+                // path-absolute/path-rootless/path-empty had matched and every
+                // mutated path came back as the empty string.
+                if (!sub.children.empty())
+                    leaf.kids = std::make_shared<const ChildMap>(sub.children);
+                if (sub.listNames) leaf.listNames = sub.listNames;
+                if (!sub.listCaps.empty())
+                    leaf.listCaps = std::make_shared<const std::set<int>>(sub.listCaps);
                 st.children[cn].push_back(std::move(leaf)); // collates repeated <cn> into a list
                 if (k(sub.to)) return true;
                 st.children[cn].pop_back(); if (st.children[cn].empty()) st.children.erase(cn);
