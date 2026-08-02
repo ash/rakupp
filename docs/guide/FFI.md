@@ -270,8 +270,11 @@ not an implementation quirk to work around — it is what an FFI is.
 The fix is to declare what C actually declares:
 
 ```raku
-sub fabs(num64 --> num64) is native {*}   say fabs(-3.34e0);   # 3.34
-sub abs(int32 --> int32)  is native {*}   say abs(-3);         # 3
+sub fabs(num64 --> num64) is native {*}
+sub abs(int32 --> int32)  is native {*}
+
+say fabs(-3.34e0);   # 3.34
+say abs(-3);         # 3
 ```
 
 Two habits that catch this early:

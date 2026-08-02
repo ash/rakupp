@@ -107,6 +107,13 @@ moves — not when Raku++ is released.
 
 If a program must run on both, the reliable habits are:
 
+- put a `;` between statements even when the first one ends in `}`. Raku
+  supplies an implicit statement separator only when the `}` is the last thing
+  on the **line**, so `sub f { … }  say 1;` needs one. Raku++ accepts it
+  without; Rakudo says *"Strange text after block (missing semicolon or
+  comma?)"*. Rakudo is right, and this is the dangerous direction of
+  divergence — the permissive engine teaches a habit that fails on the strict
+  one, with no warning until you get there
 - `sort` before comparing anything that came out of a hash
 - pass `:out` when you capture, rather than relying on pass-through timing
 - decontainerise explicitly — `@(…)` — rather than relying on a coercion
