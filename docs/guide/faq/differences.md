@@ -114,6 +114,13 @@ If a program must run on both, the reliable habits are:
   comma?)"*. Rakudo is right, and this is the dangerous direction of
   divergence — the permissive engine teaches a habit that fails on the strict
   one, with no warning until you get there
+- `await` a `Promise.allof`/`anyof` before asking its `.status`. Raku++ keeps
+  the combined promise eagerly, so it reads `Kept` immediately; Rakudo hands it
+  to the scheduler and reads `Planned` until that runs. After an `await` both
+  say `Kept`, which is what real code does anyway
+- write `callsame()`, not bare `callsame`, when its result feeds an operator:
+  `"[" ~ callsame ~ "]"` parses on Raku++ but Rakudo reads it as
+  `callsame(~"]")` and rejects it
 - `sort` before comparing anything that came out of a hash
 - pass `:out` when you capture, rather than relying on pass-through timing
 - decontainerise explicitly — `@(…)` — rather than relying on a coercion

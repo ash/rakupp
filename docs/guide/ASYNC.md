@@ -140,8 +140,11 @@ say (try await $p) // "caught: {$!.message}";   # → caught: boom
 
 ```raku
 # Combinators and chaining
-say Promise.allof(Promise.kept(1), Promise.kept(2)).status;   # → Kept
-say Promise.anyof(Promise.new, Promise.kept(1)).status;       # → Kept
+my $all = Promise.allof(Promise.kept(1), Promise.kept(2));
+my $any = Promise.anyof(Promise.new, Promise.kept(1));
+await $all, $any;                       # without the await, Rakudo still reports
+say $all.status;                        # Planned here — Raku++ keeps eagerly
+say $any.status;                        # → Kept (both)
 
 my $p = start { 10 };
 my $done = $p.then({ .result + 5 });      # runs once $p settles

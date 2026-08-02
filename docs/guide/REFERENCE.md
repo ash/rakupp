@@ -401,7 +401,7 @@ indicate which side may be auto-extended.
 
 ```raku
 say (2,3,4) »+» 1;        # → (3 4 5)     scalar broadcast
-say (1,2,3) «*« 10;       # → (10 20 30)
+say (1,2,3) »*» 10;       # → (10 20 30)  (dwim on the scalar side)
 say (1,2) »+« (10,20);    # → (11 22)     element-wise
 say (1,2,3).map(-*);      # → (-1 -2 -3)  (prefer .map for prefix ops)
 ```
@@ -680,7 +680,7 @@ Loop controls: `last`, `next`, `redo`. `when`/`given` controls: `proceed`,
 ### Everything is an expression: `do`
 
 ```raku
-my $r = do given 3 { when 3 { 'three' } default { '?' } };  say $r;  # → three
+my $r = do given 3 { when 3 { 'three' }; default { '?' } };  say $r; # → three
 my @sq = do for 1..3 { $_ * $_ };  say @sq;                          # → [1 4 9]
 ```
 

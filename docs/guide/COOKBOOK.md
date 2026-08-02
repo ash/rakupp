@@ -132,7 +132,7 @@ original:
 
 ```raku
 sub greet($n) { "hi $n" }
-&greet.wrap(-> $n { "[" ~ callsame ~ "]" });
+&greet.wrap(-> $n { "[" ~ callsame() ~ "]" });   # parens: callsame is a listop
 say greet("bob");                         # → [hi bob]    (wrapped)
 ```
 
@@ -330,6 +330,7 @@ my $done = start { die "boom" };
 say (try await $done) // "caught: {$!.message}";  # → caught: boom  (die → Broken)
 
 my $a = Promise.allof(Promise.kept(1), Promise.kept(2));
+await $a;                                 # await first: Rakudo reports Planned
 say $a.status;                            # → Kept       (anyof/allof combinators)
 ```
 

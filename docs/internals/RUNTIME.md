@@ -329,7 +329,7 @@ backing `ValueList`. Raku, however, wants:
 ```raku
 my @a = 1, 2, 3;
 my @b = @a;      # @b is a COPY — pushing to @b must not change @a
-$b[0] = 99;
+@b[0] = 99;
 say @a;          # (1 2 3)   ← unchanged
 ```
 

@@ -162,6 +162,7 @@ say $buf.decode('latin-1').substr(0, $n);   # Ada scored 97 at 99.5%
 ```
 
 ```raku
+use NativeCall;
 sub printf(Str, *@args --> int32) is native {*}
 printf("%d bottles of %s\n", 99, "beer");   # 99 bottles of beer
 ```
@@ -238,8 +239,11 @@ there is one code path rather than a fast one and a general one.
 `nativesizeof` answers from this same table, including for your own classes:
 
 ```raku
+use NativeCall;
 say nativesizeof(int);         # 8
 say nativesizeof(bool);        # 1
+
+class TimeVal is repr('CStruct') { has int64 $.sec; has int64 $.usec; }
 say nativesizeof(TimeVal);     # 16  — the struct's real laid-out size
 ```
 
@@ -275,6 +279,7 @@ not an implementation quirk to work around — it is what an FFI is.
 The fix is to declare what C actually declares:
 
 ```raku
+use NativeCall;
 sub fabs(num64 --> num64) is native {*}
 sub abs(int32 --> int32)  is native {*}
 
@@ -318,6 +323,7 @@ say $tv.sec > 1_700_000_000;   # True
 widest member:
 
 ```raku
+use NativeCall;
 class Word is repr('CUnion') { has uint16 $.half is rw; has uint8 $.lo is rw; }
 my $w = Word.new(half => 0x1234);
 say $w.lo.fmt('%#x');       # 0x34 on a little-endian machine
