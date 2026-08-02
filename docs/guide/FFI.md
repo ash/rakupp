@@ -318,9 +318,73 @@ ignored with a warning on stderr, rather than run anyway.
 | `rakupp --ffi-info` | which backend is live, or why none is |
 | `RAKUPP_FFI=0` | force the no-libffi fallback (used by the second CI leg) |
 | `RAKUPP_FFI=/path/to/lib` | use a specific libffi — and *only* that one. If it cannot be loaded, Raku++ reports it and runs on the fallback rather than silently substituting whatever the system ships, because naming a library is a request, not a hint |
+| `RAKUPP_FFI_TRACE=1` | log every crossing to stderr as it happens (see below) |
 
 When reporting a NativeCall bug, `--ffi-info` is the first line to include: the
 answer differs per architecture even on one machine.
+
+---
+
+## Proving a call really reached C
+
+`is native` declares a sub that *looks* like any other, and some of the obvious
+things to test it with — `strlen`, `sqrt`, `abs` — are Raku builtins too, so
+they would print the same answer if the declaration silently did nothing. Four
+checks that cannot pass by accident:
+
+```raku
+use NativeCall;
+
+# 1. C semantics Raku does not share — strlen stops at a NUL byte, .chars does not
+sub strlen(Str --> size_t) is native {*}
+say "ab\0cd".chars;      # 5
+say strlen("ab\0cd");    # 2   <- only C produces this
+
+# 2. a name Raku has no builtin for, bound to a C symbol by hand
+sub how-long-is-it(Str --> size_t) is native is symbol('strlen') {*}
+say how-long-is-it("hello");   # 5
+
+# 3. a value only the OS knows
+sub getpid(--> int32) is native {*}
+say getpid() == $*PID;         # True
+
+# 4. resolution is real — ask for a symbol that does not exist
+sub nope(--> int32) is native is symbol('not_a_real_symbol_42') {*}
+nope();   # Cannot find native symbol 'not_a_real_symbol_42'
+```
+
+And one that does not take the program's word for anything — ask the dynamic
+loader which libraries the process actually mapped:
+
+```sh
+DYLD_PRINT_LIBRARIES=1 rakupp prog.raku 2>&1 | grep -iE 'libffi|sqlite'   # macOS
+LD_DEBUG=libs          rakupp prog.raku 2>&1 | grep -iE 'libffi|sqlite'   # Linux
+```
+
+## Tracing calls as they happen
+
+`RAKUPP_FFI_TRACE=1` prints one line per crossing on stderr:
+
+```
+[ffi] backend: libffi: libffi.dylib (abi 1)
+[ffi] snprintf(0x156f1c9a0, 64, "%s scored %d at %.1f%%", "Ada", 97, 99.5) -> 22
+[ffi] printf("%d bottles of %s\n", 99, "beer") -> 19
+[ffi] sqlite3:sqlite3_libversion() -> "3.43.2"
+```
+
+It shows the library (when one was named), the resolved C symbol rather than
+the Raku sub name, and — importantly — **what actually crossed**: the marshalled
+argument values and the raw return, not the Raku values re-printed. So a
+marshalling bug shows up in the trace instead of being hidden by it. On the
+fallback path each line is tagged `[no libffi]`.
+
+An external tracer cannot do this job. `lldb`, `ltrace` and `dtrace` see C
+symbols, and the interpreter's own C++ calls `strlen`/`malloc` constantly, so
+a breakpoint on `strlen` cannot distinguish a crossing your program asked for
+from one the runtime made for itself. (`dtrace` also wants root, and usually
+SIP disabled.) Only this layer knows which call came from Raku.
+
+Callbacks going the other way — C calling back into Raku — are not traced.
 
 ---
 

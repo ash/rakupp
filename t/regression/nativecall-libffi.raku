@@ -120,6 +120,23 @@ $child.unlink;
 @fail.push("fallback-loud ({$err.lines.head // 'no error'})")
     unless $err.contains('num32') && $err.contains('libffi');
 
+# 5b. RAKUPP_FFI_TRACE reports what ACTUALLY crossed. The check that matters is
+#     the `2`: strlen stops at the NUL byte, so a trace echoing the Raku value
+#     back (5 characters) would be decorative rather than evidence.
+my $tchild = $*TMPDIR.add("nc-trace-{$*PID}.raku");
+$tchild.spurt: q:to/SRC/;
+    use NativeCall;
+    sub strlen(Str --> size_t) is native {*}
+    strlen("ab\0cd");
+    SRC
+%*ENV<RAKUPP_FFI_TRACE> = '1';
+my $t = run($*EXECUTABLE.absolute, $tchild.absolute, :out, :err);
+my $terr = $t.err.slurp(:close); $t.out.slurp(:close);
+%*ENV<RAKUPP_FFI_TRACE>:delete;
+$tchild.unlink;
+@fail.push("trace ({$terr.lines.grep(*.starts-with('[ffi]')).tail // 'no trace'})")
+    unless $terr.contains('[ffi] backend:') && $terr.contains('strlen(') && $terr.contains('-> 2');
+
 # 6. RAKUPP_FFI naming a library that cannot be loaded must NOT fall through to
 #    whatever the system ships — naming one is a request, not a hint.
 %*ENV<RAKUPP_FFI> = '/nonexistent/libffi.so';

@@ -52,9 +52,18 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
     call as a fixed one and put the `...` arguments in registers instead of on
     the stack: `snprintf(Str, 0, "%d-%s", 42, "hi")` answered 5 interpreted and
     8 compiled.
+  - **`RAKUPP_FFI_TRACE=1` logs every crossing to stderr as it happens** —
+    library, resolved C symbol, the marshalled arguments and the raw return.
+    It reports what actually crossed rather than re-printing the Raku values, so
+    a marshalling bug shows up in the trace instead of being hidden by it. No
+    external tracer can do this: lldb/ltrace/dtrace see C symbols, and the
+    interpreter's own C++ calls `strlen`/`malloc` constantly, so a breakpoint
+    cannot separate a crossing the program asked for from one the runtime made.
   - New guide: [docs/guide/FFI.md](docs/guide/FFI.md) — whether you need to
     install libffi (no), whether it works compiled as well as interpreted (yes),
-    the type map, and the variadic story.
+    the type map, the variadic story, how to *prove* a call reached C (the
+    obvious test subjects — `strlen`, `sqrt`, `abs` — are Raku builtins too, so
+    they prove nothing), and how to trace calls live.
 - **`is repr('CUnion')` works** — every field at offset 0, the type as wide as
   its widest member.
 - **`nativesizeof` answered from its own private table** and disagreed with the

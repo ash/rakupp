@@ -7370,6 +7370,16 @@ long long Interpreter::ncRawAddr(const Value& v) {
 // constructor can set it.)
 static std::vector<Value> g_cbSlots;   // slot → Raku Callable (never shrinks)
 
+// RAKUPP_FFI_TRACE=1 — one line per native crossing on stderr. An external
+// tracer (lldb, ltrace, dtrace) cannot do this job: it sees C symbols, and the
+// interpreter's own C++ calls strlen/malloc constantly, so program-level
+// crossings are indistinguishable from internal ones. Only this layer knows
+// which call the *Raku* program asked for.
+static const bool g_ncTrace = [] {
+    const char* e = std::getenv("RAKUPP_FFI_TRACE");
+    return e && *e && std::strcmp(e, "0") != 0;
+}();
+
 long Interpreter::runCallback(int slot, long a0, long a1, long a2, long a3, long a4, long a5) {
     if (slot < 0 || slot >= (int)g_cbSlots.size()) return 0;
     Value cb = g_cbSlots[slot];
@@ -7663,6 +7673,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         long   fbInt   = 0;
         double fbNum   = 0;
         bool   fbFloat = false;
+        bool   fbPtr   = false;   // for the trace: render as an address
     };
     std::vector<NcSlot> slots(args.size());
     std::string needFfi;
@@ -7685,6 +7696,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         std::memcpy(s.raw, &q, sizeof q);
         s.type  = F.t_pointer;
         s.fbInt = (long)(intptr_t)q;
+        s.fbPtr = true;
     };
     auto putInt = [](NcSlot& s, long long v, int w, bool sgn) {
         if (w == 0) { w = 8; sgn = true; }
@@ -7838,6 +7850,53 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         double D[8] = {0}; for (size_t k = 0; k < f.size(); k++) D[k] = f[k];
         if (retFP) rd = ((NcFnD)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
         else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7], D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+    }
+
+    if (g_ncTrace) {
+        // Rendered from what ACTUALLY crossed — the marshalled slots and the raw
+        // return — not from the Raku values, so a marshalling bug shows up here
+        // rather than being papered over by re-printing the input.
+        static const bool banner = [] {
+            std::fputs(("[ffi] backend: " + ffi::describe() + "\n").c_str(), stderr); return true;
+        }();
+        (void)banner;
+        auto esc = [](std::string t) {            // a "%d\n" format must not break the line
+            std::string o;
+            for (unsigned char ch : t) {
+                if (ch == '\n') o += "\\n";
+                else if (ch == '\t') o += "\\t";
+                else if (ch == '\r') o += "\\r";
+                else if (ch == '"')  o += "\\\"";
+                else if (ch < 0x20)  { char h[8]; std::snprintf(h, sizeof h, "\\x%02x", ch); o += h; }
+                else o += (char)ch;
+            }
+            return o;
+        };
+        std::string line = "[ffi] ";
+        if (!c.nativeLib.empty()) line += c.nativeLib + ":";
+        line += c.nativeSym + "(";
+        for (size_t i = 0; i < slots.size(); i++) {
+            if (i) line += ", ";
+            const Value& v = args[i];
+            char b[32];
+            if (v.t == VT::Str && v.hashKind.empty())
+                line += "\"" + esc(v.s.size() > 24 ? v.s.substr(0, 24) + "..." : v.s) + "\"";
+            else if (slots[i].fbFloat) { std::snprintf(b, sizeof b, "%g", slots[i].fbNum); line += b; }
+            else if (slots[i].fbPtr)   { std::snprintf(b, sizeof b, "0x%llx", (unsigned long long)slots[i].fbInt); line += b; }
+            else                       line += std::to_string(slots[i].fbInt);
+        }
+        line += ") -> ";
+        char rb[32];
+        if (rt.empty() || rt == "void" || rt == "Nil") line += "void";
+        else if (retFP)    { std::snprintf(rb, sizeof rb, "%g", rd); line += rb; }
+        else if (rt == "Str") line += ri ? "\"" + esc(std::string((const char*)(intptr_t)ri).substr(0, 24)) + "\"" : "Str";
+        // F.ok matters: without libffi both sides are null and everything would
+        // print as an address.
+        else if (F.ok && rtype == F.t_pointer) { std::snprintf(rb, sizeof rb, "0x%llx", (unsigned long long)ri); line += rb; }
+        else               line += std::to_string(ri);
+        if (!useFfi) line += "   [no libffi]";
+        line += "\n";
+        std::fputs(line.c_str(), stderr);
     }
 
     // is-rw copy-back: write each out-param's slot to the caller's lvalue

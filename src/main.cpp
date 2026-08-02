@@ -647,6 +647,7 @@ int main(int argc, char** argv) {
 "                               only needed if rakupp is moved away from its build/install tree\n"
 "  RAKUPP_FFI=0 | /path/to/lib  Disable NativeCall's libffi backend, or point at a\n"
 "                               specific libffi (default: found at runtime, see --ffi-info)\n"
+"  RAKUPP_FFI_TRACE=1           Log every NativeCall crossing to stderr as it happens\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
 "  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n";
