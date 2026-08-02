@@ -5652,6 +5652,13 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
              // Color, then `multi method alpha(ValidRGB $a)`); dropping it left
              // every such signature unmatchable
              st->kind == NK::SubsetDecl ||
+             // a lexical `my regex/token/rule NAME { … }` in the body is callable
+             // as `<NAME>` from the class's own methods — URI declares
+             // `my regex path-authority { … }` after `unit class URI` and matches
+             // against it in !check-path. Dropping it here left `<path-authority>`
+             // unresolved, which the engine treats as a lenient zero-width match,
+             // so every path validation failed with "Could not parse path".
+             st->kind == NK::NamedRegexDecl ||
              st->kind == NK::UseStmt)) // `use X` inside a class body loads at declaration (URI does this after `unit class URI`)
             cd->body.push_back(std::move(st));
     }

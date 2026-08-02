@@ -879,3 +879,62 @@ Both surfaced the same way — a program was run the ordinary way, not the way t
 test harness runs it. `showcase/modinfo --installed` now agrees byte-for-byte
 with Rakudo across `list`, `graph` and `rank` on this machine's 36 installed
 distributions.
+
+## 2026-08-02 — URI: 88 → 136 of 222, seven general fixes
+
+`HTTP::Simple` is to depend on `URI`, so URI's own suite came first. Under
+rakupp it passed 88 of the 222 assertions Rakudo passes; it now passes 136.
+Every fix is a language fix — URI is untouched.
+
+1. **`<- [a..z]>` — a blank between the sign and the bracket.** Whitespace is
+   insignificant in a regex, but the negated-class entry test required `-` and
+   `[` to be adjacent. `<- [x]>` was therefore not recognised as a character
+   class at all, fell through to the assertion branches, and matched empty at
+   every BYTE position. `URI::Escape` writes exactly that class, so nothing was
+   percent-encoded and non-ASCII paths came back raw.
+2. **`<Grammar::rule>` in a plain regex.** A qualified rule reference resolved
+   to nothing and took the lenient zero-width branch. URI declares
+   `subset Scheme of Str where /^ [ '' || <IETF::RFC_Grammar::URI::scheme> ] $/`,
+   so the subset accepted only the empty string. The plain-regex resolver now
+   splits the qualified name and matches through the grammar machinery.
+3. **An explicit `''` is a zero-width ATOM, not "nothing parsed".** Both
+   produced an empty Seq, and parseAlt drops empty branches (correctly — `[ | A ]`
+   is cosmetic). So `[ '' || 'zz' ]` lost its first alternative and could not
+   match the empty string.
+4. **`our subset` crossed a module boundary as a bare type.** Subsets registered
+   only under their short name, so an importer writing `URI::Scheme` got a type
+   object with no `where` — `~~` was False for every value. They now register
+   under the package-qualified name too, as classes already did.
+5. **A regex matched against an OBJECT did not stringify it.** `$path ~~ /…/`
+   where `$path` is a `URI::Path` compared against the object, not its `.Str`.
+   Fixed at every subject position (`~~`, `when`, `.match`, `.subst`, `.comb`,
+   `.split`) through one shared `rxSubject` helper.
+6. **A `my regex` in a CLASS body was parsed and silently DROPPED.** The
+   class-body loop keeps only whitelisted statement kinds, and NamedRegexDecl
+   was not among them. URI declares `my regex path-authority { … }` after
+   `unit class URI` and matches against it in `!check-path`, so every path
+   validation failed with "Could not parse path". (Same whitelist that needed
+   SubsetDecl for Color and UseStmt for URI itself — third time.)
+7. **`<+:S>` — a Unicode property as a COMPOSED class member — was dropped.**
+   The code approximated `:N` as digit and `:L` as alpha and silently discarded
+   every other property, with a comment saying "ASCII-liberal is fine". It is
+   not: `<+uri-alpha +:N +:S>` is how the RFC grammar admits symbols, so
+   `http://host/echo2/☃` would not parse. Properties are now carried as real
+   `uprop` members and folded into the same alternation the `+rule` members use.
+
+**A regression this batch caused, and what it exposed.** Fix 2 made YAMLish's
+`multi to-yaml(Str:D $d where /^ <!Schema::Core::element> …/)` candidate become
+selectable for the first time, and modinfo's YAML export stopped matching
+Rakudo — scalars came out unquoted. The cause was not the `where` but named
+binding: **a routine that does not declare a named parameter cannot take one**,
+and rakupp accepted them silently, so the bare-scalar candidate was winning
+calls that thread `:sorted`. Dispatch now rejects an undeclared named — except
+where Raku says otherwise: `*%rest`, a `|c` capture, and **methods**, which
+carry an implicit `*%_`. URI's `multi method new` relies on that last one for
+its legacy `:validating` adverb, and getting it wrong cost 3 assertions and 68
+Roast tests before the exemption went in.
+
+Gate: Roast 196,937 → **197,004**, `t/run.raku` 273/273, perf-guard OK, modinfo
+byte-identical on both engines. Remaining URI gaps, in size order: query (16),
+november-urlencoded (12), directory (8), path (8), mutate (7), escape (5),
+missing-components (4), 01 (23 — mostly `.query` and `.segments` behaviour).

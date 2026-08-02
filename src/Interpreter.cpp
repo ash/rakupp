@@ -4097,14 +4097,22 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             code.code->name = nr->name;
             code.code->isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
             code.code->builtin = [pat](Interpreter& I, ValueList& a) -> Value {
-                return a.empty() ? Value::nil() : I.regexMatch(a[0].toStr(), pat);
+                return a.empty() ? Value::nil() : I.regexMatch(I.rxSubject(a[0]), pat);
             };
             tctx_.cur->define("&" + nr->name, code);
             return Value::any();
         }
         case NK::SubsetDecl: {
             auto* sd = static_cast<SubsetDecl*>(s);
-            if (!sd->name.empty()) subsets_[sd->name] = SubsetInfo{sd->baseType, sd->where.get()};
+            if (!sd->name.empty()) {
+                SubsetInfo info{sd->baseType, sd->where.get()};
+                subsets_[sd->name] = info;
+                // …and under the PACKAGE-QUALIFIED name, the way a class registers.
+                // Without it an importer writing `URI::Scheme` got a bare type
+                // object whose `where` had been dropped, so `~~` against it was
+                // False for every value — including ones the subset accepts.
+                if (!tctx_.pkgPrefix.empty()) subsets_[tctx_.pkgPrefix + sd->name] = info;
+            }
             return Value::any();
         }
         case NK::UseStmt: {
@@ -5665,7 +5673,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // `when X` == `if $_ ~~ X`: a regex literal already matched $_ above;
                 // a Regex/Callable value is invoked; else a value/type smartmatch.
                 if (w->cond->kind == NK::RegexLit) match = boolify(cv);
-                else if (cv.t == VT::Regex) match = regexMatch(topic.toStr(), cv.s).truthy();
+                else if (cv.t == VT::Regex) match = regexMatch(rxSubject(topic), cv.s).truthy();
                 else if (cv.t == VT::Code) match = boolify(callCallable(cv, {topic}));
                 else match = applyArith("~~", topic, cv).truthy();
             }
@@ -6266,7 +6274,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
             // the value; anything else (a type, a junction like
             // `Cro::Message | Cro::Connection`) is smartmatched — NOT boolified
             if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{v}));
-            else if (cv.t == VT::Regex) ok = boolify(regexMatch(v.toStr(), cv.s));
+            else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(v), cv.s));
             else ok = boolify(applyBinOp("~~", v, cv));
         } catch (...) { tctx_.cur = saved; return false; }
         tctx_.cur = saved;
@@ -6284,6 +6292,33 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
     if (cand.t != VT::Code || !cand.code || !cand.code->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code->params;
     ValueList pos; for (auto& a : args) if (!isNamedArg(a)) pos.push_back(a);
+    // A candidate that does not DECLARE a named parameter cannot take one. Raku
+    // rejects `f(1, :nope)` when f has no `:$nope` and no `*%` slurpy; accepting
+    // it silently let a candidate win calls meant for its sibling — YAMLish
+    // threads `:sorted` through to-yaml, and the bare-scalar candidate (which
+    // declares no :$sorted) was binding and emitting unquoted YAML.
+    {
+        // A METHOD has an implicit `*%_`: Raku lets it accept — and ignore —
+        // named arguments it never declared. Only subs are strict. (URI's
+        // `multi method new` takes a legacy `:validating` adverb this way.)
+        bool takesAny = cand.code->isMethod;   // …as does `*%rest` or a `|c` capture
+        std::set<std::string> declared;
+        auto addName = [&](std::string nm) {
+            if (nm.empty()) return;
+            if (nm.size() > 1 && std::strchr("$@%&", nm[0])) nm = nm.substr(1);
+            declared.insert(std::move(nm));
+        };
+        for (auto& p : params) {
+            if (p.slurpy && (p.sigil == '%' || p.sigil == '\\')) { takesAny = true; continue; }
+            if (!p.named) continue;
+            addName(p.name);
+            addName(p.namedKey);
+            for (auto& a : p.aliasKeys) addName(a);   // `:buf(:$bin)` answers to both
+        }
+        if (!takesAny)
+            for (auto& a : args)
+                if (isNamedArg(a) && !declared.count(a.s)) return -1;
+    }
     size_t required = 0, total = 0; bool slurpy = false;
     const Param* slurpyParam = nullptr;
     std::vector<const Param*> positional;
@@ -6639,7 +6674,7 @@ bool Interpreter::boolify(const Value& v) {
     // each char against an unreserved-set pattern.
     if (v.t == VT::Regex) {
         if (Value* topic = tctx_.cur ? tctx_.cur->find("$_") : nullptr)
-            return regexMatch(topic->toStr(), v.s).truthy();
+            return regexMatch(rxSubject(*topic), v.s).truthy();
         return false;
     }
     if (v.t == VT::Object && v.obj && v.obj->cls) {
@@ -12108,6 +12143,27 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     SubResolver resolver;
     resolver = [&](const std::string& name, const std::string& subj, long pos, RxMatch& out) -> bool {
         if (name == "ws") { long p = pos; while (p < (long)subj.size() && std::isspace((unsigned char)subj[p])) p++; out.from = pos; out.to = p; out.matched = true; return true; }
+        // `<Grammar::rule>` — a QUALIFIED rule reference inside a plain regex.
+        // URI declares `subset Scheme of Str where /^ [ '' || <IETF::RFC_Grammar::URI::scheme> ] $/`,
+        // and without this the name resolved to nothing, took the lenient
+        // zero-width branch below, and the subset accepted only the empty string.
+        {
+            auto qs = name.rfind("::");
+            if (qs != std::string::npos && qs > 0) {
+                std::string gname = name.substr(0, qs), rname = name.substr(qs + 2);
+                auto cit = classes_.find(gname);
+                if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(gname));
+                if (cit != classes_.end() && cit->second && cit->second->findRule(rname)) {
+                    Value m = grammarParse(cit->second.get(), subj.substr(pos),
+                                           /*subparse=*/true, rname, Value());
+                    if (!isDefined(m)) return false;
+                    out.from = pos;
+                    out.to = pos + (long)m.s.size();   // Match.s is the matched text
+                    out.matched = true;
+                    return true;
+                }
+            }
+        }
         auto it = namedRegex_.find(name);
         if (it == namedRegex_.end()) { out.from = pos; out.to = pos; out.matched = true; return true; }
         const std::string& kind = namedRegexKind_[name];
@@ -14045,7 +14101,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
                 code.code->isWhateverCode = true; code.code->whateverArity = 1;
                 code.code->builtin = [pat, neg](Interpreter& I, ValueList& a) -> Value {
-                    Value m = I.regexMatch((a.empty() ? Value::any() : a[0]).toStr(), pat);
+                    Value m = I.regexMatch(I.rxSubject(a.empty() ? Value::any() : a[0]), pat);
                     if (neg) return Value::boolean(!m.truthy());
                     return m.truthy() ? m : Value::nil();
                 };
@@ -14058,13 +14114,13 @@ Value Interpreter::evalBinary(Binary* b) {
                  l.enumName == "one" || l.enumName == "none")) {
                 Value out = Value::array(); out.enumName = l.enumName;
                 for (auto& e : *l.arr) {
-                    Value m = regexMatch(e.toStr(), pat);
+                    Value m = regexMatch(rxSubject(e), pat);
                     if (op == "~~") out.arr->push_back(m.truthy() ? m : Value::nil());
                     else out.arr->push_back(Value::boolean(!m.truthy()));
                 }
                 return out;
             }
-            Value m = regexMatch(l.toStr(), pat);
+            Value m = regexMatch(rxSubject(l), pat);
             // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool
             if (op == "~~") return m.truthy() ? m : Value::nil();
             return Value::boolean(!m.truthy());
@@ -14123,7 +14179,7 @@ Value Interpreter::evalBinary(Binary* b) {
             for (auto& e : *r.arr) {
                 total++;
                 bool m;
-                if (e.t == VT::Regex) m = regexMatch(lTopic.toStr(), e.s).truthy();
+                if (e.t == VT::Regex) m = regexMatch(rxSubject(lTopic), e.s).truthy();
                 else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
                 // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
                 // smartmatch below knows nothing about IO or Pairs and answered
@@ -14137,7 +14193,7 @@ Value Interpreter::evalBinary(Binary* b) {
             return Value::boolean(op == "~~" ? res : !res);
         }
         if (r.t == VT::Regex) {
-            Value m = regexMatch(lTopic.toStr(), r.s, &r);
+            Value m = regexMatch(rxSubject(lTopic), r.s, &r);
             if (op == "~~") return m.truthy() ? m : Value::nil();
             return Value::boolean(!m.truthy());
         }
@@ -14148,7 +14204,7 @@ Value Interpreter::evalBinary(Binary* b) {
             if (r.t == VT::Hash && r.hash) {
                 for (auto& kv : *r.hash) if (regexMatch(kv.first, pat).truthy()) { res = true; break; }
             } else if (r.arr) {
-                for (auto& e : *r.arr) if (regexMatch(e.toStr(), pat).truthy()) { res = true; break; }
+                for (auto& e : *r.arr) if (regexMatch(rxSubject(e), pat).truthy()) { res = true; break; }
             }
             return Value::boolean(op == "~~" ? res : !res);
         }
@@ -14205,7 +14261,7 @@ Value Interpreter::evalBinary(Binary* b) {
             if (v.t == VT::Whatever) return false; // `ff *`: never end
             Value* tp = tctx_.cur->find("$_");
             Value topic = tp ? *tp : Value::any();
-            if (v.t == VT::Regex) return regexMatch(topic.toStr(), v.s).truthy();
+            if (v.t == VT::Regex) return regexMatch(rxSubject(topic), v.s).truthy();
             return applyArith("~~", topic, v).truthy();
         };
         bool closes = false;
@@ -16910,7 +16966,7 @@ Value Interpreter::eval(Expr* e) {
             // rx// is always the Regex object; bare /…/ and m// match against $_
             if (rl->isRx) return Value::regex(spliceRegexVars(rl->pattern));
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
-            return regexMatch(topic.toStr(), rl->pattern);
+            return regexMatch(rxSubject(topic), rl->pattern);
         }
         case NK::SubstLit: {
             auto* sl = static_cast<SubstLit*>(e);

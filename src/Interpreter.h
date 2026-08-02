@@ -493,6 +493,9 @@ public:
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
     std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
+    // The string a regex matches AGAINST. An object matches on its Str form:
+    // `$path ~~ /…/` where $path is a URI::Path must see "/a/b", as in Rakudo.
+    std::string rxSubject(const Value& v) { return v.t == VT::Object ? strOf(v) : v.toStr(); }
     Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false,
                        Value* selfBack = nullptr); // selfBack: copy the frame's `self` out (rw invocant)
     // A method `augment`-ed onto a BUILT-IN type, if there is one for this invocant.

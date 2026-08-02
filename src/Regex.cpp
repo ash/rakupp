@@ -491,7 +491,18 @@ Regex::NodePtr Regex::parseAtom() {
             }
             return false;
         };
-        if (peek() == '[' || ((peek() == '+' || peek() == '-') && peek(1) == '[') ||
+        // `<- [a..z]>` — whitespace is insignificant in a regex, so a blank may sit
+        // between the sign and the bracket. Requiring them adjacent meant `<- [x]>`
+        // was not recognised as a character class at all and fell through to the
+        // assertion branches, where it matched empty at every BYTE position
+        // (URI::Escape writes `<- [\-._~A..Za..z0..9]>`, so nothing was escaped).
+        auto signThenBracket = [&]() -> bool {
+            if (peek() != '+' && peek() != '-') return false;
+            size_t q = pos_ + 1;
+            while (q < pat_.size() && (pat_[q] == ' ' || pat_[q] == '\t')) q++;
+            return q < pat_.size() && pat_[q] == '[';
+        };
+        if (peek() == '[' || signThenBracket() ||
             (peek() == '+' && (std::isalpha((unsigned char)peek(1)) || peek(1) == '_' || peek(1) == '.' || peek(1) == ':')) ||
             negFlagComposes()) {
             node->negate = false;
@@ -500,6 +511,8 @@ Regex::NodePtr Regex::parseAtom() {
             // can't fold into class flags — collect them and build a composite:
             //   [ <!minus1> <!-subtracted-bracket> [ base-class | <plus1> | <plus2> ] ]
             std::vector<std::string> plusSubs, minusSubs;
+            // `+:Prop` / `-:Prop` members, kept as Unicode properties
+            std::vector<std::string> plusProps, minusProps;
             std::unique_ptr<Node> negBracket; // `- [..]` after the first member: a subtraction
             // `<-[ab]+[b]>` re-admits `b`: under a NEGATED base a `+member` unions with
             // the complement, it does not join the set being complemented. Collect those
@@ -548,11 +561,20 @@ Regex::NodePtr Regex::parseAtom() {
                     std::string fl = ruleFlag(nm);
                     // unicode-property part (`+:N +:S` in uri-alphanum): approximate
                     // the common ones; unsupported ones drop (ASCII-liberal is fine)
-                    if (fl.empty() && !nm.empty() && nm[0] == ':') {
-                        if (nm == ":N" || nm == ":Nd" || nm == ":No" || nm == ":Nl") fl = "d";
-                        else if (nm[1] == 'L') fl = "a";
+                    // A `+:Prop` member is a real Unicode property, matched
+                    // codepoint-wise by the same machinery a standalone `<:Prop>`
+                    // uses. Approximating :N as "digit" and :L as "alpha" and
+                    // DROPPING every other property silently is what made
+                    // `<+uri-alpha +:N +:S>` reject a snowman: :S was thrown away,
+                    // so URI could not parse `http://host/echo2/☃`.
+                    std::string uprop;
+                    if (fl.empty() && !nm.empty() && nm[0] == ':' && nm.size() > 1)
+                        uprop = nm.substr(1);
+                    if (!uprop.empty()) {
+                        if (op == '+') plusProps.push_back(uprop);
+                        else minusProps.push_back(uprop);
                     }
-                    if (!fl.empty()) {
+                    else if (!fl.empty()) {
                         if (op == '-' && first) { node->negate = true; node->classFlags += fl; }
                         else if (op == '-') node->negClassFlags += fl;
                         else if (node->negate) posExtraNode()->classFlags += fl;
@@ -565,7 +587,7 @@ Regex::NodePtr Regex::parseAtom() {
                 if (eof()) break;
             }
             if (peek() == '>') pos_++;
-            if (plusSubs.empty() && minusSubs.empty() && !negBracket && !posExtra) return node; // plain class (fast path)
+            if (plusSubs.empty() && minusSubs.empty() && plusProps.empty() && minusProps.empty() && !negBracket && !posExtra) return node; // plain class (fast path)
             auto mkSub = [&](const std::string& rn) {
                 auto s = std::make_unique<Node>();
                 s->k = K::Subrule; s->ruleName = rn; s->ruleCapture = false;
@@ -577,16 +599,23 @@ Regex::NodePtr Regex::parseAtom() {
                 look->kids.push_back(std::move(inner));
                 return look;
             };
+            auto mkProp = [&](const std::string& pr) {
+                auto n = std::make_unique<Node>();
+                n->k = K::Class; n->icase = curIcase_; n->uprop = pr;
+                return n;
+            };
             auto seq = std::make_unique<Node>(); seq->k = K::Seq;
             for (auto& ms : minusSubs) seq->kids.push_back(mkNegLook(mkSub(ms)));
+            for (auto& mp : minusProps) seq->kids.push_back(mkNegLook(mkProp(mp)));
             if (negBracket) seq->kids.push_back(mkNegLook(std::move(negBracket)));
             bool haveBase = node->negate || !node->ranges.empty() || !node->cpRanges.empty() || !node->classFlags.empty();
-            if (plusSubs.empty() && !posExtra) seq->kids.push_back(std::move(node));
+            if (plusSubs.empty() && plusProps.empty() && !posExtra) seq->kids.push_back(std::move(node));
             else {
                 auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true;
                 if (posExtra) altN->kids.push_back(std::move(posExtra)); // union members win over the complement
                 if (haveBase) altN->kids.push_back(std::move(node));
                 for (auto& ps : plusSubs) altN->kids.push_back(mkSub(ps));
+                for (auto& pp : plusProps) altN->kids.push_back(mkProp(pp));
                 seq->kids.push_back(std::move(altN));
             }
             return seq;
@@ -844,6 +873,16 @@ Regex::NodePtr Regex::parseAtom() {
             } else lit += pat_[pos_++];
         }
         if (peek() == q) pos_++;
+        // An EXPLICIT empty literal `''` is a real zero-width atom, not "nothing
+        // parsed". Returning an empty Seq made it indistinguishable from a
+        // cosmetic empty branch, and parseAlt drops those — so `[ '' || 'zz' ]`
+        // lost its first alternative and never matched the empty string. URI
+        // spells its Scheme subset `/^ [ '' || <…::scheme> ] $/`.
+        if (seq->kids.empty() && lit.empty()) {
+            auto n = std::make_unique<Node>(); n->k = K::Lit;
+            n->icase = curIcase_; n->imark = curImark_; n->lit = "";
+            return n;
+        }
         if (seq->kids.empty() && lit.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_; n->lit = lit; return n; }
         flush();
         if (seq->kids.size() == 1) return std::move(seq->kids[0]);

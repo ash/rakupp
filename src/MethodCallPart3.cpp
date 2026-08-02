@@ -1964,7 +1964,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     if ((m == "match" || m == "subst" || m == "comb" || m == "split" || m == "contains" || m == "subst-mutate")
         && rxIdx >= 0) {
-        std::string subj = inv.toStr();
+        std::string subj = rxSubject(inv);   // an object matches on its Str form
         // `/@alpha/` — array elements as a longest-first literal alternation
         // (Base64 decodes via `$str.comb(/@alpha/)`); match/subst interpolate later
         // `$var` atoms in the pattern resolve here too — `.split(/$d+/)`,
