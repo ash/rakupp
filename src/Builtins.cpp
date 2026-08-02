@@ -4139,6 +4139,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // container accepts it) but shares Lock's method implementations
                 // under the cooperative GIL.
                 v.hashKind = (inv.s == "Lock::Async") ? "Lock::Async" : "Lock";
+                // NOT a real mutex under the GIL, and that is a known deviation
+                // rather than a decision: the GIL serialises execution but is
+                // released at every blocking point, so a protected block that
+                // sleeps or does I/O IS interleaved (measured: a `start` block
+                // taking the same Lock runs inside the holder's critical section,
+                // where Rakudo makes it wait). Giving it a real recursive_mutex
+                // here deadlocks IO::Socket::Async::SSL, whose module-level
+                // $lib-lock is held across socket I/O by every socket in the
+                // process — so the honest state is a no-op lock plus this note,
+                // until await-inside-a-lock releases the lock the way Rakudo's
+                // thread-pool await does.
                 if (parallelMode_) v.ext = std::make_shared<LockState>();
             }
             return v;

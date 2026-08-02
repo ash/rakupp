@@ -5688,7 +5688,8 @@ StmtPtr Parser::parseIf(bool isUnless) {
     auto blk = parseBlock();
     s->branches.emplace_back(std::move(cond), std::move(blk));
     s->branchVars.push_back(s->thenVar);
-    if (isUnless && (isIdent("else") || isIdent("elsif")))
+    if (isUnless && (isIdent("else") || isIdent("elsif") ||
+                     isIdent("orwith") || isIdent("orwithout")))
         throw ParseError("\"unless\" does not take \"" + cur().text +
                          "\", please rewrite using \"if\"",
                          cur().line, "X::Syntax::UnlessElse", {});
@@ -5701,6 +5702,21 @@ StmtPtr Parser::parseIf(bool isUnless) {
         auto b = parseBlock();
         s->branches.emplace_back(std::move(c), std::move(b));
         s->branchVars.push_back(bv);
+    }
+    // `if A {…} orwith $x {…}` — with/without join the if-chain from EITHER end.
+    // The `with A {…} orwith B {…}` direction was chained (parseStatement's
+    // given/with branch); a chain that STARTS with if/elsif fell through here and
+    // left the `orwith` standing as a separate statement, so it ran even when an
+    // earlier branch had already been taken. That is how a TLS client re-ran its
+    // handshake branch after every read: IO::Socket::Async::SSL dispatches on
+    // `if !$!ssl {} elsif … {} orwith $!connected-promise {}`, and the second
+    // `.keep` on an already-kept Promise threw X::Promise::Vowed.
+    // Rewritten as `else { with B {…} }`, the same shape the other direction uses.
+    if (isIdent("orwith") || isIdent("orwithout")) {
+        auto blk = std::make_unique<Block>();
+        blk->stmts.push_back(parseStatement());
+        s->elseBlock = std::move(blk);
+        return s;
     }
     if (isIdent("else")) {
         advance();

@@ -8646,11 +8646,25 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // and the parameter and smartmatch paths already consult it; only the return
     // check did not. `Thing.new` in the importing scope worked throughout, which
     // is what made the failure so odd to read.
-    const std::string& retName = resolveClassAlias(c.retType);
     // …and the NATIVE lowercase names are types too: `sub rnd(--> num)` is as
     // declared as `--> Num`. Only the boxed set was consulted here, so every
     // native return constraint died "Type 'num' is not declared" the moment the
     // routine actually returned a value (an empty body never reached the check).
+    std::string retName = resolveClassAlias(c.retType);
+    // A `constant` bound to a type object NAMES a type: `my constant DH = Pointer;
+    // sub get_dh2048() returns DH {…}`. Nothing registers such a name as a class,
+    // so this check called it undeclared and the routine died the moment it
+    // RETURNED — while the very same constraint on a *parameter* bound happily,
+    // because that path treats a name it cannot resolve as one it cannot enforce.
+    // The constant lives in the routine's own closure, so resolve it there and
+    // check against the type it names; Rakudo reports the resolved type too
+    // ("expected Int", not "expected T"). This is what made every TLS *server*
+    // unusable: IO::Socket::Async::SSL builds its DH parameters in one.
+    if (!kRet.count(retName) && !classes_.count(retName) &&
+        !subsets_.count(retName) && !isKnownTypeName(retName) &&
+        !isNativeTypeName(retName) && c.closure)
+        if (Value* cv = c.closure->find(retName))
+            if (cv->t == VT::Type && !cv->s.empty()) retName = cv->s;
     if (!kRet.count(retName) && !classes_.count(retName) &&
         !subsets_.count(retName) && !isKnownTypeName(retName) &&
         !isNativeTypeName(retName))
@@ -8658,11 +8672,11 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
                    {{"what", "Type"}, {"symbol", c.retType}},
                    "Type '" + c.retType + "' is not declared");
     if (!isDefined(v)) return v;
-    if (kRet.count(c.retType) && !rtTypeMatch(v, c.retType) &&
-        !(c.retType == "Int" && v.t == VT::Bool))
+    if (kRet.count(retName) && !rtTypeMatch(v, retName) &&
+        !(retName == "Int" && v.t == VT::Bool))
         throwTypedV("X::TypeCheck::Return",
-                    {{"got", v}, {"expected", Value::typeObj(c.retType)}},
-                    "Type check failed for return value; expected " + c.retType +
+                    {{"got", v}, {"expected", Value::typeObj(retName)}},
+                    "Type check failed for return value; expected " + retName +
                     " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
     return v;
 }
@@ -11790,8 +11804,24 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         else if (l.t == VT::Type) same = (l.s == r.s && l.ofType == r.ofType);
         else if (l.t == VT::Code) same = (l.code == r.code);
         else if (l.t == VT::Array) same = (l.arr == r.arr); // Lists/Arrays: reference identity
-        else if (l.t == VT::Hash) same = l.hashKind.empty() ? (l.hash == r.hash) // plain Hash: reference
-                                                            : (l.toStr() == r.toStr()); // Set/Bag/Mix: value
+        // A plain Hash compares by reference. A KIND-tagged hash compared by its
+        // rendering, which is right for the immutable value types (a Set is its
+        // elements) and wrong for every other kind that happens to be a hash
+        // underneath: two distinct Promises both render as "Promise" and so came
+        // out identical. IO::Socket::Async::SSL drops a finished write with
+        // `@!outstanding-writes .= grep({ $_ !=== $p })`, which under that rule
+        // matched every write and left the list unemptiable — the socket then
+        // never reached its shutdown path, so a TLS server never closed a
+        // connection. Value semantics belong to a KNOWN list; the rest are
+        // reference types (Rakudo: Set/Bag/Mix/Date/Version value, Promise/
+        // Channel/Supplier/Lock/Buf/Map/IO::Path identity).
+        else if (l.t == VT::Hash) {
+            static const std::set<std::string> kValueKinds = {
+                "Set", "Bag", "Mix", "Date", "DateTime", "Version", "Capture",
+                "Blob", "ObjAt", "Encoding", "Distro"};
+            same = kValueKinds.count(l.hashKind) ? (l.toStr() == r.toStr())
+                                                 : (l.hash == r.hash);
+        }
         else if (l.t == VT::Rat) // structural nude compare — .Str on a 0-denominator Rat throws
             same = l.fatRat == r.fatRat &&
                    l.ratN && r.ratN && l.ratD && r.ratD &&
