@@ -518,7 +518,11 @@ return callCallableRaw(codeVal, std::move(args), rwArgs);   // the common no-wra
 
 `callCallableRaw` handles the special callables first — native FFI, `Format`
 sprintf, junction autothreading, multi-dispatch, builtins — then activates a
-user sub:
+user sub. (The native-FFI branch is `callNative`: it marshals each argument at
+its declared C width and calls through `libffi`, which is `dlopen`ed at run time
+rather than linked. How that behaves from a program's side — the type map,
+variadics, callbacks, and what happens on a machine with no libffi — is
+[guide/FFI.md](../guide/FFI.md).)
 
 ```cpp
 auto env = std::make_shared<Env>();                 // fresh per-call frame
@@ -1085,7 +1089,9 @@ That is why the two backends produce byte-identical output and why a feature
 implemented once in the runtime works in both. The codegen side is documented in
 [ARCHITECTURE.md](ARCHITECTURE.md) (§4), [OPTIMIZATION.md](OPTIMIZATION.md) (the
 `--exe -O` passes), and [NATIVE.md](../guide/NATIVE.md) (compiled vs. interpreted); this
-document is the value model they share.
+document is the value model they share. The FFI is one more thing they share
+rather than duplicate — a compiled binary calls the same `callNative`, so
+`is native` behaves identically in both ([guide/FFI.md](../guide/FFI.md)).
 
 And there's a third client of this exact runtime: compiled to **WebAssembly**, it
 becomes **[Raku.js](../../rakujs/README.md)** — the same interpreter running in the
