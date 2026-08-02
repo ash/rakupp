@@ -2371,9 +2371,45 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "Str" || m == "gist" || m == "raku") return Value::str("inst#" + prefix);
             if (m == "path-spec") return Value::str("inst#" + prefix);
             if (m == "can-install") return Value::boolean(true);
-            if (m == "repo-chain") { // this repo is the whole (single-link) chain
+            if (m == "repo-chain") {
+                // The whole chain the loader searches — home, then every site and
+                // vendor prefix — not just this one link. A program that walks the
+                // chain to enumerate installed distributions (rather than assuming
+                // ~/.raku) saw one repository and missed everything zef installed
+                // system-wide.
                 Value e = Value::array(); e.isList = true; e.s = "Seq";
-                e.arr->push_back(inv);
+                const char* home = getenv("HOME");
+                std::string homeRepo = std::string(home ? home : "") + "/.raku";
+                for (const std::string& pre : rakuRepoPrefixes()) {
+                    auto od = std::make_shared<ObjectData>();
+                    od->cls = inv.obj->cls;   // the Installation class, already in hand
+                    std::string nm = pre == homeRepo ? "home"
+                                   : pre.size() > 5 && pre.compare(pre.size()-5,5,"/site") == 0 ? "site"
+                                   : pre.size() > 7 && pre.compare(pre.size()-7,7,"/vendor") == 0 ? "vendor"
+                                   : "inst";
+                    od->attrs["name"] = Value::str(nm);
+                    Value p2 = Value::str(pre); p2.hashKind = "IO";
+                    od->attrs["prefix"] = p2;
+                    e.arr->push_back(Value::object(od));
+                }
+                // …and the `core` repository, which sits beside each `site`. It is
+                // REPORTED but never searched: rakupp answers the core types from
+                // its own builtins rather than from Rakudo's sources, so it stays
+                // out of rakuRepoPrefixes(). Listing it keeps the chain an honest
+                // description of the installation.
+                for (const std::string& pre : rakuRepoPrefixes()) {
+                    if (!(pre.size() > 5 && pre.compare(pre.size()-5,5,"/site") == 0)) continue;
+                    std::string core = pre.substr(0, pre.size()-5) + "/core";
+                    struct stat st;
+                    if (stat(core.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+                    auto od = std::make_shared<ObjectData>();
+                    od->cls = inv.obj->cls;
+                    od->attrs["name"] = Value::str("core");
+                    Value p3 = Value::str(core); p3.hashKind = "IO";
+                    od->attrs["prefix"] = p3;
+                    e.arr->push_back(Value::object(od));
+                }
+                if (e.arr->empty()) e.arr->push_back(inv);
                 return e;
             }
             if (m == "candidates") {

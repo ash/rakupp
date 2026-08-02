@@ -2580,7 +2580,10 @@ int Interpreter::run(Program& prog) {
 }
 
 // Discover installed Rakudo CompUnit::Repository::Installation prefixes (site/vendor + ~/.raku).
-static const std::vector<std::string>& rakuRepoPrefixes() {
+// The installation repositories, in resolution order (home, then each site
+// and vendor prefix). Exposed so `$*REPO.repo-chain` can report the same
+// chain the loader actually searches.
+const std::vector<std::string>& rakuRepoPrefixes() {
     static std::vector<std::string> cached;
     static bool init = false;
     if (init) return cached;
@@ -4005,6 +4008,13 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
 
 // Is `n` a built-in type name that a class may legitimately derive from?
 // (Used to decide whether `class X is Y` with an unregistered Y is an error.)
+bool isNativeTypeName(const std::string& n) {
+    static const std::set<std::string> t = {
+        "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
+        "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint"};
+    return t.count(n) > 0;
+}
+
 bool isKnownTypeName(const std::string& n) {
     if (n.empty()) return false;
     if (n.rfind("X::", 0) == 0) return true;         // exception types
@@ -5851,11 +5861,8 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v) {
     // a type name we can't resolve (a `::T` capture, an unimported module type)
     // cannot be enforced — bind freely like before. Native lowercase names are
     // resolvable even though isKnownTypeName (boxed names) doesn't list them.
-    static const std::set<std::string> natNames = {
-        "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
-        "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint"};
     if (!classes_.count(p.type) && !subsets_.count(p.type) &&
-        !isKnownTypeName(p.type) && !natNames.count(p.type)) return;
+        !isKnownTypeName(p.type) && !isNativeTypeName(p.type)) return;
     if (typeOrSubsetMatches(v, p.type)) return;
     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
         "Type check failed in binding to parameter '" + p.name + "'; expected " +
@@ -8091,8 +8098,13 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // check did not. `Thing.new` in the importing scope worked throughout, which
     // is what made the failure so odd to read.
     const std::string& retName = resolveClassAlias(c.retType);
+    // …and the NATIVE lowercase names are types too: `sub rnd(--> num)` is as
+    // declared as `--> Num`. Only the boxed set was consulted here, so every
+    // native return constraint died "Type 'num' is not declared" the moment the
+    // routine actually returned a value (an empty body never reached the check).
     if (!kRet.count(retName) && !classes_.count(retName) &&
-        !subsets_.count(retName) && !isKnownTypeName(retName))
+        !subsets_.count(retName) && !isKnownTypeName(retName) &&
+        !isNativeTypeName(retName))
         throwTyped("X::Undeclared",
                    {{"what", "Type"}, {"symbol", c.retType}},
                    "Type '" + c.retType + "' is not declared");

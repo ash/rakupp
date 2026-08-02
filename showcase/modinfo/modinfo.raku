@@ -216,13 +216,21 @@ sub scan-path(IO::Path $dir --> Array[Dist]) {
     @dists
 }
 
-#| Read a Rakudo installation database — one JSON file per installed
-#| distribution under `<repo>/dist/`.
+#| Read the installation databases — one JSON file per installed distribution
+#| under `<repo>/dist/`.
+#|
+#| The repositories come from `$*REPO.repo-chain`, which is the chain the engine
+#| itself searches: `home` (~/.raku), then every `site` and `vendor` prefix of
+#| the installation. Reading only ~/.raku, as this did at first, finds whatever
+#| you installed for yourself and silently misses everything zef put in `site`.
 sub scan-installed(--> Array[Dist]) {
     my Dist @dists;
-    my @roots = (%*ENV<RAKUDO_HOME>, $*HOME ?? $*HOME.add('.raku').Str !! Str)
-                    .grep(*.defined).grep(*.chars);
-    @roots.push($_) with %*ENV<HOME> ~~ Str ?? "%*ENV<HOME>/.raku" !! Str;
+    my @roots = $*REPO.repo-chain
+                    .grep({ .^name eq 'CompUnit::Repository::Installation' })
+                    .map({ .prefix.Str })
+                    .grep(*.chars);
+    # Fall back to the conventional location if the chain says nothing useful.
+    @roots.push($*HOME.add('.raku').Str) if !@roots && $*HOME;
 
     my %seen;
     for @roots.unique -> $root {

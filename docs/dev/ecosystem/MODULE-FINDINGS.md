@@ -847,3 +847,35 @@ gets exercised in testing is not the half users hit. It also says something
 about how the showcase was verified — every run in the session that built it
 set `RAKULIB` at the vendored dists, so the ordinary invocation was never
 actually tried until a user typed it.
+
+## 2026-08-02 — two more, both found by just running the programs
+
+**`sub f(--> num)` died "Type 'num' is not declared".** The return-type check
+consulted only the BOXED type names; the native lowercase ones (`int`, `num`,
+`str`, `int32`, `num64`, `byte`, `atomicint`, …) were absent, so every native
+return constraint threw the moment the routine returned a value — an empty body
+never reached the check, which is why the declaration alone looked fine. The
+parameter-binding path had the correct set all along, in a private static
+copy with a comment explaining that natives are resolvable even though
+`isKnownTypeName` omits them. Fixed by promoting that set to a shared
+`isNativeTypeName()` and calling it from both places. (Second duplicate-resolver
+bug of the day; see the correction above.)
+
+**`$*REPO.repo-chain` reported one repository.** It answered the single link it
+was called on, and `$*REPO` itself is only `~/.raku` — so a program that walks
+the chain to enumerate installed distributions found whatever the user had
+installed for themselves and silently missed everything zef had put in `site`.
+Rakudo reports home, site, vendor, core. rakupp already computed home/site/vendor
+internally in `rakuRepoPrefixes()` for its own `use` resolution; the chain now
+reports that list, plus `core` where it exists on disk.
+
+`core` is REPORTED but deliberately not added to `rakuRepoPrefixes()`: rakupp
+answers the core types from its own builtins rather than from Rakudo's sources,
+so putting core on the resolution path would change what `use` finds. The chain
+is a description of the installation, which is a different question from what
+this engine chooses to search.
+
+Both surfaced the same way — a program was run the ordinary way, not the way the
+test harness runs it. `showcase/modinfo --installed` now agrees byte-for-byte
+with Rakudo across `list`, `graph` and `rank` on this machine's 36 installed
+distributions.

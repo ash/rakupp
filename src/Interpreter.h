@@ -28,6 +28,11 @@ std::string typeCheckRepr(const Value& v);
 
 double randDouble(); // uniform random in [0,1)
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
+// The NATIVE lowercase type names (int, num, str, int64, …). Deliberately
+// separate from isKnownTypeName, which lists the boxed types.
+bool isNativeTypeName(const std::string& n);
+// Installation-repository prefixes, in resolution order.
+const std::vector<std::string>& rakuRepoPrefixes();
 int signalNumberOfName(const std::string& n); // Signal-enum name → OS number ("SIGINT"→2), -1 if unknown
 void srandSeed(long long s); // reseed the RNG (srand)
 
