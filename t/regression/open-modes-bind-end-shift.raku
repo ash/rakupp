@@ -55,6 +55,11 @@ my $r = run($*EXECUTABLE.absolute, "-I{$dir.add('lib')}", '-e', $prog, :out, :er
 my $order = $r.out.slurp(:close);
 $r.err.slurp(:close);
 @fail.push("END order: '$order'") unless $order eq 'main module-end test-end ';
+# leave nothing behind: a per-PID module directory that survives the run also
+# strands a precomp entry keyed on a path that will never exist again
+$dir.add('lib/EndOrder.rakumod').unlink;
+$dir.add('lib').rmdir;
+$dir.rmdir;
 
 # 4. shift-vs-wordlist lexing
 sub sh(\v, \n) { v +< n }

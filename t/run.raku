@@ -571,6 +571,27 @@ section('module loading and the precompiled-AST cache');
                    :env(env-with({}))).out.slurp(:close);
     ok($info.contains('Mid.rakumod') && $info.contains('Deep/Leaf.rakumod'),
        '--precomp-info names the sources it cached');
+
+    # A DELETED source leaves an entry that will never be read or rewritten —
+    # a checkout thrown away, a module version zef replaced, a per-run temp
+    # directory. Those used to pile up forever and be reported as merely
+    # "stale", i.e. as though the next run would deal with them.
+    $lib.add('Gone.rakumod').spurt: q:to/END/;
+        unit module Gone;
+        sub gone() is export { 'gone' }
+        END
+    my $gone-prog = $work.add('g.raku');
+    $gone-prog.spurt("use Gone;\nsay gone();\n");
+    run($*EXECUTABLE, '-I', $lib.Str, $gone-prog.Str, :!out, :!err, :env(env-with({})));
+    $lib.add('Gone.rakumod').unlink;
+    my $orphan-info = run($*EXECUTABLE, '--precomp-info', :out, :!err,
+                          :env(env-with({}))).out.slurp(:close);
+    my $gone-line = $orphan-info.lines.first(*.contains('Gone.rakumod')) // '';
+    ok($gone-line.starts-with('  x '),
+       "a deleted source marks its entry orphaned (line: '{$gone-line.trim}')");
+    ok($orphan-info.contains('orphaned') && $orphan-info.contains('the source file is gone'),
+       '--precomp-info says orphans are never rewritten');
+
     run($*EXECUTABLE, '--precomp-clean', :!out, :!err,
         :env(env-with({})));
     ok(entry-count() == 0, '--precomp-clean empties the cache');

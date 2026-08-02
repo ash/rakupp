@@ -2980,6 +2980,39 @@ static bool precompRead(const std::string& path, const std::string& src,
     return true;
 }
 
+// Drop the entries in ONE fan-out bucket whose source file no longer exists.
+//
+// An edited source keeps its entry (it is rewritten in place) and a source from
+// another rakupp build keeps its entry (that build still wants it); only a
+// source that is GONE leaves an entry nothing will ever ask for again — a
+// deleted checkout, a module version zef replaced, a per-run temp directory.
+// Those accumulated without limit before.
+//
+// Called after a write, which is the only moment we are already touching this
+// directory. With 256 buckets that is a handful of small headers to read, so
+// the cost is bounded no matter how large the cache grows, and every bucket
+// gets swept eventually without a timer, a policy, or a flag to explain.
+static void precompSweepBucket(const std::string& entryPath) {
+    auto slash = entryPath.rfind('/');
+    if (slash == std::string::npos) return;
+    std::string bucket = entryPath.substr(0, slash);
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(bucket, ec), end; !ec && it != end; ++it) {
+        if (it->path() == entryPath) continue;             // the one just written
+        if (it->path().extension() != ".ast") continue;
+        std::ifstream in(it->path(), std::ios::binary);
+        if (!in) continue;
+        std::ostringstream ss; ss << in.rdbuf();
+        in.close();
+        PrecompHeader h;
+        if (!precompParseHeader(ss.str(), h)) continue;    // leave what we cannot read
+        if (h.srcPath.empty()) continue;
+        std::error_code e2;
+        if (std::filesystem::exists(h.srcPath, e2) || e2) continue;
+        std::filesystem::remove(it->path(), e2);           // a loser in a race is fine
+    }
+}
+
 static void precompWrite(const std::string& path, const std::string& srcPath,
                          const std::string& src,
                          const std::string& blob, const std::string& finish,
@@ -3015,6 +3048,7 @@ static void precompWrite(const std::string& path, const std::string& srcPath,
     std::error_code ec;
     std::filesystem::rename(tmp, path, ec); // atomic: replaces this file's previous entry
     if (ec) std::remove(tmp.c_str());
+    precompSweepBucket(path);
 }
 
 // The two switches, for --precomp-info and --precomp-modules=/--precomp-files=.
@@ -3112,14 +3146,15 @@ std::vector<PrecompEntry> precompCacheList() {
         PrecompHeader h;
         auto sz = (unsigned long long)std::filesystem::file_size(it->path(), ec);
         if (ec) { ec.clear(); sz = 0; }
-        if (!precompParseHeader(ss.str(), h)) { out.push_back({"(unreadable)", sz, false}); continue; }
-        bool usable = h.buildId == precompBuildId();
+        if (!precompParseHeader(ss.str(), h)) { out.push_back({"(unreadable)", sz, false, true}); continue; }
+        std::ifstream sf(h.srcPath, std::ios::binary);
+        bool orphan = !sf;                                 // the source itself is gone
+        bool usable = !orphan && h.buildId == precompBuildId();
         if (usable) { // still current only if the source is unchanged
-            std::ifstream sf(h.srcPath, std::ios::binary);
-            if (!sf) usable = false;
-            else { std::ostringstream s2; s2 << sf.rdbuf(); usable = sha1hex(s2.str()) == h.srcSha; }
+            std::ostringstream s2; s2 << sf.rdbuf();
+            usable = sha1hex(s2.str()) == h.srcSha;
         }
-        out.push_back({h.srcPath, sz, usable});
+        out.push_back({h.srcPath, sz, usable, orphan});
     }
     std::sort(out.begin(), out.end(),
               [](const PrecompEntry& a, const PrecompEntry& b) { return a.source < b.source; });

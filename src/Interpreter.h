@@ -156,7 +156,10 @@ void precompStoreProgram(const std::string& srcPath, const std::string& src,
 // Every cached entry: the SOURCE it was built from, its size on disk, and
 // whether this rakupp can still use it (a build from another rakupp, or one
 // whose source has since changed, is listed as stale). Sorted by source.
-struct PrecompEntry { std::string source; unsigned long long bytes; bool usable; };
+// `orphan` = the source file is gone, so this entry can never be reused OR
+// rewritten; it is the only cache state that is pure garbage rather than a
+// miss waiting to happen.
+struct PrecompEntry { std::string source; unsigned long long bytes; bool usable; bool orphan; };
 std::vector<PrecompEntry> precompCacheList();
 
 // Delete every cached entry. Returns how many files went and how many bytes they

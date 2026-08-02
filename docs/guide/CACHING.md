@@ -134,6 +134,11 @@ Anything else unexpected — a truncated file, a dependency that moved, an entry
 from a rakupp that no longer exists — is treated as a miss. The source is right
 there; a miss costs a parse, never a wrong answer.
 
+**A source that is deleted takes its entry with it.** An entry whose source file
+is gone is neither a hit nor a miss — nothing will ever ask for it again — so it
+is dropped rather than left to accumulate. See `--precomp-info` below for how
+that is reported and when it happens.
+
 ---
 
 ## Looking inside
@@ -147,14 +152,28 @@ rakupp --precomp-info
     /Users/you/proj/lib/My/Shapes.rakumod  (7 KB)
     /Users/you/proj/app.raku  (2 KB)
   ! /Users/you/proj/lib/My/Util.rakumod  (3 KB)
+  x /tmp/scratch-4711/lib/Old.rakumod  (1 KB)
 
-3 entries, 12 KB
+4 entries, 13 KB
 1 marked ! is stale (3 KB): built by another rakupp, or the source has changed
 since. Each is rewritten in place on next use.
+1 marked x is orphaned (1 KB): the source file is gone, so it is never read or
+rewritten again. rakupp drops them as it goes; --precomp-clean removes them now.
 ```
 
 Entries are listed by the file they were built from. `!` marks one that will not
-be used as-is. An entry this rakupp cannot parse at all shows as `(unreadable)`.
+be used as-is but is still wanted — the next run rewrites it in place. `x` marks
+an **orphan**: the source file no longer exists, so nothing will ever ask for
+that entry again. An entry this rakupp cannot parse at all shows as
+`(unreadable)`, and counts as an orphan.
+
+Orphans are the only entries that are pure waste, and they appear for ordinary
+reasons: a checkout deleted, a module version zef replaced, a test that builds a
+module in a fresh temp directory each run. rakupp removes them as it goes —
+after writing an entry it drops any orphan sharing that entry's fan-out
+directory, which is 1/256th of the cache and costs a few small reads. There is
+no timer and no age policy; a cache that is never written to is never swept, and
+`--precomp-clean` is always available.
 
 ```bash
 rakupp --precomp-clean

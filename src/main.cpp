@@ -804,9 +804,13 @@ int main(int argc, char** argv) {
             return 0;
         }
         auto entries = precompCacheList();
-        unsigned long long bytes = 0, stale = 0;
-        size_t nStale = 0;
-        for (auto& e : entries) { bytes += e.bytes; if (!e.usable) { nStale++; stale += e.bytes; } }
+        unsigned long long bytes = 0, stale = 0, orphaned = 0;
+        size_t nStale = 0, nOrphan = 0;
+        for (auto& e : entries) {
+            bytes += e.bytes;
+            if (e.orphan)       { nOrphan++; orphaned += e.bytes; }
+            else if (!e.usable) { nStale++;  stale    += e.bytes; }
+        }
         std::cout << dir << "\n"
                   << "  modules: " << (precompModulesOn() ? "on " : "off")
                   << "  (" << precompModulesSource() << ")\n"
@@ -815,7 +819,7 @@ int main(int argc, char** argv) {
                   << "  config:  " << precompConfigPath() << "\n\n";
         if (entries.empty()) std::cout << "empty\n";
         for (auto& e : entries)
-            std::cout << (e.usable ? "    " : "  ! ") << e.source
+            std::cout << (e.orphan ? "  x " : e.usable ? "    " : "  ! ") << e.source
                       << "  (" << (e.bytes + 1023) / 1024 << " KB)\n";
         std::cout << "\n" << entries.size() << " entr" << (entries.size() == 1 ? "y" : "ies")
                   << ", " << (bytes + 1023) / 1024 << " KB\n";
@@ -823,6 +827,12 @@ int main(int argc, char** argv) {
             std::cout << nStale << " marked ! " << (nStale == 1 ? "is" : "are") << " stale ("
                       << (stale + 1023) / 1024 << " KB): built by another rakupp, or the source "
                          "has changed since. Each is rewritten in place on next use.\n";
+        if (nOrphan)
+            std::cout << nOrphan << " marked x " << (nOrphan == 1 ? "is" : "are") << " orphaned ("
+                      << (orphaned + 1023) / 1024 << " KB): the source file is gone, so "
+                      << (nOrphan == 1 ? "it is" : "they are")
+                      << " never read or rewritten again. rakupp drops them as it goes; "
+                         "--precomp-clean removes them now.\n";
         std::cout << "(one entry per source file; --precomp-clean empties it)\n";
         return 0;
     }
