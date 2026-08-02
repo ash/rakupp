@@ -20,7 +20,10 @@ lines are already evidence. Drop the `is native` and you get `Undefined routine
 `abs`, which *are* Raku builtins and so print the same thing either way; see
 [Proving a call really reached C](#proving-a-call-really-reached-c).
 
-Every example on this page was run with the `rakupp` in this repository.
+Every example on this page is run on **both engines** — the `rakupp` in this
+repository and Rakudo — and produces the same output on each. That check is the
+point, not a formality: running examples only on the permissive engine is how a
+page teaching syntax ends up teaching something that does not travel.
 
 ---
 
@@ -136,8 +139,8 @@ Two things to know about the compiled binary:
 
 ## Variadics
 
-This is where Raku++ goes furthest past other Raku implementations, so it is
-worth its own section.
+Variadic C functions are the easiest thing in an FFI to get quietly wrong, so
+they are worth their own section.
 
 C's `...` is not a formality. On the SysV-AMD64 ABI a variadic argument goes in
 a register but the callee is told how many; on the Apple ARM64 ABI it goes on
@@ -146,9 +149,8 @@ register. A caller that does not know which arguments are variadic cannot place
 them, and the failure is silent — you get a number, it is just the wrong one.
 `snprintf($buf, 16, "%d", 42)` used to yield `"0"` here, with no error.
 
-Rakudo's NativeCall has no variadic support at all, so there was no signature to
-copy. Raku++ spells it with a **slurpy, which marks the position where C's `...`
-begins**:
+Raku++ spells it with a **slurpy marking the position where C's `...` begins** —
+the same spelling Rakudo uses, and verified against it:
 
 ```raku
 use NativeCall;
@@ -181,8 +183,11 @@ Raku++ passes one.
 
 Two practical notes:
 
-- **This spelling is a Raku++ extension.** A program that uses it will not run
-  on Rakudo, which cannot call variadic C functions at all.
+- **It is portable.** Rakudo reads a trailing slurpy the same way
+  (`NativeCall.rakumod` sets a `variadic` flag from it), and produces
+  byte-identical output for every variadic example on this page. Until
+  2026-08-02 Raku++ did not — it placed `...` arguments in registers and
+  answered `"0"` — so this is a parity fix, not an extension.
 - **It needs libffi** (specifically `ffi_prep_cif_var`). On the fallback path a
   variadic signature throws, as shown above.
 
@@ -418,7 +423,7 @@ say getpid() == $*PID;         # True
 
 # 4. resolution is real — ask for a symbol that does not exist
 sub nope(--> int32) is native is symbol('not_a_real_symbol_42') {*}
-nope();   # Cannot find native symbol 'not_a_real_symbol_42'
+nope();   # dies: no such symbol (the wording differs between engines)
 ```
 
 And one that does not take the program's word for anything — ask the dynamic

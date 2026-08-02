@@ -26,8 +26,9 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
     `...` begins — `sub snprintf(Buf, size_t, Str, *@args --> int32)` — and each
     variadic argument is typed from its runtime value under C's default argument
     promotions. `snprintf($b, 64, "%d and %s and %.2f", 42, "hi", 3.5e0)`
-    produced `"0"` before and produces `42 and hi and 3.50` now. Rakudo has no
-    variadic NativeCall, so the spelling is a Raku++ extension.
+    produced `"0"` before and produces `42 and hi and 3.50` now. The spelling
+    matches Rakudo's, which reads a trailing slurpy the same way, so this is a
+    parity fix rather than an extension.
   - **More than 8 integer or 8 float arguments** was a clean `X::NYI`; there is
     no cap now.
   - **Callbacks are `ffi_closure`s.** Parameters are typed from the `Callable`'s

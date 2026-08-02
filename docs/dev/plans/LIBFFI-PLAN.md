@@ -192,6 +192,15 @@ its runtime `Value` under C's default argument promotions (`Int`→`sint64`,
 Both spellings are Raku++ extensions: they go in the divergence log and the
 spec site, and neither may change the meaning of a signature that works today.
 
+> **Outcome: the premise of this section was wrong.** "Rakudo's NativeCall has
+> no variadic support" was asserted here without being tested, and it is false:
+> `NativeCall.rakumod` sets a `variadic` flag from a trailing slurpy Positional
+> parameter, and the installed 2026.07 produces byte-identical output for every
+> variadic example in [guide/FFI.md](../../guide/FFI.md). So the slurpy spelling
+> is not invented — it is Rakudo's, and this work is a **parity fix**, not an
+> extension. It was caught by running the guide's examples on both engines,
+> which is what should have happened before the claim was written down.
+
 > **Outcome: the slurpy spelling shipped; `is variadic(N)` did not.** One way to
 > say a thing is enough, and the slurpy carries the arity itself, so the trait
 > would only have been a second spelling of the same fact. The compiled (`--exe`)
