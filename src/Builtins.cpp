@@ -1021,6 +1021,23 @@ std::vector<uint32_t> utf8cp(const std::string& s) {
     }
     return out;
 }
+// How many leading bytes of `s` are plain ASCII, looking at no more than
+// `limit` of them. Where the run reaches, a codepoint index IS a byte index,
+// which is what lets the nqp string ops skip utf8cp() altogether — see the
+// comment above their cases in rtNqpOp. Eight bytes at a time: these ops are
+// how pure-Raku tokenizers walk text, so this runs once per character scanned.
+size_t asciiRun(const std::string& s, size_t limit) {
+    size_t n = std::min(limit, s.size()), i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        std::memcpy(&w, s.data() + i, 8);
+        if (w & 0x8080808080808080ULL) break;   // a high bit somewhere in this word
+    }
+    for (; i < n; i++) if ((unsigned char)s[i] & 0x80) break;
+    return i;
+}
+bool allAscii(const std::string& s) { return asciiRun(s, s.size()) == s.size(); }
+
 // Drop every combining mark, keeping ONE base character per grapheme — the
 // folding `:ignoremark` compares through. Character positions survive it, so an
 // index into the folded text is an index into the original.
@@ -8252,7 +8269,19 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
 Value rtNqpOp(NqpOpc op, ValueList& v) {
     using O = NqpOpc;
     auto I = [&](size_t i) -> long long { return i < v.size() ? v[i].toInt() : 0; };
-    auto S = [&](size_t i) -> std::string { return i < v.size() ? v[i].toStr() : std::string(); };
+    // By reference: a Str argument is returned as-is, so the scanning ops below
+    // don't copy the whole haystack once per character examined.
+    static const std::string kEmptyStr;
+    // One slot per argument: an op may hold references to two coerced operands
+    // at once (nqp::concat, nqp::eqat), so they can't share a scratch buffer.
+    std::string sTmp[8];
+    auto S = [&](size_t i) -> const std::string& {
+        if (i >= v.size()) return kEmptyStr;
+        if (v[i].t == VT::Str) return v[i].s;
+        if (i >= 8) { sTmp[7] = v[i].toStr(); return sTmp[7]; }
+        sTmp[i] = v[i].toStr();
+        return sTmp[i];
+    };
     auto cclassHas = [](long long mask, uint32_t cp) -> bool {
         // masks follow Parser::nqpConstValue; only the classes real modules use
         const std::string cat = uniGeneralCategory(cp);
@@ -8285,22 +8314,50 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::BitxorI: return Value::integer(I(0) ^ I(1));
         case O::BitshiftlI: return Value::integer(I(0) << I(1));
         case O::BitshiftrI: return Value::integer(I(0) >> I(1)); // arithmetic (signed)
+        // The string-scanning ops below each take an ASCII fast path first.
+        // They are what a tokenizer written in Raku calls once per character,
+        // always handing over the WHOLE text, so decoding that text per call
+        // turns an O(n) scan into O(n^2) — 68 KB of JSON cost 1.9 s. On an
+        // ASCII run a codepoint index is a byte index, so no decode is needed;
+        // anything non-ASCII still falls through to utf8cp() unchanged.
         case O::Ordat: {
-            auto cps = utf8cp(S(0));
+            const std::string& s = S(0);
             long long i = I(1);
-            return Value::integer(i >= 0 && i < (long long)cps.size() ? (long long)cps[i] : -1);
+            if (i < 0) return Value::integer(-1);
+            size_t run = asciiRun(s, (size_t)i + 1);
+            // Either we reached the character asked for, or the whole string is
+            // ASCII and it lies past the end (so the count is the byte count).
+            if (run == (size_t)i + 1 || run == s.size())
+                return Value::integer((size_t)i < s.size() ? (long long)(unsigned char)s[i] : -1);
+            auto cps = utf8cp(s);
+            return Value::integer(i < (long long)cps.size() ? (long long)cps[i] : -1);
         }
         case O::Eqat: {
-            auto h = utf8cp(S(0)), nd = utf8cp(S(1));
+            const std::string& h = S(0);
+            const std::string& nd = S(1);
             long long at = I(2);
-            if (at < 0 || at + (long long)nd.size() > (long long)h.size()) return Value::integer(0);
-            for (size_t k = 0; k < nd.size(); k++)
-                if (h[at + k] != nd[k]) return Value::integer(0);
+            if (at < 0) return Value::integer(0);
+            size_t want = (size_t)at + nd.size();
+            if (want <= h.size() && asciiRun(h, want) == want && allAscii(nd))
+                return Value::integer(h.compare((size_t)at, nd.size(), nd) == 0 ? 1 : 0);
+            if (want > h.size() && allAscii(h)) return Value::integer(0);
+            auto hc = utf8cp(h), ndc = utf8cp(nd);
+            if (at + (long long)ndc.size() > (long long)hc.size()) return Value::integer(0);
+            for (size_t k = 0; k < ndc.size(); k++)
+                if (hc[at + k] != ndc[k]) return Value::integer(0);
             return Value::integer(1);
         }
         case O::Substr: {
-            auto cps = utf8cp(S(0));
+            const std::string& s = S(0);
             long long from = I(1);
+            if (allAscii(s)) {
+                long long len = v.size() > 2 ? I(2) : (long long)s.size() - from;
+                if (from < 0) from = 0;
+                if (from > (long long)s.size()) from = s.size();
+                if (len < 0 || from + len > (long long)s.size()) len = (long long)s.size() - from;
+                return Value::str(s.substr((size_t)from, (size_t)len));
+            }
+            auto cps = utf8cp(s);
             long long len = v.size() > 2 ? I(2) : (long long)cps.size() - from;
             if (from < 0) from = 0;
             if (from > (long long)cps.size()) from = cps.size();
@@ -8309,7 +8366,11 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             for (long long k = from; k < from + len; k++) out += cpToU8(cps[k]);
             return Value::str(out);
         }
-        case O::Chars: return Value::integer((long long)utf8cp(S(0)).size());
+        case O::Chars: {
+            const std::string& s = S(0);
+            if (allAscii(s)) return Value::integer((long long)s.size());
+            return Value::integer((long long)utf8cp(s).size());
+        }
         case O::Concat: return Value::str(S(0) + S(1));
         case O::Join: {
             std::string sep = S(0), out;
@@ -8320,9 +8381,16 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::str(out);
         }
         case O::Index: {
-            auto h = utf8cp(S(0)), nd = utf8cp(S(1));
+            const std::string& hs = S(0);
+            const std::string& nds = S(1);
             long long from = v.size() > 2 ? I(2) : 0;
             if (from < 0) from = 0;
+            if (allAscii(hs) && allAscii(nds)) {   // byte search — std::string::find is vectorized
+                if ((size_t)from > hs.size()) return Value::integer(-1);
+                auto at = hs.find(nds, (size_t)from);
+                return Value::integer(at == std::string::npos ? -1 : (long long)at);
+            }
+            auto h = utf8cp(hs), nd = utf8cp(nds);
             if (nd.empty()) return Value::integer(from <= (long long)h.size() ? from : -1);
             for (long long at = from; at + (long long)nd.size() <= (long long)h.size(); at++) {
                 bool ok = true;
@@ -8351,17 +8419,32 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return target;
         }
         case O::FindNotCClass: {
-            auto cps = utf8cp(S(1));
+            const std::string& s = S(1);
             long long mask = I(0), start = I(2), len = I(3);
-            long long end = std::min<long long>(start + len, (long long)cps.size());
-            for (long long k = std::max<long long>(start, 0); k < end; k++)
+            long long from = std::max<long long>(start, 0);
+            long long want = start + len;
+            if (allAscii(s)) {   // byte index == codepoint index throughout
+                long long end = std::min<long long>(want, (long long)s.size());
+                for (long long k = from; k < end; k++)
+                    if (!cclassHas(mask, (uint32_t)(unsigned char)s[k])) return Value::integer(k);
+                return Value::integer(end);
+            }
+            auto cps = utf8cp(s);
+            long long end = std::min<long long>(want, (long long)cps.size());
+            for (long long k = from; k < end; k++)
                 if (!cclassHas(mask, cps[k])) return Value::integer(k);
             return Value::integer(end);
         }
         case O::IsCClass: {
-            auto cps = utf8cp(S(1));
+            const std::string& s = S(1);
             long long i = I(2);
-            return Value::integer(i >= 0 && i < (long long)cps.size() &&
+            if (i < 0) return Value::integer(0);
+            size_t run = asciiRun(s, (size_t)i + 1);
+            if (run == (size_t)i + 1)
+                return Value::integer(cclassHas(I(0), (uint32_t)(unsigned char)s[i]) ? 1 : 0);
+            if (run == s.size()) return Value::integer(0);   // all ASCII, index past the end
+            auto cps = utf8cp(s);
+            return Value::integer(i < (long long)cps.size() &&
                                   cclassHas(I(0), cps[i]) ? 1 : 0);
         }
         case O::List: case O::ListI: case O::ListS: {

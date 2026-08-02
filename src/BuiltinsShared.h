@@ -24,6 +24,10 @@ Value makeInfArray(long long start);
 std::string markFold(const std::string& in);
 ValueList toList(const Value& v);
 std::vector<uint32_t> utf8cp(const std::string& s);
+// Leading ASCII bytes of `s`, capped at `limit`; over such a run a codepoint
+// index and a byte index are the same thing, so utf8cp() can be skipped.
+size_t asciiRun(const std::string& s, size_t limit);
+bool allAscii(const std::string& s);
 
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
