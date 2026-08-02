@@ -6213,6 +6213,62 @@ static const std::string& aliasType(const std::string& type) {
     return it != s_classAliases->end() ? it->second : type;
 }
 
+
+// Does the TYPE NAME `ln` conform to `rn`? The built-in "does" table, the
+// numeric/string tower, and the user class/role ancestry — one answer, shared by
+// the `~~` operator and by parameter dispatch. They used to disagree: `~~` knew
+// all of this while dispatch answered a blanket true for any type object, so
+// `uri-escape(Str)` bound a `Match $s` parameter.
+static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
+                             const std::string& lOfType, const std::string& rOfType) {
+    std::string ln = lnIn;
+    size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
+    if (ln == rn) return true;
+    static const std::map<std::string, std::set<std::string>> typeDoes = {
+        {"array", {"array", "Array", "List", "Positional", "Iterable", "Cool"}},
+        {"Array", {"Array", "List", "Positional", "Iterable", "Cool"}},
+        {"List",  {"List", "Positional", "Iterable", "Cool"}},
+        {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
+        {"Slip",  {"Slip", "List", "Positional", "Iterable", "Cool"}},
+        {"Hash",  {"Hash", "Map", "Associative", "Cool"}},
+        {"Map",   {"Map", "Associative", "Cool"}},
+        {"Set",   {"Set", "Setty", "QuantHash", "Associative"}},
+        {"SetHash", {"SetHash", "Setty", "QuantHash", "Associative"}},
+        {"Bag",   {"Bag", "Baggy", "QuantHash", "Associative"}},
+        {"BagHash", {"BagHash", "Baggy", "QuantHash", "Associative"}},
+        {"Mix",   {"Mix", "Mixy", "Baggy", "QuantHash", "Associative"}},
+        {"MixHash", {"MixHash", "Mixy", "Baggy", "QuantHash", "Associative"}},
+        {"Date",     {"Date", "Dateish"}},
+        {"DateTime", {"DateTime", "Dateish"}},
+    };
+    auto td = typeDoes.find(ln);
+    bool baseOk = (td != typeDoes.end() && td->second.count(rn));
+    if (!baseOk) { // numeric/string tower (Int -> Real -> Numeric -> Cool -> Any -> Mu)
+        static const std::map<std::string, std::vector<std::string>> tower = {
+            {"Int", {"Real", "Numeric", "Cool"}}, {"Num", {"Real", "Numeric", "Cool"}},
+            {"Rat", {"Rational", "Real", "Numeric", "Cool"}},
+            {"FatRat", {"Rational", "Rat", "Real", "Numeric", "Cool"}},
+            {"Complex", {"Numeric", "Cool"}},
+            {"Str", {"Stringy", "Cool"}}, {"Bool", {"Cool"}},
+        };
+        auto tw = tower.find(ln);
+        if (tw != tower.end()) for (auto& anc : tw->second) if (anc == rn) { baseOk = true; break; }
+    }
+    if (baseOk && (rOfType.empty() || rOfType == lOfType)) return true;
+    // a user type object matches its own ancestry: parent classes, composed
+    // roles, and roles/parents anywhere up the chain
+    if (g_matchClasses) {
+        auto itc = g_matchClasses->find(ln);
+        if (itc != g_matchClasses->end())
+            for (ClassInfo* c = itc->second.get(); c; c = c->parent.get()) {
+                if (c->name == rn || c->doneRoles.count(rn)) return true;
+                for (auto& p : c->extraParents)
+                    if (p && (p->name == rn || p->doneRoles.count(rn))) return true;
+            }
+    }
+    return false;
+}
+
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
     // an enum VALUE as a parameter type (`multi f(\b, int $i, LittleEndian)`)
@@ -6284,6 +6340,18 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         // picked the `Match $s` overload instead of the general one and returned
         // "" where Rakudo returns Any.
         case VT::Any: return false;
+        // A TYPE OBJECT conforms exactly as `~~` says it does. Stay lenient only
+        // when one of the two names is not a type we know — an unregistered user
+        // type must not be dispatched away on our ignorance.
+        case VT::Type: {
+            if (typeNameConforms(arg.s, type, arg.ofType, std::string())) return true;
+            std::string ln = arg.s;
+            size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
+            auto known = [](const std::string& n) {
+                return isKnownTypeName(n) || (g_matchClasses && g_matchClasses->count(n) > 0);
+            };
+            return !(known(ln) && known(type));
+        }
         default: return true; // Nil/Type/unknown subset/enum: lenient
     }
 }
@@ -6451,8 +6519,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         }
         else if (p->coerce && !p->type.empty()) {
             // coercion type `Str(Cool)`: any coercible argument matches — the
-            // coercion itself happens at binding (append-header('CL', $int))
-            score++;
+            // coercion itself happens at binding (append-header('CL', $int)).
+            // It scores NOTHING of its own: accepting anything convertible is the
+            // least specific way to match, so a nominal type of the same name must
+            // win. URI has `multi method authority(Str() $a)` beside
+            // `multi method authority(Nil)`, and `.authority(Nil)` has to reach
+            // the second one to clear the authority.
         }
         else if ((p->sigil == '@' || p->sigil == '%') && !p->type.empty() &&
                  p->type != "Any" && p->type != "Mu" && p->type != "Positional" &&
@@ -9851,9 +9923,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (a->op == "=" && a->target->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->target.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() &&
-                (ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm)) {
+                (ix->base->kind == NK::VarExpr || ix->base->kind == NK::SelfTerm ||
+                 ix->base->kind == NK::MethodCall)) {
                 Value* bp = nullptr;
-                try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+                Value held;   // a method-call base is evaluated ONCE, and kept alive here
+                if (ix->base->kind == NK::MethodCall) {
+                    // `$u.query<foo> = True` — the accessor hands back the object
+                    // itself, so mutating it through ASSIGN-KEY is what Rakudo does.
+                    try { held = eval(ix->base.get()); bp = &held; } catch (RakuError&) { bp = nullptr; }
+                }
+                else try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
                 if (bp && bp->t == VT::Object && bp->obj && bp->obj->cls) {
                     const char* meth = ix->isHash ? "ASSIGN-KEY" : "ASSIGN-POS";
                     bool has = false;
@@ -10245,7 +10324,28 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
             const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
             Value dv = Value::any();
-            for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+            // An ATTRIBUTE resets to its DECLARED TYPE object, not to bare Any:
+            // `$!authority = Nil` leaves `Authority`, so the very next
+            // `$!authority .= new(…)` has a type to call `new` on. Attributes are
+            // not env vars, so the varDefault search below never sees them.
+            bool isAttr = nm.size() > 2 && (nm[1] == '!' || nm[1] == '.');
+            if (isAttr) {
+                Value* selfp = tctx_.cur->find("self");
+                if (selfp && selfp->t == VT::Object && selfp->obj && selfp->obj->cls) {
+                    std::string an = nm.substr(2);
+                    for (ClassInfo* c = selfp->obj->cls.get(); c; c = c->parent.get()) {
+                        bool done = false;
+                        for (auto& at : c->attrs)
+                            if (at.name == an) {
+                                if (!at.type.empty() && at.type != "Mu" && at.type != "Any")
+                                    dv = Value::typeObj(at.type);
+                                done = true; break;
+                            }
+                        if (done) break;
+                    }
+                }
+            }
+            else for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
                 auto di = en->xr().varDefault.find(nm);
                 if (di != en->xr().varDefault.end()) { dv = di->second; break; }
                 if (en->vars.count(nm)) break; // owner scope reached, no declared default
@@ -11786,50 +11886,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             // `Date.new(…) ~~ Dateish` holds just as `Date ~~ Dateish` does)
             if (!res) {
                 std::string ln = l.t == VT::Type ? l.s : l.typeName();
-                size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
-                static const std::map<std::string, std::set<std::string>> typeDoes = {
-                    {"array", {"array", "Array", "List", "Positional", "Iterable", "Cool"}},
-                    {"Array", {"Array", "List", "Positional", "Iterable", "Cool"}},
-                    {"List",  {"List", "Positional", "Iterable", "Cool"}},
-                    {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
-                    {"Slip",  {"Slip", "List", "Positional", "Iterable", "Cool"}},
-                    {"Hash",  {"Hash", "Map", "Associative", "Cool"}},
-                    {"Map",   {"Map", "Associative", "Cool"}},
-                    {"Set",   {"Set", "Setty", "QuantHash", "Associative"}},
-                    {"SetHash", {"SetHash", "Setty", "QuantHash", "Associative"}},
-                    {"Bag",   {"Bag", "Baggy", "QuantHash", "Associative"}},
-                    {"BagHash", {"BagHash", "Baggy", "QuantHash", "Associative"}},
-                    {"Mix",   {"Mix", "Mixy", "Baggy", "QuantHash", "Associative"}},
-                    {"MixHash", {"MixHash", "Mixy", "Baggy", "QuantHash", "Associative"}},
-                    {"Date",     {"Date", "Dateish"}},
-                    {"DateTime", {"DateTime", "Dateish"}},
-                };
-                std::string rn = r.s;
-                auto td = typeDoes.find(ln);
-                bool baseOk = (td != typeDoes.end() && td->second.count(rn));
-                if (!baseOk) { // numeric/string tower (Int -> Real -> Numeric -> Cool -> Any -> Mu)
-                    static const std::map<std::string, std::vector<std::string>> tower = {
-                        {"Int", {"Real", "Numeric", "Cool"}}, {"Num", {"Real", "Numeric", "Cool"}},
-                        {"Rat", {"Rational", "Real", "Numeric", "Cool"}},
-                        {"FatRat", {"Rational", "Rat", "Real", "Numeric", "Cool"}},
-                        {"Complex", {"Numeric", "Cool"}},
-                        {"Str", {"Stringy", "Cool"}}, {"Bool", {"Cool"}},
-                    };
-                    auto tw = tower.find(ln);
-                    if (tw != tower.end()) for (auto& anc : tw->second) if (anc == rn) { baseOk = true; break; }
-                }
-                if (baseOk && (r.ofType.empty() || r.ofType == l.ofType)) res = true;
-                // a user type object matches its own ancestry: parent classes,
-                // composed roles, and roles/parents anywhere up the chain
-                if (!res && g_matchClasses) {
-                    auto itc = g_matchClasses->find(ln);
-                    if (itc != g_matchClasses->end())
-                        for (ClassInfo* c = itc->second.get(); c && !res; c = c->parent.get()) {
-                            if (c->name == rn || c->doneRoles.count(rn)) { res = true; break; }
-                            for (auto& p : c->extraParents)
-                                if (p && (p->name == rn || p->doneRoles.count(rn))) { res = true; break; }
-                        }
-                }
+                res = typeNameConforms(ln, r.s, l.ofType, r.ofType);
             }
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {

@@ -7684,6 +7684,14 @@ void Interpreter::registerBuiltins() {
             if (v.itemized) { out.arr->push_back(v); continue; }
             if (v.t == VT::Array && v.arr) { for (auto& e : *v.arr) deeper(e); continue; }
             if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr->push_back(e); continue; }
+            // A HASH flattens to its Pairs — an EMPTY one therefore contributes
+            // nothing. Pushing the hash itself made `flat %new, @new` (URI's
+            // `*@new, *%bad` query setter, with no named arguments) hand a Hash
+            // to code expecting a Pair: "No such method 'value'".
+            if (v.t == VT::Hash && v.hash && v.hashKind.empty()) {
+                for (auto& kv : *v.hash) out.arr->push_back(Value::pair(kv.first, kv.second));
+                continue;
+            }
             out.arr->push_back(v);
         }
         return out;

@@ -916,16 +916,14 @@ ExprPtr Parser::parseExpr(int minbp) {
                 if (sg == "@" || sg == "%") listAssign = true;
             }
             else if (lhs->kind == NK::Index) {
-                // a slice target (`@a[1,2] = …`, `%h{^3} = …`, `%h{@ks} = …`)
-                // takes the whole comma list too
+                // EVERY subscript target takes the whole comma list, not just a
+                // slice: `%h<k> = 1, 2` stores the list $(1, 2) — unlike
+                // `my $x = 1, 2`, which is item assignment and warns about the 2.
+                // (A slice distributes it; a single element keeps it as one
+                // itemized value.) URI::Query's `$q<foo> = '5', '6'` needs both
+                // items to reach ASSIGN-KEY.
                 auto* ix = static_cast<Index*>(lhs.get());
-                if (ix->index && !ix->multiDim &&
-                    (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
-                     ix->index->kind == NK::ArrayLit || // angle-word slice `%h<a b> = …`
-                     (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
-                      static_cast<VarExpr*>(ix->index.get())->name[0] == '@') ||
-                     (ix->index->kind == NK::Unary && static_cast<Unary*>(ix->index.get())->op == "^")))
-                    listAssign = true;
+                if (ix->index && !ix->multiDim) listAssign = true;
             }
         }
 

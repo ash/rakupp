@@ -1009,3 +1009,42 @@ keeps only the first element — a list on the right of a subscript assignment.
 
 Net for the day: URI 88 → 207 of 222, fourteen general interpreter fixes, no
 module touched.
+
+## 2026-08-02 — URI is COMPLETE: 222 of 222
+
+The last batch, and the one the earlier note said deserved its own:
+
+15. **One answer for type conformance.** `~~` knew the whole story — a "does"
+    table, the numeric/string tower, the user class/role ancestry walk — while
+    parameter dispatch had its own, laxer test that returned a blanket true for
+    any type object. Extracted as `typeNameConforms` and called from both, with
+    dispatch staying lenient only when one of the two names is not a type we
+    know (an unregistered user type must not be dispatched away on our
+    ignorance). Third duplicate-resolver bug of the day, and the pattern is now
+    unmistakable.
+16. **A typed attribute resets to its TYPE, not to Any.** `$!authority = Nil`
+    left bare `Any`, so the very next `$!authority .= new(…)` had nothing to
+    call `new` on. Attributes are not env vars, so the existing per-variable
+    default search never saw them.
+17. **A coercion parameter is the LEAST specific match.** `Str() $x` scored the
+    same as an exact nominal type, so `multi method authority(Str() $a)` tied
+    with `multi method authority(Nil)` and won on declaration order —
+    `.authority(Nil)` could never clear the authority. Accepting anything
+    convertible now scores nothing of its own.
+18. **EVERY subscript target takes the whole comma list**, not just a slice:
+    `%h<k> = 1, 2` stores `$(1, 2)`, unlike `my $x = 1, 2`, which is item
+    assignment and warns. This is plain Raku and was wrong for ordinary hashes
+    and arrays too, not only for URI::Query's `$q<foo> = '5', '6'`.
+19. **ASSIGN-KEY reached through a method call.** `$u.query<foo> = True` has a
+    method call as the subscript base; only variables and `self` were handled.
+20. **A Hash flattens to its Pairs, so an EMPTY one contributes nothing.**
+    `flat %new, @new` pushed the hash itself, handing a Hash to code expecting a
+    Pair ("No such method 'value'") — URI's `*@new, *%bad` query setter called
+    with no named arguments.
+
+**URI 0.3.8 now passes 222 of 222 assertions under rakupp, all 14 files.**
+Twenty general interpreter fixes got it there over the day, from 88. Not one
+line of URI was touched, and Roast rose across the whole run: 196,937 →
+197,023. `t/run.raku` 273/273, perf-guard OK, modinfo still byte-identical.
+
+The prerequisite for `HTTP::Simple` is met.
