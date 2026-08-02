@@ -4382,10 +4382,23 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ev.enumType = ed->name; // carry the enum's type identity (for .^name, ~~, .WHAT)
                 tctx_.cur->define(key, ev);
                 if (!ed->name.empty()) tctx_.cur->define(ed->name + "::" + key, ev);
+                // …and under the PACKAGE-QUALIFIED names, so another compilation
+                // unit can write `URI::Query::Mixed`. Without them the qualified
+                // form fell through to a bare type object carrying that name, and
+                // `when Mixed` inside the module never matched it — split-query
+                // ignored its :hash-format and always returned the raw pair list.
+                if (!tctx_.pkgPrefix.empty()) {
+                    global_->define(tctx_.pkgPrefix + key, ev);
+                    if (!ed->name.empty())
+                        global_->define(tctx_.pkgPrefix + ed->name + "::" + key, ev);
+                }
                 pairs.arr->push_back(Value::pair(key, val));
             }
             pairs.enumType = ed->name; // the type object itself is the tagged pair-list
-            if (!ed->name.empty()) tctx_.cur->define(ed->name, pairs);
+            if (!ed->name.empty()) {
+                tctx_.cur->define(ed->name, pairs);
+                if (!tctx_.pkgPrefix.empty()) global_->define(tctx_.pkgPrefix + ed->name, pairs);
+            }
             return Value::any();
         }
         case NK::ClassDecl: {
@@ -15261,6 +15274,11 @@ std::string Interpreter::gistOf(const Value& v) {
 }
 std::string Interpreter::strOf(const Value& v) {
     failureDetonate(v);
+    // Stringifying a container READS it, so a Proxy runs its FETCH. The subscript
+    // path deliberately hands back the container (that is how a write reaches
+    // STORE), which leaves value contexts like this one to do the read — without
+    // it `say $q<baz>` printed the Proxy's own FETCH/STORE pair.
+    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash) return strOf(deproxy(v));
     // A JUNCTION stringifies by AUTOTHREADING .Str over its eigenstates and
     // concatenating — `print 1 & 2` writes "12" (Rakudo). (`say` is different: it
     // uses .gist, which is the junction's own "all(1, 2)".)
@@ -15279,7 +15297,10 @@ std::string Interpreter::strOf(const Value& v) {
     // as `T<obj> T<obj>` (XML::Element.contents is a list of XML::Text).
     if (v.t == VT::Array && v.arr && v.enumName.empty()) {
         bool anyObj = false;
-        for (auto& e : *v.arr) if (e.t == VT::Object) { anyObj = true; break; }
+        // …and a Proxy ELEMENT is read the same way (URI::Query hands back a list
+        // of Proxy containers so the list itself stays immutable).
+        for (auto& e : *v.arr)
+            if (e.t == VT::Object || (e.t == VT::Hash && e.hashKind == "Proxy")) { anyObj = true; break; }
         if (anyObj) {
             std::string out;
             for (size_t k = 0; k < v.arr->size(); k++) { if (k) out += " "; out += strOf((*v.arr)[k]); }

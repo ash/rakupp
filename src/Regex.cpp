@@ -200,6 +200,16 @@ void Regex::collectListNames(const Node* n) {
         if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
         listNames_->insert(n->capName);
     }
+    // …and so is a POSITIONAL capture nested inside the quantified atom:
+    // `[ (x) ]+` gives $0 = [Match, Match, …], exactly as `(x)+` does. Only the
+    // quantified atom ITSELF was being marked, so a capture one level in stayed
+    // a lone Match — URI::Escape's decoder reads `$0.flatmap(…)` over
+    // `[ '%' (<.xdigit> ** 2) ]+` and got a Match instead of the list, so
+    // uri-unescape returned the empty string for every input.
+    if (n->k == K::Group && n->capIndex >= 0) {
+        const_cast<Node*>(n)->listCap = true;
+        listCaps_.insert(n->capIndex);
+    }
     for (auto& kd : n->kids) collectListNames(kd.get());
 }
 

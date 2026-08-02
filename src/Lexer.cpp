@@ -2103,8 +2103,15 @@ std::vector<Token> Lexer::tokenize() {
                 char ch = peek();
                 if (ch == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
                 if (quote) { if (ch == quote) quote = 0; raw += advance(); continue; }
-                // '...'/"..." protect an inner '/', but inside a <[...]> char class they are literal chars
-                if ((ch == '\'' || ch == '"') && brack == 0) { quote = ch; raw += advance(); continue; }
+                // '...'/"..." protect an inner '/'. Inside a CHARACTER CLASS they are
+                // literal characters instead — but a character class is `<[…]>`, so it
+                // is angle AND bracket depth together. Testing bracket depth alone also
+                // disabled quoting inside a plain `[ … ]` GROUP, where `'<'` is a quoted
+                // literal: the `<` then bumped the angle counter, the closing `/` was
+                // never found, and the whole statement failed to parse. (URI strips
+                // wrapping brackets with `/^ \s* ['<' | '"'] /`.)
+                if ((ch == '\'' || ch == '"') && !(angle > 0 && brack > 0))
+                    { quote = ch; raw += advance(); continue; }
                 if (ch == '{') { brace++; raw += advance(); continue; }
                 if (ch == '}' && brace > 0) { brace--; raw += advance(); continue; }
                 if (brace > 0) { raw += advance(); continue; } // code block: consume raw
