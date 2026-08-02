@@ -240,6 +240,56 @@ say nativesizeof(TimeVal);     # 16  — the struct's real laid-out size
 
 ---
 
+## Your declaration is a promise nothing can check
+
+A C library exports addresses, not types. Nothing — not Raku++, not Rakudo, not
+any FFI in any language — can compare what you declared against the real
+prototype, because that information does not exist at run time. A wrong
+declaration therefore does not fail: it produces a plausible answer.
+
+The `abs` family is the classic trap, because C has one name per *type*:
+
+```raku
+use NativeCall;
+sub abs(num64 --> num64) is native {*}   # WRONG — C's abs is int abs(int)
+say abs(-3.34e0);   # -3.34
+say abs(-99.5e0);   # -99.5
+say abs(7.25e0);    #  7.25
+```
+
+Every answer is the argument, unchanged — and that is the tell. libffi put the
+`num64` in the first *floating-point* register, but `int abs(int)` reads the
+first *integer* register (holding something unrelated) and returns an int in the
+integer return register. The floating-point return register is never written, so
+it still contains what we passed. The call really happened; we asked the wrong
+question and got our own input back.
+
+Rakudo prints exactly the same three lines for the same declaration, so this is
+not an implementation quirk to work around — it is what an FFI is.
+
+The fix is to declare what C actually declares:
+
+```raku
+sub fabs(num64 --> num64) is native {*}   say fabs(-3.34e0);   # 3.34
+sub abs(int32 --> int32)  is native {*}   say abs(-3);         # 3
+```
+
+Two habits that catch this early:
+
+- **Read the prototype, not the name.** `abs`/`labs`/`llabs`/`fabs`/`fabsf` are
+  five different functions; so are `strtol`/`strtod`/`strtof`. A name that
+  "obviously" takes a number usually takes one specific width of one specific
+  kind.
+- **Turn the trace on** (`RAKUPP_FFI_TRACE=1`, below). A return that echoes an
+  argument, or an integer return where you expected a float, shows up
+  immediately:
+
+```
+[ffi] abs(-3.34) -> -3.34
+```
+
+---
+
 ## Structs, unions and pointers
 
 `is repr('CStruct')` lays fields out with natural alignment; `.new` allocates
