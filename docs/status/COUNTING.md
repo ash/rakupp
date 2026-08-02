@@ -1,0 +1,202 @@
+# How Raku++ counts Roast results
+
+This is the authoritative definition of the numbers quoted everywhere else
+(README, OVERVIEW, GUIDE, FEATURES, ROADMAP, ROAST). If a figure disagrees with
+this file, this file wins. The self-hosted harness
+([`tools/run-roast.raku`](../../tools/run-roast.raku)) computes all of it and prints it
+on every run.
+
+## The one-line summary
+
+> **Per-test: ~90% of all declared tests pass. Coverage: ~43% of files fully pass.**
+
+Quote both, per-test first. The ~90% is the primary correctness number (the fair
+per-test bar); the ~43% is the stricter all-or-nothing file bar.
+
+## The measures
+
+Each `.t` file emits [TAP](https://testanything.org/): a `1..N` plan and `ok`/`not
+ok` lines. The harness runs every file with a 10-second timeout and reports four
+ratios, from strictest presentation to fairest, and from widest denominator to
+narrowest:
+
+| # | Measure | Current | Definition |
+|---|---|---|---|
+| 1 | **Files fully passing** | 631 / 1,462 (**~43%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 196,590 / 200,826 (~98%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 196,590 / 214,124 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 196,590 / 217,055 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+
+**Measure 1 (files, ~43%)** and **measure 4 (all declared tests, ~90%)** are the
+two headline numbers. 2 and 3 are diagnostic context, not headlines.
+
+## Why measure 4 is the honest per-test number
+
+The trap is a file that **parse-errors on compile**: it aborts before printing
+its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
+contributes 0 to both numerator and denominator — its tests simply vanish, which
+silently flatters the rate. Measure 4 closes that hole: for any file that emitted
+no plan at runtime, the harness reads the intended `plan N` straight from the
+source and counts all N as failing. That is why 4's denominator (217,055) is ~2.9k larger
+than 3's (214,124) — those 2,931 tests live in 87 no-TAP files (parse errors
+and runtime aborts), recovered from source. A parse error can no longer hide
+its tests.
+
+## The declared denominator grows with coverage
+
+Measure 4's denominator is **not a fixed property of the suite**; it depends on
+how much of the suite a run can actually execute, and it's worth remembering why
+so this doesn't spawn the same question twice.
+
+For the **1,400 files with a literal `plan 42;`**, the count is recoverable from
+source whether or not the file runs — so those contribute the same to *any* run.
+But **over a hundred files declare their plan dynamically** — `plan +@tests`,
+`plan $n * 6`, or `done-testing` (45 files) with no up-front number. For those,
+the test count is knowable *only by running the file*. When a run aborts such a
+file (no-TAP), there is no static integer to read from source, so the file
+contributes **0** — its tests are genuinely uncountable for that run.
+
+The consequence: **a run that executes more of the suite gets a larger
+denominator.** Our current run recovers **217,055** declared tests. (This number
+GROWS as parse fixes land: a file that used to die before announcing its plan now
+declares its real — often larger, dynamically computed — plan, so the percentage
+can dip while absolute passes rise.) Only **4 no-TAP files** still have no static
+plan to read, so the uncountable remainder is now marginal.
+
+So our same 196,590 passes read two ways:
+
+- **~90%** against *our* denominator (196,590 / 217,055) — *"of the tests we can
+  account for, how many pass."* This is what a single harness run can measure,
+  and it is the number we quote.
+- Essentially the **same ~90%** against the suite's *full* declared total —
+  our runner now recovers almost every file's plan, so the two denominators
+  have converged; *"of every test the whole suite could declare, how many pass."*
+
+Both are honest; they answer different questions. The convergence means our
+headline **~90% is no longer materially flattered** by uncountable files —
+almost every declared test is charged for or against us. It also means **raw per-test
+percentages from two different runs aren't directly comparable** until they're
+put over a common denominator: a run that unlocks more files *raises* its own
+denominator, so a rising numerator can hide behind a rising denominator (or vice
+versa). The zero-regression gate (below) is on the *file list*, precisely to
+sidestep this.
+
+## Exactly how the denominators are built
+
+Per file, `parse-tap` yields `(planned, ran, passed)` where `planned` is the
+runtime `1..N` (`-1` if none was emitted). The harness accumulates:
+
+- `tot-pass`  += `passed`                               — the numerator, shared by all ratios
+- `tot-ran`   += `ran`                                  — denominator of measure 2
+- `tot-plan`  += `planned >= 0 ? planned : ran`         — denominator of measure 3
+- `declared`  = `tot-plan` + (static `plan N` read from the source of each file
+  that emitted **no** plan at runtime)                  — denominator of measure 4
+
+The numerator is the **same** in every ratio — only the denominator widens.
+
+### Edge cases
+
+- **skip-all / dynamic-plan files** (`plan skip-all`, `plan *`, `done-testing`
+  with no count) have no static test count, so they are **excluded** from every
+  denominator (15 such files at present). A file that skips-all at runtime is
+  scored as a *passing file* contributing 0 tests.
+- **Timeouts** (18 files — mostly sleep-heavy scheduler/IO tests that flap
+  under parallel-runner load) are excluded from the assertion denominators.
+- **`# SKIP` / `# TODO`** lines that rakupp itself emits count as **passed** in
+  the numerator — this is standard TAP (a skip/todo is not a failure), and it is
+  how every TAP harness, Rakudo's included, scores.
+
+## Fudge directives (`#?rakudo …`)
+
+Roast's raw files carry **fudge directives** — `#?rakudo skip`, `#?rakudo todo`,
+`#?rakudo.jvm todo`, etc. Rakudo doesn't run the raw files; it preprocesses them
+with `fudge`, converting those comments into real skip/todo for the target
+backend. A `#?rakudo todo` marks a test even the reference implementation cannot
+yet pass; a `#?rakudo.jvm …` marks one that fails only on the JVM backend.
+
+Raku++ is a **moar-like backend**, so it honours exactly the directives Rakudo-moar
+would — and only those:
+
+- **`#?rakudo todo` / `#?rakudo.moar todo` are honoured.** The lexer rewrites each
+  such line into a `todo('reason', N)` call, so those N tests emit `# TODO` and
+  their failures don't count — identical to what Rakudo's own harness does. These
+  are **Rakudo-compatibility passes, not genuine feature coverage**: they mark
+  tests the spec itself flags as not-yet-passable. Only a handful of files flip
+  on this (they had *no other* failure), and the effect on the assertion
+  numerators is a rounding error.
+- **`#?rakudo skip` is NOT honoured — we attempt the test.** Skipping a block
+  correctly needs its emitted-test count (which we can't know without running),
+  and, more importantly, if we *can* pass a skipped test that is a real win worth
+  counting. Same for backend-specific `#?rakudo.jvm …` / `#?rakudo.js …`: those
+  run and pass on Rakudo-moar, so they plainly belong in the count.
+
+So the denominator is **not** padded down: we still attempt every `skip`-marked
+and backend-specific test. The only concession is honouring `todo` exactly as the
+moar backend does — the honest, Rakudo-faithful direction to err.
+
+## Zero-regression discipline
+
+A change ships only if the sorted list of fully-passing files (`[PASS]` lines) has
+**no removals** versus the prior baseline. Per-assertion numbers may wobble by a
+few on timing-sensitive files; the file list is the gate.
+
+### Watch measure 2's DENOMINATOR, not just its numerator
+
+Measure 2 is the only ratio whose denominator moves with the code under test:
+it counts assertions the files *actually emitted*. When a change makes a file die
+partway through, that file stops printing TAP, so the lost tests leave **both**
+sides of measure 2 at once. The percentage barely twitches while real coverage
+walks out of the room.
+
+A worked example, from the 2026-07-26 conformance batch. Baseline:
+
+```
+Assertions passed:    195924 / 200440  (97.8%)  of tests that ran
+```
+
+Adding `$val ~~ :method` (a Pair on the right of a smartmatch names a method to
+call) gave:
+
+```
+Assertions passed:    195922 / 200427  (97.8%)  of tests that ran
+```
+
+The numerator moved by −2, comfortably inside the flapper band, and the
+percentage was identical to one decimal place. The **denominator** is what gave
+the change away: 13 assertions stopped being emitted, so some file was now dying
+mid-run. The cause was that the new code evaluated the smartmatch's right-hand
+side eagerly to find out whether it was a Pair — which meant every *other*
+right-hand side got evaluated twice, and anything with side effects ran twice.
+Restricting the check to a syntactic pair node restored the emission count and
+turned the −2 into a +10:
+
+```
+Assertions passed:    195934 / 200440  (97.8%)  of tests that ran
+```
+
+Note that 200,440 is measure 2's denominator — *tests that ran*. The ~214k and
+~217k figures on the next two lines of the same summary block are measures 3 and
+4, and they do **not** move like this: a file that dies mid-run still declared
+its `plan N`, so measures 3 and 4 keep charging us for every test it failed to
+reach. That is exactly what makes them the honest headline numbers — and exactly
+what makes measure 2's moving denominator the sharpest *early warning* while
+iterating.
+
+## Reproducing
+
+```sh
+build/rakupp tools/run-roast.raku          # whole suite; prints all four ratios
+build/rakupp tools/run-roast.raku S05      # filter by path substring
+```
+
+The tail of the output is the summary block:
+
+```
+Files fully passing:  584 / 1462  (39.9%)
+Assertions passed:    194901 / 199872  (97.5%)  of tests that ran
+Assertions passed:    194901 / 212964  (91.5%)  of tests planned by files that emitted a plan
+Assertions passed:    194901 / 216222  (90.0%)  of ALL declared tests (+3258 from 93 no-TAP files read from source; 4 more have no static plan)
+```
+
+(No `ROAST` env var is required — the tests' own `use lib` resolves the
+Test-Helpers now. Setting `ROAST=<checkout>` is still harmless.)

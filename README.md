@@ -5,7 +5,7 @@ language in **C++17, with no third-party dependencies** — a hand-written lexer
 parser, and tree-walking evaluator that runs real Raku (classes, roles, grammars,
 regexes, multi-dispatch, junctions, lazy sequences, a bignum tower,
 Unicode-correct strings, and concurrency), can also **compile** a program to a
-standalone native binary, and — as **[Raku.js](rakujs/)** — **runs in the browser**
+standalone native binary, and — as **[Raku.js](rakujs)** — **runs in the browser**
 via WebAssembly, no server required. It is not a fork of Rakudo and shares no code with it;
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
@@ -17,10 +17,10 @@ Measured per individual test, **90% of Roast passes** — 196,590 of
 ~217,055 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
 **631 / 1,462 files fully pass (~43%)** — a file counts only if *every* assertion
-in it passes. Early-stage, growing test-first. See [the highlights](docs/HIGHLIGHTS.md)
-for the key features in bullets, [the overview](docs/OVERVIEW.md) for
-a one-page tour, [the full guide](docs/GUIDE.md) for the complete picture,
-[COUNTING.md](docs/COUNTING.md) for exactly how these are defined, or the
+in it passes. Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
+for the key features in bullets, [the overview](docs/guide/OVERVIEW.md) for
+a one-page tour, [the full guide](docs/guide/GUIDE.md) for the complete picture,
+[COUNTING.md](docs/status/COUNTING.md) for exactly how these are defined, or the
 [CHANGELOG](CHANGELOG.md) for what each release brought.
 
 ## Install
@@ -131,14 +131,14 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 | `-I <path>` | Add a directory to the module search path (repeatable) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
-| `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. ([LINT.md](docs/LINT.md)) |
+| `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. ([LINT.md](docs/guide/LINT.md)) |
 | `--ast SRC` | Print the parsed AST |
 | `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to (add `-O` to see the optimized codegen) |
 | `--help`, `--version` | Show help / version |
 
 `RAKUPP_PARALLEL=1` opts into true CPU parallelism for `start`/worker threads
 (default coordinates under a GIL). Full option and environment-variable reference:
-[the guide](docs/GUIDE.md#command-line-options).
+[the guide](docs/guide/GUIDE.md#command-line-options).
 
 ## Modules
 
@@ -154,16 +154,16 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
 paths). A `use` that cannot be found or fails to compile is **fatal**, as in
 Rakudo: the program stops and exits non-zero, rather than carrying on without
-the module. Full guide: **[MODULES.md](docs/MODULES.md)**.
+the module. Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
 
 ## Run Raku in the browser — Raku.js
 
 ▶ **Try it live: [raku.online](https://raku.online/)** · **Learn it interactively: [raku.online/tour](https://raku.online/tour/)**
 
-**[Raku.js](rakujs/)** is the *same* interpreter compiled to **WebAssembly** with
+**[Raku.js](rakujs)** is the *same* interpreter compiled to **WebAssembly** with
 Emscripten — the exact semantics as native `rakupp`, running entirely client-side
-with no server. It powers an in-page [playground](rakujs/playground/) (editor +
-live output, with all the [examples/](examples/) built in) and can be embedded in
+with no server. It powers an in-page [playground](rakujs/playground) (editor +
+live output, with all the [examples/](examples) built in) and can be embedded in
 any static page to make Raku snippets runnable — handy for docs, tutorials, or a
 course. Build it with `rakujs/build.sh`; details in
 [rakujs/README.md](rakujs/README.md).
@@ -172,56 +172,56 @@ course. Build it with `rakujs/build.sh`; details in
 
 ### Start here
 
-- **[presentation/](presentation/)** — a slide deck introducing Raku++ and its ecosystem. Download [rakupp-presentation.pdf](presentation/rakupp-presentation.pdf) for a quick flip-through, or open [`index.html`](presentation/index.html) in a browser for the interactive, keyboard-navigable version. The quickest visual tour.
-- **[HIGHLIGHTS.md](docs/HIGHLIGHTS.md)** — the key features, in bullets, on one page.
-- **[OVERVIEW.md](docs/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
-- **[GUIDE.md](docs/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
+- **[presentation/](presentation)** — a slide deck introducing Raku++ and its ecosystem. Download [rakupp-presentation.pdf](presentation/rakupp-presentation.pdf) for a quick flip-through, or open [`index.html`](presentation/index.html) in a browser for the interactive, keyboard-navigable version. The quickest visual tour.
+- **[HIGHLIGHTS.md](docs/guide/HIGHLIGHTS.md)** — the key features, in bullets, on one page.
+- **[OVERVIEW.md](docs/guide/OVERVIEW.md)** — a one-page tour: what Raku++ is, its goals, capabilities, and how it compares to Rakudo.
+- **[GUIDE.md](docs/guide/GUIDE.md)** — the full overview: goals, status, the compile modes, running against Roast, architecture.
 
 ### Language reference
 
-- **[FEATURES.md](docs/FEATURES.md)** — inventory of supported language features, by theme.
-- **[MODULES.md](docs/MODULES.md)** — working with modules: how `use` finds modules installed by zef, the search-path order, and writing your own. ([dev/MODULES.md](docs/dev/MODULES.md) is the internals companion: what `use` does inside the compiler, and where it diverges from Rakudo.)
-- **[CACHING.md](docs/CACHING.md)** — the precompiled parse: opt-in caching of a module's (or a program's) parsed form (`use XML` 16.0 ms → 5.7 ms), what each switch is measurably worth, and what invalidates an entry.
-- **[REFERENCE.md](docs/REFERENCE.md)** — exhaustive lookup sheet: every operator, built-in subroutine, and method, each with a verified example.
-- **[COOKBOOK.md](docs/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
-- **[faq/](docs/faq/)** — short answers to questions people actually ask ("how do I capture a command's output?"), every snippet verified against both Raku++ and Rakudo, with the differences called out.
-- **[UNICODE.md](docs/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
-- **[ASYNC.md](docs/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
-- **[NETWORKING.md](docs/NETWORKING.md)** — talking over the network: async TCP clients and servers, HTTP, graceful shutdown with `signal`, and HTTPS/TLS via `IO::Socket::Async::SSL`.
-- **[METAPROGRAMMING.md](docs/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
-- **[NQP.md](docs/NQP.md)** — the `use nqp` compatibility subset: what it covers, how it compiles (no NQP grammar involved), and why it costs nothing when unused. Lets ecosystem modules like JSON::Fast run.
+- **[FEATURES.md](docs/guide/FEATURES.md)** — inventory of supported language features, by theme.
+- **[MODULES.md](docs/guide/MODULES.md)** — working with modules: how `use` finds modules installed by zef, the search-path order, and writing your own. ([internals/MODULE-LOADING.md](docs/internals/MODULE-LOADING.md) is the internals companion: what `use` does inside the compiler, and where it diverges from Rakudo.)
+- **[CACHING.md](docs/guide/CACHING.md)** — the precompiled parse: opt-in caching of a module's (or a program's) parsed form (`use XML` 16.0 ms → 5.7 ms), what each switch is measurably worth, and what invalidates an entry.
+- **[REFERENCE.md](docs/guide/REFERENCE.md)** — exhaustive lookup sheet: every operator, built-in subroutine, and method, each with a verified example.
+- **[COOKBOOK.md](docs/guide/COOKBOOK.md)** — a cookbook of runnable one-liner snippets, each verified against `rakupp`.
+- **[faq/](docs/guide/faq/)** — short answers to questions people actually ask ("how do I capture a command's output?"), every snippet verified against both Raku++ and Rakudo, with the differences called out.
+- **[UNICODE.md](docs/guide/UNICODE.md)** — Unicode support: graphemes (UAX #29), normalization, UCA collation, character introspection — the data pipeline and measured coverage.
+- **[ASYNC.md](docs/guide/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
+- **[NETWORKING.md](docs/guide/NETWORKING.md)** — talking over the network: async TCP clients and servers, HTTP, graceful shutdown with `signal`, and HTTPS/TLS via `IO::Socket::Async::SSL`.
+- **[METAPROGRAMMING.md](docs/internals/METAPROGRAMMING.md)** — language-mutation coverage: custom operators, precedence traits, phasers, MOP, macros/slangs.
+- **[NQP.md](docs/internals/NQP.md)** — the `use nqp` compatibility subset: what it covers, how it compiles (no NQP grammar involved), and why it costs nothing when unused. Lets ecosystem modules like JSON::Fast run.
 
 ### Code to read and run
 
-- **[examples/](examples/)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md). [examples/lint/](examples/lint/) demos the `--lint` analyzer, one rule per file.
-- **[showcase/](showcase/)** — mid-size showcase programs: a Scheme interpreter built on a Raku grammar, and a pastebin HTTP server on raw sockets; see [showcase/README.md](showcase/README.md).
-- **[rakujs/](rakujs/)** — **Raku.js**: the interpreter compiled to **WebAssembly** to run Raku in the browser with no server; includes a playground page with all the examples. Same interpreter as native, compiled with Emscripten; see [rakujs/README.md](rakujs/README.md).
+- **[examples/](examples)** — complete example programs (Mandelbrot, Game of Life, a JSON grammar, a quine, …); see [examples/README.md](examples/README.md). [examples/lint/](examples/lint) demos the `--lint` analyzer, one rule per file.
+- **[showcase/](showcase)** — mid-size showcase programs: a Scheme interpreter built on a Raku grammar, and a pastebin HTTP server on raw sockets; see [showcase/README.md](showcase/README.md).
+- **[rakujs/](rakujs)** — **Raku.js**: the interpreter compiled to **WebAssembly** to run Raku in the browser with no server; includes a playground page with all the examples. Same interpreter as native, compiled with Emscripten; see [rakujs/README.md](rakujs/README.md).
 
 ### Under the hood
 
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
-- **[PARSING.md](docs/PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (factorial `postfix:<!>`, custom precedence) are parsed in a single pass.
-- **[RUNTIME.md](docs/RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — the `Value` type, variables and containers, calls and dispatch, and lazy/infinite sequences.
-- **[MEMORY.md](docs/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
-- **[LINT.md](docs/LINT.md)** — the `--lint` static analyzer: the rules it applies, warnings vs. notes, exit codes, and why it stays conservative on Raku's dynamic constructs.
-- **[OPTIMIZATION.md](docs/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
-- **[HTTPS.md](docs/HTTPS.md)** — the story of getting one real HTTPS request working: the chain of general bugs from "OpenSSL won't load" to `HTTP/1.1 200 OK` over TLS, and the NativeCall surface it exercised.
-- **[DOGFOODING.md](docs/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
-- **[ECOSYSTEM.md](docs/ECOSYSTEM.md)** — the projects built on this interpreter (Raku.js, raku.online with its tour and spec sub-sites, raku-corpus), how they connect, and the release runbook for rebuilding wasm and redeploying the sites after a new version.
+- **[ARCHITECTURE.md](docs/internals/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
+- **[PARSING.md](docs/internals/PARSING.md)** — the front end: from source text to AST — the lexer, the Pratt parser, and how user-defined operators (factorial `postfix:<!>`, custom precedence) are parsed in a single pass.
+- **[RUNTIME.md](docs/internals/RUNTIME.md)** — the runtime model: how statically-typed C++ runs dynamic Raku — the `Value` type, variables and containers, calls and dispatch, and lazy/infinite sequences.
+- **[MEMORY.md](docs/guide/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
+- **[LINT.md](docs/guide/LINT.md)** — the `--lint` static analyzer: the rules it applies, warnings vs. notes, exit codes, and why it stays conservative on Raku's dynamic constructs.
+- **[OPTIMIZATION.md](docs/internals/OPTIMIZATION.md)** — the `--exe -O` optimizer: what it does and how fast it gets.
+- **[HTTPS.md](docs/guide/HTTPS.md)** — the story of getting one real HTTPS request working: the chain of general bugs from "OpenSSL won't load" to `HTTP/1.1 200 OK` over TLS, and the NativeCall surface it exercised.
+- **[DOGFOODING.md](docs/status/DOGFOODING.md)** — the Raku tools Raku++ uses to build, test, and measure itself.
+- **[ECOSYSTEM.md](docs/status/ECOSYSTEM.md)** — the projects built on this interpreter (Raku.js, raku.online with its tour and spec sub-sites, raku-corpus), how they connect, and the release runbook for rebuilding wasm and redeploying the sites after a new version.
 
 ### Measurements & status
 
-- **[ROAST.md](docs/ROAST.md)** — Roast suite overview and per-section statistics.
-- **[COUNTING.md](docs/COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
-- **[BENCHMARKS.md](docs/BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
-- **[NATIVE.md](docs/NATIVE.md)** — interpreter vs compiled (`--exe`) on the example programs; every example compiles natively with identical output.
-- **[COMPILERS.md](docs/COMPILERS.md)** — which compiler and architecture to use (arm64 vs x86_64 on macOS, GCC vs Clang, MSVC vs MinGW on Windows), for building Raku++ and for `--exe`.
-- **[ROADMAP.md](docs/ROADMAP.md)** — done / in-progress / next.
+- **[ROAST.md](docs/status/ROAST.md)** — Roast suite overview and per-section statistics.
+- **[COUNTING.md](docs/status/COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
+- **[BENCHMARKS.md](docs/status/BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
+- **[NATIVE.md](docs/guide/NATIVE.md)** — interpreter vs compiled (`--exe`) on the example programs; every example compiles natively with identical output.
+- **[COMPILERS.md](docs/guide/COMPILERS.md)** — which compiler and architecture to use (arm64 vs x86_64 on macOS, GCC vs Clang, MSVC vs MinGW on Windows), for building Raku++ and for `--exe`.
+- **[ROADMAP.md](docs/status/ROADMAP.md)** — done / in-progress / next.
 - **[CHANGELOG.md](CHANGELOG.md)** — release notes for tagged releases.
 
 ### The story
 
-- **[MILESTONES.md](docs/MILESTONES.md)** — the dated timeline: the headline moments and numbers, release by release. Start here for the arc at a glance.
+- **[MILESTONES.md](docs/status/MILESTONES.md)** — the dated timeline: the headline moments and numbers, release by release. Start here for the arc at a glance.
 - **[docs/dev/JOURNEY.md](docs/dev/JOURNEY.md)** — a memoir of how this was built: the method and the principles.
 - **[LONGREAD.md](LONGREAD.md)** — the long-form story: the whole arc from empty directory to ~82% of Roast, a native compiler, and a browser playground.
 

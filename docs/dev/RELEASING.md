@@ -22,7 +22,7 @@ costs an hour.
 Read the **denominators**, not just the pass count. A file that dies removes its
 tests from *both* sides of "tests that ran", so a real regression can leave the
 percentage untouched — a falling denominator means a file stopped emitting TAP.
-See [COUNTING.md](../COUNTING.md), which works through exactly that case.
+See [COUNTING.md](../status/COUNTING.md), which works through exactly that case.
 
 The suite flaps by a file — 624↔625 fully passing and 10↔11 timeouts on the same
 build — worth about 20 assertions either way. Take three runs and use the
@@ -133,10 +133,10 @@ iteration order per process. Do not read a ±5 move as progress.
    [flake.nix](../../flake.nix) (the Nix package, issue #5).
 2. Write the CHANGELOG entry — measured numbers, not projected, with the
    methodology link. Note anything deliberately left open.
-3. Refresh the figures in README, `docs/ROAST.md`, `docs/COUNTING.md`,
-   `docs/FEATURES.md`, `docs/GUIDE.md`, `docs/HIGHLIGHTS.md`, `docs/OVERVIEW.md`
-   and `docs/ROADMAP.md` — all from **one** run, so they agree with each other.
-   `docs/BENCHMARKS.md` too if the benchmarks were re-run.
+3. Refresh the figures in README, `docs/status/ROAST.md`, `docs/status/COUNTING.md`,
+   `docs/guide/FEATURES.md`, `docs/guide/GUIDE.md`, `docs/guide/HIGHLIGHTS.md`, `docs/guide/OVERVIEW.md`
+   and `docs/status/ROADMAP.md` — all from **one** run, so they agree with each other.
+   `docs/status/BENCHMARKS.md` too if the benchmarks were re-run.
 4. Tag, and publish.
 5. **Republish the site data** — the graphs and listings under
    <https://raku.online/spec/> and <https://raku.online/spec/rules/>.
@@ -148,7 +148,7 @@ this runs, the site shows the *previous* release's divergences, coverage meters
 and Roast map while announcing the new version.
 
 **After the tag, not before.** `gen-dashboard.raku` mines the rakupp repo's `v*`
-tags and reads `docs/ROAST.md` / `docs/BENCHMARKS.md` *as committed at each one*.
+tags and reads `docs/status/ROAST.md` / `docs/status/BENCHMARKS.md` *as committed at each one*.
 Run it before tagging and the new release is simply absent from the timeline —
 and since it only collects, never measures, nothing warns you.
 

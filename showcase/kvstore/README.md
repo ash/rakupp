@@ -1,7 +1,7 @@
 # kvstore — a key-value server with its own protocol
 
 An in-memory key-value store with a Redis-flavoured text protocol, over raw TCP.
-Like the [chat](../chat/) server it is concurrent — one `start` thread per
+Like the [chat](../chat) server it is concurrent — one `start` thread per
 connection — but instead of broadcasting, the connections share a single mutable
 store guarded by a `Lock`, and each command line gets a reply. It's the "network
 protocol" showcase: no HTTP, just a line protocol you can type by hand.

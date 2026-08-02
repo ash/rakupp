@@ -50,7 +50,7 @@ So the app is thin; the actual Markdown/JSON/grammar work is the very same Raku
 code the CLI showcases run.
 
 Running on the main thread (rather than a Web Worker like the
-[playground](../../rakujs/playground/)) keeps this simple and `file://`-openable;
+[playground](../../rakujs/playground)) keeps this simple and `file://`-openable;
 the trade-off is no Stop button and a brief freeze on heavy input — fine for
 these keystroke-fast apps.
 

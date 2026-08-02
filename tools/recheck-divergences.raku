@@ -17,7 +17,7 @@
 #
 # NOTE: this tool used to live in a scratch directory and was lost to a reboot
 # mid-campaign. It is in the repo because it is part of the measurement loop, not
-# a throwaway: see docs/ROAST.md for the other half of the gate.
+# a throwaway: see docs/status/ROAST.md for the other half of the gate.
 
 sub run-capped(Str $exe, Str $file, Int $secs = 10 --> Str) {
     # alarm+exec rather than a Raku-level timeout: Raku++ can run away on a bad

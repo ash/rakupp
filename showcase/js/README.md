@@ -18,7 +18,7 @@ build/rakupp showcase/js/js.raku                   # no file → a REPL
 Semicolons are optional — a newline ends a statement wherever JavaScript's
 automatic semicolon insertion (ASI) would; see [Semicolons (ASI)](#semicolons-asi).
 
-Ten example programs live in [`examples/`](examples/):
+Ten example programs live in [`examples/`](examples):
 
 | File | Shows off |
 |---|---|

@@ -109,4 +109,4 @@ Stdin box; edit either and press Run.
 
 The interpreter itself is the Raku source in the editor. It is the same code
 that runs from the command line with native `rakupp` — see
-[`../showcase/`](../showcase/).
+[`../showcase/`](../showcase).

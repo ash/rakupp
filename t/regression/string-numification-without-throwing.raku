@@ -8,7 +8,7 @@
 # loop. `std::strtod` reports the same failure through its end pointer for free.
 #
 # This test pins the SEMANTICS, which must be identical either way — the speed is
-# in docs/OPTIMIZATION.md.
+# in docs/internals/OPTIMIZATION.md.
 # Contract: exit 0 + last line PASS.
 my @fail;
 sub check($got, $want, $what) { @fail.push("$what: got $got want $want") unless $got eq $want }

@@ -1,7 +1,7 @@
 # t/ — the example + showcase regression suite
 
-One command runs every program in [`examples/`](../examples/) and every
-[`showcase/`](../showcase/), with the **same `rakupp` binary that runs the
+One command runs every program in [`examples/`](../examples) and every
+[`showcase/`](../showcase), with the **same `rakupp` binary that runs the
 suite**, and checks their output:
 
 ```sh

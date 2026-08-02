@@ -2,7 +2,7 @@
 
 Reads JSON into native Raku values with a grammar, and writes them back out —
 pretty-printed or minified — with an optional `jq`-style path to pull one value.
-Where [lisp](../lisp/) and [forth](../forth/) implement whole languages, this is
+Where [lisp](../lisp) and [forth](../forth) implement whole languages, this is
 the everyday job a grammar is for: read a data format, do something, write it
 back.
 

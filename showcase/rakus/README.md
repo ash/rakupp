@@ -2,7 +2,7 @@
 
 Point it at a directory and it serves the files inside over HTTP/1.1 — the Raku
 answer to `python3 -m http.server`, on nothing but `IO::Socket::INET`. Where the
-[pastebin](../pastebin/) is a single-purpose app with a hand-wired route table,
+[pastebin](../pastebin) is a single-purpose app with a hand-wired route table,
 rakus is a reusable *server*: give it a folder and it figures out the rest.
 
 ## Run it
@@ -16,7 +16,7 @@ build/rakupp --exe -o rakus showcase/rakus/rakus.raku && ./rakus 8080 ~/site
 ```
 
 Then open <http://127.0.0.1:8080/>. With no root given it serves the bundled
-[`public/`](public/) folder — a landing page, a stylesheet, an SVG logo, and a
+[`public/`](public) folder — a landing page, a stylesheet, an SVG logo, and a
 `files/` directory with no index (so you can see the auto listing).
 
 ## What it does

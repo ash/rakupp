@@ -27,7 +27,7 @@ need newlines to be significant, which means overriding `ws`.
 
 > **Note (2026-07-19):** overriding `ws` now works — rakupp bug G2, which had
 > `rule` sigspace ignore a user-defined `token ws`, is fixed (see
-> [`docs/dev/BUGS-JS-SHOWCASE.md`](../../docs/dev/BUGS-JS-SHOWCASE.md)). So the
+> [`docs/dev/findings/BUGS-JS-SHOWCASE.md`](../../docs/dev/findings/BUGS-JS-SHOWCASE.md)). So the
 > door to a grammar-based ASI is technically open. We still don't take it, on
 > purpose — see the next section.
 

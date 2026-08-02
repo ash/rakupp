@@ -5,18 +5,18 @@ together they answer "what can it actually build?"
 
 | Project | Axis it showcases | How you run it |
 |---|---|---|
-| [**lisp/**](lisp/) | Language power — a grammar + a tree-walking evaluator | interpreter that runs Scheme files or a REPL |
-| [**js/**](js/) | Language power — a full precedence ladder, closures, classes | interpreter that runs JavaScript/TypeScript files or a REPL |
-| [**forth/**](forth/) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
-| [**perl/**](perl/) | Language power — sigil variables, context, regex | interpreter that runs Perl 5 files or a REPL |
-| [**python/**](python/) | Language power — the off-side rule, via an INDENT/DEDENT tokenizer | interpreter that runs Python 3 files or a REPL |
-| [**markdown/**](markdown/) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
-| [**json/**](json/) | Parsing — a grammar that round-trips data | parse, pretty-print / minify, and query JSON |
-| [**pastebin/**](pastebin/) | Deployable — a hand-written HTTP server on raw sockets | native binary you point a browser at |
-| [**rakus/**](rakus/) | Deployable — a general static HTTP file server | point it at a folder, open it in a browser |
-| [**chat/**](chat/) | Concurrency — many clients, one thread each | TCP chat server you connect to with `nc` |
-| [**kvstore/**](kvstore/) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
-| [**modinfo/**](modinfo/) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
+| [**lisp/**](lisp) | Language power — a grammar + a tree-walking evaluator | interpreter that runs Scheme files or a REPL |
+| [**js/**](js) | Language power — a full precedence ladder, closures, classes | interpreter that runs JavaScript/TypeScript files or a REPL |
+| [**forth/**](forth) | Language power — a stack machine + word dictionary | interpreter that runs Forth files or a REPL |
+| [**perl/**](perl) | Language power — sigil variables, context, regex | interpreter that runs Perl 5 files or a REPL |
+| [**python/**](python) | Language power — the off-side rule, via an INDENT/DEDENT tokenizer | interpreter that runs Python 3 files or a REPL |
+| [**markdown/**](markdown) | Parsing — a grammar that emits HTML | converter: Markdown in, a styled page out |
+| [**json/**](json) | Parsing — a grammar that round-trips data | parse, pretty-print / minify, and query JSON |
+| [**pastebin/**](pastebin) | Deployable — a hand-written HTTP server on raw sockets | native binary you point a browser at |
+| [**rakus/**](rakus) | Deployable — a general static HTTP file server | point it at a folder, open it in a browser |
+| [**chat/**](chat) | Concurrency — many clients, one thread each | TCP chat server you connect to with `nc` |
+| [**kvstore/**](kvstore) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
+| [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -108,7 +108,7 @@ for my $w (sort { $freq{$b} <=> $freq{$a} or $a cmp $b } keys %freq) {
 
 All six example programs produce byte-identical output under the system `perl`
 and under `perl.raku`. References and nested data structures, `tr///`, packages
-and file I/O are out of scope — see [perl/README.md](perl/) for the exact
+and file I/O are out of scope — see [perl/README.md](perl/README.md) for the exact
 boundary.
 
 ## python — the off-side rule
@@ -139,7 +139,7 @@ All five example programs produce byte-identical output under CPython 3 and
 under `python.raku` — arbitrary-precision ints, `0.1 + 0.2` printing
 `0.30000000000000004`, comprehensions, closures, and `lambda`-key sorting
 included. Classes, imports, exceptions and generators are out of scope; see
-[python/README.md](python/) for the exact boundary and a walk-through of the
+[python/README.md](python/README.md) for the exact boundary and a walk-through of the
 indentation tokenizer.
 
 ## markdown — the parsing story
@@ -290,10 +290,10 @@ byte-identical, and byte-identical again over the 61 real distributions of the
 module battery. See [`modinfo/README.md`](modinfo/README.md) for the module map
 and what each fixture is for.
 
-## In the browser — [`web/`](web/)
+## In the browser — [`web/`](web)
 
 The pure showcases also run **client-side in the browser**, on rakupp compiled to
-WebAssembly (see [`rakujs/`](../rakujs/)). [`web/`](web/) has three little apps that
+WebAssembly (see [`rakujs/`](../rakujs)). [`web/`](web) has three little apps that
 reuse the showcase code directly: a **live Markdown editor**, a **JSON
 beautifier/minifier**, and a **regex tester + grammar explorer** with match
 highlighting and parse-tree output. The server showcases can't run there — the

@@ -3,7 +3,7 @@
 Raku++ ships a static analyzer. `rakupp --lint FILE` parses a program and
 reports likely mistakes **without running it**, then exits non-zero if it found
 any warnings (notes alone still exit 0). Full rule reference:
-[docs/LINT.md](../../docs/LINT.md).
+[docs/guide/LINT.md](../../docs/guide/LINT.md).
 
 Each file here isolates one rule; [`kitchen-sink.raku`](kitchen-sink.raku) trips
 several at once, and [`clean.raku`](clean.raku) is written to pass with nothing

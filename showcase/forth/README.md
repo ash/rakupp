@@ -1,6 +1,6 @@
 # forth — a Forth interpreter
 
-The stack-machine counterpart to the [Lisp](../lisp/) tree-walker. Forth has no
+The stack-machine counterpart to the [Lisp](../lisp) tree-walker. Forth has no
 parse tree: source is a flat stream of whitespace-separated *words*, each of which
 pushes a number or runs a dictionary entry against a shared data stack. `: name … ;`
 defines new words from old ones, so the language grows itself from a handful of

@@ -3040,7 +3040,7 @@ bool precompSetSetting(const std::string& key, bool on) {
       } }
     if (!replaced) {
         if (lines.empty())
-            lines.push_back("# rakupp settings. See `rakupp --precomp-info` and docs/CACHING.md.");
+            lines.push_back("# rakupp settings. See `rakupp --precomp-info` and docs/guide/CACHING.md.");
         lines.push_back(key + " = " + (on ? "on" : "off"));
     }
     std::string tmp = path + ".tmp";

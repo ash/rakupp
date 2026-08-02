@@ -761,7 +761,7 @@ int main(int argc, char** argv) {
     // separate switches because they earn their keep very differently — caching a
     // module tree is a clear win, caching a small script's own parse is a wash —
     // so `modules` is the one likely to become a default later. See
-    // docs/CACHING.md for the measurements.
+    // docs/guide/CACHING.md for the measurements.
     if (argc >= 2 && (std::string(argv[1]).rfind("--precomp-modules=", 0) == 0 ||
                       std::string(argv[1]).rfind("--precomp-files=", 0) == 0)) {
         std::string a = argv[1];

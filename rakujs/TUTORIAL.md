@@ -32,7 +32,7 @@ Everything below is variations on that.
 ## The files you need, and where they go
 
 Building Raku.js ([`build.sh`](build.sh)) produces exactly two files into
-[`playground/`](playground/):
+[`playground/`](playground):
 
 | File | What it is |
 |------|------------|
@@ -82,14 +82,14 @@ RakuJS({ locateFile: name => BASE + name,   // and let it find rakujs.wasm
 
 That's the whole placement story: **two library files together, served over
 http; your page and worker just need a path that reaches them.** The
-[`playground/`](playground/) app does exactly this — see
+[`playground/`](playground) app does exactly this — see
 [`worker.js`](playground/worker.js), which loads `rakujs.js`/`rakujs.wasm` from
 its own directory.
 
 > A page can also **avoid the fetch entirely** and open straight from `file://`,
 > by embedding the wasm as base64 and pointing Emscripten's `locateFile` at a
 > `data:application/wasm;base64,…` URL (data URLs are fetchable even from
-> `file://`). The [`showcase/web/`](../showcase/web/) apps do this — no server
+> `file://`). The [`showcase/web/`](../showcase/web) apps do this — no server
 > needed; see their [`bundle.sh`](../showcase/web/bundle.sh) and
 > [`runner.js`](../showcase/web/runner.js).
 
@@ -280,7 +280,7 @@ that runs the module right on the page: `raku.run(src)` returns a
 `Promise<{out, err, rc, ms}>`, plus a `debounced()` helper for live editing and
 the `rakuHeredoc()` from §3.
 
-The [`showcase/web/`](../showcase/web/) apps (live Markdown, JSON formatter,
+The [`showcase/web/`](../showcase/web) apps (live Markdown, JSON formatter,
 regex/grammar explorer) are complete, working examples — main-thread, no server,
 openable from `file://` — a good next read.
 

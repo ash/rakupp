@@ -108,7 +108,7 @@ is the fair one for "correctness on what runs." This is the headline: **90%**,
 or roughly **196,400 of ~217,100** declared tests. One whole synopsis — S15,
 Unicode — is at **100%** of its assertions.
 
-The subtlety we documented in [docs/COUNTING.md](docs/COUNTING.md) is that the
+The subtlety we documented in [docs/status/COUNTING.md](docs/status/COUNTING.md) is that the
 denominator is not fixed. "Declared" means every test any file *tries* to run,
 including files that abort before emitting a single result — we recover their
 planned count from the source and count all of it as failing. The better the
@@ -241,7 +241,7 @@ We fixed them in two rounds — containers and binding, list/Seq typing, associa
 gists, junction gists, numeric coercions, quoting adverbs, regex and grammar
 corners — and drove the number of genuine divergences from **148 down to 14**. The
 full ledger is in
-[docs/dev/COURSE-DIVERGENCES.md](docs/dev/COURSE-DIVERGENCES.md). Every one of
+[docs/dev/findings/COURSE-DIVERGENCES.md](docs/dev/findings/COURSE-DIVERGENCES.md). Every one of
 those was a bug that neither Roast nor the two big projects had caught, because
 nobody had written *that* idiom before in a form we tested.
 
@@ -284,7 +284,7 @@ The identical count climbed to **4,056 — 60% of the comparable programs** — 
 still moving. Every batch passes a zero-regression Roast gate before it counts, so
 the two fronts reinforce each other: the Roast standing rose from 433 to 440 fully
 passing files across these same batches. Each batch is a progression row in
-[docs/dev/PWC-DIVERGENCES.md](docs/dev/PWC-DIVERGENCES.md).
+[docs/dev/findings/PWC-DIVERGENCES.md](docs/dev/findings/PWC-DIVERGENCES.md).
 
 What the ledger surfaced late is a leverage insight worth keeping: the remaining
 mismatches are not evenly spread. Six prolific authors account for about half of
@@ -387,7 +387,7 @@ three weeks, executing in a browser with no server behind it.
 
 ## A nostalgic note
 
-Among the two dozen programs in [examples/](examples/) is `mandel.raku` — the
+Among the two dozen programs in [examples/](examples) is `mandel.raku` — the
 Mandelbrot set rendered in ASCII, the same demo that shipped with Parrot two
 decades ago. Back then a fractal crawling down the terminal was the thing you
 showed people to prove a new language was real.

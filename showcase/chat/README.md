@@ -3,7 +3,7 @@
 A multi-client chat server written directly on `IO::Socket::INET`, no framework.
 Every connection is handled on its own `start` thread; a shared roster of clients
 is guarded by a `Lock`, and each message is broadcast to everyone else. Where the
-[pastebin](../pastebin/) is one request then one response, this keeps many
+[pastebin](../pastebin) is one request then one response, this keeps many
 long-lived connections interleaving at once.
 
 ## Run it

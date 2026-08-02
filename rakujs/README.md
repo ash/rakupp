@@ -10,9 +10,9 @@ The name is branding, not mechanism: Raku.js is **not** a from-scratch
 reimplementation of Raku in JavaScript. It is the exact same C++ interpreter from
 `../src`, compiled with Emscripten, so semantics are identical to the native
 `rakupp` and to what it validates against the Roast suite. (That interpreter is
-documented in [../docs/RUNTIME.md](../docs/RUNTIME.md) — the `Value` model and
-execution — and [../docs/PARSING.md](../docs/PARSING.md) — source to AST; the
-overall pipeline in [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).) Nothing
+documented in [../docs/internals/RUNTIME.md](../docs/internals/RUNTIME.md) — the `Value` model and
+execution — and [../docs/internals/PARSING.md](../docs/internals/PARSING.md) — source to AST; the
+overall pipeline in [../docs/internals/ARCHITECTURE.md](../docs/internals/ARCHITECTURE.md).) Nothing
 in `../src` is modified — everything here is additive:
 
 | File | Purpose |
@@ -110,7 +110,7 @@ fully static. Shared programs are capped at 200 KB. Compression uses the native
 
 ## Examples
 
-The example dropdown is generated from [`../examples/`](../examples/) (the same
+The example dropdown is generated from [`../examples/`](../examples) (the same
 programs the CLI ships) by [`gen-examples.raku`](gen-examples.raku) — run with the
 native `rakupp` binary by `build.sh`, so Raku.js generates its own playground data
 with the interpreter it ships, and `examples/` stays the single source of truth.
@@ -127,7 +127,7 @@ To regenerate after adding an example, re-run `build.sh` (or just
 recursion cap; all shipped examples stay well under it.
 
 The dropdown also includes **language showcases** — whole interpreters (Lisp,
-Forth, JS/TS, Perl, Python) from [`../showcase/`](../showcase/), each running a
+Forth, JS/TS, Perl, Python) from [`../showcase/`](../showcase), each running a
 sample program in the browser. A Python program interpreted by a Raku program
 interpreted by a C++ interpreter compiled to WebAssembly, in a fraction of a
 second — [**Interpreters all the way down**](STACKED-INTERPRETERS.md) explains
@@ -190,10 +190,10 @@ output through Emscripten's `print` / `printErr` and call the exported function:
 > stack limits, and timer behaviour (an in-browser figure exists only as a
 > dated upper bound; see the † note). Treat these numbers as a first
 > sounding, not a settled benchmark like the native tables in
-> [../docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
+> [../docs/status/BENCHMARKS.md](../docs/status/BENCHMARKS.md).
 
 Measured 2026-07-22 on the same kernels, machine, and day as the native tables
-in [../docs/BENCHMARKS.md](../docs/BENCHMARKS.md), both hosts running the same
+in [../docs/status/BENCHMARKS.md](../docs/status/BENCHMARKS.md), both hosts running the same
 Raku++ 1.0.0 wasm (`-Oz`, `-fexceptions`). Same policy everywhere: 7 runs,
 first discarded, minimum of the remaining 6; one module instance reused across
 runs (each run still gets a fresh `Interpreter`). Node and Bun run a
@@ -254,7 +254,7 @@ and a fresh worker + module instance is ready in tens of ms after the one-time
   level, so recursion caps around ~200 levels — beyond that the browser raises a
   `RangeError`, which the playground catches, reports as a recursion-limit message,
   and recovers from. This is a browser constraint, not a Raku one: the same program
-  runs natively ([docs/MEMORY.md](../docs/MEMORY.md) compares the measured
+  runs natively ([docs/guide/MEMORY.md](../docs/guide/MEMORY.md) compares the measured
   recursion budgets of all three modes). Raising it would require rewriting the interpreter onto an explicit
   heap stack (a `src/` change, out of scope here). `-sSTACK_SIZE` does **not**
   help — verified. Iterative/loop-based examples are unaffected.

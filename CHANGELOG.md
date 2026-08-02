@@ -1,7 +1,7 @@
 # Changelog
 
 Release notes for tagged releases. Numbers are measured, not projected;
-methodology for all Roast figures is in [docs/COUNTING.md](docs/COUNTING.md).
+methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
 ## Unreleased
 
@@ -47,7 +47,7 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
   module-private, so the importer still gets the built-in. `--aot`/`--bundle`
   interpret and were never affected.
 
-Documentation corrected in the same pass: the README and `docs/MODULES.md` both
+Documentation corrected in the same pass: the README and `docs/guide/MODULES.md` both
 still promised that *"a missing or broken `use` is a warning, not a fatal
 error — the rest of your program keeps running"*. That stopped being true; a
 `use` that cannot be found or fails to compile is now fatal and exits non-zero,
@@ -98,7 +98,7 @@ Only the syntactic *shape* is cached, never the variable or its value: both are
 looked up and type-checked on every evaluation, so a variable that changes type
 mid-loop simply stops taking the fast path. It needs no flag and cannot change
 semantics. Written up, with the guards and the three prototypes that failed, in
-[docs/dev/NODE-SPECIALIZATION.md](docs/dev/NODE-SPECIALIZATION.md).
+[docs/internals/NODE-SPECIALIZATION.md](docs/internals/NODE-SPECIALIZATION.md).
 
 The measurement that shaped it is worth repeating: classical constant folding,
 the obvious "optimise the AST" move, had **nothing to fold** — 37 sites in
@@ -308,7 +308,7 @@ interpreter spends its time and how the source is arranged.
 Five candidates were ranked from a profile. Three landed, one was measured and
 abandoned, one was measured and never attempted. The full record — including
 what did *not* work and why — is in
-[docs/dev/PERF-CAMPAIGN.md](docs/dev/PERF-CAMPAIGN.md).
+[docs/dev/experiments/PERF-CAMPAIGN.md](docs/dev/experiments/PERF-CAMPAIGN.md).
 
 - **A call's argument vector is MOVED, not copied** (−9% on call-heavy code, from
   four lines). `evalCall` built a `ValueList`, then passed it to `callCallable` —
@@ -338,7 +338,7 @@ Measured and **not** adopted, recorded so they are not retried:
   a **~4% ceiling** (hash lookup 2.8% of `fib`, string ops 1.2%) for the riskiest
   change on the list. Not attempted.
 - **A hash map or switch for the dispatch chain** — see
-  [docs/dev/METHOD-DISPATCH-EXPERIMENT.md](docs/dev/METHOD-DISPATCH-EXPERIMENT.md).
+  [docs/dev/experiments/METHOD-DISPATCH-EXPERIMENT.md](docs/dev/experiments/METHOD-DISPATCH-EXPERIMENT.md).
   56% of the arms dispatch on the invocant TYPE and cannot be name-indexed, and a
   map lookup costs what ~19 `MName` comparisons cost.
 
@@ -566,14 +566,14 @@ leaves the other wrong. Each batch is gated on the full Roast run.
 
 ### Documentation
 
-- **[docs/faq/](docs/faq/)** — a new section, six pages: running external
+- **[docs/guide/faq/](docs/guide/faq/)** — a new section, six pages: running external
   commands, containers and itemisation, compiling, performance, debugging, and
   where Raku++ and Rakudo differ. Every runnable snippet is executed on both
   engines and must produce identical output; where the two genuinely diverge the
   page says so rather than documenting whichever is convenient.
 - Spec and tour links repointed from `ash/raku-spec` / `ash/raku-tour` to
   `ash/raku.online` (`sites/spec`, `sites/tour`), across six files.
-- **Benchmarks re-measured**, and a table corrected. `docs/faq/performance.md`
+- **Benchmarks re-measured**, and a table corrected. `docs/guide/faq/performance.md`
   labelled its first column "interpreter" while holding `run-optbench`'s `--exe`
   numbers, understating compilation by an order of magnitude — 5M integer
   accumulation is 1342 ms interpreted, not the 295 ms printed there. Re-measured
@@ -836,7 +836,7 @@ UCD case tables also lifted string-heavy tests suite-wide: the run went from
 - **Match numification follows the Str ladder** (`+$0` of digits is Int).
 - Corpus differential: **1,532 / 1,812 exact matches (84.5%)** on the
   reorganized corpus (rounds 2–4 in
-  [docs/dev/CORPUS-DIFF.md](docs/dev/CORPUS-DIFF.md)).
+  [docs/dev/findings/CORPUS-DIFF.md](docs/dev/findings/CORPUS-DIFF.md)).
 
 ## v1.0.0 — 2026-07-22
 
@@ -852,7 +852,7 @@ fully-passing-file regressions.
   pass** (was 558). 97.4% of tests that actually run pass. (The declared
   denominator grew because files that previously died before announcing a
   plan now declare their real, often larger, plans.)
-- **A regression-test suite is born**: [t/regression/](t/regression/) — one
+- **A regression-test suite is born**: [t/regression/](t/regression) — one
   self-contained case per bug we introduced and had to fix (21 cases,
   auto-discovered by `t/run.raku`; the suite is at 79 checks).
 
@@ -907,7 +907,7 @@ fully-passing-file regressions.
   `mandel` 0.13 s vs Rakudo 0.47 s). The YAMLish grammar workload drifted
   ~8% slower over the campaign week — bisected to gradual accretion across
   parse/regex hot paths, no single culprit; recorded in
-  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) as a post-1.0 item.
+  [docs/status/BENCHMARKS.md](docs/status/BENCHMARKS.md) as a post-1.0 item.
 - **Suite infra**: the test-server `stop-server` used `pkill -f` with the
   full script path — a regex in which `raku++` is invalid, so no server ever
   died; 54 zombies had accumulated and one answered a later run's INCR with a
@@ -935,8 +935,8 @@ full Roast suite with no fully-passing file regressions.
   are deliberately conservative — interpolation and regex pattern text count as
   uses, and `EVAL`/symbolic references stand the "unused" rules down — to keep
   false positives near zero on Raku's dynamic constructs. Rule reference in
-  [docs/LINT.md](docs/LINT.md); one-rule-per-file demos in
-  [examples/lint/](examples/lint/).
+  [docs/guide/LINT.md](docs/guide/LINT.md); one-rule-per-file demos in
+  [examples/lint/](examples/lint).
 
 ### Language & runtime
 
@@ -987,7 +987,7 @@ enforcement and Capture/Map/Seq gists.
 
 ### Ecosystem & docs
 
-- New [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md): the projects built on this
+- New [docs/status/ECOSYSTEM.md](docs/status/ECOSYSTEM.md): the projects built on this
   interpreter (Raku.js, raku.online, spec.raku.online, raku-corpus, the Homebrew
   tap), how they connect, and the release runbook for rebuilding the wasm and
   redeploying the sites after a version bump.
@@ -1044,9 +1044,9 @@ full Roast suite with no fully-passing file regressions.
   payloads. Block-final `if`/`given` is a pointy block's value; `Less`/`Same`/
   `More` and `PromiseStatus` resolve to real enum values under native name-term
   lookup.
-- New [docs/MEMORY.md](docs/MEMORY.md): reserved-vs-resident memory and the
+- New [docs/guide/MEMORY.md](docs/guide/MEMORY.md): reserved-vs-resident memory and the
   measured recursion depths per mode (interpreter / `--exe` / WebAssembly).
-- New [docs/COMPILERS.md](docs/COMPILERS.md): which compiler and architecture to
+- New [docs/guide/COMPILERS.md](docs/guide/COMPILERS.md): which compiler and architecture to
   use — arm64 vs. x86_64/Rosetta on macOS, Clang vs. GCC (with a measured
   ~1.3–2× gap on this codebase), MSVC vs. MinGW on Windows — both for building
   Raku++ and for the compiler `--exe` invokes.
@@ -1077,7 +1077,7 @@ out of bounds, plus the correctness and concurrency items listed above.
   cooperative-GIL build (what ships and what every example uses) is unaffected.
 - **Native (`--exe`) recursion is uncatchable if it overflows**: a compiled
   program that recurses past its stack dies with a signal rather than a catchable
-  `X::Recursion` (the interpreter throws). See docs/MEMORY.md.
+  `X::Recursion` (the interpreter throws). See docs/guide/MEMORY.md.
 - A native `given`/`when`/`CATCH` with a bare `my` declaration *between* clauses
   fails to compile (a `goto` past an initializer) instead of falling back to
   bundling; wrap the declaration in its own block.
@@ -1131,7 +1131,7 @@ release.)
   element itemization, `Z`-comma, stacked zip/cross metaops, one-level
   operands, min/max flattening, rotor pairs, rw loop params, …).
 - New builtins and methods across the campaign — inventories now stand at
-  **179 subroutines / 505 methods** ([docs/REFERENCE.md](docs/REFERENCE.md)):
+  **179 subroutines / 505 methods** ([docs/guide/REFERENCE.md](docs/guide/REFERENCE.md)):
   `Lock::Async`, minimal `IO::CatHandle`, `FileHandle.encoding`,
   `List.lazy`, `cross(:with)`, the hyperbolic-trig family
   (`sech`/`cosech`/`cotanh` + inverses), `%%` by zero throwing
@@ -1172,7 +1172,7 @@ release.)
 
 - **Perl Weekly Challenge corpus** (10,428 community solutions run under
   both engines): byte-identical stdout+status went **2,663 → 4,056** across
-  15 fix batches ([docs/dev/PWC-DIVERGENCES.md](docs/dev/PWC-DIVERGENCES.md)).
+  15 fix batches ([docs/dev/findings/PWC-DIVERGENCES.md](docs/dev/findings/PWC-DIVERGENCES.md)).
 - **Raku course**: the generator reproduces the full 1,483-page course
   byte-for-byte identically to Rakudo after two rounds of divergence fixes.
 
@@ -1189,7 +1189,7 @@ release.)
 
 - Cold start is **~2 ms** (best of 200 spawns; previously documented ~12 ms).
 - Full benchmark refresh against Rakudo v2026.06
-  ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)): the interpreter is ahead on 8
+  ([docs/status/BENCHMARKS.md](docs/status/BENCHMARKS.md)): the interpreter is ahead on 8
   of 9 kernels (fib remains Rakudo's, 1.7×), `--exe` ahead on all 9.
 - A perf regression found and reversed mid-campaign: eager `&?BLOCK`/
   `&?ROUTINE` frame bindings cost +40% on call-heavy code; the lazy

@@ -14,7 +14,7 @@ build/rakupp showcase/python/python.raku --ast=file.py       # dump the AST
 build/rakupp showcase/python/python.raku                     # no file → a REPL
 ```
 
-Five example programs live in [`examples/`](examples/):
+Five example programs live in [`examples/`](examples):
 
 | File | Shows off |
 |---|---|

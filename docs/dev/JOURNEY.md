@@ -228,7 +228,7 @@ dependency — which is a different and useful shape for a Raku program to take.
 
 ## The examples/ directory: a test suite that doesn't know it's one
 
-Somewhere along the way the repository grew an [examples/](../../examples/)
+Somewhere along the way the repository grew an [examples/](../../examples)
 directory — two dozen small, self-contained programs: the Mandelbrot set in
 ASCII, Conway's Life on a torus, a JSON parser as a grammar, quicksort three
 ways, a quine, a Brainfuck interpreter. The original motive was the obvious
@@ -243,7 +243,7 @@ A showcase program is written the way a person naturally writes Raku, not the
 way a spec test isolates a feature — and the natural phrasing kept stepping on
 quirks: a slip that wouldn't flatten inside an array literal, `"$x-1"`
 interpolating as subtraction, `Rat.Str` quietly truncating, a `rule TOP` that
-refused trailing whitespace. Those went into [TRIAGE.md](TRIAGE.md) with a
+refused trailing whitespace. Those went into [TRIAGE.md](findings/TRIAGE.md) with a
 minimal repro, the correct behaviour, and the workaround used — a page that
 exists because of these programs.
 
@@ -263,7 +263,7 @@ roughly half the directory falling back to interpreter bundling, to all of it
 compiling natively — drove a long tail of codegen work: placeholder
 parameters, slips, lazy `gather`, the sequence operator, grammar registration,
 destructuring loops. The sweep now runs as a routine check, and
-[NATIVE.md](../NATIVE.md) records interpreter-vs-native timings on exactly
+[NATIVE.md](../guide/NATIVE.md) records interpreter-vs-native timings on exactly
 these programs.
 
 A directory meant as a brochure turned out to be a test suite that doesn't
@@ -278,7 +278,7 @@ At the time of writing, Raku++ fully passes **252 of 1,464** Roast files (~17%),
 with **119,873 / 164,321** reached assertions passing. Those numbers are a
 coverage figure and a correctness-on-what-runs figure respectively; they measure
 different things and are quoted for different purposes (see
-[ROAST.md](../ROAST.md)).
+[ROAST.md](../status/ROAST.md)).
 
 The live frontier is grammars in the large. The course generator reads its TOC
 through `YAMLish`, an indentation-sensitive YAML grammar that exercises nearly

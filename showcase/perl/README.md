@@ -14,7 +14,7 @@ build/rakupp showcase/perl/perl.raku --ast=file.pl     # dump the parsed AST
 build/rakupp showcase/perl/perl.raku                   # no file → a REPL
 ```
 
-Six example programs live in [`examples/`](examples/):
+Six example programs live in [`examples/`](examples):
 
 | File | Shows off |
 |---|---|
