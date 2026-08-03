@@ -10,9 +10,43 @@
 # GIL while a worker waits on its child, so the children genuinely overlap.
 # Results are tallied and printed in file order regardless of N.
 
-my $ROOT    = %*ENV<ROAST> // '/Users/ash/roast';   # set $ROAST to your Roast checkout
-my $BIN     = ~$*EXECUTABLE;   # test whichever compiler is running this harness
+my $ROOT    = (%*ENV<ROAST> // '/Users/ash/roast').IO.absolute;  # set $ROAST to your Roast checkout
+my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness
 my $TIMEOUT = 10;
+
+# The I/O tests write RELATIVE paths, so they land in whatever directory the
+# harness was started from — the repo root. Several never clean up (open.t's
+# `create_this_file`/`create_this_file2`, file-tests.t's `symlink-existing`/
+# `symlink-nonexisting`, chmod.t's `temp_<epoch>`, evalfile.t's
+# `temp-evalfile.<pid>.<n>`, local.t's `t/spec/S22-package-format/`), and the
+# per-run ones piled up: dozens of untracked files, which is also why .gitignore
+# carries a list of them. Roast is an upstream checkout we do not patch, so the
+# fix belongs here — every child runs from a per-run scratch directory under
+# $*TMPDIR, removed when the run ends. ($ROOT and $BIN are absolutized above for
+# the same reason: a relative one would not resolve from the scratch directory.)
+#
+# The scratch directory is NOT empty. Roast is written to run from an
+# implementation's repo root and a handful of tests read what is there: dir.t
+# asserts the listing contains a `t/` and indexes `dir('t').[0]` ("see roast's
+# README as for why there is always a t/ available"), filetest.t file-tests `t`
+# and `README.md`, local.t builds `t/spec/…` under the cwd. Handed a bare
+# directory they silently lose those assertions, so the scratch root carries the
+# same entries the repo root gave them — with this, the whole-suite tally is
+# unchanged.
+my $SCRATCH = $*TMPDIR.add("rakupp-roast-{$*PID}");
+$SCRATCH.mkdir;
+$SCRATCH.add('t').mkdir;
+$SCRATCH.add('t/placeholder.t').spurt("# keeps t/ non-empty: dir.t reads dir('t').[0]\n");
+$SCRATCH.add('README.md').spurt("Scratch working directory for a rakupp Roast run.\n");
+sub rmtree($p) {
+    return unless $p.e || $p.l;          # .e is False for a DANGLING symlink
+    if $p.d && !$p.l {
+        rmtree($_.IO) for dir($p);
+        rmdir($p);
+    }
+    else { try unlink($p) }
+}
+END { rmtree($SCRATCH) }
 
 # Run a test file, capturing stdout with a hard timeout (idiomatic Proc::Async + Promise).
 # Returns (output-string, timed-out-bool).
@@ -20,7 +54,7 @@ sub run-with-timeout($bin, $file, $timeout) {
     my $proc = Proc::Async.new($bin, $file);
     my $out = '';
     $proc.stdout.tap(-> $chunk { $out ~= $chunk });
-    my $done = $proc.start;
+    my $done = $proc.start(:cwd($SCRATCH.absolute));
     await Promise.anyof($done, Promise.in($timeout));
     my $timedout = $done.status ne 'Kept';
     $proc.kill if $timedout;
