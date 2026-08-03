@@ -7020,7 +7020,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
     if (name == "$*TZ") return Value::integer(tzOffsetDyn());
-    if (name == "$*INIT-INSTANT") { Value v = Value::number(initInstant_); v.hashKind = "Instant"; return v; }
+    if (name == "$*INIT-INSTANT") return initInstantVal();
     if (name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
     if (name == "$*SCHEDULER") {
         if (tctx_.cur) if (Value* p = tctx_.cur->find("$*SCHEDULER")) return *p; // user-assigned wins
@@ -10557,6 +10557,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (bloby(*lv) && bloby(rhs) && lv->blobElemSize() == rhs.blobElemSize()) {
             lv->s += rhs.s;
             lv->hashKind = "Buf";
+            identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW Buf in the variable
             if (lv->ofType.empty()) lv->ofType = rhs.ofType;
             return sink ? Value::any() : *lv;
         }
@@ -11647,7 +11648,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             Value out = Value::str(l.s + r.s);
             out.hashKind = "Buf";                       // Rakudo: utf8 ~ Blob is a Buf
             out.ofType = l.ofType.empty() ? r.ofType : l.ofType;
-            return out;
+            return identify(out);
         }
         // an undefined operand stringifies to "" (Rakudo warns; `Any ~ $x` is $x)
         // — except IterationEnd, which is a sentinel with a real name
@@ -11803,7 +11804,14 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         else if (l.t == VT::Object) same = (l.obj == r.obj);
         else if (l.t == VT::Type) same = (l.s == r.s && l.ofType == r.ofType);
         else if (l.t == VT::Code) same = (l.code == r.code);
-        else if (l.t == VT::Array) same = (l.arr == r.arr); // Lists/Arrays: reference identity
+        // Lists/Arrays are reference identity — except a CAPTURE, which is the one
+        // Array-shaped VALUE type: `\(1,2) === \(1,2)` is True. Its parts carry
+        // their own identity, so `\(1)` stays apart from `\("1")`.
+        else if (l.t == VT::Array) {
+            same = (l.hashKind == "Capture" || r.hashKind == "Capture")
+                       ? (l.hashKind == r.hashKind && whichOf(l) == whichOf(r))
+                       : (l.arr == r.arr);
+        }
         // A plain Hash compares by reference. A KIND-tagged hash compared by its
         // rendering, which is right for the immutable value types (a Set is its
         // elements) and wrong for every other kind that happens to be a hash
@@ -11814,14 +11822,23 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         // never reached its shutdown path, so a TLS server never closed a
         // connection. Value semantics belong to a KNOWN list; the rest are
         // reference types (Rakudo: Set/Bag/Mix/Date/Version value, Promise/
-        // Channel/Supplier/Lock/Buf/Map/IO::Path identity).
+        // Channel/Supplier/Lock/Buf/Map/IO::Path identity). Capture and Blob are
+        // NOT in the list: neither is a hash underneath (a Capture is an Array, a
+        // Blob a Str), so naming them here only pointed the reader at the wrong
+        // branch — they are answered above and below respectively.
         else if (l.t == VT::Hash) {
             static const std::set<std::string> kValueKinds = {
-                "Set", "Bag", "Mix", "Date", "DateTime", "Version", "Capture",
-                "Blob", "ObjAt", "Encoding", "Distro"};
+                "Set", "Bag", "Mix", "Date", "DateTime", "Version",
+                "ObjAt", "Encoding", "Distro"};
             same = kValueKinds.count(l.hashKind) ? (l.toStr() == r.toStr())
                                                  : (l.hash == r.hash);
         }
+        // …and the reference types that are NOT hashes underneath got the same
+        // wrong answer from the value fallback at the bottom: a Buf is a tagged
+        // Str, an Instant/Duration a tagged Num, so two separately built Bufs
+        // holding the same bytes compared identical. They carry an identity
+        // token instead — see identityScalar/identify in Value.h.
+        else if (identityScalar(l) || identityScalar(r)) same = (whichOf(l) == whichOf(r));
         else if (l.t == VT::Rat) // structural nude compare — .Str on a 0-denominator Rat throws
             same = l.fatRat == r.fatRat &&
                    l.ratN && r.ratN && l.ratD && r.ratD &&
@@ -13588,6 +13605,7 @@ static void tagTemporal(const std::string& op, const Value& l, const Value& r, V
     if (!(li || ri || ld || rd)) return;
     if (op == "-") res.hashKind = (li && ri) ? "Duration" : li ? "Instant" : "Duration";
     else res.hashKind = (li || ri) ? "Instant" : "Duration";
+    identify(res); // the sum is a new Instant/Duration, with its own identity
 }
 
 // Shared hyper-operator core for every spelling (`>>op<<`, `»op«`, and the
@@ -14044,7 +14062,7 @@ Value Interpreter::evalBinary(Binary* b) {
                     return Value::boolean(res);
                 }
                 if (op == "-" && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
-                    Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return d;
+                    Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return identify(d);
                 }
                 if ((op == "+" || op == "-") && l.hashKind == "DateTime" &&
                     (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration"))
@@ -15326,7 +15344,9 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
             std::string r = v.s;
             for (auto& ch : r) ch = (char)~(unsigned char)ch;
-            Value out = Value::str(r); out.hashKind = v.hashKind; return out;
+            Value out = Value::str(r); out.hashKind = v.hashKind;
+            if (out.hashKind == "Buf") identify(out);
+            return out;
         }
         // On a Str, Rakudo declines — and so do we now. Ours used to complement
         // the UTF-8 BYTES and hand the result back as a Str, which for any input
@@ -17348,7 +17368,7 @@ Value Interpreter::eval(Expr* e) {
             }
             if (ve->name == "$*PID") return Value::integer((long long)::getpid());
             if (ve->name == "$*TZ") return Value::integer(tzOffsetDyn());
-            if (ve->name == "$*INIT-INSTANT") { Value v = Value::number(initInstant_); v.hashKind = "Instant"; return v; }
+            if (ve->name == "$*INIT-INSTANT") return initInstantVal();
             if (ve->name == "&?BLOCK" && tctx_.curBlockVal) return *tctx_.curBlockVal;
             if (ve->name == "&?ROUTINE" && tctx_.curRoutineVal) return *tctx_.curRoutineVal;
             if (ve->name == "$*TMPDIR") { const char* t = std::getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp"; while (d.size() > 1 && d.back() == '/') d.pop_back(); Value p = Value::str(d); p.hashKind = "IO"; return p; }
@@ -17643,7 +17663,7 @@ Value Interpreter::eval(Expr* e) {
                 auto d = std::chrono::system_clock::now().time_since_epoch();
                 Value v = Value::number(std::chrono::duration<double>(d).count());
                 v.hashKind = "Instant";
-                return v;
+                return identify(v);
             }
             if (n == "time") return Value::integer((long long)::time(nullptr)); // POSIX seconds (Int)
             if (n == "rand") return Value::number(randDouble()); // random Num in [0, 1)
@@ -18023,7 +18043,7 @@ Value Interpreter::eval(Expr* e) {
                 if (inv.s.rfind("buf", 0) != 0)
                     throw RakuError{Value::typeObj("X::Buf::RO"), "Cannot write to an immutable Blob"};
                 ValueList wargs = evalArgs(mc->args);
-                Value fresh = Value::str(""); fresh.hashKind = "Buf";
+                Value fresh = Value::str(""); fresh.hashKind = "Buf"; identify(fresh);
                 return bufBitOp(fresh, mc->method, wargs);
             }
             // A method `augment`-ed onto a BUILT-IN type may assign to `self`

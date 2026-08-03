@@ -21,6 +21,20 @@
 #     The SSL socket retires a finished write with
 #     `@!outstanding-writes .= grep({ $_ !=== $p })`, which matched every write.
 #
+# The `===` fix reached only the types stored as a kind-tagged HASH. Four more
+# were wrong because they are stored as something else, and they fell through to
+# the same value-compare fallback (or, for Capture, to reference identity):
+#
+#   * Buf, Instant and Duration are REFERENCE types in Rakudo but plain tagged
+#     scalars here — a Buf is a Str, an Instant/Duration a Num — so there was no
+#     address to compare and `Buf.new(1,2) === Buf.new(1,2)` was True. Buf is the
+#     one that bites: it is mutable, and retiring one buffer from a list with
+#     `.grep({ $_ !=== $buf })` threw away every buffer holding the same bytes,
+#     the same failure that left a TLS socket unable to close. Each construction
+#     now stamps an identity token; Blob, immutable, keeps value semantics.
+#   * a Capture is the one Array-shaped VALUE type — `\(1,2) === \(1,2)` is True
+#     — and got reference identity along with every other Array.
+#
 # Contract: exit 0 + last line PASS.
 my @fail;
 sub check($got, $want, $what) {
@@ -97,6 +111,53 @@ my @outstanding = ($p, $q);
 @outstanding .= grep({ $_ !=== $p });
 check(@outstanding.elems, 1, 'grep drops only the promise named');
 check(@outstanding[0] === $q, True, 'and leaves the other one');
+
+# ---- the reference types that are NOT hashes underneath --------------------
+my $buf = Buf.new(1, 2);
+check($buf === $buf,   True,  'a Buf is itself');
+sub give-back($x) { $x }
+check($buf === give-back($buf), True, 'and still itself after a round trip through a sub');
+check(Buf.new(1, 2) === Buf.new(1, 2),  False, 'two Bufs of the same bytes are not identical');
+check(Buf.new(1, 2) !=== Buf.new(1, 2), True,  '!=== agrees');
+my $alias = $buf;
+check($alias === $buf, True, 'a second name for one Buf is that Buf');
+check($buf.subbuf(0, 2) === $buf, False, 'a subbuf is a new Buf, even taking all of it');
+check(Buf.new(1, 2) === Buf.new(1, 3), False, 'and different bytes are certainly not');
+
+# …while the IMMUTABLE byte types keep value semantics, as they do in Rakudo
+check(Blob.new(1, 2) === Blob.new(1, 2), True, 'a Blob is its bytes');
+check('ab'.encode === 'ab'.encode,       True, 'and so is a utf8');
+
+my $inst = Instant.from-posix(1000);
+check($inst === $inst, True, 'an Instant is itself');
+check(Instant.from-posix(1000) === Instant.from-posix(1000), False,
+      'two Instants of the same moment are not identical');
+check($inst.^name, 'Instant', 'Instant.from-posix answers an Instant, not a Num');
+my $dur = Duration.new(5);
+check($dur === $dur, True, 'a Duration is itself');
+check(Duration.new(5) === Duration.new(5), False, 'two Durations of the same length are not identical');
+# $*INIT-INSTANT is ONE Instant however often it is read
+check($*INIT-INSTANT === $*INIT-INSTANT, True, '$*INIT-INSTANT keeps one identity');
+
+# ---- …and the one Array-shaped VALUE type ----------------------------------
+check(\(1, 2) === \(1, 2),       True,  'a Capture is its arguments');
+check(\(1, 2) === \(1, 3),       False, 'a different argument is a different Capture');
+check(\(1, 2) === \('1', '2'),   False, 'and the argument TYPES count');
+check(\(1, :a<b>) === \(1, :a<b>), True,  'named arguments compare too');
+check(\(:a<b>) === \(:a<c>),       False, '…by value');
+check(\(1, 2) === (1, 2),          False, 'a Capture is not the list of the same things');
+
+# `===` is `.WHICH` equality — the two must not disagree
+check(\(1, 2).WHICH eq \(1, 2).WHICH, True,  'equal Captures share a .WHICH');
+check($buf.WHICH eq Buf.new(1, 2).WHICH, False, 'distinct Bufs get distinct .WHICH');
+check($buf.WHICH eq $buf.WHICH,          True,  'and one Buf keeps its own');
+
+# the mutable-Buf spelling of the grep the SSL socket runs: two buffers that
+# happen to hold the same bytes, only one of them named
+my @bufs = (Buf.new(1, 2), Buf.new(1, 2));
+my $drop = @bufs[0];
+@bufs .= grep({ $_ !=== $drop });
+check(@bufs.elems, 1, 'grep drops only the buffer named, not its twin');
 
 if @fail {
     .say for @fail;

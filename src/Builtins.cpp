@@ -1564,6 +1564,7 @@ Value Interpreter::bufSplice(Value& buf, ValueList& args) {
     }
     Value removed = Value::str(buf.s.substr((size_t)from, (size_t)len));
     removed.hashKind = buf.hashKind;
+    if (removed.hashKind == "Buf") identify(removed); // a fresh Buf, not the spliced one
     buf.s.replace((size_t)from, (size_t)len, repl);
     return removed;
 }
@@ -1740,6 +1741,17 @@ std::string whichOf(const Value& v) {
         if (r.ratN && r.ratD) return r.ratN->toString() + "/" + r.ratD->toString();
         return r.toStr();
     };
+    // a Buf/Instant/Duration is a reference type wearing a scalar's clothes: its
+    // identity is the token stamped at construction (see identify() in Value.h),
+    // not its bytes or its seconds. Without this `Buf.new(1,2).WHICH` was the
+    // useless "Buf|" — the bytes are unprintable — for every buffer alive.
+    // A token-less one (a construction site that predates the stamp) keeps the
+    // old value rendering rather than claiming to be a different object.
+    if (identityScalar(v) && v.ext) {
+        char idb[24];
+        std::snprintf(idb, sizeof idb, "|%p", v.ext.get());
+        return v.typeName() + idb;
+    }
     if (v.isAllomorph()) {
         // the numeric half is the same value with the string side dropped
         Value num = v; num.hashKind.clear(); num.s.clear();
@@ -1770,6 +1782,24 @@ std::string whichOf(const Value& v) {
         // it makes `1..^5` and `1..4` the same value, and builds a huge string
         // for a large range on the way
         case VT::Range:   return "Range|" + v.gist();
+        // a CAPTURE is a VALUE — `\(1,2) === \(1,2)` is True in Rakudo, alone
+        // among the Arrays — so it identifies by its PARTS, each with its own
+        // identity. Rendering them (the old "Capture|1 2") merged `\(1)` with
+        // `\("1")` and `\(:a)` with a positional "a".
+        case VT::Array:   if (v.hashKind == "Capture") {
+                              std::string pos;
+                              std::vector<std::string> named; // named parts are unordered
+                              if (v.arr) for (auto& e : *v.arr) {
+                                  if (e.t == VT::Pair && e.namedArg)
+                                      named.push_back(":" + e.s + "(" +
+                                                      (e.pairVal ? whichOf(*e.pairVal) : "") + ")");
+                                  else pos += "(" + whichOf(e) + ")";
+                              }
+                              std::sort(named.begin(), named.end());
+                              for (auto& nm : named) pos += nm;
+                              return "Capture|" + pos;
+                          }
+                          return v.typeName() + "|" + v.toStr();
         default:          return v.typeName() + "|" + v.toStr();
     }
 }
@@ -3733,6 +3763,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         Value b = Value::str(bytes); // buf*/Buf[T] are the mutable spellings
         b.hashKind = (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("Buf", 0) == 0) ? "Buf" : "Blob";
         b.ofType = "uint" + std::to_string(w * 8); // blob8 IS Blob[uint8] — the [T] always shows
+        if (b.hashKind == "Buf") identify(b);
         return b;
     }
     if (inv.t == VT::Type &&
@@ -4014,7 +4045,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // Duration is a number of seconds, tagged so .WHAT/.^name answer Duration
         Value d = Value::number(args.empty() ? 0.0 : args[0].toNum());
         d.hashKind = "Duration";
-        return d;
+        return identify(d);
     }
     if (inv.t == VT::Num && inv.hashKind == "Duration") {
         if (m == "Num" || m == "Real") return Value::number(inv.n);
@@ -4054,7 +4085,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (inv.t == VT::Type && inv.s == "Instant" && m == "from-posix") {
         // TAI = POSIX + the 10 pre-1972 leap seconds (Instant.from-posix(32) is 42)
-        return Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
+        // — and it is an Instant, not a bare Num: untagged, its .^name was "Num"
+        // and `===` compared it by value.
+        Value v = Value::number((args.empty() ? 0.0 : args[0].toNum()) + 10.0);
+        v.hashKind = "Instant";
+        return identify(v);
     }
     // `List.tree` / `Array.tree` on a type object is identity (returns the type)
     if (inv.t == VT::Type && m == "tree") return inv;
@@ -4087,7 +4122,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (fill.empty()) fill.push_back('\0');
             std::string bytes;
             for (long long k = 0; k < an; k++) bytes += fill[(size_t)(k % (long long)fill.size())];
-            Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob"; return b;
+            Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob";
+            if (b.hashKind == "Buf") identify(b);
+            return b;
         }
         std::string bytes;
         std::function<void(const Value&)> add = [&](const Value& v) {
@@ -4106,7 +4143,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
         };
         for (auto& a : args) add(a);
-        Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob"; return b; // Buf is mutable
+        Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob"; // Buf is mutable
+        if (b.hashKind == "Buf") identify(b);
+        return b;
     }
     if (inv.t == VT::Type && inv.s == "Pair" && m == "new") {
         Value key = Value::any(), val = Value::any();
@@ -7066,7 +7105,7 @@ void Interpreter::registerBuiltins() {
     // Q 64-bit, H hex digits, x a null byte. S/L/Q are native (little-endian here),
     // v/V little and n/N big. MIME::Base64's test suite builds UTF-16 input with it.
     B["pack"] = [](Interpreter&, ValueList& a) -> Value {
-        if (a.empty()) { Value b = Value::str(""); b.hashKind = "Buf"; return b; }
+        if (a.empty()) { Value b = Value::str(""); b.hashKind = "Buf"; return identify(b); }
         std::string tmpl = a[0].toStr();
         ValueList items;
         for (size_t i = 1; i < a.size(); i++)
@@ -7117,7 +7156,7 @@ void Interpreter::registerBuiltins() {
                 }
             }
         }
-        Value b = Value::str(out); b.hashKind = "Buf"; return b;
+        Value b = Value::str(out); b.hashKind = "Buf"; return identify(b);
     };
     // callframe($level) — the caller's frame $level steps up: its .file, the LINE
     // the call was written on, and .code (the routine it sits in, `<unit>` at
@@ -8236,7 +8275,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 char kind = n->op == O::WriteNum ? 'n' : (n->op == O::WriteInt ? 'i' : 'u');
                 if (lv) {
                     if (lv->t != VT::Str) { lv->t = VT::Str; lv->s.clear(); }
-                    if (lv->hashKind.empty()) lv->hashKind = "Buf";
+                    if (lv->hashKind.empty()) { lv->hashKind = "Buf"; identify(*lv); }
                     nqpBufWrite(lv->s, off, val, nb, en, kind);
                 }
                 return val;
@@ -8607,7 +8646,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return nqpBufRead(v[0].s, I(1), nb, en, kind);
         }
         case O::Slice: { // nqp::slice(buf, from, to) — inclusive byte range → Buf
-            Value out = Value::str(""); out.hashKind = "Buf";
+            Value out = Value::str(""); out.hashKind = "Buf"; identify(out);
             if (!v.empty() && v[0].t == VT::Str) {
                 long long from = I(1), to = I(2), len = (long long)v[0].s.size();
                 if (from < 0) from = 0;

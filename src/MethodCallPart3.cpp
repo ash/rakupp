@@ -1163,7 +1163,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (pos > (long long)all.size()) pos = all.size();
             long long take = std::min(want, (long long)all.size() - pos);
             Value b = Value::str(all.substr((size_t)pos, (size_t)take));
-            b.hashKind = "Buf";
+            b.hashKind = "Buf"; identify(b);
             (*inv.hash)["bpos"] = Value::integer(pos + take);
             return b;
         }
@@ -1356,7 +1356,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (from < 0) from += n;
         if (from < 0) from = 0; if (from > n) from = n;
         if (len < 0) len = 0; if (from + len > n) len = n - from;
-        Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind; return b;
+        Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind;
+        if (b.hashKind == "Buf") identify(b); // a subbuf is a NEW Buf, not a view
+        return b;
     }
     // `.unpack(TEMPLATE)` — the subset the documentation exercises. "C*" is every
     // byte as an integer; a count is a repeat, `*` is "all that remain".

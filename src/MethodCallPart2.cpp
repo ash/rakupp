@@ -1037,7 +1037,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             double sec = sit != inv.hash->end() ? sit->second.toNum() : 0.0;
             long long ep = civilToDays(fld("year"), fld("month"), fld("day")) * 86400 +
                            fld("hour") * 3600 + fld("minute") * 60 - fld("timezone");
-            Value v = Value::number((double)ep + sec); v.hashKind = "Instant"; return v;
+            Value v = Value::number((double)ep + sec); v.hashKind = "Instant"; return identify(v);
         }
         if ((m == "timezone" || m == "offset") && inv.hashKind == "DateTime") return Value::integer(fld("timezone"));
         if ((m == "in-timezone" || m == "utc" || m == "local") && inv.hashKind == "DateTime") {
@@ -2383,7 +2383,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool p = gilPark(); ssize_t n = ::recv(fd, buf.data(), buf.size(), 0); gilUnpark(p);
             if (n < 0) return Value::nil();
             Value r = Value::str(std::string(buf.data(), (size_t)n)); // n==0 => "" (peer closed)
-            if (bin) r.hashKind = "Buf";
+            if (bin) { r.hashKind = "Buf"; identify(r); }
             return r;
         }
         if (m == "print" || m == "write" || m == "send" || m == "put") {

@@ -271,6 +271,25 @@ struct Value {
     }
 };
 
+// Buf, Instant and Duration are REFERENCE types in Rakudo — two of them are the
+// same one only when they are the same object — but here they are plain tagged
+// scalars: a Buf is a Str with hashKind="Buf", an Instant/Duration a Num. With
+// no address to compare, `===` fell through to comparing the RENDERING and
+// called two independently built buffers identical. That is the same trap that
+// made `@!outstanding-writes .= grep({ $_ !=== $p })` unemptiable for Promises,
+// and worse here, because a Buf is mutable: dropping one from a list by
+// `!=== $buf` threw away every buffer that happened to hold the same bytes.
+//
+// So each freshly built one stamps a token into `ext` — unused by Str and Num,
+// and carried along by a plain Value copy, which is exactly what "the same
+// object" means for these. `whichOf` reads it; `===` compares that.
+// Blob stays out: it is immutable and compares by value in Rakudo too.
+inline bool identityScalar(const Value& v) {
+    return (v.t == VT::Str && v.hashKind == "Buf") ||
+           (v.t == VT::Num && (v.hashKind == "Instant" || v.hashKind == "Duration"));
+}
+inline Value& identify(Value& v) { v.ext = std::make_shared<char>(); return v; }
+
 bool valueEq(const Value& a, const Value& b);   // numeric/str smart equality
 int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
 std::string strSucc(const std::string& s);             // Raku magic string increment

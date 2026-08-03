@@ -936,6 +936,17 @@ public:
     static double toleranceDyn();
     static long long tzOffsetDyn(); // $*TZ resolution: user dynamic, else system offset
     double initInstant_ = 0; // process start time ($*INIT-INSTANT)
+    // $*INIT-INSTANT is ONE Instant read many times, and an Instant is a
+    // reference type — so every read has to hand back the SAME identity token,
+    // or `$*INIT-INSTANT === $*INIT-INSTANT` would be False. Both reader sites
+    // go through here.
+    std::shared_ptr<void> initInstantId_ = std::make_shared<char>();
+    Value initInstantVal() {
+        Value v = Value::number(initInstant_);
+        v.hashKind = "Instant";
+        v.ext = initInstantId_;
+        return v;
+    }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash, so attr writes persist)
 private:
     Value evalCall(Call* c);
