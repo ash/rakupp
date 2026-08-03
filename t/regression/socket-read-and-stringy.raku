@@ -60,4 +60,27 @@ sub ck($got, $want, $l) { unless $got eqv $want { say "FAIL: $l — {$got.raku} 
     $srv.close;
 }
 
+# 5. A statement prefix takes the WHOLE remaining expression — through `=`,
+#    through the comma list, and through the loose `and`/`or`. Stopping at the
+#    assignment level made `try EXPR or die MSG` parse as `(try EXPR) or die MSG`,
+#    so the die escaped the very `try` it was written inside. HTTP::Tiny
+#    validates an absent proxy with exactly that idiom and died on construction.
+{
+    my sub bad() { die 'inner' }
+
+    my $reached = False;
+    try bad() or $reached = True;
+    ck($reached, False, 'try swallows a trailing `or`');
+
+    ck((do 0 or 5), 5, 'and so does do');
+    ck((do 1, 2).List, (1, 2), 'a statement prefix takes the comma list');
+    ck([try bad(), 2].elems, 1, 'so the whole thing is ONE element');
+
+    # the assignment form still binds the way it did
+    my $v = try bad();
+    ck($v.defined, False, 'try of a dying call is undefined');
+    my $w = try 40 + 2;
+    ck($w, 42, 'and yields the value when nothing dies');
+}
+
 say $ok ?? 'PASS' !! 'FAIL';

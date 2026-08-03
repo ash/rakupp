@@ -3476,9 +3476,15 @@ ExprPtr Parser::parsePrimary() {
                     be->body.push_back(std::move(st));
                     u->operand = std::move(be);
                 } else {
-                    // statement prefixes take a whole expression incl. assignment:
-                    // `try target = values` is try(target = values), not (try target) = values
-                    u->operand = parseExpr(BP_ASSIGN);
+                    // A statement prefix takes the WHOLE remaining expression —
+                    // through `=`, through the comma list, and through the loose
+                    // `and`/`or`. Measured against Rakudo: `do 1, 2` is (1, 2),
+                    // `do 0 or 5` is 5, and `[try bad(), 2]` has ONE element.
+                    // Stopping at BP_ASSIGN made `try EXPR or die MSG` parse as
+                    // `(try EXPR) or die MSG`, so the die escaped the try it was
+                    // written inside — HTTP::Tiny validates an absent proxy with
+                    // exactly that idiom and died on every construction.
+                    u->operand = parseExpr(0);
                     // …and a trailing statement MODIFIER belongs to that expression:
                     // `do EXPR for LIST` collects one value per iteration, which is how
                     // JSON::Fast's test builds a list (`List.new(|do … for 10 ... 1)`).

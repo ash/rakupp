@@ -1284,3 +1284,37 @@ them is about the thing the module does.
 emitting TAP at all for the first time (7/9). The socket fixes did NOT move
 HTTP::Tiny, HTTP::UserAgent or the Cro pair — those fail on their own causes.
 `t/run.raku` 284/284; the regression file passes under Rakudo.
+
+### HTTP::Tiny: a statement prefix takes the whole expression — 2 -> 5 of 10
+
+41. **`try EXPR or die MSG` parsed as `(try EXPR) or die MSG`**, so the `die`
+    escaped the very `try` it was written inside. HTTP::Tiny validates a proxy
+    it may not have with exactly that idiom (`try $http-proxy.&split-url or die
+    "Invalid HTTP proxy: …"`), so **every** construction died.
+
+    Measured against Rakudo rather than reasoned about, because the answer is
+    less obvious than it looks: a statement prefix takes the WHOLE remaining
+    expression — `do 1, 2` is `(1, 2)`, `do 0 or 5` is `5`, and `[try bad(), 2]`
+    has ONE element. `do`, `gather`, `quietly` and `once` all behave the same, so
+    the fix is to the shared parse site rather than to `try`.
+
+HTTP::Tiny 2/10 -> 5/10, and Roast is unmoved (197,122 -> 197,121; the −1 is
+`S17-promise/in.t` and `S32-list/pick.t`, the timing and random files, against
+`S12-introspection/can.t` +1). Three files remain, on three separate causes:
+`.cando` on a Method, `.message` on Any, and a destructuring signature in a
+`while` pointy block (`while $c.receive -> ( :key($i), :value($res) )`) — that
+last one needs `WhileStmt` to carry a signature rather than a single name, which
+is a bigger change than it looks and is left for its own pass.
+
+**Battery: 34 of 59** (LWP::Simple over the line), 18 DIFF, 6 ENV, 1 without
+tests. The reachable ceiling is 52.
+
+### Housekeeping, worth knowing
+
+The machine had **133 unkillable `rakupp` processes** accumulated over several
+days, every one of them the same NativeCall probe
+(`sub strdup(int64) is native(Str) {*}; strdup(0)`), wedged in state `UE` —
+uninterruptible kernel wait, trying to exit. `kill -9` does not clear them; only
+a reboot will. Two things follow: a NativeCall call CAN wedge a process
+permanently, which is a bug worth reproducing on its own; and any timing
+measured on this machine while they sit there is suspect.
