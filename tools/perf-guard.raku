@@ -29,6 +29,39 @@ unless $RAKUPP.IO.x {
     note "Set RAKUPP=/path/to/rakupp (the default is <repo>/build/rakupp).";
     exit 2;
 }
+
+# …and a binary built for ANOTHER ARCHITECTURE runs under translation, which
+# costs a uniform 1.7-2x: every kernel goes over tolerance at once and none of it
+# says anything about the code. It is easy to hit — the default is
+# <repo>/build/rakupp, and a machine that also keeps a build-arm64/ can leave a
+# stale x86_64 binary at the default path. The gate reported a 70-100% regression
+# across the board that way while the arm64 build of the same commit measured 7%
+# FASTER than the baseline.
+sub host-arch(--> Str) {
+    return '' if $*DISTRO.is-win;
+    # hw.optional.arm64 is 1 on Apple Silicon even when the ASKING process is
+    # translated — `uname -m` is not, it reports the caller's own architecture.
+    my $s = run('sysctl', '-n', 'hw.optional.arm64', :out, :err);
+    my $v = $s.out.slurp(:close).trim; $s.err.slurp(:close);
+    return 'arm64' if $v eq '1';
+    my $u = run('uname', '-m', :out, :err);
+    my $m = $u.out.slurp(:close).trim; $u.err.slurp(:close);
+    $m
+}
+{
+    my $f = run('file', '-b', $RAKUPP, :out, :err);
+    my $desc = $f.out.slurp(:close); $f.err.slurp(:close);
+    my $bin = $desc.contains('arm64') ?? 'arm64'
+           !! $desc.contains('x86_64') ?? 'x86_64' !! '';
+    my $host = host-arch();
+    if $bin && $host && $bin ne $host {
+        note "perf-guard INCONCLUSIVE — $RAKUPP is $bin on a $host host.";
+        note "It would be measured under translation, which costs 1.7-2x uniformly";
+        note "and makes every kernel look like a regression.";
+        note "Build for this machine, or point RAKUPP at the $host binary.";
+        exit 2;
+    }
+}
 my $RUNS   = 4;   # 1 warm-up (discarded) + 3 measured
 
 my %kernels =
