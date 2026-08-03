@@ -511,14 +511,25 @@ static void wrapNative(Value& v, int bits, bool sign, bool isFloat = false) {
         v.natBits = bits; v.natFloat = true;
         return;
     }
-    long long x = v.toInt();
+    // A value wider than a long long must keep its LOW bits here, not saturate —
+    // that is what a native container means. toInt() saturates on purpose for its
+    // own callers, so go to the magnitude directly when there is one.
+    unsigned long long u = (v.t == VT::Int && v.big) ? v.big->toU64Wrap()
+                                                     : (unsigned long long)v.toInt();
+    long long x;
     if (bits < 64) {
         unsigned long long mask = (1ULL << bits) - 1;
-        unsigned long long u = (unsigned long long)x & mask;
+        u &= mask;
         if (sign && (u & (1ULL << (bits - 1)))) x = (long long)u - (long long)(1ULL << bits);
         else x = (long long)u;
+        v = Value::integer(x);
     }
-    v = Value::integer(x);
+    else if (!sign && (u >> 63)) {
+        // an unsigned 64-bit value above 2^63-1 does not fit a long long: keep it
+        // exact as a bigint rather than handing back a negative
+        v = Value::bigint(BigInt::fromString(std::to_string(u)));
+    }
+    else v = Value::integer((long long)u);
     v.natBits = bits; v.natSigned = sign;
 }
 
@@ -9760,7 +9771,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value v = (vi < vals.size()) ? vals[vi] : Value::any();
                 vi++;
                 if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
-                else { Value* lv = lvalue(tgt); *lv = v; }
+                else {
+                    Value* lv = lvalue(tgt);
+                    // A native container keeps its width across the store, exactly as
+                    // the scalar path does: `my uint32 ($a, $b) = …` has to wrap at 32
+                    // bits, and overwriting the Value outright threw the width away.
+                    int nb = lv->natBits; bool ns = lv->natSigned, nf = lv->natFloat;
+                    *lv = v;
+                    if (nb) wrapNative(*lv, nb, ns, nf);
+                }
             }
         };
         bind(lst, rhs);
@@ -9854,6 +9873,42 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 bp->s = bp->s.substr(0, b0) + rhs.toStr() + bp->s.substr(b1);
                 rwWriteThrough(invE);
                 return sink ? Value::any() : rhs;
+            }
+        }
+    }
+    // `$buf[i] = v` — a Buf is a PACKED byte string, so there is no Value to hand
+    // back as an lvalue and the generic index path replaced the whole buffer with
+    // an empty Array: the element width was lost, and with it the wraparound.
+    // Digest::SHA2 builds its message schedule as `(state buf32 $w)[$j] = …`, where
+    // every write is a sum that overflows 32 bits, so every SHA-256 digest was wrong.
+    if (a->op == "=" && a->target->kind == NK::Index) {
+        auto* idx = static_cast<Index*>(a->target.get());
+        if (!idx->isHash && !idx->multiDim && idx->adverb.empty()) {
+            Value* bp = nullptr;
+            try { bp = lvalue(idx->base.get(), /*asInvocant=*/true); } catch (...) { bp = nullptr; }
+            if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
+                if (bp->hashKind == "Blob")    // a Blob is immutable; only a Buf writes
+                    throw RakuError{Value::typeObj("X::Assignment::RO"),
+                        "Cannot modify an immutable Blob"};
+                int w = bp->blobElemSize();
+                Value kv = eval(idx->index.get());
+                if (kv.t == VT::Code && kv.code && kv.code->isWhateverCode) // $b[*-1] = v
+                    kv = callCallable(kv, ValueList{Value::integer(bp->blobElems())});
+                long long i = kv.toInt();
+                if (i < 0) i += bp->blobElems();
+                if (i < 0)
+                    throw RakuError{Value::typeObj("X::OutOfRange"),
+                        "Index out of range for " + bp->hashKind};
+                Value rhs = eval(a->value.get());
+                // writing past the end grows with zeroed elements, as Rakudo does
+                size_t need = (size_t)(i + 1) * w;
+                if (bp->s.size() < need) bp->s.resize(need, '\0');
+                unsigned long long x = (rhs.t == VT::Int && rhs.big)
+                    ? rhs.big->toU64Wrap() : (unsigned long long)rhs.toInt();
+                for (int k = 0; k < w; k++)               // little-endian, truncating
+                    bp->s[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
+                rwWriteThrough(idx->base.get());
+                return sink ? Value::any() : Value::integer(bp->blobWordAt(i));
             }
         }
     }
@@ -11735,11 +11790,19 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "~&" || op == "~|" || op == "~^") {
         std::string a = l.toStr(), b = r.toStr();
         // Blob/Buf extend rightwards for all three; plain Str ~& truncates to the shorter
-        bool bufish = (l.t == VT::Str && !l.hashKind.empty()) || (r.t == VT::Str && !r.hashKind.empty());
+        bool lBuf = (l.t == VT::Str && !l.hashKind.empty());
+        bool rBuf = (r.t == VT::Str && !r.hashKind.empty());
         auto combine = [&](unsigned long long x, unsigned long long y) {
             return op == "~&" ? (x & y) : op == "~|" ? (x | y) : (x ^ y);
         };
-        if (bufish) { // binary data: operate on BYTES, which is what a Buf is
+        // Rakudo refuses to mix a buffer with a string here, in either order: the
+        // operator is defined on bytes for one and on codepoints for the other,
+        // so there is no answer that is right for both.
+        if (lBuf != rBuf)
+            throw RakuError{Value::typeObj("X::Buf::AsStr"),
+                "Stringification of a " + (lBuf ? l.hashKind : r.hashKind) +
+                " is not done with 'Stringy', which the '" + op + "' operator uses"};
+        if (lBuf) { // binary data: operate on BYTES, which is what a Buf is
             std::string out;
             size_t n = std::max(a.size(), b.size());
             for (size_t k = 0; k < n; k++) {
@@ -11747,7 +11810,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 unsigned char cb = k < b.size() ? (unsigned char)b[k] : 0;
                 out += (char)combine(ca, cb);
             }
-            return Value::str(out);
+            // The result is a buffer, not a Str, and it takes the LEFT operand's
+            // exact type — `Blob ~^ Buf` is a Blob, `Buf ~^ Blob` a Buf, and
+            // `utf8 ~^ Buf` a utf8. Returning a bare Str made every use of these
+            // operators on binary data (Digest::HMAC's key padding, for one) hand
+            // the next stage something it could not treat as bytes.
+            Value v = Value::str(out);
+            v.hashKind = l.hashKind;
+            v.enumName = l.enumName;   // the Blob SUBTYPE lives here: utf8, utf16, Blob[uint8]
+            v.ofType   = l.ofType;
+            return v;
         }
         // A Str combines CODEPOINTS, as Rakudo does — not the UTF-8 bytes. Going
         // byte-wise agreed for ASCII and was wrong for everything else: it both
@@ -17885,6 +17957,19 @@ Value Interpreter::eval(Expr* e) {
         case NK::Index: return evalIndex(static_cast<Index*>(e));
         case NK::MethodCall: {
             auto* mc = static_cast<MethodCall*>(e);
+            // `state $x .= new` INITIALIZES ONCE, exactly as `state $x = …` does —
+            // every later evaluation is a no-op that answers the slot. Re-running it
+            // called the method on the value the previous run left behind, so
+            // `(state buf32 $w .= new)` became `Buf.new` on a Buf INSTANCE and the
+            // buffer turned into a Str on the second pass. Digest::SHA2 keeps its
+            // whole message schedule in one such buffer, inside a `reduce`, so
+            // everything after the sixteenth round of every SHA-256 was wrong.
+            if (mc->mutate && mc->inv && mc->inv->kind == NK::VarExpr) {
+                auto* ve = static_cast<VarExpr*>(mc->inv.get());
+                if (ve->declare && ve->declScope == "state" && tctx_.curStateEnv &&
+                    tctx_.curStateEnv->vars.count(ve->name))
+                    return tctx_.curStateEnv->vars[ve->name];
+            }
             // `.dynamic` asks about the VARIABLE, not its value. A `*` twigil makes a
             // container dynamic and the NAME carries that; `is dynamic` does the same
             // without a twigil, and is recorded per scope at declaration time.

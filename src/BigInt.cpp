@@ -175,6 +175,12 @@ long long BigInt::toLL() const {
     return sign < 0 ? -(long long)r : (long long)r; // r <= 2^63 here, so -(ll)r is well-defined at LLONG_MIN
 }
 
+unsigned long long BigInt::toU64Wrap() const {
+    unsigned long long r = 0;   // unsigned overflow is defined: this is value mod 2^64
+    for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (unsigned long long)BASE + mag[i];
+    return sign < 0 ? (unsigned long long)0 - r : r;
+}
+
 double BigInt::toDouble() const {
     double r = 0;
     for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (double)BASE + mag[i];

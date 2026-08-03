@@ -47,6 +47,12 @@ struct BigInt {
         return mag[0] <= 709551615u;
     }
     long long toLL() const;
+    // The low 64 bits, two's complement, WRAPPING rather than saturating. toLL()
+    // deliberately saturates because its callers are indices and codepoints, where
+    // a silent wrap is garbage; a native uint64/int64 container is the opposite
+    // case — it is defined to keep the low bits, and saturating there turned every
+    // 64-bit digest word into 0x7FFF_FFFF_FFFF_FFFF.
+    unsigned long long toU64Wrap() const;
     double toDouble() const;
     std::string toString() const;
 };

@@ -1090,3 +1090,55 @@ The `https` path is the one part with no test behind it:
 `IO::Socket::Async::SSL` is not installed on either engine here, so the client
 `require`s it on demand and throws a clear transport error when it is absent,
 instead of failing to load at all.
+
+## 2026-08-03 — Digest, and seven fixes behind one wrong hash
+
+`Digest::HMAC` builds every HMAC out of `Blob ~^ Blob`, and `Digest::SHA2` keeps
+its whole SHA-256 message schedule in a `state buf32` inside a `reduce`. Between
+them they were sitting on seven separate interpreter bugs, none of which is
+about hashing. Found by triage rather than by reading: `tier2/triage.raku` in
+the battery runs every test file under both engines and clusters the failures by
+the FIRST thing rakupp said, so one cause showing up in several distributions is
+visible immediately.
+
+23. **`Buf ~^ Buf` answered a `Str`.** The bytes were already right — the earlier
+    note in this file said "and gets the wrong bytes", which was wrong. Only the
+    TYPE was lost, and that was enough: the padded key went into the hash
+    function as a string. The result now carries the LEFT operand's exact type
+    (`Blob ~^ Buf` is a Blob, `utf8 ~^ Buf` a utf8, kept in `enumName`), and
+    mixing a buffer with a string throws, as Rakudo does in either order.
+24. **A type before the parenthesis did not reach the variables.**
+    `my uint32 ($T1, $T2)` kept only a per-item type, so the list form declared
+    untyped scalars — `my Int ($a, $b)` too. Rakudo also refuses a per-item type
+    when the list already has one; we accept it, which is laxer and left alone.
+25. **List assignment discarded the native width**, overwriting the container
+    instead of storing through it, so even a correctly-typed `my uint32 ($a, $b)
+    = …` did not wrap.
+26. **`$buf[i] = v` replaced the whole buffer with an Array.** A Buf is a packed
+    byte string, so there is no element `Value*` to hand back as an lvalue and
+    the generic index path simply overwrote it. Handled in the assignment path
+    now, beside `subbuf-rw`: little-endian, truncating to the element width,
+    growing with zeroes, and refusing a Blob because a Blob is immutable.
+27. **`state $x .= new` re-initialized on every execution.** This is the one that
+    made SHA-256 wrong. `state $x = …` was already once-only; `.=` was not, so
+    each pass called `.new` on the value the previous pass had left, and
+    `(state buf32 $w .= new)` became a plain `Str` on the second iteration. Every
+    digest was correct for fifteen rounds and wrong from the sixteenth — the
+    first round that reads the schedule back.
+28. **Radix literals wider than a long long saturated.** `0xFFFF_FFFF_FFFF_FFFF`
+    parsed as 9223372036854775807. The decimal path already promoted to bigint;
+    hex, binary and octal went through `strtoll` and clamped.
+29. **`:16("FFFFFFFFFFFFFFFF")` answered −1**, accumulating in a `long long`.
+    Now a bigint, like the `:16<…>` angle form beside it always was.
+
+**SHA-256 is byte-identical to Rakudo.** `Digest::HMAC` passes its own suite.
+Roast 197,060 → 197,074 with no file losing anything, and every gain in the
+affected area: S02-types/signed-unsigned-native.t +6, my-6c.t +3, buf.t,
+bit.t and native.t +1 each. `t/run.raku` 281/281, pinned in
+`t/regression/digest-native-widths-cluster.raku` (which passes under Rakudo).
+
+**Still open, and next:** SHA-512 is wrong. It no longer saturates, so what is
+left is narrower — the 64-bit path through `blob64` and the untyped `rotr` in
+that half of the module. Also noticed and NOT fixed: rakupp reports `Buf` where
+Rakudo reports `Buf[uint32]`, and Rakudo answers the UNTRUNCATED value from
+`$buf[i] = v` while storing the truncated one. Neither affects a digest.

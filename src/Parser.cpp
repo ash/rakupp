@@ -1861,7 +1861,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             }
             if (!isKind(Tok::Var)) error("expected variable in declaration");
             auto ve = std::make_unique<VarExpr>(advance().text);
-            ve->declare = true; ve->declScope = scope; ve->declType = t2;
+            ve->declare = true; ve->declScope = scope;
+            // A type written BEFORE the parenthesis applies to every variable in
+            // the list — `my Int ($a, $b)` declares two Int, and `my uint32
+            // ($a, $b)` two 32-bit natives that wrap on assignment. Only the
+            // per-item type was being kept, so the list form silently declared
+            // untyped scalars: Digest::SHA2's `my uint32 ($T1, $T2) = …` never
+            // truncated, and every SHA-256 digest came out wrong.
+            ve->declType = t2.empty() ? type : t2;
             if (isIdent("where")) { advance(); parseExpr(BP_COMMA + 1); } // constraint parsed, not yet enforced here
             if (isOp("=") ) { // per-item initializer: `my Int:D ($x = 5)`
                 advance();
@@ -2499,6 +2506,41 @@ ExprPtr Parser::parsePrimary() {
             e->raw = bare;
             if (bare.size() > 18 && bare.find_first_not_of("0123456789") == std::string::npos) {
                 try { (void)std::stoll(bare); } catch (...) { e->big = bare; }
+            }
+            // A RADIX literal wide enough to overflow a long long: the lexer's
+            // strtoll saturated it, so `0xFFFF_FFFF_FFFF_FFFF` came out as
+            // 9223372036854775807. Recompute it exactly, in decimal, the way an
+            // over-long decimal literal is already handled just above — SHA-512's
+            // constants are 64-bit and every one of them was being clamped.
+            else if (bare.size() > 2 && bare[0] == '0' &&
+                     (bare[1] == 'x' || bare[1] == 'X' || bare[1] == 'b' || bare[1] == 'B' ||
+                      bare[1] == 'o' || bare[1] == 'O' || bare[1] == 'd' || bare[1] == 'D')) {
+                int b = (bare[1] == 'x' || bare[1] == 'X') ? 16
+                      : (bare[1] == 'b' || bare[1] == 'B') ? 2
+                      : (bare[1] == 'o' || bare[1] == 'O') ? 8 : 10;
+                std::string dec = "0";
+                auto mulAdd = [](const std::string& n, int m, int add) { // decimal long multiply
+                    std::string r; int carry = add;
+                    for (int i = (int)n.size() - 1; i >= 0; i--) {
+                        int p = (n[i] - '0') * m + carry;
+                        r += (char)('0' + p % 10); carry = p / 10;
+                    }
+                    while (carry) { r += (char)('0' + carry % 10); carry /= 10; }
+                    while (r.size() > 1 && r.back() == '0') r.pop_back();
+                    std::reverse(r.begin(), r.end());
+                    return r.empty() ? std::string("0") : r;
+                };
+                bool ok = true;
+                for (size_t i = 2; i < bare.size() && ok; i++) {
+                    int d = std::isdigit((unsigned char)bare[i]) ? bare[i] - '0'
+                          : std::isalpha((unsigned char)bare[i])
+                              ? std::tolower((unsigned char)bare[i]) - 'a' + 10 : -1;
+                    if (d < 0 || d >= b) ok = false; else dec = mulAdd(dec, b, d);
+                }
+                if (ok) {
+                    try { e->v = std::stoll(dec); }
+                    catch (...) { e->big = dec; }
+                }
             }
             return e;
         }

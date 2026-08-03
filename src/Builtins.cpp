@@ -3751,7 +3751,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if ((v.t == VT::Array || v.t == VT::Range) && !(v.t == VT::Array && !v.arr)) { for (auto& e : v.flatten()) add(e); }
             else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) bytes += v.s; // copy an existing buffer's bytes
             else {
-                unsigned long long x = (unsigned long long)v.toInt();
+                // low bits, not a saturated toInt(): a 64-bit word above 2^63-1 is
+                // ordinary in a blob64 (SHA-512's constants are full of them)
+                unsigned long long x = (v.t == VT::Int && v.big)
+                    ? v.big->toU64Wrap() : (unsigned long long)v.toInt();
                 for (int k = 0; k < w; k++) bytes += (char)(unsigned char)((x >> (8 * k)) & 0xFF);
             }
         };
@@ -7241,7 +7244,9 @@ void Interpreter::registerBuiltins() {
                 "Cannot convert string to number: " + why + " in ':" + std::to_string(base) +
                 "<" + s + ">'"};
         };
-        long long val = 0, den = 0; // den = digits after the radix point (0 = none yet)
+        // BigInt throughout: a long long silently overflowed, so
+        // `:16("FFFFFFFFFFFFFFFF")` answered -1 rather than 18446744073709551615
+        BigInt val(0), den(0), bb((long long)base);   // den = 0 until a radix point is met
         bool any = false;
         for (size_t i = 0; i < s.size(); i++) {
             char c = s[i];
@@ -7250,21 +7255,21 @@ void Interpreter::registerBuiltins() {
                 continue;
             }
             if (c == '.') {
-                if (den) return bad("more than one radix point");
-                den = 1; continue;
+                if (!den.isZero()) return bad("more than one radix point");
+                den = BigInt(1); continue;
             }
             int d = (c >= '0' && c <= '9') ? c - '0'
                   : (c >= 'a' && c <= 'z') ? c - 'a' + 10
                   : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : -1;
             if (d < 0 || d >= base)
                 return bad("base-" + std::to_string(base) + " number must begin with valid digits or '.'");
-            val = val * base + d;
-            if (den) den *= base;
+            val = val * bb + BigInt(d);
+            if (!den.isZero()) den = den * bb;
             any = true;
         }
         if (!any) return bad("base-" + std::to_string(base) + " number must begin with valid digits or '.'");
-        if (den > 1) return Value::rat(BigInt(val), BigInt(den));
-        return Value::integer(val);
+        if (!den.isZero() && BigInt::cmp(den, BigInt(1)) > 0) return Value::rat(val, den);
+        return Value::bigint(val);
     };
     // split(SEP, STR, …) is the sub form of STR.split(SEP, …)
     B["split"] = [](Interpreter& I, ValueList& a) -> Value {
