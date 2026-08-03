@@ -1151,9 +1151,31 @@ Two more came out of the 64-bit half straight after:
 
 **SHA-224 joined SHA-256** in matching Rakudo byte for byte.
 
-**Still open, and next:** SHA-512 and SHA-384 are still wrong, though the output
-is now a plausible digest rather than saturated garbage, so what is left is one
-more bug in the 64-bit half — `blob64`-typed reduce parameters and the untyped
-`rotr` in that half of the module are where to look. Also noticed and NOT fixed: rakupp reports `Buf` where
+Chasing SHA-512 further turned up two more, both in argument passing rather than
+in arithmetic, and both found the same way — instrument the real module, print
+what the block actually contains:
+
+32. **`|$x` slipped one level too deep when the value was itemized.** A list held
+    in a scalar is itemized by definition, and the one-level splice excluded that
+    case, falling through to a RECURSIVE `flatten()`. So
+    `my $s = ((1,2),(3,4)); ("A", |$s)` gave five elements where Rakudo gives
+    three.
+33. **`reduce` deep-flattened every argument** instead of following the one-arg
+    rule. Measured against Rakudo: a SINGLE Positional argument spreads
+    (`reduce &f, @a`, `reduce &f, 1..4`), several arguments are taken as they are
+    (`reduce &f, "I", (1,2), (3,4)` folds over three items, two of them Lists).
+    Together these two are why `$block[$t]` was undefined for every `t` but 0 —
+    the 16-word block reached the fold as sixteen separate values.
+
+Both verified directly against Rakudo, and Roast-neutral: 197,076 -> 197,079 and
+633 -> 634 files, where the whole delta is `S17-channel/stress.t` recovering
+from a timeout and the two known random files (`S17-supply/lines.t`,
+`integration/advent2012-day13.t`, whose "weighted roll" test flaps on its own).
+
+**Still open:** SHA-512 and SHA-384 remain wrong. The digest changed again with
+these two fixes, so the block now arrives intact and something further in is
+still off — the `blob64`-typed `reduce` parameter and the untyped `rotr` in that
+half of the module are the next places to look. SHA-256 and SHA-224 stay
+byte-identical throughout. Also noticed and NOT fixed: rakupp reports `Buf` where
 Rakudo reports `Buf[uint32]`, and Rakudo answers the UNTRUNCATED value from
 `$buf[i] = v` while storing the truncated one. Neither affects a digest.

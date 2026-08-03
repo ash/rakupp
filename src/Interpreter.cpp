@@ -17811,10 +17811,17 @@ Value Interpreter::eval(Expr* e) {
                     // splice the ELEMENTS as-is: flatten() would recurse into them,
                     // dropping an element that is itself an empty list
                     // (`my @b = (), 1; (|@b, 2)` must stay 3 elements).
-                    if (v.t == VT::Array && v.arr && !v.itemized) {
+                    //
+                    // Itemization does NOT change that. A list held in a scalar is
+                    // itemized by definition, and excluding it here sent
+                    // `my $s = ((1,2),(3,4)); ("A", |$s)` through the recursive
+                    // flatten instead — five elements where Rakudo gives three, and
+                    // the reason Digest::SHA2 saw its 16-word block arrive as
+                    // sixteen separate arguments.
+                    if (v.t == VT::Array && v.arr) {
                         for (auto& x : *v.arr) items.push_back(x); continue;
                     }
-                    if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
+                    if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); continue; }
                     // |%hash (or a Hash-valued expr like `|$<authority>.ast`)
                     // slips its PAIRS — Cro builds `%parts = scheme => …, |$<hier-part>.ast`
                     if (v.t == VT::Hash && v.hash &&

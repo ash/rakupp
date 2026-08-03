@@ -104,6 +104,35 @@ sub ck($got, $want, $l) { unless $got eqv $want { say "FAIL: $l — {$got.raku} 
     ck(1234.polymod(10 xx *).List, (4, 3, 2, 1), 'and the lazy-divisor form');
 }
 
+# 9. `|$x` slips ONE level, whatever the itemization. A list held in a scalar is
+#    itemized by definition, and that case was falling through to a RECURSIVE
+#    flatten — so a list of lists lost its structure the moment it was slipped.
+{
+    my $s = ((1, 2), (3, 4));
+    ck(("A", |$s).map(*.^name).List, ('Str', 'List', 'List'), 'a slipped scalar keeps its sublists');
+    my $r = (1, 2, 3, 4).rotor(2);
+    ck(("A", |$r).elems, 3, 'and so does a Seq');
+    my @b = (), 1;
+    ck((|@b, 2).elems, 3, 'an empty sublist still survives the slip');
+    ck((1, |(2, 3), 4).elems, 4, 'a literal slip is unchanged');
+}
+
+# 10. `reduce` follows the ONE-ARG RULE. It deep-flattened every argument, so a
+#     list argument lost its own structure — which is how Digest::SHA2's 16-word
+#     block reached the fold as sixteen separate values.
+{
+    ck((reduce { $^a ~ '|' ~ $^b.^name }, 'I', (1, 2), (3, 4)), 'I|List|List',
+       'several arguments stay as they are');
+    ck((reduce { $^a ~ '|' ~ $^b.^name }, 'I', [1, 2], [3, 4]), 'I|Array|Array',
+       'including Arrays');
+    ck((reduce { $^a + $^b }, 1 .. 4), 10, 'a single Range spreads');
+    my @a = 1, 2, 3;
+    ck((reduce { $^a + $^b }, @a), 6, 'and a single Array');
+    my @n = (1, 2), (3, 4);
+    ck((reduce { $^a ~ '|' ~ $^b.^name }, 'I', |@n), 'I|List|List', 'a slipped list of lists');
+    ck((produce { $^a + $^b }, 1 .. 4).List, (1, 3, 6, 10), 'produce follows the same rule');
+}
+
 # The whole point: SHA-256 and SHA-224 through the ecosystem's own pure-Raku
 # Digest are byte-identical to Rakudo now, and `Digest::HMAC` passes its own
 # suite. SHA-512/384 are still wrong — one more 64-bit bug in that half.

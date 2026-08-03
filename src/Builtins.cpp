@@ -6687,8 +6687,18 @@ void Interpreter::registerBuiltins() {
                                                     : [] { Value o = Value::array(); o.isList = true; return o; }();
             Value f = a[0];
             ValueList items;
-            for (size_t i = 1; i < a.size(); i++)
-                for (auto& x : a[i].flatten()) items.push_back(x);
+            // The ONE-ARG RULE, as Rakudo has it: a single Positional argument
+            // spreads to its elements (`reduce &f, @a`, `reduce &f, 1..4`), and
+            // several arguments are taken as they are — `reduce &f, "I", (1,2),
+            // (3,4)` folds over three items, the last two being Lists. Deep
+            // `flatten()`ing every argument destroyed exactly that: Digest::SHA2's
+            // 16-word block arrived as sixteen separate values, so `$block[$t]`
+            // was undefined for every t but 0.
+            if (a.size() == 2 && (a[1].t == VT::Array || a[1].t == VT::Range)) {
+                if (a[1].t == VT::Array && a[1].arr) for (auto& x : *a[1].arr) items.push_back(x);
+                else items = a[1].flatten();
+            }
+            else for (size_t i = 1; i < a.size(); i++) items.push_back(a[i]);
             Value list = Value::array(items); list.isList = true;
             ValueList ma{f};
             return I.methodCall(list, rname, ma);
