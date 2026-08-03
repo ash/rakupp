@@ -441,11 +441,13 @@ void Lexer::skipWhitespaceAndComments() {
                 for (;;) {
                     if (int w = uwsAt(0)) { for (int k = 0; k < w; k++) advance(); continue; }
                     if (embCommentAt(0)) {
+                        const int startLine = line_;
                         advance(); advance(); // # `
                         char ob = peek(), cb = ob == '(' ? ')' : ob == '[' ? ']' : '}';
                         int d = 0;
                         do { if (peek() == ob) d++; else if (peek() == cb) d--; advance(); }
                         while (d > 0 && !eof());
+                        if (d > 0) runawayTerm(std::string(1, cb), std::string(1, ob), startLine);
                         continue;
                     }
                     break;
@@ -464,6 +466,7 @@ void Lexer::skipWhitespaceAndComments() {
             if ((peek(1) == '`' || peek(1) == '|' || peek(1) == '=') &&
                 (peek(2) == '(' || peek(2) == '[' || peek(2) == '{' || peek(2) == '<')) {
                 char open = peek(2), close = open == '(' ? ')' : open == '[' ? ']' : open == '{' ? '}' : '>';
+                const int startLine = line_;
                 advance(); advance(); advance(); // # ` open
                 int d = 1;
                 while (!eof() && d > 0) {
@@ -471,6 +474,7 @@ void Lexer::skipWhitespaceAndComments() {
                     if (ch == open) d++;
                     else if (ch == close) d--;
                 }
+                if (d > 0) runawayTerm(std::string(1, close), std::string(1, open), startLine);
                 continue;
             }
             if (peek(1) == '|') { // leading declarator pod `#| text` — record by line
@@ -520,9 +524,11 @@ void Lexer::skipWhitespaceAndComments() {
                                      "X::Syntax::Pod::BeginWithoutIdentifier",
                                      {{"line", std::to_string(line_)}, {"filename", "EVAL_0"}});
                 bool capture = (name == "pod"); // collect pod block content for `$=pod` / --doc
+                const int beginLine = line_;
                 size_t contentStart = eof() ? pos_ : pos_ + 1; // just after this line's newline
                 // skip until the matching =end <name> (nested =begin/=end of other names are skipped over)
                 int depth = 0; // nested =begin of the SAME name — Date::Names nests =begin comment
+                bool ended = false;
                 for (;;) {
                     if (eof()) break;
                     if (col_ == 1 && (peek() == ' ' || peek() == '\t')) {
@@ -546,6 +552,7 @@ void Lexer::skipWhitespaceAndComments() {
                                 else { // matching close of OUR block
                                     if (capture) podData_ += renderPod(src_.substr(contentStart, s2 - contentStart));
                                     while (!eof() && peek() != '\n') advance();
+                                    ended = true;
                                     break;
                                 }
                             }
@@ -556,6 +563,9 @@ void Lexer::skipWhitespaceAndComments() {
                     while (!eof() && peek() != '\n') advance();
                     if (!eof()) advance();
                 }
+                if (!ended) // the block swallowed the rest of the file
+                    throw ParseError("Expected \"=end " + name + "\" to terminate \"=begin " +
+                                     name + "\"; found end of file instead.", beginLine, true);
                 continue;
             } else if (word == "finish") {
                 // rest of file (after this line) is the $=finish data block
@@ -760,7 +770,21 @@ Token Lexer::lexNumber() {
     return t;
 }
 
+void Lexer::runawayQuote(const char* construct, const char* finalDelim, int startLine) const {
+    throw ParseError("Unable to parse expression in " + std::string(construct) +
+                         "; couldn't find final " + finalDelim +
+                         " (corresponding starter was at line " + std::to_string(startLine) + ")",
+                     line_, true);
+}
+
+void Lexer::runawayTerm(const std::string& close, const std::string& open, int startLine) const {
+    throw ParseError("Couldn't find terminator " + close + " (corresponding " + open +
+                         " was at line " + std::to_string(startLine) + ")",
+                     line_, true);
+}
+
 Token Lexer::lexQuoted(char quote) {
+    const int startLine = line_;
     advance(); // opening quote
     std::string raw;
     // A single-quoted string is normally a plain StrLit. The `\qq[…]` (and `\q[…]`)
@@ -839,7 +863,10 @@ Token Lexer::lexQuoted(char quote) {
             litAppend(c);
         }
     }
-    if (!eof()) advance(); // closing quote
+    if (eof()) // no closer before end of input — the literal never ended
+        runawayQuote(quote == '\'' ? "single quotes" : "double quotes",
+                     quote == '\'' ? "\"'\"" : "'\"'", startLine);
+    advance(); // closing quote
     return make((quote == '\'' && !sqInterp) ? Tok::StrLit : Tok::StrInterp, raw);
 }
 
@@ -913,7 +940,13 @@ bool Lexer::tryQuoteForm(Token& out) {
                 uint32_t cp = (unsigned char)D[0] & (0xFF >> (dlen + 1));
                 for (int k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)D[k] & 0x3F);
                 if (uniGeneralCategory(cp) == "Ps" || cp == 0x301D) {
-                    uint32_t cc = cp + 1;
+                    // The closer is the MIRRORED glyph, not blindly cp+1: the tick
+                    // brackets cross over (⦍ U+298D closes with ⦐ U+2990, ⦏ U+298F
+                    // with ⦎ U+298E), and cp+1 picked the other pair's closer — the
+                    // scan then ran to end of input. U+301D 〝 has no mirror; its
+                    // closer really is cp+1.
+                    int32_t mir = uniBidiMirror(cp);
+                    uint32_t cc = mir >= 0 ? (uint32_t)mir : cp + 1;
                     DC.clear();
                     if (cc < 0x800) { DC += (char)(0xC0 | (cc >> 6)); DC += (char)(0x80 | (cc & 0x3F)); }
                     else if (cc < 0x10000) { DC += (char)(0xE0 | (cc >> 12)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
@@ -921,6 +954,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                 }
             }
             while (pos_ < p) advance();
+            const int startLine = line_;
             for (int k = 0; k < dlen; k++) advance(); // opening delimiter
             std::string raw;
             while (!eof() && src_.compare(pos_, dlen, DC) != 0) {
@@ -932,7 +966,8 @@ bool Lexer::tryQuoteForm(Token& out) {
                 }
                 raw += advance();
             }
-            if (!eof()) for (int k = 0; k < dlen; k++) advance(); // closing delimiter
+            if (eof()) runawayTerm(DC, D, startLine);
+            for (int k = 0; k < dlen; k++) advance(); // closing delimiter
             bool interp = (w == "qq");
             std::string feats = interp ? "sahfcb" : "";
             bool anyFeat = false;
@@ -960,20 +995,27 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (!isRegex && !isSubst && !isTrans && !isWords &&
         p + 1 < src_.size() && (unsigned char)src_[p] == 0xC2 && (unsigned char)src_[p + 1] == 0xAB) {
         while (pos_ < p) advance(); // consume the keyword (+ adverbs/whitespace)
+        const int startLine = line_;
         int opens = 0;
         while ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xAB) { advance(); advance(); opens++; }
         std::string raw;
+        bool closed = false;
         while (!eof()) {
             if ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
                 int closes = 0;
                 while (closes < opens && (unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
                     advance(); advance(); closes++;
                 }
-                if (closes == opens) break;                          // matched full run: done
+                if (closes == opens) { closed = true; break; }       // matched full run: done
                 for (int k = 0; k < closes; k++) raw += "\xC2\xBB"; // shorter run is content
                 continue;
             }
             raw += advance();
+        }
+        if (!closed) { // `Q««…` needs an equally long `»»` run, so name the whole run
+            std::string o, c;
+            for (int k = 0; k < opens; k++) { o += "\xC2\xAB"; c += "\xC2\xBB"; }
+            runawayTerm(c, o, startLine);
         }
         out = make(w == "qq" ? Tok::StrInterp : Tok::StrLit, raw);
         return true;
@@ -1032,9 +1074,13 @@ bool Lexer::tryQuoteForm(Token& out) {
     // Perl-5 regex mode (rx:P5/…/) uses Perl bracket semantics where `[` does not
     // nest like Raku char classes, so don't shield the delimiter inside `[ ]` there.
     bool p5 = adverbs.find("P5") != std::string::npos || adverbs.find("Perl5") != std::string::npos;
-    auto readPart = [&](bool quoteAware, bool blocks) -> std::string {
+    int startLine = line_; // set again below, once the opening delimiter is consumed
+    // `isRepl` marks the SECOND half of s/pat/repl/ — Rakudo names that part
+    // rather than reporting a plain missing terminator.
+    auto readPart = [&](bool quoteAware, bool blocks, bool isRepl = false) -> std::string {
         std::string raw;
         int depth = 1;
+        bool closed = false;
         char q = 0;
         int bd = 0; // { } embedded-code-block nesting
         int sd = 0; // [ ] nesting: a char class <-[/]> / group shields the delimiter
@@ -1061,12 +1107,19 @@ bool Lexer::tryQuoteForm(Token& out) {
             if (quoteAware && !p5 && ch == '[') { sd++; raw += advance(); continue; }
             if (quoteAware && !p5 && ch == ']' && sd > 0) { sd--; raw += advance(); continue; }
             if (sd == 0 && bracket && ch == d) { depth++; raw += advance(); continue; }
-            if (sd == 0 && ch == close) { depth--; if (depth == 0) { advance(); break; } raw += advance(); continue; }
+            if (sd == 0 && ch == close) { depth--; if (depth == 0) { advance(); closed = true; break; } raw += advance(); continue; }
             raw += advance();
+        }
+        if (!closed) {
+            if (isRepl)
+                throw ParseError(std::string("Malformed replacement part; couldn't find final ") + close,
+                                 line_, true);
+            runawayTerm(std::string(1, close), std::string(1, d), startLine);
         }
         return raw;
     };
     while (pos_ < p) advance(); // consume keyword + adverbs
+    startLine = line_;
     advance();                  // opening delimiter
     // repeated bracket delimiters: q{{ … }} / q[[[ … ]]] — only an equally long
     // run of closers ends the quote; shorter runs are literal content
@@ -1075,6 +1128,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     std::string raw;
     if (reps > 1) {
         int rdepth = 1;
+        bool closed = false;
         while (!eof()) {
             char ch = peek();
             if (ch == d) {
@@ -1085,13 +1139,15 @@ bool Lexer::tryQuoteForm(Token& out) {
                 int run = 0; while (peek(run) == close) run++;
                 if (run >= reps) {
                     for (int k = 0; k < reps; k++) advance();
-                    if (--rdepth == 0) break;
+                    if (--rdepth == 0) { closed = true; break; }
                     for (int k = 0; k < reps; k++) raw += close;
                     continue;
                 }
             }
             raw += advance();
         }
+        if (!closed) // `q[[ … ` — only a run of `reps` closers ends it
+            runawayTerm(std::string(reps, close), std::string(reps, d), startLine);
     }
     else raw = readPart(patQuoteAware, codeBlocks);
     if (isExec) { // qx = literal command, qqx = interpolated command
@@ -1139,12 +1195,17 @@ bool Lexer::tryQuoteForm(Token& out) {
             while (!eof() && std::isspace((unsigned char)peek())) advance();
             std::string rhs; bool wasStr = false; char rq = peek();
             if (rq == '"' || rq == '\'') {
-                wasStr = true; advance(); // opening quote
+                wasStr = true;
+                const int rqLine = line_;
+                advance(); // opening quote
                 while (!eof() && peek() != rq) {
                     if (peek() == '\\') { rhs += advance(); if (!eof()) rhs += advance(); }
                     else rhs += advance();
                 }
-                if (peek() == rq) advance(); // closing quote
+                if (eof())
+                    runawayQuote(rq == '\'' ? "single quotes" : "double quotes",
+                                 rq == '\'' ? "\"'\"" : "'\"'", rqLine);
+                advance(); // closing quote
             } else {
                 // capture the RHS expression up to a statement/argument boundary
                 int pd = 0, bd = 0, brd = 0;
@@ -1170,9 +1231,10 @@ bool Lexer::tryQuoteForm(Token& out) {
             }
         } else if (bracket) { // s[..][..] / tr[..][..] : skip ws, expect a fresh bracket pair
             while (!eof() && std::isspace((unsigned char)peek())) advance();
+            startLine = line_; // the replacement's own opener is what a runaway names
             if (peek() == d) { advance(); repl = readPart(false, !isTrans); }
         } else {
-            repl = readPart(false, !isTrans); // replacement (tr: raw, not brace-aware)
+            repl = readPart(false, !isTrans, /*isRepl=*/true); // replacement (tr: raw, not brace-aware)
         }
         // tr/y: tag the pattern with a sentinel so the interpreter transliterates
         out = make(Tok::SubstLit, (isTrans ? std::string("\x01") : std::string()) + adverbs + raw);
@@ -1929,11 +1991,13 @@ std::vector<Token> Lexer::tokenize() {
         const bool inAngle = angleWords_ > 0;
         // corner-bracket literal quote ｢...｣ (U+FF62 .. U+FF63)
         if (!inAngle && (unsigned char)c == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA2) {
+            const int startLine = line_;
             advance(); advance(); advance(); // ｢
             std::string raw;
             while (!eof() && !((unsigned char)peek() == 0xEF && (unsigned char)peek(1) == 0xBD && (unsigned char)peek(2) == 0xA3))
                 raw += advance();
-            if (!eof()) { advance(); advance(); advance(); } // ｣
+            if (eof()) runawayTerm("\xEF\xBD\xA3", "\xEF\xBD\xA2", startLine);
+            advance(); advance(); advance(); // ｣
             Token ct = make(Tok::StrLit, raw);
             ct.spaceBefore = spaced;
             out.push_back(ct);
@@ -1944,6 +2008,7 @@ std::vector<Token> Lexer::tokenize() {
         if (!inAngle && (unsigned char)c == 0xE3 && (unsigned char)peek(1) == 0x80 &&
             ((unsigned char)peek(2) == 0x8C || (unsigned char)peek(2) == 0x8E)) {
             unsigned char ob = (unsigned char)peek(2), cb = ob + 1;
+            const int startLine = line_;
             advance(); advance(); advance(); // opener
             std::string raw;
             int cjkd = 1;
@@ -1955,7 +2020,9 @@ std::vector<Token> Lexer::tokenize() {
                 }
                 raw += advance();
             }
-            if (!eof()) { advance(); advance(); advance(); } // closer
+            if (eof())
+                runawayTerm(std::string("\xE3\x80") + (char)cb, std::string("\xE3\x80") + (char)ob, startLine);
+            advance(); advance(); advance(); // closer
             Token ct = make(Tok::StrLit, raw);
             ct.spaceBefore = spaced;
             out.push_back(ct);
@@ -1971,19 +2038,23 @@ std::vector<Token> Lexer::tokenize() {
             unsigned char closeB = (openB == 0x98 || openB == 0x9A || openB == 0x99) ? 0x99 : 0x9D;
             unsigned char closeB2 = (openB == 0x9E || openB == 0x9D) ? 0x9C  // low-9/Swedish double also close with open-curly
                                   : (openB == 0x9A || openB == 0x99) ? 0x98 : 0; // low-9/Swedish single likewise
+            const int startLine = line_;
             advance(); advance(); advance();
             std::string raw; int depth = 1;
+            bool closed = false;
             while (!eof()) {
                 if ((unsigned char)peek() == 0xE2 && (unsigned char)peek(1) == 0x80) {
                     unsigned char b2 = (unsigned char)peek(2);
                     if (b2 == closeB || (closeB2 && b2 == closeB2)) {
-                        if (--depth == 0) { advance(); advance(); advance(); break; }
+                        if (--depth == 0) { advance(); advance(); advance(); closed = true; break; }
                     }
                     else if (b2 == openB && (openB == 0x98 || openB == 0x9C)) depth++; // nested opener (curly pairs only)
                     raw += advance(); raw += advance(); raw += advance(); continue;
                 }
                 raw += advance();
             }
+            if (!closed)
+                runawayTerm(std::string("\xE2\x80") + (char)closeB, std::string("\xE2\x80") + (char)openB, startLine);
             Token qt = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
             qt.spaceBefore = spaced;
             out.push_back(qt);
@@ -2094,11 +2165,13 @@ std::vector<Token> Lexer::tokenize() {
                  !(peek(1) == ']' && !out.empty() &&
                    (out.back().kind == Tok::LBracket ||
                     (out.back().kind == Tok::Op && out.back().text == "\\")))) {
+            const int startLine = line_;
             advance(); // opening /
             std::string raw;
             char quote = 0;       // '...' / "..." protect an inner /
             int angle = 0, brack = 0; // <...> assertions/classes and [...] groups protect an inner /
             int brace = 0;            // {...} embedded code protects an inner / (e.g. `{ take $/.Str }`)
+            int capture = 0;          // open `<(` match-capture markers
             while (!eof()) {
                 char ch = peek();
                 if (ch == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
@@ -2115,9 +2188,12 @@ std::vector<Token> Lexer::tokenize() {
                 if (ch == '{') { brace++; raw += advance(); continue; }
                 if (ch == '}' && brace > 0) { brace--; raw += advance(); continue; }
                 if (brace > 0) { raw += advance(); continue; } // code block: consume raw
-                // `<(` and `)>` are the match-capture markers, not balanced <…> groups
-                if (ch == '<' && peek(1) == '(') { raw += advance(); raw += advance(); continue; }
-                if (ch == ')' && peek(1) == '>') { raw += advance(); raw += advance(); continue; }
+                // `<(` and `)>` are the match-capture markers, not balanced <…> groups.
+                // `)>` only closes a marker that actually opened: in `<at(0)>` the
+                // `)>` is an argument list ending inside an assertion, and eating it
+                // left the `<` unbalanced so the closing `/` was never found.
+                if (ch == '<' && peek(1) == '(') { capture++; raw += advance(); raw += advance(); continue; }
+                if (ch == ')' && peek(1) == '>' && capture > 0) { capture--; raw += advance(); raw += advance(); continue; }
                 // `<<` / `>>` are word-boundary assertions, not angle groups — but
                 // only at depth 0: in `<!after <[cd]>>` the two `>` close nested angles
                 if (angle == 0 && ((ch == '<' && peek(1) == '<') || (ch == '>' && peek(1) == '>')))
@@ -2129,7 +2205,8 @@ std::vector<Token> Lexer::tokenize() {
                 else if (ch == '/' && angle == 0 && brack == 0) break;
                 raw += advance();
             }
-            if (peek() == '/') advance();
+            if (eof()) runawayTerm("/", "/", startLine);
+            advance(); // closing /
             t = make(Tok::RegexLit, raw);
         }
         else {
@@ -2147,7 +2224,7 @@ std::vector<Token> Lexer::tokenize() {
                                      "lines() to read input, ('') for a null "
                                      "string or () for an empty list",
                                      line_, "X::Obsolete", {{"old", "<>"}});
-                if (t.text == "<" && peek() != ']' && angleTermContext(out)) angleWords_++;
+                if (t.text == "<" && peek() != ']' && angleTermContext(out)) { angleWords_++; angleLine_ = t.line; }
             } else {
                 // inside a list: an exact `<` nests; a token LEADING with `>`
                 // (`>`, `>=`, `>>`) or END-glued to one with no `<` inside
@@ -2169,6 +2246,10 @@ std::vector<Token> Lexer::tokenize() {
             heredocMarker_.clear();
         }
     }
+    // A bare `< … >` word list still open at end of input never got its `>`.
+    // (A `;` is a legal WORD inside the list, so only end of file — or a brace,
+    // handled above — can settle it.)
+    if (angleWords_ > 0) runawayQuote("quote words", "'>'", angleLine_);
     out.push_back(make(Tok::End, ""));
     return out;
 }

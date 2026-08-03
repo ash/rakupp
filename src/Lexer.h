@@ -39,6 +39,7 @@ private:
     size_t pos_ = 0;
     size_t atomDropEnd_ = (size_t)-1; // pos right after a dropped ⚛ marker (not whitespace)
     int angleWords_ = 0; // depth inside a bare `< … >` word list: quote/regex lexing is off (content is words)
+    int angleLine_ = 0;  // line the OUTERMOST `<` of that word list opened on
     int line_ = 1;
 public:
     std::map<int, std::string> declPod_; // `#= text` trailing declarator pod, by line
@@ -54,6 +55,17 @@ private:
     bool unicodeLetterHere() const;     // is the codepoint at pos_ an identifier letter
     void consumeIdentChars(std::string& name); // append ASCII-cont + Unicode-letter chars
     bool tryReadSuperscript(std::string& digits); // ⁰¹²³… run -> ASCII digits (for ** N)
+
+    // A delimited construct ran off the end of the file. Rakudo words this two
+    // ways — the bare quote forms name the CONSTRUCT, the bracketed q/rx/comment
+    // forms name the TERMINATOR — and both quote the line the construct STARTED
+    // on, the only coordinate still worth reporting once the scan has eaten the
+    // rest of the file. `atEof` is set so the REPL asks for another line instead
+    // of erroring on a half-typed literal (as the runaway heredoc already does).
+    [[noreturn]] void runawayQuote(const char* construct, const char* finalDelim,
+                                   int startLine) const;
+    [[noreturn]] void runawayTerm(const std::string& close, const std::string& open,
+                                  int startLine) const;
 
     void skipWhitespaceAndComments();
     Token lexNumber();
