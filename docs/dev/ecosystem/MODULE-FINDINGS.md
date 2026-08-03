@@ -1179,3 +1179,72 @@ half of the module are the next places to look. SHA-256 and SHA-224 stay
 byte-identical throughout. Also noticed and NOT fixed: rakupp reports `Buf` where
 Rakudo reports `Buf[uint32]`, and Rakudo answers the UNTRUNCATED value from
 `$buf[i] = v` while storing the truncated one. Neither affects a digest.
+
+## 2026-08-04 — the inside-out view, and DBIish 1 -> 28
+
+Before fixing anything else, the 19 remaining DIFF distributions were triaged by
+CAUSE rather than by distribution (`tier2/triage.raku` in the battery, which now
+keeps looking past a `not ok` for a real exception and decodes test output as
+utf8-c8 — a Digest test emits junk bytes that killed the run outright).
+
+**126 failing files across 19 distributions, and they concentrate hard.** Nine
+distributions fail on one or two causes between them; the other ten hold about
+fifty distinct causes. The reachable ceiling is 52, not 59: six distributions are
+`ENV` (Rakudo itself passes nothing) and one ships no tests.
+
+The cheap tier, ranked:
+
+| dist | files | the single cause |
+|---|--:|---|
+| DBIish | 14 | `Rakudo::Internals.REGISTER-DYNAMIC` missing |
+| LWP::Simple | 10 of 11 | `.Stringy` on an enum (`RequestType`) |
+| HTTP::Tiny | 6 of 8 | `Invalid HTTP proxy:` |
+| Cro::HTTP | 2 | `Class '' cannot inherit from 'Supplier'` — an ANONYMOUS class |
+| NativeHelpers::Blob | 3 | `add_method` on a Pointer, `array_type` on utf8 |
+
+and four one-file distributions: JSON::Tiny (a UTF-16 surrogate pair),
+DateTime::Format (RFC 2822 with a timezone), NativeHelpers::Array (wrong type
+back), Date::Calendar::Strftime (a deprecation warning we emit and Rakudo does
+not). Cross-cutting: `Too many levels of recursion` (Cro::Core + Config) and
+`.backtrace` on an Exception (Log::Async, 6 of its 12 files).
+
+Deliberately NOT chased: AttrX::Mooish is the biggest single block at 23 files,
+but across TWELVE causes, mostly its own generated accessors — a deep MOP
+feature, not a fruit. Log::Async (7 causes) and JSON::Fast (8, all different)
+are the same shape.
+
+### DBIish: three fixes, 1 -> 28 of 37
+
+Taking the top item turned out to be three bugs stacked, each hidden behind the
+last — which is the standing lesson of this file, and the reason the ranking
+above is a bet rather than a promise.
+
+34. **`Rakudo::Internals.REGISTER-DYNAMIC` did not exist**, so DBIish died at its
+    first `use`. It is the initializer a module supplies for a process-wide
+    dynamic it owns. Rakudo defers the block to the variable's first lookup; we
+    run it at registration, which needs no hook in every lookup path and differs
+    only in WHEN. An existing binding is left alone rather than overwritten.
+35. **`PROCESS::<$x> = …` never reached the process scope from inside a routine.**
+    The parser rewrites the qualified name to the bare `$*x` and dropped the
+    qualification, so the assignment made a fresh lexical in whatever frame ran
+    it and the value vanished on return. Only a mainline assignment had ever
+    worked. `VarExpr` now carries `processScoped` and the lvalue installs into
+    the process scope. This is the general bug; REGISTER-DYNAMIC merely needed it.
+36. **A sigilless loop variable in `while`.** `while self.row -> \r { … }` — only
+    the sigilled form was accepted, so the `\` was left for the block parser and
+    the whole module failed to parse. `until` shares the fix.
+
+DBIish now passes **28 of its 37 files**, twice what Rakudo manages in this
+sandbox (14), but it stays DIFF: two files Rakudo passes still fail, on
+`Stub code executed` and `No such method 'convert' for invocant of type 'Hash'`.
+The second is the interesting one — `role TypeConverter does Associative` with a
+`handles`-delegating private hash dispatches as a Hash rather than as the
+composing object. That is a role/Associative issue, not a database one.
+
+Roast 197,079 -> 197,104, 634 files, no losses. The gains are nowhere near
+DBIish: `S26-documentation/04a-input-output.t` 0/6 -> 6/6, `S05-mass/stdrules.t`
++7, `S05-mass/rx.t` +5, `S02-literals/quoting-unicode.t` 61/65 -> 65/65, and
+`S05-interpolation/lexicals.t` emitting TAP at all for the first time — all of
+them the PROCESS:: scoping fix. `S05-metasyntax/unicode-property-pair.t` reads
+3/3 -> 2/6, which looked like a loss and is not: the pre-change binary fails that
+same assertion, and the earlier 3/3 was a truncated run of the file.

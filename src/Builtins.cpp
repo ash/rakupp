@@ -3506,6 +3506,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::boolean(false);
 #endif
         }
+        // REGISTER-DYNAMIC '$*NAME', { PROCESS::<$NAME> = … } — the initializer
+        // a module supplies for a process-wide dynamic it owns. Rakudo defers it
+        // to the variable's first lookup; we run it at registration instead,
+        // which needs no hook in every lookup path and differs only in WHEN.
+        // The one case where that is visible is a value already in place, so an
+        // existing binding is left alone rather than overwritten.
+        if (m == "REGISTER-DYNAMIC" && args.size() >= 2) {
+            std::string name = args[0].toStr();
+            if (!name.empty() && global_ && !global_->find(name)) {
+                ValueList none;
+                callCallable(args[1], none);
+            }
+            return Value::any();
+        }
     }
     // Rakudo::Internals::JSON — the built-in JSON codec several modules use at
     // load time (OpenSSL::NativeLib reads libraries.json through it).

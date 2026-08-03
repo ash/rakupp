@@ -75,6 +75,8 @@ struct VarExpr : Expr {
     std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
     ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
     bool namedBind = false;      // `my (:@a, :@b) := %h` — binds the RHS hash's value by bare name
+    bool processScoped = false;  // written `PROCESS::<$x>` / `$PROCESS::x` — assignment
+                                 // installs into the PROCESS scope, not the current one
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) {}
 };
 

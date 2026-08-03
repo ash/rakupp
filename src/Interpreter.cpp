@@ -9155,6 +9155,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             throw RakuError{Value::typeObj("X::Assignment::RO"),
                             "Cannot modify an immutable value (" + ve->name + ")"};
 
+        // `PROCESS::<$x> = …` names the PROCESS scope explicitly, so it installs
+        // there however deep the current frame is. Assigning through the bare name
+        // instead created a fresh lexical in whatever sub happened to run it, and
+        // the value vanished on return — which is why a module registering its own
+        // process-wide dynamic from inside a routine (DBIish's `$*DBI-DEFS`, set by
+        // `Rakudo::Internals.REGISTER-DYNAMIC`) never made it visible to anyone.
+        if (ve->processScoped && !ve->declare && global_) {
+            if (!global_->vars.count(ve->name)) global_->define(ve->name, defaultFor(sigil));
+            return &global_->vars[ve->name];
+        }
+
         if (ve->declare) {
             if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
                 if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));

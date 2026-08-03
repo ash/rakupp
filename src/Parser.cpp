@@ -2708,7 +2708,11 @@ ExprPtr Parser::parsePrimary() {
                 e->line = ln;
                 return e;
             }
-            int ln = cur().line; auto e = std::make_unique<VarExpr>(stripPseudoPkg(advance().text)); e->line = ln; return e;
+            int ln = cur().line;
+            std::string raw = advance().text;
+            auto e = std::make_unique<VarExpr>(stripPseudoPkg(raw));
+            e->processScoped = raw.find("PROCESS::") != std::string::npos;
+            e->line = ln; return e;
         }
         case Tok::LParen: {
             advance();
@@ -3621,7 +3625,8 @@ ExprPtr Parser::parsePrimary() {
                 isOp("<") && !cur().spaceBefore) {
                 advance(); // <
                 std::vector<std::string> words = readAngleWords(">");
-                std::string sym = pseudoAngleSymbol(name.substr(0, name.size() - 2),
+                std::string pseudoPkg = name.substr(0, name.size() - 2);
+                std::string sym = pseudoAngleSymbol(pseudoPkg,
                                                     words.empty() ? "" : words[0]);
                 // `MY::<&foo>:exists` asks whether the symbol is DECLARED, which is
                 // how a module's export list is usually tested (Test::Output's suite).
@@ -3636,7 +3641,9 @@ ExprPtr Parser::parsePrimary() {
                     c->args.push_back(std::make_unique<StrLit>(sym));
                     return c;
                 }
-                return std::make_unique<VarExpr>(sym);
+                auto pv = std::make_unique<VarExpr>(sym);
+                pv->processScoped = (pseudoPkg == "PROCESS");
+                return pv;
             }
             // `Foo::<bar>` — a slot in a REAL package's symbol table, the same
             // syntax the pseudo-packages above use. Read and WRITTEN: roast's
@@ -5787,7 +5794,16 @@ StmtPtr Parser::parseWhile(bool isUntil) {
     auto s = std::make_unique<WhileStmt>();
     s->isUntil = isUntil;
     { bool sv = stmtCond_; stmtCond_ = true; s->cond = parseExpression(); stmtCond_ = sv; }
-    if (matchOp("->")) { if (isKind(Tok::Var)) s->var = advance().text; }
+    if (matchOp("->")) {
+        if (isKind(Tok::Var)) s->var = advance().text;
+        // sigilless loop variable: `while self.row -> \r { … }`. Only the sigilled
+        // form was accepted, so the `\` was left for parseBlock and the whole
+        // module failed to parse — DBIish's StatementHandle is written this way.
+        else if (matchOp("\\") && (isKind(Tok::Ident) || isKind(Tok::Var))) {
+            s->var = advance().text;
+            if (!s->var.empty()) sigilless_.insert(s->var);
+        }
+    }
     s->body = parseBlock();
     return s;
 }
