@@ -4751,7 +4751,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             auto di = declPod_.find(cur().line);
             if (di == declPod_.end() && pos_ > 0) di = declPod_.find(toks_[pos_ - 1].line);
             if (di != declPod_.end()) p.pod = di->second;
-            if (p.pod.empty()) p.pod = leadingPodFor(cur().line); // `#|` above the param
+            // A `#|` above the param — but not the ROUTINE's own, which on a
+            // one-line signature is "above" the parameters too.
+            if (p.pod.empty() && cur().line > sigOwnerLine_) p.pod = leadingPodFor(cur().line);
         }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
@@ -4920,7 +4922,14 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     }
     if (isKind(Tok::LParen)) {
         s->hadSig = true;
-        sigRetType_.clear(); sigRetLiteral_.reset(); advance(); s->params = parseSignature();
+        sigRetType_.clear(); sigRetLiteral_.reset(); advance();
+        // The routine's own `#|` sits above the DECLARATION line. On a one-line
+        // signature that is also "above" every parameter on it, so the first one
+        // adopted the routine's description: `#| Another way.` on
+        // `multi MAIN('go', Int $n)` came out as the help text for `<n>`.
+        sigOwnerLine_ = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+        s->params = parseSignature();
+        sigOwnerLine_ = 0;
         // a `--> T` that follows a parameter (not comma-separated) is left for us
         if (isOp("-->")) { advance();
                            if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))

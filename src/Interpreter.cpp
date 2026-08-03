@@ -659,23 +659,43 @@ std::string Interpreter::mainUsage() {
     for (auto& cand : cands) {
         if (!cand.code || !cand.code->params) continue;
         std::string line = "  " + (srcFile_.empty() ? std::string("<program>") : srcFile_);
+        // Rakudo lists the OPTIONS first and the positionals after, whatever
+        // order they were declared in — so the two are collected separately and
+        // joined below. (The option list underneath keeps declaration order.)
+        std::string named, positional;
         for (auto& p : *cand.code->params) {
             std::string label;
-            if (p.litVal) { line += " " + eval(p.litVal.get()).toStr(); continue; }
+            if (p.litVal) { positional += " " + eval(p.litVal.get()).toStr(); continue; }
             if (p.named) {
-                label = "--" + bare(p);
-                if (!(p.type.empty() || p.type == "Bool")) label += "=<" + p.type + ">";
-                line += " [" + label + "]";
+                // A one-character name is a SHORT option: `-x`, not `--x`. An
+                // untyped one takes `[=Any]`, a typed one `=<Type>`, and a Bool
+                // takes nothing at all because its presence is the value.
+                std::string nm = bare(p);
+                label = (nm.size() == 1 ? "-" : "--") + nm;
+                if (p.type == "Bool") { }
+                else if (p.type.empty()) label += "[=Any]";
+                else label += "=<" + p.type + ">";
+                named += " [" + label + "]";
             }
-            else if (p.slurpy) { label = "[<" + bare(p) + "> ...]"; line += " " + label; }
-            else if (p.optional || p.defaultVal) { label = "[<" + bare(p) + ">]"; line += " " + label; }
-            else { label = "<" + bare(p) + ">"; line += " " + label; }
+            else if (p.slurpy) { label = "[<" + bare(p) + "> ...]"; positional += " " + label; }
+            else if (p.optional || p.defaultVal) { label = "[<" + bare(p) + ">]"; positional += " " + label; }
+            else { label = "<" + bare(p) + ">"; positional += " " + label; }
             if (!p.pod.empty()) {
                 std::string def;
-                if (p.defaultVal) { try { def = eval(p.defaultVal.get()).gist(); } catch (...) {} }
+                if (p.defaultVal) {
+                    try {
+                        Value d = eval(p.defaultVal.get());
+                        // A string default is shown quoted, so `[default: '.']`
+                        // cannot be read as punctuation of the sentence around it.
+                        def = d.t == VT::Str ? "'" + d.toStr() + "'" : d.gist();
+                    } catch (...) {}
+                }
                 opts.push_back({label, p.pod, def});
             }
         }
+        line += named + positional;
+        // …and the routine's own `#|` becomes the candidate's description.
+        if (!cand.code->pod.empty()) line += " -- " + cand.code->pod;
         out += line + "\n";
     }
     if (!opts.empty()) {
@@ -2105,7 +2125,11 @@ void Interpreter::flushOpenWriteHandles() {
         std::string mode = (*h)["mode"].toStr();
         const std::string& buf = (*h)["buffer"].s;
         if ((mode == "rw" || mode == "update") && buf.empty()) continue; // nothing written — leave the file alone
-        std::ofstream out((*h)["path"].toStr(), mode == "a" ? std::ios::app : std::ios::trunc);
+        // A handle that was .flush-ed already has part of its output on disk:
+        // append the rest, and write nothing at all when there is no rest.
+        bool wrote = (*h)["wrote"].truthy();
+        if (wrote && buf.empty()) continue;
+        std::ofstream out((*h)["path"].toStr(), (mode == "a" || wrote) ? std::ios::app : std::ios::trunc);
         if (out) out << buf;
     }
     openWriteHandles_.clear();

@@ -91,6 +91,8 @@ private:
     bool lastIsDynamic_ = false;  // `is dynamic` captured by skipTraits, same way
     bool lastIsExport_ = false;   // `is export` on a variable declaration, same way
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
+    int sigOwnerLine_ = 0;        // decl line of the routine whose signature is being parsed:
+                                  // its leading `#|` belongs to the routine, not to a parameter
     int anonStateN_ = 0;          // unique ids for bare-`$` anonymous state vars
     bool useNqp_ = false;         // saw `use nqp` — enables the nqp:: op subset
     static bool nqpConstValue(const std::string& name, long long& out);

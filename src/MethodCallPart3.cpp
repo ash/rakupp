@@ -1167,17 +1167,46 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*inv.hash)["bpos"] = Value::integer(pos + take);
             return b;
         }
+        // .flush — put what has been written on disk NOW, without closing. These
+        // handles buffer in memory until .close, so without this a program that
+        // flushes deliberately (a log, a trace file read by something else while
+        // it runs) saw nothing until it exited — and `.flush` itself did not
+        // exist, so it died instead.
+        if (m == "flush") {
+            auto st = inv.hash->find("std");
+            if (st != inv.hash->end()) {
+                if (st->second.toStr() == "err") std::cerr.flush(); else std::cout.flush();
+                return Value::boolean(true);
+            }
+            std::string mode = (*inv.hash)["mode"].toStr();
+            const std::string& buf = (*inv.hash)["buffer"].s;
+            if (!buf.empty() && (mode == "w" || mode == "a" || mode == "rw" || mode == "update")) {
+                bool wrote = (*inv.hash)["wrote"].truthy();
+                std::ofstream out((*inv.hash)["path"].toStr(),
+                                  std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
+                if (out) out << buf;
+                // The buffer is now on disk: keep only what comes AFTER it, and
+                // remember to append from here on. Truncating again at close
+                // would delete exactly what the flush was for.
+                (*inv.hash)["buffer"] = Value::str("");
+                (*inv.hash)["wrote"]  = Value::boolean(true);
+            }
+            return Value::boolean(true);
+        }
         if (m == "close") {
             std::string mode = (*inv.hash)["mode"].toStr();
             const std::string& buf = (*inv.hash)["buffer"].s;
+            bool wrote = (*inv.hash)["wrote"].truthy();   // a .flush already put some on disk
             // rw/update flush only when something was WRITTEN — an untouched
             // rw handle on an existing file must not wipe it with a trunc
-            if (mode == "w" || mode == "a" || ((mode == "rw" || mode == "update") && !buf.empty())) {
+            bool write = (mode == "w" || mode == "a" || ((mode == "rw" || mode == "update") && !buf.empty()));
+            if (wrote && buf.empty()) write = false;      // everything is already there
+            if (write) {
                 std::ofstream out((*inv.hash)["path"].toStr(),
-                                  std::ios::binary | (mode == "a" ? std::ios::app : std::ios::trunc));
+                                  std::ios::binary | ((mode == "a" || wrote) ? std::ios::app : std::ios::trunc));
                 if (out) out << buf;
-                (*inv.hash)["flushed"] = Value::boolean(true); // exit-flush skips it now
             }
+            (*inv.hash)["flushed"] = Value::boolean(true); // exit-flush skips it now
             return Value::boolean(true);
         }
         if (m == "spurt") { // IO::Handle.spurt($content) — write through the open handle
