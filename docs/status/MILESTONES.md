@@ -27,9 +27,10 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-07-29 | **v1.5.1** | **fib −17.6%** — argument vectors moved not copied; the 9,138-line dispatcher split into four files (CI's GCC job 25m → 1m32s) |
 | 2026-07-31 | **v1.5.2** | **a module counts as working only when its own test suite passes** — 630 Roast files, 180 regression tests |
 | 2026-08-01 | **v1.7.0** | **node specialization** — the largest single interpreter speed-up since the performance campaign (`$a OP $b` −18.3%); **18 / 59 distributions** pass their own suites (from 11) |
+| 2026-08-03 | **v1.8.0** | **other people's code** — `zef` installs and `use` works end to end; `URI` 88 → 222 of 222 on twenty general fixes; TLS runs with certificate verification; a precompiled-parse cache; **32 / 59 distributions** pass their own suites (from 18) |
 | 2026-07-22 → | *(in progress)* | **v2.0** — running the ecosystem's zef modules |
 
-**By the numbers:** v0.1.0 → v1.7.0 in 30 days (2026-07-02 to 2026-08-01).
+**By the numbers:** v0.1.0 → v1.8.0 in 32 days (2026-07-02 to 2026-08-03).
 
 ---
 
@@ -137,7 +138,17 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   hot loops are made of and takes a path that skips what the general case must
   do: `$a OP $b` −18.3%, `fib` −11.7%, against a control kernel that does not
   move. Only the shape is cached, never the variable or its value.
-- Stretch flagship: **zef itself running under rakupp**.
+- **Aug 3 — v1.8.0: 18 → 32 of 59 distributions**, the largest move the number
+  has made. `URI` went 88 → 222 of 222 assertions in a day on twenty general
+  fixes with not one line of `URI` touched; `XML` and `YAMLish` reached
+  `zef test`; and the parser stopped being blind to installed modules, which had
+  meant a zef-installed module contributed none of its operators. Three fixes
+  found running `IO::Socket::Async::SSL` gave TLS with certificate verification —
+  none of them about TLS. Modules are also parsed once now and cached as ASTs
+  (38% off `use XML` plus a mainline), and `--exe`/`--aot`/`--bundle` carry the
+  modules they use, so a compiled binary runs with the module tree deleted.
+- **The stretch flagship landed: `zef` itself runs under rakupp**, and its
+  install writes a real repository entry, so `install` → `use` works end to end.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

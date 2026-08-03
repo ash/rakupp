@@ -3,9 +3,136 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
-## Unreleased
+## v1.8.0 (2026-08-03) — other people's code
 
-Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
+The whole release is about running code nobody here wrote. v1.5.2 set the
+standard — a distribution counts as working only when its own `zef`
+install-time test suite passes — and this is the largest move that number has
+made. Almost none of it was module-specific work: the modules found general
+bugs, and fixing those is what moved everything at once.
+
+| | v1.7.0 | v1.8.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 196,590 | **197,060** |
+| Roast files fully passing | 631 | **633** |
+| Distributions passing their own suite | 18 / 59 | **32 / 59** |
+| Operator divergences from Rakudo | 30 | **24** |
+
+The Roast figure is the repeating profile of three runs (197,060 / 197,060 /
+197,062, 633 files each time) with identical denominators, so no file stopped
+emitting TAP — see [docs/status/COUNTING.md](docs/status/COUNTING.md) for why
+that check matters more than the percentage.
+
+### `URI` 0.3.8: 88 of 222 assertions, then 222 of 222
+
+One distribution taken end to end in a day, by **twenty general interpreter
+fixes and not one line of `URI`**. The ones with the widest blast radius:
+
+- **Every subscript target takes the whole comma list.** `%h<k> = 1, 2` stores
+  `$(1, 2)`, unlike `my $x = 1, 2`, which is item assignment. This was wrong for
+  ordinary hashes and arrays, not only for `URI::Query`.
+- **A `Proxy` is a container, not a value** — it was being rendered and compared
+  as itself rather than through its `FETCH`.
+- **A coercion parameter is the LEAST specific match.** `Str() $x` scored equal
+  to an exact nominal type, so `multi method authority(Str() $a)` tied with
+  `multi method authority(Nil)` and won on declaration order.
+- **One answer for type conformance.** `~~` knew the whole story — a "does"
+  table, the numeric and string towers, the class and role ancestry walk — while
+  parameter dispatch had a second, laxer copy that returned a blanket true for
+  any type object. The third bug of that day whose cause was a duplicated lookup
+  that had drifted from its original; they are now one function.
+- **A typed attribute resets to its TYPE, not to `Any`**, so `$!x = Nil` followed
+  by `$!x .= new` works.
+- **A `Hash` flattens to its `Pair`s**, so an empty one contributes nothing.
+
+### `zef` installs, and seven more distributions pass
+
+`zef` 1.1.3 runs under Raku++ and its install writes a real `CompUnit`
+repository entry, so `install` → `use` works end to end. That needed `$*HOME`,
+`$?DISTRIBUTION`, package-name adverbs, and `$*REPO.need`/`.installed`. `XML`
+and `YAMLish` reached `zef test` along the way.
+
+**The parser could not see installed modules, only ones on a `lib` path.** A
+`use` is resolved to a *file* at parse time so the parser can scan it for the
+operators it declares; that resolver was a second copy of the loader's, and it
+only knew about search paths. A zef-installed module therefore contributed no
+operators, and a program using one died with `Undefined routine 'SPACE'` from
+inside a grammar. The two resolvers are now one.
+
+### TLS runs, certificates and all
+
+`IO::Socket::Async::SSL` works under Raku++, verification included. Three
+general fixes got it there, none about TLS:
+
+- **A `constant` as a return type.** `sub get_dh2048() returns DH` with
+  `my constant DH = Pointer` died "Type 'DH' is not declared" the moment it
+  returned: the return check consulted classes, subsets and native names but
+  never the routine's own closure, which is where a constant lives.
+- **`unless` accepted an `orwith` chain** it should have refused, so a dispatch
+  written as `if !$!ssl {} elsif … {} orwith $!connected-promise {}` re-ran its
+  handshake branch after every read.
+- **`===` compared any kind-tagged hash by its rendering.** Right for
+  `Set`/`Bag`/`Mix`, wrong for every reference type that is a hash underneath:
+  two distinct `Promise`s both render `Promise`, so they compared identical, and
+  a socket retiring a finished write with `.grep({ $_ !=== $p })` discarded every
+  write it had. A follow-up pass extended identity to the four reference types
+  stored as plain scalars — `Buf`, `Instant`, `Duration` — and gave `Capture` the
+  value semantics it actually has. `Buf.new(1,2) === Buf.new(1,2)` was True.
+
+**Left open, deliberately:** under the GIL a `Lock` is a no-op, so a `start`
+block taking a lock runs inside the holder's critical section where Rakudo makes
+it wait. Giving `Lock` a real recursive mutex fixes the ordering and then
+deadlocks, because the module holds one process-wide lock across socket I/O and
+the GIL and the mutex are taken in opposite orders. Fixing it properly means
+making an `await` inside a lock release the GIL the way Rakudo's thread-pool
+await does. The comment at the site now says this instead of claiming the GIL
+already serialises.
+
+### A precompiled-parse cache
+
+Modules are parsed once and the AST is cached under `~/.cache/rakupp/precomp`,
+which takes a module's cost from 16 ms to 5.7 ms interpreted and 19 ms to 6.6 ms
+under `--exe` — 38% off total startup for `use XML` plus a mainline. There is no
+bytecode: Raku++ walks the AST, so the AST already *is* its code representation,
+and nothing on the hot path moved.
+
+**Both halves are off by default** (`--precomp-modules=on`, `--precomp-files=on`,
+or `RAKUPP_PRECOMP_*`): Raku++ does not write to a user's disk unasked.
+
+Validation is by **content hash**, never by timestamp — `touch` changes nothing,
+and an edit backdated to 1970 is still picked up, which is the failure mode of
+Python's default `.pyc` scheme. One entry per source file, so twenty edits of a
+module leave one entry, and the search path is part of the key because `-I`
+decides *which file* a `use` resolves to.
+
+Every bug found in this cache has been in invalidation rather than in the
+serializer, including the last one: **an entry whose source file was deleted was
+never removed.** It is now a third state, reported as `orphan` by
+`--precomp-info` and dropped as Raku++ goes — after writing an entry it clears
+any orphan sharing that entry's fan-out directory, which is 1/256th of the cache
+and costs a few small reads. No timer, no age policy. See
+[docs/guide/CACHING.md](docs/guide/CACHING.md).
+
+### Compiled binaries carry their modules
+
+`--exe`, `--aot` and `--bundle` embed the transitive `use` graph as serialized
+ASTs, so a compiled binary runs with the module tree deleted.
+
+This also fixed a class of bug rather than an instance: **`--aot` was silently
+lossy.** The emitter listed each node type's fields by hand and dropped whatever
+nobody remembered, so `my Int(Str) $n = "42"` compiled into a binary that threw a
+type error. It now emits the same serialized blob the cache uses and cannot have
+that shape of bug again. `--ast-roundtrip FILE` is the verification tool: 824
+Roast files and 375 battery modules round-trip byte-identically.
+
+### `showcase/modinfo`
+
+A distribution inspector built on **seventeen ecosystem modules at once** — the
+kind of program that only works if the engine does. Writing it produced sixteen
+general interpreter fixes and zero module workarounds, nine of them from
+`IO::Glob` alone, and its output is byte-identical under both engines.
+
+### Everything else
 
 - **NativeCall now marshals through `libffi`.** The library is `dlopen`ed at
   runtime, never linked and never vendored, so the binary keeps its
@@ -116,6 +243,31 @@ Fixed after the v1.7.0 tag was cut, so **not** in the v1.7.0 binaries.
   is unchanged: a **non**-exported module sub of a built-in's name stays
   module-private, so the importer still gets the built-in. `--aot`/`--bundle`
   interpret and were never affected.
+
+- **`IO::Handle.flush` did not exist.** These handles buffer in memory until
+  `.close`, so a program that flushes deliberately — a log, or a trace file
+  something else reads *while* it runs — saw nothing until exit, and calling
+  `.flush` died rather than doing nothing.
+- **`&MAIN`'s usage text now matches Rakudo's**, byte for byte, for a `multi
+  MAIN` with docs, defaults and short options. It differed in four ways at once
+  and leaked a routine's `#|` onto its own parameters in a one-line signature.
+- **`IO::Socket::INET.new` produced a value reporting as `Socket`**, so a sub
+  with an `IO::Socket::INET` constraint rejected its own listener. The async
+  socket mapped its internal kind to the Rakudo type one line away in the same
+  switch; the synchronous one never did.
+- **`$( … )` in a regex interpolated nothing.** Only an identifier was spliced
+  into a pattern, so `/ 'Content-Length: ' $($body.bytes) /` reached the regex
+  parser verbatim — the `$` read as the end anchor. It did not error; it quietly
+  matched something else.
+- **`next without $x` read `without` as the loop label.** The optional-label
+  guard excluded the block keywords, which do not include `with`/`without`
+  because everywhere else those start a term. Affects `last`, `next` and `redo`.
+- **`Buf.new($blob)` stored the blob's element count** as its single byte. A
+  `Blob` is `Positional` and the constructor's flattener knew `Array` and `Range`
+  but not a buffer, so it fell through to numifying it.
+- **String methods take an ASCII fast path.** Over a leading run of plain ASCII a
+  byte index and a grapheme index are the same thing, so the codepoint expansion
+  can be skipped entirely; the nqp string ops also stopped copying the haystack.
 
 Documentation corrected in the same pass: the README and `docs/guide/MODULES.md` both
 still promised that *"a missing or broken `use` is a warning, not a fatal

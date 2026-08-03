@@ -10,13 +10,14 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v1.7.0** (2026-08-01) — *the interpreter gets
-faster*. **944** of the official Raku documentation's runnable examples now
+**Status:** current release **v1.8.0** (2026-08-03) — *other people's code*:
+**32 of 59** ecosystem distributions now pass their own `zef` install-time test
+suite, up from 18. **945** of the official Raku documentation's runnable examples
 produce byte-identical output on both engines, up from 835 at v1.2.0.
-Measured per individual test, **90% of Roast passes** — 196,590 of
-~217,055 tests the suite declares, counting the tests in files that abort before
+Measured per individual test, **90% of Roast passes** — 197,060 of
+~217,110 tests the suite declares, counting the tests in files that abort before
 running (their `plan N` is read from source). On the stricter all-or-nothing bar,
-**631 / 1,462 files fully pass (~43%)** — a file counts only if *every* assertion
+**633 / 1,462 files fully pass (~43%)** — a file counts only if *every* assertion
 in it passes. Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/guide/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/guide/GUIDE.md) for the complete picture,
