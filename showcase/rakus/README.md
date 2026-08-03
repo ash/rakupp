@@ -1,7 +1,13 @@
 # rakus — a static HTTP file server
 
 Point it at a directory and it serves the files inside over HTTP/1.1 — the Raku
-answer to `python3 -m http.server`, on nothing but `IO::Socket::INET`. Where the
+answer to `python3 -m http.server`, on nothing but `IO::Socket::INET`.
+
+> This is the **showcase** copy: one file, runnable straight from a checkout.
+> The installable distribution lives in
+> [raku-modules/App-Rakus](https://github.com/ash/raku-modules/tree/main/App-Rakus)
+> as `App::Rakus`, where the routing is split into a library so it can be tested
+> without a socket. Edits here do not reach there, or the other way about. Where the
 [pastebin](../pastebin) is a single-purpose app with a hand-wired route table,
 rakus is a reusable *server*: give it a folder and it figures out the rest.
 

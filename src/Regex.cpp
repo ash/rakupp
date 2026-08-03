@@ -929,6 +929,25 @@ Regex::NodePtr Regex::parseAtom() {
             if (peek() == '$') { pos_++; n->multiline = true; } // `$$` = end-of-line, `$` = end-of-string
             return n;
         }
+        // `$( … )` — an arbitrary expression, matched as its Str. The identifier
+        // scan below takes letters only, so `$(` left the atom as a bare "$" and
+        // the parenthesis went on to parse as a GROUP: the pattern silently
+        // matched something else rather than failing, which is the worst way for
+        // this to go wrong. `$( … )` is valid Raku on its own, so the whole text
+        // is handed to the same hook that evaluates `$var`.
+        if (nx == '(') {
+            std::string expr = "$";
+            pos_++;                                   // the '$'
+            int depth = 0;
+            while (!eof()) {
+                char p = pat_[pos_++];
+                expr += p;
+                if (p == '(') depth++;
+                else if (p == ')' && --depth == 0) break;
+            }
+            auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = expr;
+            return vm;
+        }
         // $var — match the variable's current Str value literally at match time
         pos_++;
         std::string var = "$";

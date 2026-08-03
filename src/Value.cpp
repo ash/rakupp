@@ -662,6 +662,13 @@ std::string Value::typeName() const {
                         // a connected async socket is an IO::Socket::Async (Rakudo's
                         // type); the internal "AsyncSocket" kind only drives dispatch.
                         if (hashKind == "AsyncSocket") return "IO::Socket::Async";
+                        // …and the synchronous one is an IO::Socket::INET, which
+                        // it never said. A socket bound as `IO::Socket::INET $s`
+                        // was rejected with "expected IO::Socket::INET but got
+                        // Socket": the value could not name the type it is, so
+                        // the one signature a server naturally writes — pass me
+                        // a listener — could not be written at all.
+                        if (hashKind == "Socket") return "IO::Socket::INET";
                         return hashKind.empty() ? "Hash" : hashKind; // the TYPE name (gist is via toStr)
         case VT::Code:  return code && code->isWhateverCode ? "WhateverCode"
                              : code && code->isRegexRoutine ? "Regex"

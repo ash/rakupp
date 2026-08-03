@@ -12173,6 +12173,26 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
             if (pat[i] == '}') { if (braces) braces--; out += pat[i]; continue; }
             if (pat[i] == '\'' && !braces) { inSq = !inSq; out += pat[i]; continue; }
             if (inSq || braces) { out += pat[i]; continue; }
+            // `$( … )` — an expression, matched as its Str. Only an IDENTIFIER
+            // was interpolated here, so `$($x.bytes)` was left in the pattern
+            // verbatim: the `$` then read as the end anchor and the parenthesis
+            // as a group, and the match failed for reasons having nothing to do
+            // with the value. It never errored — it just quietly matched
+            // something else, which is the worst way for a pattern to be wrong.
+            if (pat[i] == '$' && i + 1 < pat.size() && pat[i + 1] == '(') {
+                int depth = 0;
+                size_t j = i + 1;
+                for (; j < pat.size(); j++) {
+                    if (pat[j] == '(') depth++;
+                    else if (pat[j] == ')' && --depth == 0) { j++; break; }
+                }
+                if (depth == 0) {
+                    Value v = evalString(pat.substr(i, j - i));   // the whole `$( … )`
+                    out += v.t == VT::Regex ? "[ " + v.s + " ]" : quoteMetaRx(v.toStr());
+                    i = j - 1;
+                    continue;
+                }
+            }
             if (pat[i] == '$' && i + 1 < pat.size() && (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
                 size_t j = i + 1;
                 while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
