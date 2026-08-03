@@ -1248,3 +1248,39 @@ DBIish: `S26-documentation/04a-input-output.t` 0/6 -> 6/6, `S05-mass/stdrules.t`
 them the PROCESS:: scoping fix. `S05-metasyntax/unicode-property-pair.t` reads
 3/3 -> 2/6, which looked like a loss and is not: the pre-change binary fails that
 same assertion, and the earlier 3/3 was a truncated run of the file.
+
+### LWP::Simple: four fixes, 7 -> 18 of 18 — PASS
+
+Second item off the cheap tier, and the first distribution to actually cross the
+line this session. Like DBIish it was several bugs stacked, and again none of
+them is about the thing the module does.
+
+37. **`.Stringy` did not exist.** It is Mu's string coercion — `self.Str` — and
+    died on every type, including the enum values LWP builds its request line
+    from (`$rt.Stringy ~ " {$path} HTTP/1.1"`). Forwarded the way `.perl`
+    already forwards to `.raku`, with the same escape: a class defining its own
+    `method Stringy` keeps it. Roast's `S02-types/undefined-types.t` gained ten
+    assertions from this alone.
+38. **A listener could not bind by HOSTNAME.** `IO::Socket::INET.new(:listen,
+    :localhost<localhost>, …)` fed the name straight to `inet_addr`, which
+    answers INADDR_NONE, so the bind failed and `.new` returned Nil with nothing
+    to say why. The CLIENT path had resolved names all along — the listener just
+    never used the same helper.
+39. **`.localport` / `.localhost` were missing.** The port a `:localport(0)`
+    listener actually got is only knowable after bind, from the OS, and asking
+    for port 0 is how a test avoids guessing a free one. `.localhost` answers the
+    name as GIVEN rather than what it resolved to, which is what Rakudo reports.
+40. **`.read($n)` returned whatever was in the first packet.** Rakudo's `.read`
+    answers EXACTLY `$n` bytes, blocking until it has them or the peer closes;
+    `.recv($n)` answers at most `$n`. One `recv()` served both. This is invisible
+    until a message straddles a packet boundary — and then a chunked HTTP body
+    fails to parse its own chunk header, which is precisely the two files LWP had
+    left. Measured against Rakudo rather than assumed: a server writing 4 bytes,
+    pausing, then writing 6 gives Rakudo 10 bytes from one `.read(10)` and gave
+    us 4.
+
+**LWP::Simple 18/18.** Roast 197,104 -> 197,122, 634 files, no losses:
+`S02-types/undefined-types.t` 35/39 -> 45/49, and `S32-io/IO-Socket-INET.t`
+emitting TAP at all for the first time (7/9). The socket fixes did NOT move
+HTTP::Tiny, HTTP::UserAgent or the Cro pair — those fail on their own causes.
+`t/run.raku` 284/284; the regression file passes under Rakudo.

@@ -2393,7 +2393,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     const bool userPerl = mName.size() == 4 && mName == "perl" &&
                           inv.t == VT::Object && inv.obj && inv.obj->cls &&
                           inv.obj->cls->findMethod("perl");
-    const MName m{(mName == "perl" && !userPerl) ? kRaku : mName};
+    // `.Stringy` is Mu's string coercion — `self.Str` — and was missing entirely,
+    // so it died on every type including the enum values LWP::Simple builds its
+    // request line from. Forwarded the same way `.perl` forwards to `.raku`, with
+    // the same escape: a class that defines its own `method Stringy` keeps it.
+    static const std::string kStr = "Str";
+    const bool userStringy = mName == "Stringy" &&
+                             inv.t == VT::Object && inv.obj && inv.obj->cls &&
+                             inv.obj->cls->findMethod("Stringy");
+    const MName m{(mName == "perl" && !userPerl)      ? kRaku
+                : (mName == "Stringy" && !userStringy) ? kStr
+                                                       : mName};
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     // read the environment ONCE, not on every method call — getenv walks environ
     static const bool kTrace = std::getenv("RAKUPP_TRACE") != nullptr;
@@ -3397,7 +3407,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (listen) {
             int yes = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
             addr.sin_port = htons((uint16_t)localport);
-            addr.sin_addr.s_addr = (localhost.empty() || localhost == "0.0.0.0") ? INADDR_ANY : inet_addr(localhost.c_str());
+            // A NAME is as valid here as a dotted quad — `:localhost<localhost>`
+            // is how a test spins up a server on the loopback. Only the client
+            // path resolved, so the listener bound to INADDR_NONE and failed,
+            // handing back Nil with nothing to say why.
+            if (localhost.empty() || localhost == "0.0.0.0") addr.sin_addr.s_addr = INADDR_ANY;
+            else resolve(localhost, addr);
             if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(fd, 128) < 0) { ::close(fd); return Value::nil(); }
         } else {
             addr.sin_port = htons((uint16_t)port);
@@ -3406,6 +3421,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (rc < 0) { ::close(fd); return Value::nil(); }
         }
         Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash)["fd"] = Value::integer(fd);
+        // Keep the name as GIVEN: `.localhost` answers what was asked for, not
+        // what it resolved to, which is what Rakudo reports.
+        if (listen) { if (!localhost.empty()) (*s.hash)["localhost"] = Value::str(localhost); }
+        else (*s.hash)["peerhost"] = Value::str(host);
         return s;
     }
     // CArray[T].new(vals…) — a packed native array (NativeCall). Stored as raw

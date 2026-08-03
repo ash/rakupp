@@ -2369,6 +2369,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash)["fd"] = Value::integer(cfd);
             return s;
         }
+        // The port/address this socket is actually bound to. Asked of a listener
+        // opened on `:localport(0)`, which is how a test gets a free port without
+        // guessing one — the answer is only knowable after bind, from the OS.
+        if (m == "localport" || m == "localhost" || m == "peerport" || m == "peerhost") {
+            sockaddr_in sa{};
+            socklen_t sl = sizeof(sa);
+            bool peer = m[0] == 'p';
+            int rc = peer ? ::getpeername(fd, (sockaddr*)&sa, &sl)
+                          : ::getsockname(fd, (sockaddr*)&sa, &sl);
+            if (rc < 0) return Value::nil();
+            if (m == "localport" || m == "peerport") return Value::integer(ntohs(sa.sin_port));
+            auto given = inv.hash->find(m);   // the name as the caller wrote it
+            if (given != inv.hash->end()) return given->second;
+            char buf[INET_ADDRSTRLEN] = {0};
+            inet_ntop(AF_INET, &sa.sin_addr, buf, sizeof(buf));
+            return Value::str(buf);
+        }
         if (m == "recv" || m == "read") {
             size_t want = 65536;
             if (!args.empty() && args[0].isNumeric()) want = (size_t)args[0].toInt();
@@ -2380,9 +2397,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal || a.pairVal->truthy();
             std::vector<char> buf(want ? want : 1);
-            bool p = gilPark(); ssize_t n = ::recv(fd, buf.data(), buf.size(), 0); gilUnpark(p);
-            if (n < 0) return Value::nil();
-            Value r = Value::str(std::string(buf.data(), (size_t)n)); // n==0 => "" (peer closed)
+            size_t got = 0;
+            bool p = gilPark();
+            // `.read($n)` answers EXACTLY $n bytes, blocking until it has them or
+            // the peer closes; `.recv($n)` answers at most $n and returns what has
+            // arrived. One recv() served both, so a reader that asked for a fixed
+            // number got however much happened to be in the first packet — which is
+            // silent until a message straddles a packet boundary, and then a chunked
+            // HTTP body fails to parse its own chunk header.
+            while (got < buf.size()) {
+                ssize_t n = ::recv(fd, buf.data() + got, buf.size() - got, 0);
+                if (n <= 0) { if (n < 0 && got == 0) { gilUnpark(p); return Value::nil(); } break; }
+                got += (size_t)n;
+                if (m != "read") break;   // recv is "up to", not "exactly"
+            }
+            gilUnpark(p);
+            Value r = Value::str(std::string(buf.data(), got)); // got==0 => "" (peer closed)
             if (bin) { r.hashKind = "Buf"; identify(r); }
             return r;
         }
