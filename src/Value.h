@@ -256,6 +256,11 @@ struct Value {
     }
     long long blobElems() const { int w = blobElemSize(); return (long long)(s.size() / w); }
     long long blobWordAt(long long idx) const; // one element, LE-decoded (idx pre-checked)
+    // The same element as a VALUE. An unsigned 64-bit word with its top bit set
+    // does not fit a long long, so blobWordAt() hands it back negative — a
+    // blob64 read as -1 instead of 18446744073709551615. Use this everywhere an
+    // element is handed to Raku.
+    Value blobElemAt(long long idx) const;
     ValueList blobList() const;                // every element as an Int
 
     // native-int element width for a typed array/hash `ofType` (uint32/int8/…):

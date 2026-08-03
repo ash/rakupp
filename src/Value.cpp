@@ -694,11 +694,25 @@ long long Value::blobWordAt(long long idx) const {
     return (long long)v;
 }
 
+Value Value::blobElemAt(long long idx) const {
+    long long w = blobWordAt(idx);
+    // only an 8-byte UNSIGNED element can overflow a long long; every narrower
+    // width fits, and a signed one is meant to come back negative
+    if (blobElemSize() == 8 && w < 0 && ofType.rfind("uint", 0) == 0) {
+        unsigned long long u = (unsigned long long)w;
+        std::string dec; // u is at most 20 digits; build it without a BigInt divide
+        while (u) { dec += (char)('0' + (int)(u % 10)); u /= 10; }
+        std::reverse(dec.begin(), dec.end());
+        return Value::bigint(BigInt::fromString(dec));
+    }
+    return Value::integer(w);
+}
+
 ValueList Value::blobList() const {
     ValueList out;
     long long n = blobElems();
     out.reserve((size_t)n);
-    for (long long i = 0; i < n; i++) out.push_back(Value::integer(blobWordAt(i)));
+    for (long long i = 0; i < n; i++) out.push_back(blobElemAt(i));
     return out;
 }
 

@@ -9908,7 +9908,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 for (int k = 0; k < w; k++)               // little-endian, truncating
                     bp->s[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
                 rwWriteThrough(idx->base.get());
-                return sink ? Value::any() : Value::integer(bp->blobWordAt(i));
+                return sink ? Value::any() : bp->blobElemAt(i);
             }
         }
     }
@@ -17226,7 +17226,7 @@ Value Interpreter::evalIndex(Index* idx) {
                         long long bn = base.blobElems();
                         if (i < 0) i += bn;
                         return (i >= 0 && i < bn)
-                             ? Value::integer(base.blobWordAt(i)) : Value::any();
+                             ? base.blobElemAt(i) : Value::any();
                     }
                     // a Str is a one-item list: "ab"[0] is "ab"
                     if (i == 0) return base;
@@ -17270,7 +17270,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 long long bn = base.blobElems();
                 for (long long k : indices) {
                     if (k < 0) k += bn;
-                    if (k >= 0 && k < bn) out.arr->push_back(Value::integer(base.blobWordAt(k)));
+                    if (k >= 0 && k < bn) out.arr->push_back(base.blobElemAt(k));
                 }
                 return out;
             }

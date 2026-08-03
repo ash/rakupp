@@ -8544,7 +8544,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (v[0].t == VT::Array && v[0].arr && i >= 0 && i < (long long)v[0].arr->size())
                 return (*v[0].arr)[i];
             if (v[0].t == VT::Str && i >= 0 && i < v[0].blobElems())  // Buf/Blob byte
-                return Value::integer(v[0].blobWordAt(i));
+                return v[0].blobElemAt(i);
             return op == O::AtposI ? Value::integer(0) : Value::nil();
         }
         case O::Bindpos: case O::BindposI: {

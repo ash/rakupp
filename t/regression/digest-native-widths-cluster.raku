@@ -81,8 +81,31 @@ sub ck($got, $want, $l) { unless $got eqv $want { say "FAIL: $l — {$got.raku} 
     ck(:16("c.8"), 12.5, 'a radix point still gives a Rat');
 }
 
-# 7. The whole point: SHA-256 through the ecosystem's own pure-Raku Digest.
-#    Left out here because it needs the module; `Digest::HMAC` passes its own
-#    suite under rakupp now, which is the standing check.
+# 7. A 64-bit blob element reads back UNSIGNED. blobWordAt returns a long long,
+#    so a word with its top bit set came out negative — blob64 answered -1 for
+#    18446744073709551615, and SHA-512 built its state from that.
+{
+    ck(blob64.new(0xFFFFFFFFFFFFFFFF).list[0], 18446744073709551615, 'a full 64-bit blob word');
+    ck(blob64.new(0x6a09e667f3bcc908).list[0], 7640891576956012808, 'and one that fits a long long');
+    ck(blob32.new(0xFFFFFFFF).list[0], 4294967295, 'blob32 was never affected');
+    ck(Buf.new(255, 255).list.List, (255, 255), 'nor a plain byte buffer');
+    my buf64 $q .= new;
+    $q[0] = 0xFFFFFFFFFFFFFFFF;
+    ck($q[0], 18446744073709551615, 'reading back what was just written');
+}
+
+# 8. `.polymod` divides in BigInt when the invocant is one. It used to take
+#    `toInt()`, which saturates, so a 64-bit word lost its top byte on the way
+#    out of a digest.
+{
+    ck(0xFFFFFFFFFFFFFFFF.polymod(256 xx 7).reverse.List,
+       (255, 255, 255, 255, 255, 255, 255, 255), 'polymod of a full 64-bit word');
+    ck(255.polymod(10, 10).List, (5, 5, 2), 'a small invocant is unchanged');
+    ck(1234.polymod(10 xx *).List, (4, 3, 2, 1), 'and the lazy-divisor form');
+}
+
+# The whole point: SHA-256 and SHA-224 through the ecosystem's own pure-Raku
+# Digest are byte-identical to Rakudo now, and `Digest::HMAC` passes its own
+# suite. SHA-512/384 are still wrong — one more 64-bit bug in that half.
 
 say $ok ?? 'PASS' !! 'FAIL';

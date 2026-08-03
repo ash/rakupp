@@ -2686,12 +2686,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return out;
         }
         if (m == "elems") return Value::integer(bn);
-        if (m == "head") return bn == 0 ? Value::any() : Value::integer(inv.blobWordAt(0));
-        if (m == "tail") return bn == 0 ? Value::any() : Value::integer(inv.blobWordAt(bn - 1));
+        if (m == "head") return bn == 0 ? Value::any() : inv.blobElemAt(0);
+        if (m == "tail") return bn == 0 ? Value::any() : inv.blobElemAt(bn - 1);
         if (m == "AT-POS" && !args.empty()) {
             long long i = args[0].toInt();
             if (i < 0) i += bn;
-            return (i >= 0 && i < bn) ? Value::integer(inv.blobWordAt(i)) : Value::any();
+            return (i >= 0 && i < bn) ? inv.blobElemAt(i) : Value::any();
         }
     }
     // `.elems` on a type object is 1 — a type object is a one-element list of

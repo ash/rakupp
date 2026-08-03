@@ -198,6 +198,27 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             for (auto& d : a.flatten()) fin.push_back(d);
         }
         if (!lazy) {
+            // A bigint invocant divides in BigInt: `inv.toInt()` saturates, so
+            // `0xFFFF_FFFF_FFFF_FFFF.polymod(256 xx 7)` answered a leading 0x7F
+            // instead of 0xFF — which is how SHA-512 lost its top byte on the way
+            // out of the digest. (The lazy-divisor branch below still works in
+            // long long; a bigint there wants the same treatment when something
+            // needs it.)
+            if (inv.big) {
+                BigInt bn = *inv.big;
+                auto emit = [&](const BigInt& v) {
+                    out.arr->push_back(v.fitsLL() ? Value::integer(v.toLL()) : Value::bigint(v));
+                };
+                for (auto& d : fin) {
+                    long long dv = d.toInt(); if (dv == 0) break;
+                    BigInt q, r;
+                    BigInt::divmod(bn, BigInt(dv), q, r);
+                    emit(r);
+                    bn = q;
+                }
+                emit(bn); // trailing remainder
+                return out;
+            }
             for (auto& d : fin) {
                 long long dv = d.toInt(); if (dv == 0) break;
                 out.arr->push_back(Value::integer(n % dv));

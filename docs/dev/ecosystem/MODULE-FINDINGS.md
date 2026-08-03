@@ -1137,8 +1137,23 @@ affected area: S02-types/signed-unsigned-native.t +6, my-6c.t +3, buf.t,
 bit.t and native.t +1 each. `t/run.raku` 281/281, pinned in
 `t/regression/digest-native-widths-cluster.raku` (which passes under Rakudo).
 
-**Still open, and next:** SHA-512 is wrong. It no longer saturates, so what is
-left is narrower — the 64-bit path through `blob64` and the untyped `rotr` in
-that half of the module. Also noticed and NOT fixed: rakupp reports `Buf` where
+Two more came out of the 64-bit half straight after:
+
+30. **A 64-bit blob element read back SIGNED.** `blobWordAt` returns a
+    `long long`, so a word with its top bit set came out negative — `blob64`
+    answered −1 where the value is 18446744073709551615. Every call site now
+    goes through `blobElemAt`, which promotes exactly that case to a bigint.
+31. **`.polymod` saturated its invocant**, taking `toInt()` on a bigint, so
+    `0xFFFF_FFFF_FFFF_FFFF.polymod(256 xx 7)` answered a leading `0x7F` instead
+    of `0xFF`. The finite-divisor branch divides in BigInt now; the lazy-divisor
+    branch still works in `long long` and wants the same treatment when
+    something needs it.
+
+**SHA-224 joined SHA-256** in matching Rakudo byte for byte.
+
+**Still open, and next:** SHA-512 and SHA-384 are still wrong, though the output
+is now a plausible digest rather than saturated garbage, so what is left is one
+more bug in the 64-bit half — `blob64`-typed reduce parameters and the untyped
+`rotr` in that half of the module are where to look. Also noticed and NOT fixed: rakupp reports `Buf` where
 Rakudo reports `Buf[uint32]`, and Rakudo answers the UNTRUNCATED value from
 `$buf[i] = v` while storing the truncated one. Neither affects a digest.
