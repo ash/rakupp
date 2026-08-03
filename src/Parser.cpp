@@ -105,7 +105,10 @@ void Parser::expectKind(Tok k, const char* what) {
     advance();
 }
 void Parser::error(const std::string& msg) {
-    throw ParseError(msg + " (got '" + cur().text + "')", cur().line);
+    // Dying ON the end token means the source simply ran out — an unclosed block,
+    // paren or signature. The REPL turns that into a continuation prompt instead
+    // of an error; every other caller ignores the flag.
+    throw ParseError(msg + " (got '" + cur().text + "')", cur().line, cur().kind == Tok::End);
 }
 
 // ---------------- infix table ----------------

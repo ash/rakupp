@@ -583,7 +583,17 @@ public:
     void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
     bool suppressLoopFirst_ = false; // set while running a loop body so execBlock skips FIRST
-    Value evalString(const std::string& src, bool mainlinePH = false); // EVAL
+    // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
+    // into a soft "give me more" answer instead of a thrown syntax error.
+    Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr);
+    // ---- REPL support (src/Repl.cpp) ----------------------------------------
+    // A REPL never calls run(): it keeps ONE Interpreter alive and feeds it
+    // evalString per line, so the mainline scope IS the session. These two cover
+    // what run() would otherwise have done at either end.
+    void replStart(std::vector<std::string> args); // define @*ARGS, arm mainline `state`
+    void replFinish();                             // run END/deferred-END phasers, once, at exit
+    // Every name visible from the current scope, for tab completion.
+    std::vector<std::string> replNames() const;
     // `use Foo::Bar` -> compile lib file into global scope. `quiet` suppresses the
     // not-found warning: a runtime `require` reports failure by THROWING instead
     // (so `try require ::($m)` is silent, as in Rakudo).

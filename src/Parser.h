@@ -13,7 +13,13 @@ struct ParseError : std::runtime_error {
     int line;
     std::string exType; // typed compile diagnostic (X::Parameter::Twigil, …); "" = generic
     std::vector<std::pair<std::string, std::string>> exAttrs;
+    // The parse died ON the end-of-input token, i.e. the source ran out rather
+    // than said something wrong — `sub f {` with no `}`. Only the REPL reads it,
+    // to tell "give me a continuation line" from "this is a syntax error".
+    bool atEof = false;
     ParseError(const std::string& msg, int line) : std::runtime_error(msg), line(line) {}
+    ParseError(const std::string& msg, int line, bool atEof)
+        : std::runtime_error(msg), line(line), atEof(atEof) {}
     ParseError(const std::string& msg, int line, std::string type,
                std::vector<std::pair<std::string, std::string>> attrs)
         : std::runtime_error(msg), line(line), exType(std::move(type)), exAttrs(std::move(attrs)) {}

@@ -2192,7 +2192,9 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
             lines.push_back(line);
         }
         if (!found) // runaway heredoc: the terminator never appears before EOF
-            throw ParseError("Ending delimiter " + marker + " not found for heredoc", line_);
+            // atEof: the body simply hasn't been typed yet, so the REPL keeps
+            // prompting instead of erroring on a half-entered heredoc.
+            throw ParseError("Ending delimiter " + marker + " not found for heredoc", line_, true);
         // dedent by the closing marker's indentation
         std::string body;
         for (size_t i = 0; i < lines.size(); i++) {

@@ -3710,7 +3710,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     throwTyped("X::CompUnit::UnsatisfiedDependency", {{"specification", name}}, where);
 }
 
-Value Interpreter::evalString(const std::string& src, bool mainlinePH) {
+Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* incompleteOut) {
     Lexer lexer(src);
     auto prog = std::make_shared<Program>();
     try {
@@ -3729,6 +3729,10 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH) {
             }
         *prog = parser.parseProgram();
     } catch (ParseError& e) {
+        // REPL: the input just ran out (unclosed block/paren/heredoc). Report it
+        // as "incomplete" so the caller can ask for the next line, rather than
+        // raising a syntax error the user would have to work around.
+        if (incompleteOut && e.atEof) { *incompleteOut = true; return Value::any(); }
         if (e.exType == "X::Package::Stubbed") {
             // the space-joined `packages` names become a real list attribute
             std::string names;
@@ -3797,6 +3801,41 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH) {
         }
     }
     return last;
+}
+
+// ---- REPL support --------------------------------------------------------
+// The session is one Interpreter that never sees run(): each line goes through
+// evalString into the SAME global scope, which is what makes `my $x` on line 1
+// still there on line 9. These three supply the little that run() would have
+// done around the mainline — and nothing here is reachable from a script run.
+
+void Interpreter::replStart(std::vector<std::string> args) {
+    argv_ = std::move(args);
+    tctx_.curStateEnv = global_.get(); // mainline `state` vars live in the session scope
+    Value a = Value::array();
+    for (auto& s : argv_) a.arr->push_back(Value::str(s));
+    tctx_.cur->define("@*ARGS", a);
+}
+
+void Interpreter::replFinish() {
+    // END blocks typed at the prompt were deferred by evalString; they belong to
+    // the session, so they run once, newest first, as the session ends.
+    for (auto it = deferredEnds_.rbegin(); it != deferredEnds_.rend(); ++it) {
+        auto sc = std::make_shared<Env>(); sc->parent = it->second;
+        try { execBlock(it->first, sc); } catch (...) {}
+    }
+    deferredEnds_.clear();
+}
+
+std::vector<std::string> Interpreter::replNames() const {
+    std::vector<std::string> out;
+    for (const Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        for (auto& kv : e->vars) out.push_back(kv.first);
+    for (auto& kv : classes_)  out.push_back(kv.first);
+    for (auto& kv : subsets_)  out.push_back(kv.first);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 // If RAKU_TEST_DIE_ON_FAIL is a true value, a real (non-TODO) failure stops the

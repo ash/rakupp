@@ -9,6 +9,7 @@
 #include "Lint.h"
 #include "Ffi.h"
 #include "Highlight.h"
+#include "Repl.h"
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
@@ -604,7 +605,8 @@ int main(int argc, char** argv) {
 "Usage:\n"
 "  rakupp FILE [ARGS...]        Run a Raku program from a file\n"
 "  rakupp -e 'CODE' [ARGS...]   Run a one-liner\n"
-"  rakupp                       Read a program from standard input\n"
+"  rakupp                       Start an interactive session (REPL)\n"
+"  rakupp < FILE, ... | rakupp  Read a whole program from standard input\n"
 "\n"
 "Options:\n"
 "  -I <path>                    Add a directory to the module search path\n"
@@ -643,6 +645,9 @@ int main(int argc, char** argv) {
 "  RAKUPP_PARALLEL=1            Run start/worker threads on all cores (true CPU\n"
 "                               parallelism; default coordinates under a GIL)\n"
 "  RAKUPP_DUMPTOKENS=1          Dump the lexer token stream before running\n"
+"  RAKUPP_HISTORY=file          REPL history file (default ~/.rakupp_history);\n"
+"                               set it empty to keep no history at all\n"
+"  RAKUPP_REPL=1                Force a REPL session even when stdin is redirected\n"
 "  RAKUPP_HOME=dir              Where --exe finds its runtime (dir/lib + dir/include/rakupp);\n"
 "                               only needed if rakupp is moved away from its build/install tree\n"
 "  RAKUPP_FFI=0 | /path/to/lib  Disable NativeCall's libffi backend, or point at a\n"
@@ -1054,7 +1059,12 @@ int main(int argc, char** argv) {
         src = ss.str();
         fileName = rest[0];
         for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
+    } else if (rakupp::stdinIsTerminal() || rakupp::replForced()) {
+        // Bare `rakupp` at a terminal: an interactive session.
+        return rakupp::rakuppRepl(exePath, libPaths);
     } else {
+        // Bare `rakupp` with stdin redirected — `echo … | rakupp`, `rakupp < f.raku`
+        // — is a whole program arriving on stdin, exactly as before.
         std::ostringstream ss;
         ss << std::cin.rdbuf();
         src = ss.str();

@@ -44,6 +44,10 @@ file(GLOB_RECURSE RAKUPP_SOURCES CONFIGURE_DEPENDS
 # by `rakupp --compile`.
 set(RAKUPP_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_MAIN}")
+# The REPL belongs to the CLI, not the runtime: keeping it out of rakupp_rt means
+# no `--exe` binary carries a line editor it can never reach.
+set(RAKUPP_REPL "${CMAKE_CURRENT_SOURCE_DIR}/src/Repl.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 
 add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
 target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -57,7 +61,7 @@ if(WIN32)
   target_compile_definitions(rakupp_rt PUBLIC _WIN32_WINNT=0x0602)
 endif()
 
-add_executable(rakupp "${RAKUPP_MAIN}")
+add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}")
 target_link_libraries(rakupp PRIVATE rakupp_rt)
 
 # Install layout (so `--exe` works after `cmake --install`): the binary in bin/,
