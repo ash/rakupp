@@ -1611,3 +1611,30 @@ behind it, and is not what HTTP::Tiny's last three files need first. Those three
 all die on `.message` of an `Any` inside exactly this construct.
 
 **Battery: 38 of 59.** HTTP::Tiny is now the closest at 7 of 10.
+
+### A file-level metric that moved backwards while the code got better
+
+The battery reads `Digest` as **1/4 at v1.8.0 and 0/4 now** — stable over three
+runs with each binary, so not noise. It is not a regression. Bisect blamed
+`231b562`, and bisect was wrong, because the test it ran is timing-dependent.
+
+What actually changed, measured on the same machine minutes apart:
+
+| | v1.8.0 | now |
+|---|---:|---:|
+| `sha512("abc")` | 131,062 ms | **5,316 ms** |
+| `t/rfc4231.t` assertions passing | 0 (fails from #1) | **2** (#1, #2 correct; #3, #4 fail) |
+
+rakupp is **25× faster** at SHA-512 and now gets the HMAC-SHA224 and -SHA256
+vectors right, where at v1.8.0 it got none of them right. The file-level verdict
+flipped precisely BECAUSE of that: at v1.8.0 the file never got far enough to
+report, and now it runs on and emits `not ok` for the SHA-384/512 vectors, which
+are still wrong.
+
+Worth keeping as a caution about the standings number: **a distribution can move
+from PASS to DIFF by getting better**, when a suite's later half exercises
+something still broken that its earlier half used to hide. The per-assertion view
+is the one that told the truth here; the file count did not.
+
+(Both binaries still exceed 200 s on `t/rfc4231.t` run directly, so the file is
+slow either way — SHA-384/512 remain the open item from the Digest thread.)
