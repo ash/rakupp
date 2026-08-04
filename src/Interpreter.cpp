@@ -10118,8 +10118,20 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (bp && bp->t == VT::Object && bp->obj && bp->obj->cls) {
                     const char* meth = ix->isHash ? "ASSIGN-KEY" : "ASSIGN-POS";
                     bool has = false;
-                    for (ClassInfo* c = bp->obj->cls.get(); c && !has; c = c->parent.get())
+                    for (ClassInfo* c = bp->obj->cls.get(); c && !has; c = c->parent.get()) {
                         if (c->methods.count(meth)) has = true;
+                        // …or DELEGATED: `has %!s handles <AT-KEY ASSIGN-KEY>` gives
+                        // the object those methods without putting them in `methods`,
+                        // and they dispatch perfectly well when called. Missing them
+                        // here meant `%!attr{$k} = $v` fell through to the generic
+                        // container path and REPLACED the whole object with a plain
+                        // Hash — DBIish sets its converter table that way inside
+                        // BUILD, so the attribute stopped being a TypeConverter one
+                        // line after it was built.
+                        for (auto& at : c->attrs)
+                            for (auto& h : at.handles)
+                                if (h == meth || h == "*") { has = true; break; }
+                    }
                     if (has) {
                         Value k = eval(ix->index.get());
                         Value v = evalValueOf(a->value.get());

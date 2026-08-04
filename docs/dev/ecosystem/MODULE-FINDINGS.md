@@ -1519,3 +1519,58 @@ Worth doing once the dependency underneath is found.
 **Battery: 38 of 59**, unchanged this round. DBIish is still the closest at 35 of
 its 37 files, needing `Stub code executed` and the built-in conversions of
 `DBDish::TypeConverter`.
+
+53. **A `handles`-delegated `ASSIGN-KEY` counts.** `$obj{k} = v` looks for
+    ASSIGN-KEY before falling back to the generic container path, and it consulted
+    only the class's own method table. `handles <AT-KEY ASSIGN-KEY>` gives the
+    object those methods WITHOUT putting them there — they dispatch perfectly
+    well when called — so the interception missed them and the assignment
+    REPLACED the whole object with a plain Hash. DBIish sets its converter table
+    that way inside BUILD, so the attribute stopped being a TypeConverter one
+    line after it was built.
+
+Roast 197,143 -> 197,136 / 636 on this run, entirely the three known
+timing/random files (`S17-channel/stress.t` timing out, `S32-list/pick.t`,
+`integration/advent2012-day13.t`). `t/run.raku` 291/291.
+
+### DBIish is still short, and I stopped rather than guess further
+
+Its `t/06-types.rakutest` needs one more thing: `DBDish::TypeConverter` delegates
+only `<AT-KEY EXISTS-KEY>`, with no ASSIGN-KEY at all, and `%!Conversions{$type}
+= &conv` still has to reach the delegated hash. I wrote that — route the write
+into the delegation target — and **backed it out**: the object survived but the
+value landed under a key the delegated read does not use, so a write was silently
+lost. That is worse than the loud failure it replaced.
+
+Four repros in a row diverged from the module here (my simplified versions kept
+either passing on both engines or dying on Rakudo for unrelated reasons), which
+is the signal to stop and come back with the real object-hash shape
+(`has Callable %!Conversions{Mu:U}`) rather than another approximation.
+
+### Re-triage after all of the above
+
+96 failing files across 14 distributions:
+
+| dist | files | distinct causes |
+|---|--:|--:|
+| Cro::HTTP | 2 | 2 |
+| DBIish | 2 | 2 |
+| NativeHelpers::Blob | 3 | 2 (unreachable — MoarVM internals) |
+| Config | 3 | 3 |
+| HTTP::Tiny | 5 | 3 |
+| Digest | 4 | 4 |
+| IO::Glob | 5 | 4 |
+| Text::Utils | 7 | 5 |
+| Cro::Core | 7 | 5 |
+| Data::Dump | 8 | 5 |
+| HTTP::UserAgent | 7 | 7 |
+| Log::Async | 12 | 7 |
+| JSON::Fast | 8 | 8 |
+| AttrX::Mooish | 23 | 12 |
+
+**The "one cause" heuristic has now mis-called three in a row** (NativeHelpers::Blob,
+Config, DBIish), because the first complaint says nothing about what is behind
+it. The count is not a queue any more; the remaining distributions all want real
+investigation before an estimate is worth anything.
+
+**Battery: 38 of 59.**
