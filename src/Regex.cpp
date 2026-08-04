@@ -864,7 +864,17 @@ Regex::NodePtr Regex::parseAtom() {
         while (!eof() && peek() != q) {
             if (peek() == '\\' && pos_ + 1 < pat_.size()) {
                 pos_++; char e = pat_[pos_++];
-                switch (e) { case 'n': lit += '\n'; break; case 't': lit += '\t'; break;
+                // A SINGLE-quoted literal has exactly two escapes, `\\` and `\'`;
+                // everything else keeps its backslash, so `'\n'` is backslash-then-n
+                // and `'\u'` is backslash-then-u. Applying the double-quoted rules to
+                // both spellings silently ATE the backslash — which is why
+                // JSON::Tiny's `<utf16_codepoint>+ % '\u'` never saw its separator
+                // and decoded each half of a surrogate pair on its own.
+                if (q == '\'') {
+                    if (e == '\\' || e == '\'') lit += e;
+                    else { lit += '\\'; lit += e; }
+                }
+                else switch (e) { case 'n': lit += '\n'; break; case 't': lit += '\t'; break;
                              case 'r': lit += '\r'; break; case '0': lit += '\0'; break; default: lit += e; }
             } else if (q == '"' && peek() == '$' &&
                        (std::isalnum((unsigned char)peek(1)) || peek(1) == '_')) {

@@ -1318,3 +1318,33 @@ uninterruptible kernel wait, trying to exit. `kill -9` does not clear them; only
 a reboot will. Two things follow: a NativeCall call CAN wedge a process
 permanently, which is a bug worth reproducing on its own; and any timing
 measured on this machine while they sit there is suspect.
+
+### Cro::HTTP and JSON::Tiny
+
+42. **`class :: is Supplier {…}` was rejected as inheriting from an unknown
+    TRAIT.** `Supplier` sits beside `Supply`, `Channel` and `Promise` in the
+    known-type list and was simply missing, so a class naming it as a parent fell
+    through to the user-trait path and died. Added with `Supplier::Preserving`
+    and `Tap`. The anonymous-class part was never the problem — `class :: is
+    SomeUserClass {…}` always worked.
+
+    This unblocked Cro::HTTP's two HTTP/2 files, which now fail on frame CONTENT
+    instead (`DATA Frame length cannot be less than padding length`) — deeper,
+    and left alone.
+
+43. **A single-quoted literal inside a regex was losing its backslashes.** In
+    Raku the only escapes inside `'…'` are `\\` and `\'`; `'\n'` is
+    backslash-then-n and `'\u'` is backslash-then-u. We applied the DOUBLE-quoted
+    escape rules to both spellings, so the backslash was eaten. It hid well:
+    `/ '\u' /` still "matched", because it had quietly become `/ u /`.
+
+    JSON::Tiny spells its surrogate-pair rule `'u' <utf16_codepoint>+ % '\u'`.
+    With the separator gone, each `\uXXXX` matched as a separate escape, so
+    `𝒷` decoded as two lone surrogates instead of one astral
+    character. **JSON::Tiny 5/6 -> 6/6, PASS** — one better than Rakudo manages
+    here, which fails its own deprecation test.
+
+Roast 197,121 -> 197,125, and 634 -> **635 files**:
+`integration/advent2012-day10.t` goes 25/26 -> 26/26. No losses.
+
+**Battery: 36 of 59.** The reachable ceiling is 52.

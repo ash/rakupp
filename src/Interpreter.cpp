@@ -4162,6 +4162,10 @@ bool isKnownTypeName(const std::string& n) {
         "Attribute", "Scalar", "Proxy", "Version", "Order", "Enumeration",
         "Date", "DateTime", "Instant", "Duration", "IO", "Proc", "Thread",
         "Promise", "Channel", "Supply", "Lock", "Semaphore", "Stash", "Compiler",
+        // Supplier and its kin sit beside Supply and were simply missing, so
+        // `class :: is Supplier {…}` — how a test stubs out a live supplier —
+        // was rejected as inheriting from an unknown TRAIT rather than a type.
+        "Supplier", "Supplier::Preserving", "Tap",
         "Distribution", "CompUnit", "Label", "Nd",
     };
     return t.count(n) > 0;
