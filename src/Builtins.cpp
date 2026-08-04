@@ -2948,6 +2948,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (mm == "base_type" && inv.t == VT::Type) {
             Value b = Value::typeObj(inv.s); b.ofType = inv.ofType; return b;
         }
+        // `.^array_type` — the ELEMENT type of a buffer, which is how
+        // NativeHelpers::Blob decides what to allocate. A plain Blob/Buf is
+        // uint8; the sized spellings carry theirs in ofType, and utf8 is uint8
+        // under its own name. (Rakudo answers this for a buffer VALUE and for
+        // utf8; a bare `blob8` type object has no such method there either.)
+        if (mm == "array_type" && inv.t == VT::Str &&
+            (inv.hashKind == "Buf" || inv.hashKind == "Blob"))
+            return Value::typeObj(inv.ofType.empty() ? "uint8" : inv.ofType);
+        // The utf* TYPE OBJECTS answer it as well — and only those. Measured:
+        // Rakudo gives utf8/utf16/utf32 their element type and refuses blob8,
+        // blob32, Buf and Blob, which are aliases rather than classes there.
+        if (mm == "array_type" && inv.t == VT::Type) {
+            if (inv.s == "utf8")  return Value::typeObj("uint8");
+            if (inv.s == "utf16") return Value::typeObj("uint16");
+            if (inv.s == "utf32") return Value::typeObj("uint32");
+        }
         if (mm == "shortname") { // type name without its package qualifier
             std::string n = inv.typeName();
             size_t base = n.find('[');            // keep any [parametrization]

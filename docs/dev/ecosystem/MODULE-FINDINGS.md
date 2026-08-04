@@ -1443,3 +1443,38 @@ DateTime only. Doing it properly needs a method registry rakupp does not have,
 since the built-in methods are a dispatch chain rather than a table.
 
 **Battery: 38 of 59.**
+
+### `.^array_type`, and why NativeHelpers::Blob is NOT cheap tier
+
+51. **`.^array_type` — the element type of a buffer — did not exist.** A buffer
+    VALUE now answers it (uint8 for a plain Buf/Blob, the sized spellings from
+    `ofType`), and so do the `utf8`/`utf16`/`utf32` type objects. Measured
+    against Rakudo including what it REFUSES: `blob8`, `blob32`, `Buf` and `Blob`
+    as bare type objects have no such method there, being aliases rather than
+    classes, and we now refuse them too.
+
+**NativeHelpers::Blob cannot be reached by fixing the engine, and I had it
+ranked wrong.** The triage put it on the cheap tier at three files behind two
+missing methods. It is not: the module reads **MoarVM's private object memory
+layout**.
+
+```raku
+sub OBJECT_BODY(Mu \any) { Pointer.new(any.WHERE + Offset) }
+sub BODY_OF(Mu \any) { nativecast(Pointer[%known-bodies{any.REPR}], OBJECT_BODY(any)).deref }
+```
+
+`%known-bodies` maps a REPR name to a CStruct mirroring `MVMArrayBody`, and the
+callers then read `.realstart` off it. rakupp's Blob is a `std::string` inside a
+C++ Value; there is no `MVMArrayBody` at `WHERE + Offset` and there never will
+be.
+
+So the missing `.REPR` is **load-bearing in the right direction**: adding it
+would let `BODY_OF` proceed and `nativecast` a bogus pointer into arbitrary
+memory. Failing at `.REPR` is the correct behaviour, and it should stay failing.
+This is the first entry in this file that belongs to the wishlist's "cannot be
+made to work by fixing the engine" category rather than to the fix list.
+
+Roast 197,136 -> 197,141, 636 -> **637 files**; `t/run.raku` 289/289.
+
+**Battery: 38 of 59**, unchanged — the `.^array_type` fix is real but
+NativeHelpers::Blob stays DIFF for the reason above.
