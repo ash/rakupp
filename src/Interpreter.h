@@ -518,6 +518,10 @@ public:
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
     bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
+    // peel a `.grep(PRED)` off a loop source, so the alias sources above still
+    // recognise `for %h.values.grep(…) { $_ = … }` (Rakudo's grep is `is raw`)
+    Expr* peelGrepFilter(Expr* listExpr, Expr*& pred);
+    bool grepFilterKeeps(Expr* pred, const Value& v);
     // Invoke method `name` found from `startCls`, pushing a redispatch context so
     // callsame/nextsame reach the same method on the owning class's parent (recursively).
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,

@@ -2911,6 +2911,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
          m == "keys" || m == "kv" || m == "pairs" || m == "reverse" || m == "sort")) {
         Value o = Value::array(); o.isList = true; return o;
     }
+    // …and the same undefined invocant answers the list methods that REDUCE a
+    // list rather than return one. Rakudo reaches these through Any's
+    // iterable methods (an undefined invocant iterates as one Any element),
+    // so `%h<missing>.first({…})` is Nil, not a "no such method" death.
+    if ((inv.t == VT::Any || inv.t == VT::Nil) &&
+        (m == "first" || m == "head" || m == "tail" || m == "join" ||
+         m == "sum" || m == "min" || m == "max" || m == "skip" || m == "unique")) {
+        Value o = Value::array(); o.isList = true;
+        return methodCall(o, m, args, rwArgs);
+    }
     // `.ast`/`.made` on an undefined capture (e.g. `$<optional><tag>.ast`) degrades to Nil.
     if ((inv.t == VT::Any || inv.t == VT::Nil) && (m == "ast" || m == "made")) return Value::nil();
 

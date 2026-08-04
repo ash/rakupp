@@ -239,6 +239,21 @@ static bool valueEqv(const Value& a, const Value& b) {
     }
 }
 
+// `given $x { … }` / `for $x { … }` alias $_ TO THE VARIABLE, so mutating the
+// topic (s///, tr///, .=, ++) rewrites $x. We approximate the alias with a
+// copy-back when the scope leaves — but only when $_ actually changed, because
+// the body may equally assign the variable through its own name
+// (`$chunk .= new without $chunk`), and an unconditional copy-back would then
+// restore the stale topic over that write.
+struct TopicAlias {
+    Value* slot = nullptr; Env* sc = nullptr; Value orig;
+    ~TopicAlias() {
+        if (!slot || !sc) return;
+        auto it = sc->vars.find("$_");
+        if (it != sc->vars.end() && !valueEqv(it->second, orig)) *slot = it->second;
+    }
+};
+
 // Numify a string with Raku-correct result type (Int vs Num); undefined if non-numeric.
 // External linkage (declared in Interpreter.h) so Builtins.cpp's .Int/.Numeric can
 // reuse the BigInt-aware parse instead of the lossy long-long toInt().
@@ -5489,10 +5504,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                     return forResult();
                 }
-                auto valueAlias = rw ? nullptr : valuesAliasSource(fs->list.get());
+                Expr* gpred = nullptr;
+                Expr* gsrc = peelGrepFilter(fs->list.get(), gpred);
+                auto valueAlias = rw ? nullptr : valuesAliasSource(gsrc);
                 if (valueAlias) {
                     size_t i = 0, n = valueAlias->size();
                     for (auto& kv : *valueAlias) {
+                        if (!grepFilterKeeps(gpred, kv.second)) { i++; continue; }
                         env->vars["$_"] = kv.second;
                         bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == n, col);
                         kv.second = env->vars["$_"];
@@ -5642,9 +5660,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
                 // `for values %h { $_ = … }` writes back into the hash, same as
                 // `for @a` does into the array
-                if (auto valueAlias = valuesAliasSource(fs->list.get())) {
+                Expr* gpredB = nullptr;
+                Expr* gsrcB = peelGrepFilter(fs->list.get(), gpredB);
+                if (auto valueAlias = valuesAliasSource(gsrcB)) {
                     size_t i = 0, n = valueAlias->size();
                     for (auto& kv : *valueAlias) {
+                        if (!grepFilterKeeps(gpredB, kv.second)) { i++; continue; }
                         freshScope();
                         scope->define(var, kv.second);
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == n, col);
@@ -5722,8 +5743,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 return forResult();
             }
             size_t nvars = loopVars.empty() ? 1 : loopVars.size();
+            // `for $str { s/x/y/ }` — the topic is an ALIAS, so a mutation writes
+            // back to the variable, exactly as `given` does. An ARRAY source
+            // already writes through its elements; only a `$`-scalar source needs
+            // this, and only when the body topicalizes ($_ rather than a named
+            // loop variable).
+            Value* scalarSlot = nullptr;
+            if (scalarItem && loopVars.empty() && items.size() == 1 &&
+                fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->declare)
+                try { scalarSlot = lvalue(fs->list.get()); } catch (...) { scalarSlot = nullptr; }
             for (size_t i = 0; i < items.size(); i += nvars) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                TopicAlias tback{scalarSlot, scope.get(), items[i]};
                 if (loopVars.empty()) {
                     scope->define("$_", items[i]);
                 } else {
@@ -5751,6 +5782,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 auto env = tctx_.cur;
                 bool hadTopic = env->vars.count("$_");
                 Value savedTopic = hadTopic ? env->vars["$_"] : Value::any();
+                // `$_` is an ALIAS to the topic, not a copy: `s/x/y/ given $str`
+                // has to rewrite $str. Only a plain scalar variable is aliased
+                // here — an array/hash topic already writes through its elements,
+                // and a literal or call result has nowhere to write back to.
+                Value* topicSlot = nullptr;
+                if (g->topic && g->topic->kind == NK::VarExpr) {
+                    auto* tv = static_cast<VarExpr*>(g->topic.get());
+                    if (!tv->name.empty() && tv->name[0] == '$' && !tv->declare)
+                        try { topicSlot = lvalue(g->topic.get()); } catch (...) { topicSlot = nullptr; }
+                }
                 env->vars["$_"] = topic;
                 // `{ $^x } without X` — a placeholder block receives the topic as its argument
                 if (g->body) {
@@ -5775,10 +5816,21 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     throw;
                 }
                 tctx_.curGivenFrame = savedGF;
+                if (topicSlot && !valueEqv(env->vars["$_"], topic))
+                    *topicSlot = env->vars["$_"];   // write the alias back
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                 return r;
             }
             auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+            // the same aliasing as the modifier form above: `given $str { s/x/y/ }`
+            // rewrites $str
+            Value* topicSlot = nullptr;
+            if (g->topic && g->topic->kind == NK::VarExpr) {
+                auto* tv = static_cast<VarExpr*>(g->topic.get());
+                if (!tv->name.empty() && tv->name[0] == '$' && !tv->declare)
+                    try { topicSlot = lvalue(g->topic.get()); } catch (...) { topicSlot = nullptr; }
+            }
+            TopicAlias tback{topicSlot, scope.get(), topic};   // however the block exits
             scope->define("$_", topic);
             if (!g->var.empty()) scope->define(g->var, topic);
             // `do with (EXPR) { $^a … }` — a placeholder block receives the topic as
@@ -6745,6 +6797,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // candidate is out — `(Bool:D :$pad!)` does not bind `:pad('')`
             // (Base64's pad-rewrite chain relies on this to terminate)
             if (p.sigil == '$' && !p.type.empty() && !typeMatchesArg(sval, p.type)) return -1;
+            // a `&`-sigil named is implicitly Callable, whether or not it also
+            // spells a type — `(:&content)` must NOT bind `content => "text"`.
+            // HTTP::Tiny chains Str → Blob → Callable content multis, and the
+            // Callable one was swallowing the very first (string) call.
+            if (p.sigil == '&' && isDefined(sval) && sval.t != VT::Code &&
+                !(sval.t == VT::Object && sval.obj && sval.obj->cls &&
+                  sval.obj->cls->findMethod("CALL-ME"))) return -1;
             if (p.defConstraint == 1 && !isDefined(sval)) return -1;
             if (p.defConstraint == 2 && isDefined(sval)) return -1;
             // Rakudo's candidate sort treats a candidate REQUIRING a named as narrower
@@ -6860,7 +6919,12 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
         return hout;
     }
     Value out = Value::array();
-    if (inv.t == VT::Array && inv.arr)
+    // a Blob/Buf is Positional over its ELEMENTS, so `$blob».fmt('%08b')` runs
+    // once per byte — flatten() would hand back the whole buffer as one item
+    if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
+        for (auto& el : inv.blobList()) out.arr->push_back(methodCall(el, m, args));
+    }
+    else if (inv.t == VT::Array && inv.arr)
         for (auto& el : *inv.arr) out.arr->push_back(methodCall(el, m, args));
     else
         for (auto& el : inv.flatten()) out.arr->push_back(methodCall(el, m, args));
@@ -9577,6 +9641,31 @@ Value Interpreter::iterationSourceOf(Value v) {
 // `clip-to 0, $_, 255 for values %r`, an `is rw` sub that assigns to $_).
 // Returns the hash's storage when the loop's source is exactly that shape —
 // `values %h` or `%h.values` over a %-variable — and null otherwise.
+// Rakudo's `.grep` hands back the SAME containers it was given (`is raw`), so
+// `for %h.values.grep(*.starts-with('@')) { $_ = … }` writes into the hash. The
+// alias recognisers below only know the bare sources, so peel one `.grep` off
+// first and let the loop skip the elements the predicate rejects.
+Expr* Interpreter::peelGrepFilter(Expr* listExpr, Expr*& pred) {
+    pred = nullptr;
+    if (!listExpr || listExpr->kind != NK::MethodCall) return listExpr;
+    auto* mc = static_cast<MethodCall*>(listExpr);
+    if (mc->method != "grep" || mc->args.size() != 1 ||
+        mc->meta || mc->hyper || mc->maybe || mc->methodExpr) return listExpr;
+    pred = mc->args[0].get();
+    return mc->inv.get();
+}
+
+bool Interpreter::grepFilterKeeps(Expr* pred, const Value& v) {
+    if (!pred) return true;
+    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    env->define("$_", v);
+    auto saved = tctx_.cur; tctx_.cur = env;
+    Value pv;
+    try { pv = eval(pred); } catch (...) { tctx_.cur = saved; throw; }
+    tctx_.cur = saved;
+    return matcherAccepts(*this, v, pv);
+}
+
 std::shared_ptr<std::map<std::string, Value>> Interpreter::valuesAliasSource(Expr* listExpr) {
     if (!listExpr) return nullptr;
     Expr* hashArg = nullptr;
@@ -9591,7 +9680,10 @@ std::shared_ptr<std::map<std::string, Value>> Interpreter::valuesAliasSource(Exp
     }
     if (!hashArg || hashArg->kind != NK::VarExpr) return nullptr;
     auto* ve = static_cast<VarExpr*>(hashArg);
-    if (ve->name.empty() || ve->name[0] != '%') return nullptr;
+    // `%h.values` — and equally `.values` on a $-scalar (usually the topic) that
+    // HOLDS a hash: `with %p<a><b> { for .values { $_ = … } }` writes into the
+    // very same storage, because a Hash Value shares its map.
+    if (ve->name.empty() || (ve->name[0] != '%' && ve->name[0] != '$')) return nullptr;
     Value* hv = tctx_.cur->find(ve->name);
     if (!hv || hv->t != VT::Hash || !hv->hash || !hv->hashKind.empty()) return nullptr;
     return hv->hash;
@@ -13348,6 +13440,30 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     };
     auto interp = [&](const std::string& s, const Value& mv) -> std::string {
         std::string r;
+        // `$0.uc()` in a replacement is a METHOD CALL, exactly as in any other
+        // interpolating string — and, as there, only WITH parentheses (`$0.uc`
+        // stays the capture followed by literal text). Without this the capture
+        // interpolated and `.uc()` came out verbatim, so HTTP::Tiny's header
+        // capitalisation emitted `h.uc()ost:` on the wire. The captures are
+        // already bound in scope by bindCaps(), so the expression is simply
+        // evaluated rather than re-implemented here.
+        auto methodChain = [&](size_t start, size_t after) -> size_t {
+            size_t j = after, last = after;
+            while (j + 1 < s.size() && s[j] == '.' &&
+                   (std::isalpha((unsigned char)s[j + 1]) || s[j + 1] == '_')) {
+                size_t k = j + 1;
+                while (k < s.size() && (std::isalnum((unsigned char)s[k]) || s[k] == '_' || s[k] == '-')) k++;
+                if (k >= s.size() || s[k] != '(') break;   // no parens: not a call
+                int depth = 0; size_t e = k;
+                for (; e < s.size(); e++) {
+                    if (s[e] == '(') depth++;
+                    else if (s[e] == ')') { if (--depth == 0) { e++; break; } }
+                }
+                if (depth != 0) break;                     // unbalanced: leave it literal
+                j = e; last = e;
+            }
+            return last > after ? last : start;             // start = "no chain found"
+        };
         for (size_t i = 0; i < s.size(); i++) {
             if (s[i] == '\\' && i + 1 < s.size()) {
                 // the replacement side is qq-ish: decode the standard escapes
@@ -13368,6 +13484,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             }
             if (s[i] == '$' && i + 1 < s.size() && std::isdigit((unsigned char)s[i + 1])) {
                 size_t j = i + 1; std::string num; while (j < s.size() && std::isdigit((unsigned char)s[j])) num += s[j++];
+                size_t chainEnd = methodChain(i, j);
+                if (chainEnd != i) {
+                    try { r += evalString(s.substr(i, chainEnd - i)).toStr(); i = chainEnd - 1; continue; }
+                    catch (...) { }                        // fall back to the plain capture
+                }
                 long idx = std::stol(num); if (mv.arr && idx < (long)mv.arr->size()) r += (*mv.arr)[idx].toStr();
                 i = j - 1; continue;
             }
@@ -14552,10 +14673,65 @@ Value Interpreter::evalBinary(Binary* b) {
     if (op == "..." || op == "...^" || op == "^..." || op == "^...^") {
         // sequence operator: seed [, closure] ... endpoint|*. A leading `^`
         // excludes the seed, a trailing one the endpoint.
-        Value l = eval(b->lhs.get());
-        Value r = eval(b->rhs.get());
-        Value out = seqOp(std::move(l), std::move(r), op.back() == '^');
-        if (op.front() == '^' && out.t == VT::Array && out.arr && !out.arr->empty())
+        //
+        // It is a LIST infix, so `1 ... 5 ... 1` and `'A'...'Z', 'a'...'z'` are
+        // ONE operator over a list of lists: each operand group's FIRST element
+        // is the endpoint that closes the previous segment, and the rest of the
+        // group is emitted verbatim and seeds the next one. Only a chain, or a
+        // syntactic comma group on the right, takes this path — a plain
+        // `seed ... endpoint` keeps the original single-segment behaviour, and
+        // an endpoint that merely HAPPENS to be list-valued still means what it
+        // always did.
+        auto isSeqOp = [](const std::string& o) {
+            return o == "..." || o == "...^" || o == "^..." || o == "^...^";
+        };
+        std::vector<Binary*> spine;              // outermost first
+        {
+            Expr* n = b;
+            while (n && n->kind == NK::Binary && isSeqOp(static_cast<Binary*>(n)->op)) {
+                spine.push_back(static_cast<Binary*>(n));
+                n = static_cast<Binary*>(n)->lhs.get();
+            }
+        }
+        std::reverse(spine.begin(), spine.end());   // innermost (the seed end) first
+        bool grouped = spine.size() > 1;
+        for (auto* sn : spine)
+            if (sn->rhs && sn->rhs->kind == NK::ListExpr &&
+                !static_cast<ListExpr*>(sn->rhs.get())->parenned) grouped = true;
+        if (!grouped) {
+            Value l = eval(b->lhs.get());
+            Value r = eval(b->rhs.get());
+            Value out = seqOp(std::move(l), std::move(r), op.back() == '^');
+            if (op.front() == '^' && out.t == VT::Array && out.arr && !out.arr->empty())
+                out.arr->erase(out.arr->begin());
+            return out;
+        }
+        // group i>0 comes from spine[i-1]->rhs; group 0 is the innermost lhs
+        auto groupOf = [&](Expr* e) {
+            std::vector<Value> g;
+            if (e->kind == NK::ListExpr && !static_cast<ListExpr*>(e)->parenned)
+                for (auto& it : static_cast<ListExpr*>(e)->items) g.push_back(eval(it.get()));
+            else g.push_back(eval(e));
+            return g;
+        };
+        Value cur = eval(spine.front()->lhs.get());   // the seed group, whole
+        Value out = Value::array(); out.isList = true; out.s = "Seq";
+        size_t skip = 0;                              // head of the segment already emitted
+        for (size_t i = 0; i < spine.size(); i++) {
+            std::vector<Value> g = groupOf(spine[i]->rhs.get());
+            Value seg = seqOp(cur, g[0], spine[i]->op.back() == '^');
+            if (seg.t == VT::Array && seg.arr)
+                for (size_t k = skip; k < seg.arr->size(); k++) out.arr->push_back((*seg.arr)[k]);
+            else if (skip == 0) out.arr->push_back(seg);
+            if (g.size() > 1) {
+                Value rest = Value::array(); rest.isList = true;
+                for (size_t k = 1; k < g.size(); k++) { out.arr->push_back(g[k]); rest.arr->push_back(g[k]); }
+                cur = rest; skip = rest.arr->size();
+            } else {
+                cur = out.arr->empty() ? Value::any() : out.arr->back(); skip = 1;
+            }
+        }
+        if (spine.front()->op.front() == '^' && !out.arr->empty())
             out.arr->erase(out.arr->begin());
         return out;
     }
@@ -18173,7 +18349,12 @@ Value Interpreter::eval(Expr* e) {
                             for (auto& el : *inv.arr) out.arr->push_back(callCallable(mv, ValueList{el}));
                         return out;
                     }
-                    return callCallable(mv, ca);
+                    Value cres = callCallable(mv, ca);
+                    // `.=` still mutates through an INDIRECT call: `$auth .= &url-decode`
+                    // is `$auth = url-decode($auth)` (HTTP::Tiny decodes the userinfo
+                    // this way), and the plain-method path below never sees it.
+                    if (mc->mutate) { if (Value* lv = lvalue(mc->inv.get())) *lv = cres; }
+                    return cres;
                 }
                 mc->method = mv.toStr(); // resolved here so write- routing below sees it
             }

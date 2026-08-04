@@ -143,7 +143,11 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == ".." || o == "..^" || o == "^.." || o == "^..^") { in.valid = true; in.lbp = BP_RANGE; in.isRange = true; return in; }
         // sequence op: looser than comma, so `1,3 ... 19` seeds with (1,3).
         // `^` on either end excludes that endpoint (`1 ^... 5` is 2,3,4,5).
-        if (o == "..." || o == "...^" || o == "^..." || o == "^...^") { in.valid = true; in.lbp = BP_COMMA; return in; }
+        // the sequence op is a LIST INFIX, like Z/X: looser than comma, so
+        // `'A'...'Z', 'a'...'z', 0...9` is one chained sequence whose operands
+        // are comma groups, not a comma list of sequences (evalBinary walks the
+        // chain and applies Rakudo's list-of-lists semantics)
+        if (o == "..." || o == "...^" || o == "^..." || o == "^...^") { in.valid = true; in.lbp = BP_ZIP; return in; }
         if (o == "==>") { in.valid = true; in.lbp = BP_OR; return in; } // forward feed (left-assoc: data flows L→R)
         if (o == "<==") { in.valid = true; in.lbp = BP_OR; in.rightAssoc = true; return in; } // backward feed (right-assoc: the far-right source flows leftward)
         if (o == "==" || o == "!=" || o == "<" || o == "<=" || o == ">" || o == ">=" ||

@@ -1672,3 +1672,95 @@ HTTP::Tiny's three remaining files no longer die on `.message` of an `Any`; they
 now fail on ordinary URL-parsing assertions, where `$out.slurp` comes back empty
 because the test's `$*HTTP-TINY-HANDLE` never receives the request. Different
 bug, still open.
+
+## 2026-08-05 — one test file, six general bugs
+
+Running `t/requests.t` from HTTP::Tiny 0.2.6 by hand and fixing whatever it hit
+next turned out to be a good way to find general faults. Six, in the order the
+file met them.
+
+**1. The status line came back with a NUL in front of it.** Not a parsing bug at
+all — a regression from the `given`/`for` topic-aliasing work landed earlier the
+same day. That change wrote `$_` back into the topic variable when the scope
+left, unconditionally. HTTP::Tiny opens a method with
+
+```raku
+$chunk .= new without $chunk;
+```
+
+The body assigns the variable *through its own name*; the copy-back then put the
+stale topic (the `Blob[uint8]` type object) back over it, and
+`Blob[uint8].new($that)` is a one-element buffer holding 0. The aliasing is now
+conditional: copy back only when `$_` actually changed. A real alias would not
+need the guard, but the interpreter stores variables by value.
+
+**2. `.first` on an undefined invocant died.** Rakudo reaches `Any`'s iterable
+methods, where an undefined invocant iterates as one `Any` element, so
+`%h<missing>.first({…})` is Nil. rakupp had an arm for the list methods that
+RETURN a list (`map`/`grep`/`sort`/…) but not for the ones that reduce one —
+`first`, `head`, `tail`, `join`, `sum`, `min`, `max`.
+
+**3. The sequence operator had the wrong precedence and the wrong arity.** The
+base64 alphabet is written
+
+```raku
+my constant %enc = ( 'A'...'Z', 'a'...'z', 0...9, '+', '/' ).pairs;
+```
+
+`...` is a LIST infix — looser than comma, like `Z` and `X` — and it is
+list-associative, so that is ONE operator over four comma groups, not a comma
+list of three sequences. Rakudo's rule, derived by probing: each group's FIRST
+element is the endpoint that closes the previous segment, and the rest of the
+group is emitted verbatim and seeds the next one. That is also what makes the
+documented `1 ... 5 ... 1` turn around at 5.
+
+rakupp had `...` at comma precedence and strictly binary, so the alphabet came
+out as three nested Seqs (3 pairs instead of 64) and `1 ... 5 ... 1` stopped at
+5. Fixed in both places: `BP_ZIP` in the parser, and `evalBinary` now walks the
+chain's left spine and applies the group algorithm. A single `seed ... endpoint`
+with no comma group on the right keeps the original path untouched.
+
+**4. `»` did not iterate a Blob.** `$blob».fmt('%08b')` ran once, on the whole
+buffer, so every byte of the base64 input became the buffer's byte COUNT.
+`hyperMethodEach` fell through to `flatten()`, which hands a Blob back as one
+item; it now uses `blobList()` for a Blob/Buf invocant, the same rule the rest of
+the method surface already follows.
+
+**5. `.=` did not mutate through an indirect call.** `$auth .= &url-decode`
+parses as an indirect method call (the `&name` becomes a `methodExpr`), and that
+branch returned the result without ever consulting `mc->mutate`. So the userinfo
+was base64'd still percent-encoded. Plain `.= uc` was fine — again two copies of
+one path, one of which never got the feature.
+
+**6. A `&`-sigil named parameter bound a Str.** HTTP::Tiny's content handling is
+a multi chain: `Str:D :$content` encodes to a Blob, `Blob:D :$content` wraps it
+in a closure, and the real method takes `:&content`. rakupp type-checked a named
+argument only for `$`-sigil parameters, so the `:&content` candidate accepted the
+original string and the chain never ran — "Cannot invoke non-Callable value of
+type Str". A `&`-sigil parameter is implicitly Callable whether or not it also
+spells a type.
+
+Along the way, `for %h.values.grep(…) { $_ = … }` was made to alias. Rakudo's
+`grep` is `is raw`, so the survivors are the same containers; rakupp's syntactic
+alias recognisers now peel one `.grep` off the loop source and skip the elements
+the predicate rejects. The same recogniser also accepts a `$`-scalar holding a
+hash, which is how the idiom appears under `with`:
+
+```raku
+with %params<request><named><content> {
+    for .values.grep: *.starts-with('@') { $_ = .substr(1).IO }
+}
+```
+
+`t/requests.t` goes from dying on test 2 to passing 5 and reaching the sixth.
+
+### Still open
+
+`.^lookup` on a builtin invocant always answers a method object, so
+`"bar".^lookup('slurp')` is truthy where Rakudo says `Mu`. HTTP::Tiny uses
+exactly that to tell an `IO::Path` form field from a plain one, and so tries to
+slurp the string. The mirror-image fault is `.can`, which answers False for
+every builtin method (`"bar".can('uc')`). Both want a real "does this builtin
+type have this method" oracle, which the interpreter does not have — dispatch is
+an if-chain over string literals, not a table. Left alone rather than papered
+over with another curated list.
