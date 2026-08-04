@@ -1638,3 +1638,37 @@ is the one that told the truth here; the file count did not.
 
 (Both binaries still exceed 200 s on `t/rfc4231.t` run directly, so the file is
 slow either way — SHA-384/512 remain the open item from the Digest thread.)
+
+### 56. A CATCH inside a method never worked
+
+```raku
+class C { method m() { CATCH { default { return 'got' } }; die 'boom' } }
+C.new.m      # Rakudo: got      rakupp: (Any)
+```
+
+Two faults in one path, and the second explains the odd symptom:
+
+- **`invokeMethod` had no CATCH handling at all.** Its unwinder ended in
+  `catch (...) { restore; throw; }`, while `callCallable` carries a full one —
+  topic binding, the `when`/`default` match rule, the ReturnEx-from-CATCH case,
+  the unmatched-rethrow. Two copies of one path and only the sub side ever got
+  the feature. **The third time this exact shape appears in this file.**
+- **It also ran the CATCH block INLINE**, as an ordinary body statement. Every
+  other statement runner skips a block with `isCatch`; this loop did not. So the
+  handler fired immediately with no exception in hand (`$_` was `Any`) and its
+  value became the method's return value — which is why the symptom looked like a
+  topic bug rather than a missing handler.
+
+Both fixed. Verified against Rakudo on seven shapes: the topic is the exception,
+`return` from `default` and from a `when` clause both leave the method, an
+unmatched CATCH rethrows, a CATCH does NOT run when nothing throws, it catches
+from a callee, and a private method behaves the same.
+
+Roast 197,136 -> 197,137 / 636, the only movement being `S17-supply/lines.t`, the
+known random one. `t/run.raku` 293/293 — a clean landing for a change this deep
+in the unwinder.
+
+HTTP::Tiny's three remaining files no longer die on `.message` of an `Any`; they
+now fail on ordinary URL-parsing assertions, where `$out.slurp` comes back empty
+because the test's `$*HTTP-TINY-HANDLE` never receives the request. Different
+bug, still open.

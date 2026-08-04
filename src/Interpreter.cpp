@@ -9069,11 +9069,26 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // `method t { my $auth = … if $cond; $auth ~= … }` died "not declared"
     // whenever the condition was false (rakupp issue #13's follow-up).
     if (c.body) hoistExprDecls(*c.body, tctx_.cur.get(), &c.hoistNeed);
+    // A method body may carry a CATCH, exactly as a sub's does. This path had no
+    // handling for one at all — its unwinder ended in `catch (...) { restore;
+    // throw; }` — so `method m { CATCH { default { return … } }; die }` lost the
+    // return and answered Any, while the same code in a `sub` worked. Two copies
+    // of one path, and only callCallable ever got the feature.
+    Block* catchBlk = nullptr;
+    if (c.body)
+        for (auto& st : *c.body)
+            if (st->kind == NK::Block && static_cast<Block*>(st.get())->isCatch)
+                catchBlk = static_cast<Block*>(st.get());
     try {
         if (c.body) {
             size_t nst = c.body->size();
             for (size_t i = 0; i < nst; i++) {
                 auto* s = (*c.body)[i].get();
+                // a CATCH block is a HANDLER, not a statement: the other runners
+                // skip it in normal flow and this one ran it inline, so it fired
+                // with no exception in hand ($_ was Any) and its value became the
+                // method's.
+                if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 if (i + 1 == nst && s->kind == NK::ReturnStmt) { // tail return: no unwind
                     auto* r = static_cast<ReturnStmt*>(s);
                     last = r->value ? eval(r->value.get()) : Value::any();
@@ -9094,6 +9109,31 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
         return b.hasVal ? b.v : last;
+    }
+    catch (RakuError& e) {
+        if (!catchBlk) { tctx_.cur = saved; throw; }
+        tctx_.cur->define("$_", exceptionFor(e));
+        tctx_.cur->define("$!", exceptionFor(e));
+        bool matched = false;
+        try {
+            struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_};
+            for (auto& st : catchBlk->stmts) exec(st.get());
+        }
+        catch (BreakGivenEx&) { matched = true; }   // a when/default matched
+        catch (ResumeEx&)     { matched = true; }   // .resume: absorbed
+        catch (ReturnEx& r) {                       // `return`/`fail` from the CATCH
+            tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
+            if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
+            return r.v;
+        }
+        catch (...) { tctx_.cur = saved; throw; }   // die/rethrow from the CATCH
+        // Only a matching when/default handles it; an unmatched CATCH rethrows.
+        if (!matched) { tctx_.cur = saved; throw; }
+        tctx_.cur = saved;
+        copyOutRw(c.params, env, rwArgs, true);
+        if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
+        if (tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
+        return Value::nil();
     }
     catch (...) { tctx_.cur = saved; throw; }
     tctx_.cur = saved;
