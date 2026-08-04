@@ -1347,4 +1347,6 @@ measured on this machine while they sit there is suspect.
 Roast 197,121 -> 197,125, and 634 -> **635 files**:
 `integration/advent2012-day10.t` goes 25/26 -> 26/26. No losses.
 
-**Battery: 36 of 59.** The reachable ceiling is 52.
+**Battery: 35 of 59** (32 at the v1.8.0 tag: +Digest::HMAC, +LWP::Simple,
++JSON::Tiny). The reachable ceiling is 52 — six distributions are ENV, where
+Rakudo itself passes nothing, and one ships no tests.
