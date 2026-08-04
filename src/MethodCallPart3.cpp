@@ -472,8 +472,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // Foo.isa(Foo) / $obj.isa("Any") / 5.isa(Int) — walk the class chain, then
         // built-in ancestry. Works on any value via its type name.
         std::string want = args[0].t == VT::Type ? args[0].s : args[0].toStr();
+        // a parameterized type object carries its parameter separately
+        if (args[0].t == VT::Type && !args[0].ofType.empty() &&
+            want.find('[') == std::string::npos)
+            want += "[" + args[0].ofType + "]";
         std::string tn = inv.t == VT::Type ? inv.s : (inv.obj && inv.obj->cls ? inv.obj->cls->name : inv.typeName());
+        if (inv.t == VT::Type && !inv.ofType.empty() && tn.find('[') == std::string::npos)
+            tn += "[" + inv.ofType + "]";
         if (tn == want || want == "Any" || want == "Mu") return Value::boolean(true);
+        // `CArray[int32]` IS a `CArray`: an unparameterized want matches the base
+        // of a parameterized type. (The reverse does not hold — a bare CArray is
+        // not a CArray[int32].)
+        if (want.find('[') == std::string::npos) {
+            size_t br = tn.find('[');
+            if (br != std::string::npos && tn.compare(0, br, want) == 0) return Value::boolean(true);
+        }
         // an allomorph (IntStr/NumStr/RatStr/ComplexStr) IS both its numeric
         // type and Str by inheritance
         if (inv.isAllomorph() &&

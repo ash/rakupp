@@ -1392,3 +1392,29 @@ A measuring note worth keeping: the run before this one read 196,793, a drop of
 (`S32-list/pick.t` and `S17-procasync/stress.t`). Re-run on their own they give
 318 and 24 exactly as before. The denominator moving with the numerator is the
 tell — see COUNTING.md.
+
+### NativeHelpers::Array: a CArray knows its own type
+
+48. **A CArray reported itself as `Str`.** It is stored as raw bytes in a Str,
+    and `typeName()` had no arm for it, so `.^name` lied and every type test on a
+    CArray was False — `$c ~~ CArray` included. The element type was already
+    being recorded (in `enumName`), which is what makes the parameterized
+    spelling possible: `CArray[int32]`.
+49. **`.isa` did not compose the parameter.** A parameterized type object carries
+    its parameter separately, so `.isa(CArray[int32])` compared "CArray[int32]"
+    against a bare "CArray" and failed — while `~~` had gone through
+    `typeNameConforms` and answered True all along. `.isa` is what `isa-ok` uses,
+    which is why the module saw it and the smartmatch tests did not. A bare
+    `.isa(CArray)` now matches a parameterized value too, and not the reverse.
+
+**NativeHelpers::Array PASS.** Roast unmoved at 197,137 / 636 — no file changed
+at all, which is the right outcome for a fix this narrow.
+
+**A known divergence, deliberately left:** Rakudo names these fully —
+`NativeCall::Types::CArray[int32]`, with `.isa("CArray")` False and
+`.isa("NativeCall::Types::CArray")` True. We use the short name for the type
+OBJECT as well, so rakupp is self-consistent, and qualifying it would touch the
+whole NativeCall surface. The regression file asserts the name by suffix so it
+passes on both engines and the divergence stays visible rather than pinned.
+
+**Battery: 37 of 59.**
