@@ -2652,6 +2652,37 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
         std::string mn = args.empty() ? "" : args[0].toStr();
         Value out = Value::array(); out.isList = true;
+        // A BUILT-IN value answers .can too. Everything below this was gated on a
+        // user ClassInfo, so `Date.new(…).can('day-of-week')` was False even
+        // though the method plainly works — and a module that GATES on .can, as
+        // Date::Calendar::Strftime does for %u and %V, silently emitted the
+        // format specifier instead of the value. The Dateish set is enumerated
+        // against Rakudo's own answers rather than guessed.
+        if (inv.t == VT::Hash && (inv.hashKind == "Date" || inv.hashKind == "DateTime")) {
+            static const std::set<std::string> dateish = {
+                "year", "month", "day", "day-of-week", "day-of-month", "day-of-year",
+                "week", "week-number", "week-year", "days-in-month", "is-leap-year",
+                "daycount", "yyyy-mm-dd", "dd-mm-yyyy", "mm-dd-yyyy",
+                "later", "earlier", "truncated-to", "Str", "gist", "raku", "clone",
+                "DateTime", "Date", "defined", "new" };
+            static const std::set<std::string> timeOnly = {
+                "hour", "minute", "second", "whole-second", "timezone",
+                "utc", "local", "in-timezone", "posix" };
+            static const std::set<std::string> dateOnly = { "succ", "pred" };
+            bool isDT = inv.hashKind == "DateTime";
+            if (dateish.count(mn) || (isDT ? timeOnly.count(mn) : dateOnly.count(mn))) {
+                Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
+                stub.code->name = mn; stub.code->isMethod = true;
+                std::string mnc = mn;
+                stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                    if (a.empty()) return Value::any();
+                    ValueList rest(a.begin() + 1, a.end());
+                    return I.methodCall(a[0], mnc, std::move(rest));
+                };
+                out.arr->push_back(stub);
+                return out;
+            }
+        }
         ClassInfo* ci = nullptr;
         if (inv.t == VT::Object && inv.obj) ci = inv.obj->cls.get();
         else if (inv.t == VT::Type) { auto it = classes_.find(resolveClassAlias(inv.s)); if (it != classes_.end()) ci = it->second.get(); }

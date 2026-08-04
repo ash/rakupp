@@ -1418,3 +1418,28 @@ whole NativeCall surface. The regression file asserts the name by suffix so it
 passes on both engines and the divergence stays visible rather than pinned.
 
 **Battery: 37 of 59.**
+
+### Date::Calendar::Strftime: a built-in value answers .can
+
+50. **`.can` was gated entirely on a user ClassInfo**, so a built-in value always
+    answered False — `Date.new(2001,2,1).can('day-of-week')` was False even
+    though the method plainly works and returns 4. That is quiet in the worst
+    way: a module which GATES on `.can`, rather than calling and catching, simply
+    takes the other branch. Date::Calendar::Strftime does exactly that for its
+    `%u` and `%V` specifiers, so a format came back with the specifiers still in
+    it (`"2001-02-01 2001 2001 2001 %V %u %Ep"`) and nothing anywhere said why.
+
+    The Dateish sets were enumerated from **Rakudo's own `.can` answers** rather
+    than guessed, which is what caught the split: `succ`/`pred` are Date's alone,
+    and `hour`/`minute`/`second`/`timezone`/`utc`/`local`/`in-timezone`/`posix`
+    are DateTime's. rakupp now matches Rakudo name-for-name on both types.
+
+**Date::Calendar::Strftime PASS.** Roast 197,137 -> 197,136 / 636 — the single
+assertion is `integration/advent2012-day13.t`, the known random one.
+`t/run.raku` 288/288.
+
+`.can` on other built-in types is still narrow: this arm covers Date and
+DateTime only. Doing it properly needs a method registry rakupp does not have,
+since the built-in methods are a dispatch chain rather than a table.
+
+**Battery: 38 of 59.**
