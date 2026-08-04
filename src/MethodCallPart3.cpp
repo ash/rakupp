@@ -507,6 +507,42 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& anc : typeAncestry(tn)) if (anc == want) return Value::boolean(true);
         return Value::boolean(false);
     }
+    // `&f.cando(\(1, 2))` — the candidates that would accept that capture, as a
+    // list (empty when none would). Multi dispatch already answers exactly this
+    // question through scoreCandidate; there was simply no method exposing it,
+    // and HTTP::Tiny gates its cookie-jar check on `.cando`.
+    if (m == "cando" && inv.t == VT::Code && inv.code && !args.empty()) {
+        ValueList call;                      // the capture's parts, as a call would see them
+        const Value& cap = args[0];
+        if (cap.t == VT::Array && cap.arr)
+            for (auto& x : *cap.arr) {
+                Value e = x;
+                if (e.t == VT::Pair) e.namedArg = true;   // its NAMED parts
+                call.push_back(std::move(e));
+            }
+        else call.push_back(cap);
+        // On a METHOD the capture's first positional is the INVOCANT, which is not
+        // part of the parameter list — `$m.cando: \(Jar, 'GET', 'x')` asks whether
+        // `method add($, $)` accepts the two that follow.
+        auto forCand = [&](const Value& c) {
+            if (!(c.t == VT::Code && c.code && c.code->isMethod)) return call;
+            ValueList rest;
+            for (size_t i = 1; i < call.size(); i++) rest.push_back(call[i]);
+            return rest;
+        };
+        Value out = Value::array(); out.isList = true;
+        // Candidates, whenever there are any — an explicit `proto g(|) {*}` is not
+        // flagged as a dispatcher, and scoring ITS signature accepts anything.
+        if (!inv.code->candidates.empty()) {
+            for (auto& c : inv.code->candidates) {
+                if (c.t == VT::Code && c.code && c.code->isProto) continue; // the proto
+                                        // defines the group; its `|` accepts anything
+                if (scoreCandidate(c, forCand(c)) >= 0) out.arr->push_back(c);
+            }
+        }
+        else if (scoreCandidate(inv, forCand(inv)) >= 0) out.arr->push_back(inv);
+        return out;
+    }
     if (m == "package" && inv.t == VT::Code && inv.code)
         return Value::typeObj(inv.code->pkg.empty() ? "GLOBAL" : inv.code->pkg);
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of

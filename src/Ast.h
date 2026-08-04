@@ -422,6 +422,9 @@ struct WhileStmt : Stmt {
     std::unique_ptr<Block> body;
     bool isUntil = false;
     std::string var; // `while EXPR -> $x { }` binds each cond value to $x
+    std::vector<Param> params;  // full pointy signature — `while $c.receive ->
+                                // (:key($k), :value($v)) {…}` destructures each
+                                // value, bound through bindParams like `for` does
     bool asExpr = false; // used in value context: collect each iteration's value into a List
     bool modifier = false; // `STMT while COND` postfix form — no implicit block (a `my` in STMT leaks out)
     WhileStmt(): Stmt(NK::WhileStmt) {}

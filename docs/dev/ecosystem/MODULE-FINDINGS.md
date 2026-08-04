@@ -1574,3 +1574,40 @@ it. The count is not a queue any more; the remaining distributions all want real
 investigation before an estimate is worth anything.
 
 **Battery: 38 of 59.**
+
+### HTTP::Tiny: 5 -> 7 of 10, and a bigger fish spotted
+
+54. **`while EXPR -> (:key($k), :value($v))`** — a destructuring signature.
+    `WhileStmt` held a single loop-variable NAME, so a file using this failed to
+    parse outright. It carries a full `params` list now and binds through
+    `bindParams`, exactly as `ForStmt` already did; positional destructuring
+    (`-> ($a, $b)`) comes along for free.
+55. **`.cando(\capture)`** did not exist. Multi dispatch already answers precisely
+    this question through `scoreCandidate`; nothing exposed it. Two details the
+    regression file caught, both after the first version looked right:
+    on a METHOD the capture's first positional is the INVOCANT and is not a
+    parameter, and an explicit `proto g(|) {*}` sits in the candidate list, where
+    its `|` signature accepts everything — the real dispatcher already skips it,
+    and `.cando` has to as well.
+
+Roast unmoved at 197,136 / 636 across both. `t/run.raku` 293/293.
+
+### Found on the way, and NOT fixed: a CATCH in a method loses its `return`
+
+```raku
+class C { method pub() { CATCH { default { return "got" } }; die "boom" } }
+say C.new.pub;      # Rakudo: got        rakupp: (Any)
+```
+
+A plain `sub` is fine. The cause is structural: **`invokeMethod` has no CATCH
+handling at all** — its body loop ends in `catch (...) { restore; throw; }` —
+while `callCallable` has a full one, including the `ReturnEx`-from-CATCH case
+with its own comment about `fail` inside a CATCH. Two copies of the same path,
+one of which never got the feature. That is the third time this exact shape has
+appeared in this file.
+
+Left for its own change: it is a real fix in unwinding code, wants the full gate
+behind it, and is not what HTTP::Tiny's last three files need first. Those three
+all die on `.message` of an `Any` inside exactly this construct.
+
+**Battery: 38 of 59.** HTTP::Tiny is now the closest at 7 of 10.

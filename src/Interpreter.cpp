@@ -5366,7 +5366,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (ws->modifier) scope = tctx_.cur;
                 else if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                 else scope->vars.clear(); // reuse buckets, drop last iteration's bindings
-                if (!ws->var.empty()) scope->define(ws->var, cv); // while EXPR -> $x { }
+                if (!ws->params.empty()) {
+                    // `while EXPR -> (:key($k), :value($v))` — the condition's value
+                    // is the single argument of the pointy signature, exactly as a
+                    // `for` topic is.
+                    ValueList one{cv};
+                    one[0].namedArg = false;
+                    bindParams(ws->params, one, scope);
+                }
+                else if (!ws->var.empty()) scope->define(ws->var, cv); // while EXPR -> $x { }
                 // FIRST runs on the first iteration only; LAST would need lookahead, so it
                 // is approximated as always-last (a single flag can't know the true last).
                 if (!runLoopBody(ws->body.get(), scope, ws->label, firstIter, true, col)) break;

@@ -5848,7 +5848,18 @@ StmtPtr Parser::parseWhile(bool isUntil) {
     s->isUntil = isUntil;
     { bool sv = stmtCond_; stmtCond_ = true; s->cond = parseExpression(); stmtCond_ = sv; }
     if (matchOp("->")) {
-        if (isKind(Tok::Var)) s->var = advance().text;
+        // a DESTRUCTURING signature: `while $c.receive -> (:key($i), :value($r))`.
+        // Only a single name was accepted, so a Cro test that unpacks each value
+        // this way failed to parse at all.
+        if (isKind(Tok::LParen)) {
+            advance();
+            Param outer;
+            outer.name = "$__while-topic";
+            outer.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+            if (!matchKind(Tok::RParen)) error("expected ')' in while loop signature");
+            s->params.push_back(std::move(outer));
+        }
+        else if (isKind(Tok::Var)) s->var = advance().text;
         // sigilless loop variable: `while self.row -> \r { … }`. Only the sigilled
         // form was accepted, so the `\` was left for parseBlock and the whole
         // module failed to parse — DBIish's StatementHandle is written this way.
