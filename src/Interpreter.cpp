@@ -15577,7 +15577,16 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
                 }
             }
             else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
-            else if (v.t == VT::Hash && v.hash) { for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); } }
+            // `|%h` slips a HASH as named arguments — but only a real Hash or Map.
+            // Plenty of ordinary objects are hash-BACKED here (DateTime, Instant,
+            // Proxy, Set…), and slipping their internals as nameds meant the value
+            // itself never arrived: `$.to-string(|$args)` in DateTime::Format's
+            // CALL-ME handed to-string no positional at all, so it worked on the
+            // DateTime TYPE OBJECT. The list-literal path already drew this line.
+            else if (v.t == VT::Hash && v.hash &&
+                     (v.hashKind.empty() || v.hashKind == "Map")) {
+                for (auto& kv : *v.hash) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); }
+            }
             // `|` on a PAIR passes it as a NAMED argument (`f(1, |(:tee<OUT>))`,
             // and the conditional form `|(:tee<OUT> if $on)` Test::Output uses).
             // A pair inside a slipped LIST stays positional — that is Rakudo's

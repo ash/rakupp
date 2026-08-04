@@ -783,7 +783,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Type && (inv.s == "DateTime" || inv.s == "Date")) {
         // a `:formatter(&code)` is stored and applied by .Str (Rakudo's stringifier hook)
         Value formatter; bool haveFmt = false;
-        for (auto& a : args) if (a.t == VT::Pair && a.s == "formatter" && a.pairVal && a.pairVal->t == VT::Code)
+        // A formatter need not be a bare Code: `does Callable` + `method CALL-ME`
+        // is how DateTime::Format ships one, and callCallable already invokes
+        // that. Requiring VT::Code here dropped the argument on the floor and the
+        // DateTime silently stringified as ISO-8601 instead.
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "formatter" && a.pairVal &&
+                                 (a.pairVal->t == VT::Code || a.pairVal->t == VT::Object))
             { formatter = *a.pairVal; haveFmt = true; }
         auto mk = [&](long long y, long long mo, long long d, long long h, long long mi, Value sec, long long posix, long long tz) {
             // reject out-of-range fields (Rakudo dies): month 1..12, day 1..days-in-month,
@@ -996,7 +1001,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto fld = [&](const char* k) { auto it = inv.hash->find(k); return it != inv.hash->end() ? it->second.toInt() : 0; };
         // a stored `:formatter(&code)` drives .Str and .gist — `say` shows the
         // formatted form too (Dateish gist delegates to Str)
-        if ((m == "Str" || m == "gist") && inv.hash->count("formatter") && (*inv.hash)["formatter"].t == VT::Code) {
+        if ((m == "Str" || m == "gist") && inv.hash->count("formatter") &&
+            ((*inv.hash)["formatter"].t == VT::Code || (*inv.hash)["formatter"].t == VT::Object)) {
             ValueList fa{inv};
             return Value::str(callCallable((*inv.hash)["formatter"], fa).toStr());
         }
@@ -1057,6 +1063,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long y, mo, d; daysToCivil(days, y, mo, d);
             long long outSec = rem % 60 + leap;
             Value v = Value::makeHash(); v.hashKind = "DateTime";
+            // a conversion keeps the formatter: `$dt.utc`, `.local`, `.clone`,
+            // `.in-timezone`, `.later`, `.earlier` all stay formatted, as in Rakudo
+            if (inv.hash->count("formatter")) (*v.hash)["formatter"] = (*inv.hash)["formatter"];
             (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
             (*v.hash)["hour"] = Value::integer(rem / 3600); (*v.hash)["minute"] = Value::integer((rem % 3600) / 60);
             (*v.hash)["second"] = frac != 0.0 ? Value::number(outSec + frac) : Value::integer(outSec);
@@ -1153,6 +1162,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             daysToCivil(dayNum, y, mo, d);
             long long nh = totSec / 3600, nmi = (totSec % 3600) / 60, nsec = totSec % 60;
             Value v = Value::makeHash(); v.hashKind = "DateTime";
+            // a conversion keeps the formatter: `$dt.utc`, `.local`, `.clone`,
+            // `.in-timezone`, `.later`, `.earlier` all stay formatted, as in Rakudo
+            if (inv.hash->count("formatter")) (*v.hash)["formatter"] = (*inv.hash)["formatter"];
             (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
             (*v.hash)["hour"] = Value::integer(nh); (*v.hash)["minute"] = Value::integer(nmi);
             (*v.hash)["second"] = frac != 0.0 ? Value::number((double)nsec + frac) : Value::integer(nsec);
@@ -1179,6 +1191,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long tz = fld("timezone");
             long long ep = civilToDays(y, mo, d) * 86400 + h * 3600 + mi * 60 + si - tz;
             Value v = Value::makeHash(); v.hashKind = "DateTime";
+            // a conversion keeps the formatter: `$dt.utc`, `.local`, `.clone`,
+            // `.in-timezone`, `.later`, `.earlier` all stay formatted, as in Rakudo
+            if (inv.hash->count("formatter")) (*v.hash)["formatter"] = (*inv.hash)["formatter"];
             (*v.hash)["year"] = Value::integer(y); (*v.hash)["month"] = Value::integer(mo); (*v.hash)["day"] = Value::integer(d);
             (*v.hash)["hour"] = Value::integer(h); (*v.hash)["minute"] = Value::integer(mi);
             (*v.hash)["second"] = (u == "second" && sec != std::floor(sec)) ? Value::number(sec) : Value::integer((long long)sec);
@@ -2893,7 +2908,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // validate (rejecting e.g. `.clone(month => 13)`), recomputing posix.
     if (m == "clone" && inv.t == VT::Hash && (inv.hashKind == "DateTime" || inv.hashKind == "Date") && inv.hash) {
         std::map<std::string, Value> merged;
-        for (const char* k : {"year", "month", "day", "hour", "minute", "second", "timezone"})
+        // the formatter travels with the clone, like every other conversion
+        for (const char* k : {"year", "month", "day", "hour", "minute", "second", "timezone", "formatter"})
             if (inv.hash->count(k)) merged[k] = (*inv.hash)[k];
         for (auto& a : args) if (a.t == VT::Pair && a.pairVal) merged[a.s] = *a.pairVal;
         ValueList na; for (auto& kv : merged) na.push_back(Value::pair(kv.first, kv.second));

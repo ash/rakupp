@@ -1350,3 +1350,45 @@ Roast 197,121 -> 197,125, and 634 -> **635 files**:
 **Battery: 35 of 59** (32 at the v1.8.0 tag: +Digest::HMAC, +LWP::Simple,
 +JSON::Tiny). The reachable ceiling is 52 — six distributions are ENV, where
 Rakudo itself passes nothing, and one ships no tests.
+
+### DateTime::Format: four fixes, and the widest one yet
+
+44. **`$.name(ARGS)` was not a method call.** It parsed as the no-argument
+    accessor `$.name` followed by a postfix call on whatever that returned, so
+    the arguments never arrived and the result was invoked as though it were a
+    Callable — "Cannot invoke non-Callable value of type Str". The colon
+    spelling, `$.a: 40, 2`, is the same construct and now takes the same path.
+
+    Roast has had a test for this since RT #61988 and we had never reached it:
+    `S12-methods/syntax.t` aborted at 12 of its 15. It now runs 14 and passes
+    them, and `S12-class/inheritance.t` goes 21/24 -> 31/36 — that file, too, was
+    stopping early on this.
+
+    Two things nearly slipped past on the way in. The argument loop first used
+    `parseExpr(BP_COMMA)`, which SWALLOWS the comma, so `$.a(2, 3)` arrived as a
+    single list argument that numified to its element count — the method answered
+    `2` instead of `5`, quietly. And `$!name(…)` deliberately does NOT take this
+    path: a private attribute is not a method.
+
+45. **A formatter may be an object doing `Callable`**, not only a bare Code —
+    which is exactly how DateTime::Format ships one (`does Callable` plus
+    `method CALL-ME`). `callCallable` had always handled that shape; the DateTime
+    code gated on `VT::Code` before reaching it and dropped the argument.
+46. **Every DateTime conversion keeps its formatter** — `.utc`, `.local`,
+    `.clone`, `.in-timezone`, `.later`, `.earlier`. Only `.new` carried it, so a
+    formatted DateTime lost its formatting the moment it was converted, which is
+    the second assertion of the RFC-2822 test.
+47. **`|$obj` passes the object as ONE positional.** Only a real Hash or Map
+    slips as named arguments, and plenty of ordinary values are hash-BACKED here
+    (DateTime, Instant, Proxy, the Set family). Slipping their internals meant
+    the value never arrived: `$.to-string(|$args)` handed to-string no positional
+    at all, so it ran on the DateTime TYPE OBJECT. The list-literal path had
+    drawn this line already; the ARGUMENT path had not.
+
+**DateTime::Format PASS.** Roast 197,125 -> 197,137, 635 -> **636 files**.
+
+A measuring note worth keeping: the run before this one read 196,793, a drop of
+332, which was entirely two files timing out under machine load
+(`S32-list/pick.t` and `S17-procasync/stress.t`). Re-run on their own they give
+318 and 24 exactly as before. The denominator moving with the numerator is the
+tell — see COUNTING.md.

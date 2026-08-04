@@ -2710,6 +2710,40 @@ ExprPtr Parser::parsePrimary() {
             }
             int ln = cur().line;
             std::string raw = advance().text;
+            // `$.name(ARGS)` is `self.name(ARGS)` — a method call that TAKES those
+            // arguments. It used to parse as the no-argument accessor `$.name`
+            // followed by a postfix call on whatever that returned, so
+            // `$.to-string(|$args)` ran to-string with nothing and then tried to
+            // invoke its Str result ("Cannot invoke non-Callable value of type
+            // Str"). `$!name(…)` cannot be a call at all — a private attribute is
+            // not a method — so only the `.` twigil takes this path.
+            // …and the colon spelling of the same call, `$.a: 40, 2`, which is
+            // the listop form every other method call already accepts.
+            bool dotColonCall = raw.size() > 2 && raw[0] == '$' && raw[1] == '.' &&
+                                isOp(":") && !cur().spaceBefore &&
+                                peek().kind != Tok::RParen && peek().kind != Tok::Semicolon &&
+                                !(peek().kind == Tok::Op && peek().text == "=");
+            if (raw.size() > 2 && raw[0] == '$' && raw[1] == '.' &&
+                ((isKind(Tok::LParen) && !cur().spaceBefore) || dotColonCall)) {
+                bool paren = isKind(Tok::LParen);
+                advance(); // ( or :
+                auto mc = std::make_unique<MethodCall>();
+                mc->line = ln;
+                mc->inv = std::make_unique<SelfTerm>();
+                mc->method = raw.substr(2);
+                if (paren ? !isKind(Tok::RParen) : true)
+                    for (;;) {
+                        // BP_COMMA + 1: stop AT the comma so each argument is its
+                        // own. At BP_COMMA the comma is swallowed and `$.a(2, 3)`
+                        // arrives as one list argument, which numifies to its
+                        // element count — `2`, quietly, instead of 5.
+                        mc->args.push_back(parseExpr(BP_COMMA + 1));
+                        if (isKind(Tok::Comma)) { advance(); continue; }
+                        break;
+                    }
+                if (paren) expectKind(Tok::RParen, ")");
+                return mc;
+            }
             auto e = std::make_unique<VarExpr>(stripPseudoPkg(raw));
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
             e->line = ln; return e;
