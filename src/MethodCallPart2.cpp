@@ -1962,8 +1962,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             else if (at.type == "str") seed = Value::str("");
                             else if (std::isupper((unsigned char)at.type[0])) seed = Value::typeObj(at.type);
                         }
-                        if (!at.containerIs.empty() && at.sigil == '%')
-                            seed = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
+                        bool userContainer = false;
+                        if (!at.containerIs.empty() && at.sigil == '%') {
+                            static const std::set<std::string> quant = {
+                                "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+                            if (quant.count(at.containerIs))
+                                seed = makeBaggy({}, at.containerIs); // has %.a is Set — empty Setty
+                            else if (classes_.count(at.containerIs)) {
+                                userContainer = true;
+                                // a USER type: the attribute IS an instance of it, so
+                                // its methods are reachable. DBIish declares
+                                // `has %.Converter is DBDish::TypeConverter` and then
+                                // calls `.convert` on it; as a plain Hash there was no
+                                // such method and nothing said which line was at fault.
+                                ValueList none;
+                                seed = methodCall(Value::typeObj(at.containerIs), "new", none);
+                            }
+                        }
                         // Pre-seed the slot so a self-referential default (`.= new`,
                         // or one reading $!this-attr) sees the seed, not an unset Any.
                         od->attrs[at.name] = seed;
@@ -1975,7 +1990,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         // (Array)/(Hash) and the default renderer shows [1, 2] /
                         // {:a(1)} rather than the List and Pair the initialiser
                         // happened to produce.
-                        dv = coerceToSigil(dv, at.sigil);
+                        // …but a USER container type is the value: coercing it to
+                        // the sigil would turn the object straight back into the
+                        // plain Hash it was declared not to be.
+                        if (!userContainer) dv = coerceToSigil(dv, at.sigil);
                         od->attrs[at.name] = dv;
                     }
                 // the default constructor binds nameds to declared PUBLIC attributes

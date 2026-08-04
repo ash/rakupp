@@ -1478,3 +1478,44 @@ Roast 197,136 -> 197,141, 636 -> **637 files**; `t/run.raku` 289/289.
 
 **Battery: 38 of 59**, unchanged — the `.^array_type` fix is real but
 NativeHelpers::Blob stays DIFF for the reason above.
+
+## 2026-08-04 (cont.) — pushing past the cheap tier
+
+52. **`has %.x is SomeType` makes the attribute an INSTANCE of that type**, not a
+    plain Hash. Only the QuantHash family (`is Set`, `is Bag`, …) was recognised,
+    so DBIish's `has %.Converter is DBDish::TypeConverter` stayed a Hash and
+    `.convert` on it was "No such method 'convert' for invocant of type 'Hash'".
+
+    Three separate things had to line up, and the first two were near-misses:
+    the trait is recorded in `skipTraits`, NOT in the class-body parser I patched
+    first; and the seed was being undone at the end by `coerceToSigil`, which
+    turned the freshly built object straight back into the Hash it was declared
+    not to be. `is Set` survived that only because a Setty is hash-backed.
+
+    Recording any capitalised trait name is safe on its own: the interpreter acts
+    only on a `%` sigil whose trait names the QuantHash family or a class it
+    knows, so an ordinary uppercase trait still does nothing.
+
+### An object's `.Str`: a real divergence, measured and NOT taken
+
+Rakudo gives an object with no `.Str` a DISTINGUISHING identity —
+`K<6297087282688>` — and we give every instance of a class the same `K<obj>`. So
+anything comparing two objects by their string form calls them equal, and
+`Test`'s `isnt $a, $b` on a clone is exactly that: Config's `t/09-cloning.t`
+asserts a clone is not its source, and passed nothing.
+
+Making `.Str` carry the object's address fixes that file (Config 6/9 -> 7/9) and
+**costs two Roast assertions**, in `S12-attributes/clone.t` and
+`S09-typed-arrays/hashes.t`. Bisected against a stashed rebuild: the attribute
+fix above is clean, and these two are the stringification change alone. The
+symptom is unrelated on its face — `$obj.arr = 'g','h','i'` through an accessor
+yields `"g"` instead of the list — which says something in rakupp depends on
+objects stringifying alike, and that is its own bug.
+
+**Not taken**, because it does not reach the goal either: Config stays DIFF at
+7/9 regardless, so the trade would have been two Roast assertions for nothing.
+Worth doing once the dependency underneath is found.
+
+**Battery: 38 of 59**, unchanged this round. DBIish is still the closest at 35 of
+its 37 files, needing `Stub code executed` and the built-in conversions of
+`DBDish::TypeConverter`.

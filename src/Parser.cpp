@@ -1714,8 +1714,16 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             static const std::set<std::string> containers = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash", "List"};
+            // `is Set` / `is List` — and any other TYPE name, because
+            // `has %.Converter is DBDish::TypeConverter` makes the attribute an
+            // instance of that type rather than a plain Hash. Recording a name
+            // here is harmless on its own: the interpreter acts only on a `%`
+            // sigil whose trait names the QuantHash family or a class it knows,
+            // so an ordinary uppercase trait (is DEPRECATED) still does nothing.
             bool wasContainer = wasIs && containers.count(cur().text);
-            if (wasContainer) lastContainerIs_ = cur().text; // my %h is Set / my @a is List
+            bool wasTypeName = wasIs && !cur().text.empty() &&
+                               std::isupper((unsigned char)cur().text[0]);
+            if (wasContainer || wasTypeName) lastContainerIs_ = cur().text;
             if (wasIs && cur().text == "dynamic") lastIsDynamic_ = true; // my $x is dynamic
             if (wasIs && cur().text == "export") lastIsExport_ = true;   // our %x is export
             advance(); // trait name / type
@@ -5579,9 +5587,14 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         pos_ = save;                                  // not a literal: fall through
                     }
                     if (tr == "is" && isKind(Tok::Ident)) {
-                        static const std::set<std::string> containers = {
-                            "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-                        if (containers.count(cur().text)) a.containerIs = cur().text; // has %.a is Set
+                        // `has %.a is Set` — the QuantHash family, and also any
+                        // user type: `has %.Converter is DBDish::TypeConverter`
+                        // makes the attribute an instance of that role, not a
+                        // plain Hash. Only a capitalised name, so `is rw` and the
+                        // other lowercase traits are untouched.
+                        const std::string& tn = cur().text;
+                        if (!tn.empty() && std::isupper((unsigned char)tn[0]))
+                            a.containerIs = tn;
                     }
                     if (isKind(Tok::Ident) || isKind(Tok::Var)) advance();
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
