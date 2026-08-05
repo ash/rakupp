@@ -6672,7 +6672,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         for (auto& a : args) if (isNamedArg(a)) rest.push_back(a);
         int s = scoreCandidate(tv, rest);
         if (s < 0) return -1;
-        score += 1 + s;
+        score += 2 + s;
     }
     for (size_t i = 0; i < positional.size() && i < pos.size(); i++) {
         const Param* p = positional[i];
@@ -6681,7 +6681,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             bool eq = (pos[i].isNumeric() && lv.isNumeric()) ? (pos[i].toNum() == lv.toNum())
                                                              : (pos[i].toStr() == lv.toStr());
             if (!eq) return -1;
-            score += 3; // a literal match is very specific
+            score += 6; // a literal match is very specific
             continue;
         }
         // destructuring param `[$a,$b]`: the arg must be a list/array whose element
@@ -6699,12 +6699,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             size_t got = pos[i].arr->size();
             if (got < reqd) return -1;
             if (!sslurpy && got > tot) return -1;
-            score += 3; // a matching-arity destructure is very specific
+            score += 6; // a matching-arity destructure is very specific
             continue;
         }
         if (subsets_.count(p->type)) {
             if (!subsetMatches(p->type, pos[i])) return -1;
-            score += 2; // a satisfied subset is very specific
+            score += 4; // a satisfied subset is very specific
         }
         else if (p->sigil == '&' && !p->type.empty() && p->type != "Callable") {
             // `Int &x` constrains the routine's RETURN type — not modeled; accept
@@ -6734,7 +6734,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             const Value& av = pos[i];
             if (p->sigil == '@' ? av.t != VT::Array : av.t != VT::Hash) return -1;
             if (av.ofType != p->type) return -1;
-            score += 2;
+            score += 4;
         }
         // A bare `@a` / `%h` parameter IS a type constraint: the sigil means
         // Positional / Associative. Without this the sigil said nothing, so
@@ -6750,16 +6750,30 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (!ok) return -1;
             // Outranks a coercion parameter, which scores 2 by accepting anything
             // convertible: `read(@paths)` must beat `read(IO() $path)` for a list.
-            score += 3;
+            score += 6;
         }
         else if (!typeMatchesArg(pos[i], p->type)) return -1;
         // type smiley: :D requires a defined arg, :U requires an undefined one
         if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
         if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
-        if (p->defConstraint) score++; // a smiley is more specific
+        if (p->defConstraint) score += 2; // a smiley is more specific
+        // `Any` is narrower than `Mu` — Mu is the root, and everything except a
+        // Junction is an Any. Both matched everything and scored the same, so
+        // declaration order decided: Data::Dump writes `multi Dump(Mu $obj) {
+        // $obj.gist }` ahead of the real `multi Dump(Any $obj)`, and every call
+        // got the gist.
+        {   // a Junction is Mu but NOT Any; nor is the Mu type object itself
+            bool junc = pos[i].t == VT::Array && pos[i].arr &&
+                        (pos[i].enumName == "any" || pos[i].enumName == "all" ||
+                         pos[i].enumName == "one" || pos[i].enumName == "none");
+            if (p->type == "Any" && !junc &&
+                !(pos[i].t == VT::Type && pos[i].s == "Mu")) score++;
+        }
         if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
-            score++;                                   // constrained at all beats unconstrained
-            if (p->type == pos[i].typeName()) score++; // exact type is more specific than a supertype
+            score += 2;                                // constrained at all beats unconstrained
+                                                       // (2, so a NOMINAL type still outranks the
+                                                       // `Any`-beats-`Mu` point given just above)
+            if (p->type == pos[i].typeName()) score += 2; // exact type is more specific than a supertype
                                                        // (so multi f(Int) beats multi f(Numeric) for an Int)
         }
         if (p->whereExpr) {
@@ -6788,7 +6802,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             } catch (...) { tctx_.cur = saved; return -1; }
             tctx_.cur = saved;
             if (!ok) return -1;
-            score += 2; // a satisfied where-constraint is more specific
+            score += 4; // a satisfied where-constraint is more specific
         }
     }
     // named params: a REQUIRED named (`:$test!`) disqualifies the candidate when
@@ -6838,7 +6852,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // `:$pad!`/`:$uri!`/`:$str!` adverb multis (each `(Bool:D :$x!, |c)`) must
             // beat the positionally-typed `(Str:D $s, |c)` when their named is passed.
             // A large fixed boost approximates that lexicographic rule.
-            score += p.required ? 16 : 2;
+            score += p.required ? 32 : 4;  // (doubled with the positional scale)
         }
         if (p.whereExpr) {
             Value v = supplied ? sval
