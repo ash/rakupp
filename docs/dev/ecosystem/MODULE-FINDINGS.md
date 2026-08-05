@@ -1896,7 +1896,31 @@ Fixing the dist in hand and gating on Roast is not enough. Roast did not move fo
 either regression — both live in shapes only real module code writes. The whole
 battery has to run after each batch, not just the dist being worked on.
 
-One open oddity: the runner reports IO::Glob 6/8 while running its files in place
-gives 8/8. The runner stages a copy into a temp directory, so something in that
-suite is sensitive to the working directory. Worth a look before trusting that
-row either way.
+### The oddity was mine, and it hid three more bugs
+
+The runner said IO::Glob 6/8 where my by-hand check said 8/8. **The runner was
+right.** Counting `not ok` lines reports zero both when a file passes and when it
+dies before emitting anything; the runner also requires exit 0. The same trap
+appears earlier in this session — noticed, written down, then walked into anyway.
+Verify a file passed, not that it printed no failures.
+
+Behind it, three general faults:
+
+- **An object that `does Iterable` had no list methods.** `glob('*.md').sort` was
+  "no such method". It now answers the set Rakudo's Iterable role supplies —
+  sort/map/grep/first/head/tail/unique/squish/Seq/flat — through its own
+  `.iterator`. Not the whole list surface: Rakudo's split is irregular, and
+  `.list`/`.elems`/`.reverse`/`.join`/`.kv` on an Iterable object mean the
+  invocant AS ONE ITEM. Each was checked against Rakudo one at a time rather than
+  assumed.
+- **`my @files = $iterable-object` did not iterate.** `coerceHash` already asked
+  an object what it holds (that fix landed for zef's config object); `coerceArray`
+  never did.
+- **A named parameter could not carry a sub-signature after its `!`.**
+  `:@specification! (Optionality $o, Version $v)` — the sub-signature check ran
+  before the required-marker was consumed, so the `(` fell through as a syntax
+  error. META6 declares a `trait_mod` that way, which took Test::META down at
+  PARSE time for every suite that uses it.
+
+IO::Glob 6/8 → 7/8, matching Rakudo file-for-file, which puts the battery at
+**38 of 59**.
