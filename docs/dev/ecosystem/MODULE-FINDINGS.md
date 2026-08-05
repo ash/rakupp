@@ -2032,3 +2032,24 @@ could hit.
 Remaining DIFF, closest first: Config 7/9, Text::Utils 11/18, Log::Async 5/17,
 AttrX::Mooish 12/35, Cro::Core 2/9, then the Cro::HTTP / HTTP::UserAgent /
 Digest / NativeHelpers::Blob tail (the last two want native-struct work).
+
+## 2026-08-05 (later still) — Digest 0/4 → 4/4: seven faults on the numeric floor
+
+Digest's five algorithms are pure Raku, so its suite is a stress test of the
+interpreter's numeric and native-int floor. Seven general faults (commit
+efed6dd): lazy-divisor `polymod` saturating on BigInt (every EXPECTED value in
+the tests was corrupt — the digests half the time were right); prefix `+^`
+saturating a top-bit-set 64-bit word to LLONG_MIN (one line, and SHA-512 plus
+all of HMAC-384/512 came back); a statement-modifier `given` never collecting
+`$^placeholders` (SHA-3's ROL64 simply had no parameters); Buf element writes
+via `op=` and range-slice assignment replacing the buffer with an Array
+(Keccak's state); native-int params not truncating on bind (RIPEMD's rotl);
+`map fn, (A), (B)` flattening tuples; and `blob8 $x` losing a multi to bare
+`@lanes` — fixed by re-spacing the whole specificity ladder (literal 16 >
+subset 12 > typed container 10 > nominal 8 > sigil 6, coercions still 0).
+
+With `--timeout=600` the verdict is **PASS 4/4 vs 4/4**. Under the battery's
+default 60s the ripemd file (a 1MB input digested in an interpreted loop) will
+TIME out — a speed matter, not correctness; both engines pass every assertion.
+
+Roast 197,221 → 197,232, only the flaky stress file moving; t/run.raku 306/306.
