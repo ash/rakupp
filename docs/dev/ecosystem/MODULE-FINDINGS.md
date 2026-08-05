@@ -1979,3 +1979,43 @@ made twice in one session.
 Battery holds at **40 PASS · 12 DIFF · 6 ENV · 1 NOTESTS** — Trap and
 Test::Output confirmed PASS, Test::META up from 0/3 to 1/3 (the named-parameter
 sub-signature fix lets META6 parse), and no distribution regressed.
+
+## 2026-08-05 (later) — JSON::Fast 5/14 → 14/14, ten faults, none about JSON
+
+The same loop, richest haul yet. JSON::Fast is nqp-heavy, so its suite reaches
+the runtime's lowest layers. Highlights (full list in commit ddc75ad):
+
+- **A repeat `use` never re-imported.** `loadModule` returned on the cache hit,
+  so a module's `sub EXPORT(*@_)` ran only for the FIRST use-statement —
+  JSON::Fast's `use JSON::Fast <immutable !pretty>` in one block and plain
+  `use JSON::Fast` in the next got the first block's bindings or nothing. The
+  EXPORT sub is now kept per module and replayed per use. Two roast module files
+  (gh2979.t, nested.t) turned PASS off the same fix.
+- **Enums were shallow.** Values did not do `Enumeration`, a pair-valued enum
+  (`One => "Eins"`) lost its values, `Bool::` was empty, and the enum TYPE
+  object was *defined* — where Rakudo's is a type object, so JSON::Fast's
+  `with obj` ladder renders it "null". The definedness rule now lives in ONE
+  place (rtIsDefined) — the `.defined` method had its own copy, which is this
+  codebase's oldest failure shape again.
+- **NFG at the nqp seams.** `~` composed combining marks but `.join`,
+  `nqp::join`, `nqp::concat` and `nqp::strfromcodes` did not; JSON::Fast
+  round-trips strings through NFD codes and back, so `"möp stüff"` came out
+  byte-decomposed and `eq` failed while `.ords` looked identical. That last
+  detail made it genuinely hard to see.
+- **`nqp::create` matched class names by full name.** A `my class ... is
+  repr("VMHash")` inside a module carries the package prefix
+  (JSON::Fast::IterationMap), so create returned a BUFFER and every bindkey
+  vanished. Matched by base name now; `create(Map)` also keeps Map identity.
+- **An augment shadowed instead of adding.** `augment class DateTime { multi
+  method new(Any:U) {…} }` made every other `DateTime.new` die "no matching
+  candidate". An augment's multi that matches nothing now falls through to the
+  built-in method.
+- **`@a »=~=« @b`** — a hyper around a USER infix — failed twice: the parse, and
+  the trailing `=` misread as compound assignment. Plus a ternary is an lvalue
+  over the branch its condition picks (`($c ?? $x !! $y) = 5`), and rw
+  write-back reaches through `++$var` — both shapes are how JSON::Fast threads
+  its parse position.
+
+**14/14 — one better than Rakudo, which fails a race file in this environment.**
+Roast up 197,184 → ~197,192 with two files improving and nothing regressing;
+t/run.raku 304/304.
