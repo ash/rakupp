@@ -1,5 +1,5 @@
 #include "MethodCallSegment.h"
-#include <sys/time.h> // gettimeofday — DateTime.now subsecond stamp
+#include <chrono> // DateTime.now subsecond stamp (portable — MSVC has no sys/time.h)
 
 // Segment 2 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -864,11 +864,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "now" || m == "today") {
             // DateTime.now carries fractional seconds (Rakudo prints six digits;
             // Log::Async's default-format test matches `'.' \d+` in the stamp).
-            // Date.today ignores the second slot entirely.
-            struct timeval tv; gettimeofday(&tv, nullptr);
-            time_t t = tv.tv_sec; struct tm* lt = localtime(&t);
+            // Date.today ignores the second slot entirely. Both fields derive
+            // from ONE microsecond reading so the fraction can't straddle a
+            // second boundary. std::chrono, not gettimeofday: MSVC has no
+            // sys/time.h.
+            long long us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            time_t t = (time_t)(us / 1000000); struct tm* lt = localtime(&t);
             Value sec = inv.s == "Date" ? Value::integer(lt->tm_sec)
-                      : Value::number((double)lt->tm_sec + (double)tv.tv_usec / 1e6);
+                      : Value::number((double)lt->tm_sec + (double)(us % 1000000) / 1e6);
             return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, sec, (long long)t, tzOffsetDyn());
         }
         if (m == "new") {
