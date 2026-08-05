@@ -4826,6 +4826,17 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         }
         if (matchOp("?")) p.optional = true;
         else if (matchOp("!")) p.required = true;
+        // …and the sub-signature may sit AFTER the `?`/`!` marker:
+        // `:@specification! (Optionality $o, Version $v)` — the check above runs
+        // before the marker is consumed, so a required named parameter with one
+        // never matched and the `(` fell through as a syntax error. META6 declares
+        // its trait_mod that way, which took Test::META (and any suite that uses
+        // it) down at parse time.
+        if (!p.subSig && isKind(Tok::LParen) && cur().spaceBefore) {
+            advance(); // '('
+            p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+            if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
+        }
         // invocant marker:  method m ($self: $arg)  — ':' separates invocant from rest
         if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
         // where / is / returns / of trait clauses

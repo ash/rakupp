@@ -1383,6 +1383,14 @@ static Value coerceArray(const Value& v) {
         }
         return Value::array(v.flatten());
     }
+    // …and an OBJECT assigned to an `@` container is asked what it holds, the same
+    // way a `%` assignment already did: Rakudo's list store walks the right-hand
+    // side's `.list`, whose default is built on `.iterator`. `my @files =
+    // glob('*.md')` is the files, not one IO::Glob.
+    if (v.t == VT::Object && g_objListItems) {
+        ValueList items;
+        if (g_objListItems(v, items)) { Value r = Value::array(std::move(items)); r.isList = false; return r; }
+    }
     Value a = Value::array();
     if (v.t != VT::Nil && v.t != VT::Any) a.arr->push_back(v);
     return a;

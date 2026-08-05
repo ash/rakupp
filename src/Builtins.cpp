@@ -4762,6 +4762,26 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return grammarParse(c, "", /*subparse=*/false, m, Value());
             }
     }
+    // An ITERABLE object answers the list methods that Rakudo's Iterable role
+    // supplies, by running its own `.iterator`: `glob('*.md').sort` works because
+    // IO::Glob `does Iterable`. Deliberately NOT the whole list surface — Rakudo
+    // splits it, and `.list`/`.elems`/`.reverse`/`.join`/`.kv` on an Iterable
+    // object mean the invocant AS ONE ITEM (checked against Rakudo, one by one).
+    if (inv.t == VT::Object && inv.obj && inv.obj->cls) {
+        static const std::set<std::string> kIterableMethods = {
+            "sort", "map", "grep", "first", "head", "tail", "unique", "squish",
+            "Seq", "flat" };
+        if (kIterableMethods.count(m)) {
+            bool iterable = inv.obj->cls->findMethod("iterator") != nullptr;
+            for (ClassInfo* c = inv.obj->cls.get(); c && !iterable; c = c->parent.get())
+                if (c->doesRole("Iterable")) iterable = true;
+            ValueList items;
+            if (iterable && objListItems(inv, items)) {
+                Value lst = Value::array(); lst.isList = true; *lst.arr = std::move(items);
+                return methodCall(lst, m, args, rwArgs);
+            }
+        }
+    }
     if (std::getenv("RAKUPP_TRACE"))
         std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
                   << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";
