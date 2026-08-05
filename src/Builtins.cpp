@@ -7908,14 +7908,24 @@ void Interpreter::registerBuiltins() {
     };
     B["map"] = [](Interpreter& I, ValueList& a) -> Value {
         Value out = Value::array(); out.isList = true; out.s = "Seq";
-        if (a.size() >= 2 && a[0].t == VT::Code)
-            for (size_t i = 1; i < a.size(); i++) // `map fn, 1, 2, 3` — every list arg
-                for (auto& v : toList(a[i])) {
-                    Value r = I.callCallable(a[0], {v});
-                    if (r.t == VT::Array && r.isList && r.s == "Slip")
-                        for (auto& x : *r.arr) out.arr->push_back(x);
-                    else out.arr->push_back(r);
-                }
+        auto emit = [&](const Value& v) {
+            Value r = I.callCallable(a[0], {v});
+            if (r.t == VT::Array && r.isList && r.s == "Slip")
+                for (auto& x : *r.arr) out.arr->push_back(x);
+            else out.arr->push_back(r);
+        };
+        if (a.size() >= 2 && a[0].t == VT::Code) {
+            // the single-arg rule: ONE list argument is iterated; with SEVERAL,
+            // each argument is one element (a parenthesized group stays whole —
+            // Digest::RIPEMD maps a destructuring block over two tuples), except
+            // a Slip, which always flattens in
+            if (a.size() == 2) { for (auto& v : toList(a[1])) emit(v); }
+            else for (size_t i = 1; i < a.size(); i++) {
+                if (a[i].t == VT::Array && a[i].isList && a[i].s == "Slip")
+                    for (auto& v : *a[i].arr) emit(v);
+                else emit(a[i]);
+            }
+        }
         return out;
     };
     B["grep"] = [](Interpreter& I, ValueList& a) -> Value {

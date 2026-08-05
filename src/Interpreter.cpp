@@ -640,6 +640,15 @@ static void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
                             collectPHStmt(static_cast<const WhileStmt*>(s)->body.get(), out); break;
         case NK::ForStmt: collectPHExpr(static_cast<const ForStmt*>(s)->list.get(), out);
                           collectPHStmt(static_cast<const ForStmt*>(s)->body.get(), out); break;
+        // `EXPR given $^n % 64` — a statement-modifier given/with: BOTH sides may
+        // carry placeholders (Digest::SHA3's ROL64 is written exactly this way).
+        // Only the MODIFIER form: a block given owns its own scope.
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            if (g->modifier) {
+                collectPHExpr(g->topic.get(), out);
+                if (g->body) for (auto& st : g->body->stmts) collectPHStmt(st.get(), out);
+            }
+            break; }
         default: break;
     }
 }
@@ -6154,6 +6163,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (i < args.size()) {
                     Value v = args[i];
                     if (!params[i].type.empty()) typeCheckBind(params[i], v);
+                    // a native-int param truncates on bind (see the slow path)
+                    { bool sg; int bits = Value::natWidthOfType(params[i].type, sg);
+                      if (bits) wrapNative(v, bits, sg); }
                     v.readonly = true;               // plain scalar param is readonly
                     env->define(params[i].name, std::move(v));
                 } else {
@@ -6398,6 +6410,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Unexpected named argument '" + kv.first + "' passed"};
 
+    // a NATIVE-int parameter truncates its argument at bind time, as Rakudo's
+    // does: `sub f(uint32 $n)` called with 2**40+5 binds 5. Digest::RIPEMD's
+    // rotl leans on exactly this — without the wrap its accumulator grew a few
+    // bits every round and the digest was garbage by round three. The wrap also
+    // marks the slot natBits, so assignments inside keep wrapping.
+    for (auto& p : params) {
+        if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
+        bool sign; int bits = Value::natWidthOfType(p.type, sign);
+        if (!bits) continue;
+        if (Value* bound = env->find(p.name))
+            wrapNative(*bound, bits, sign);
+    }
     // enforce `where` constraints on the bound values (a single sub isn't dispatched,
     // so scoreCandidate never ran — `sub p(Int $n where * > 0)` must reject p(-1))
     for (auto& p : params) {
@@ -6715,7 +6739,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             bool eq = (pos[i].isNumeric() && lv.isNumeric()) ? (pos[i].toNum() == lv.toNum())
                                                              : (pos[i].toStr() == lv.toStr());
             if (!eq) return -1;
-            score += 6; // a literal match is very specific
+            score += 16; // a literal match is the narrowest thing there is
             continue;
         }
         // destructuring param `[$a,$b]`: the arg must be a list/array whose element
@@ -6738,7 +6762,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         }
         if (subsets_.count(p->type)) {
             if (!subsetMatches(p->type, pos[i])) return -1;
-            score += 4; // a satisfied subset is very specific
+            score += 12; // a satisfied subset is narrower than its base nominal
         }
         else if (p->sigil == '&' && !p->type.empty() && p->type != "Callable") {
             // `Int &x` constrains the routine's RETURN type — not modeled; accept
@@ -6768,7 +6792,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             const Value& av = pos[i];
             if (p->sigil == '@' ? av.t != VT::Array : av.t != VT::Hash) return -1;
             if (av.ofType != p->type) return -1;
-            score += 4;
+            score += 10;
         }
         // A bare `@a` / `%h` parameter IS a type constraint: the sigil means
         // Positional / Associative. Without this the sigil said nothing, so
@@ -6803,8 +6827,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             if (p->type == "Any" && !junc &&
                 !(pos[i].t == VT::Type && pos[i].s == "Mu")) score++;
         }
-        if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
-            score += 2;                                // constrained at all beats unconstrained
+        if (!p->type.empty() && p->type != "Any" && p->type != "Mu" && !p->coerce) {
+            score += 8;                                // a NOMINAL type outranks a bare @/% sigil
+                                                       // constraint (blob8 $x beats @lanes for a
+                                                       // Buf — Digest::SHA3 dispatches on exactly
+                                                       // that) and, transitively, a where-only param
                                                        // (2, so a NOMINAL type still outranks the
                                                        // `Any`-beats-`Mu` point given just above)
             if (p->type == pos[i].typeName()) score += 2; // exact type is more specific than a supertype
@@ -10204,8 +10231,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // Does this subscript select MANY elements? A syntactic list / angle-words /
     // Range / @-var / `^N`, or a call whose result turns out to be a list.
     auto sliceSubscript = [](Index* ix) {
+        // a Range built by a binary op (`$_ ..^ $_ + 8`, Digest::SHA3's lane
+        // serialisation) is as much a slice as the literal Range node
+        auto isRangeOp = [](Expr* e) {
+            if (!e || e->kind != NK::Binary) return false;
+            const std::string& o = static_cast<Binary*>(e)->op;
+            return o == ".." || o == "..^" || o == "^.." || o == "^..^";
+        };
         return ix->index && !ix->multiDim &&
             (ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
+             isRangeOp(ix->index.get()) ||
              ix->index->kind == NK::ArrayLit ||
              ix->index->kind == NK::MethodCall || ix->index->kind == NK::Call ||
              (ix->index->kind == NK::VarExpr && !static_cast<VarExpr*>(ix->index.get())->name.empty() &&
@@ -10277,6 +10312,31 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value kv = eval(idx->index.get());
                 if (kv.t == VT::Code && kv.code && kv.code->isWhateverCode) // $b[*-1] = v
                     kv = callCallable(kv, ValueList{Value::integer(bp->blobElems())});
+                // a SLICE index distributes the RHS elements across the range:
+                // `$new-state[$_ ..^ $_+8] = store64 $lane` (Digest::SHA3) —
+                // numifying the Range wrote one element at the wrong spot
+                if (kv.t == VT::Range || (kv.t == VT::Array && kv.arr)) {
+                    ValueList ks = kv.flatten();
+                    Value rv = evalValueOf(a->value.get());
+                    ValueList vs;
+                    if (rv.t == VT::Range) vs = rv.flatten();
+                    else if (rv.t == VT::Array && rv.arr) vs = *rv.arr;
+                    else vs.push_back(rv);
+                    for (size_t k2 = 0; k2 < ks.size(); k2++) {
+                        long long j = ks[k2].toInt();
+                        if (j < 0) j += bp->blobElems();
+                        if (j < 0) continue;
+                        Value v = k2 < vs.size() ? vs[k2] : Value::integer(0);
+                        size_t need = (size_t)(j + 1) * (size_t)w;
+                        if (bp->s.size() < need) bp->s.resize(need, '\0');
+                        unsigned long long x2 = (v.t == VT::Int && v.big)
+                            ? v.big->toU64Wrap() : (unsigned long long)v.toInt();
+                        for (int b = 0; b < w; b++)
+                            bp->s[(size_t)j * w + b] = (char)(unsigned char)((x2 >> (8 * b)) & 0xFF);
+                    }
+                    rwWriteThrough(idx->base.get());
+                    return sink ? Value::any() : eval(a->target.get());
+                }
                 long long i = kv.toInt();
                 if (i < 0) i += bp->blobElems();
                 if (i < 0)
@@ -10599,6 +10659,27 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (bp) {
                         if (bp->t == VT::Any || bp->t == VT::Nil)
                             *bp = ix->isHash ? Value::makeHash() : Value::array();
+                        // a Blob/Buf slice-assign writes the BYTES in place —
+                        // `$new-state[$_ ..^ $_+8] = store64 $lane` is how
+                        // Digest::SHA3 serialises each Keccak lane
+                        if (!ix->isHash && bp->t == VT::Str &&
+                            (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
+                            int esz = bp->blobElemSize();
+                            Value outB = Value::array(); outB.isList = true;
+                            for (size_t i = 0; i < ks.size(); i++) {
+                                long long j = ks[i].toInt();
+                                if (j < 0) continue;
+                                Value v = i < vs.size() ? vs[i] : Value::integer(0);
+                                size_t need = (size_t)(j + 1) * (size_t)esz;
+                                if (bp->s.size() < need) bp->s.resize(need, '\0');
+                                unsigned long long w = v.big ? v.big->toU64Wrap()
+                                                             : (unsigned long long)v.toInt();
+                                for (int b = 0; b < esz; b++)
+                                    bp->s[(size_t)j * esz + b] = (char)((w >> (8 * b)) & 0xFF);
+                                outB.arr->push_back(v);
+                            }
+                            return sink ? Value::any() : outB;
+                        }
                         Value out = Value::array(); out.isList = true;
                         for (size_t i = 0; i < ks.size(); i++) {
                             Value v = i < vs.size() ? nilElemDefault(vs[i], *bp) : Value::any();
@@ -11035,6 +11116,32 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             *lv = rhs;
             if (nb) wrapNative(*lv, nb, ns, nf);
             return sink ? Value::any() : *lv;
+        }
+    }
+    // `$buf[$i] op= v` writes the BYTE in place: the generic lvalue below
+    // replaces a non-Array base with a fresh Array, silently discarding the
+    // buffer (Digest::SHA3 absorbs its padding with `$state[$i] +^= $suffix`).
+    if (a->target->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(a->target.get());
+        if (!ix->isHash && ix->index && !ix->multiDim && ix->base->kind == NK::VarExpr) {
+            Value* bp = nullptr;
+            try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+            if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
+                long long i = eval(ix->index.get()).toInt();
+                Value rhsB = eval(a->value.get());
+                std::string binop = a->op.substr(0, a->op.size() - 1);
+                int esz = bp->blobElemSize();
+                if (i >= 0) {
+                    size_t need = (size_t)(i + 1) * (size_t)esz;
+                    if (bp->s.size() < need) bp->s.resize(need, '\0');
+                    Value cur = bp->blobElemAt(i);
+                    Value nv = applyBinOp(binop, cur, rhsB);
+                    unsigned long long w = nv.big ? nv.big->toU64Wrap() : (unsigned long long)nv.toInt();
+                    for (int b = 0; b < esz; b++)
+                        bp->s[(size_t)i * esz + b] = (char)((w >> (8 * b)) & 0xFF);
+                    return sink ? Value::any() : bp->blobElemAt(i);
+                }
+            }
         }
     }
     Value* lv = lvalue(a->target.get());
@@ -15913,7 +16020,7 @@ Value Interpreter::evalUnary(Unary* u) {
     // WhateverCode (e.g. `.sort: ~*` sorts by stringification).
     if ((v.t == VT::Whatever || (v.t == VT::Code && v.code && v.code->isWhateverCode)) &&
         (u->op == "~" || u->op == "-" || u->op == "+" || u->op == "?" || u->op == "!" ||
-         u->op == "so" || u->op == "not")) {
+         u->op == "so" || u->op == "not" || u->op == "+^")) {
         Value inner = v; std::string op = u->op;
         Value code; code.t = VT::Code; code.code = std::make_shared<Callable>(); code.code->isWhateverCode = true;
         code.code->builtin = [inner, op](Interpreter& I, ValueList& a) -> Value {
@@ -15929,6 +16036,13 @@ Value Interpreter::evalUnary(Unary* u) {
                 return b.isNumeric() ? b : Value::number(b.toNum());
             }
             if (op == "?" || op == "so") return Value::boolean(b.truthy());
+            if (op == "+^") { // bitwise NOT: -(x+1), exact at any width
+                if (b.big) {
+                    BigInt res = BigInt(0) - (*b.big + BigInt(1));
+                    return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
+                }
+                return Value::integer(~b.toInt());
+            }
             return Value::boolean(!b.truthy()); // ! / not
         };
         return code;
@@ -16022,7 +16136,15 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (u->op == "!") return Value::boolean(!boolify(v));
     if (u->op == "?") return Value::boolean(boolify(v));
-    if (u->op == "+^") return Value::integer(~strictInt(v)); // bitwise NOT
+    if (u->op == "+^") { // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch
+                          // reads +^ of a top-bit-set 64-bit word — ~strictInt
+                          // saturated it to LLONG_MIN and the digest was garbage)
+        if (v.big) {
+            BigInt res = BigInt(0) - (*v.big + BigInt(1));
+            return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
+        }
+        return Value::integer(~strictInt(v));
+    }
     if (u->op == "?^") return Value::boolean(!boolify(v));
     if (u->op == "~^") {
         // On a Blob/Buf this is the byte-wise complement, and Rakudo implements

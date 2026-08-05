@@ -242,6 +242,25 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             return false;
         };
+        // a bigint invocant divides in BigInt here too — `parse-base($hex,
+        // 16).polymod(256 xx *)` is how Digest's tests spell an expected blob,
+        // and the long-long path saturated it to 0x7FFF… bytes
+        if (inv.big) {
+            BigInt bn = *inv.big;
+            while (!bn.isZero()) {
+                long long d;
+                if (!next(d) || d == 1) {
+                    out.arr->push_back(bn.fitsLL() ? Value::integer(bn.toLL()) : Value::bigint(bn));
+                    break;
+                }
+                if (d == 0) break;
+                BigInt q, r;
+                BigInt::divmod(bn, BigInt(d), q, r);
+                out.arr->push_back(r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r));
+                bn = q;
+            }
+            return out;
+        }
         while (n != 0) {
             long long d;
             if (!next(d) || d == 1) { out.arr->push_back(Value::integer(n)); break; }
