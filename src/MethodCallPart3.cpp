@@ -2238,10 +2238,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
     }
     if (m == "subst" && args.size() >= 1) { // literal (string) substitution
-        std::string s = inv.toStr(), from = a0().toStr();
-        if (from.empty()) return Value::str(s);
+        // named adverbs are position-independent: `.subst(:g, '%2A', '*')`
+        // (HTTP::Request's form-escape) puts :g FIRST — the pattern is the
+        // first POSITIONAL, the replacement the second
+        std::string s = inv.toStr(), from;
         Value* replArg = nullptr;
-        for (size_t i = 1; i < args.size(); i++) if (args[i].t != VT::Pair) { replArg = &args[i]; break; }
+        bool haveFrom = false;
+        for (size_t i = 0; i < args.size(); i++) {
+            if (args[i].t == VT::Pair && args[i].namedArg) continue;
+            if (!haveFrom) { from = args[i].toStr(); haveFrom = true; }
+            else { replArg = &args[i]; break; }
+        }
+        if (from.empty()) return Value::str(s);
         long nsub = 0;
         return Value::str(substSelect(s, from, replArg, args, nsub, /*literal=*/true));
     }

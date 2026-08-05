@@ -874,6 +874,42 @@ Regex::NodePtr Regex::parseAtom() {
                     if (e == '\\' || e == '\'') lit += e;
                     else { lit += '\\'; lit += e; }
                 }
+                else if ((e == 'x' || e == 'o') &&
+                         (peek() == '[' || std::isalnum((unsigned char)peek()))) {
+                    // "\x41" / "\x[263a]" / "\o[17]" inside a DOUBLE-quoted span
+                    // decode exactly as they do in a qq string — HTTP::MediaType's
+                    // grammar writes its SP/HTAB/DQUOTE rules as `"\x20"` literals
+                    int base = e == 'x' ? 16 : 8;
+                    auto emitCp = [&](long cp) {
+                        if (cp < 0) return;
+                        uint32_t u = (uint32_t)cp;
+                        if (u < 0x80) lit += (char)u;
+                        else if (u < 0x800) { lit += (char)(0xC0 | (u >> 6)); lit += (char)(0x80 | (u & 0x3F)); }
+                        else if (u < 0x10000) { lit += (char)(0xE0 | (u >> 12)); lit += (char)(0x80 | ((u >> 6) & 0x3F)); lit += (char)(0x80 | (u & 0x3F)); }
+                        else { lit += (char)(0xF0 | (u >> 18)); lit += (char)(0x80 | ((u >> 12) & 0x3F)); lit += (char)(0x80 | ((u >> 6) & 0x3F)); lit += (char)(0x80 | (u & 0x3F)); }
+                    };
+                    if (peek() == '[') {
+                        pos_++;
+                        std::string body;
+                        while (!eof() && peek() != ']') body += pat_[pos_++];
+                        if (peek() == ']') pos_++;
+                        size_t p = 0;
+                        while (p <= body.size()) {
+                            size_t comma = body.find(',', p);
+                            std::string tok = body.substr(p, comma == std::string::npos ? std::string::npos : comma - p);
+                            size_t a2 = tok.find_first_not_of(" \t"), b2 = tok.find_last_not_of(" \t");
+                            if (a2 != std::string::npos)
+                                emitCp(std::strtol(tok.substr(a2, b2 - a2 + 1).c_str(), nullptr, base));
+                            if (comma == std::string::npos) break;
+                            p = comma + 1;
+                        }
+                    } else {
+                        std::string digits;
+                        auto isd = [&](char ch) { return base == 16 ? std::isxdigit((unsigned char)ch) != 0 : (ch >= '0' && ch <= '7'); };
+                        while (!eof() && isd(peek())) digits += pat_[pos_++];
+                        emitCp(std::strtol(digits.c_str(), nullptr, base));
+                    }
+                }
                 else switch (e) { case 'n': lit += '\n'; break; case 't': lit += '\t'; break;
                              case 'r': lit += '\r'; break; case '0': lit += '\0'; break; default: lit += e; }
             } else if (q == '"' && peek() == '$' &&
@@ -2436,6 +2472,17 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         });
         if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
         scope_.pop_back();
+        // a FRESH completion fires its action method now (memo replays reuse it) —
+        // Rakudo fires actions during the match, and a later failure keeps them
+        if (me.matched && st.hooks && st.hooks->onRule && st.hooks->hasAction &&
+            st.hooks->hasAction(name)) {
+            ParseNode fp; fp.name = name;
+            fp.from = me.capFrom >= 0 ? me.capFrom : pos;
+            fp.to = me.capFrom >= 0 ? me.capTo : me.end;
+            fp.caps = me.caps; fp.named = me.named; fp.kids = me.kids;
+            fp.listNames = me.listNames; fp.listCaps = me.listCaps; fp.capReps = me.capReps;
+            st.hooks->onRule(fp);
+        }
         if (!memoise) {
             if (!me.matched) return false;
             candDeclEnd_ = me.declEnd;
@@ -2471,8 +2518,21 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         candLitPrefix_ = (sub.litPrefix >= 0 ? sub.litPrefix - pos : 0);
         // non-ratchet: the callee may complete again after backtracking, so its frame
         // stays live — freeze a COPY of the subtree for this completion
+        auto kidsCopy = sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children);
+        // fresh completion: fire the action (each re-completion after a backtrack
+        // fires again, as Rakudo's non-ratchet regexes do)
+        if (st.hooks && st.hooks->onRule && st.hooks->hasAction && st.hooks->hasAction(name)) {
+            ParseNode fp; fp.name = name;
+            fp.from = sub.capFrom >= 0 ? sub.capFrom : pos;
+            fp.to = sub.capFrom >= 0 ? sub.capTo : end;
+            fp.caps = sub.caps; fp.named = sub.named; fp.kids = kidsCopy;
+            fp.listNames = re->listNamesPtr(); fp.listCaps = re->listCapsPtr();
+            if (!sub.capReps.empty())
+                fp.capReps = std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps);
+            st.hooks->onRule(fp);
+        }
         return finish(record(end, sub.caps, sub.named,
-                             sub.children.empty() ? nullptr : std::make_shared<const ChildMap>(sub.children),
+                             kidsCopy,
                              re->listNamesPtr(), re->listCapsPtr(),
                              sub.capReps.empty() ? nullptr
                                : std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps),

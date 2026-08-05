@@ -3266,7 +3266,13 @@ ExprPtr Parser::parsePrimary() {
                                           // it made a hash composer containing one parse as a BLOCK
                                           // — Cro::Uri's `{ authority => …, $<host>.ast }` came back
                                           // a Block, so `.<host>` on it failed and no URI parsed.
-                                          (pv.kind == Tok::Op && pv.text == ">");
+                                          (pv.kind == Tok::Op && pv.text == ">") ||
+                                          // …and a HYPER marker: the dot in `>>.trim` calls on the
+                                          // term before the marker, not on the topic — HTTP::Header's
+                                          // `make { …, content => $x.split(',')>>.trim }` composer
+                                          (pv.kind == Tok::Op &&
+                                           (pv.text == ">>" || pv.text == "<<" ||
+                                            pv.text == "\xC2\xBB" || pv.text == "\xC2\xAB"));
                         if (!termBefore) { isHash = false; break; }
                     }
                 }
@@ -6704,10 +6710,16 @@ StmtPtr Parser::parseStatementImpl() {
             blk->phaser = which; // distinguishes CATCH from CONTROL (one of each is fine)
             return blk;
         }
-        if (kw == "BEGIN" || kw == "END" || kw == "INIT" || kw == "CHECK" ||
-            kw == "ENTER" || kw == "LEAVE" || kw == "FIRST" || kw == "NEXT" ||
-            kw == "LAST" || kw == "KEEP" || kw == "UNDO" || kw == "PRE" ||
-            kw == "POST" || kw == "DOC" || kw == "QUIT" || kw == "CLOSE") {
+        if ((kw == "BEGIN" || kw == "END" || kw == "INIT" || kw == "CHECK" ||
+             kw == "ENTER" || kw == "LEAVE" || kw == "FIRST" || kw == "NEXT" ||
+             kw == "LAST" || kw == "KEEP" || kw == "UNDO" || kw == "PRE" ||
+             kw == "POST" || kw == "DOC" || kw == "QUIT" || kw == "CLOSE") &&
+            // a TIGHT paren is CALL syntax, not a phaser body:
+            // `POST($uri, content => %form)` inside HTTP::Request::Common is a
+            // recursive call to the user's `sub POST` — it parsed as the POST
+            // phaser over a parenthesized list, which then ECHOED the arguments
+            // as the candidate's return value
+            !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
             advance();
             auto b = std::make_unique<Block>();
             b->phaser = kw; // run-timing handled by the interpreter

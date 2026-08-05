@@ -9612,8 +9612,23 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // attribute lvalue: $.x / $!x
         if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
             Value* selfp = tctx_.cur->find("self");
-            if (selfp && selfp->t == VT::Object && selfp->obj)
+            if (selfp && selfp->t == VT::Object && selfp->obj) {
+                // record the attr's declared type for the assignment check
+                // (`$.method = $m.uc` with `has RequestMethod $.method is rw`
+                // must throw on a value outside the subset — HTTP::Request)
+                tctx_.lastLvalueAttrType.clear();
+                if (ve->name[0] == '$' && selfp->obj->cls)
+                    for (ClassInfo* ci = selfp->obj->cls.get(); ci; ci = ci->parent.get())
+                        for (auto& at : ci->attrs)
+                            if (at.name == ve->name.substr(2)) {
+                                if (at.sigil == '$' && !at.type.empty() &&
+                                    std::isupper((unsigned char)at.type[0]))
+                                    tctx_.lastLvalueAttrType = at.type;
+                                goto selfAttrTypeDone;
+                            }
+                selfAttrTypeDone:
                 return &selfp->obj->attrs[ve->name.substr(2)];
+            }
         }
         // a placeholder's caret/colon spelling resolves to its bare slot
         if (ve->name.size() > 2 && (ve->name[1] == '^' || ve->name[1] == ':'))
@@ -11043,15 +11058,29 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // the MethodCall lvalue arm): `has C $.x is rw` rejects 42 and Mu.
         // The rvalue-invocant fallback made this path reachable, so the check
         // must come with it (roast S14-roles/basic.t).
-        if (a->op == "=" && a->target->kind == NK::MethodCall &&
+        bool selfAttrTarget = a->target->kind == NK::VarExpr &&
+            static_cast<VarExpr*>(a->target.get())->name.size() > 2 &&
+            (static_cast<VarExpr*>(a->target.get())->name[1] == '.' ||
+             static_cast<VarExpr*>(a->target.get())->name[1] == '!');
+        if (a->op == "=" && (a->target->kind == NK::MethodCall || selfAttrTarget) &&
             !tctx_.lastLvalueAttrType.empty()) {
             std::string aty = tctx_.lastLvalueAttrType;
             tctx_.lastLvalueAttrType.clear();
-            if (!typeOrSubsetMatches(rhs, aty))
+            if (!typeOrSubsetMatches(rhs, aty)) {
+                // report the QUALIFIED subset name, as Rakudo does — the tests
+                // match /'expected HTTP::Request::RequestMethod but got Str'/
+                std::string rep = aty;
+                if (subsets_.count(aty))
+                    for (auto& kv : subsets_)
+                        if (kv.first.size() > aty.size() + 2 &&
+                            kv.first.compare(kv.first.size() - aty.size(), aty.size(), aty) == 0 &&
+                            kv.first.compare(kv.first.size() - aty.size() - 2, 2, "::") == 0)
+                            { rep = kv.first; break; }
                 throwTypedV("X::TypeCheck::Assignment",
                             {{"got", rhs}, {"expected", Value::typeObj(aty)}},
-                            "Type check failed in assignment; expected " + aty +
+                            "Type check failed in assignment; expected " + rep +
                             " but got " + rhs.typeName());
+            }
         }
         int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
         if (sigil == '@') {
@@ -12969,7 +12998,13 @@ static std::string quoteMetaRx(const std::string& s) {
         if (c == '\t') { out += "\\t"; continue; }
         if (c == '\r') { out += "\\r"; continue; }
         if (c == ' ')  { out += "\\ "; continue; }
-        if (std::strchr(".?*+^$()[]{}|\\<>-", c)) out += '\\';
+        // EVERY ASCII non-alphanumeric gets a backslash — the engine reads
+        // backslash+punct as the literal char. The old curated list missed `&`
+        // (regex CONJUNCTION), so an interpolated query string
+        // (`/^POST\s$file/` with `?r=1&r=2`) became two branches that could
+        // never match at one spot.
+        if ((unsigned char)c < 0x80 && !std::isalnum((unsigned char)c) && c != '_')
+            out += '\\';
         out += c;
     }
     return out;
@@ -14412,6 +14447,15 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         tctx_.cur->vars = s->vars;
     };
 
+    // Completed-subrule log: on an overall parse FAILURE the actions of the
+    // subrules that DID complete replay in completion order — Rakudo fires
+    // actions during the match and a failing TOP does not unfire them
+    // (HTTP::Header sets its fields from a parse that fails on a missing
+    // trailing newline). A SUCCESSFUL parse discards the log and fires
+    // everything once in the normal bottom-up build — the proven path.
+    auto completionLog = std::make_shared<std::vector<ParseNode>>();
+    bool replayBuild = false;  // building $/ for a replayed firing: build fires nothing
+
     // Turn the recorded parse tree into Match values, running actions bottom-up
     // so `$<child>.made` is available to a parent's action.
     std::function<Value(const ParseNode&)> build = [&](const ParseNode& pn) -> Value {
@@ -14539,11 +14583,33 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (pm != pendingMakes->end() && !mv.pairVal) mv.pairVal = std::make_shared<Value>(pm->second);
         // an action-class method (if any) can still override; a proto node
         // dispatches to the winning candidate's method (`x:sym<y>`), falling
-        // back to a method named after the proto itself
-        if (!pn.actualRule.empty() && pn.actualRule != pn.name) runAction(pn.actualRule, mv);
-        runAction(pn.name, mv);
+        // back to a method named after the proto itself. (A failure-replay
+        // build dispatches its own method — build must not double-fire.)
+        if (!replayBuild) {
+            if (!pn.actualRule.empty() && pn.actualRule != pn.name) runAction(pn.actualRule, mv);
+            runAction(pn.name, mv);
+        }
         return mv;
     };
+
+    // Log completed subrules that HAVE an action method: on an overall failure
+    // their actions replay in completion order (see completionLog above).
+    if (haveActions && actCls) {
+        gm.hooks.hasAction = [actCls](const std::string& nm) -> bool {
+            if (actCls->findMethod(nm)) return true;
+            auto g2 = nm.find(":sym\xC2\xAB"); // :sym«…» → canonical :sym<…>
+            if (g2 != std::string::npos) { auto e2 = nm.find("\xC2\xBB", g2 + 6);
+                if (e2 != std::string::npos &&
+                    actCls->findMethod(nm.substr(0, g2) + ":sym<" + nm.substr(g2 + 6, e2 - (g2 + 6)) + ">" + nm.substr(e2 + 2)))
+                    return true; }
+            size_t c = nm.find(':'); // proto candidate falls back to the base name
+            if (c != std::string::npos && c > 0 && actCls->findMethod(nm.substr(0, c))) return true;
+            return false;
+        };
+        gm.hooks.onRule = [completionLog](const ParseNode& pn) {
+            completionLog->push_back(pn); // kids are frozen shared_ptrs — cheap
+        };
+    }
 
     // Match against a dedicated child scope so match-time `:my` vars land in a small,
     // isolated map — the LTM `|` snapshot (saveState) then copies O(:my vars) per probe,
@@ -14557,9 +14623,37 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         tctx_.cur = matchScope;
         matched = gm.parse(input, startRule, subparse, tree, endPos);
         if (!matched) {
+            // the parse FAILED, but the subrules that completed still fire their
+            // actions, in completion order — Rakudo's during-match firing does
+            // not unfire on a later failure (HTTP::Header relies on the side
+            // effects of exactly such a parse)
+            if (haveActions && actCls && !completionLog->empty()) {
+                replayBuild = true;
+                for (auto& pn : *completionLog) {
+                    Value mv;
+                    try { mv = build(pn); } catch (...) { continue; }
+                    if (!pn.actualRule.empty() && pn.actualRule != pn.name)
+                        try { runAction(pn.actualRule, mv); } catch (RakuError&) {}
+                    try { runAction(pn.name, mv); }
+                    catch (RakuError&) {} // a throwing action cannot abort a parse that already failed
+                    // proto-candidate fallback: `x:sym<y>` fires `method x` when
+                    // no candidate-named method exists
+                    size_t c = pn.name.find(':');
+                    if (c != std::string::npos && c > 0 && !actCls->findMethod(pn.name))
+                        try { runAction(pn.name.substr(0, c), mv); } catch (RakuError&) {}
+                    // the replay is bottom-up (completion order): store this
+                    // made so a later PARENT's build sees `$<child>.made`
+                    if (std::getenv("RAKUPP_DEBUG_REPLAY"))
+                        fprintf(stderr, "[replay] %s %ld..%ld made=%s\n", pn.name.c_str(),
+                                pn.from, pn.to, mv.pairVal ? "yes" : "no");
+                    if (mv.pairVal) (*pendingMakes)[{pn.from, pn.to}] = *mv.pairVal;
+                }
+                replayBuild = false;
+            }
             tctx_.cur = savedScope;
             setMatchVar(Value::nil()); return Value::nil();
         }
+        completionLog->clear(); // success: the normal bottom-up build fires everything once
         // build with the match scope still current: a deferred `{ make … }`
         // may read the rule's `:my` vars (Cro's route matcher makes `$cap`)
         Value mv;
@@ -15996,6 +16090,11 @@ Value Interpreter::evalUnary(Unary* u) {
         bool listInfix = !op.empty() && (op[0] == 'Z' || op[0] == 'X') &&
                          !isSetOpStr(op) && op != "X"; // "X" alone is still the cross op
         if (op == "Z" || op == "X") listInfix = true;
+        // SET-op reduces treat each comma item as ONE operand too:
+        // `[(^)] @s1.words, @s2.words` is the symmetric difference of two word
+        // LISTS (flattening merged them and answered per-word parity), while a
+        // lone list operand still spreads one level (`[(^)] @case.words`).
+        if (isSetOpStr(op)) listInfix = true;
         if (u->operand->kind == NK::ListExpr) {
             auto* le = static_cast<ListExpr*>(u->operand.get());
             for (auto& ie : le->items) {

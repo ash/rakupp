@@ -5903,6 +5903,15 @@ void Interpreter::registerBuiltins() {
             return exp.enumName == "any" ? t > 0 : exp.enumName == "all" ? t == total
                  : exp.enumName == "one" ? t == 1 : t == 0;
         }
+        // …and a junction GOT autothreads the same way: `is any(@names), 'a'`
+        // collapses per the junction's kind (HTTP::UserAgent's header tests)
+        if (got.t == VT::Array && got.arr &&
+            (got.enumName == "any" || got.enumName == "all" || got.enumName == "one" || got.enumName == "none")) {
+            int t = 0, total = (int)got.arr->size();
+            for (auto& br : *got.arr) if (scalarEq(br, exp)) t++;
+            return got.enumName == "any" ? t > 0 : got.enumName == "all" ? t == total
+                 : got.enumName == "one" ? t == 1 : t == 0;
+        }
         return scalarEq(got, exp);
     };
     // An object argument (e.g. an exception in `is $!, 'msg'`) compares by its Str —

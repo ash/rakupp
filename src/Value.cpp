@@ -368,6 +368,23 @@ std::string Value::toStr() const {
             if (hashKind == "StrDistance" && hash && hash->count("after"))
                 return hash->at("after").toStr(); // "$dist" is the resulting string
             if ((hashKind == "Date" || hashKind == "DateTime") && hash) return dateGist(*hash, hashKind == "Date");
+            // Setty/Baggy .Str is the elements space-joined — `elem(weight)`
+            // for a non-1 Bag/Mix weight — NOT the generic key\tvalue dump
+            // (`say ([(^)] @words).Str` prints "orange", not "orange\tTrue")
+            if (hashKind == "Set" || hashKind == "SetHash" ||
+                hashKind == "Bag" || hashKind == "BagHash" ||
+                hashKind == "Mix" || hashKind == "MixHash") {
+                ReprDepthGuard g; if (g.tooDeep()) return "...";
+                bool isSet = hashKind[0] == 'S';
+                std::string out; bool first = true;
+                if (hash) for (auto& kv : *hash) {
+                    if (!first) out += " "; first = false;
+                    out += kv.second.pairKey ? kv.second.pairKey->toStr() : kv.first;
+                    if (!isSet && !(kv.second.isNumeric() && kv.second.toNum() == 1.0))
+                        out += "(" + kv.second.gist() + ")";
+                }
+                return out;
+            }
             ReprDepthGuard g; if (g.tooDeep()) return "...";
             std::string out;
             if (hash) { bool first = true;

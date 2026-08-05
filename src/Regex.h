@@ -25,9 +25,18 @@ struct FnRef {
 // Interpreter callbacks that let the grammar matcher evaluate embedded Raku at
 // match time — code assertions, `:my`/`{…}` side-effects, runtime `$var` atoms,
 // and `** { … }` quantifier bounds — all against the interpreter's live scope.
+struct ParseNode; // declared below — the hooks reference completed nodes
 struct GrammarHooks {
     using NamedMap = std::map<std::string, std::pair<long, long>>; // named-capture byte spans, for $/ / $<x>
     using ParamMap = std::map<std::string, std::string>;           // current rule params, e.g. $indent
+    // Action firing DURING the match, Rakudo-style: a completed subrule fires its
+    // action method immediately — and a later backtrack/overall failure does NOT
+    // unfire it (HTTP::Header sets header fields from actions of a parse whose
+    // TOP ultimately fails on a missing trailing newline). hasAction gates the
+    // node assembly so rules with no method cost nothing; onRule fires it.
+    // Fired on FRESH completions only — a memo replay reuses the first firing.
+    std::function<bool(const std::string&)> hasAction;
+    std::function<void(const ParseNode&)> onRule;
     std::function<bool(const std::string&, long, long, const NamedMap&, const ParamMap&)> assertPass; // <?{…}>
     std::function<void(const std::string&, long, long, const NamedMap&, const ParamMap&)> run;        // :my / {…}
     // Same as `run`, but carrying the POSITIONAL captures too so the block's `$/`
