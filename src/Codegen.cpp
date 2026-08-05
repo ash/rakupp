@@ -146,7 +146,12 @@ struct Codegen {
         if (!e) return false;
         switch (e->kind) {
             case NK::Whatever: return true;
-            case NK::Binary: { auto* b = static_cast<Binary*>(e); return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
+            // The sequence op CONSUMES its own `*` (seed generators, an infinite or
+            // predicate endpoint), so it is never part of a surrounding curry —
+            // `say (1 ... * > 5).List` is a say of a Seq, not a say of a closure.
+            case NK::Binary: { auto* b = static_cast<Binary*>(e);
+                if (b->op == "..." || b->op == "...^" || b->op == "^..." || b->op == "^...^") return false;
+                return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary:  return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
             // Only the invocant/callee is part of THIS whatever-curry; arguments are their
@@ -995,17 +1000,54 @@ struct Codegen {
                 if (b->op == "..." || b->op == "...^") {
                     // sequence operator: seeds emit per-element (a `* + *` seed becomes a
                     // generator closure); a bare `*`/Inf endpoint marks the sequence infinite.
-                    std::string L;
-                    if (b->lhs->kind == NK::ListExpr) {
-                        auto* le = static_cast<ListExpr*>(b->lhs.get());
-                        std::string items;
-                        for (size_t i = 0; i < le->items.size(); i++) {
-                            if (i) items += ", ";
-                            items += exArg(le->items[i].get());
+                    // `...` is a LIST infix, so a chain (`1 ... 5 ... 1`) or a comma group
+                    // on the right (`'A'...'Z', 'a'...'z'`) is ONE operator over a list of
+                    // lists — the same walk the interpreter does, into the shared
+                    // RT.seqOpGroups.
+                    auto isSeqOp = [](const std::string& o) { return o == "..." || o == "...^"; };
+                    std::vector<Binary*> spine;
+                    for (Expr* n = const_cast<Binary*>(b); n && n->kind == NK::Binary &&
+                             isSeqOp(static_cast<Binary*>(n)->op); n = static_cast<Binary*>(n)->lhs.get())
+                        spine.push_back(static_cast<Binary*>(n));
+                    std::reverse(spine.begin(), spine.end());
+                    bool grouped = spine.size() > 1;
+                    for (auto* sn : spine)
+                        if (sn->rhs->kind == NK::ListExpr &&
+                            !static_cast<ListExpr*>(sn->rhs.get())->parenned) grouped = true;
+                    auto seedOf = [&](Expr* e) {
+                        if (e->kind == NK::ListExpr) {
+                            auto* le = static_cast<ListExpr*>(e);
+                            std::string items;
+                            for (size_t i = 0; i < le->items.size(); i++) {
+                                if (i) items += ", ";
+                                items += exArg(le->items[i].get());
+                            }
+                            return "listToArray({" + items + "})";
                         }
-                        L = "listToArray({" + items + "})";
+                        return exArg(e);
+                    };
+                    if (grouped) {
+                        std::string groups, excl;
+                        for (size_t i = 0; i < spine.size(); i++) {
+                            std::string items;
+                            Expr* r = spine[i]->rhs.get();
+                            if (r->kind == NK::ListExpr && !static_cast<ListExpr*>(r)->parenned) {
+                                auto* le = static_cast<ListExpr*>(r);
+                                for (size_t k = 0; k < le->items.size(); k++) {
+                                    if (k) items += ", ";
+                                    items += le->items[k]->kind == NK::Whatever ? "Value::whatever()"
+                                                                                : exArg(le->items[k].get());
+                                }
+                            }
+                            else items = r->kind == NK::Whatever ? "Value::whatever()" : exArg(r);
+                            if (i) { groups += ", "; excl += ", "; }
+                            groups += "ValueList{" + items + "}";
+                            excl += spine[i]->op == "...^" ? "1" : "0";
+                        }
+                        return "RT.seqOpGroups(" + seedOf(spine.front()->lhs.get()) +
+                               ", std::vector<ValueList>{" + groups + "}, std::vector<char>{" + excl + "}, false)";
                     }
-                    else L = exArg(b->lhs.get());
+                    std::string L = seedOf(b->lhs.get());
                     std::string R = b->rhs->kind == NK::Whatever ? "Value::whatever()" : exArg(b->rhs.get());
                     return "RT.seqOp(" + L + ", " + R + ", " + (b->op == "...^" ? "true" : "false") + ")";
                 }

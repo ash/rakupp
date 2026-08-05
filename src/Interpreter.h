@@ -463,6 +463,11 @@ public:
         return it == builtins_.end() ? nullptr : &it->second;
     }
     Value seqOp(Value l, Value r, bool exclusive); // the `...` sequence operator (also used by codegen)
+    // `...` is list-associative: `1 ... 5 ... 1` and `'A'...'Z', 'a'...'z'` are ONE
+    // operator over a list of lists. Each group's first element closes the previous
+    // segment; the rest is emitted verbatim and seeds the next. Shared with codegen.
+    Value seqOpGroups(Value seed, const std::vector<ValueList>& groups,
+                      const std::vector<char>& exclEnd, bool exclSeed);
     std::vector<long long> evalShapeDims(Expr* shape); // `my @a[2;3]` dimension list
     Value rtGather(Value blockClosure); // gather with probe-and-double laziness (native codegen)
     // Emit text for say/print/put/note: route through a user-overridden $*OUT/$*ERR

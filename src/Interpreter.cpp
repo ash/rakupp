@@ -6932,6 +6932,31 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
     return out;
 }
 
+Value Interpreter::seqOpGroups(Value seed, const std::vector<ValueList>& groups,
+                               const std::vector<char>& exclEnd, bool exclSeed) {
+    Value out = Value::array(); out.isList = true; out.s = "Seq";
+    Value cur = std::move(seed);
+    size_t skip = 0;                    // head of the segment already emitted
+    for (size_t i = 0; i < groups.size(); i++) {
+        if (groups[i].empty()) continue;
+        Value seg = seqOp(cur, groups[i][0], i < exclEnd.size() && exclEnd[i]);
+        if (seg.t == VT::Array && seg.arr)
+            for (size_t k = skip; k < seg.arr->size(); k++) out.arr->push_back((*seg.arr)[k]);
+        else if (skip == 0) out.arr->push_back(seg);
+        if (groups[i].size() > 1) {     // the tail seeds the next segment verbatim
+            Value rest = Value::array(); rest.isList = true;
+            for (size_t k = 1; k < groups[i].size(); k++) {
+                out.arr->push_back(groups[i][k]); rest.arr->push_back(groups[i][k]);
+            }
+            cur = rest; skip = rest.arr->size();
+        } else {
+            cur = out.arr->empty() ? Value::any() : out.arr->back(); skip = 1;
+        }
+    }
+    if (exclSeed && !out.arr->empty()) out.arr->erase(out.arr->begin());
+    return out;
+}
+
 bool Interpreter::exprHasWhateverLit(const Expr* e) {
     if (!e) return false;
     switch (e->kind) {
@@ -14708,32 +14733,20 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // group i>0 comes from spine[i-1]->rhs; group 0 is the innermost lhs
         auto groupOf = [&](Expr* e) {
-            std::vector<Value> g;
+            ValueList g;
             if (e->kind == NK::ListExpr && !static_cast<ListExpr*>(e)->parenned)
                 for (auto& it : static_cast<ListExpr*>(e)->items) g.push_back(eval(it.get()));
             else g.push_back(eval(e));
             return g;
         };
-        Value cur = eval(spine.front()->lhs.get());   // the seed group, whole
-        Value out = Value::array(); out.isList = true; out.s = "Seq";
-        size_t skip = 0;                              // head of the segment already emitted
-        for (size_t i = 0; i < spine.size(); i++) {
-            std::vector<Value> g = groupOf(spine[i]->rhs.get());
-            Value seg = seqOp(cur, g[0], spine[i]->op.back() == '^');
-            if (seg.t == VT::Array && seg.arr)
-                for (size_t k = skip; k < seg.arr->size(); k++) out.arr->push_back((*seg.arr)[k]);
-            else if (skip == 0) out.arr->push_back(seg);
-            if (g.size() > 1) {
-                Value rest = Value::array(); rest.isList = true;
-                for (size_t k = 1; k < g.size(); k++) { out.arr->push_back(g[k]); rest.arr->push_back(g[k]); }
-                cur = rest; skip = rest.arr->size();
-            } else {
-                cur = out.arr->empty() ? Value::any() : out.arr->back(); skip = 1;
-            }
+        Value seed = eval(spine.front()->lhs.get());  // the seed group, whole
+        std::vector<ValueList> groups; std::vector<char> exclEnd;
+        for (auto* sn : spine) {
+            groups.push_back(groupOf(sn->rhs.get()));
+            exclEnd.push_back(sn->op.back() == '^');
         }
-        if (spine.front()->op.front() == '^' && !out.arr->empty())
-            out.arr->erase(out.arr->begin());
-        return out;
+        return seqOpGroups(std::move(seed), groups, exclEnd,
+                           spine.front()->op.front() == '^');
     }
     if (op == "~~" || op == "!~~") {
         // a PAIR pattern names a METHOD: `3 ~~ :is-prime` asks 3.is-prime, and
