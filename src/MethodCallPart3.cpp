@@ -951,11 +951,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "child" || m == "add") {
             if (!args.empty()) rejectNulPath(args[0].toStr());
             std::string s = inv.toStr(); if (!s.empty() && s.back() == '/') s.pop_back();
+            // a bare `.` parent contributes NOTHING: `'.'.IO.child('t')` is `t`,
+            // not `./t` (Rakudo's IO::Spec::Unix.join drops a '.' dirname). Only
+            // the exact `.` — `'./x'.IO.child('y')` stays `./x/y`. IO::Glob walks
+            // a tree from `'.'.IO` and compares the result against bare names.
+            bool dotRoot = (s == ".");
             // several parts (or one list argument) append as successive segments:
             // `"foo".IO.add(<bar baz>)` is foo/bar/baz
             for (auto& a : args) {
                 if (a.t == VT::Pair) continue;
-                for (auto& part : toList(a)) { s += "/"; s += part.toStr(); }
+                for (auto& part : toList(a)) {
+                    if (dotRoot) { s = part.toStr(); dotRoot = false; }
+                    else { s += "/"; s += part.toStr(); }
+                }
             }
             if (args.empty()) s += "/";
             return asIO(s);
@@ -1096,9 +1104,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (DIR* d = opendir(base.c_str())) {
                 while (struct dirent* e = readdir(d)) {
                     std::string nm = e->d_name;
-                    if (nm == "." || nm == "..") continue;
+                    // `.` and `..` are excluded by the DEFAULT :test only. An
+                    // explicit :test replaces that filter, so `dir(:test(*))`
+                    // yields them too — IO::Glob's `glob(*).dir` counts on it.
+                    if (!haveTest && (nm == "." || nm == "..")) continue;
                     if (haveTest && !matcherAccepts(*this, Value::str(nm), test)) continue;
-                    out.arr->push_back(asIO(base + (base.empty() || base.back() == '/' ? "" : "/") + nm));
+                    // a `.` directory contributes nothing to the entry's path —
+                    // `'.'.IO.dir` yields `META6.json`, not `./META6.json`, the
+                    // same rule `.child` follows
+                    out.arr->push_back(asIO(base == "." ? nm
+                        : base + (base.empty() || base.back() == '/' ? "" : "/") + nm));
                 }
                 closedir(d);
             }

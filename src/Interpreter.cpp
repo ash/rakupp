@@ -6512,6 +6512,10 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         // here let it win a candidate meant for a real value: `uri-escape(Any)`
         // picked the `Match $s` overload instead of the general one and returned
         // "" where Rakudo returns Any.
+        // `*` is a Whatever, not a wildcard for the type checker: `multi glob(Str:D)`
+        // must NOT take `glob(*)` when a `multi glob(Whatever)` is what it is for
+        // (IO::Glob's whatever-match pattern). It still satisfies Any/Mu above.
+        case VT::Whatever: return type == "Whatever";
         case VT::Any: return false;
         // A TYPE OBJECT conforms exactly as `~~` says it does. Stay lenient only
         // when one of the two names is not a type we know — an unregistered user
