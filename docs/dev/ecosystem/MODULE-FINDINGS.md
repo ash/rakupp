@@ -2053,3 +2053,21 @@ default 60s the ripemd file (a 1MB input digested in an interpreted loop) will
 TIME out — a speed matter, not correctness; both engines pass every assertion.
 
 Roast 197,221 → 197,232, only the flaky stress file moving; t/run.raku 306/306.
+
+## 2026-08-05 (session 3 continuation) — NativeHelpers::Blob is MoarVM-bound
+
+Not a rakupp bug to fix. The dist's whole mechanism is `MoarVM::Guts::REPRs`
+(vendored inside it): `BODY_OF(obj)` takes `obj.WHERE + Offset` — the raw
+MoarVM object address, with Offset found by scanning the object's own memory
+for a planted 0xdeadbeaf payload — and nativecasts MoarVM's C body layouts
+(MVMArrayB.realstart, CArrayB.storage) to reach the VM's internal data
+pointers. Passing its suite means emulating MoarVM's object ABI, which is
+out of scope by the campaign's own rules (same class as the native-lib ENV
+rows, though the runner scores it DIFF because real Rakudo passes 4/4).
+
+Two REAL API gaps it exposes are worth having for other dists eventually —
+`.^array_type` on Blob/buf*/CArray/array (the element type object) and
+`.REPR` (the repr name) — but implementing them here only moves this dist's
+failure EARLIER (the load-time Offset probe dies cleanly instead of the
+call-time `.REPR` method miss), so they are deferred until another dist
+needs them. Effective ceiling: 52 → 51.
