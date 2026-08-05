@@ -2020,3 +2020,15 @@ the runtime's lowest layers. Highlights (full list in commit ddc75ad):
 Roast up 197,184 → ~197,192 with two files improving and nothing regressing;
 t/run.raku 304/304. The full battery confirms: **41 PASS · 11 DIFF · 6 ENV ·
 1 NOTESTS**, no other distribution moved.
+
+### Data::Dump 2/9 → 9/9 — battery at 42
+
+The full battery confirms **42 PASS · 10 DIFF · 6 ENV · 1 NOTESTS**, no other
+distribution moved. Data::Dump's six faults are in commit b531a8b; the one with
+the widest blast radius is the string-interpolation scanner not tracking quotes,
+so `"{sym('{')}"` swallowed the rest of the string — a parser fault any module
+could hit.
+
+Remaining DIFF, closest first: Config 7/9, Text::Utils 11/18, Log::Async 5/17,
+AttrX::Mooish 12/35, Cro::Core 2/9, then the Cro::HTTP / HTTP::UserAgent /
+Digest / NativeHelpers::Blob tail (the last two want native-struct work).
