@@ -10560,6 +10560,60 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
+        // `$x := %h{key}` binds the hash SLOT, not its value: a later `$x = v`
+        // writes into the hash. Config walks a nested config with
+        // `$index := $index{$_}` and then assigns through the last binding.
+        // The map is node-stable and held by shared_ptr, so the slot survives
+        // any later insertion — an ARRAY element deliberately does not qualify
+        // (its storage is a vector, and a push would leave the binding dangling).
+        if (a->op == ":=" && a->target->kind == NK::VarExpr && a->value->kind == NK::Index) {
+            auto* tv = static_cast<VarExpr*>(a->target.get());
+            auto* ix = static_cast<Index*>(a->value.get());
+            if (ix->isHash && ix->index && !ix->multiDim &&
+                !tv->name.empty() && tv->name[0] == '$') {
+                Value* base = lvalue(ix->base.get());
+                std::shared_ptr<std::map<std::string, Value>> h;
+                if (base) {
+                    Value* real = base;
+                    // the base may itself be a bound slot: reach the container it holds
+                    Value fetched;
+                    if (base->t == VT::Hash && base->hashKind == "Proxy" && base->hash) {
+                        fetched = deproxy(*base);
+                        if (fetched.t != VT::Hash || !fetched.hash || fetched.hashKind == "Proxy") {
+                            fetched = Value::makeHash();
+                            proxyStore(*base, fetched);      // autovivify through the binding
+                        }
+                        real = &fetched;
+                    }
+                    if (real->t != VT::Hash || !real->hash) {
+                        if (real == base) *base = Value::makeHash();
+                        real = base;
+                    }
+                    if (real->t == VT::Hash && real->hashKind.empty()) h = real->hash;
+                }
+                if (h) {
+                    std::string key = eval(ix->index.get()).toStr();
+                    h->emplace(key, Value::any());           // the slot exists from now on
+                    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                    Value fetch; fetch.t = VT::Code; fetch.code = std::make_shared<Callable>();
+                    fetch.code->builtin = [h, key](Interpreter&, ValueList&) -> Value {
+                        auto it = h->find(key);
+                        return it == h->end() ? Value::any() : it->second;
+                    };
+                    Value store; store.t = VT::Code; store.code = std::make_shared<Callable>();
+                    store.code->builtin = [h, key](Interpreter&, ValueList& sa) -> Value {
+                        Value nv = sa.empty() ? Value::any() : sa[0];
+                        (*h)[key] = nv;
+                        return nv;
+                    };
+                    (*proxy.hash)["FETCH"] = fetch;
+                    (*proxy.hash)["STORE"] = store;
+                    Value* blv = lvalue(a->target.get());
+                    *blv = proxy;
+                    return sink ? Value::any() : (*h)[key];
+                }
+            }
+        }
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (a->op == "=" && a->target->kind == NK::VarExpr) {
@@ -10662,6 +10716,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (keepDefault && !lv->pairVal) lv->pairVal = keepDefault;
         }
         else if (sigil == '%') {
+            // `%a := %b` BINDS: both names are the same hash from then on, so a
+            // write through either is visible through the other. The coercion
+            // below copies (which is right for `=`), and that copy is why an
+            // aliased hash silently diverged.
+            if (a->op == ":=" && rhs.t == VT::Hash && rhs.hash) { *lv = rhs; return sink ? Value::any() : *lv; }
             static const std::set<std::string> setty = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             std::string keepType = lv->ofType; // typed container: `my Int %h` keeps Int

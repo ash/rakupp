@@ -1764,3 +1764,54 @@ every builtin method (`"bar".can('uc')`). Both want a real "does this builtin
 type have this method" oracle, which the interpreter does not have — dispatch is
 an if-chain over string literals, not a table. Left alone rather than papered
 over with another curated list.
+
+## 2026-08-05 (cont.) — IO::Glob 2/8 → 8/8, and none of it was about globbing
+
+Same method as HTTP::Tiny: run the dist's own files and fix whatever they hit.
+Five faults, all general.
+
+**`'.'.IO.child('t')` was `./t`.** Rakudo's `IO::Spec::Unix.join` drops a `.`
+dirname, so a bare `.` parent contributes nothing to the path — and only the
+exact `.` (`'./x'.IO.child('y')` stays `./x/y`). `.dir` follows the same rule.
+IO::Glob walks a tree from `'.'.IO` and compares entries against bare names, so
+every result was off by a prefix.
+
+**`.dir` always excluded `.` and `..`.** In Rakudo that exclusion IS the default
+`:test`; passing an explicit one replaces it, so `dir(:test($glob))` yields them
+too. IO::Glob's `glob(*).dir` expects exactly that.
+
+**`*` satisfied every type.** `VT::Whatever` fell into `typeMatchesArg`'s lenient
+default arm, so `glob(*)` bound `multi glob(Str:D $pattern)` instead of the
+`multi glob(Whatever $)` written for it — and the glob's pattern became the
+Whatever object rather than the grammar's `'*'`. A Whatever matches `Whatever`
+(and `Any`/`Mu`, which return true earlier); nothing else.
+
+**A regex did not close over its scope.**
+
+```raku
+sub mk($a) { rx/$a/ }
+'foo' ~~ mk('foo')      # Rakudo: matches      rakupp: no match
+```
+
+rakupp interpolates a regex's `$vars` at match time — which is right, Rakudo
+re-reads them too, so `my $w = 'a'; my $r = rx/$w/; $w = 'b'` matches `b` in both
+engines. What was missing is *which scope*: rakupp used whatever was current at
+match time, so a variable from the regex's own lexical scope was simply gone. A
+regex value now carries the Env that built it (only when the pattern names a
+variable, so ordinary regexes retain nothing) and resolves there first, with the
+current scope as fallback for an in-flight `$0`.
+
+**`$^name` in a regex literal declared nothing.** `collectPHExpr` scanned a
+SubstLit's raw pattern and replacement text for `$^a`, but had no `RegexLit` case
+at all. So in
+
+```raku
+@alts.map({ rx/$base$^alt/ })
+```
+
+the block got no parameter, `$alt` never existed, and the alternation matched
+nothing. Both halves of this — the closure and the placeholder — are what
+IO::Glob compiles `{foo,bar}` into.
+
+All eight files now match Rakudo. Roast unmoved through the batch; `t/run.raku`
+296/296.
