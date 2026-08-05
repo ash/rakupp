@@ -1944,3 +1944,38 @@ The battery ends the session at **40 PASS · 13 DIFF · 6 ENV · 1 NOTESTS**, fr
 35 at the start. Closest remaining: Config 7/9 (its last file wants object `.Str`
 to carry identity — tried in an earlier session, reverted for 2 Roast
 assertions), Cro::Core 2/9, Data::Dump 1/9.
+
+### `Any` is narrower than `Mu` — and one number to correct
+
+Data::Dump opens with a `Mu` catch-all declared BEFORE the real formatter:
+
+```raku
+multi Dump (Mu $obj, …)  { return $obj.gist }
+multi Dump (Any $obj, …) { …the formatter… }
+```
+
+Both matched everything and scored the same, so declaration order won and every
+call got the gist. `Any` now scores one point above `Mu`, with the two exceptions
+that matter: a Junction is Mu but NOT Any, and neither is the Mu type object.
+
+The interesting part is the FIRST attempt. Giving `Any` a point on the same
+scale as every other specificity bonus made a nominal type merely TIE with it,
+and roast's `integration/advent2012-day14.t` caught it at once: `multi
+is-prime-rm(2, Int $k)` lost to `multi is-prime-rm(Int, Int)` and 2 stopped being
+prime. The fix is to DOUBLE all the existing bonuses rather than inflate the new
+one, so every existing ratio survives and the `Any` point sits strictly between
+"unconstrained" and "constrained at all".
+
+Note which gate caught what. The battery caught the `when`/CATCH and
+Match-autovivification regressions that Roast slept through — shapes only real
+module code writes. Roast caught this dispatch-weight tie, which the battery
+would have slept through. Neither is sufficient alone.
+
+**Correcting a number**: I reported Data::Dump 1/9 → 5/9 from counting files with
+no `not ok` lines. By the runner's criteria (which also require exit 0) it is
+**1/9 → 2/9**. The same measurement trap as the IO::Glob row, two sections up,
+made twice in one session.
+
+Battery holds at **40 PASS · 12 DIFF · 6 ENV · 1 NOTESTS** — Trap and
+Test::Output confirmed PASS, Test::META up from 0/3 to 1/3 (the named-parameter
+sub-signature fix lets META6 parse), and no distribution regressed.
