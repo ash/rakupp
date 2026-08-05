@@ -1924,3 +1924,23 @@ Behind it, three general faults:
 
 IO::Glob 6/8 → 7/8, matching Rakudo file-for-file, which puts the battery at
 **38 of 59**.
+
+### 40 of 59
+
+Trap and Test::Output were each ONE file short, and both went down to the same
+root cause — worth noting because the two dists look unrelated (Test::Output
+captures output *through* Trap):
+
+- **`PROCESS::{"\$$name"}` read `Any`.** The angle form `PROCESS::<$OUT>` is
+  resolved at parse time into a plain variable; the brace form cannot be, so it
+  landed as an index into nothing. It resolves the symbol at run time now, and
+  reads it back through ordinary variable evaluation — `$*OUT` and friends are
+  not plain Env slots, so a direct map lookup finds nothing.
+- **`$x := PROCESS::{…}` died "Target is not assignable".** The hash-slot binding
+  added earlier this session takes the lvalue of the subscript's BASE, and a
+  pseudo-package has none. It falls through to the ordinary bind now.
+
+The battery ends the session at **40 PASS · 13 DIFF · 6 ENV · 1 NOTESTS**, from
+35 at the start. Closest remaining: Config 7/9 (its last file wants object `.Str`
+to carry identity — tried in an earlier session, reverted for 2 Roast
+assertions), Cro::Core 2/9, Data::Dump 1/9.
