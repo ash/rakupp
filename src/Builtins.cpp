@@ -563,7 +563,7 @@ Value coerceToSigil(Value v, char sigil) {
     return v;
 }
 
-bool defined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
+bool defined(const Value& v) { return rtIsDefined(v); } // one rule (rtIsDefined owns it: enum type objects are undefined)
 
 // √z from the MODULUS, the way Rakudo computes it — not std::sqrt(std::complex),
 // whose libc++ form loses a ULP on the real part: (-3+4i).sqrt came out as
@@ -1176,7 +1176,9 @@ std::string joinValues(const ValueList& items, const std::string& sep) {
         if (i) out += sep;
         out += items[i].toStr();
     }
-    return out;
+    // NFC-composed, as concatenation is: joining ("a", COMBINING RING) yields
+    // the composed grapheme in Rakudo's NFG strings
+    return nfcNormalize(std::move(out));
 }
 
 // A lazy @-array over the integers from `start` upward (an infinite `…..Inf` range).
@@ -2824,7 +2826,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // builtinExt_ (keyed by type name). Consult it — walking the native ancestry,
     // so augmenting Cool/Any reaches Int/Str too — for native values and type
     // objects, ahead of the built-in method table.
-    if (Value* f = builtinExtMethod(inv, m)) return invokeMethod(*f, inv, std::move(args), rwArgs);
+    if (Value* f = builtinExtMethod(inv, m)) {
+        // An augment ADDS candidates; it does not hide the built-in ones. A multi
+        // whose candidates all reject the args falls through to the built-in
+        // method instead of dying — `augment class DateTime { multi method
+        // new(Any:U) {…} }` must leave `DateTime.new($str)` working (JSON::Fast).
+        if (f->code && f->code->isMultiDispatcher) {
+            bool anyFits = false;
+            ValueList withInv; withInv.push_back(inv);
+            for (auto& a : args) withInv.push_back(a);
+            for (auto& c : f->code->candidates) {
+                if (c.code && c.code->isProto) continue;
+                if (scoreCandidate(c, withInv) >= 0 || scoreCandidate(c, args) >= 0) { anyFits = true; break; }
+            }
+            if (!anyFits) goto builtinExtFallthrough;
+        }
+        return invokeMethod(*f, inv, std::move(args), rwArgs);
+    }
+    builtinExtFallthrough:;
     // Any is not Cool: string methods on an UNDEFINED invocant die in Rakudo
     // ("Cannot resolve caller split(Any:U: …)"), typically after `prompt`/`get`
     // hit EOF. Everything else on Any stays lenient.
@@ -8590,14 +8609,16 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (allAscii(s)) return Value::integer((long long)s.size());
             return Value::integer((long long)utf8cp(s).size());
         }
-        case O::Concat: return Value::str(S(0) + S(1));
+        // NFC-composed, as Rakudo's NFG strings are: chaining nqp::concat with a
+        // combining char must yield the composed grapheme (JSON::Fast's \u parser)
+        case O::Concat: return Value::str(nfcNormalize(S(0) + S(1)));
         case O::Join: {
             std::string sep = S(0), out;
             if (v.size() > 1 && v[1].t == VT::Array && v[1].arr) {
                 bool first = true;
                 for (auto& e : *v[1].arr) { if (!first) out += sep; out += e.toStr(); first = false; }
             }
-            return Value::str(out);
+            return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
         }
         case O::Index: {
             const std::string& hs = S(0);
@@ -8623,7 +8644,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             std::string out;
             if (!v.empty() && v[0].t == VT::Array && v[0].arr)
                 for (auto& e : *v[0].arr) out += cpToU8((uint32_t)e.toInt());
-            return Value::str(out);
+            // Rakudo strings are NFG: building one from codes COMPOSES, whatever
+            // normalization the codes were in (JSON::Fast round-trips through
+            // NFD codes and back)
+            return Value::str(nfcNormalize(std::move(out)));
         }
         case O::StrToCodes: {
             // (str, NORMALIZE_* const, target-list) — fills target, returns it
@@ -8730,7 +8754,12 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return v.size() > 2 ? v[2] : Value::nil();
         case O::Create: {
             std::string tn = v[0].t == VT::Type ? v[0].s : v[0].typeName();
-            if (tn == "Map" || tn == "Hash" || tn == "IterationMap") return Value::makeHash();
+            // a `my class IterationMap is repr("VMHash")` declared INSIDE a module
+            // carries the package prefix (JSON::Fast::IterationMap) — the repr is
+            // what matters, and the base name is our only proxy for it
+            if (auto q = tn.rfind("::"); q != std::string::npos) tn = tn.substr(q + 2);
+            if (tn == "Map") { Value m = Value::makeHash(); m.hashKind = "Map"; return m; } // keeps Map identity through p6bindattrinvres
+            if (tn == "Hash" || tn == "IterationMap") return Value::makeHash();
             if (tn == "List") { Value r = Value::array(); r.isList = true; return r; }
             return Value::array(); // IterationBuffer / NFD / Uni / … — a plain buffer
         }
@@ -8754,7 +8783,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if ((v[0].t == VT::Array && v[3].t == VT::Array && v[0].arr && v[3].arr)) {
                 *v[0].arr = *v[3].arr;             // rebind the backing buffer
             } else if (v[0].t == VT::Hash && v[3].t == VT::Hash && v[0].hash && v[3].hash) {
-                *v[0].hash = *v[3].hash;
+                *v[0].hash = *v[3].hash;           // (hashKind stays the invocant's: a Map keeps being a Map)
             } else if (v[0].t == VT::Object && v[0].obj) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
                 v[0].obj->attrs[bare] = v[3];

@@ -610,6 +610,9 @@ public:
     void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false);
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
+    // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the
+    // import protocol again in the new scope (JSON::Fast's per-scope defaults)
+    std::map<std::string, Value> moduleExportSubs_;
     // sets $/ $0..; rxVal (an anonymous `regex {…}` value) engages wired mode:
     // code blocks/assertions run for real, in the regex's closed-over scope
     // What a `for` walks: an object with its own `.iterator` decides for itself.

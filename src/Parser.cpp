@@ -738,6 +738,35 @@ ExprPtr Parser::parseExpr(int minbp) {
             lhs = std::move(as);
             continue;
         }
+        // hyper around a USER infix: `@a »=~=« @b` — marker + registered custom
+        // operator + marker. Desugars exactly like the bracketed form below, to a
+        // hyper-with call of &infix:<op> (JSON::Fast's datetime test compares
+        // round-tripped arrays this way).
+        if (!in.valid && cur().kind == Tok::Op &&
+            (cur().text == ">>" || cur().text == "<<" ||
+             cur().text == "\xC2\xBB" || cur().text == "\xC2\xAB") &&
+            peek().kind == Tok::Op && userInfix_.count(peek().text) &&
+            (peek(2).kind == Tok::Op &&
+             (peek(2).text == ">>" || peek(2).text == "<<" ||
+              peek(2).text == "\xC2\xBB" || peek(2).text == "\xC2\xAB")) &&
+            BP_ZIP >= minbp) {
+            std::string m1 = (cur().text == "<<" || cur().text == "\xC2\xAB") ? "<<" : ">>";
+            advance();
+            std::string opName = advance().text;
+            std::string m2 = (cur().text == "<<" || cur().text == "\xC2\xAB") ? "<<" : ">>";
+            advance();
+            ExprPtr rhs = parseExpr(BP_COMMA + 1);
+            auto c = std::make_unique<Call>();
+            c->name = "hyper-with:" + m1 + m2;
+            c->args.push_back(std::move(lhs));
+            c->args.push_back(std::move(rhs));
+            auto pw = std::make_unique<PairExpr>();
+            pw->key = "with";
+            pw->value = std::make_unique<VarExpr>("&infix:<" + opName + ">");
+            c->args.push_back(std::move(pw));
+            lhs = std::move(c);
+            continue;
+        }
         // hyper with a bracketed operator value: $a >>[&infix:<+>]<< $b — the
         // marker + [ + CALLABLE + ] + marker; desugars to zip(:with(CALLABLE))
         if (!in.valid && cur().kind == Tok::Op &&

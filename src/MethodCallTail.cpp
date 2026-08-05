@@ -878,7 +878,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const std::string sep = args.empty() ? "" : a0().toStr();
             std::string out;
             for (size_t k = 0; k < items.size(); k++) { if (k) out += sep; out += strOf(items[k]); }
-            return Value::str(out);
+            return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
         }
         if (m == "fmt") {
             std::string fmt = args.empty() ? "%s" : a0().toStr();

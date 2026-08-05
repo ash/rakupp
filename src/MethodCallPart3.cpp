@@ -582,7 +582,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (nv.t == VT::Hash && nv.hashKind == "Failure") return nv;
             if (nv.t != VT::Str) return methodCall(nv, m, args, rwArgs);
         }
-        if (inv.t == VT::Rat) r = inv;
+        if (inv.t == VT::Rat) {
+            r = inv;
+            // .Rat on a RatStr allomorph sheds the Str half — keeping the tag made
+            // `jsonify(.Rat)` see another RatStr and recurse forever (JSON::Fast)
+            r.hashKind.clear(); r.s.clear();
+        }
         else if (inv.t == VT::Int || inv.t == VT::Bool) r = Value::rat(inv.toBig(), BigInt(1));
         else {
             // Num→Rat by continued fractions (Rakudo's default epsilon 1e-6):

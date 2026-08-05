@@ -143,7 +143,14 @@ Value divideByZero(const Value& lhs, const char* opName) {
                     "Cannot modify an immutable " + kind + " (" + v.gist() + ")"};
 }
 
-bool rtIsDefined(const Value& v) { return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure"); }
+bool rtIsDefined(const Value& v) {
+    // an enum TYPE object (the tagged pair-list EnumDecl builds: enumType set,
+    // enumName empty) is a type object — `with Bloop {…}` must not fire, and
+    // JSON::Fast renders it "null" through exactly that test. Junctions carry
+    // enumName ("any"/"all"/…) and stay defined.
+    if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty()) return false;
+    return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure");
+}
 static bool isDefined(const Value& v) { return rtIsDefined(v); }
 
 // Howard Hinnant's days<->civil algorithms (proleptic Gregorian, day 0 = 1970-01-01).
@@ -3461,7 +3468,28 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
 }
 
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet) {
-    if (loadedModules_.count(name)) return;
+    if (loadedModules_.count(name)) {
+        // The module body ran once and stays run — but a repeat `use` still
+        // IMPORTS into the new scope. Only the `sub EXPORT(*@_)` protocol needs
+        // replaying (its symbols are defined lexically, per use-statement, and
+        // may depend on the args: `use JSON::Fast <immutable !pretty>` in one
+        // block, plain `use JSON::Fast` in the next). Ordinary `is export`
+        // symbols were published to global and are already visible.
+        auto it = moduleExportSubs_.find(name);
+        if (doImport && it != moduleExportSubs_.end()) {
+            ValueList eargs;
+            for (auto& s : importArgs) eargs.push_back(Value::str(s));
+            try {
+                Value res = callCallable(it->second, eargs);
+                if (res.t == VT::Hash && res.hash)
+                    for (auto& kv : *res.hash) tctx_.cur->define(kv.first, kv.second);
+            } catch (RakuError& e) {
+                std::cerr << "===WARNING=== Module " << name
+                          << " EXPORT failed: " << e.message << "\n";
+            }
+        }
+        return;
+    }
     noteSymbolMutation("module load (use/need)");
     loadedModules_.insert(name);
 
@@ -3587,6 +3615,8 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         // in the USING scope.
         {
             auto it = moduleEnv->vars.find("&EXPORT");
+            if (it != moduleEnv->vars.end() && it->second.t == VT::Code)
+                moduleExportSubs_[name] = it->second;   // for repeat `use`s
             if (doImport && it != moduleEnv->vars.end() && it->second.t == VT::Code) {
                 ValueList eargs;
                 for (auto& s : importArgs) eargs.push_back(Value::str(s));
@@ -4550,9 +4580,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             Value pairs = Value::array();
             for (auto& it : items) {
                 std::string key; Value val;
-                if (it.t == VT::Pair) { key = it.s; val = it.pairVal ? *it.pairVal : Value::integer(counter); counter = val.toInt() + 1; }
+                if (it.t == VT::Pair) { key = it.s; val = it.pairVal ? *it.pairVal : Value::integer(counter); if (val.t == VT::Int) counter = val.toInt() + 1; }
                 else { key = it.toStr(); val = Value::integer(counter++); }
-                Value ev = Value::enumVal(key, val.toInt());
+                Value ev = Value::enumVal(key, val.t == VT::Int ? val.toInt() : counter++);
+                // a NON-Int enum value (`enum Blerp (One => "Eins")`) keeps its real
+                // value beside the ordinal; `.value` and `.pair` answer with it
+                if (val.t != VT::Int) ev.pairVal = std::make_shared<Value>(val);
                 ev.enumType = ed->name; // carry the enum's type identity (for .^name, ~~, .WHAT)
                 tctx_.cur->define(key, ev);
                 if (!ed->name.empty()) tctx_.cur->define(ed->name + "::" + key, ev);
@@ -6470,6 +6503,7 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
     // an enum VALUE as a parameter type (`multi f(\b, int $i, LittleEndian)`)
     // matches exactly that value; the enum TYPE name matches any of its values
     if (!arg.enumName.empty() && (type == arg.enumName || type == arg.enumType ||
+        type == "Enumeration" ||
         (!arg.enumType.empty() && type == arg.enumType + "::" + arg.enumName))) return true;
     // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params and its own name
     if (arg.isAllomorph() && (type == "Str" || type == "str" || type == "Stringy" ||
@@ -7468,6 +7502,13 @@ Value& rtAttrRef(Value& self, const std::string& name) {
 // Nominal type check for native multi-dispatch.
 bool rtTypeMatch(const Value& v, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu" || type == "Cool") return true;
+    // an enum VALUE matches the Enumeration role, its own enum type, and its name
+    if (!v.enumName.empty() &&
+        (type == "Enumeration" || type == v.enumType || type == v.enumName)) return true;
+    // a TAGGED built-in (Failure, IO::Path, FileHandle, Blob, …) matches its own
+    // reported type — nqp::istype($result, Failure) is how JSON::Fast rejects a
+    // malformed number, and the tag was never consulted here
+    if (!v.hashKind.empty() && (type == v.hashKind || type == v.typeName())) return true;
     // an allomorph (IntStr/RatStr/NumStr/ComplexStr) IS both of its types:
     // `my Str $s = <42>` and `my Int $i = <42>` both hold
     if (v.isAllomorph() && (type == "Str" || type == "Stringy" || type == v.hashKind))
@@ -7491,8 +7532,10 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
         case VT::Hash:    return type == "Hash" || type == "Associative" || type == "Map";
         case VT::Code:    return type == "Code" || type == "Callable" || type == "Routine" || type == "Block";
         case VT::Object: {
-            for (ClassInfo* c = v.obj && v.obj->cls ? v.obj->cls.get() : nullptr; c; c = c->parent.get())
+            for (ClassInfo* c = v.obj && v.obj->cls ? v.obj->cls.get() : nullptr; c; c = c->parent.get()) {
                 if (c->name == type) return true;
+                if (c->doesRole(type)) return true; // `does Positional` answers istype too
+            }
             // package-relative short name: `has Path $.path` accepts URI::Path
             const std::string& q = aliasType(type);
             if (&q != &type)
@@ -8897,6 +8940,19 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     return v;
 }
 
+// The lvalue TARGET of an rw write-back: `f(++$pos)` in Rakudo hands the
+// CONTAINER through the increment, so the callee's writes land in $pos. Peel a
+// prefix/postfix ++/-- (the increment already ran when the arg was evaluated)
+// and aim at the variable underneath.
+static Expr* peelIncDec(Expr* e) {
+    while (e && e->kind == NK::Unary) {
+        auto* u = static_cast<Unary*>(e);
+        if (u->op != "++" && u->op != "--") break;
+        e = u->operand.get();
+    }
+    return e;
+}
+
 // Copy `is rw` parameter final values back to the caller's argument lvalues.
 void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env,
                             const std::vector<ExprPtr>* rwArgs, bool /*methodCtx*/) {
@@ -8922,7 +8978,7 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
                 auto sy = env->xr().rwSynced.find(p.name);
                 bool unchanged = sy != env->xr().rwSynced.end() && valueEqv(it->second, sy->second);
                 if (!unchanged)
-                    try { if (Value* lv = lvalue((*rwArgs)[pi].get())) *lv = it->second; } catch (...) {}
+                    try { if (Value* lv = lvalue(peelIncDec((*rwArgs)[pi].get()))) *lv = it->second; } catch (...) {}
             }
         }
         pi++;
@@ -9000,7 +9056,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     Value v = e->vars[name];
     auto savedCur = tctx_.cur;
     tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
-    try { if (Value* lv = lvalue(it->second.first)) *lv = v; } catch (...) {}
+    try { if (Value* lv = lvalue(peelIncDec(it->second.first))) *lv = v; } catch (...) {}
     tctx_.cur = savedCur;
     e->x().rwSynced[name] = v;
 }
@@ -9651,6 +9707,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     // for the container — assign into the inner slot
     if (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "ctx$")
         return lvalue(static_cast<Unary*>(e)->operand.get());
+    // a TERNARY is an lvalue over whichever branch its condition picks:
+    // `($c ?? $x !! $y) = 5` writes $x. JSON::Fast passes an rw arg as
+    // `$ord == -1 ?? $pos !! ++$pos`, and the write-back comes through here.
+    if (e->kind == NK::Ternary) {
+        auto* t = static_cast<Ternary*>(e);
+        return lvalue(boolify(eval(t->cond.get())) ? t->then.get() : t->els.get());
+    }
+    // `++$x` / `--$x` as a target is the container through the increment (the
+    // increment itself ran when the expression was EVALUATED; re-running it here
+    // would double-step the rw write-back that is this path's only real caller)
+    if (e->kind == NK::Unary) {
+        auto* u = static_cast<Unary*>(e);
+        if (u->op == "++" || u->op == "--") return lvalue(u->operand.get());
+    }
     // `self{$k} = v` / `self[$i] = v` inside a method mutates the invocant
     if (e->kind == NK::SelfTerm) {
         if (Value* p = tctx_.cur->find("self")) return p;
@@ -12432,6 +12502,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (r.i == 1 && !isDefined(l)) return Value::boolean(op != "~~");
             if (r.i == 2 && isDefined(l))  return Value::boolean(op != "~~");
             res = (l.typeName() == r.s) || r.s == "Any" || r.s == "Mu" ||
+                  // an enum VALUE does the Enumeration role (and its own type)
+                  (!l.enumName.empty() && (r.s == "Enumeration" || r.s == l.enumType)) ||
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
                   (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
@@ -14405,6 +14477,16 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
         (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
         std::string inner = op.substr(2, op.size() - 4);
+        // a USER infix wins whole: `@a »=~=« @b` hyper-applies &infix:<=~=> —
+        // without this, its trailing `=` read as a compound assignment below
+        if (Value* uf = tctx_.cur->find("&infix:<" + inner + ">")) {
+            bool sL = op.compare(0, 2, ">>") == 0;
+            bool sR = op.compare(op.size() - 2, 2, "<<") == 0;
+            Value ll = l, rr = r;
+            Value fn = *uf;
+            return hyperCore(ll, rr, sL, sR,
+                [&](const Value& x, const Value& y, Value*, Value*) { return callCallable(fn, ValueList{x, y}); });
+        }
         // hyper compound assignment: `@a <<+=>> 2019` applies the base op
         // elementwise and MUTATES the left array (Value.arr is shared storage,
         // so writing through it reaches the caller's container)
@@ -14683,6 +14765,16 @@ Value Interpreter::evalBinary(Binary* b) {
                 return code;
             }
             std::string inner = op.substr(2, op.size() - 4);
+            // a USER infix wins whole: `@a »=~=« @b` hyper-applies &infix:<=~=> —
+            // without this, its trailing `=` read as a compound assignment below
+            if (Value* uf = tctx_.cur->find("&infix:<" + inner + ">")) {
+                bool sL = op.compare(0, 2, ">>") == 0;
+                bool sR = op.compare(op.size() - 2, 2, "<<") == 0;
+                Value ll = l, rr = r;
+                Value fn = *uf;
+                return hyperCore(ll, rr, sL, sR,
+                    [&](const Value& x, const Value& y, Value*, Value*) { return callCallable(fn, ValueList{x, y}); });
+            }
             // hyper compound assignment: `@a <<+=>> 2019` applies the base op
             // elementwise and MUTATES the left array (Value.arr is shared
             // storage, so writing through it reaches the caller's container)
@@ -18229,6 +18321,14 @@ Value Interpreter::eval(Expr* e) {
             }
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
+            // `Bool::` / `Foo::` — a bare trailing-::: name IS the package stash
+            // (`Bool::.values` enumerates the enum's values). Same result as .WHO.
+            if (n.size() > 2 && n.compare(n.size() - 2, 2, "::") == 0 &&
+                !nt->ofType.empty() == false && nt->defConstraint == 0) {
+                Value base = Value::typeObj(n.substr(0, n.size() - 2));
+                ValueList none;
+                return methodCall(base, "WHO", none);
+            }
             if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
                 Value ty = Value::typeObj(n); ty.ofType = nt->ofType;
                 ty.i = nt->defConstraint;

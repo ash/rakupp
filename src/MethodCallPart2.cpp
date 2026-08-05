@@ -716,7 +716,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         Value::number(INFINITY));
         return r;
     }
-    if (inv.t == VT::Type && (inv.s == "Rat" || inv.s == "FatRat") && m == "new") {
+    // `Rational[Int,Int].new(3,10)` — the parameterized role constructs a Rat
+    // (JSON::Fast's roundtrip test builds one directly)
+    if (inv.t == VT::Type && (inv.s == "Rat" || inv.s == "FatRat" || inv.s == "Rational") && m == "new") {
         BigInt n = args.size() > 0 ? args[0].toBig() : BigInt(0);
         BigInt d = args.size() > 1 ? args[1].toBig() : BigInt(1);
         Value v = Value::ratZ(std::move(n), std::move(d));
@@ -2827,8 +2829,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // enum value introspection (VT::Int carrying an enumName, e.g. `medium` of `enum Size <...>`)
     if (inv.t == VT::Int && !inv.enumName.empty()) {
         if (m == "key") return Value::str(inv.enumName);
-        if (m == "value") return Value::integer(inv.toInt());
-        if (m == "pair") return Value::pair(inv.enumName, Value::integer(inv.toInt()));
+        // a non-Int enum value (`One => "Eins"`) rides in pairVal beside the ordinal
+        if (m == "value") return inv.pairVal ? *inv.pairVal : Value::integer(inv.toInt());
+        if (m == "pair") return Value::pair(inv.enumName,
+                                            inv.pairVal ? *inv.pairVal : Value::integer(inv.toInt()));
         // TYPE-level queries reach the enum type object — the tagged pair-list the
         // declaration built. `.enums` was implemented only there, so `Mass.enums`
         // worked and `g.enums` fell off the ladder. The VT::Array guard matters:
@@ -3045,6 +3049,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (kv.first.rfind(pre, 0) == 0 &&
                     kv.first.find("::", pre.size()) == std::string::npos)
                     (*stash)[kv.first.substr(pre.size())] = kv.second;
+        }
+        // an ENUM type's stash holds its values (`Bool::.values` is (True, False))
+        if (pkg == "Bool") {
+            (*stash)["True"]  = Value::boolean(true);
+            (*stash)["False"] = Value::boolean(false);
+        }
+        else if (Value* et = tctx_.cur->find(pkg)) {
+            if (et->t == VT::Array && et->arr && !et->enumType.empty() && et->enumName.empty())
+                for (auto& pr : *et->arr)
+                    if (pr.t == VT::Pair)
+                        if (Value* ev = tctx_.cur->find(pr.s)) (*stash)[pr.s] = *ev;
         }
         Value st; st.t = VT::Hash; st.hash = stash; st.hashKind = "Stash"; st.s = pkg;
         return st;
