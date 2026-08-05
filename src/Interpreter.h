@@ -523,6 +523,7 @@ public:
     std::shared_ptr<ValueList> derefArrayAlias(Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
     bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
+    Value* topicAliasSlot(Expr* topic, bool skip);  // the slot a given/with topic aliases
     // peel a `.grep(PRED)` off a loop source, so the alias sources above still
     // recognise `for %h.values.grep(…) { $_ = … }` (Rakudo's grep is `is raw`)
     Expr* peelGrepFilter(Expr* listExpr, Expr*& pred);

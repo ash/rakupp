@@ -3007,6 +3007,41 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // builtin-type invocant (`().^lookup('elems')`): a "method object" —
             // a Callable that dispatches the named method on its first argument
             std::string mn = args.empty() ? "" : args[0].toStr();
+            // …but Rakudo answers Mu when the type does NOT have the method, and
+            // modules gate on exactly that: HTTP::Tiny tells an IO::Path form
+            // field from a plain string with `$value.^lookup('slurp')`, and an
+            // always-yes answer made it try to slurp the string. rakupp has no
+            // table of builtin methods — dispatch is an if-chain over string
+            // literals — so the only oracle is to TRY it and read the answer off
+            // X::Method::NotFound. The probe runs on a sentinel of the invocant's
+            // type (a real IO::Path is swapped for one that cannot exist, so a
+            // reader throws "failed to open" rather than reading anything), and
+            // names whose dispatch would WRITE are not probed at all: they keep
+            // the old permissive answer rather than risk the side effect.
+            static const std::set<std::string> kUnsafeToProbe = {
+                "print", "say", "put", "note", "printf", "write", "spurt", "open",
+                "mkdir", "rmdir", "symlink", "link", "unlink", "rename", "copy",
+                "move", "chdir", "close", "flush", "seek", "run", "shell", "exit",
+                "throw", "rethrow", "sink", "emit", "send", "recv", "start",
+                "sleep", "kill", "signal", "await", "react", "trans", "subst-mutate" };
+            // A TYPE object is not probeable — `Str.^lookup('parse-base')` is the
+            // idiomatic way to reach a method object, and the instance dispatch it
+            // names cannot run on the type. Only an INSTANCE invocant is probed.
+            if (!mn.empty() && !kUnsafeToProbe.count(mn) &&
+                inv.t != VT::Object && inv.t != VT::Type) {
+                Value probe = inv;
+                if (probe.hashKind == "IO") probe.s = "/nonexistent/rakupp-lookup-probe";
+                bool notFound = false;
+                try { ValueList none; methodCall(probe, mn, none); }
+                catch (RakuError& e) {
+                    const Value& p = e.payload;
+                    notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
+                               (p.t == VT::Object && p.obj && p.obj->cls &&
+                                p.obj->cls->name == "X::Method::NotFound");
+                }
+                catch (...) {}
+                if (notFound) return Value::typeObj("Mu");
+            }
             Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
             code.code->name = mn; code.code->isMethod = true;
             code.code->builtin = [mn](Interpreter& I, ValueList& a) -> Value {
@@ -4065,7 +4100,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value files = (*inv.hash)["files"];
             if (files.arr) for (auto& f : *files.arr) {
                 ValueList none;
-                Value one = methodCall(Value::str(f.toStr()), "slurp", none); // path-string slurp
+                Value p = Value::str(f.toStr()); p.hashKind = "IO"; // .slurp is IO::Path's
+                Value one = methodCall(p, "slurp", none);
                 out += one.toStr();
             }
             return Value::str(out);

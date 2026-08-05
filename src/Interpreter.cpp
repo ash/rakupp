@@ -245,12 +245,20 @@ static bool valueEqv(const Value& a, const Value& b) {
 // the body may equally assign the variable through its own name
 // (`$chunk .= new without $chunk`), and an unconditional copy-back would then
 // restore the stale topic over that write.
+// "did the body change the topic" — deliberately STRICTER than eqv: a Buf and a
+// Str holding the same bytes are eqv, and `$_ = Buf.new(.encode) with %h<k>` is
+// exactly the rewrite that has to land.
+static bool topicChanged(const Value& now, const Value& orig) {
+    return now.t != orig.t || now.hashKind != orig.hashKind ||
+           now.isList != orig.isList || !valueEqv(now, orig);
+}
+
 struct TopicAlias {
     Value* slot = nullptr; Env* sc = nullptr; Value orig;
     ~TopicAlias() {
         if (!slot || !sc) return;
         auto it = sc->vars.find("$_");
-        if (it != sc->vars.end() && !valueEqv(it->second, orig)) *slot = it->second;
+        if (it != sc->vars.end() && topicChanged(it->second, orig)) *slot = it->second;
     }
 };
 
@@ -5795,12 +5803,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // has to rewrite $str. Only a plain scalar variable is aliased
                 // here — an array/hash topic already writes through its elements,
                 // and a literal or call result has nowhere to write back to.
-                Value* topicSlot = nullptr;
-                if (g->topic && g->topic->kind == NK::VarExpr) {
-                    auto* tv = static_cast<VarExpr*>(g->topic.get());
-                    if (!tv->name.empty() && tv->name[0] == '$' && !tv->declare)
-                        try { topicSlot = lvalue(g->topic.get()); } catch (...) { topicSlot = nullptr; }
-                }
+                Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
                 env->vars["$_"] = topic;
                 // `{ $^x } without X` — a placeholder block receives the topic as its argument
                 if (g->body) {
@@ -5825,7 +5828,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     throw;
                 }
                 tctx_.curGivenFrame = savedGF;
-                if (topicSlot && !valueEqv(env->vars["$_"], topic))
+                if (topicSlot && topicChanged(env->vars["$_"], topic))
                     *topicSlot = env->vars["$_"];   // write the alias back
                 if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
                 return r;
@@ -5833,12 +5836,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
             // the same aliasing as the modifier form above: `given $str { s/x/y/ }`
             // rewrites $str
-            Value* topicSlot = nullptr;
-            if (g->topic && g->topic->kind == NK::VarExpr) {
-                auto* tv = static_cast<VarExpr*>(g->topic.get());
-                if (!tv->name.empty() && tv->name[0] == '$' && !tv->declare)
-                    try { topicSlot = lvalue(g->topic.get()); } catch (...) { topicSlot = nullptr; }
-            }
+            Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
             TopicAlias tback{topicSlot, scope.get(), topic};   // however the block exits
             scope->define("$_", topic);
             if (!g->var.empty()) scope->define(g->var, topic);
@@ -5890,6 +5888,16 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 Value bv;
                 try { bv = execBlock(w->body.get(), scope); }
                 catch (ProceedEx&) { return Value::any(); } // `proceed`: try the next when
+                // `when … { last }` (or `next`/`redo`): the block already redirected
+                // LOOP control, and that wins. Signalling the given-break as well
+                // was actively harmful — the enclosing loop consumes the when-flag
+                // first, returns "iteration done", and leaves the loop flag set, so
+                // the `last` escaped the routine and broke the CALLER's loop.
+                // (HTTP::Tiny ends its header scan with `when .not { last }`, which
+                // killed the 100-continue retry loop two frames up.)  A `return`
+                // deliberately does NOT short-circuit here: a CATCH block's `when`
+                // must still report that it MATCHED, or the exception is rethrown.
+                if (tctx_.loopCtl) return bv;
                 // Same callable frame as the consuming given/loop body → set the
                 // cooperative flag instead of throwing (the throw walks macOS
                 // unwind info under a lock — ruinous per-row inside a bind loop)
@@ -9159,6 +9167,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     ++tctx_.frameTop;
     uint64_t savedFrameTop = tctx_.frameTop, savedRoutineFrame = tctx_.curRoutineFrame;
     tctx_.curRoutineFrame = tctx_.frameTop;
+    // …and `$/` scopes to it, exactly as it does to a sub's. Only callCallable
+    // marked its Env, so a MATCH inside a method wrote through to the caller's
+    // `$/` and destroyed it: HTTP::Tiny reads `$<status>` again after calling
+    // `self.read-header-lines(…)` and got Nil, so every response came back
+    // `success => False`. (The third thing invokeMethod was missing that
+    // callCallable already had.)
+    tctx_.cur->routineFrame = true;
     struct FrameGuard {
         ExecContext& t; uint64_t ft, rf;
         ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; }
@@ -9761,6 +9776,23 @@ std::shared_ptr<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
 // and a writing body updates all four (Color clamps a CMYK tuple with
 // `clip-to 0, $_, 1 for $c, $m, $y, $k`). Only a list made ENTIRELY of scalar
 // variables qualifies; anything else is a plain list of values.
+// The writable slot a `given`/`with` topic aliases, or null when there is none.
+// A plain scalar variable qualifies, and so does a hash/array ELEMENT — HTTP::Tiny's
+// own test suite rewrites its expected bodies with
+// `$_ = Buf[uint8].new: .encode with %want<content>`. A literal, a call result or a
+// whole array/hash has nowhere to write back to. `skip` means the body will not run
+// (`with` on an undefined topic), and then the slot is not taken at all, so a missing
+// key is not autovivified just by being tested.
+Value* Interpreter::topicAliasSlot(Expr* topic, bool skip) {
+    if (!topic || skip) return nullptr;
+    if (topic->kind == NK::VarExpr) {
+        auto* tv = static_cast<VarExpr*>(topic);
+        if (tv->name.empty() || tv->name[0] != '$' || tv->declare) return nullptr;
+    }
+    else if (topic->kind != NK::Index) return nullptr;
+    try { return lvalue(topic); } catch (...) { return nullptr; }
+}
+
 bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
     if (!listExpr || listExpr->kind != NK::ListExpr) return false;
     auto* le = static_cast<ListExpr*>(listExpr);

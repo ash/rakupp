@@ -721,7 +721,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (inv.t == VT::Nil) return Value::nil();
         rejectNulPath(inv.toStr()); Value p = Value::str(inv.toStr()); p.hashKind = "IO"; return p;
     }
-    if (m == "slurp" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) { // FileHandle has its own slurp
+    // `.slurp` belongs to IO::Path (IO::Handle has its own, below) — a Str is NOT
+    // a path in Rakudo, `"file".slurp` is "no such method". rakupp accepted any
+    // invocant, which made `$value.^lookup('slurp')` true for a plain string and
+    // sent HTTP::Tiny off to slurp a form field. `slurp $path` (the SUB) is
+    // unaffected; so is every `$io.slurp`.
+    if (m == "slurp" && inv.hashKind == "IO") {
         std::ifstream in(inv.toStr(), std::ios::binary);
         if (!in) throwFailedOpen(inv.toStr());
         std::ostringstream ss; ss << in.rdbuf();
