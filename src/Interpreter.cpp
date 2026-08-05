@@ -10623,7 +10623,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* ix = static_cast<Index*>(a->value.get());
             if (ix->isHash && ix->index && !ix->multiDim &&
                 !tv->name.empty() && tv->name[0] == '$') {
-                Value* base = lvalue(ix->base.get());
+                // the base may have no lvalue at all — `$x := PROCESS::{"\$OUT"}`
+                // subscripts a pseudo-package, not a container. Fall through to the
+                // ordinary bind rather than letting "not assignable" escape.
+                Value* base = nullptr;
+                try { base = lvalue(ix->base.get()); } catch (RakuError&) { base = nullptr; }
                 std::shared_ptr<std::map<std::string, Value>> h;
                 if (base) {
                     Value* real = base;
@@ -16849,6 +16853,27 @@ bool Interpreter::keySubscriptIsSlice(const Expr* ixExpr, const Value& iv) {
 }
 
 Value Interpreter::evalIndex(Index* idx) {
+    // `PROCESS::{"\$$name"}` — a pseudo-package stash read with a COMPUTED key.
+    // The angle form `PROCESS::<$OUT>` is resolved at parse time into a plain
+    // variable; the brace form cannot be, so it landed here as an index into
+    // nothing and read Any. Trap opens its tee with exactly this
+    // (`PROCESS::{"\$$_"}` for "OUT"/"ERR").
+    if (idx->isHash && idx->index && idx->base && idx->base->kind == NK::NameTerm) {
+        const std::string& pkg = static_cast<NameTerm*>(idx->base.get())->name;
+        {
+            std::string base = pkg;
+            if (base.size() > 2 && base.compare(base.size() - 2, 2, "::") == 0)
+                base = base.substr(0, base.size() - 2);
+            std::string key = eval(idx->index.get()).toStr();
+            if (base == "PROCESS" && key.size() > 1 && std::strchr("$@%&", key[0])) {
+                // PROCESS symbols live as `$*NAME` dynamics
+                std::string dyn = key.size() > 1 && std::strchr("*!?.^", key[1])
+                                ? key : key.substr(0, 1) + "*" + key.substr(1);
+                VarExpr tmp(dyn); tmp.line = idx->line;   // read it the ordinary way:
+                return eval(&tmp);                        // $*OUT and friends are not plain Env slots
+            }
+        }
+    }
     // `@arr[$i]` / `@arr[0]` — a plain array read, which is most of what an
     // index does in a loop. The general path below starts by copying the whole
     // container into a local Value (376 bytes and a refcount round trip on the
