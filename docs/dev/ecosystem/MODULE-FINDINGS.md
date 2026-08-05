@@ -2018,4 +2018,5 @@ the runtime's lowest layers. Highlights (full list in commit ddc75ad):
 
 **14/14 — one better than Rakudo, which fails a race file in this environment.**
 Roast up 197,184 → ~197,192 with two files improving and nothing regressing;
-t/run.raku 304/304.
+t/run.raku 304/304. The full battery confirms: **41 PASS · 11 DIFF · 6 ENV ·
+1 NOTESTS**, no other distribution moved.
