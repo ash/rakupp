@@ -1159,6 +1159,14 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (isWords || adverbs.find(":w ") != std::string::npos ||
         adverbs.find(":words ") != std::string::npos) {
         out = make(Tok::QwList, raw);
+        // the FORM decides quote protection (ww) and interpolation (qq):
+        // the parser splits the words differently for each — qqww{ "\n" || }
+        // is two words, the first a real newline (Text::Utils' suite)
+        bool interpF  = (w == "qq" || w == "qqw" || w == "qqww");
+        bool protectF = (w == "qww" || w == "qqww" ||
+                         adverbs.find(":ww ") != std::string::npos);
+        out.text2 = protectF ? (interpF ? "qqww" : "qww")
+                             : (interpF ? "qqw"  : "qw");
         return true;
     }
     // heredoc: q:to/MARKER/ — the delimited text is the terminator; body follows at line end
@@ -1591,6 +1599,10 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     // A name TIGHT after ':' is an adverb pair — `:y(2)` is y => 2, never a `y///`
     // transliteration; `:q<x>` is q => 'x'. (A spaced `$fh.say: q/hi/` stays a quote.)
     if (pv.kind == Tok::Op && pv.text == ":" && !spaced) return true;
+    // A name TIGHT after `|` or `\` is a capture/sigilless PARAMETER name —
+    // `-> \s, |q { … }` (Log::Async wraps a method with exactly this); the `q`
+    // must not open a q{…} quote that swallows the block.
+    if (pv.kind == Tok::Op && (pv.text == "|" || pv.text == "\\") && !spaced) return true;
     if (pv.kind == Tok::Ident) {
         static const std::set<std::string> decl = {
             "method", "submethod", "sub", "multi", "proto", "token", "rule",

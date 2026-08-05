@@ -335,6 +335,14 @@ struct ExecContext {
     // with `callframe(1)`). Pushed next to dynStack, which every call already pays.
     struct CallSite { int line; const Value* code; };
     std::vector<CallSite> callFrames;
+    // Lvalue-mode method invocation: `$obj[i] = v` on a class whose AT-POS is
+    // `return-rw @!arr[$i]` must write the REAL element, not a returned copy.
+    // The subscript-lvalue path sets wantLvalue to callFrames.size()+1 before
+    // invoking AT-POS/AT-KEY; a `return-rw` executing at exactly that frame
+    // depth fills lvalueOut with lvalue(operand) — its target lives in the
+    // object's shared containers, so the pointer survives the frame.
+    int wantLvalue = 0;      // 0 off; else the callFrames depth being served
+    Value* lvalueOut = nullptr;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -505,7 +513,8 @@ public:
     // `$path ~~ /…/` where $path is a URI::Path must see "/a/b", as in Rakudo.
     std::string rxSubject(const Value& v) { return v.t == VT::Object ? strOf(v) : v.toStr(); }
     Value invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false,
-                       Value* selfBack = nullptr); // selfBack: copy the frame's `self` out (rw invocant)
+                       Value* selfBack = nullptr,  // selfBack: copy the frame's `self` out (rw invocant)
+                       bool skipWrappers = false); // true: innermost wrap level reached — run the body
     // A method `augment`-ed onto a BUILT-IN type, if there is one for this invocant.
     Value* builtinExtMethod(const Value& inv, const std::string& m);
     // What an object contributes when assigned to a `%` container: its own
@@ -886,6 +895,13 @@ public:
     bool docMode_ = false;            // --doc: run DOC phasers and print the rendered POD
     std::string srcFile_;             // source file path as invoked ($*PROGRAM-NAME)
     std::string srcFileAbs_;          // absolute source file path ($?FILE)
+    std::string curDeclFile_;         // file whose top level is executing (module load switches it)
+    // the file a routine declared NOW should record (backtrace .file)
+    std::string curDeclFile() const {
+        return !curDeclFile_.empty() ? curDeclFile_
+             : (srcFileAbs_.empty() ? srcFile_ : srcFileAbs_);
+    }
+    Value captureBacktrace();         // innermost-first BacktraceFrame list (Exception.throw)
     // %?RESOURCES for the module currently being loaded (dist resource files);
     // a stack because module loads nest (a module can `use` another).
     std::vector<Value> resourceStack_;

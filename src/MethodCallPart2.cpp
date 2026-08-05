@@ -1,4 +1,5 @@
 #include "MethodCallSegment.h"
+#include <sys/time.h> // gettimeofday — DateTime.now subsecond stamp
 
 // Segment 2 of the method-dispatch chain, split out of methodCallInner.
 //
@@ -861,8 +862,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     " (or leap second not allowed here)");
         };
         if (m == "now" || m == "today") {
-            time_t t = time(nullptr); struct tm* lt = localtime(&t);
-            return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, Value::integer(lt->tm_sec), (long long)t, tzOffsetDyn());
+            // DateTime.now carries fractional seconds (Rakudo prints six digits;
+            // Log::Async's default-format test matches `'.' \d+` in the stamp).
+            // Date.today ignores the second slot entirely.
+            struct timeval tv; gettimeofday(&tv, nullptr);
+            time_t t = tv.tv_sec; struct tm* lt = localtime(&t);
+            Value sec = inv.s == "Date" ? Value::integer(lt->tm_sec)
+                      : Value::number((double)lt->tm_sec + (double)tv.tv_usec / 1e6);
+            return mk(lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min, sec, (long long)t, tzOffsetDyn());
         }
         if (m == "new") {
             if (args.empty()) // `DateTime.new()` / `Date.new()` — must provide arguments
@@ -1300,6 +1307,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `.new` on a scalar built-in type object → that type's default value. This is
     // what real Raku does (Str.new → "", Int.new → 0) and lets `augment class Str {…}`
     // methods be reached via `Str.new.themethod`.
+    // A BacktraceFrame (from Exception.backtrace): file/line/code plus the
+    // predicates Backtrace consumers grep by (Log::Async::Context)
+    if (inv.t == VT::Hash && inv.hashKind == "BacktraceFrame" && inv.hash) {
+        if (m == "file" || m == "line" || m == "code") {
+            auto it = inv.hash->find(m.s);
+            return it != inv.hash->end() ? it->second : Value::any();
+        }
+        if (m == "is-hidden" || m == "is-setting" || m == "is-routine")
+            return Value::boolean(false);
+        if (m == "subname") {
+            auto it = inv.hash->find("code");
+            return Value::str(it != inv.hash->end() && it->second.code ? it->second.code->name : "");
+        }
+        if (m == "gist" || m == "Str") {
+            auto fl = inv.hash->find("file"); auto ln = inv.hash->find("line");
+            return Value::str("  in block at " + (fl != inv.hash->end() ? fl->second.toStr() : "") +
+                              " line " + (ln != inv.hash->end() ? ln->second.toStr() : "0"));
+        }
+    }
     // A CallFrame (from `callframe`): .file / .line / .code, and `<unit>` as the
     // code's name at mainline, where there is no enclosing routine.
     if (inv.t == VT::Hash && inv.hashKind == "CallFrame" && inv.hash) {
@@ -1942,10 +1968,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
                     for (auto it = chain.rbegin(); it != chain.rend(); ++it)
                         for (auto& at : (*it)->attrs) {
-                            Value dv = at.hasDefVal ? at.defVal
-                                     : at.def ? eval(const_cast<Expr*>(at.def))
-                                              : (at.sigil == '@' ? Value::array()
-                                                 : at.sigil == '%' ? Value::makeHash() : Value::any());
+                            Value dv;
+                            if (at.hasDefVal) dv = at.defVal;
+                            else if (at.def) { // close over the declaring class's scope
+                                auto sv = tctx_.cur;
+                                if ((*it)->declEnv) tctx_.cur = (*it)->declEnv;
+                                try { dv = eval(const_cast<Expr*>(at.def)); }
+                                catch (...) { tctx_.cur = sv; throw; }
+                                tctx_.cur = sv;
+                            } else dv = at.sigil == '@' ? Value::array()
+                                      : at.sigil == '%' ? Value::makeHash() : Value::any();
                             od->attrs[at.name] = dv;
                         }
                     ValueList builtinArgs;
@@ -1964,16 +1996,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // attr defaults evaluate with `self` in scope, so a default
                 // CLOSURE (`has $.cl = { self.foo }`) captures the new object
                 Value selfEarly = Value::object(od);
-                auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
-                denv->define("self", selfEarly);
-                auto savedDenv = tctx_.cur; tctx_.cur = denv;
+                auto savedDenv = tctx_.cur;
                 struct EnvRestore {
                     Interpreter& I; std::shared_ptr<Env> e;
                     ~EnvRestore() { I.tctx_.cur = e; }
                 } envRestore{*this, savedDenv};
                 std::vector<ClassInfo*> chain;
                 for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
-                for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+                for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                    // each level's defaults close over ITS declaration scope
+                    // (class-body constants/lexicals — `constant %Glyphs` in
+                    // Font::AFM must resolve from another module's `.new`),
+                    // not over whatever scope the CALLER happens to be in
+                    auto denv = std::make_shared<Env>();
+                    denv->parent = (*it)->declEnv ? (*it)->declEnv : savedDenv;
+                    denv->define("self", selfEarly);
+                    tctx_.cur = denv;
                     for (auto& at : (*it)->attrs) {
                         // The value the slot holds when it has no explicit default.
                         // A native-typed scalar takes its zero (`has atomicint $.n`
@@ -2024,6 +2062,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (!userContainer) dv = coerceToSigil(dv, at.sigil);
                         od->attrs[at.name] = dv;
                     }
+                }
+                tctx_.cur = savedDenv;
                 // the default constructor binds nameds to declared PUBLIC attributes
                 // only; anything else is silently ignored (Rakudo semantics — an
                 // unknown name must NOT enter the attr store, or `$.name` inside a
@@ -2113,8 +2153,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         for (ClassInfo* c = ci.get(); c; c = c->parent.get()) chain.push_back(c);
                         for (auto it = chain.rbegin(); it != chain.rend(); ++it)
                             for (auto& at : (*it)->attrs) {
-                                Value dv = at.hasDefVal ? at.defVal : at.def ? eval(const_cast<Expr*>(at.def))
-                                         : (at.sigil == '@' ? Value::array() : at.sigil == '%' ? Value::makeHash() : Value::any());
+                                Value dv;
+                                if (at.hasDefVal) dv = at.defVal;
+                                else if (at.def) { // declaring class's scope, as above
+                                    auto sv = tctx_.cur;
+                                    if ((*it)->declEnv) tctx_.cur = (*it)->declEnv;
+                                    try { dv = eval(const_cast<Expr*>(at.def)); }
+                                    catch (...) { tctx_.cur = sv; throw; }
+                                    tctx_.cur = sv;
+                                } else dv = at.sigil == '@' ? Value::array()
+                                          : at.sigil == '%' ? Value::makeHash() : Value::any();
                                 od->attrs[at.name] = dv;
                             }
                         return Value::object(od);
@@ -2129,6 +2177,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     // exception object .throw / .fail: raise it (message from its .message method)
     if ((m == "throw" || m == "rethrow" || m == "fail") && inv.t == VT::Object && inv.obj) {
+        // record the backtrace at THROW time on the object itself — the thrown
+        // value is shared, so a caught `$exception.backtrace` reads it back
+        // (Log::Async::Context throws a fresh Exception exactly for the walk)
+        if (m == "throw" && !inv.obj->attrs.count("__bt"))
+            inv.obj->attrs["__bt"] = captureBacktrace();
         std::string msg;
         if (Value* mm = inv.obj->cls ? inv.obj->cls->findMethod("message") : nullptr)
             { try { ValueList none; msg = invokeMethod(*mm, inv, none).toStr(); } catch (...) {} }
@@ -2137,6 +2190,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (ma != inv.obj->attrs.end() && rtIsDefined(ma->second)) msg = ma->second.toStr();
         }
         throw RakuError{inv, msg.empty() ? inv.typeName() : msg};
+    }
+    // `.backtrace` on an exception object: the frames its .throw recorded
+    // (captured NOW for a never-thrown one). A class defining its own
+    // backtrace method still wins — this only fills the built-in gap.
+    if (m == "backtrace" && inv.t == VT::Object && inv.obj &&
+        !(inv.obj->cls && inv.obj->cls->findMethod("backtrace"))) {
+        auto it = inv.obj->attrs.find("__bt");
+        return it != inv.obj->attrs.end() ? it->second : captureBacktrace();
     }
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj && inv.obj->cls) {

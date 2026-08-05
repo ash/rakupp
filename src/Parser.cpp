@@ -1730,8 +1730,29 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
 
 // skip `is trait` / `does Role` / `where ...` clauses up to '=' , ; or end
 void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
-    while (isIdent("is") || isIdent("does") || isIdent("returns") || isIdent("of")) {
+    while (isIdent("is") || isIdent("does") || isIdent("returns") || isIdent("of") ||
+           (isIdent("will") && peek().kind == Tok::Ident)) {
         bool wasIs = isIdent("is");
+        // `will leave {…}` / `will undo {…}` / `will keep {…}` on a variable
+        // declaration: capture the phaser + block; the declarator emits them as
+        // a synthetic phaser statement over this variable (Log::Async's suite
+        // holds a tempfile in `my $output will leave { .unlink } = tempfile`)
+        if (isIdent("will")) {
+            advance();
+            std::string ph = isKind(Tok::Ident) ? advance().text : "";
+            if (isKind(Tok::LBrace)) {
+                auto blk = parseBlock();
+                if (onVarDecl && (ph == "leave" || ph == "keep" || ph == "undo")) {
+                    auto be = std::make_unique<BlockExpr>();
+                    be->body = std::move(blk->stmts);
+                    lastWillBlock_ = std::move(be);
+                    lastWillPhaser_.assign(1, std::toupper((unsigned char)ph[0]));
+                    for (size_t k = 1; k < ph.size(); k++)
+                        lastWillPhaser_ += std::toupper((unsigned char)ph[k]);
+                }
+            }
+            continue;
+        }
         advance();
         // `is readonly` is a PARAMETER trait; on a variable declaration it's a
         // compile error (X::Comp::Trait::Unknown) — roast S03-binding/ro.t.
@@ -1974,11 +1995,26 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // Hash[Any, KeyType], so a missing key answers Any (Rakudo)
         if (!keyType.empty()) ve->declType = (ve->declType.empty() ? "Any" : ve->declType) + "," + keyType;
         lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false;
+        lastWillPhaser_.clear(); lastWillBlock_.reset();
         skipTraits(scope != "has", &ve->declDefault);
         if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
         if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
         if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
         if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
+        if (lastWillBlock_) {
+            // desugar `my $x will leave {…}` into `LEAVE {…}($x)` right after
+            // this statement — the block loops flush pendingStmts_; calling the
+            // block with the variable binds it as the phaser body's topic
+            auto call = std::make_unique<Call>();
+            call->callee = std::move(lastWillBlock_);
+            call->args.push_back(std::make_unique<VarExpr>(ve->name));
+            auto ph = std::make_unique<Block>();
+            ph->phaser = lastWillPhaser_;
+            auto es = std::make_unique<ExprStmt>(); es->e = std::move(call);
+            ph->stmts.push_back(std::move(es));
+            pendingStmts_.push_back(std::move(ph));
+            lastWillPhaser_.clear(); lastWillBlock_.reset();
+        }
         // `my $a is default(42) where * == 42` — constraint parsed, not yet enforced
         if (isIdent("where")) { advance(); parseExpr(BP_ASSIGN + 1); }
         return ve;
@@ -2680,23 +2716,62 @@ ExprPtr Parser::parsePrimary() {
             return std::make_unique<SubstLit>(t.text, t.text2, t.flag);
         }
         case Tok::QwList: { // qw<...> : split raw content on whitespace into a list of strings
+            // the lexer records the form in text2: quote protection for
+            // qww/qqww ('…'/"…" spans group into one word, quotes dropped),
+            // interpolation+escapes for the qq forms ("\n" is a newline,
+            // "$x" the variable's value). Empty text2 (other producers of
+            // QwList tokens) keeps the plain whitespace split.
+            const std::string form = cur().text2;
+            const bool protect = form == "qww" || form == "qqww";
+            const bool interp  = form == "qqw" || form == "qqww";
             std::string raw = advance().text;
             auto arr = std::make_unique<ArrayLit>();
             arr->isList = true;
             size_t i = 0, n = raw.size();
             while (i < n) {
                 for (int w; i < n && (w = uniWsLen(raw, i, true)); ) i += w;
+                if (i >= n) break;
+                if (protect && (raw[i] == '\'' || raw[i] == '"')) {
+                    // quoted span: one word up to the matching quote
+                    char q = raw[i++];
+                    std::string seg; bool closed = false;
+                    while (i < n) {
+                        if (raw[i] == '\\' && i + 1 < n) { seg += raw[i]; seg += raw[i + 1]; i += 2; continue; }
+                        if (raw[i] == q) { closed = true; i++; break; }
+                        seg += raw[i++];
+                    }
+                    (void)closed;
+                    if (q == '"' && interp)
+                        arr->items.push_back(parseInterpString(seg));
+                    else {
+                        // single-quote semantics: only \' and \\ unescape
+                        std::string lit;
+                        for (size_t k = 0; k < seg.size(); k++) {
+                            if (seg[k] == '\\' && k + 1 < seg.size() &&
+                                (seg[k + 1] == q || seg[k + 1] == '\\')) { lit += seg[++k]; continue; }
+                            lit += seg[k];
+                        }
+                        arr->items.push_back(std::make_unique<StrLit>(lit));
+                    }
+                    continue;
+                }
                 size_t start = i;
-                while (i < n && !uniWsLen(raw, i, true)) i++;
+                while (i < n && !uniWsLen(raw, i, true) &&
+                       !(protect && (raw[i] == '\'' || raw[i] == '"'))) i++;
                 if (i > start) {
                     std::string word = raw.substr(start, i - start);
                     // a numeric word is an allomorph (<42> IntStr, <1/3> RatStr, …) —
                     // in a multi-word list too: <1 2 3>[0].WHAT is IntStr
-                    if (ExprPtr num = angleWordNumeric(word)) {
+                    ExprPtr cp;
+                    if (protect && (cp = angleColonPair(word))) // `:name(…)` word → Pair
+                        arr->items.push_back(std::move(cp));
+                    else if (ExprPtr num = angleWordNumeric(word)) {
                         auto al = std::make_unique<AllomorphLit>();
                         al->num = std::move(num); al->str = word;
                         arr->items.push_back(std::move(al));
-                    } else
+                    } else if (interp && word.find_first_of("$@{\\") != std::string::npos)
+                        arr->items.push_back(parseInterpString(word));
+                    else
                         arr->items.push_back(std::make_unique<StrLit>(word));
                 }
             }
@@ -3301,7 +3376,10 @@ ExprPtr Parser::parsePrimary() {
                 // guillemet qw word list  « a b c »  (interpolating qw, treated as plain here)
                 advance();
                 auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : readAngleWords("\xC2\xBB")) arr->items.push_back(std::make_unique<StrLit>(w));
+                for (auto& w : readAngleWords("\xC2\xBB")) {
+                    if (ExprPtr cp = angleColonPair(w)) arr->items.push_back(std::move(cp));
+                    else arr->items.push_back(std::make_unique<StrLit>(w));
+                }
                 arr->isList = true;
                 return arr;
             }
@@ -3310,6 +3388,8 @@ ExprPtr Parser::parsePrimary() {
                 advance();
                 auto arr = std::make_unique<ArrayLit>();
                 for (auto& w : readAngleWords(">>")) {
+                    // a `:name(…)` word is a colonpair (`<<:TRACE(1) DEBUG>>`)
+                    if (ExprPtr cp = angleColonPair(w)) { arr->items.push_back(std::move(cp)); continue; }
                     // strip one level of quotes around a word ('a b' / "a b")
                     std::string s = w;
                     if (s.size() >= 2 && (s.front() == '\'' || s.front() == '"') && s.back() == s.front())
@@ -4021,6 +4101,42 @@ ExprPtr Parser::parsePrimary() {
     }
 }
 
+// A word like `:name`, `:!name`, `:name(expr)` or `:42name` inside a
+// «…»/<<…>>/qww word list is a COLONPAIR, as in Rakudo — `enum Loglevels
+// <<:TRACE(1) DEBUG …>>` (Log::Async) relies on the pair reading to number
+// its values. Returns null when the word is not pair-shaped.
+ExprPtr Parser::angleColonPair(const std::string& w) {
+    if (w.size() < 2 || w[0] != ':') return nullptr;
+    size_t i = 1; bool neg = false;
+    if (w[i] == '!') { neg = true; i++; if (i >= w.size()) return nullptr; }
+    if (std::isdigit((unsigned char)w[i]) && !neg) { // :42name — value-first pair
+        size_t d = i; while (d < w.size() && std::isdigit((unsigned char)w[d])) d++;
+        if (d < w.size() && (std::isalpha((unsigned char)w[d]) || w[d] == '_')) {
+            auto pe = std::make_unique<PairExpr>();
+            pe->colonForm = true;
+            pe->key = w.substr(d);
+            pe->value = std::make_unique<IntLit>(std::stoll(w.substr(i, d - i)));
+            return pe;
+        }
+        return nullptr;
+    }
+    if (!(std::isalpha((unsigned char)w[i]) || w[i] == '_')) return nullptr;
+    size_t j = i;
+    while (j < w.size() && (std::isalnum((unsigned char)w[j]) || w[j] == '_' ||
+           ((w[j] == '-' || w[j] == '\'') && j + 1 < w.size() &&
+            std::isalpha((unsigned char)w[j + 1])))) j++;
+    auto pe = std::make_unique<PairExpr>();
+    pe->colonForm = true;
+    pe->key = w.substr(i, j - i);
+    if (j == w.size()) { pe->value = std::make_unique<BoolLit>(!neg); return pe; }
+    if (neg) return nullptr;
+    if (w[j] == '(' && w.back() == ')' && j + 1 < w.size())
+        { pe->value = parseEmbeddedExpr(w.substr(j + 1, w.size() - j - 2)); return pe; }
+    if (w[j] == '<' && w.back() == '>' && j + 1 < w.size())
+        { pe->value = std::make_unique<StrLit>(w.substr(j + 1, w.size() - j - 2)); return pe; }
+    return nullptr;
+}
+
 // ---------------- string interpolation ----------------
 ExprPtr Parser::parseEmbeddedExpr(const std::string& src) {
     Lexer lx(src);
@@ -4354,6 +4470,8 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             (i + 1 < n) && (std::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
                             raw[i + 1] == '{' || raw[i + 1] == '*' || raw[i + 1] == '!' ||
                             raw[i + 1] == '.' || raw[i + 1] == '^' || colonPh ||
+                            (raw[i + 1] == '?' && i + 2 < n &&
+                             (std::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_')) ||
                             ((unsigned char)raw[i + 1] >= 0x80 &&
                              [&]{ size_t l; return identContAt(i + 1, l); }()))) {
             char sig = c;
@@ -4368,9 +4486,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 i = j + 1;
                 continue;
             }
-            // twigil ($*dyn, $!attr, $.attr, $^placeholder)
+            // twigil ($*dyn, $!attr, $.attr, $^placeholder, $?LINE)
             if (raw[j] == '*' || raw[j] == '!' || raw[j] == '.' || raw[j] == '^' ||
-                (raw[j] == ':' && colonPh)) var += raw[j++];
+                raw[j] == '?' || (raw[j] == ':' && colonPh)) var += raw[j++];
             for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
             // hyphen/apostrophe continue the name when followed by an alphanumeric ($foo-bar)
             while (j + 1 < n && rakuIdentJoins(raw[j], raw[j + 1])) {
@@ -4434,7 +4552,18 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // @arr/%hash only interpolate when followed by a postcircumfix/method
             if ((sig == '@' || sig == '%') && !hadPostfix) { lit += var; i = j; continue; }
             flush();
-            try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { lit += var; }
+            try {
+                ExprPtr part = parseEmbeddedExpr(var);
+                // a compile-time magical reads its NODE's line — stamp the
+                // string's own position, not the sub-parser's line 1
+                // ("line $?LINE" — Log::Async's context test)
+                if (part && part->kind == NK::VarExpr && var.rfind("$?", 0) == 0) {
+                    int base = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+                    for (size_t nl = 0; nl < i; nl++) if (raw[nl] == '\n') base++;
+                    static_cast<VarExpr*>(part.get())->line = base;
+                }
+                result->parts.push_back(std::move(part));
+            } catch (...) { lit += var; }
             i = j;
             continue;
         }
@@ -4454,6 +4583,8 @@ std::unique_ptr<Block> Parser::parseBlock() {
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
         blk->stmts.push_back(parseStatement());
+        for (auto& ps : pendingStmts_) blk->stmts.push_back(std::move(ps)); // `will leave` desugars
+        pendingStmts_.clear();
         if (!isKind(Tok::Semicolon)) enforceStmtSep();
     }
     checkRedeclarations(blk->stmts);
@@ -6351,6 +6482,10 @@ StmtPtr Parser::parseStatementImpl() {
                         if (!w.empty()) u->importArgs.push_back(w);
                     }
                     if ((isKind(Tok::StrLit) || isKind(Tok::StrInterp)) && u->arg.empty()) u->arg = cur().text;
+                    // `use Mod "use-args"` — a STRING argument reaches sub EXPORT
+                    // exactly like the angle form (`use lib 'x'` keeps u->arg only)
+                    if ((isKind(Tok::StrLit) || isKind(Tok::StrInterp)) && u->module != "lib")
+                        u->importArgs.push_back(cur().text);
                     advance();
                 }
             }
@@ -6718,6 +6853,8 @@ Program Parser::parseProgram() {
     while (!isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
         prog.stmts.push_back(parseStatement());
+        for (auto& ps : pendingStmts_) prog.stmts.push_back(std::move(ps)); // `will leave` desugars
+        pendingStmts_.clear();
         if (!matchKind(Tok::Semicolon)) enforceStmtSep();
     }
     checkRedeclarations(prog.stmts);

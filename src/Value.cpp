@@ -391,7 +391,11 @@ std::string Value::toStr() const {
                 auto it = obj->attrs.find("message");
                 if (it != obj->attrs.end() && it->second.t == VT::Str) return it->second.s;
             }
-            return obj && obj->cls ? obj->cls->name + "<obj>" : "Object";
+            // Rakudo's default Mu.Str is `Name<identity>` — DISTINCT per object.
+            // `isnt $a, $a.clone` is a string compare and must see two objects.
+            return obj && obj->cls
+                ? obj->cls->name + "<" + std::to_string((uintptr_t)obj.get()) + ">"
+                : "Object";
         case VT::Regex: return s;
         case VT::Match: return s;
     }
@@ -956,6 +960,32 @@ bool valueEq(const Value& a, const Value& b) {
     if (a.isNumeric() && b.isNumeric())
         return a.toNum() == b.toNum();
     return a.toStr() == b.toStr();
+}
+
+// Structural object equality for eqv/is-deeply: Rakudo's default eqv holds for
+// two DISTINCT objects of the same class whose attributes are pairwise eqv
+// (`A.new(:1a) eqv A.new(:1a)` is True; the clone tests in roast rely on it).
+// `eq` is the caller's own recursive comparator so attribute values keep the
+// caller's semantics. Depth-capped: object graphs carry parent links (XML), and
+// a cycle must fall back to identity, not hang.
+static thread_local int g_objEqDepth = 0;
+bool objectStructEqv(const Value& a, const Value& b,
+                     bool (*eq)(const Value&, const Value&)) {
+    if (a.obj == b.obj) return true;
+    if (!a.obj || !b.obj) return false;
+    if (a.obj->cls != b.obj->cls) return false; // a.WHAT =:= b.WHAT
+    if (g_objEqDepth > 256) return false;
+    ++g_objEqDepth;
+    bool ok = true;
+    if (a.obj->hasBoxed != b.obj->hasBoxed) ok = false;
+    else if (a.obj->hasBoxed && !eq(a.obj->boxed, b.obj->boxed)) ok = false;
+    else if (a.obj->attrs.size() != b.obj->attrs.size()) ok = false;
+    else for (auto& kv : a.obj->attrs) {
+        auto it = b.obj->attrs.find(kv.first);
+        if (it == b.obj->attrs.end() || !eq(kv.second, it->second)) { ok = false; break; }
+    }
+    --g_objEqDepth;
+    return ok;
 }
 
 int valueCmp(const Value& a, const Value& b) {

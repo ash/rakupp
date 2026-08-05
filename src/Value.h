@@ -59,6 +59,7 @@ struct Callable {
     const std::vector<Param>* params = nullptr;   // borrowed from AST
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
     signed char hoistNeed = -1;                    // see Interpreter::hoistExprDecls (-1 = undecided)
+    std::string declFile;                          // source file the routine was declared in (backtrace .file)
     std::shared_ptr<Env> closure;
     std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)
     std::once_flag stateInit;                      // stateEnv is created exactly once (thread-safe under parallel calls)
@@ -296,6 +297,9 @@ inline bool identityScalar(const Value& v) {
 inline Value& identify(Value& v) { v.ext = std::make_shared<char>(); return v; }
 
 bool valueEq(const Value& a, const Value& b);   // numeric/str smart equality
+// structural eqv over two objects: same class, attrs pairwise-equal via `eq`
+bool objectStructEqv(const Value& a, const Value& b,
+                     bool (*eq)(const Value&, const Value&));
 int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
 std::string strSucc(const std::string& s);             // Raku magic string increment
 std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=false on underflow)

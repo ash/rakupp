@@ -1529,15 +1529,24 @@ bool deepEq(const Value& a, const Value& b) {
         }
         return true;
     }
-    if (a.t == VT::Pair && b.t == VT::Pair)
-        return a.s == b.s && deepEq(a.pairVal ? *a.pairVal : Value::any(),
-                                   b.pairVal ? *b.pairVal : Value::any());
+    if (a.t == VT::Pair && b.t == VT::Pair) {
+        // typed keys (an object key stringifies with its identity now, so the
+        // rendering can't stand in for the key) compare structurally
+        bool keyOk = a.pairKey && b.pairKey ? deepEq(*a.pairKey, *b.pairKey)
+                                            : a.s == b.s;
+        return keyOk && deepEq(a.pairVal ? *a.pairVal : Value::any(),
+                               b.pairVal ? *b.pairVal : Value::any());
+    }
     if (a.t == VT::Rat && b.t == VT::Rat) // structural (eqv): <0/0> eqv <0/0> is True; toNum would NaN-compare
         return a.fatRat == b.fatRat &&
                a.ratN && b.ratN && a.ratD && b.ratD &&
                BigInt::cmp(*a.ratN, *b.ratN) == 0 && BigInt::cmp(*a.ratD, *b.ratD) == 0;
     if (a.t == VT::Num && b.t == VT::Num && std::isnan(a.n) && std::isnan(b.n))
         return true; // structural: NaN eqv NaN (numeric == would say false)
+    // two objects: structural, not stringified — object .Str carries identity
+    // now, so the toStr fallback would call every clone unequal to its source
+    if (a.t == VT::Object && b.t == VT::Object)
+        return objectStructEqv(a, b, deepEq);
     return valueEq(a, b);
 }
 
@@ -5962,12 +5971,16 @@ void Interpreter::registerBuiltins() {
         else if (a.size() >= 3) {
             std::string op = a[1].toStr();
             const Value& x = a[0]; const Value& y = a[2];
-            if (op == "==") c = x.toNum() == y.toNum();
-            else if (op == "!=") c = x.toNum() != y.toNum();
-            else if (op == "<") c = x.toNum() < y.toNum();
-            else if (op == ">") c = x.toNum() > y.toNum();
-            else if (op == "<=") c = x.toNum() <= y.toNum();
-            else if (op == ">=") c = x.toNum() >= y.toNum();
+            // the numeric fast path only fits actual numbers — a Version (or any
+            // tagged value) must go through the real operator (`cmp-ok $v, '>',
+            // v0.0.0` flattened both sides to 0 and failed; Log::Async's suite)
+            bool bothNum = x.isNumeric() && y.isNumeric();
+            if (bothNum && op == "==") c = x.toNum() == y.toNum();
+            else if (bothNum && op == "!=") c = x.toNum() != y.toNum();
+            else if (bothNum && op == "<") c = x.toNum() < y.toNum();
+            else if (bothNum && op == ">") c = x.toNum() > y.toNum();
+            else if (bothNum && op == "<=") c = x.toNum() <= y.toNum();
+            else if (bothNum && op == ">=") c = x.toNum() >= y.toNum();
             else if (op == "eq") c = x.toStr() == y.toStr();
             else if (op == "ne") c = x.toStr() != y.toStr();
             else c = applyArith(op, x, y).truthy(); // ===, eqv, ~~, before/after, user ops…
@@ -6668,6 +6681,9 @@ void Interpreter::registerBuiltins() {
             else if (x.s == "update") mode = "update";   // read/write, must exist
             else if (x.s == "exclusive" || x.s == "x") excl = true; // create-new-or-fail (O_EXCL)
         }
+        // :nl-in(...) — custom input line separator(s); .lines/.get honour it
+        Value nlIn;
+        for (auto& x : a) if (x.t == VT::Pair && x.s == "nl-in" && x.pairVal) nlIn = *x.pairVal;
         if (excl) { // File::Temp opens `:rw, :exclusive` to claim a fresh name
             std::ifstream probe(path);
             if (probe) throw RakuError{Value::typeObj("X::IO::Exclusive"),
@@ -6683,6 +6699,7 @@ void Interpreter::registerBuiltins() {
         (*h.hash)["path"] = Value::str(path);
         (*h.hash)["mode"] = Value::str(mode);
         (*h.hash)["buffer"] = Value::str("");
+        if (nlIn.t != VT::Any) (*h.hash)["nl-in"] = nlIn;
         if (mode == "w") { std::ofstream create(path, std::ios::trunc); } // the file exists immediately
         if (mode == "rw") { std::ofstream create(path, std::ios::app); }  // exists immediately, kept intact
         if (mode != "r") I.registerWriteHandle(h.hash); // flush at exit if not closed

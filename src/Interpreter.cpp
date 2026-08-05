@@ -229,8 +229,14 @@ static bool valueEqv(const Value& a, const Value& b) {
             for (auto& kv : *a.hash) { auto it = b.hash->find(kv.first); if (it == b.hash->end() || !valueEqv(kv.second, it->second)) return false; }
             return true;
         case VT::Pair:
-            return a.s == b.s && valueEqv(a.pairVal ? *a.pairVal : Value::any(), b.pairVal ? *b.pairVal : Value::any());
-        case VT::Object: return a.obj == b.obj;
+            // typed keys compare structurally (an object key's rendering now
+            // carries its identity, so `$o => 1 eqv Foo.new => 1` needs the key)
+            return (a.pairKey && b.pairKey ? valueEqv(*a.pairKey, *b.pairKey)
+                                           : a.s == b.s) &&
+                   valueEqv(a.pairVal ? *a.pairVal : Value::any(), b.pairVal ? *b.pairVal : Value::any());
+        // structural, like Rakudo's default eqv: same class + eqv attributes
+        // (a clone eqv its source; identity alone was too narrow)
+        case VT::Object: return objectStructEqv(a, b, valueEqv);
         // A RANGE compares by its endpoint FORM, exclusion markers included —
         // expanding it made `1..^5 eqv 1..4` True, and built the whole list to
         // answer. A CODE object is identical only to itself. A TYPE object carries
@@ -3682,6 +3688,12 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         }
         howMs = traceLoad ? nowMs() - t0 : 0;
         howLabel = cached ? "precomp" : "parse";
+        // routines declared while this module's top level runs record ITS file
+        // (backtrace .file — Log::Async walks frames by path); RAII because a
+        // throwing module load is fatal-but-caught upstream
+        struct DFGuard { std::string& f; std::string s; ~DFGuard() { f = s; } }
+            dfG{curDeclFile_, curDeclFile_};
+        curDeclFile_ = srcPath;
         loadParsed(prog, finish);
     };
 
@@ -4395,6 +4407,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 c.code->body = &sd->body;
                 c.code->closure = tctx_.cur;
                 c.code->retType = sd->retType;
+                c.code->declFile = curDeclFile();
                 c.code->pod = sd->pod;
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
                 // dropping the flag here meant callCallable never bound `self`
@@ -4633,6 +4646,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code->body = &md->body;
                     code.code->closure = tctx_.cur;
                     code.code->isMethod = true;
+                    code.code->declFile = curDeclFile();
                     if (md->params.empty()) code.code->placeholders = computePlaceholders(md->body);
                     return code;
                 };
@@ -5111,6 +5125,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 code.code->body = &md->body;
                 code.code->closure = bodyEnv;
                 code.code->isMethod = true; // invoked via .() binds the 1st arg as self
+                code.code->declFile = curDeclFile();
                 code.code->isStub = stmtIsStub(md->body);
                 // an undeclared `$!attr` reference in a method body is a compile
                 // error in a CLASS (roles get their attrs from consumers)
@@ -5373,6 +5388,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
+            // `return-rw EXPR` under an lvalue-mode invocation (this frame is
+            // the one the subscript-assign path invoked): surface the container
+            if (r->isRw && r->value && tctx_.wantLvalue &&
+                tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
+                try { tctx_.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
+                if (tctx_.lvalueOut) {
+                    Value v = *tctx_.lvalueOut;
+                    if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
+                        tctx_.returning = true; tctx_.returnV = std::move(v);
+                        return Value::any();
+                    }
+                    throw ReturnEx{v};
+                }
+            }
             Value v = r->value ? eval(r->value.get()) : Value::any();
             // cooperative return when no callable boundary sits between here and
             // the routine (native loops/blocks only) — else the exception path
@@ -6014,6 +6043,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
     // first argument and binds `self`, exactly as a declared one does.
     code.code->isMethod = be->isMethodTerm;
+    code.code->declFile = curDeclFile();
     code.code->isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
     // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
     // `()` and only a bare `{;}` gets the implicit `$_`
@@ -6277,6 +6307,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                             Value na = Value::pair(kv.first, kv.second); na.namedArg = true;
                             a.arr->push_back(std::move(na));
                         }
+                // a `|c` param binds a real CAPTURE: `$c<name>` reaches its named
+                // parts and it round-trips as \(…) (Log::Async's wrap tests)
+                if (capture && !p.name.empty()) { a.hashKind = "Capture"; a.itemized = true; }
                 env->define(p.name, a);
                 // capture sub-signature `|c($x, :$y!)` — unpack the slurped
                 // positionals AND the call's named args into the inner params
@@ -6493,6 +6526,9 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"MixHash", {"MixHash", "Mixy", "Baggy", "QuantHash", "Associative"}},
         {"Date",     {"Date", "Dateish"}},
         {"DateTime", {"DateTime", "Dateish"}},
+        {"IO::Path",   {"IO::Path", "IO", "Cool"}},
+        {"IO::Handle", {"IO::Handle", "IO"}},
+        {"IO::Special", {"IO::Special", "IO"}},
     };
     auto td = typeDoes.find(ln);
     bool baseOk = (td != typeDoes.end() && td->second.count(rn));
@@ -6562,6 +6598,11 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
                     "blob64", "buf64", "utf8", "utf16", "utf32", "Positional"};
                 return bufTypes.count(type) > 0;
             }
+            // an IO::Path is Cool but NOT Stringy — a `Str:D $path` candidate must
+            // refuse it, or Config's read(Str:D) re-dispatches to itself forever
+            // ($path.IO is already an IO::Path). Version/IO::Special are Any-based.
+            if (arg.hashKind == "IO") return type == "Cool";
+            if (arg.hashKind == "Version" || arg.hashKind == "IO::Special") return false;
             return type == "Str" || type == "Cool" || type == "Stringy" || type == "str";
         case VT::Array: return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq");
         case VT::Hash:
@@ -7545,7 +7586,12 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
         case VT::Num:     return type == "Num" || type == "Numeric" || type == "Real";
         case VT::Rat:     return type == "Rat" || type == "Numeric" || type == "Real";
         case VT::Complex: return type == "Complex" || type == "Numeric";
-        case VT::Str:     return type == "Str" || type == "Stringy";
+        case VT::Str:
+            // tagged non-strings that ride on VT::Str (IO::Path, Version,
+            // IO::Special) are not Str/Stringy; their own names matched above
+            if (v.hashKind == "IO" || v.hashKind == "Version" || v.hashKind == "IO::Special")
+                return false;
+            return type == "Str" || type == "Stringy";
         // Bool is an Int-backed enum, so `True ~~ Int` / nqp::istype(True, Int)
         // hold (CBOR::Simple classifies Bool via nqp::istype($_, Numeric)).
         case VT::Bool:    return type == "Bool" || type == "Int" ||
@@ -7572,6 +7618,31 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
         }
         default: return false;
     }
+}
+
+// The call chain as a list of BacktraceFrame values, innermost first — what
+// Exception.throw records and .backtrace answers. Each frame carries the file
+// its routine was DECLARED in (declFile), so Log::Async's Context can walk
+// past its own module's frames by path, and the line executing in that
+// activation (the innermost's current line; an outer one's call-site line).
+Value Interpreter::captureBacktrace() {
+    Value bt = Value::array(); bt.isList = true;
+    auto& fr = tctx_.callFrames;
+    long long line = curLine_;
+    for (size_t idx = fr.size(); ; idx--) {
+        const Value* code = idx > 0 ? fr[idx - 1].code : nullptr;
+        Value f = Value::makeHash(); f.hashKind = "BacktraceFrame";
+        std::string file;
+        if (code && code->code && !code->code->declFile.empty()) file = code->code->declFile;
+        else file = srcFileAbs_.empty() ? srcFile_ : srcFileAbs_;
+        (*f.hash)["file"] = Value::str(file);
+        (*f.hash)["line"] = Value::integer(line);
+        if (code) (*f.hash)["code"] = *code;
+        bt.arr->push_back(std::move(f));
+        if (idx == 0) break;
+        line = fr[idx - 1].line;
+    }
+    return bt;
 }
 
 // Reduction metaop for native codegen: fold `op` over a flattened list.
@@ -8516,6 +8587,34 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (codeVal.t == VT::Object && codeVal.obj && codeVal.obj->cls) {
             if (Value* cm = codeVal.obj->cls->findMethod("CALL-ME"))
                 return invokeMethod(*cm, codeVal, std::move(args));
+            // a `but`-mixin over a Code stays callable — the mixin adds methods,
+            // the boxed code is still what gets invoked (Log::Async wraps its
+            // formatter `but role { method is-hidden-from-backtrace {…} }`)
+            if (codeVal.obj->hasBoxed && codeVal.obj->boxed.t == VT::Code)
+                return callCallable(codeVal.obj->boxed, std::move(args), rwArgs);
+        }
+        // an ENUM VALUE is callable like its type: `WARNING(TRACE)` coerces via
+        // Loglevels(…) — a same-type arg passes through, else match by value or
+        // name in the type's pair list (Log::Async's default level filter)
+        if (!codeVal.enumType.empty() && !codeVal.enumName.empty() && !args.empty()) {
+            const Value& a0 = args[0];
+            if (a0.enumType == codeVal.enumType) return a0;
+            Value* ty = tctx_.cur ? tctx_.cur->find(codeVal.enumType) : nullptr;
+            if (!ty && global_) ty = global_->find(codeVal.enumType);
+            if (ty && ty->t == VT::Array && ty->arr) {
+                long long counter2 = 0;
+                for (auto& p : *ty->arr) {
+                    if (p.t != VT::Pair) continue;
+                    long long pv = p.pairVal ? p.pairVal->toInt() : counter2;
+                    counter2 = pv + 1;
+                    bool hit = a0.t == VT::Str ? (p.s == a0.s) : (pv == a0.toInt());
+                    if (hit) {
+                        Value ev = Value::enumVal(p.s, pv);
+                        ev.enumType = codeVal.enumType;
+                        return ev;
+                    }
+                }
+            }
         }
         if (codeVal.t == VT::Type) {
             auto cit = classes_.find(codeVal.s);
@@ -9119,8 +9218,42 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 }
 
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
-                                Value* selfBack) {
+                                Value* selfBack, bool skipWrappers) {
     if (codeVal.t != VT::Code || !codeVal.code) return Value::any();
+    // A wrapped method runs its wrapper stack first, exactly as callCallable
+    // does for subs (`K.^find_method('add-tap').wrap: -> \s, |q {…}` —
+    // Log::Async's import tests). The wrapper receives (self, |args);
+    // callsame/nextsame drop one level, ending at the original body.
+    if (!codeVal.code->wrappers.empty() && !skipWrappers) {
+        const auto& wraps = codeVal.code->wrappers;
+        std::function<Value(int, ValueList)> runLevel =
+            [&](int level, ValueList as) -> Value {
+                if (level < 0) {
+                    Value inv2 = as.empty() ? self : as[0];
+                    ValueList rest(as.begin() + (as.empty() ? 0 : 1), as.end());
+                    return invokeMethod(codeVal, inv2, std::move(rest), rwArgs,
+                                        ownFrame, nullptr, /*skipWrappers=*/true);
+                }
+                RedispatchCtx rc;
+                rc.sameArgs = as;
+                rc.next = [&runLevel, level](ValueList na) -> Value { return runLevel(level - 1, std::move(na)); };
+                rc.restart = [this, &codeVal](ValueList na) -> Value {
+                    Value inv2 = na.empty() ? Value::any() : na[0];
+                    ValueList rest(na.begin() + (na.empty() ? 0 : 1), na.end());
+                    return invokeMethod(codeVal, inv2, std::move(rest));
+                };
+                redispatchStack_.push_back(std::move(rc));
+                Value r;
+                try { r = callCallable(wraps[level], as, nullptr, /*ownFrame=*/true); }
+                catch (...) { redispatchStack_.pop_back(); throw; }
+                redispatchStack_.pop_back();
+                return r;
+            };
+        ValueList withInv; withInv.reserve(args.size() + 1);
+        withInv.push_back(self);
+        for (auto& a : args) withInv.push_back(std::move(a));
+        return runLevel((int)wraps.size() - 1, std::move(withInv));
+    }
     DepthGuard guard(tctx_.callDepth);
     Callable& c = *codeVal.code;
     if (c.isMultiDispatcher) {
@@ -9311,7 +9444,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (s->kind == NK::Block && static_cast<Block*>(s)->isCatch) continue;
                 if (i + 1 == nst && s->kind == NK::ReturnStmt) { // tail return: no unwind
                     auto* r = static_cast<ReturnStmt*>(s);
-                    last = r->value ? eval(r->value.get()) : Value::any();
+                    // `return-rw` in lvalue mode: surface the container (same
+                    // rule as the exec-site ReturnStmt arm)
+                    if (r->isRw && r->value && tctx_.wantLvalue &&
+                        tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
+                        try { tctx_.lvalueOut = lvalue(r->value.get()); } catch (RakuError&) {}
+                    }
+                    last = tctx_.lvalueOut && r->isRw ? *tctx_.lvalueOut
+                         : r->value ? eval(r->value.get()) : Value::any();
                 } else
                     last = exec(s);
                 if (tctx_.returning) { // cooperative return reached this method boundary
@@ -9605,7 +9745,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 base->obj->cls->findMethod("AT-KEY")) {
                 static thread_local Value atKeyHold;
                 Value k = eval(idx->index.get());
+                // lvalue mode: a `return-rw` in AT-KEY hands back the REAL
+                // container (`method AT-KEY($k) { return-rw %!h{$k} }`);
+                // a Proxy return still routes through the held copy (shared
+                // FETCH/STORE closures make the copy transparent)
+                struct WantG { ExecContext& t; int w; Value* o;
+                    ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
+                } wg{tctx_, tctx_.wantLvalue, tctx_.lvalueOut};
+                tctx_.wantLvalue = (int)tctx_.callFrames.size() + 1;
+                tctx_.lvalueOut = nullptr;
                 atKeyHold = methodCall(*base, "AT-KEY", ValueList{k});
+                if (Value* out = tctx_.lvalueOut) return out;
                 return &atKeyHold;
             }
             if (base->t != VT::Hash) *base = Value::makeHash();
@@ -9620,7 +9770,14 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 base->obj->cls->findMethod("AT-POS")) {
                 static thread_local Value atPosHold;
                 Value k = eval(idx->index.get());
+                // lvalue mode — same contract as the AT-KEY arm above
+                struct WantG { ExecContext& t; int w; Value* o;
+                    ~WantG() { t.wantLvalue = w; t.lvalueOut = o; }
+                } wg{tctx_, tctx_.wantLvalue, tctx_.lvalueOut};
+                tctx_.wantLvalue = (int)tctx_.callFrames.size() + 1;
+                tctx_.lvalueOut = nullptr;
                 atPosHold = methodCall(*base, "AT-POS", ValueList{k});
+                if (Value* out = tctx_.lvalueOut) return out;
                 return &atPosHold;
             }
             // a List ((1,3,5) held in a scalar) is immutable — element assignment dies
@@ -9696,8 +9853,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 return &whoHold;
             }
         }
-        // the invocant is only a route to the real target — a read-only attr is OK here
-        Value* base = lvalue(mc->inv.get(), /*asInvocant=*/true);
+        // the invocant is only a route to the real target — a read-only attr is OK here.
+        // An RVALUE invocant (`logger().untapped-ok = True` — a sub call) still
+        // works for shared-backed values: an Object's attrs (and a Hash's map)
+        // live behind a shared_ptr, so writing through a held COPY writes the
+        // real thing (Log::Async's suite sets an rw attr through `logger`).
+        Value* base;
+        try { base = lvalue(mc->inv.get(), /*asInvocant=*/true); }
+        catch (RakuError&) {
+            static thread_local Value invHold;
+            invHold = eval(mc->inv.get());
+            if (!(invHold.t == VT::Object || (invHold.t == VT::Hash && invHold.hash)))
+                throw;
+            base = &invHold;
+        }
         // `$failure.handled = True` marks it inert — the one writable accessor
         // a Failure has
         if (base->t == VT::Hash && base->hashKind == "Failure" && mc->method == "handled") {
@@ -12613,7 +12782,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                   (!l.enumName.empty() && (r.s == "Enumeration" || r.s == l.enumType)) ||
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
-                  (r.s == "Numeric" && l.isNumeric()) || (r.s == "Cool") ||
+                  (r.s == "Numeric" && l.isNumeric()) ||
+                  // Cool is broad but not universal: Version, IO::Special and
+                  // IO::Handle descend from Any, not Cool (Rakudo-verified)
+                  (r.s == "Cool" && l.hashKind != "Version" &&
+                   l.hashKind != "IO::Special" && l.hashKind != "FileHandle") ||
                   // UInt is a CONSTRAINED subset of Int, so it cannot be a plain
                   // name match — ask typeMatchesArg, which owns the rule (rakupp#11)
                   (r.s == "UInt" && typeMatchesArg(l, "UInt")) ||
@@ -12639,7 +12812,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 else if (r.s == "Iterable" && l.t == VT::Range) res = true;
                 else if ((r.s == "Associative" || r.s == "Map") && l.t == VT::Hash) res = true;
                 else if (r.s == "Callable" && l.t == VT::Code) res = true;
-                else if (r.s == "Stringy" && l.t == VT::Str) res = true;
+                // ...but only for actual strings: an IO::Path/Version/IO::Special
+                // rides on VT::Str and is NOT Stringy (Blob/Buf genuinely are)
+                else if (r.s == "Stringy" && l.t == VT::Str &&
+                         l.hashKind != "IO" && l.hashKind != "Version" &&
+                         l.hashKind != "IO::Special" && l.hashKind != "CArray") res = true;
                 else if (r.s == "Real" && l.isNumeric() && l.t != VT::Complex) res = true;
                 // Buf does Blob; the sized views (buf8/blob8/utf8…) share our
                 // byte representation, so a Buf answers any buf* type
@@ -12864,7 +13041,11 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
             if (pat[i] == '$' && i + 1 + tw < pat.size() &&
                 (std::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
                 size_t j = i + 1 + tw;
-                while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
+                // kebab-case names too: `-`/`'` + letter continues the identifier
+                // (`/^ \\h* $comment-char /` — Text::Utils), as rxInterpArrays does
+                while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                       ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
+                        std::isalpha((unsigned char)pat[j + 1])))) j++;
                 Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
                 // POSITION decides the reading (issue #15): `<$p>` compiles the
                 // string AS A REGEX, a bare `$p` matches it LITERALLY. The
@@ -12913,7 +13094,10 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
         if (c == '$' && i + 1 + tw < pat.size() &&
             (std::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
             size_t j = i + 1 + tw;
-            while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
+            // kebab-case names continue through `-`/`'` + letter (same rule as above)
+            while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                   ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
+                    std::isalpha((unsigned char)pat[j + 1])))) j++;
             // `<$p>` is the assertion form: it already compiles the value as a
             // regex at match time, so leave it alone.
             bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
@@ -13379,6 +13563,12 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
         std::string a = adv;
         for (size_t gp = pat.find(a); gp != std::string::npos; gp = pat.find(a)) pat.erase(gp, a.size());
     }
+    // Interpolate $scalars/@arrays exactly as regexMatch does (quotemeta'd
+    // literal splice). The engine's own match-time var atom splices the RAW
+    // value, so a variable holding ' ' collapsed into pattern whitespace:
+    // `s/ $W ** 2 /-/` matched EMPTY at position 0 (Text::Utils).
+    pat = interpRegexPattern(pat);
+    pat = rxInterpArrays(pat);
     Regex re(pat);
     out.clear(); changed = false;
     Value last = Value::nil();
@@ -13667,9 +13857,22 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 size_t j = i + 1;
                 if (realPat[j] == '^' && j + 1 < realPat.size()) j++; // $^a is visible as $a
                 if (j < realPat.size() && (std::isalpha((unsigned char)realPat[j]) || realPat[j] == '_')) {
-                    std::string nm; while (j < realPat.size() && (std::isalnum((unsigned char)realPat[j]) || realPat[j] == '_')) nm += realPat[j++];
+                    std::string nm;
+                    while (j < realPat.size() && (std::isalnum((unsigned char)realPat[j]) || realPat[j] == '_' ||
+                           ((realPat[j] == '-' || realPat[j] == '\'') && j + 1 < realPat.size() &&
+                            std::isalpha((unsigned char)realPat[j + 1])))) nm += realPat[j++];
                     if (Value* v = tctx_.cur->find("$" + nm)) {
-                        for (char c : v->toStr()) { if (std::strchr(".\\+*?[^]$(){}=!<>|:-#", c)) ip += '\\'; ip += c; }
+                        // whitespace must be escaped too (it is insignificant in a
+                        // regex): a variable holding ' ' spliced bare, so
+                        // `s/ $W ** 2 /-/` matched EMPTY — same rule as quoteMetaRx
+                        for (char c : v->toStr()) {
+                            if (c == '\n') { ip += "\\n"; continue; }
+                            if (c == '\t') { ip += "\\t"; continue; }
+                            if (c == '\r') { ip += "\\r"; continue; }
+                            if (c == ' ')  { ip += "\\ "; continue; }
+                            if (std::strchr(".\\+*?[^]$(){}=!<>|:-#", c)) ip += '\\';
+                            ip += c;
+                        }
                         i = j - 1; continue;
                     }
                 }
@@ -15597,6 +15800,19 @@ Value Interpreter::evalUnary(Unary* u) {
         return hyperUnary(u->op.substr(6), eval(u->operand.get()));
     // control-flow in expression position: return/last/next/redo
     if (u->op == "return" || u->op == "return-rw") {
+        // expression-position `return-rw` in lvalue mode: surface the container
+        if (u->op == "return-rw" && u->operand && tctx_.wantLvalue &&
+            tctx_.wantLvalue == (int)tctx_.callFrames.size()) {
+            try { tctx_.lvalueOut = lvalue(u->operand.get()); } catch (RakuError&) {}
+            if (tctx_.lvalueOut) {
+                Value v = *tctx_.lvalueOut;
+                if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
+                    tctx_.returning = true; tctx_.returnV = std::move(v);
+                    return Value::any();
+                }
+                throw ReturnEx{v};
+            }
+        }
         Value v = u->operand ? eval(u->operand.get()) : Value::any();
         if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
             tctx_.returning = true; tctx_.returnV = std::move(v); // cooperative return

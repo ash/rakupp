@@ -95,6 +95,12 @@ private:
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     bool lastIsDynamic_ = false;  // `is dynamic` captured by skipTraits, same way
+    // `my $x will leave {…}` — the phaser name + block captured by skipTraits;
+    // the declarator turns them into a synthetic LEAVE/KEEP/UNDO phaser stmt
+    // (pendingStmts_), flushed after the current statement by the block loops
+    std::string lastWillPhaser_;
+    ExprPtr lastWillBlock_;
+    std::vector<StmtPtr> pendingStmts_;
     bool lastIsExport_ = false;   // `is export` on a variable declaration, same way
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
     int sigOwnerLine_ = 0;        // decl line of the routine whose signature is being parsed:
@@ -227,6 +233,7 @@ private:
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
     ExprPtr parseEmbeddedExpr(const std::string& src); // parse a `{…}`/`$()` interpolation, inheriting user operators
+    ExprPtr angleColonPair(const std::string& w); // `:name(expr)` word in a «…»/qww list → PairExpr (null if not pair-shaped)
     std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)
 };
 
