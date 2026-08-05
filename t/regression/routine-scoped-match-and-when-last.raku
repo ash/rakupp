@@ -57,6 +57,36 @@ ck scan(['a', 'b']), 2, 'and the `last` still works where it belongs';
 class C { method m() { CATCH { when X::AdHoc { return 'CAUGHT' } }; die 'boom' } }
 ck C.new.m, 'CAUGHT', 'a `when { return }` inside CATCH still handles';
 
+# a `when { next }` inside a CATCH inside a loop: BOTH the when-match and the
+# loop control fire, and the handler must still see the match (File::Find's
+# `keep-going` is written exactly this way)
+sub walk(@dirs, Bool :$keep-going) {
+    my @seen;
+    for @dirs -> $d {
+        if $d eq 'bad' {
+            die X::AdHoc.new(payload => 'boom');
+            CATCH { when X::AdHoc { .rethrow unless $keep-going; next } }
+        }
+        @seen.push: $d;
+    }
+    @seen
+}
+ck walk(<a bad b>, :keep-going).List, ('a', 'b'), 'a `when { next }` in a CATCH resumes the loop';
+ck (try walk(<a bad b>)).defined, False, 'and rethrows without :keep-going';
+
+# --- a topic that is an ELEMENT aliases, but only of a plain container -------
+my %h = k => 'a';
+$_ = 'b' with %h<k>;
+ck %h<k>, 'b', 'a hash element topic writes back';
+
+# reading a key off a Match must NOT create it
+'ab12' ~~ / $<word> = [\w+] /;
+my $m = $/;
+my $touched = False;
+$touched = True with $m<nosuch>;
+ck $touched, False, 'an absent Match key stays absent';
+ck ($m<word> // '').Str, 'ab12', 'and the real capture is intact';
+
 # --- .slurp is IO::Path's, and .^lookup says so -----------------------------
 ck ('some string'.^lookup('slurp')).defined, False, '.^lookup is Mu for a method Str lacks';
 ck ('some string'.^lookup('uc')).defined, True,  'and a real one is still found';

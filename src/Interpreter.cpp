@@ -4142,14 +4142,22 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     for (;;) {
         try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
               if (tctx_.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
-              if (tctx_.givenCtl) { // cooperative when-match in this loop's body: iteration done
-                  tctx_.givenCtl = 0; suppressLoopFirst_ = savedSF; return true;
-              }
+              // LOOP CONTROL FIRST: `when … { last }` sets BOTH flags — the
+              // when-match and the `last`. Consuming the when-flag first said
+              // "iteration done" and left the loop flag set, so it travelled out
+              // of the routine and broke the CALLER's loop (HTTP::Tiny's header
+              // scan ends with `when .not { last }`). The loop control subsumes
+              // the when-match, so clear that too. A `when` inside a CATCH is
+              // unaffected: the handler consumes its flag before we get here.
               if (tctx_.loopCtl) { // cooperative next/last/redo from this loop's body
+                  tctx_.givenCtl = 0;
                   int ctl = tctx_.loopCtl; tctx_.loopCtl = 0;
                   if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params)
                   if (ctl == 1) { try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
                   runLast(); suppressLoopFirst_ = savedSF; return false; // last
+              }
+              if (tctx_.givenCtl) { // cooperative when-match in this loop's body: iteration done
+                  tctx_.givenCtl = 0; suppressLoopFirst_ = savedSF; return true;
               }
               if (collect) collect->push_back(v); try { runNextP(); } catch (LastEx&) { runLast(); suppressLoopFirst_ = savedSF; return false; } runLast(); suppressLoopFirst_ = savedSF; return true; }
         catch (LeaveEx&) { runLast(); suppressLoopFirst_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
@@ -5888,16 +5896,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 Value bv;
                 try { bv = execBlock(w->body.get(), scope); }
                 catch (ProceedEx&) { return Value::any(); } // `proceed`: try the next when
-                // `when … { last }` (or `next`/`redo`): the block already redirected
-                // LOOP control, and that wins. Signalling the given-break as well
-                // was actively harmful — the enclosing loop consumes the when-flag
-                // first, returns "iteration done", and leaves the loop flag set, so
-                // the `last` escaped the routine and broke the CALLER's loop.
-                // (HTTP::Tiny ends its header scan with `when .not { last }`, which
-                // killed the 100-continue retry loop two frames up.)  A `return`
-                // deliberately does NOT short-circuit here: a CATCH block's `when`
-                // must still report that it MATCHED, or the exception is rethrown.
-                if (tctx_.loopCtl) return bv;
                 // Same callable frame as the consuming given/loop body → set the
                 // cooperative flag instead of throwing (the throw walks macOS
                 // unwind info under a lock — ruinous per-row inside a bind loop)
@@ -9789,7 +9787,21 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip) {
         auto* tv = static_cast<VarExpr*>(topic);
         if (tv->name.empty() || tv->name[0] != '$' || tv->declare) return nullptr;
     }
-    else if (topic->kind != NK::Index) return nullptr;
+    else if (topic->kind == NK::Index) {
+        // Only an element of a PLAIN Hash or Array. Taking the lvalue of anything
+        // else can create the very thing it is inspecting — `with
+        // $match<authority> { … }` over a Match would autovivify a key into the
+        // parse result and wreck it (URI's grammar walk is written that way).
+        auto* ix = static_cast<Index*>(topic);
+        if (!ix->base) return nullptr;
+        Value* base = nullptr;
+        try { base = lvalue(ix->base.get()); } catch (...) { return nullptr; }
+        if (!base) return nullptr;
+        bool plain = (base->t == VT::Hash && base->hash && base->hashKind.empty()) ||
+                     (base->t == VT::Array && base->arr && !base->isList);
+        if (!plain) return nullptr;
+    }
+    else return nullptr;
     try { return lvalue(topic); } catch (...) { return nullptr; }
 }
 
