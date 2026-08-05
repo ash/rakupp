@@ -1879,3 +1879,24 @@ byte. The test compares a generated multipart request against a CRLF fixture rea
 this way, and the stray CRs made every body differ.
 
 All ten files now match Rakudo, including the online ones.
+
+### Battery: 36 → 37 of 59, and a lesson about scope
+
+The full re-measure after this batch: **37 PASS · 15 DIFF · 6 ENV · 1 NOTESTS**
+(reachable ceiling is 52). HTTP::Tiny, URI, File::Find and LWP::Simple all land
+in the PASS column.
+
+The lesson is the run BEFORE the last two fixes: **34 PASS, down from 36.** Both
+dists I had been working on were green, and the batch had cost three others. The
+`when`-block change made every `CATCH { when X { … next } }` rethrow, and
+element-topic aliasing autovivified a key into a Match and wrecked URI's grammar
+walk (LWP::Simple went down with it, since it parses URLs through URI).
+
+Fixing the dist in hand and gating on Roast is not enough. Roast did not move for
+either regression — both live in shapes only real module code writes. The whole
+battery has to run after each batch, not just the dist being worked on.
+
+One open oddity: the runner reports IO::Glob 6/8 while running its files in place
+gives 8/8. The runner stages a copy into a temp directory, so something in that
+suite is sensitive to the working directory. Worth a look before trusting that
+row either way.
