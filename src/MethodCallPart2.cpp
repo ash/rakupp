@@ -395,8 +395,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // uninitialised: the attribute's declared default kind
                 return sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash() : Value::any();
             }
-            return Value::any();
+            // a TYPE object has no attribute storage — Rakudo throws, and
+            // Data::Dump's `try get_value // … // 'undefined'` chain expects it
+            throw RakuError{Value::typeObj("X::Method::NotFound"),
+                "Cannot look up attributes in a " + obj.typeName() + " type object"};
         }
+        // no `.hash` on an Attribute either (the guts would leak into a dump)
+        if (m == "hash")
+            throw RakuError{Value::typeObj("X::Method::NotFound"),
+                "No such method 'hash' for invocant of type 'Attribute'"};
         if (m == "container_descriptor" || m == "container") return inv; // enough for `.of`/rw queries
         if (m == "package" || m == "declaring_package") return h.count("package") ? h["package"] : Value::typeObj("Mu");
     }
@@ -1729,7 +1736,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::set<ClassInfo*> visited; // dedup by class (MRO), not by method name
                 std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
                     if (!c || !visited.insert(c).second) return;
-                    for (auto& kv : c->methods) out.arr->push_back(kv.second);
+                    for (auto& kv : c->methods) {
+                        // private (!p) methods stay out, as in Rakudo
+                        if (!kv.first.empty() && kv.first[0] == '!') continue;
+                        out.arr->push_back(kv.second);
+                    }
+                    // a PUBLIC attribute's auto-generated accessor is a method too
+                    // (Rakudo lists it; Data::Dump renders `method public () …`)
+                    for (auto& at : c->attrs) {
+                        if (!at.pub || c->methods.count(at.name)) continue;
+                        Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
+                        stub.code->name = at.name; stub.code->isMethod = true;
+                        std::string an = at.name;
+                        stub.code->retType = at.type.empty() ? "" : at.type;
+                        stub.code->builtin = [an](Interpreter& I, ValueList& a) -> Value {
+                            if (a.empty()) return Value::any();
+                            ValueList rest(a.begin() + 1, a.end());
+                            return I.methodCall(a[0], an, std::move(rest));
+                        };
+                        out.arr->push_back(stub);
+                    }
                     if (local) return;
                     walk(c->parent.get());
                     for (auto& p : c->extraParents) walk(p.get());
@@ -2743,6 +2769,46 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     return I.methodCall(a[0], mnc, std::move(rest));
                 };
                 out.arr->push_back(stub);
+            }
+        }
+        // a BUILTIN value (Match, IO::Path, …) answers .can by PROBING, the same
+        // oracle .^lookup uses: dispatch the name on a sentinel and read the
+        // answer off X::Method::NotFound. Data::Dump renders a Match through
+        // `qw<made pos hash from list orig>.grep({ $obj.^can($_) })`.
+        if (!ci && out.arr->empty() && !mn.empty() &&
+            inv.t != VT::Object && inv.t != VT::Type && inv.t != VT::Any && inv.t != VT::Nil &&
+            // Date/DateTime share one dispatch surface here, so a probe cannot
+            // tell them apart — the curated Dateish list above is authoritative
+            inv.hashKind != "Date" && inv.hashKind != "DateTime") {
+            static const std::set<std::string> kUnsafe = {
+                "print", "say", "put", "note", "printf", "write", "spurt", "open",
+                "mkdir", "rmdir", "symlink", "link", "unlink", "rename", "copy",
+                "move", "chdir", "close", "flush", "seek", "run", "shell", "exit",
+                "throw", "rethrow", "sink", "emit", "send", "recv", "start",
+                "sleep", "kill", "signal", "await", "react", "trans", "subst-mutate"};
+            if (!kUnsafe.count(mn)) {
+                Value probe = inv;
+                if (probe.hashKind == "IO") probe.s = "/nonexistent/rakupp-can-probe";
+                bool notFound = false;
+                try { ValueList none; methodCall(probe, mn, none); }
+                catch (RakuError& e) {
+                    const Value& pl = e.payload;
+                    notFound = (pl.t == VT::Type && pl.s == "X::Method::NotFound") ||
+                               (pl.t == VT::Object && pl.obj && pl.obj->cls &&
+                                pl.obj->cls->name == "X::Method::NotFound");
+                }
+                catch (...) {}
+                if (!notFound) {
+                    Value stub; stub.t = VT::Code; stub.code = std::make_shared<Callable>();
+                    stub.code->name = mn; stub.code->isMethod = true;
+                    std::string mnc = mn;
+                    stub.code->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                        if (a.empty()) return Value::any();
+                        ValueList rest(a.begin() + 1, a.end());
+                        return I.methodCall(a[0], mnc, std::move(rest));
+                    };
+                    out.arr->push_back(stub);
+                }
             }
         }
         return out;

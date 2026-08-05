@@ -353,6 +353,13 @@ std::string Value::toStr() const {
         case VT::Hash: {
             // a bare `Mu.new` / `Any.new` instance has no attributes to show
             if (hashKind == "Mu" || hashKind == "Any") return hashKind + ".new";
+            // an Attribute Strs as its declaration ("Int $!private"), like its
+            // gist — the key\tvalue dump below leaked into Data::Dump's output
+            if (hashKind == "Attribute" && hash) {
+                std::string tn = hash->count("type") ? hash->at("type").toStr() : "";
+                std::string nm = hash->count("name") ? hash->at("name").toStr() : "";
+                return (tn.empty() ? "" : tn + " ") + nm;
+            }
             if (hashKind == "Format" && hash && hash->count("fmt")) return hash->at("fmt").toStr();
             // An IO::Handle Strs as its PATH — `"foo".IO.open.Str` is "foo".
             // Without this it fell through to the key\tvalue dump below.

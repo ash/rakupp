@@ -4099,6 +4099,28 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
     matchOp(close);
     return words;
 }
+// Scan a balanced `{ … }` code block inside an interpolated string, RESPECTING
+// quoted spans: a brace inside '…' or "…" is text, not nesting — `{sym('{')}`
+// must not swallow the rest of the string. Returns the inner text and leaves
+// `j` on the closing brace (or n).
+static std::string scanInterpBlock(const std::string& raw, size_t& j) {
+    size_t n = raw.size();
+    int depth = 1; std::string inner;
+    char q = 0;                    // active quote char inside the block, if any
+    while (j < n && depth > 0) {
+        char c = raw[j];
+        if (q) {
+            if (c == '\\' && q == '"' && j + 1 < n) { inner += c; inner += raw[j+1]; j += 2; continue; }
+            if (c == q) q = 0;
+        }
+        else if (c == '\'' || c == '"') q = c;
+        else if (c == '{') depth++;
+        else if (c == '}') { depth--; if (depth == 0) break; }
+        inner += c; j++;
+    }
+    return inner;
+}
+
 
 ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     // interpolation-feature prefix from quoting adverbs (q:c / Q:s / qq:!s):
@@ -4255,13 +4277,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             continue;
         }
         if (fC && c == '{') {
-            // balanced code block
-            int depth = 1; size_t j = i + 1; std::string inner;
-            while (j < n && depth > 0) {
-                if (raw[j] == '{') depth++;
-                else if (raw[j] == '}') { depth--; if (depth == 0) break; }
-                inner += raw[j]; j++;
-            }
+            // balanced code block (quote-aware: a brace inside '…'/"…" is text)
+            size_t j = i + 1;
+            std::string inner = scanInterpBlock(raw, j);
             flush();
             try { result->parts.push_back(parseEmbeddedExpr(inner)); } catch (...) {}
             i = j + 1;
@@ -4342,13 +4360,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             size_t j = i + 1;
             std::string var(1, sig);
             if (raw[j] == '{') {
-                // ${ ... }
-                int depth = 1; j++; std::string inner;
-                while (j < n && depth > 0) {
-                    if (raw[j] == '{') depth++;
-                    else if (raw[j] == '}') { depth--; if (depth == 0) break; }
-                    inner += raw[j]; j++;
-                }
+                // ${ ... } (same quote-aware scan)
+                j++;
+                std::string inner = scanInterpBlock(raw, j);
                 flush();
                 try { result->parts.push_back(parseEmbeddedExpr(std::string(1, sig) + "(" + inner + ")")); } catch (...) {}
                 i = j + 1;

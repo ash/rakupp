@@ -2133,6 +2133,49 @@ Value makeSignature(const Callable* c) {
         }
         params.arr->push_back(pv);
     }
+    // A METHOD's reflected .params carries the implicit pieces Rakudo's do: the
+    // invocant first (unless one was declared) and a trailing `*%_` slurpy
+    // (unless the method declares its own named slurpy). Data::Dump renders
+    // method signatures as `.params[1 .. *-2]`, which is only right with both
+    // in place. The rendered `str`/arity/count stay as they were.
+    if (c && c->isMethod) {
+        bool haveInv = false, haveNamedSlurpy = false;
+        for (const Param* pp : ps) {
+            if (pp->invocant) haveInv = true;
+            if (pp->slurpy && pp->sigil == '%') haveNamedSlurpy = true;
+        }
+        auto mkParam = [](const std::string& str, const std::string& name,
+                          bool invocant, bool slurpy, bool named) {
+            Value pv = Value::makeHash(); pv.hashKind = "Parameter";
+            (*pv.hash)["str"] = Value::str(str);
+            (*pv.hash)["name"] = Value::str(name);
+            (*pv.hash)["usage-name"] = Value::str(name.size() > 1 ? name.substr(1) : "");
+            (*pv.hash)["type"] = Value::str("Mu");
+            (*pv.hash)["type-obj"] = Value::typeObj("Mu");
+            (*pv.hash)["invocant"] = Value::boolean(invocant);
+            (*pv.hash)["multi-invocant"] = Value::boolean(true);
+            (*pv.hash)["named"] = Value::boolean(named);
+            (*pv.hash)["slurpy"] = Value::boolean(slurpy);
+            (*pv.hash)["optional"] = Value::boolean(named || slurpy);
+            (*pv.hash)["raw"] = Value::boolean(invocant);
+            (*pv.hash)["readonly"] = Value::boolean(true);
+            (*pv.hash)["rw"] = Value::boolean(false);
+            (*pv.hash)["copy"] = Value::boolean(false);
+            (*pv.hash)["capture"] = Value::boolean(false);
+            (*pv.hash)["prefix"] = Value::str(slurpy ? "*" : "");
+            (*pv.hash)["suffix"] = Value::str("");
+            (*pv.hash)["modifier"] = Value::str("");
+            (*pv.hash)["default"] = Value::typeObj("Code");
+            (*pv.hash)["constraints"] = Value::typeObj("Mu");
+            Value nn = Value::array(); nn.isList = true;
+            (*pv.hash)["named_names"] = nn;
+            return pv;
+        };
+        if (!haveInv)
+            params.arr->insert(params.arr->begin(), mkParam("Mu $", "$", true, false, false));
+        if (!haveNamedSlurpy)
+            params.arr->push_back(mkParam("*%_", "%_", false, true, true));
+    }
     (*s.hash)["params"] = params;
     return s;
 }
@@ -3069,6 +3112,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return I.methodCall(in2, mn, rest);
             };
             return code;
+        }
+        // `.^methods` / `.^attributes` on a BUILTIN type: rakupp has no table to
+        // enumerate (dispatch is an if-chain), so the honest answer is the empty
+        // list — Data::Dump walks `.^mro[1..*]».^methods` to EXCLUDE inherited
+        // methods, and dying on Any took the whole dump down.
+        if ((mm == "methods" || mm == "attributes") &&
+            !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s)))) {
+            Value o = Value::array(); o.isList = true; return o;
         }
         return methodCall(tobj, mm, args, rwArgs);
     }
