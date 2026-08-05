@@ -3373,29 +3373,20 @@ ExprPtr Parser::parsePrimary() {
                 return arr;
             }
             if (t.text == "\xC2\xAB") {
-                // guillemet qw word list  « a b c »  (interpolating qw, treated as plain here)
+                // guillemet word list « a b c » — qq:ww:v, same ladder as qqww
                 advance();
                 auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : readAngleWords("\xC2\xBB")) {
-                    if (ExprPtr cp = angleColonPair(w)) arr->items.push_back(std::move(cp));
-                    else arr->items.push_back(std::make_unique<StrLit>(w));
-                }
+                for (auto& w : readAngleWords("\xC2\xBB"))
+                    arr->items.push_back(qqwwWordItem(w));
                 arr->isList = true;
                 return arr;
             }
             if (t.text == "<<") {
-                // ASCII guillemets: `<<0 +4 'a b'>>` — a qww word list in term position
+                // ASCII guillemets: `<<0 +4 'a b'>>` — qq:ww:v, same ladder as qqww
                 advance();
                 auto arr = std::make_unique<ArrayLit>();
-                for (auto& w : readAngleWords(">>")) {
-                    // a `:name(…)` word is a colonpair (`<<:TRACE(1) DEBUG>>`)
-                    if (ExprPtr cp = angleColonPair(w)) { arr->items.push_back(std::move(cp)); continue; }
-                    // strip one level of quotes around a word ('a b' / "a b")
-                    std::string s = w;
-                    if (s.size() >= 2 && (s.front() == '\'' || s.front() == '"') && s.back() == s.front())
-                        s = s.substr(1, s.size() - 2);
-                    arr->items.push_back(std::make_unique<StrLit>(s));
-                }
+                for (auto& w : readAngleWords(">>"))
+                    arr->items.push_back(qqwwWordItem(w));
                 arr->isList = true;
                 return arr;
             }
@@ -4135,6 +4126,27 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
     if (w[j] == '<' && w.back() == '>' && j + 1 < w.size())
         { pe->value = std::make_unique<StrLit>(w.substr(j + 1, w.size() - j - 2)); return pe; }
     return nullptr;
+}
+
+// One word of a «…»/<<…>>/qqww list, processed with qq:ww:v semantics:
+// colonpair → Pair, quoted span → literal (double quotes interpolate),
+// bare numeric → allomorph, bare with $@{\ → interpolated string.
+// The three list forms MUST share this ladder — roast compares «…» against
+// qqww:v[…] element-for-element (S02-literals/allomorphic.t).
+ExprPtr Parser::qqwwWordItem(const std::string& w) {
+    if (ExprPtr cp = angleColonPair(w)) return cp;
+    if (w.size() >= 2 && (w.front() == '\'' || w.front() == '"') && w.back() == w.front()) {
+        std::string inner = w.substr(1, w.size() - 2);
+        if (w.front() == '"') return parseInterpString(inner);
+        return std::make_unique<StrLit>(inner);
+    }
+    if (ExprPtr num = angleWordNumeric(w)) {
+        auto al = std::make_unique<AllomorphLit>();
+        al->num = std::move(num); al->str = w;
+        return al;
+    }
+    if (w.find_first_of("$@{\\") != std::string::npos) return parseInterpString(w);
+    return std::make_unique<StrLit>(w);
 }
 
 // ---------------- string interpolation ----------------

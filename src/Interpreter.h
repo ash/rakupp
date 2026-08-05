@@ -343,6 +343,10 @@ struct ExecContext {
     // object's shared containers, so the pointer survives the frame.
     int wantLvalue = 0;      // 0 off; else the callFrames depth being served
     Value* lvalueOut = nullptr;
+    // `$obj.attr = v` — the attribute's declared type, recorded by the
+    // MethodCall lvalue arm so the assignment can enforce it (a role-typed
+    // `has C $.x is rw` must reject 42/Mu; roast S14-roles/basic.t)
+    std::string lastLvalueAttrType;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -412,6 +416,10 @@ public:
     // When set (one-shot), a paramless block's mutated implicit $_ is copied back
     // here after the call — `@a.grep({ $_++; True })` writes into @a's element.
     Value* topicWriteback_ = nullptr;
+    // The consumed topicWriteback_, re-exposed to a BUILTIN callable for the
+    // duration of its run (builtins have no env for the $_ copy-back) — the
+    // `++*` WhateverCode writes the driver's aliased element through it.
+    Value* builtinTopicWB_ = nullptr;
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
     bool noAutothread_ = false;

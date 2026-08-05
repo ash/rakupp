@@ -234,6 +234,7 @@ private:
     ExprPtr parseInterpString(const std::string& raw);
     ExprPtr parseEmbeddedExpr(const std::string& src); // parse a `{…}`/`$()` interpolation, inheriting user operators
     ExprPtr angleColonPair(const std::string& w); // `:name(expr)` word in a «…»/qww list → PairExpr (null if not pair-shaped)
+    ExprPtr qqwwWordItem(const std::string& w);   // one «…»/<<…>>/qqww word with qq:ww:v semantics
     std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)
 };
 

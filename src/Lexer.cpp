@@ -1734,13 +1734,23 @@ Token Lexer::lexOperator(bool termBefore) {
             pos_ = save;
         }
       }
+      // an `R`-metaop inner is hyper too: `«R~«` is the reversed op — the R is
+      // alphanumeric, so it needs its own gate ahead of the symbolic-inner rule
+      // (roast S03-metaops/hyper.t; the ASCII `>>R~<<` form already worked)
+      bool rMetaInner = false;
+      { bool ro3;
+        if (guill(0, ro3) && peek(2) == 'R' && (unsigned char)peek(3) < 0x80 &&
+            !std::isalnum((unsigned char)peek(3)) && peek(3) != '_' && peek(3) != ' ')
+            rMetaInner = true;
+      }
       if ((guill(0, ro) && (unsigned char)peek(2) < 0x80 &&
           !std::isalnum((unsigned char)peek(2)) && peek(2) != '_' && peek(2) != ' ') ||
-          (uniSymInner && guill(0, ro))) {
+          (uniSymInner && guill(0, ro)) || (rMetaInner && guill(0, ro))) {
         size_t save = pos_;
         std::string open = ro ? ">>" : "<<";
         advance(); advance(); // opening guillemet
         std::string inner; bool rc;
+        if (rMetaInner) inner += advance(); // the metaop's R, before the symbols
         while (!eof() && !guill(0, rc) && !std::isspace((unsigned char)peek()) &&
                !std::isalnum((unsigned char)peek()) && inner.size() < 4)
             inner += advance();

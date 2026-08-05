@@ -8700,7 +8700,14 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             }
         }
     }
-    if (c.builtin) return c.builtin(*this, args);
+    if (c.builtin) {
+        // a builtin body can't do the env-based $_ copy-back — hand it the
+        // aliased element directly (deepmap/map drivers + the ++* curry)
+        struct BWG { Interpreter& I; Value* s; ~BWG() { I.builtinTopicWB_ = s; } }
+            bwg{*this, builtinTopicWB_};
+        builtinTopicWB_ = topicWB;
+        return c.builtin(*this, args);
+    }
 
     // Implicit @_ is a flattening slurpy (*@_): list-flavored args (Seq/List
     // tuples, e.g. from X/Z) spread one level; itemized [..] arrays stay nested.
@@ -9896,6 +9903,22 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
                             throw RakuError{Value::typeObj("X::Assignment::RO"),
                                 "Cannot modify an immutable '" + mc->method + "'"};
+            // record the attr's declared type so the assignment enforces it
+            // (`has C $.x is rw` — `.x = 42` must throw X::TypeCheck::Assignment).
+            // ALWAYS reset first: resolving the INVOCANT of a chained accessor
+            // (`$cont.obj.arr = …`) came through this same arm and left ITS
+            // type in the channel, which then wrongly checked the outer target
+            // (roast S12-attributes/clone.t died "expected LeObject but got Str")
+            tctx_.lastLvalueAttrType.clear();
+            for (ClassInfo* ci = base->obj->cls.get(); ci; ci = ci->parent.get())
+                for (auto& at : ci->attrs)
+                    if (at.name == mc->method) {
+                        if (at.sigil == '$' && !at.type.empty() &&
+                            std::isupper((unsigned char)at.type[0]))
+                            tctx_.lastLvalueAttrType = at.type;
+                        goto attrTypeDone;
+                    }
+            attrTypeDone:
             return &base->obj->attrs[mc->method];
         }
     }
@@ -11010,10 +11033,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             const std::string& ct = static_cast<VarExpr*>(a->target.get())->declCoerce;
             if (!ct.empty()) rhs = coerceToType(rhs, ct);
         }
+        tctx_.lastLvalueAttrType.clear();
         Value* lv = lvalue(a->target.get());
         // A Proxy container routes `= x` through its STORE method (`:=` still rebinds).
         if (a->op == "=" && lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash) {
             if (lv->hash->count("STORE")) { Value r = proxyStore(*lv, rhs); return sink ? Value::any() : r; }
+        }
+        // `$obj.attr = v` enforces the attribute's DECLARED type (recorded by
+        // the MethodCall lvalue arm): `has C $.x is rw` rejects 42 and Mu.
+        // The rvalue-invocant fallback made this path reachable, so the check
+        // must come with it (roast S14-roles/basic.t).
+        if (a->op == "=" && a->target->kind == NK::MethodCall &&
+            !tctx_.lastLvalueAttrType.empty()) {
+            std::string aty = tctx_.lastLvalueAttrType;
+            tctx_.lastLvalueAttrType.clear();
+            if (!typeOrSubsetMatches(rhs, aty))
+                throwTypedV("X::TypeCheck::Assignment",
+                            {{"got", rhs}, {"expected", Value::typeObj(aty)}},
+                            "Type check failed in assignment; expected " + aty +
+                            " but got " + rhs.typeName());
         }
         int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
         if (sigil == '@') {
@@ -11804,6 +11842,10 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
         (op.substr(op.size() - 2) == ">>" || op.substr(op.size() - 2) == "<<")) {
         std::string inner = op.substr(2, op.size() - 4);
+        // the bracket-cited operator form: `(1,2) >>[+]<< (3,4)` — the citation
+        // means the bare infix, element-wise (roast issue-2353 test)
+        if (inner.size() >= 3 && inner.front() == '[' && inner.back() == ']')
+            inner = inner.substr(1, inner.size() - 2);
         // hyper compound assignment: `@a <<+=>> 2019` applies the base op
         // elementwise and MUTATES the left array (Value.arr is shared storage,
         // so writing through it reaches the caller's container)
@@ -14695,6 +14737,10 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
+    // bracket-cited infix (`(1,2) >>[+]<< (3,4)` — the hyper carries the op as
+    // `[+]`): the citation means the bare operator; strip once and recurse
+    if (op.size() >= 3 && op.front() == '[' && op.back() == ']' && op != "[=]")
+        return applyBinOp(op.substr(1, op.size() - 2), l, r);
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
     if (op.size() > 1 && op[0] == 'R' && !std::isalnum((unsigned char)op[1]))
@@ -16155,6 +16201,26 @@ Value Interpreter::evalUnary(Unary* u) {
         return arr;
     }
     if (u->op == "++" || u->op == "--") {
+        // Whatever-currying: `++*` / `*--` are WhateverCodes that step their
+        // argument — mutating the DRIVER's element when one is aliased
+        // (`.deepmap(++*)` in roast S03-metaops/hyper.t writes @a in place;
+        // builtinTopicWB_ carries map/grep/deepmap's element slot to us).
+        if (u->operand->kind == NK::Whatever) {
+            std::string op = u->op; bool post = u->postfix;
+            Value code; code.t = VT::Code; code.code = std::make_shared<Callable>();
+            code.code->isWhateverCode = true;
+            code.code->builtin = [op, post](Interpreter& I, ValueList& a) -> Value {
+                Value cur = a.empty() ? Value::any() : a[0];
+                Value nv = cur.t == VT::Bool
+                    ? Value::boolean(op == "++")
+                    : cur.t == VT::Str ? (op == "++" ? Value::str(strSucc(cur.s)) : cur)
+                    : applyArith(op == "++" ? "+" : "-",
+                                 cur.t == VT::Any ? Value::integer(0) : cur, Value::integer(1));
+                if (I.builtinTopicWB_) *I.builtinTopicWB_ = nv;
+                return post ? (cur.t == VT::Any ? Value::integer(0) : cur) : nv;
+            };
+            return code;
+        }
         Value* lv = lvalue(u->operand.get());
         // a Proxy-bound alias (`$a := $x`) reads via FETCH and writes via STORE,
         // so ++/-- reach the underlying container instead of clobbering the Proxy
