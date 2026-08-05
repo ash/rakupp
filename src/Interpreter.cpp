@@ -599,6 +599,15 @@ static void collectPHExpr(const Expr* e, std::set<std::string>& out) {
                     }
             };
             scan(sl->pattern); scan(sl->repl); break; }
+        case NK::RegexLit: { // and in a plain regex literal, the same way
+            const std::string& str = static_cast<const RegexLit*>(e)->pattern;
+            for (size_t i = 0; i + 2 < str.size(); i++)
+                if (str[i] == '$' && str[i + 1] == '^' && std::isalpha((unsigned char)str[i + 2])) {
+                    size_t j = i + 2; std::string nm = "$^";
+                    while (j < str.size() && (std::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
+                    out.insert(nm);
+                }
+            break; }
         default: break; // do NOT descend into nested BlockExpr (own scope)
     }
 }
@@ -9622,11 +9631,26 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
 
+// A `rx//` (or a bare `/…/` in value context) is a CLOSURE over the scope that
+// built it: `sub mk($a) { rx/$a/ }` still matches $a's value after mk returns,
+// because Rakudo re-reads the variable at match time from the regex's OWN
+// lexical scope. rakupp interpolates at match time too, but against whatever
+// scope is current then — so the variable was simply gone. Carry the creating
+// scope on the value (only when the pattern actually names one, so ordinary
+// regexes retain nothing).
+static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
+    Value v = Value::regex(std::move(pat));
+    if (sc && (v.s.find('$') != std::string::npos || v.s.find('@') != std::string::npos))
+        v.ext = std::static_pointer_cast<void>(sc);
+    return v;
+}
+
 // In value context (assignment RHS, colon-pair value), a bare `/pat/` is a Regex
 // OBJECT, not an immediate match against $_ — so `:err(/pat/)` and `my $rx = /pat/`
 // store a Regex that can be smartmatched later.
 Value Interpreter::evalValueOf(Expr* e) {
-    if (e && e->kind == NK::RegexLit) return Value::regex(spliceRegexVars(static_cast<RegexLit*>(e)->pattern));
+    if (e && e->kind == NK::RegexLit)
+        return regexClosingOver(spliceRegexVars(static_cast<RegexLit*>(e)->pattern), tctx_.cur);
     return eval(e);
 }
 
@@ -12524,10 +12548,16 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                     continue;
                 }
             }
-            if (pat[i] == '$' && i + 1 < pat.size() && (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
-                size_t j = i + 1;
+            // `$^name` (and `$:name`) is a PLACEHOLDER — the enclosing block binds it
+            // under the bare name, so the twigil is skipped for the lookup.
+            // IO::Glob builds its alternation regexes as `@alts.map({ rx/$base$^alt/ })`.
+            size_t tw = (pat[i] == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':') &&
+                         (std::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
+            if (pat[i] == '$' && i + 1 + tw < pat.size() &&
+                (std::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
+                size_t j = i + 1 + tw;
                 while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
-                Value* v = tctx_.cur->find("$" + pat.substr(i + 1, j - i - 1));
+                Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
                 // POSITION decides the reading (issue #15): `<$p>` compiles the
                 // string AS A REGEX, a bare `$p` matches it LITERALLY. The
                 // assertion form is `<` immediately before and `>` right after
@@ -12570,14 +12600,16 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
         if (c == '}') { if (braces) braces--; out += c; continue; }
         if (c == '\'' && !braces) { inSq = !inSq; out += c; continue; }
         if (inSq || braces) { out += c; continue; }
-        if (c == '$' && i + 1 < pat.size() &&
-            (std::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
-            size_t j = i + 1;
+        size_t tw = (c == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':') &&
+                     (std::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
+        if (c == '$' && i + 1 + tw < pat.size() &&
+            (std::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
+            size_t j = i + 1 + tw;
             while (j < pat.size() && (std::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
             // `<$p>` is the assertion form: it already compiles the value as a
             // regex at match time, so leave it alone.
             bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
-            Value* v = tctx_.cur->find("$" + pat.substr(i + 1, j - i - 1));
+            Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw)); // `$^x` binds as `$x`
             if (v && !inAngle) {
                 if (v->t == VT::Regex) { out += "[ " + v->s + " ]"; sawRegex = true; }
                 else out += quoteMetaRx(v->toStr());
@@ -12676,6 +12708,16 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // Repeated until stable: splicing a regex VALUE inserts that regex's own
     // source, which may itself name further regexes (`rx/$lit$lit/` spliced into
     // `rx/^$two$/`). The pass count is a guard against a self-referential value.
+    // A regex value that closed over its creating scope resolves its $vars there
+    // FIRST; anything still unresolved then falls back to the current scope (so
+    // an in-flight `$0`, or a caller's variable, still works).
+    if (!wired && rxVal && rxVal->t == VT::Regex && rxVal->ext &&
+        pat.find('$') != std::string::npos) {
+        auto savedOuter = tctx_.cur;
+        tctx_.cur = std::static_pointer_cast<Env>(rxVal->ext);
+        pat = interpRegexPattern(pat);
+        tctx_.cur = savedOuter;
+    }
     if (!wired) pat = interpRegexPattern(pat);
     if (!wired) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
@@ -17682,7 +17724,7 @@ Value Interpreter::eval(Expr* e) {
                 return v;
             }
             // rx// is always the Regex object; bare /…/ and m// match against $_
-            if (rl->isRx) return Value::regex(spliceRegexVars(rl->pattern));
+            if (rl->isRx) return regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
             Value topic; if (Value* p = tctx_.cur->find("$_")) topic = *p;
             return regexMatch(rxSubject(topic), rl->pattern);
         }
