@@ -1815,3 +1815,67 @@ IO::Glob compiles `{foo,bar}` into.
 
 All eight files now match Rakudo. Roast unmoved through the batch; `t/run.raku`
 296/296.
+
+## 2026-08-05 (cont.) — HTTP::Tiny 10/10, and six more general faults
+
+Carrying on through `t/responses.t` and the rest of the suite.
+
+**`$/` scoped to a sub but not to a method.** `invokeMethod` set
+`curRoutineFrame` but never marked its Env as a routine frame, and that mark is
+what the `$/` assignment consults. So a regex match anywhere inside a method
+wrote through to the CALLER's `$/` and destroyed it:
+
+```raku
+$status-line ~~ / … $<status> = [\d ** 3] … /;
+return {
+    headers => self.read-header-lines(@header-lines),   # matches inside
+    success => $<status>.starts-with('2'),              # $<status> is now Nil
+}
+```
+
+Every response came back `success => False`. This is the third feature
+`invokeMethod` was missing that `callCallable` already had (after the cooperative
+return frame and CATCH).
+
+**`last` inside a `when` inside a `for` escaped its routine.** The loop body
+runner checks the cooperative when-flag before the loop-control flag, so a
+`when … { last }` had its when-flag consumed — "iteration done" — while the
+`last` flag stayed set, travelled out of the routine, and broke the CALLER's
+loop. HTTP::Tiny ends its header scan with `when .not { last }`, which silently
+killed the 100-continue retry loop two frames up. A when-block that redirected
+loop control no longer signals the given-break as well. A `return` still does:
+a CATCH block's `when` has to report that it matched, or the exception is
+rethrown — the first attempt at this fix broke exactly that, and the regression
+file caught it.
+
+**A `given`/`with` topic that is a hash element now aliases too.** The test suite
+rewrites its own expected bodies with
+
+```raku
+$_ = Buf[uint8].new: .encode with %want<content>;
+```
+
+Two parts: the alias recogniser accepts an Index topic, and the "did the body
+change it" guard had to become stricter than `eqv` — a Buf and a Str of the same
+bytes are `eqv`, so the rewrite looked like a no-op.
+
+**`.slurp` is IO::Path's, not every Str's.** `"file".slurp` is no-such-method in
+Rakudo. rakupp accepted any invocant, which is why `$value.^lookup('slurp')` was
+true for a plain form field and sent the encoder off to slurp a string.
+
+**`.^lookup` answers Mu for a method the type does not have.** The open item from
+the earlier entry, closed. There is still no table of builtin methods, so rakupp
+probes: dispatch the name on a sentinel of the invocant's type and read the
+answer off `X::Method::NotFound`. A TYPE-object invocant is never probed —
+`Str.^lookup('parse-base')` is the idiomatic way to fetch a method object, and
+the instance dispatch it names cannot run on the type (roast's parse-base.t
+caught that immediately). Names whose dispatch would write something keep the
+old permissive answer rather than risk the side effect.
+
+**A text-mode file read translates the line separator.** An IO::Handle's default
+`:nl-in` is `["\n", "\r\n"]`, so a CRLF file slurps back with plain LF —
+`"a\r\nb".IO.slurp.encode.bytes` is 4 in Rakudo, 5 in rakupp. `:bin` keeps every
+byte. The test compares a generated multipart request against a CRLF fixture read
+this way, and the stray CRs made every body differ.
+
+All ten files now match Rakudo, including the online ones.

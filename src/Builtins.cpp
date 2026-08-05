@@ -6504,7 +6504,18 @@ void Interpreter::registerBuiltins() {
         std::ifstream in(a[0].toStr());
         if (!in) throwFailedOpen(a[0].toStr());
         std::ostringstream ss; ss << in.rdbuf();
-        return Value::str(ss.str());
+        std::string text = ss.str();
+        // same text-mode CRLF -> LF translation as the method form (see above);
+        // `slurp $p, :bin` routes to the method, which keeps the raw bytes
+        if (text.find('\r') != std::string::npos) {
+            std::string outT; outT.reserve(text.size());
+            for (size_t i = 0; i < text.size(); i++) {
+                if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+                outT += text[i];
+            }
+            text.swap(outT);
+        }
+        return Value::str(text);
     };
     // lines() / get() / words() with no arg read from $*ARGFILES: the files named
     // in @*ARGS (awk/perl -n style), or standard input when there are none.

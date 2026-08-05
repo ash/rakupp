@@ -730,9 +730,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::ifstream in(inv.toStr(), std::ios::binary);
         if (!in) throwFailedOpen(inv.toStr());
         std::ostringstream ss; ss << in.rdbuf();
-        Value v = Value::str(ss.str());
-        // slurp(:bin) yields a Blob (the raw bytes), not a decoded Str
-        for (auto& a : args) if (a.t == VT::Pair && a.s == "bin" && a.pairVal && a.pairVal->truthy()) v.hashKind = "Blob";
+        std::string text = ss.str();
+        bool bin = false;
+        for (auto& a : args) if (a.t == VT::Pair && a.s == "bin" && a.pairVal && a.pairVal->truthy()) bin = true;
+        // TEXT mode translates the line separator: an IO::Handle's default
+        // :nl-in is ["\n", "\r\n"], so a CRLF file reads back with plain LF
+        // (`"a\r\nb".IO.slurp.encode.bytes` is 4 in Rakudo, not 5). :bin is the
+        // raw bytes and keeps every CR. HTTP::Tiny compares a generated request
+        // against a CRLF fixture read this way.
+        if (!bin && text.find('\r') != std::string::npos) {
+            std::string outT; outT.reserve(text.size());
+            for (size_t i = 0; i < text.size(); i++) {
+                if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') continue;
+                outT += text[i];
+            }
+            text.swap(outT);
+        }
+        Value v = Value::str(text);
+        if (bin) v.hashKind = "Blob";   // slurp(:bin) yields a Blob, not a decoded Str
         return v;
     }
     if (m == "spurt" && !(inv.t == VT::Hash && inv.hashKind == "FileHandle")) {
