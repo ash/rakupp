@@ -78,6 +78,9 @@ classified and (mostly) repro'd.
   `tools/rc-compare.raku` harness, results, and the gaps it surfaces.
 - **[findings/REVIEW-1.0.md](findings/REVIEW-1.0.md)** — the pre-1.0 independent
   review, and what it turned up.
+- **[findings/REVIEW-2.0.md](findings/REVIEW-2.0.md)** — the pre-2.0 review of the
+  whole hand-written source: nine parallel fresh-eyes passes, five gated fix
+  batches, the gates before and after, and what was deliberately deferred.
 - **[findings/CONFORMANCE.md](findings/CONFORMANCE.md)** — a dated docs-conformance
   audit log (feature-by-feature against docs.raku.org). Historical, not maintained
   as current reference.
