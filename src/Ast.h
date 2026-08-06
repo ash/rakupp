@@ -353,6 +353,9 @@ struct AttrDecl {
     bool coerce = false; // coercion-type attribute: `has IO::Path() $.filename`
     std::vector<std::string> handles; // `handles <m1 m2>` — delegate these methods to the attr
     int defConstraint = 0; // type smiley: 0=none, 1=:D (defined), 2=:U (undefined)
+    bool objKeyed = false; // `has %!h{Mu:U}` — an object-keyed hash: TYPE-OBJECT
+                           // subscript keys stay distinct ("(Name)") instead of
+                           // stringifying to "" like a plain hash's
     ExprPtr def;        // optional default
 };
 

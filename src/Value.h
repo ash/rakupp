@@ -115,6 +115,8 @@ struct Value {
     std::string hashKind; // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/...
     bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
     bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
+    bool objKeyed = false; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
+                           // subscript keys stay distinct ("(Name)") instead of "" like a plain hash
     bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
     bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
     std::shared_ptr<ValueList> arr;
@@ -351,6 +353,7 @@ struct ClassAttr {
     bool hasDefVal = false;    // use defVal instead of `def`
     std::vector<std::string> handles; // `has $.b handles <m1 m2>` — methods delegated to this attr
     int defConstraint = 0; // type smiley on the attr type: 0=none, 1=:D (defined), 2=:U (undefined)
+    bool objKeyed = false; // `has %!h{Mu:U}` — object-keyed hash (type-object keys stay distinct)
     const void* declId = nullptr;     // identity of the declaring AttrDecl (diamond-composition dedup)
 };
 

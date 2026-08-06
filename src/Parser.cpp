@@ -1665,6 +1665,20 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             if (indirectName && !isKind(Tok::LParen))
                 error("indirect method call requires parentheses: $obj.'name'()");
             if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace)
+            // a DETACHED adverb — `$sth.row :hash` — the colonpair (ident TIGHT
+            // after the colon) is the call's named argument. It must be decided
+            // BEFORE the colon-args form below, which was swallowing
+            // `:hash, hash(...), 'msg'` whole as positional args (DBIish).
+            else if (isOp(":") &&
+                     (peek().kind == Tok::Ident || peek().kind == Tok::IntLit ||
+                      (peek().kind == Tok::Op && peek().text == "!" && peek(2).kind == Tok::Ident)) &&
+                     !peek().spaceBefore) {
+                while (isOp(":") &&
+                       (peek().kind == Tok::Ident || peek().kind == Tok::IntLit ||
+                        (peek().kind == Tok::Op && peek().text == "!" && peek(2).kind == Tok::Ident)) &&
+                       !peek().spaceBefore)
+                    mc->args.push_back(parseColonPair());
+            }
             else if (isOp(":") && (startsTermToken(peek()) ||
                      (peek().kind == Tok::Ident && (peek().text == "my" || peek().text == "our" || peek().text == "state")))) {
                 // colon method-args:  @x.sort: -*.value   ==  @x.sort(-*.value)
@@ -1781,6 +1795,14 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
             if (wasIs && cur().text == "dynamic") lastIsDynamic_ = true; // my $x is dynamic
             if (wasIs && cur().text == "export") lastIsExport_ = true;   // our %x is export
             advance(); // trait name / type
+            // a QUALIFIED type trait: `has %.Converter is DBDish::TypeConverter`
+            // — keep consuming `::name` segments into the captured name, or the
+            // container type is just its first segment (DBIish's 06-types)
+            if (wasTypeName)
+                while (isOp("::") && peek().kind == Tok::Ident) {
+                    advance(); // ::
+                    lastContainerIs_ += "::" + advance().text;
+                }
             if (wasContainer && isKind(Tok::LBracket)) { // is Bag[Int] — key-type parameter
                 advance();
                 if (isKind(Tok::Ident)) { lastContainerOf_ = cur().text; advance(); }
@@ -2440,8 +2462,14 @@ ExprPtr Parser::parsePrimary() {
     // ::?CLASS / ::?ROLE / ::?PACKAGE — the lexically-enclosing type (compile-time)
     if (isOp("::") && peek().text == "?" && peek(2).kind == Tok::Ident) {
         advance(); advance(); // :: ?
-        advance();            // CLASS / ROLE / PACKAGE
+        std::string which = advance().text; // CLASS / ROLE / PACKAGE
         std::string nm = typeStack_.empty() ? "" : typeStack_.back();
+        // ::?CLASS inside a ROLE is GENERIC — it means the CONSUMING class, known
+        // only per invocant. Emit a runtime marker the interpreter resolves from
+        // `self` (DBDish::Connection's `method new` does `::?CLASS.bless`, and
+        // baking the role's own name built role-punned connections).
+        if (which == "CLASS" && !typeIsRole_.empty() && typeIsRole_.back())
+            return std::make_unique<NameTerm>("::?CLASS");
         return std::make_unique<NameTerm>(nm.empty() ? "Mu" : nm);
     }
     // root symbol access: `::<$x>` — the symbol looked up through the scope chain
@@ -4226,8 +4254,12 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
             return words;
         }
         const Token& t = cur();
-        if (words.empty() || t.spaceBefore) words.push_back(t.text);
-        else words.back() += t.text;
+        // a VersionLit token dropped its `v` at the lexer — restore it, or the
+        // word list <v8.OMG vfe.xxx> loses the prefix on the v+digit entries
+        // (Cro::Uri's IPvFuture test hosts)
+        std::string wt = t.kind == Tok::VersionLit ? "v" + t.text : t.text;
+        if (words.empty() || t.spaceBefore) words.push_back(wt);
+        else words.back() += wt;
         advance();
     }
     matchOp(close);
@@ -5673,6 +5705,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     if (braced) advance();          // {
     else matchKind(Tok::Semicolon); // unit form
     typeStack_.push_back(cd->name); // enclosing type for ::?CLASS in the body
+    typeIsRole_.push_back(cd->isRole);
     while (!isKind(Tok::End) && (!braced || !isKind(Tok::RBrace))) {
         if (matchKind(Tok::Semicolon)) continue;
         // `also is Parent` / `also does Role` inside the body — same effect as the
@@ -5755,6 +5788,16 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 size_t idx = 1;
                 if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); idx = 2; }
                 a.name = vn.substr(idx);
+                // an OBJECT-HASH key-type shape rides right on the name:
+                // `has Callable %!Conversions{Mu:U} handles <AT-KEY EXISTS-KEY>`
+                // (DBDish::TypeConverter). Left unconsumed it derailed the
+                // trait loop, so `handles` was never captured.
+                if (a.sigil == '%' && isKind(Tok::LBrace) && !cur().spaceBefore) {
+                    a.objKeyed = true; // {Mu:U}-shaped: type-object keys stay distinct
+                    int d = 0;
+                    do { if (isKind(Tok::LBrace)) d++; else if (isKind(Tok::RBrace)) d--; advance(); }
+                    while (d > 0 && !isKind(Tok::End));
+                }
                 // traits before the default: is rw / is readonly / of Type / does Role / where EXPR / handles <...>
                 while (isIdent("is") || isIdent("of") || isIdent("does") || isIdent("where") || isIdent("handles")) {
                     std::string tr = advance().text;
@@ -5800,8 +5843,18 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         // plain Hash. Only a capitalised name, so `is rw` and the
                         // other lowercase traits are untouched.
                         const std::string& tn = cur().text;
-                        if (!tn.empty() && std::isupper((unsigned char)tn[0]))
+                        if (!tn.empty() && std::isupper((unsigned char)tn[0])) {
                             a.containerIs = tn;
+                            advance();
+                            // QUALIFIED names keep their `::segment`s — the
+                            // captured type was just "DBDish" (DBIish 06-types)
+                            while (isOp("::") && peek().kind == Tok::Ident) {
+                                advance();
+                                a.containerIs += "::" + advance().text;
+                            }
+                            if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
+                            continue;
+                        }
                     }
                     if (isKind(Tok::Ident) || isKind(Tok::Var)) advance();
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
@@ -5991,6 +6044,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     }
     if (braced) expectKind(Tok::RBrace, "}");
     typeStack_.pop_back();
+    typeIsRole_.pop_back();
     return cd;
 }
 

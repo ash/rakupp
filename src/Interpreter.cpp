@@ -153,6 +153,17 @@ bool rtIsDefined(const Value& v) {
 }
 static bool isDefined(const Value& v) { return rtIsDefined(v); }
 
+// A hash-subscript key: on an OBJECT-KEYED hash (declared `has %!h{Mu:U}`) a
+// TYPE-OBJECT key keys by its parenthesised name so `%h{Str}` and `%h{Int}`
+// stay distinct (DBDish's TypeConverter reads `%!Conversions{$type}` directly
+// while writes come in through the delegated KEY protocol; both must agree).
+// On a PLAIN hash a type object stringifies to "" like Rakudo's. Everything
+// else keys by its stringification.
+static std::string hashSubKey(const Value& k, const Value* base = nullptr) {
+    if (k.t == VT::Type && base && base->objKeyed) return "(" + k.s + ")";
+    return k.toStr();
+}
+
 // Howard Hinnant's days<->civil algorithms (proleptic Gregorian, day 0 = 1970-01-01).
 long long civilToDays(long long y, long long m, long long d) {
     y -= m <= 2;
@@ -4270,6 +4281,58 @@ bool isKnownTypeName(const std::string& n) {
     return t.count(n) > 0;
 }
 
+// An anonymous PUN of a parameterized role with its `[...]` params bound to
+// argv — what `P[%defaults].new` and `Q[Int].mk` dispatch on. A shallow copy of
+// the role's ClassInfo keeps its methods/attrs; only the param bindings differ.
+Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv) {
+    auto pun = std::make_shared<ClassInfo>(*role);
+    static int punSerial = 0;
+    pun->name = roleName + "\x01pun" + std::to_string(++punSerial);
+    pun->doneRoles.insert(roleName); // `~~ P` still answers True
+    pun->roleParamBindings.clear();
+    auto tmp = std::make_shared<Env>();
+    tmp->parent = role->declEnv ? role->declEnv : global_;
+    try { bindParams(role->decl->roleParams, argv, tmp, /*methodCtx=*/false); }
+    catch (...) {} // arity/type mismatch: leave unbound rather than die here
+    size_t posIdx = 0;
+    for (auto& p : role->decl->roleParams) {
+        if (p.typeCapture && !p.type.empty() && !p.named) {
+            size_t ai = 0, seen = 0; bool found = false;
+            for (; ai < argv.size(); ai++)
+                if (!argv[ai].namedArg && seen++ == posIdx) { found = true; break; }
+            if (found) {
+                Value tv = argv[ai].t == VT::Type ? argv[ai]
+                                                  : Value::typeObj(argv[ai].typeName());
+                pun->roleParamBindings.push_back({p.type, tv});
+            }
+        }
+        if (!p.named && !p.slurpy) posIdx++;
+        if (!p.name.empty())
+            if (Value* v = tmp->find(p.name)) pun->roleParamBindings.push_back({p.name, *v});
+    }
+    classes_[pun->name] = pun;
+    return Value::typeObj(pun->name);
+}
+
+// Rakudo materializes a fresh CLONE of a loop's body block each time the loop
+// STATEMENT executes: `state` vars declared in the body restart per execution and
+// persist only across that one run's iterations. This frame holds them; it becomes
+// the parent of every iteration scope, so plain (non-declare) reads of the variable
+// still find it through the normal lexical chain.
+struct LoopStateFrame {
+    ExecContext& t; std::shared_ptr<Env> savedCur; Env* savedState; bool on;
+    LoopStateFrame(ExecContext& tc, bool enable)
+        : t(tc), savedCur(tc.cur), savedState(tc.curStateEnv), on(enable) {
+        if (!on) return;
+        auto frame = std::make_shared<Env>();
+        frame->parent = tc.cur;
+        frame->loopFrame = true; // plain `my` (a while-cond declare) skips past it
+        tc.cur = frame;
+        tc.curStateEnv = frame.get();
+    }
+    ~LoopStateFrame() { if (on) { t.cur = savedCur; t.curStateEnv = savedState; } }
+};
+
 Value Interpreter::exec(Stmt* s, bool sink) {
     if (s->line > 0) curLine_ = s->line; // track for test-failure diagnostics
     switch (s->kind) {
@@ -4682,6 +4745,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.def = a.def.get(); ca.type = a.type; ca.requiredWhy = a.requiredWhy;
                         ca.defConstraint = a.defConstraint;
                         ca.containerIs = a.containerIs;
+                        ca.objKeyed = a.objKeyed;
                         ci->attrs.push_back(ca);
                     }
                     for (auto& r : cd->rules) { ci->rules[r.name] = r.pattern; ci->ruleKind[r.name] = r.kind; ci->ruleOrder.push_back(r.name); }
@@ -5069,9 +5133,25 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     tmp->parent = ci->declEnv;
                     try { bindParams(role->decl->roleParams, argv, tmp, /*methodCtx=*/false); }
                     catch (...) {} // arity/type mismatch: leave unbound rather than abort composition
-                    for (auto& p : role->decl->roleParams)
+                    size_t posIdx = 0;
+                    for (auto& p : role->decl->roleParams) {
+                        // `role R[::T]`: a bare type-capture param binds the type NAME
+                        // to the argument at its positional slot (Cro::ConnectionState[
+                        // TestState] answers TestState for T in the role body)
+                        if (p.typeCapture && !p.type.empty() && !p.named) {
+                            size_t ai = 0, seen = 0; bool found = false;
+                            for (; ai < argv.size(); ai++)
+                                if (!argv[ai].namedArg && seen++ == posIdx) { found = true; break; }
+                            if (found) {
+                                Value tv = argv[ai].t == VT::Type ? argv[ai]
+                                                                  : Value::typeObj(argv[ai].typeName());
+                                ci->roleParamBindings.push_back({p.type, tv});
+                            }
+                        }
+                        if (!p.named && !p.slurpy) posIdx++;
                         if (!p.name.empty())
                             if (Value* v = tmp->find(p.name)) ci->roleParamBindings.push_back({p.name, *v});
+                    }
                 }
             }
             {   // a class body takes no arguments — placeholders are compile errors
@@ -5107,6 +5187,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ca.handles = a.handles;
                 ca.built = a.built;
                 ca.defConstraint = a.defConstraint;
+                ca.objKeyed = a.objKeyed;
                 ca.def = a.def.get();
                 ca.declId = &a;
                 ci->attrs.push_back(ca);
@@ -5473,6 +5554,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::WhileStmt: {
             auto* ws = static_cast<WhileStmt*>(s);
             ValueList collected; ValueList* col = ws->asExpr ? &collected : nullptr;
+            // Rakudo materializes a fresh CLONE of a loop's body block each time the
+            // loop STATEMENT executes: `state` vars in the body restart per execution
+            // and persist only across that run's iterations (Cro.compose counts a Z-loop
+            // with `++state $split` and relies on the reset). The frame is the parent of
+            // every iteration scope, so later plain reads reach the var lexically.
+            // Postfix modifier loops keep the old behavior (`my` in STMT leaks out).
+            LoopStateFrame lsf{tctx_, !ws->modifier};
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             for (;;) {
@@ -5504,6 +5592,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::ForStmt: {
             auto* fs = static_cast<ForStmt*>(s);
             ValueList collected; ValueList* col = fs->asExpr ? &collected : nullptr;
+            LoopStateFrame lsf{tctx_, !fs->modifier}; // per-execution `state` reset, as in WhileStmt
             auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::any(); };
             // for over .values/.kv/.pairs of a SetHash/BagHash/MixHash ALIASES the
             // weights: mutations through the loop variable write back into the
@@ -5993,6 +6082,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::LoopStmt: {
             auto* ls = static_cast<LoopStmt*>(s);
             ValueList collected; ValueList* col = ls->asExpr ? &collected : nullptr;
+            LoopStateFrame lsf{tctx_, true}; // per-execution `state` reset, as in WhileStmt
             auto outer = std::make_shared<Env>(); outer->parent = tctx_.cur;
             auto saved = tctx_.cur; tctx_.cur = outer;
             try {
@@ -6013,6 +6103,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::RepeatStmt: {
             auto* r = static_cast<RepeatStmt*>(s);
+            LoopStateFrame lsf{tctx_, true}; // per-execution `state` reset, as in WhileStmt
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             for (;;) {
@@ -7501,7 +7592,8 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     }
     if (isHash) {
         if ((base.t == VT::Hash || base.t == VT::Match) && base.hash) { // Match: named captures
-            auto it = base.hash->find(key.toStr());
+            // type-object keys follow the object-keyed rule (hashSubKey)
+            auto it = base.hash->find(hashSubKey(key, &base));
             if (it != base.hash->end()) return it->second;
         }
         return typedElemDefault(base);
@@ -8621,6 +8713,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             if (cit != classes_.end())
                 if (Value* cm = cit->second->findMethod("CALL-ME"))
                     return invokeMethod(*cm, codeVal, std::move(args));
+            // a TYPE OBJECT held in a variable invokes as the coercion call,
+            // exactly like the literal spelling: `my $t = Int; $t('123')` is
+            // Int('123') (DBDish's convert-function builds converters this way)
+            if (!args.empty()) return coerceToType(args[0], codeVal.s);
         }
         throw RakuError{Value::typeObj("X::Method::NotFound"), "Cannot invoke non-Callable value of type " + codeVal.typeName()};
     }
@@ -9099,13 +9195,16 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     // edits, and lvalue() on an untouched arg can autovivify a missing path.
     bool any = false;
     for (auto& p : *params) if (p.isRw || p.isRaw || p.sigil == '\\') any = true;
-    if (!any) return;
+    if (!any && env->xr().rwSynced.empty()) return;
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) continue;
         if (p.invocant) continue;  // an explicit `C:U:` invocant consumes no arg slot
         if (p.slurpy) break;
-        if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
+        // rwSynced-only entries are the Buf-bound params (see setupRwLinks):
+        // they copy back when mutated, same unchanged-guard as `is rw`
+        if ((p.isRw || p.isRaw || p.sigil == '\\' ||
+             env->xr().rwSynced.count(p.name)) && pi < rwArgs->size()) {
             auto it = env->vars.find(p.name);
             if (it != env->vars.end()) {
                 auto sy = env->xr().rwSynced.find(p.name);
@@ -9133,6 +9232,17 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             auto it = env->vars.find(p.name);
             env->x().rwSynced[p.name] = it != env->vars.end() ? it->second : Value::any();
             anyRwLinks_ = true;
+        }
+        // a plain param BOUND TO A BUF is mutable through the binding in Rakudo
+        // (Buf contents are the container's), but our buffer bytes live BY VALUE
+        // — so snapshot it for the post-call copy-back (copyOutRw); no immediate
+        // write-through link. Cro's frame serializer appends into a `Buf $buf`
+        // parameter and the caller emits the same buffer.
+        else if (p.sigil == '$' && !p.isCopy && !p.named && pi < rwArgs->size()) {
+            auto it = env->vars.find(p.name);
+            if (it != env->vars.end() && it->second.t == VT::Str &&
+                (it->second.hashKind == "Buf" || it->second.hashKind == "Blob"))
+                env->x().rwSynced[p.name] = it->second;
         }
         pi++;
     }
@@ -9358,10 +9468,17 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // them from the invocant's class MRO (child wins), skipping names the frame will
     // bind itself (an actual param of the same name shadows). Cheap: the vector is
     // empty for the overwhelming majority of classes.
-    if (self.t == VT::Object && self.obj && self.obj->cls)
-        for (ClassInfo* k = self.obj->cls.get(); k; k = k->parent.get())
+    {
+        ClassInfo* rk = nullptr;
+        if (self.t == VT::Object && self.obj) rk = self.obj->cls.get();
+        else if (self.t == VT::Type) { // type-object invocant sees them too
+            auto it = classes_.find(self.s);
+            if (it != classes_.end()) rk = it->second.get();
+        }
+        for (ClassInfo* k = rk; k; k = k->parent.get())
             for (auto& b : k->roleParamBindings)
                 if (!env->vars.count(b.first)) env->define(b.first, b.second);
+    }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/true);
         if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through
@@ -9590,6 +9707,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
                 return &tctx_.curStateEnv->vars[ve->name];
             }
+            // a plain `my` never lands in a loop-statement state frame — a declare
+            // in a while COND stays visible after the loop
+            Env* de = tctx_.cur.get();
+            while (de->loopFrame && de->parent) de = de->parent.get();
             Value init = typedDefault(ve->declType, sigil);
             if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
                 init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
@@ -9601,13 +9722,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 Value dv = eval(ve->declDefault.get());
                 if (sigil == '@' || sigil == '%') // container stays empty; v is the ELEMENT default
                     init.pairVal = std::make_shared<Value>(dv);
-                else { init = dv; tctx_.cur->x().varDefault[ve->name] = dv; }
+                else { init = dv; de->x().varDefault[ve->name] = dv; }
             }
             else if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
-                tctx_.cur->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
-            if (ve->declDynamic) tctx_.cur->x().varDynamic.insert(ve->name); // `is dynamic`
-            tctx_.cur->define(ve->name, std::move(init));
-            return &tctx_.cur->vars[ve->name];
+                de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+            if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
+            de->define(ve->name, std::move(init));
+            return &de->vars[ve->name];
         }
         // attribute lvalue: $.x / $!x
         if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
@@ -9780,8 +9901,26 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (Value* out = tctx_.lvalueOut) return out;
                 return &atKeyHold;
             }
+            // …or a DELEGATED one: `has Callable %!Conversions{Mu:U} handles
+            // <AT-KEY EXISTS-KEY>` (DBDish::TypeConverter) — the element lives
+            // in the delegating ATTRIBUTE's hash; write straight into it, or
+            // the object was replaced by a fresh plain Hash
+            if (base->t == VT::Object && base->obj && base->obj->cls) {
+                for (ClassInfo* c2 = base->obj->cls.get(); c2; c2 = c2->parent.get())
+                    for (auto& at2 : c2->attrs)
+                        for (auto& h2 : at2.handles)
+                            if (h2 == "AT-KEY" || h2 == "*") {
+                                Value& slot = base->obj->attrs[at2.name];
+                                if (slot.t != VT::Hash) slot = Value::makeHash();
+                                Value kv2 = eval(idx->index.get());
+                                // type-object keys use the same keying as the
+                                // delegated Hash protocol reads
+                                std::string key2 = hashSubKey(kv2, &slot);
+                                return &(*slot.hash)[key2];
+                            }
+            }
             if (base->t != VT::Hash) *base = Value::makeHash();
-            std::string key = eval(idx->index.get()).toStr();
+            std::string key = hashSubKey(eval(idx->index.get()), base);
             return &(*base->hash)[key];
         } else {
             // `$obj[$i] = v` on an OBJECT whose class defines AT-POS: assign through
@@ -10749,7 +10888,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             try { bp = lvalue(ix->base.get()); } catch (RakuError&) {}
             if (bp && bp->t == VT::Hash && bp->hash &&
                 (bp->hashKind == "SetHash" || bp->hashKind == "BagHash" || bp->hashKind == "MixHash")) {
-                std::string key = eval(ix->index.get()).toStr();
+                std::string key = hashSubKey(eval(ix->index.get()), bp);
                 Value rhs = evalValueOf(a->value.get());
                 bool del = bp->hashKind == "SetHash" ? !rhs.truthy() : rhs.toNum() == 0.0;
                 if (del) bp->hash->erase(key);
@@ -11020,7 +11159,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (real->t == VT::Hash && real->hashKind.empty()) h = real->hash;
                 }
                 if (h) {
-                    std::string key = eval(ix->index.get()).toStr();
+                    std::string key = hashSubKey(eval(ix->index.get()));
                     h->emplace(key, Value::any());           // the slot exists from now on
                     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
                     Value fetch; fetch.t = VT::Code; fetch.code = std::make_shared<Callable>();
@@ -11302,8 +11441,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             // a `$` container ITEMIZES what it holds: `my $t = (1,2)` is one
             // thing, so it does not flatten into a later list (`my @b = $t` has
-            // ONE element) and renders as `$(1, 2)`
-            if (a->op == "=" && (rhs.t == VT::Array || rhs.t == VT::Hash) && !rhs.itemized)
+            // ONE element) and renders as `$(1, 2)`. A SIGILLESS name is not a
+            // container — `my \b = @a` IS the array, and flat(b, …) flattens it
+            // (Cro's CompositeConnector builds its component list that way).
+            if (a->op == "=" && (rhs.t == VT::Array || rhs.t == VT::Hash) && !rhs.itemized &&
+                sigil == '$')
                 rhs.itemized = true;
             *lv = rhs;
         }
@@ -14469,8 +14611,24 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 if (pn.capReps) {
                     auto it = pn.capReps->find((int)ci);
                     if (it != pn.capReps->end())
-                        for (auto& o : it->second)
-                            lst.arr->push_back(Value::matchVal(input.substr(o.first, o.second - o.first), o.first, o.second));
+                        for (auto& o : it->second) {
+                            Value om = Value::matchVal(input.substr(o.first, o.second - o.first), o.first, o.second);
+                            // each occurrence carries the SUBRULE children whose
+                            // spans nest inside it — Cro::Uri's query action reads
+                            // `$_<pchars>` per occurrence of `( <pchars> | … )*`
+                            if (pn.kids) for (auto& kv : *pn.kids) {
+                                if (!kv.first.empty() && kv.first[0] == '\x01') continue; // internal keys
+                                Value hits = Value::array(); hits.isList = true;
+                                for (auto& child : kv.second)
+                                    if (child.from >= o.first && child.to <= o.second)
+                                        hits.arr->push_back(child.name.empty()
+                                            ? Value::matchVal(input.substr(child.from, child.to - child.from), child.from, child.to)
+                                            : build(child));
+                                if (hits.arr->size() == 1) om.hashRef()[kv.first] = (*hits.arr)[0];
+                                else if (!hits.arr->empty()) om.hashRef()[kv.first] = hits;
+                            }
+                            lst.arr->push_back(std::move(om));
+                        }
                 }
                 mv.arrRef().push_back(std::move(lst));
                 continue;
@@ -16386,7 +16544,7 @@ Value Interpreter::evalUnary(Unary* u) {
                      base->hashKind == "MixHash")) {
                     bool drop = base->hashKind == "MixHash" ? newv.toNum() == 0.0
                                                             : true;
-                    if (drop) base->hash->erase(eval(ix->index.get()).toStr());
+                    if (drop) base->hash->erase(hashSubKey(eval(ix->index.get()), base));
                 }
             }
         }
@@ -17473,7 +17631,7 @@ Value Interpreter::evalIndex(Index* idx) {
             std::string base = pkg;
             if (base.size() > 2 && base.compare(base.size() - 2, 2, "::") == 0)
                 base = base.substr(0, base.size() - 2);
-            std::string key = eval(idx->index.get()).toStr();
+            std::string key = hashSubKey(eval(idx->index.get()));
             if (base == "PROCESS" && key.size() > 1 && std::strchr("$@%&", key[0])) {
                 // PROCESS symbols live as `$*NAME` dynamics
                 std::string dyn = key.size() > 1 && std::strchr("*!?.^", key[1])
@@ -17727,6 +17885,23 @@ Value Interpreter::evalIndex(Index* idx) {
             return el;
         }
     }
+    // parameterizing a ROLE at runtime: P[%defaults].new — an anonymous pun of
+    // the role with its `[...]` params bound (Cro::Policy::Timeout[%(...)] is
+    // used exactly this way, never composed into a class). `Q[Int]` with a bare
+    // type argument parses as a NameTerm instead and puns in that arm.
+    if (base.t == VT::Type && !idx->isHash && idx->index) {
+        auto rit = classes_.find(base.s);
+        if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
+            !rit->second->decl->roleParams.empty()) {
+            ClassInfo* role = rit->second.get();
+            ValueList argv;
+            Value iv = eval(idx->index.get());
+            if (iv.t == VT::Array && iv.isList && !iv.itemized)
+                for (auto& e : *iv.arr) argv.push_back(e);
+            else argv.push_back(iv);
+            return makeRolePun(role, base.s, argv);
+        }
+    }
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
     if (base.t == VT::Type && !idx->isHash && idx->index) {
         Value p = eval(idx->index.get());
@@ -17849,7 +18024,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // Match object indexing: $/[n] positional, $/{key} / $/<key> named
     if (base.t == VT::Match) {
         if (idx->isHash) {
-            std::string key = eval(idx->index.get()).toStr();
+            std::string key = hashSubKey(eval(idx->index.get()));
             if (base.hash) { auto it = base.hash->find(key); if (it != base.hash->end()) return it->second; }
             return Value::nil();
         }
@@ -18256,10 +18431,10 @@ Value Interpreter::evalIndex(Index* idx) {
         // hash slice: %h{'a','b'} / %h<a b> — multiple keys yield a list of values
         if (keySubscriptIsSlice(idx->index.get(), iv)) {
             Value out = Value::array(); out.isList = true;
-            for (auto& k : iv.flatten()) out.arr->push_back(lookup1(k.toStr()));
+            for (auto& k : iv.flatten()) out.arr->push_back(lookup1(hashSubKey(k, &base)));
             return out;
         }
-        return lookup1(iv.toStr());
+        return lookup1(hashSubKey(iv, &base));
     }
     // positional [0] on a non-Positional item returns the item itself: `$hashref[0] === $hashref`
     if (!idx->isHash && base.t == VT::Hash && base.hashKind.empty()) {
@@ -18598,11 +18773,16 @@ Value Interpreter::eval(Expr* e) {
                     if (!tctx_.curStateEnv->vars.count(ve->name)) tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
                     return tctx_.curStateEnv->vars[ve->name];
                 }
+                // a plain `my` never lands in a loop-statement state frame — a
+                // declare in a while COND stays visible after the loop
+                std::shared_ptr<Env> deh = tctx_.cur;
+                while (deh->loopFrame && deh->parent) deh = deh->parent;
+                Env* de = deh.get();
                 // `our &foo;` re-declaration: bind to the existing package (global) code
                 // symbol — e.g. an `our sub` defined in a sibling block. Restricted to the
                 // `&` sigil so scalar/array/hash `our` vars keep their assignable containers.
                 if (ve->declScope == "our" && sigil == '&' && curPkgEnv_ && curPkgEnv_ != tctx_.cur)
-                    if (Value* g = curPkgEnv_->find(ve->name)) { tctx_.cur->define(ve->name, *g); return *g; }
+                    if (Value* g = curPkgEnv_->find(ve->name)) { de->define(ve->name, *g); return *g; }
                 // A bare untyped `my @a` re-evaluated in the SAME scope keeps its
                 // container — declarations initialize per scope entry, not per
                 // evaluation. So in `until $i.push-exactly(my @a, 3) =:= IterationEnd`,
@@ -18616,24 +18796,24 @@ Value Interpreter::eval(Expr* e) {
                     if (sigil == '@' || sigil == '%') { // container stays empty; v is the ELEMENT default
                         Value c = sigil == '@' ? Value::array() : Value::makeHash();
                         c.pairVal = std::make_shared<Value>(dv);
-                        tctx_.cur->define(ve->name, c);
-                        return tctx_.cur->vars[ve->name];
+                        de->define(ve->name, c);
+                        return de->vars[ve->name];
                     }
-                    tctx_.cur->x().varDefault[ve->name] = dv;
-                    tctx_.cur->define(ve->name, dv);
-                    return tctx_.cur->vars[ve->name];
+                    de->x().varDefault[ve->name] = dv;
+                    de->define(ve->name, dv);
+                    return de->vars[ve->name];
                 }
                 if (ve->declShape && sigil == '@') { // shaped array `my @a[2;3]`
-                    tctx_.cur->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
-                    return tctx_.cur->vars[ve->name];
+                    de->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
+                    return de->vars[ve->name];
                 }
-                if (!ve->declType.empty() || !tctx_.cur->vars.count(ve->name)) {
+                if (!ve->declType.empty() || !de->vars.count(ve->name)) {
                     if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
-                        tctx_.cur->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
-                    tctx_.cur->define(ve->name, typedDefault(ve->declType, sigil));
+                        de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
+                    de->define(ve->name, typedDefault(ve->declType, sigil));
                 }
-                if (ve->declDynamic) tctx_.cur->x().varDynamic.insert(ve->name); // `is dynamic`
-                return tctx_.cur->vars[ve->name];
+                if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
+                return de->vars[ve->name];
             }
             if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
                 Value* selfp = tctx_.cur->find("self");
@@ -18824,6 +19004,18 @@ Value Interpreter::eval(Expr* e) {
             }
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
+            // the deferred `::?CLASS`-in-a-role marker: the CONSUMING class,
+            // read off the live invocant (self.WHAT); a type-object self keeps
+            // its own name
+            if (n == "::?CLASS") {
+                if (Value* selfp = tctx_.cur->find("self")) {
+                    if (selfp->t == VT::Object && selfp->obj && selfp->obj->cls)
+                        return Value::typeObj(selfp->obj->cls->name);
+                    if (selfp->t == VT::Type) return *selfp;
+                    return Value::typeObj(selfp->typeName());
+                }
+                return Value::typeObj("Mu");
+            }
             // `Bool::` / `Foo::` — a bare trailing-::: name IS the package stash
             // (`Bool::.values` enumerates the enum's values). Same result as .WHO.
             if (n.size() > 2 && n.compare(n.size() - 2, 2, "::") == 0 &&
@@ -18833,6 +19025,26 @@ Value Interpreter::eval(Expr* e) {
                 return methodCall(base, "WHO", none);
             }
             if (!nt->ofType.empty()) { // parameterized type: Array[Int], Hash[Int,Str]
+                // …unless the base names a parameterized ROLE: `Q[Int]` puns it
+                // with the type argument(s) bound (the composed-into-class path
+                // handles `does Q[Int]` separately; this is direct use)
+                {
+                    auto rit = classes_.find(n);
+                    if (rit != classes_.end() && rit->second->isRole && rit->second->decl &&
+                        !rit->second->decl->roleParams.empty()) {
+                        ValueList argv;
+                        std::string rest = nt->ofType;
+                        size_t pos = 0;
+                        while (pos <= rest.size()) {
+                            size_t c = rest.find(',', pos);
+                            std::string part = rest.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
+                            if (!part.empty()) argv.push_back(Value::typeObj(part));
+                            if (c == std::string::npos) break;
+                            pos = c + 1;
+                        }
+                        return makeRolePun(rit->second.get(), n, argv);
+                    }
+                }
                 Value ty = Value::typeObj(n); ty.ofType = nt->ofType;
                 ty.i = nt->defConstraint;
                 return ty;

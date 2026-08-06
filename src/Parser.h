@@ -149,6 +149,9 @@ private:
     bool inReactBlock_ = false; // true while parsing a react/supply block (whenever must be inside one)
     bool unitDecl_ = false;     // true while dispatching a `unit …` declaration (allows a bodyless `unit sub foo;`)
     std::vector<std::string> typeStack_; // enclosing class/role/grammar names (for ::?CLASS)
+    std::vector<bool> typeIsRole_;       // parallel: is that enclosing type a ROLE?
+                                         // (::?CLASS in a role is GENERIC — resolved
+                                         // per-invocant at runtime, not baked here)
 
     const Token& cur() const { return toks_[pos_]; }
     const Token& peek(int off = 1) const;

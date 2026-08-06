@@ -2071,3 +2071,91 @@ Two REAL API gaps it exposes are worth having for other dists eventually —
 failure EARLIER (the load-time Offset probe dies cleanly instead of the
 call-time `.REPR` method miss), so they are deferred until another dist
 needs them. Effective ceiling: 52 → 51.
+
+## 2026-08-06 — DBIish, Cro::HTTP, Cro::Core: the battery reaches 50
+
+Three dists cleared in one continued sweep, each by the run-its-own-suite loop.
+
+### DBIish (t/05-mock, t/06-types)
+
+- **Str:D dispatch and `~~` narrowed further**: an IO-kinded hash value answers
+  Cool but not Str; Version and IO::Special answer neither. Same family as the
+  Config fix, applied to the remaining arms (typeMatchesArg, typeNameConforms,
+  rtTypeMatch, smartmatch Stringy/Cool).
+- **Object-typed hash KEYS survive the Hash protocol**: a type object used as a
+  subscript key is keyed as `(Name)` — one helper (hashSubKey) applied at every
+  subscript site, plus the KEY-protocol builtins — so a converter table keyed by
+  type objects round-trips. A `handles`-delegated AT-KEY also accepts an element
+  LVALUE (writes go into the delegate's hash).
+- **Buf/Blob plain params write back**: binding snapshots the byte buffer and
+  copies mutations out on return (rwSynced), since blob bytes live by value.
+- **A qualified role name is a TRAIT**: `is DBDish::TypeConverter` parses both
+  in class headers and attr trait lists; an attr's `{Mu:U}` key-shape braces
+  are consumed before the trait loop.
+- **structural eqv for objects extends to Pair keys** (pairKey compare in
+  valueEqv/deepEq).
+
+### Cro::HTTP (http2-frame-parser, http2-frame-serializer)
+
+- **Supplier.emit into a dead tap fires the tap's QUIT**: a RakuError thrown by
+  a tap's whenever body routes to that tap's quit handler, closes the tap, and
+  releases the react source — it must not rethrow into the emitter (the frame
+  parser dies per malformed frame and the test observes each death on the
+  outer tap's quit).
+- **`whenever` without a QUIT phaser forwards quits downstream** (ctx->quitCb +
+  closeTapHandle) instead of swallowing them.
+- **Supply.schedule-on is the identity** in rakupp's cooperative model.
+
+### Cro::Core 2/9 → 9/9 — battery at 50 of 59
+
+Nine files, run by hand (the dist spins under the zef harness); every fault
+general, none about HTTP. t/regression/cro-core-cluster.raku carries the
+cluster (passes both engines).
+
+- **`state` in a loop body restarts per loop-statement execution** — Rakudo
+  clones the body block each time the enclosing `for`/`while`/`loop`/`repeat`
+  statement runs, so `++state $split` counts iterations of THIS run only.
+  rakupp's counter leaked across calls, and Cro.compose's Z-loop slice went
+  stale → infinite compose recursion ("Too many levels of recursion" at test
+  85). Implemented as a per-execution state frame (LoopStateFrame) spliced
+  into the scope chain; routine-level `state` still persists per Callable;
+  plain `my` in a loop COND skips past the frame (Env::loopFrame) so
+  `while my $x = …` stays visible after the loop — the first cut cost
+  no-implicit-block.t/my-6c.t/my-6e.t exactly that way. This CLOSES the
+  "accepted divergence" recorded in the 2.0 campaign notes.
+- **A sigilless binding to an array is the array, not an item**: the
+  `$`-container itemization on assignment now keys on the actual `$` sigil, so
+  `my \before = @!before; flat(before, $x, after)` flattens
+  (Cro::CompositeConnector's component list; the composed pipeline used to
+  carry two Array lumps and emit nothing).
+- **Match.caps** lists positional AND named captures, one entry per occurrence,
+  ordered by match position (Cro::MediaType decodes quoted parameter values by
+  joining qtext/quoted-pair caps).
+- **Per-occurrence group children**: `( … | $<b>=<[…]> )+` exposes each
+  occurrence's own named-capture children on the per-occurrence Match
+  (Cro::Uri's percent-encoding walks `@$0` checking `$_<broken>`).
+- **Supply identity/introspection does not run the block**: `.isa/.does/.WHAT/
+  .defined/isa-ok $supply, Supply` used to eagerly drain — Cro's composer saw
+  every sink message twice.
+- **The eager drain waits for a whenever on a still-pending Promise** (bounded
+  by live workers, so a never-kept promise cannot hang `.list`) —
+  Connector.establish awaits connect() inside its supply block.
+- **`.Channel` on an on-demand supply is a LIVE conversion** (emit → queue,
+  done → close, quit → fail) — establish(...).Channel then `$supplier.emit`
+  used to hit "receive on a closed channel".
+- **`role R[::T]` type captures bind** — at composition (`does R[TestState]`)
+  and for type-object invocants (pipeline components are type objects), and
+  **a parameterized role PUNS**: `P[%defaults].new` (Index path) and `R[Int]`
+  (NameTerm parameterized-type path) both build an anonymous pun ClassInfo
+  with the role params bound (makeRolePun). Cro::Policy::Timeout[%(...)] is
+  only ever used this way.
+- **A broken Promise quits its whenever**: with no QUIT phaser the react (or
+  the enclosing supply, transitively) dies with the cause — and an on-demand
+  supply whenever'd at react level taps with a quit hook that fails the react
+  after its loop unwinds. Cro::TCP's dies-ok on a refused connect needs the
+  whole chain.
+
+MEASUREMENT NOTE, twice this batch: a probe that "still fails" after a fix may
+be running a STALE binary when the rebuild is `;`-chained with the run — the
+occurrence-children fix and the estchan probe each lost a diagnosis cycle to
+it. Rebuild, THEN probe, as separate commands.

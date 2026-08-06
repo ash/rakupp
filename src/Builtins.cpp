@@ -4641,6 +4641,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         try { callCallable((*t.hash)["emit"], one); if (rctx) reactStack_.pop_back(); }
                         catch (NextEx&) { if (rctx) reactStack_.pop_back(); }
                         catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
+                        catch (RakuError& e) {
+                            // an exception in the tap's block QUITS the tap — the
+                            // quit handler gets the exception and the EMITTER is
+                            // not unwound (Cro's frame parser dies per malformed
+                            // frame; the test taps `quit => { when X::… }`)
+                            if (rctx) reactStack_.pop_back();
+                            (*t.hash)["closed"] = Value::boolean(true);
+                            if (t.hash->count("quit") && (*t.hash)["quit"].t == VT::Code) {
+                                ValueList one2{exceptionFor(e)};
+                                try { callCallable((*t.hash)["quit"], one2); } catch (...) {}
+                            }
+                            if (t.ext) { auto ctx2 = std::static_pointer_cast<ReactCtx>(t.ext); std::lock_guard<std::mutex> lk(ctx2->m); if (ctx2->liveSources > 0) ctx2->liveSources--; ctx2->cv.notify_all(); }
+                            break;
+                        }
                         catch (...) { if (rctx) reactStack_.pop_back(); throw; }
                         if (rctx && rctx->closed) break; // `done` inside the block ended the react
                     }
@@ -4947,6 +4961,23 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     catch (RakuError& e) { quit = true; quitReason = exceptionFor(e); quitMsg = e.message; }
     catch (...) { tctx_.tapStack.pop_back(); supplyCloseStack_.pop_back(); throw; }
     tctx_.tapStack.pop_back();
+    // A whenever on a still-pending Promise holds the supply open (Cro's connector
+    // `establish` awaits connect() inside the supply block). The eager drain must
+    // wait for those one-shots to fire before treating the supply as finished —
+    // but only while a worker exists that could still settle them, so a
+    // never-kept promise doesn't hang `.list`.
+    if (ctx->pending > 0 && gilHeld_ && !parallelMode_ && liveWorkers_.load() > 0) {
+        static thread_local ExecContext parked;
+        saveCtx(parked);
+        gilYieldNotify();
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            gil_.lock();
+            if (ctx->pending <= 0 || liveWorkers_.load() == 0) break;
+            gilYieldNotify();
+        }
+        loadCtx(parked);
+    }
     ctx->collect = nullptr; // vals is about to go out of scope with this frame
     {
         auto closers = std::move(supplyCloseStack_.back());
@@ -7581,6 +7612,11 @@ void Interpreter::registerBuiltins() {
             I.supplyCloseStack_.pop_back();
             for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
         }
+        if (ctx->quitFlag) { // a whenever'd supply quit unhandled: the react dies with it
+            std::string qm = "Supply quit";
+            try { ValueList na; Value mv = I.methodCall(ctx->quitErr, "message", na); if (mv.t == VT::Str) qm = mv.s; } catch (...) {}
+            throw RakuError{ctx->quitErr, qm};
+        }
         return Value::nil();
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
@@ -7615,6 +7651,13 @@ void Interpreter::registerBuiltins() {
                     if (ps->broken) {
                         Value ex = ps->cause.t == VT::Nil ? Value::str(ps->causeMsg) : ps->cause;
                         for (auto& q : quitP) { ValueList one{ex}; try { I2.callCallable(q, one); } catch (...) {} }
+                        if (quitP.empty()) {
+                            // no QUIT phaser: the break QUITS the enclosing supply —
+                            // forward downstream and close (a refused connect inside
+                            // Connector.establish must fail the whole pipeline)
+                            if (ctx->quitCb.t == VT::Code) { ValueList one{ex}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                            if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                        }
                     } else {
                         ValueList one{ ps->result };
                         try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
@@ -7659,6 +7702,16 @@ void Interpreter::registerBuiltins() {
             if (!quitP.empty())
                 quitW = ctxCallable(ctx, [quitP](Interpreter& I2, ValueList& args) -> Value {
                     for (auto& p : quitP) { ValueList one = args; try { I2.callCallable(p, one); } catch (...) {} }
+                    return Value::any();
+                });
+            else
+                // no QUIT phaser: an exception in the whenever body QUITS the
+                // ENCLOSING supply — forward to the downstream tap's quit and
+                // close (Cro's frame parser dies per malformed frame and the
+                // test observes it on the OUTER tap's quit handler)
+                quitW = ctxCallable(ctx, [ctx](Interpreter& I2, ValueList& args) -> Value {
+                    if (ctx->quitCb.t == VT::Code) { ValueList one = args; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                    if (ctx->tap) I2.closeTapHandle(ctx->tap);
                     return Value::any();
                 });
             Value tapV = I.tapSupply(src, emitW, doneW, quitW);
@@ -7763,6 +7816,33 @@ void Interpreter::registerBuiltins() {
                     }
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
+                if (s.hash->count("block")) {
+                    // on-demand supply in a react: tap it with a quit hook that fails
+                    // the react (no QUIT phaser on the whenever ⇒ the quit is fatal —
+                    // Cro::TCP's `whenever Connector.establish(...)` on a dead port)
+                    std::shared_ptr<ReactCtx> rctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                    Value emitW; emitW.t = VT::Code; emitW.code = std::make_shared<Callable>();
+                    Value blkCopy = blk;
+                    emitW.code->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
+                        ValueList one = args;
+                        try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {}
+                        return Value::any();
+                    };
+                    Value quitW;
+                    if (rctx) {
+                        std::weak_ptr<ReactCtx> wctx = rctx;
+                        quitW.t = VT::Code; quitW.code = std::make_shared<Callable>();
+                        quitW.code->builtin = [wctx](Interpreter&, ValueList& a) -> Value {
+                            if (auto c = wctx.lock()) {
+                                std::lock_guard<std::mutex> lk(c->m);
+                                if (!c->quitFlag) { c->quitFlag = true; c->quitErr = a.empty() ? Value::str("quit") : a[0]; }
+                                c->closed = true; c->cv.notify_all();
+                            }
+                            return Value::any();
+                        };
+                    }
+                    return I.tapSupply(s, emitW, Value::nil(), quitW);
+                }
                 ValueList ta{blk}; return I.methodCall(s, "tap", ta); // from-list: eager
             }
             // `whenever $channel { … }` — one run per received value, completing when
@@ -7796,8 +7876,26 @@ void Interpreter::registerBuiltins() {
             // the full async react registration is still an open item.)
             if (s.t == VT::Hash && s.hashKind == "Promise" && s.ext) {
                 auto ps = std::static_pointer_cast<PromiseState>(s.ext);
-                bool done; { std::lock_guard<std::mutex> lk(ps->m); done = ps->done; }
-                if (done) { ValueList one{ps->result}; return I.callCallable(blk, one); }
+                bool done, broken; Value cause; std::string causeMsg;
+                { std::lock_guard<std::mutex> lk(ps->m);
+                  done = ps->done; broken = ps->broken; cause = ps->cause; causeMsg = ps->causeMsg; }
+                if (done) {
+                    if (broken) {
+                        // a BROKEN promise quits the whenever: a QUIT phaser in the
+                        // block handles it, otherwise the react itself dies with the
+                        // cause (a refused .connect must fail the react, not run the
+                        // block with Any — Cro::TCP's dies-ok relies on it)
+                        Value ex = cause.t == VT::Nil ? Value::str(causeMsg) : cause;
+                        std::vector<Value> quitP;
+                        scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
+                        if (!quitP.empty()) {
+                            for (auto& q : quitP) { ValueList one{ex}; try { I.callCallable(q, one); } catch (...) {} }
+                            Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+                        }
+                        throw RakuError{ex, causeMsg.empty() ? std::string("Promise broken") : causeMsg};
+                    }
+                    ValueList one{ps->result}; return I.callCallable(blk, one);
+                }
             }
             // whenever over a Promise/plain value: run the block once with it
             ValueList one{s}; return I.callCallable(blk, one);

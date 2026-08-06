@@ -24,6 +24,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // block exactly as it was.
         Value invLocal = inv;
         Value& inv = invLocal;
+        // .schedule-on($scheduler) hops emissions onto that scheduler in Rakudo;
+        // rakupp's taps already run cooperatively, so the identity is the
+        // faithful translation (Cro's HTTP/2 frame tests pipe through it)
+        if (m == "schedule-on") return inv;
         // Supply.Promise: a Promise kept with the LAST value the Supply emits when it
         // is done (broken if it quits). Drives the supply via tapSupply. Cro coerces
         // `Promise(supply {…})` here (body parsers).
@@ -87,7 +91,57 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 return tapSupply(inv, emit, done, quit);
             }
-            inv = drainSupplyBlock(inv);
+            // identity/introspection must NOT run the block: isa-ok $supply, Supply
+            // (Cro's composer tests) would otherwise tap the pipeline a second time
+            bool introspect = m == "isa" || m == "does" || m == "WHAT" || m == "WHICH"
+                || m == "WHERE" || m == "HOW" || m == "^name" || m == "defined"
+                || m == "so" || m == "Bool" || m == "gist" || m == "raku" || m == "perl";
+            if (m == "Channel") {
+                // LIVE conversion: each emit queues as it happens, done closes the
+                // channel, quit fails it. Eager-draining here would snapshot-and-
+                // close, so a later $supplier.emit into the pipeline would hit
+                // "receive on a closed channel" (Cro::Core drives establish().Channel
+                // exactly that way in its connection-conditional tests).
+                Value c = Value::makeHash(); c.hashKind = "Channel";
+                (*c.hash)["queue"] = Value::array();
+                (*c.hash)["closed"] = Value::boolean(false);
+                auto ps = std::make_shared<PromiseState>();
+                c.ext = ps;
+                Value cp = Value::makeHash(); cp.hashKind = "Promise"; cp.ext = ps;
+                (*cp.hash)["status"] = Value::str("Planned");
+                (*c.hash)["closedPromise"] = cp;
+                auto ch = c.hash;
+                auto settle = [ch, ps](bool failed, Value cause) {
+                    (*ch)["closed"] = Value::boolean(true);
+                    if (failed) (*ch)["failCause"] = cause;
+                    if ((*ch)["queue"].arr->empty()) {
+                        std::lock_guard<std::mutex> lk(ps->m);
+                        if (!ps->done) {
+                            if (failed) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); }
+                            else ps->result = Value::boolean(true);
+                            ps->done = true;
+                        }
+                        ps->cv.notify_all();
+                        (*(*ch)["closedPromise"].hash)["status"] = Value::str(failed ? "Broken" : "Kept");
+                    }
+                };
+                Value emitCb; emitCb.t = VT::Code; emitCb.code = std::make_shared<Callable>();
+                emitCb.code->builtin = [ch](Interpreter&, ValueList& a) -> Value {
+                    if (!a.empty()) (*ch)["queue"].arr->push_back(a[0]);
+                    return Value::any();
+                };
+                Value doneCb; doneCb.t = VT::Code; doneCb.code = std::make_shared<Callable>();
+                doneCb.code->builtin = [settle](Interpreter&, ValueList&) -> Value {
+                    settle(false, Value::any()); return Value::any();
+                };
+                Value quitCb; quitCb.t = VT::Code; quitCb.code = std::make_shared<Callable>();
+                quitCb.code->builtin = [settle](Interpreter&, ValueList& a) -> Value {
+                    settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any();
+                };
+                tapSupply(inv, emitCb, doneCb, quitCb);
+                return c;
+            }
+            if (!introspect) inv = drainSupplyBlock(inv);
         }
         bool listy = inv.hash->count("values");
         auto vals = [&]() -> ValueList { return listy ? *(*inv.hash)["values"].arr : ValueList{}; };
@@ -1982,6 +2036,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 tctx_.cur = sv;
                             } else dv = at.sigil == '@' ? Value::array()
                                       : at.sigil == '%' ? Value::makeHash() : Value::any();
+                            if (at.objKeyed && dv.t == VT::Hash) dv.objKeyed = true;
                             od->attrs[at.name] = dv;
                         }
                     ValueList builtinArgs;
@@ -2024,6 +2079,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         // (`has T $.x .= new` == `$!x = T.new`) — Rakudo semantics.
                         Value seed = at.sigil == '@' ? Value::array()
                                    : at.sigil == '%' ? Value::makeHash() : Value::any();
+                        if (at.objKeyed && seed.t == VT::Hash) seed.objKeyed = true;
                         if (at.sigil == '$' && !at.type.empty()) {
                             if (at.type == "atomicint" || at.type == "byte" ||
                                 at.type.rfind("int", 0) == 0 || at.type.rfind("uint", 0) == 0)
@@ -2167,6 +2223,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                     tctx_.cur = sv;
                                 } else dv = at.sigil == '@' ? Value::array()
                                           : at.sigil == '%' ? Value::makeHash() : Value::any();
+                                if (at.objKeyed && dv.t == VT::Hash) dv.objKeyed = true;
                                 od->attrs[at.name] = dv;
                             }
                         return Value::object(od);
@@ -2840,11 +2897,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // oracle .^lookup uses: dispatch the name on a sentinel and read the
         // answer off X::Method::NotFound. Data::Dump renders a Match through
         // `qw<made pos hash from list orig>.grep({ $obj.^can($_) })`.
+        // …and a bare BUILTIN TYPE object probes on a sentinel VALUE of the
+        // type: `Str.can('Int')` is True (the .Int conversion method), which is
+        // how DBDish::TypeConverter picks `$type($datum)` over `$type.new(...)`
+        Value probeInv = inv;
+        if (!ci && inv.t == VT::Type && !classes_.count(inv.s)) {
+            if (inv.s == "Str") probeInv = Value::str("");
+            else if (inv.s == "Int") probeInv = Value::integer(0);
+            else if (inv.s == "Num") probeInv = Value::number(0);
+            else if (inv.s == "Bool") probeInv = Value::boolean(false);
+        }
         if (!ci && out.arr->empty() && !mn.empty() &&
-            inv.t != VT::Object && inv.t != VT::Type && inv.t != VT::Any && inv.t != VT::Nil &&
+            probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&
             // Date/DateTime share one dispatch surface here, so a probe cannot
             // tell them apart — the curated Dateish list above is authoritative
-            inv.hashKind != "Date" && inv.hashKind != "DateTime") {
+            probeInv.hashKind != "Date" && probeInv.hashKind != "DateTime") {
             static const std::set<std::string> kUnsafe = {
                 "print", "say", "put", "note", "printf", "write", "spurt", "open",
                 "mkdir", "rmdir", "symlink", "link", "unlink", "rename", "copy",
@@ -2852,7 +2919,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 "throw", "rethrow", "sink", "emit", "send", "recv", "start",
                 "sleep", "kill", "signal", "await", "react", "trans", "subst-mutate"};
             if (!kUnsafe.count(mn)) {
-                Value probe = inv;
+                Value probe = probeInv;
                 if (probe.hashKind == "IO") probe.s = "/nonexistent/rakupp-can-probe";
                 bool notFound = false;
                 try { ValueList none; methodCall(probe, mn, none); }
@@ -3016,6 +3083,32 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value lst = Value::array(); lst.isList = true;
         for (auto& e : *inv.arr) lst.arr->push_back(e);
         return methodCall(lst, "join", args, rwArgs);
+    }
+    // .caps: every positional AND named capture as key=>Match pairs, one entry
+    // per occurrence (lists unfolded), ordered by where each occurrence matched.
+    if (inv.t == VT::Match && m == "caps") {
+        std::vector<std::pair<Value, Value>> entries;
+        auto addEntry = [&](const Value& key, const Value& v) {
+            if (v.isList && v.arr) { for (auto& e : *v.arr) entries.push_back({key, e}); }
+            else entries.push_back({key, v});
+        };
+        if (inv.arr) for (size_t i = 0; i < inv.arr->size(); i++)
+            addEntry(Value::integer((long long)i), (*inv.arr)[i]);
+        if (inv.hash) for (auto& kv : *inv.hash) {
+            if (!kv.first.empty() && kv.first[0] == '\x01') continue;
+            addEntry(Value::str(kv.first), kv.second);
+        }
+        std::stable_sort(entries.begin(), entries.end(),
+                         [](const std::pair<Value, Value>& a, const std::pair<Value, Value>& b) {
+                             return a.second.rFrom < b.second.rFrom;
+                         });
+        Value o = Value::array(); o.isList = true;
+        for (auto& e : entries) {
+            Value p = Value::pair(e.first.t == VT::Str ? e.first.s : e.first.toStr(), e.second);
+            if (e.first.t != VT::Str) p.pairKey = std::make_shared<Value>(e.first);
+            o.arr->push_back(std::move(p));
+        }
+        return o;
     }
     if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list" || m == "caps"
                                || m == "hash" || m == "pairs" || m == "kv" || m == "elems")) {

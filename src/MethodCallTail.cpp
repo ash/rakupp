@@ -211,19 +211,28 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // Pair
     // low-level access protocol as ordinary methods (xxKEY.t etc.)
     if (inv.t == VT::Hash && inv.hash) {
+        // on an OBJECT-KEYED hash (declared `{Mu:U}`) a TYPE-OBJECT key keys by
+        // its (parenthesised) name, not its empty stringification —
+        // `%!Conversions{Mu:U} handles <AT-KEY EXISTS-KEY>` stores per-type
+        // converters and `{Str}` must not collide with `{Int}` (DBIish). A
+        // plain hash keeps Rakudo's ""-key for type objects.
+        bool objKeyed = inv.objKeyed;
+        auto kkey = [objKeyed](const Value& k) {
+            return k.t == VT::Type && objKeyed ? "(" + k.s + ")" : k.toStr();
+        };
         if (m == "AT-KEY" && !args.empty()) {
-            auto it = inv.hash->find(args[0].toStr());
+            auto it = inv.hash->find(kkey(args[0]));
             return it != inv.hash->end() ? it->second : Value::any();
         }
         if (m == "EXISTS-KEY" && !args.empty())
-            return Value::boolean(inv.hash->count(args[0].toStr()) > 0);
+            return Value::boolean(inv.hash->count(kkey(args[0])) > 0);
         if (m == "DELETE-KEY" && !args.empty()) {
-            auto it = inv.hash->find(args[0].toStr());
+            auto it = inv.hash->find(kkey(args[0]));
             if (it == inv.hash->end()) return Value::any();
             Value v = it->second; inv.hash->erase(it); return v;
         }
         if ((m == "ASSIGN-KEY" || m == "BIND-KEY") && args.size() >= 2) {
-            (*inv.hash)[args[0].toStr()] = args[1]; return args[1];
+            (*inv.hash)[kkey(args[0])] = args[1]; return args[1];
         }
     }
     if (inv.t == VT::Array && inv.arr) {

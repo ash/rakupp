@@ -191,6 +191,9 @@ struct Env {
     std::unordered_map<std::string, Value> vars;
     std::shared_ptr<Env> parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
+    bool loopFrame = false;    // a loop-statement `state` frame: plain `my` declares
+                               // (e.g. in a while COND) skip past it to the enclosing
+                               // scope, so they stay visible after the loop
 
     // `x()` materialises the extras (use for WRITES); `xr()` returns a shared
     // empty instance when there are none (use for READS, so a lookup never
@@ -391,6 +394,10 @@ struct ReactCtx {
     // dispatcher keeps firing the handler after the block is gone (a second
     // Ctrl-C re-invoking `$server.stop` on an already-stopped service).
     std::vector<std::shared_ptr<TapHandle>> extTaps;
+    // a whenever'd supply QUIT with no QUIT phaser: the react itself dies with
+    // the cause once its loop unwinds (a refused connect fails the react)
+    bool quitFlag = false;
+    Value quitErr;
 };
 
 class Interpreter {
@@ -457,6 +464,8 @@ public:
     Value spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever Promise.in(N)` timer
     Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block
+    // anonymous pun of a parameterized role with `[...]` args bound (P[%h].new / Q[Int].mk)
+    Value makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv);
     // Live-Supply transform chain: run one emitted value through a tap's chain of
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
     // chain has finished (head/first reached its limit) so `done` should fire.
