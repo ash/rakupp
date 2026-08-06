@@ -423,6 +423,7 @@ struct IfStmt : Stmt {
 };
 
 struct WhileStmt : Stmt {
+    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr cond;
     std::unique_ptr<Block> body;
     bool isUntil = false;
@@ -436,6 +437,7 @@ struct WhileStmt : Stmt {
 };
 
 struct ForStmt : Stmt {
+    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr list;
     std::vector<std::string> vars; // loop variables ($_ if empty)
     bool rwVars = false;           // `<-> $i` / `-> $i is rw`: writes copy back to the source
@@ -500,6 +502,7 @@ struct WhenStmt : Stmt {
 };
 
 struct LoopStmt : Stmt {   // C-style: loop (init; cond; incr) { }
+    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr init, cond, incr;
     std::unique_ptr<Block> body;
     bool asExpr = false; // used in value context: collect each iteration's value into a List
@@ -507,6 +510,7 @@ struct LoopStmt : Stmt {   // C-style: loop (init; cond; incr) { }
 };
 
 struct RepeatStmt : Stmt { // repeat { } while/until cond
+    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr cond;
     bool isUntil = false;
     std::unique_ptr<Block> body;

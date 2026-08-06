@@ -4353,6 +4353,134 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     return Value::typeObj(pun->name);
 }
 
+// Does this subtree contain a `state` declaration the enclosing loop's state
+// frame would host? CONSERVATIVE: any node kind the walk doesn't enumerate
+// answers YES, so the loop keeps its frame; only provably state-free bodies
+// skip it. The frame is one extra Env hop on EVERY lookup in the loop, which
+// measured ~5% on the loopsum perf kernel — state-free hot loops shouldn't pay.
+static bool mayHaveStateDecl(const Expr* e);
+static bool mayHaveStateDecl(const Stmt* s);
+static bool mayHaveStateDecl(const Block* b) {
+    if (!b) return false;
+    for (auto& st : b->stmts) if (mayHaveStateDecl(st.get())) return true;
+    return false;
+}
+static bool mayHaveStateDecl(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
+        case NK::NameTerm: case NK::Whatever: case NK::SelfTerm:
+        case NK::RegexLit: case NK::SubstLit: case NK::AllomorphLit:
+            return false;
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            return v->declare && v->declScope == "state";
+        }
+        case NK::InterpStr: {
+            for (auto& part : static_cast<const InterpStr*>(e)->parts)
+                if (mayHaveStateDecl(part.get())) return true;
+            return false;
+        }
+        case NK::Assign: {
+            auto* a = static_cast<const Assign*>(e);
+            return mayHaveStateDecl(a->target.get()) || mayHaveStateDecl(a->value.get());
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            return mayHaveStateDecl(b->lhs.get()) || mayHaveStateDecl(b->rhs.get());
+        }
+        case NK::Unary:
+            return mayHaveStateDecl(static_cast<const Unary*>(e)->operand.get());
+        case NK::Call: {
+            for (auto& a : static_cast<const Call*>(e)->args)
+                if (mayHaveStateDecl(a.get())) return true;
+            return false;
+        }
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (mayHaveStateDecl(m->inv.get())) return true;
+            for (auto& a : m->args) if (mayHaveStateDecl(a.get())) return true;
+            return false;
+        }
+        case NK::Index: {
+            auto* ix = static_cast<const Index*>(e);
+            return mayHaveStateDecl(ix->base.get()) || mayHaveStateDecl(ix->index.get());
+        }
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return mayHaveStateDecl(t->cond.get()) || mayHaveStateDecl(t->then.get()) ||
+                   mayHaveStateDecl(t->els.get());
+        }
+        case NK::Range: {
+            auto* r = static_cast<const RangeExpr*>(e);
+            return mayHaveStateDecl(r->from.get()) || mayHaveStateDecl(r->to.get());
+        }
+        case NK::ListExpr: {
+            for (auto& it : static_cast<const ListExpr*>(e)->items)
+                if (mayHaveStateDecl(it.get())) return true;
+            return false;
+        }
+        case NK::Pair: {
+            auto* pr = static_cast<const PairExpr*>(e);
+            return mayHaveStateDecl(pr->keyExpr.get()) || mayHaveStateDecl(pr->value.get());
+        }
+        case NK::ChainExpr: {
+            for (auto& o : static_cast<const ChainExpr*>(e)->operands)
+                if (mayHaveStateDecl(o.get())) return true;
+            return false;
+        }
+        default:
+            return true; // BlockExpr, SymbolicRef, NqpOp, … — keep the frame
+    }
+}
+static bool mayHaveStateDecl(const Stmt* s) {
+    if (!s) return false;
+    switch (s->kind) {
+        case NK::EmptyStmt: case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt:
+        case NK::UseStmt:
+            return false;
+        case NK::ExprStmt:
+            return mayHaveStateDecl(static_cast<const ExprStmt*>(s)->e.get());
+        case NK::Block:
+            return mayHaveStateDecl(static_cast<const Block*>(s));
+        case NK::ReturnStmt:
+            return mayHaveStateDecl(static_cast<const ReturnStmt*>(s)->value.get());
+        case NK::IfStmt: {
+            auto* is = static_cast<const IfStmt*>(s);
+            for (auto& br : is->branches)
+                if (mayHaveStateDecl(br.first.get()) || mayHaveStateDecl(br.second.get())) return true;
+            return mayHaveStateDecl(is->elseBlock.get());
+        }
+        case NK::WhileStmt: {
+            auto* w = static_cast<const WhileStmt*>(s);
+            return mayHaveStateDecl(w->cond.get()) || mayHaveStateDecl(w->body.get());
+        }
+        case NK::ForStmt: {
+            auto* f = static_cast<const ForStmt*>(s);
+            return mayHaveStateDecl(f->list.get()) || mayHaveStateDecl(f->body.get());
+        }
+        case NK::LoopStmt: {
+            auto* l = static_cast<const LoopStmt*>(s);
+            return mayHaveStateDecl(l->init.get()) || mayHaveStateDecl(l->cond.get()) ||
+                   mayHaveStateDecl(l->incr.get()) || mayHaveStateDecl(l->body.get());
+        }
+        case NK::RepeatStmt: {
+            auto* r = static_cast<const RepeatStmt*>(s);
+            return mayHaveStateDecl(r->cond.get()) || mayHaveStateDecl(r->body.get());
+        }
+        case NK::GivenStmt: {
+            auto* g = static_cast<const GivenStmt*>(s);
+            return mayHaveStateDecl(g->topic.get()) || mayHaveStateDecl(g->body.get());
+        }
+        case NK::WhenStmt: {
+            auto* w = static_cast<const WhenStmt*>(s);
+            return mayHaveStateDecl(w->cond.get()) || mayHaveStateDecl(w->body.get());
+        }
+        default:
+            return true; // SubDecl, ClassDecl, VarDecl, EnumDecl, … — keep the frame
+    }
+}
+
 // Rakudo materializes a fresh CLONE of a loop's body block each time the loop
 // STATEMENT executes: `state` vars declared in the body restart per execution and
 // persist only across that one run's iterations. This frame holds them; it becomes
@@ -5594,7 +5722,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // with `++state $split` and relies on the reset). The frame is the parent of
             // every iteration scope, so later plain reads reach the var lexically.
             // Postfix modifier loops keep the old behavior (`my` in STMT leaks out).
-            LoopStateFrame lsf{tctx_, !ws->modifier};
+            if (ws->hasStateCache < 0)
+                ws->hasStateCache = (mayHaveStateDecl(ws->cond.get()) || mayHaveStateDecl(ws->body.get())) ? 1 : 0;
+            LoopStateFrame lsf{tctx_, !ws->modifier && ws->hasStateCache != 0};
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             for (;;) {
@@ -5626,7 +5756,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::ForStmt: {
             auto* fs = static_cast<ForStmt*>(s);
             ValueList collected; ValueList* col = fs->asExpr ? &collected : nullptr;
-            LoopStateFrame lsf{tctx_, !fs->modifier}; // per-execution `state` reset, as in WhileStmt
+            if (fs->hasStateCache < 0)
+                fs->hasStateCache = (mayHaveStateDecl(fs->list.get()) || mayHaveStateDecl(fs->body.get())) ? 1 : 0;
+            LoopStateFrame lsf{tctx_, !fs->modifier && fs->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
             auto forResult = [&]() { return fs->asExpr ? Value::list(std::move(collected)) : Value::any(); };
             // for over .values/.kv/.pairs of a SetHash/BagHash/MixHash ALIASES the
             // weights: mutations through the loop variable write back into the
@@ -6116,7 +6248,10 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         case NK::LoopStmt: {
             auto* ls = static_cast<LoopStmt*>(s);
             ValueList collected; ValueList* col = ls->asExpr ? &collected : nullptr;
-            LoopStateFrame lsf{tctx_, true}; // per-execution `state` reset, as in WhileStmt
+            if (ls->hasStateCache < 0)
+                ls->hasStateCache = (mayHaveStateDecl(ls->init.get()) || mayHaveStateDecl(ls->cond.get()) ||
+                                     mayHaveStateDecl(ls->incr.get()) || mayHaveStateDecl(ls->body.get())) ? 1 : 0;
+            LoopStateFrame lsf{tctx_, ls->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
             auto outer = std::make_shared<Env>(); outer->parent = tctx_.cur;
             auto saved = tctx_.cur; tctx_.cur = outer;
             try {
@@ -6137,7 +6272,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::RepeatStmt: {
             auto* r = static_cast<RepeatStmt*>(s);
-            LoopStateFrame lsf{tctx_, true}; // per-execution `state` reset, as in WhileStmt
+            if (r->hasStateCache < 0)
+                r->hasStateCache = (mayHaveStateDecl(r->cond.get()) || mayHaveStateDecl(r->body.get())) ? 1 : 0;
+            LoopStateFrame lsf{tctx_, r->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             for (;;) {
