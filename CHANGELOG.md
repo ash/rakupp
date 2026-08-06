@@ -76,12 +76,16 @@ server-shutdown shape works end to end.
 
 ### Performance
 
-`perf-guard --check` passes against the recorded v1.5.1 baseline: `fib`
-−4.3%, `asg` and `hash` at baseline, `loopsum` still carrying its known +5%
-(the per-loop `state`-frame allocation that correctness required — recorded
-debt, not a new regression; A/B of pre- and post-release binaries measures
-identical). The interpreter/compiler agreement gate (`run-optbench`) passes
-4-way on every kernel.
+`perf-guard --check` passes against the recorded v1.5.1 baseline: `fib`,
+`asg` and `hash` at or under baseline, and the `loopsum` debt the
+battery-50 correctness work had introduced is **paid off** rather than
+shipped. The per-loop-execution `state` frame (which Cro's `++state`
+counter made necessary) put one extra scope hop on every lookup in every
+loop — ~5% on `loopsum`. A conservative AST scan now skips the frame for
+loops that provably declare no `state` (anything the scanner can't rule
+out keeps it), cached per loop node; the state-reset semantics are
+unchanged on every sensitive Roast file. The interpreter/compiler
+agreement gate (`run-optbench`) passes 4-way on every kernel.
 
 ## v1.8.0 (2026-08-03) — other people's code
 
