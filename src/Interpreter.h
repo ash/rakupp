@@ -245,6 +245,7 @@ struct ExitEx { int code = 0; };
 struct LastEx { std::string label; };
 struct NextEx { std::string label; };
 struct RedoEx { std::string label; };
+struct DoneEx {}; // `done` control flow: exits the enclosing whenever block / supply body / react body
 struct BreakGivenEx { Value v; bool hasVal = false; }; // `when`/`succeed` exits the enclosing given/loop, carrying its value
 struct LeaveEx { Value v; bool hasVal = false; };       // `leave` exits the enclosing block (loop bodies skip NEXT)
 struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the throw point
@@ -462,8 +463,13 @@ public:
     // made for itself. Such a thread has no lexical scope to run Raku in.
     bool onRakuThread() const { return (bool)tctx_.cur; }
     Value spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever Promise.in(N)` timer
+    Value spawnIntervalWhenever(double interval, double delay, Value blk,
+                                std::shared_ptr<ReactCtx> ctx,
+                                std::shared_ptr<TapHandle> handle); // Supply.interval ticker
     Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block
+    Value spawnSupplyInterval(double interval, double delay, Value blk,
+                              std::shared_ptr<SupplyTapCtx> ctx); // Supply.interval inside a supply {} block
     // anonymous pun of a parameterized role with `[...]` args bound (P[%h].new / Q[Int].mk)
     Value makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv);
     // Live-Supply transform chain: run one emitted value through a tap's chain of

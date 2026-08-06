@@ -65,7 +65,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // silently return an empty Tap and never start the worker).
         if ((m == "tap" || m == "act") && inv.hash->count("kind")) {
             std::string k = inv.hash->at("kind").toStr();
-            if (k == "async-read" || k == "async-listen" || k == "signal") {
+            if (k == "async-read" || k == "async-listen" || k == "signal" || k == "interval") {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
                 Value done, quit;
                 for (auto& a : args) if (a.t == VT::Pair && a.pairVal) {

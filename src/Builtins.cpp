@@ -4639,6 +4639,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         try { callCallable((*t.hash)["emit"], one); if (rctx) reactStack_.pop_back(); }
                         catch (NextEx&) { if (rctx) reactStack_.pop_back(); }
                         catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
+                        catch (DoneEx&) { if (rctx) reactStack_.pop_back(); (*t.hash)["closed"] = Value::boolean(true); complete = true; break; }
                         catch (RakuError& e) {
                             // an exception in the tap's block QUITS the tap — the
                             // quit handler gets the exception and the EMITTER is
@@ -4722,7 +4723,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             return mkSupply(out);
         }
-        if (m == "interval") { ValueList v; for (int i = 0; i < 5; i++) v.push_back(Value::integer(i)); return mkSupply(v); } // finite stand-in
+        if (m == "interval") { // real ticker: 0 after $delay (default: immediately), then one per $interval
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            (*s.hash)["kind"] = Value::str("interval");
+            (*s.hash)["interval"] = args.empty() ? Value::number(1) : args[0];
+            double delay = 0;
+            for (size_t i = 1; i < args.size(); i++)
+                if (args[i].t != VT::Pair) { delay = args[i].toNum(); break; }
+            (*s.hash)["delay"] = Value::number(delay);
+            return s;
+        }
         if (m == "empty") return mkSupply({});
     }
     if (inv.t == VT::Type && inv.s == "Promise") {
@@ -4957,6 +4967,7 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
         if (blk.t == VT::Code) { ValueList na; callCallable(blk, na); }
     }
     catch (RakuError& e) { quit = true; quitReason = exceptionFor(e); quitMsg = e.message; }
+    catch (DoneEx&) {} // `done` in the body: normal end of the stream
     catch (...) { tctx_.tapStack.pop_back(); supplyCloseStack_.pop_back(); throw; }
     tctx_.tapStack.pop_back();
     // A whenever on a still-pending Promise holds the supply open (Cro's connector
@@ -5151,7 +5162,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     Interpreter* self = this;
     if (secs < 0) secs = 0;
     Value fireW = ctxCallable(ctx, [blk, ctx](Interpreter& I2, ValueList&) -> Value {
-        if (!ctx->done && !ctx->doneFired) { ValueList none; try { I2.callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} }
+        if (!ctx->done && !ctx->doneFired) { ValueList none; try { I2.callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} }
         ctx->pending--;
         I2.maybeFinishSupply(ctx);
         return Value::any();
@@ -5168,6 +5179,70 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         self->tctx_.cur = spawnScope;
         self->tctx_.dynStack.push_back(spawnScope.get());
         ValueList none; try { self->callCallable(fireW, none); } catch (...) {}
+        self->gilYieldNotify();
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin});
+    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+}
+
+// `whenever Supply.interval(N)` inside a supply {…} block: a repeating ticker
+// that holds the activation open (pending) and fires each tick under it, so the
+// body's emits reach the downstream tap. Stops on `done`, on the activation's
+// tap closing (.tap.close — the CLOSE-phaser stress in S17 syntax.t spawns and
+// closes thousands of these), or at interpreter shutdown.
+Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
+                                       std::shared_ptr<SupplyTapCtx> ctx) {
+    engageGil();
+    ctx->pending++;
+    liveWorkers_++;
+    reapFinishedWorkers();
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
+    if (delay < 0) delay = 0;
+    auto tick = std::make_shared<long long>(0);
+    Value fireW = ctxCallable(ctx, [blk, ctx, tick](Interpreter& I2, ValueList&) -> Value {
+        if (!ctx->done && !ctx->doneFired) {
+            ValueList one{Value::integer((*tick)++)};
+            try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) {}
+        }
+        return Value::any();
+    });
+    workers_.push_back({BigStackThread([self, interval, delay, fireW, ctx, fin, spawnScope]() mutable {
+        t_isWorker = true;
+        auto stop = [&] {
+            if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
+            if (ctx->done || ctx->doneFired) return true;
+            if (ctx->tap) { std::lock_guard<std::mutex> lk(ctx->tap->m); if (ctx->tap->closed) return true; }
+            return false;
+        };
+        auto sleepChunked = [&](double secs) { // GIL not held; wakes early on teardown
+            double left = secs;
+            while (left > 0 && !stop()) {
+                double c = left < 0.25 ? left : 0.25;
+                std::this_thread::sleep_for(std::chrono::duration<double>(c));
+                left -= c;
+            }
+        };
+        sleepChunked(delay);
+        while (!stop()) {
+            self->gil_.lock();
+            ExecContext wctx; self->loadCtx(wctx);
+            self->tctx_.cur = spawnScope;
+            self->tctx_.dynStack.push_back(spawnScope.get());
+            if (!stop()) { ValueList none; try { self->callCallable(fireW, none); } catch (...) {} }
+            self->gilYieldNotify();
+            if (stop()) break;
+            sleepChunked(interval);
+        }
+        self->gil_.lock(); // release the activation hold and let the supply finish
+        ExecContext wctx2; self->loadCtx(wctx2);
+        self->tctx_.cur = spawnScope;
+        self->tctx_.dynStack.push_back(spawnScope.get());
+        ctx->pending--;
+        try { self->maybeFinishSupply(ctx); } catch (...) {}
         self->gilYieldNotify();
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
@@ -5195,7 +5270,7 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
         if (ctx) self->reactStack_.push_back(ctx);
         if (!(ctx && ctx->closed)) {
             ValueList none;
-            try { self->callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (...) {}
+            try { self->callCallable(blk, none); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} catch (...) {}
         }
         if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
@@ -5204,6 +5279,69 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
         fin->store(true, std::memory_order_release);
     }), fin});
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+}
+
+// `Supply.interval($interval, $delay)` tapped: a worker emits ascending Ints —
+// the first after $delay (0 = immediately, like Rakudo), then one per $interval,
+// forever. Sleeps in small chunks so `done` (react ctx closed) or `.close` (tap
+// handle) tears the worker down promptly instead of after a whole interval.
+Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value blk,
+                                         std::shared_ptr<ReactCtx> ctx,
+                                         std::shared_ptr<TapHandle> handle) {
+    engageGil();
+    if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
+    liveWorkers_++;
+    reapFinishedWorkers();
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    Interpreter* self = this;
+    if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
+    if (delay < 0) delay = 0;
+    workers_.push_back({BigStackThread([self, interval, delay, blk, ctx, handle, fin, spawnScope]() mutable {
+        t_isWorker = true;
+        auto closedNow = [&] {
+            if (self->workerAbort_.load(std::memory_order_relaxed)) return true; // mainline done: stop ticking
+            if (ctx && ctx->closed) return true;
+            if (handle) { std::lock_guard<std::mutex> lk(handle->m); if (handle->closed) return true; }
+            return false;
+        };
+        auto sleepChunked = [&](double secs) { // GIL not held; wakes early on teardown
+            double left = secs;
+            while (left > 0 && !closedNow()) {
+                double c = left < 0.25 ? left : 0.25;
+                std::this_thread::sleep_for(std::chrono::duration<double>(c));
+                left -= c;
+            }
+        };
+        sleepChunked(delay);
+        long long tick = 0;
+        bool lastEx = false;
+        while (!closedNow() && !lastEx) {
+            self->gil_.lock();
+            ExecContext wctx; self->loadCtx(wctx);
+            tctx_.cur = spawnScope;
+            tctx_.dynStack.push_back(spawnScope.get());
+            if (ctx) self->reactStack_.push_back(ctx);
+            if (!closedNow()) {
+                ValueList one{Value::integer(tick++)};
+                try { self->callCallable(blk, one); }
+                catch (NextEx&) {}
+                catch (LastEx&) { lastEx = true; } // `last` ends THIS subscription
+                catch (DoneEx&) {} // `done` closed the ctx in its bookkeeping
+                catch (...) {}
+            }
+            if (ctx) self->reactStack_.pop_back();
+            self->gilYieldNotify();
+            if (closedNow() || lastEx) break;
+            sleepChunked(interval);
+        }
+        if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
+        self->liveWorkers_--;
+        fin->store(true, std::memory_order_release);
+    }), fin});
+    Value t = Value::makeHash(); t.hashKind = "Tap";
+    if (handle) { t.ext = handle; (*t.hash)["wired"] = Value::boolean(true); } // .close stops the ticker
+    return t;
 }
 
 // `whenever $channel { … }` — a react source that runs the block once per value
@@ -5246,7 +5384,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             }
             Value v = q->front(); q->erase(q->begin());
             ValueList one{v};
-            try { self->callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) { break; } catch (...) {}
+            try { self->callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; } catch (...) {}
             if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->closed) break; }
         }
         if (ctx) self->reactStack_.pop_back();
@@ -5390,6 +5528,10 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             closeTapHandle(handle);
             if (!handled) throw;
         }
+        catch (DoneEx&) { // `done` in the supply body: normal end (its bookkeeping already ran)
+            tctx_.tapStack.pop_back();
+            ctx->blockDone = true;
+        }
         catch (...) { tctx_.tapStack.pop_back(); closeTapHandle(handle); throw; }
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
         (*t.hash)["wired"] = Value::boolean(true);
@@ -5418,7 +5560,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             for (auto& bv : *(*sup.hash)["buffer"].arr) {
                 bool complete = false;
                 ValueList outs = applyTapChain(tapRec, bv, complete);
-                for (auto& o : outs) { ValueList one{o}; try { callCallable(emitCb, one); } catch (NextEx&) {} catch (LastEx&) { complete = true; break; } }
+                for (auto& o : outs) { ValueList one{o}; try { callCallable(emitCb, one); } catch (NextEx&) {} catch (LastEx&) { complete = true; break; } catch (DoneEx&) { complete = true; break; } }
                 if (complete) break;
             }
         }
@@ -5437,6 +5579,15 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         if (h.count("signals") && h.at("signals").arr)
             for (auto& n : *h.at("signals").arr) sigs.push_back((int)n.toInt());
         return tapSignal(sigs, emitCb, doneCb, nullptr);
+    }
+    // Supply.interval(N) tapped directly (.tap, or inside a supply {…} block):
+    // each tap gets its OWN ticker; the returned Tap's handle stops it on .close.
+    if (h.count("kind") && h.at("kind").toStr() == "interval") {
+        double iv = h.count("interval") ? h.at("interval").toNum() : 1;
+        double dl = h.count("delay") ? h.at("delay").toNum() : 0;
+        auto handle = std::make_shared<TapHandle>();
+        std::shared_ptr<ReactCtx> rctx = reactStack_.empty() ? nullptr : reactStack_.back();
+        return spawnIntervalWhenever(iv, dl, emitCb, rctx, handle);
     }
     if (h.count("kind") && h.at("kind").toStr() == "async-listen") {
         std::string host = h.count("host") ? h.at("host").toStr() : "localhost";
@@ -5544,6 +5695,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             try { callCallable(emitCb, one); }
             catch (NextEx&) {}
             catch (LastEx&) { break; }
+            catch (DoneEx&) { break; }
         }
         if (h.count("quit-reason")) {
             if (quitCb.t == VT::Code) { ValueList one{h.at("quit-reason")}; callCallable(quitCb, one); }
@@ -7599,6 +7751,7 @@ void Interpreter::registerBuiltins() {
         I.reactStack_.push_back(ctx);
         I.supplyCloseStack_.emplace_back();
         try { I.callCallable(a.back(), {}); }
+        catch (DoneEx&) {} // `done` in the react body: normal completion (ctx already closed)
         catch (...) { I.reactStack_.pop_back(); I.supplyCloseStack_.pop_back(); throw; }
         I.reactStack_.pop_back();
         I.runReactLoop(ctx); // block until every live whenever source is done
@@ -7621,6 +7774,14 @@ void Interpreter::registerBuiltins() {
         return Value::nil();
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
+        // `whenever $supplier` coerces via .Supply (Rakudo does the same): a raw
+        // Supplier used to fall through to the run-once-with-the-value arm, which
+        // ran the handler EAGERLY with the Supplier as topic. That deadlock was
+        // masked by awaitPromise's no-workers escape until a real async source
+        // (Supply.interval) engaged the GIL earlier in the program.
+        if (!a.empty() && a[0].t == VT::Hash && a[0].hashKind == "Supplier") {
+            ValueList none; a[0] = I.methodCall(a[0], "Supply", none);
+        }
         // Inside an on-demand supply activation (real tap or eager drain): wire a
         // real inner tap. The body runs (now or later, from an I/O worker) with
         // this activation re-established, so its emits reach the downstream tap.
@@ -7633,6 +7794,14 @@ void Interpreter::registerBuiltins() {
                 (*src.hash)["kind"].toStr() == "timer") {
                 double secs = src.hash->count("seconds") ? (*src.hash)["seconds"].toNum() : 0;
                 return I.spawnSupplyTimer(secs, blk, ctx);
+            }
+            // whenever Supply.interval(N) in a supply block: a repeating ticker
+            // that keeps this activation open until done/close stops it.
+            if (src.t == VT::Hash && src.hashKind == "Supply" && src.hash->count("kind") &&
+                (*src.hash)["kind"].toStr() == "interval") {
+                double iv = src.hash->count("interval") ? (*src.hash)["interval"].toNum() : 1;
+                double dl = src.hash->count("delay") ? (*src.hash)["delay"].toNum() : 0;
+                return I.spawnSupplyInterval(iv, dl, blk, ctx);
             }
             // whenever over a Promise: register an ASYNC one-shot — the block runs
             // once, with the promise's RESULT, when the promise settles. Must NOT
@@ -7661,7 +7830,7 @@ void Interpreter::registerBuiltins() {
                         }
                     } else {
                         ValueList one{ ps->result };
-                        try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
+                        try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                         for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
                     }
                     ctx->pending--;
@@ -7680,14 +7849,14 @@ void Interpreter::registerBuiltins() {
                 Value rv = src;
                 if (src.t == VT::Hash && src.hashKind == "Promise" && src.hash->count("result")) rv = (*src.hash)["result"];
                 ValueList one{rv};
-                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
+                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
             std::vector<Value> lastP, quitP;
             scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
             Value emitW = ctxCallable(ctx, [blk](Interpreter& I2, ValueList& args) -> Value {
                 try { ValueList one = args; return I2.callCallable(blk, one); }
-                catch (NextEx&) {} catch (LastEx&) {}
+                catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 return Value::any();
             });
             // every inner tap holds the supply open until its done fires; the
@@ -7751,10 +7920,19 @@ void Interpreter::registerBuiltins() {
                 Value blkCopy = blk;
                 emitW.code->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
                     ValueList one = args;
-                    try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {}
+                    try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                     return Value::any();
                 };
                 return I.tapSignal(sigs, emitW, Value::nil(), ctx);
+            }
+            // whenever Supply.interval(N) { … } in a react: a live ticker source —
+            // the react waits on it (forever, unless `done`/`last` ends it).
+            if (s.t == VT::Hash && s.hashKind == "Supply" &&
+                s.hash->count("kind") && (*s.hash)["kind"].toStr() == "interval") {
+                double iv = s.hash->count("interval") ? (*s.hash)["interval"].toNum() : 1;
+                double dl = s.hash->count("delay") ? (*s.hash)["delay"].toNum() : 0;
+                std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                return I.spawnIntervalWhenever(iv, dl, blk, ctx, nullptr);
             }
             // whenever $socket.Supply { … } — an async-read/async-listen stream in a
             // react: count it as a live source so the block waits for data, and
@@ -7826,7 +8004,7 @@ void Interpreter::registerBuiltins() {
                     Value blkCopy = blk;
                     emitW.code->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
                         ValueList one = args;
-                        try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {}
+                        try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                         return Value::any();
                     };
                     Value quitW;
@@ -7869,7 +8047,7 @@ void Interpreter::registerBuiltins() {
                 I.runProcPromise(s, 0);
                 Value procv = s.hash->count("proc") ? (*s.hash)["proc"] : s;
                 ValueList one{procv};
-                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {}
+                try { I.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
             // whenever over a SETTLED Promise binds the block to its RESULT, not the
@@ -7896,6 +8074,45 @@ void Interpreter::registerBuiltins() {
                         throw RakuError{ex, causeMsg.empty() ? std::string("Promise broken") : causeMsg};
                     }
                     ValueList one{ps->result}; return I.callCallable(blk, one);
+                }
+                // UNKEPT promise in a react: REGISTER — fire the block once with the
+                // result when it settles, counted as a live source. This is the
+                // standard shutdown idiom (`whenever $kill { done }`); firing
+                // immediately with the promise OBJECT ran `done` at registration
+                // and tore the react down before its other whenevers wired up.
+                if (!I.reactStack_.empty()) {
+                    auto rctx = I.reactStack_.back();
+                    { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
+                    std::vector<Value> quitP;
+                    scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
+                    Interpreter* self = &I;
+                    Value blkCopy = blk;
+                    std::function<void()> fire = [self, blkCopy, ps, rctx, quitP]() {
+                        // runs under the GIL, from the settler's thread (via ps->thens)
+                        self->reactStack_.push_back(rctx);
+                        if (!rctx->closed) {
+                            if (ps->broken) {
+                                Value ex = ps->cause.t == VT::Nil ? Value::str(ps->causeMsg) : ps->cause;
+                                if (!quitP.empty()) {
+                                    for (auto& q : quitP) { ValueList one{ex}; try { self->callCallable(q, one); } catch (...) {} }
+                                } else {
+                                    std::lock_guard<std::mutex> lk(rctx->m);
+                                    if (!rctx->quitFlag) { rctx->quitFlag = true; rctx->quitErr = ex; }
+                                    rctx->closed = true; rctx->cv.notify_all();
+                                }
+                            } else {
+                                ValueList one{ps->result};
+                                try { self->callCallable(blkCopy, one); }
+                                catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {} catch (...) {}
+                            }
+                        }
+                        self->reactStack_.pop_back();
+                        { std::lock_guard<std::mutex> lk(rctx->m); if (rctx->liveSources > 0) rctx->liveSources--; rctx->cv.notify_all(); }
+                    };
+                    bool now = false;
+                    { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(fire); }
+                    if (now) fire();
+                    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
             }
             // whenever over a Promise/plain value: run the block once with it
@@ -7950,12 +8167,13 @@ void Interpreter::registerBuiltins() {
                 if (ctx->doneCb.t == VT::Code) { ValueList na; try { I.callCallable(ctx->doneCb, na); } catch (...) {} }
                 I.closeTapHandle(ctx->tap);
             }
-            return Value::boolean(true);
+            throw DoneEx{}; // done also EXITS the enclosing whenever block / supply body (Rakudo)
         }
         // `done` inside a react block closes its loop.
         if (!I.reactStack_.empty()) {
             auto ctx = I.reactStack_.back();
-            std::lock_guard<std::mutex> lk(ctx->m); ctx->closed = true; ctx->cv.notify_all();
+            { std::lock_guard<std::mutex> lk(ctx->m); ctx->closed = true; ctx->cv.notify_all(); }
+            throw DoneEx{}; // …and the enclosing whenever/react body
         }
         return Value::boolean(true);
     };
