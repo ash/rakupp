@@ -2159,3 +2159,56 @@ MEASUREMENT NOTE, twice this batch: a probe that "still fails" after a fix may
 be running a STALE binary when the rebuild is `;`-chained with the run — the
 occurrence-children fix and the estchan probe each lost a diagnosis cycle to
 it. Rebuild, THEN probe, as separate commands.
+
+## 2026-08-06 (later) — the subtest reckoning: every Pair-form subtest was vacuous
+
+Chasing AttrX::Mooish's failures turned up something bigger than any one dist:
+`subtest "title" => {…}` — the PAIR form, which is how nearly every module
+writes subtests — never ran its body. The builtin unpacked only the
+positional `subtest {…}, "title"` shape; a Pair argument matched neither arm,
+so the body was skipped and the subtest reported ok with an empty description.
+An old comment deferred unpacking it because "running those bodies exposes
+unimplemented features across ~23 roast files". True — and every one of those
+passes was fictitious, in Roast and in the battery alike.
+
+The form now runs (die → not ok with the description; the honest exit code).
+Consequences, all measured:
+
+- **The Roast top line RESETS: 197,320 → 194,980.** The −2,340 is newly
+  VISIBLE pre-existing gaps, not new breakage — spot-checked movers show the
+  same old failure lists plus subtests that now run and fail (S16-io/words.t's
+  `.words` mis-splitting multi-space runs, Mu.return-rw's assignable return,
+  S32-io seek/tell shapes, …). Numbers before this date are not comparable.
+- **AttrX::Mooish's "12/35" was really 2/35.** The passing files were shells
+  of unrun subtests. The honest scope: the dist drives Rakudo's metamodel
+  directly (BUILDPLAN rewriting, ^add_method/^private_method_table, persistent
+  Attribute objects with get_value/set_value/container_descriptor, HOW
+  mixins) — a deliberate multi-session campaign, not a batch.
+- **Three dists lost PASS and were won back the honest way**, each a general
+  fix: IO::Glob (dir("/") joined "//name" — the root already ends in '/');
+  HTTP::Tiny (three: a NAMED `:%h is copy` param shared the caller's hash —
+  named @/% args now follow the positional bind/copy rules; a `|rest` capture
+  param's name wasn't a sigilless TERM, so `rest<data-callback>` parsed as a
+  listop call; `<k>:exists` on a Capture ignored its named parts; and
+  `.modified` returned a bare Num — it is an Instant, `.DateTime` must work);
+  LWP::Simple (our dlopen fell back to macOS's /usr/lib libcrypto stub, which
+  ABORTS mid-run — versioned/Homebrew candidates now come first, the stub
+  stays a last resort because OpenSSL's basic use of it does work).
+
+En route to AttrX::Mooish, general machinery that stands on its own:
+- **callwith/callsame chain through a BUILT-IN parent**: `class AttrProxy is
+  Proxy { method new(…) { callwith(…) } }` redispatches to the builtin's
+  method (invokeMethodChain nativeParent fallback), and a custom `.new` now
+  enters the chain at all (it used to invoke directly, so no dispatcher).
+- **Proxy SUBCLASS instances**: the builtin-parent constructor result is
+  stamped with the subclass; stamped proxies dispatch that class's methods
+  (public and private) with the proxy as self, carry instance attrs, and
+  answer nqp::istype for the subclass.
+- **The nqp op surface AttrX::Mooish needs**: istype_nd/isconcrete_nd/
+  clone_nd/iscont/islist/istrue/what/shift/lock/unlock/hllize/box_s/getattr_i
+  — and nqp op ARGUMENTS of variable form pass their CONTAINER (a proxy
+  reaches nqp::istype_nd un-FETCHed, which is the whole point of the _nd
+  forms).
+
+Gates at the end of it: t/run.raku 310/310, battery back to the pre-reckoning
+shape minus the honest AttrX::Mooish row, perf-guard OK.

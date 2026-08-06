@@ -2423,6 +2423,19 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto ai = classAliases_.find(invIn.s);
         if (ai != classAliases_.end()) { invCopy = invIn; invCopy->s = ai->second; invp = &*invCopy; }
     }
+    // A Proxy stamped with a SUBCLASS identity (`class AttrProxy is Proxy`,
+    // constructed via callwith in its own .new) dispatches that class's methods
+    // — public and private — with the proxy itself as self, BEFORE the FETCH
+    // rule (AttrX::Mooish drives its whole lazy machinery this way).
+    if (invIn.t == VT::Hash && invIn.hashKind == "Proxy" && invIn.hash) {
+        auto ki = invIn.hash->find("\x01cls");
+        if (ki != invIn.hash->end()) {
+            auto cit = classes_.find(ki->second.s);
+            if (cit != classes_.end())
+                if (Value* um = cit->second->findMethod(mName))
+                    return invokeMethod(*um, invIn, args, rwArgs);
+        }
+    }
     // A method called ON a Proxy is a READ of what it stands for: FETCH first.
     // (`$doc.root[0].name` — AT-POS hands back a Proxy, and every method after it
     // was landing on the container.) `.VAR` deliberately still sees the Proxy.
@@ -6597,7 +6610,8 @@ void Interpreter::registerBuiltins() {
                 if (haveTest) { ValueList m{Value::str(n)}; if (!I.methodCall(test, "ACCEPTS", m).truthy()) continue; }
                 // dir() yields IO::Path entries (Rakudo semantics) — File::Find,
                 // and any `.d`/`.IO` on the result, need real IO::Path objects.
-                Value p = Value::str(base + "/" + n); p.hashKind = "IO";
+                // The root dir already ends in '/' — dir("/") is "/.file", not "//.file".
+                Value p = Value::str(base + (base.back() == '/' ? "" : "/") + n); p.hashKind = "IO";
                 out.arr->push_back(p);
             }
             closedir(d);
@@ -6821,11 +6835,17 @@ void Interpreter::registerBuiltins() {
     };
     B["subtest"] = [](Interpreter& I, ValueList& a) -> Value {
         Value code; std::string desc;
-        // NB: the Pair form `subtest "title" => {…}` is deliberately NOT unpacked
-        // yet — running those bodies exposes unimplemented features across ~23
-        // roast files (is rw on a class, Mu.iterator, Rational subclassing, …).
-        // Tracked as the subtest-Pair-form batch; unlock once those gaps close.
-        for (auto& v : a) { if (v.t == VT::Code) code = v; else if (v.t == VT::Str) desc = v.s; }
+        for (auto& v : a) {
+            if (v.t == VT::Code) code = v;
+            else if (v.t == VT::Str) desc = v.s;
+            // `subtest "title" => {…}` — the Pair form runs its body like any
+            // other (it was once left unrun; every such subtest passed VACUOUSLY,
+            // which inflated whole dist suites — AttrX::Mooish's most of all)
+            else if (v.t == VT::Pair && v.pairVal) {
+                desc = v.s;
+                if (v.pairVal->t == VT::Code) code = *v.pairVal;
+            }
+        }
         // A pending `todo` marks this whole subtest TODO: inner failures neither die nor count.
         bool todod = false; std::string todoReason;
         if (I.todoRemaining_ > 0) { todod = true; todoReason = I.todoReason_; I.todoRemaining_--; }
@@ -8681,7 +8701,17 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     }
     ValueList v;
     v.reserve(a.size());
-    for (auto& e : a) v.push_back(eval(e.get()));
+    // nqp ops operate on CONTAINERS: a variable holding a Proxy passes the proxy
+    // itself (nqp::istype_nd($attr-var, AttrProxy) / nqp::iscont must see it),
+    // where an ordinary Raku read would FETCH. Ops that want the value decont
+    // explicitly.
+    for (auto& e : a) {
+        if (e->kind == NK::VarExpr) {
+            auto* ve = static_cast<VarExpr*>(e.get());
+            if (Value* p = tctx_.cur->find(ve->name)) { v.push_back(*p); continue; }
+        }
+        v.push_back(eval(e.get()));
+    }
     return rtNqpOp(n->op, v); // eager leaf ops — shared with native codegen
 }
 
@@ -8954,6 +8984,13 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::Getattr: {
             const std::string& nm = S(2);
+            // a stamped Proxy-subclass instance (AttrProxy) keeps its attrs as
+            // prefixed keys on the proxy hash itself
+            if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash &&
+                v[0].hash->count("\x01cls")) {
+                auto it = v[0].hash->find("\x01" "a" + nm);
+                return it != v[0].hash->end() ? it->second : Value::nil();
+            }
             // '$!reified' / '$!storage' name the container's own backing store
             if (v[0].t == VT::Array || v[0].t == VT::Hash) return v[0];
             if (v[0].t == VT::Object && v[0].obj) {
@@ -8965,7 +9002,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::Bindattr: case O::P6BindAttrInvRes: {
             const std::string& nm = S(2);
-            if ((v[0].t == VT::Array && v[3].t == VT::Array && v[0].arr && v[3].arr)) {
+            if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash &&
+                v[0].hash->count("\x01cls")) { // stamped Proxy-subclass instance
+                (*v[0].hash)["\x01" "a" + nm] = v[3];
+            } else if ((v[0].t == VT::Array && v[3].t == VT::Array && v[0].arr && v[3].arr)) {
                 *v[0].arr = *v[3].arr;             // rebind the backing buffer
             } else if (v[0].t == VT::Hash && v[3].t == VT::Hash && v[0].hash && v[3].hash) {
                 *v[0].hash = *v[3].hash;           // (hashKind stays the invocant's: a Map keeps being a Map)
@@ -8977,6 +9017,41 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::P6ScalarWithValue:
             return v.size() > 1 ? v[1] : Value::nil(); // container wrap is a no-op for us
+        case O::What: { // the type object of the value (like .WHAT, no method dispatch)
+            if (v.empty()) return Value::typeObj("Mu");
+            if (v[0].t == VT::Type) return v[0];
+            if (v[0].t == VT::Object && v[0].obj && v[0].obj->cls)
+                return Value::typeObj(v[0].obj->cls->name);
+            return Value::typeObj(v[0].typeName());
+        }
+        case O::IsList:
+            return Value::integer(!v.empty() && v[0].t == VT::Array ? 1 : 0);
+        case O::IsCont:
+            // a Proxy IS a container; ordinary values reach us decontainerized
+            return Value::integer(!v.empty() && v[0].t == VT::Hash &&
+                                  v[0].hashKind == "Proxy" ? 1 : 0);
+        case O::IsTrue:
+            return Value::integer(!v.empty() && v[0].truthy() ? 1 : 0);
+        case O::IsConcrete:
+            return Value::integer(!v.empty() && rtIsDefined(v[0]) ? 1 : 0);
+        case O::CloneOp: { // shallow clone: fresh backing store, same elements
+            if (v.empty()) return Value::nil();
+            Value c = v[0];
+            if (c.t == VT::Array && c.arr) { auto na = std::make_shared<ValueList>(*c.arr); c.arr = na; }
+            else if (c.t == VT::Hash && c.hash) { auto nh = std::make_shared<std::map<std::string, Value>>(*c.hash); c.hash = nh; }
+            else if (c.t == VT::Object && c.obj) { auto no = std::make_shared<ObjectData>(*c.obj); c.obj = no; }
+            return c;
+        }
+        case O::Shift: { // generic array shift (ShiftI is the int variant)
+            if (!v.empty() && v[0].t == VT::Array && v[0].arr && !v[0].arr->empty()) {
+                Value f = v[0].arr->front(); v[0].arr->erase(v[0].arr->begin()); return f;
+            }
+            return Value::nil();
+        }
+        case O::LockOp: case O::UnlockOp:
+            // nqp::lock/unlock guard concurrent lazy builds; under the GIL the
+            // build is already atomic, so the guard is a no-op here
+            return Value::nil();
         case O::Null: return Value::nil();
         case O::IsNanOrInf: {
             double d = v.empty() ? 0 : v[0].toNum();

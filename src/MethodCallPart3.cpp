@@ -1184,7 +1184,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         const struct timespec& ts = (m == "accessed") ? ats : (m == "changed") ? cts : mts;
         secs = (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 #endif
-        return Value::number(secs);
+        // an INSTANT, not a bare Num: `.modified.DateTime` must dispatch
+        // (HTTP::Tiny's mirror builds if-modified-since from it)
+        Value v = Value::number(secs); v.hashKind = "Instant"; return identify(v);
     }
     if (m == "chmod" && inv.hashKind == "IO") { // $path.IO.chmod(0o644)
         ::chmod(inv.toStr().c_str(), (mode_t)(args.empty() ? 0 : args[0].toInt()));

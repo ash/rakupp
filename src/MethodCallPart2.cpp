@@ -1922,7 +1922,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // only ADD to Mu.new, which still takes named attributes.)
                     if (!useCustom && hasProto) return invokeMethod(*um, inv, args, rwArgs);
                 }
-                if (useCustom) return invokeMethod(*um, inv, args, rwArgs);
+                // through the CHAIN, so a callwith/callsame inside the custom new
+                // has a dispatcher (AttrProxy.new's callwith → the builtin Proxy.new)
+                if (useCustom) return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
             } else if (ci->findMethod(m)) {
                 return invokeMethodChain(m, ci.get(), inv, args, rwArgs);
             }

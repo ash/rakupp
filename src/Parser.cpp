@@ -4699,8 +4699,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (matchOp("|")) {
             // capture parameter `|c` — slurps remaining positional+named args. Don't
             // swallow a trailing trait keyword (`| where …`) as the capture name.
-            if ((isKind(Tok::Ident) && !isIdent("where") && !isIdent("is") && !isIdent("of")) || isKind(Tok::Var))
+            if ((isKind(Tok::Ident) && !isIdent("where") && !isIdent("is") && !isIdent("of")) || isKind(Tok::Var)) {
                 p.name = advance().text;
+                // the capture name is a sigilless TERM in the body: `rest<key>`
+                // must subscript it, not become a listop call (HTTP::Tiny's
+                // `|rest` + `rest<data-callback>:exists`)
+                if (!p.name.empty() && p.name[0] != '$' && p.name[0] != '@' && p.name[0] != '%')
+                    sigilless_.insert(p.name);
+            }
             // optional sub-signature `|c( … )` / `| ( … )` — parse it (destructures
             // the capture's positionals into these inner params at call time)
             if (isKind(Tok::LParen)) {
@@ -7029,10 +7035,20 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"pop_s", NqpOpc::PopS}, {"shift_i", NqpOpc::ShiftI}, {"splice", NqpOpc::Splice},
         {"hash", NqpOpc::Hash}, {"bindkey", NqpOpc::Bindkey},
         {"create", NqpOpc::Create}, {"istype", NqpOpc::Istype},
+        {"istype_nd", NqpOpc::Istype}, // no-decont variant: same for us
         {"getattr", NqpOpc::Getattr}, {"bindattr", NqpOpc::Bindattr},
+        {"getattr_i", NqpOpc::Getattr},
         {"p6bindattrinvres", NqpOpc::P6BindAttrInvRes},
         {"p6scalarwithvalue", NqpOpc::P6ScalarWithValue},
         {"null", NqpOpc::Null}, {"isnanorinf", NqpOpc::IsNanOrInf},
+        // the AttrX::Mooish surface
+        {"hllize", NqpOpc::Decont}, {"box_s", NqpOpc::P6BoxS},
+        {"what", NqpOpc::What}, {"islist", NqpOpc::IsList},
+        {"iscont", NqpOpc::IsCont}, {"istrue", NqpOpc::IsTrue},
+        {"isconcrete", NqpOpc::IsConcrete}, {"isconcrete_nd", NqpOpc::IsConcrete},
+        {"clone", NqpOpc::CloneOp}, {"clone_nd", NqpOpc::CloneOp},
+        {"shift", NqpOpc::Shift},
+        {"lock", NqpOpc::LockOp}, {"unlock", NqpOpc::UnlockOp},
     };
     auto it = k.find(op);
     if (it == k.end()) return nullptr;

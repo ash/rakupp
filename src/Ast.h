@@ -226,6 +226,8 @@ enum class NqpOpc : uint16_t {
     // object/meta ops
     Create, Istype, Getattr, Bindattr, P6BindAttrInvRes, P6ScalarWithValue,
     Null, IsNanOrInf,
+    // appended (AST-cache safe): the AttrX::Mooish surface
+    What, IsList, IsCont, IsTrue, IsConcrete, CloneOp, Shift, LockOp, UnlockOp,
 };
 struct NqpOp : Expr {
     NqpOpc op;

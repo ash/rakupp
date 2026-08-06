@@ -4281,6 +4281,29 @@ bool isKnownTypeName(const std::string& n) {
     return t.count(n) > 0;
 }
 
+// macOS resolves a bare unversioned libssl/libcrypto name to the /usr/lib
+// compat stubs, which warn ("loading libcrypto in an unsafe way") and can
+// abort the process on some code paths. A VERSIONED library (Homebrew's
+// libcrypto.3.dylib, or a full path from OpenSSL's resources) is safe — so for
+// ssl/crypto try versioned names FIRST and leave the stub as the last resort
+// (some dists' basic use of the stub does work; banning it outright cost
+// OpenSSL 7/7 → 1/7).
+static std::vector<std::string> libCandidates(const std::string& l) {
+    std::vector<std::string> cands;
+#if defined(__APPLE__)
+    if (l == "ssl" || l == "crypto") {
+        for (const char* v : {".3", ".1.1"}) {
+            cands.push_back("lib" + l + v + ".dylib");
+            cands.push_back("/opt/homebrew/lib/lib" + l + v + ".dylib");
+            cands.push_back("/usr/local/lib/lib" + l + v + ".dylib");
+        }
+    }
+#endif
+    for (std::string c : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"})
+        cands.push_back(std::move(c));
+    return cands;
+}
+
 // An anonymous PUN of a parameterized role with its `[...]` params bound to
 // argv — what `P[%defaults].new` and `Q[Int].mk` dispatch on. A shallow copy of
 // the role's ClassInfo keeps its methods/attrs; only the param bindings differ.
@@ -6455,8 +6478,21 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
                 if (!p.subSig && p.sigil == '$' && !p.type.empty() && !p.coerce)
                     typeCheckBind(p, it->second);
-                if (!p.name.empty() || !p.subSig) env->define(p.name, it->second);
-                attrWrite(it->second);
+                // named @/% params follow the positional binding rules: bind
+                // (share) the caller's container — unless `is copy`, which takes
+                // a fresh one (HTTP::Tiny's `:%headers is copy` mutates its copy;
+                // sharing leaked host/user-agent back into the caller's hash)
+                Value bv = it->second;
+                if (p.sigil == '@') {
+                    if (bv.t == VT::Array && bv.itemized) { Value u = bv; u.itemized = false; bv = coerceArray(u); }
+                    else if (bv.t == VT::Array && !p.isCopy && !bv.isList && !bv.ext) { /* bind: share */ }
+                    else bv = coerceArray(bv);
+                }
+                else if (p.sigil == '%') {
+                    if (!(bv.t == VT::Hash && bv.hash && !p.isCopy)) bv = coerceHash(bv);
+                }
+                if (!p.name.empty() || !p.subSig) env->define(p.name, bv);
+                attrWrite(bv);
             }
             else if (p.defaultVal) {
                 Value dv = evalDefault(p.defaultVal.get());
@@ -7669,6 +7705,11 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     // reported type — nqp::istype($result, Failure) is how JSON::Fast rejects a
     // malformed number, and the tag was never consulted here
     if (!v.hashKind.empty() && (type == v.hashKind || type == v.typeName())) return true;
+    // a stamped Proxy-subclass instance (AttrProxy) answers its class name too
+    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash) {
+        auto ki = v.hash->find("\x01cls");
+        if (ki != v.hash->end() && type == ki->second.s) return true;
+    }
     // an allomorph (IntStr/RatStr/NumStr/ComplexStr) IS both of its types:
     // `my Str $s = <42>` and `my Int $i = <42>` both hold
     if (v.isAllomorph() && (type == "Str" || type == "Stringy" || type == v.hashKind))
@@ -8247,7 +8288,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // try the name as-is, then platform-decorated forms
             const std::string& l = lib;
             std::string dlerr;
-            for (const std::string& cand : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"}) {
+            for (const std::string& cand : libCandidates(l)) {
                 if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
                 if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
                     std::string es = e;
@@ -8594,7 +8635,7 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
     void* handle = RTLD_DEFAULT;
     if (!lib.empty()) {
         std::string dlerr;
-        for (const std::string& cand : {lib, "lib" + lib + ".dylib", "lib" + lib + ".so", lib + ".dylib", lib + ".so"}) {
+        for (const std::string& cand : libCandidates(lib)) {
             if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
             if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
                 std::string es = e;
@@ -9314,15 +9355,38 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     // Only set up a redispatch frame when an ancestor also defines this method — most
     // calls have no override chain and shouldn't pay for a pushed closure.
     ClassInfo* nextStart = owner ? owner->parent.get() : nullptr;
-    if (!nextStart || !nextStart->findMethod(name))
+    bool userNext = nextStart && nextStart->findMethod(name);
+    // …or the chain roots into a BUILT-IN parent: `class AttrProxy is Proxy {
+    // method new(…) { callwith(…) } }` (AttrX::Mooish) redispatches to the
+    // builtin's method. Dispatch it on the builtin type/underlying value.
+    std::string nb;
+    if (!userNext)
+        for (ClassInfo* c = owner; c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
+    if (!userNext && nb.empty())
         return invokeMethod(*um, self, args, rwArgs);
     RedispatchCtx rc;
     rc.sameArgs = args;
     rc.fromChain = true; // marks the parent-class deferral frame for multi-method exhaustion
     Value selfCopy = self;
-    rc.next = [this, name, nextStart, selfCopy, rwArgs](ValueList na) -> Value {
-        return invokeMethodChain(name, nextStart, selfCopy, std::move(na), rwArgs);
-    };
+    if (userNext)
+        rc.next = [this, name, nextStart, selfCopy, rwArgs](ValueList na) -> Value {
+            return invokeMethodChain(name, nextStart, selfCopy, std::move(na), rwArgs);
+        };
+    else {
+        std::string clsName = owner ? owner->name : std::string();
+        rc.next = [this, name, nb, selfCopy, clsName](ValueList na) -> Value {
+            Value binv = selfCopy;
+            if (binv.t == VT::Type) binv = Value::typeObj(nb); // AttrProxy.new → Proxy.new
+            else if (binv.t == VT::Object && binv.obj && binv.obj->hasBoxed)
+                binv = binv.obj->boxed;                        // instance → its builtin box
+            Value r = methodCall(binv, name, std::move(na));
+            // a constructor's builtin result keeps the SUBCLASS identity: Rakudo's
+            // callwith in AttrProxy.new makes an AttrProxy, not a bare Proxy
+            if (name == "new" && r.t == VT::Hash && r.hash && r.hashKind == nb && !clsName.empty())
+                (*r.hash)["\x01cls"] = Value::str(clsName);
+            return r;
+        };
+    }
     rc.restart = [this, name, selfCopy, rwArgs](ValueList na) -> Value {
         return methodCall(selfCopy, name, std::move(na), rwArgs);  // samewith: re-dispatch from the top
     };
@@ -9733,6 +9797,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // attribute lvalue: $.x / $!x
         if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {
             Value* selfp = tctx_.cur->find("self");
+            // self is a stamped Proxy subclass instance (AttrProxy): its attrs
+            // live as prefixed keys on the proxy hash itself
+            if (selfp && selfp->t == VT::Hash && selfp->hashKind == "Proxy" &&
+                selfp->hash && selfp->hash->count("\x01cls"))
+                return &(*selfp->hash)["\x01" "a" + ve->name];
             if (selfp && selfp->t == VT::Object && selfp->obj) {
                 // record the attr's declared type for the assignment check
                 // (`$.method = $m.uc` with `has RequestMethod $.method is rw`
@@ -18303,6 +18372,15 @@ Value Interpreter::evalIndex(Index* idx) {
                 else if (base.t == VT::Pair && key == base.s) {
                     exists = true; val = base.pairVal ? *base.pairVal : Value::any();
                 }
+                // a Capture's NAMED parts are its Pair elements — `rest<key>:exists`
+                // (HTTP::Tiny checks its |rest capture this way)
+                else if (base.t == VT::Array && base.arr) {
+                    for (auto& el : *base.arr)
+                        if (el.t == VT::Pair && el.s == key) {
+                            exists = true; val = el.pairVal ? *el.pairVal : Value::any();
+                            break;
+                        }
+                }
             } else {
                 // `*-1` / `*` in an adverbed slice (`@a[*-1, *-2]:v`) resolve against length
                 long long asz = (base.t == VT::Array && base.arr) ? (long long)base.arr->size() : 0;
@@ -18821,6 +18899,13 @@ Value Interpreter::eval(Expr* e) {
                     throwTyped("X::Syntax::NoSelf", {{"variable", ve->name}},
                                "Variable " + ve->name +
                                " used where no 'self' is available");
+                // self is a stamped Proxy subclass instance (AttrProxy): attrs
+                // live as prefixed keys on the proxy hash itself
+                if (selfp->t == VT::Hash && selfp->hashKind == "Proxy" &&
+                    selfp->hash && selfp->hash->count("\x01cls")) {
+                    auto it = selfp->hash->find("\x01" "a" + ve->name);
+                    return it != selfp->hash->end() ? it->second : Value::any();
+                }
                 if (selfp && selfp->t == VT::Object && selfp->obj) {
                     std::string an = ve->name.substr(2);
                     // `$.name` is `self.name`: a METHOD call, always. The attribute
