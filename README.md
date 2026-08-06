@@ -10,15 +10,24 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v1.8.0** (2026-08-03) — *other people's code*:
-**32 of 59** ecosystem distributions now pass their own `zef` install-time test
-suite, up from 18. **945** of the official Raku documentation's runnable examples
-produce byte-identical output on both engines, up from 835 at v1.2.0.
-Measured per individual test, **90% of Roast passes** — 197,060 of
-~217,110 tests the suite declares, counting the tests in files that abort before
-running (their `plan N` is read from source). On the stricter all-or-nothing bar,
-**633 / 1,462 files fully pass (~43%)** — a file counts only if *every* assertion
-in it passes. Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
+**Status:** current release **v2.0.0** (2026-08-07) — *other people's code,
+honestly counted*:
+
+| | v2.0.0 | at v1.8.0 |
+|---|---:|---:|
+| Ecosystem distributions passing their own `zef` install-time test suite | **50 / 59** | 32 / 59 |
+| Official documentation examples byte-identical on both engines | **952** | 945 |
+| Roast, per individual test — of ~218,700 the suite declares | **197,090 (90%)** | 197,060\* |
+| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 633\* |
+
+The per-test figure counts the tests in files that abort before running (their
+`plan N` is read from source); on the all-or-nothing bar a file counts only if
+*every* assertion in it passes. \*The v1.8.0 Roast figures were **inflated**:
+`subtest "…" => {…}` bodies — the Pair form, most of the suite's subtests —
+silently never ran and auto-passed. v2.0.0 fixes that, which removed ~2,340
+vacuous passes and 39 "fully passing" files, then re-earned the total honestly;
+compare the two columns knowing the new one clears a stricter bar.
+Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/guide/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/guide/GUIDE.md) for the complete picture,
 [COUNTING.md](docs/status/COUNTING.md) for exactly how these are defined, or the

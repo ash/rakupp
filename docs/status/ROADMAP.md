@@ -54,8 +54,8 @@ coverage milestone by milestone and track it with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing: **633 / 1,462 Roast
-files fully pass (~43%)**, **197,060 / 217,110 declared assertions (~90%)** —
+synopses rather than isolated features. Current standing: **594 / 1,462 Roast
+files fully pass (~41%)**, **197,090 / 218,675 declared assertions (~90%)** —
 run the harness for live numbers; definitions in [COUNTING.md](COUNTING.md).
 Major subsystems now in:
 
@@ -132,19 +132,28 @@ Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 433 files):
 
 ## Next
 
-**The v2.0.0 campaign — ecosystem modules** is planned in
-[dev/ecosystem/V2-MODULES-PLAN.md](../dev/ecosystem/V2-MODULES-PLAN.md): run the top-50 zef modules
-(tiered — top-10 test suites ≥95%, top-25 usage-verified, top-50 loading),
-selected by reverse-dependency count, vendored + sandboxed for safety, with
-`zef` under rakupp as the stretch flagship. Baseline measured 2026-07-22:
-all 62 locally installed dists already `use` cleanly.
+**The v2.0.0 campaign — ecosystem modules — shipped** (see
+[dev/ecosystem/V2-MODULES-PLAN.md](../dev/ecosystem/V2-MODULES-PLAN.md) for the plan and
+[dev/ecosystem/MODULE-FINDINGS.md](../dev/ecosystem/MODULE-FINDINGS.md) for the batch log):
+**50 of 59** vendored top-50 distributions pass their own `zef` install-time
+suites, `zef` itself runs under rakupp end to end, and the count is measured
+on the honest subtest bar. Of the two remaining DIFFs, `NativeHelpers::Blob`
+is MoarVM-bound by design (out of scope) and `AttrX::Mooish` needs deep
+Rakudo-metamodel emulation — **the next campaign**: a BUILDPLAN-style
+construction hook, persistent `Attribute` MOP objects with
+`get_value`/`set_value`, `^add_method`, and per-instance `does` mixins.
+Alongside it sits the structural debt the pre-2.0 review chose to document
+rather than rush ([dev/findings/REVIEW-2.0.md](../dev/findings/REVIEW-2.0.md)):
+converging the `invokeMethod`/`callCallableRaw` twin (method bodies still
+skip LEAVE phasers and `-->` checks), the three-way Z/X metaop duplication,
+and the regex engine's seven copies of its builtin-class tables.
 
 
 **The documentation-conformance track** runs alongside it, measured by
 [the spec site](https://github.com/ash/raku.online/tree/main/sites/spec): every runnable example in the
 official docs executed on both engines and classified three ways. On current
-`main`, 939 of them are byte-identical on Raku++ and Rakudo (from 835 at v1.2.0),
-leaving 122 where Raku++ is the one that is wrong (and a further 30 in the
+`main`, 952 of them are byte-identical on Raku++ and Rakudo (from 835 at v1.2.0),
+leaving 133 where Raku++ is the one that is wrong (and a further 24 in the
 companion operator-behaviour matrix, down from 72). (The `Set`/`Bag`/`Mix`/`Map`
 rows flap by a few either way between runs — Rakudo randomizes hash iteration
 order per process — so read the count with a ±5 band.) The largest single item left there is
@@ -157,21 +166,15 @@ is the same family.
 The cheap Roast wins are largely spent; moving the full-pass count now takes
 *whole features* (parse + runtime + dispatch together). Roughly ordered:
 
-1. **The subtest Pair-form campaign** — `subtest 'desc' => {…}` bodies
-   currently never run (auto-pass); the fix is implemented but held out until
-   the ~31 pre-existing bugs it exposes are fixed (sprintf recovered already;
-   remaining: Rat 0-denominator semantics, 6.e roles/MRO/submethods, IO
-   seek/chdir/print/prompt, `is_deeply` needs a real Junction type — the full
-   list is in [dev/findings/REVIEW-1.0.md](../dev/findings/REVIEW-1.0.md)). Landing it re-measures
-   the suite honestly.
-2. **Case-folding tail** — `.fc` full folding (`ß` → `ss`), `:ignorecase` /
-   `:ignoremark` on non-ASCII (incl. codepoint classes), `samemark`; and
-   routing `.collate`/`.sort` through the UCA machinery.
-3. **EVAL lexical isolation** — eval-born symbols must not leak to the caller
+1. **The post-reckoning Roast tail** — the Pair-form subtest fix landed for
+   v2.0.0 and re-measured the suite honestly; the newly *visible* failures
+   inside subtest-heavy files are now ordinary, reachable work (`.words`
+   splitting, `Mu.return-rw`, seek/tell shapes, S12/S14 `rw` accessors).
+2. **EVAL lexical isolation** — eval-born symbols must not leak to the caller
    (a recurring S02 tail).
-4. **Test/subprocess helpers** — the `is_run`-based files (Test::Util), shaped
+3. **Test/subprocess helpers** — the `is_run`-based files (Test::Util), shaped
    -array bounds, `OUR::.<>`-style Stash objects.
-5. **Widen native `--exe` codegen** toward the constructs that still fall back
+4. **Widen native `--exe` codegen** toward the constructs that still fall back
    to bundling (roles/packages, symbolic refs, `s///` — see below).
 6. **The v1.0 gate** — reach 90–92% of declared assertions with no
    architecture changes and no performance regressions, then tag v1.0.

@@ -3,6 +3,86 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v2.0.0 (2026-08-07) — other people's code, honestly counted
+
+| | v1.8.0 | v2.0.0 |
+|---|---:|---:|
+| Distributions passing their own suite | 32 / 59 | **50 / 59** |
+| Roast assertions (all declared) | 197,060\* | **197,090** |
+| Roast files fully passing | 633\* | **594** |
+| Documentation examples byte-identical | 945 | **952** |
+| Local regression suite (`t/run.raku`) | 280 | **312** |
+
+\*inflated — see the next paragraph. The Roast figure is the middle of three
+runs (197,090 / 197,087 / 197,092; 594 / 593 / 594 files — the suite's known
+±3-assertion flap band) with matching denominators.
+
+### The honest bar
+
+The release-defining change is subtractive. `subtest "description" => { … }` —
+the Pair form, which is how most of Roast (and nearly every ecosystem module)
+writes subtests — **never ran its body**: the block arrived as a Pair value the
+`subtest` builtin didn't extract, so every such subtest auto-passed as empty.
+Fixing one line re-measured the world: the top line dropped 197,320 → 194,980
+(−2,340 vacuous passes, −39 "fully passing" files) as the hidden bodies started
+actually testing, and the rest of the cycle earned the total back honestly —
+v2.0.0's 197,090 clears a bar v1.8.0's 197,060 never faced. Do not compare
+Roast numbers across this boundary without that correction. Three
+distributions' suites also fell when their subtests woke up and were won back
+with general fixes before release.
+
+### 32 → 50 of 59 distributions
+
+The bar is unchanged from v1.5.2 — a distribution counts only when its own
+`zef` install-time suite passes — and the additions are the deep end of the
+top-50: **Cro::HTTP, Cro::Core, DBIish, HTTP::UserAgent, JSON::Fast,
+Data::Dump, Config, XML, Text::Utils, Log::Async, HTTP::Tiny, IO::Glob** and
+more. As ever, almost none of it was module-specific: the standout general
+fixes include per-loop-execution `state` frames (Cro's `++state` counter),
+lvalue-mode method calls (`$obj[$i] = v` through `return-rw`), object `.Str`
+identity + structural `eqv`, parameterized-role `::T` binding and role puns,
+`callwith`/`callsame` through built-in parents, and the reflection contract
+(`^methods`, `.params`, `get_value`) that `Data::Dump` reads. The two
+remaining DIFFs are known and scoped: `AttrX::Mooish` (deep Rakudo-metamodel
+emulation, its own campaign) and `NativeHelpers::Blob` (MoarVM-bound by
+design — it pokes MoarVM's C object layout).
+
+### The pre-2.0 review
+
+Before this release the whole hand-written source (~57k lines) got a
+fresh-eyes review — nine parallel passes, five gated fix batches, every batch
+held to zero Roast/battery/corpus regressions
+([docs/dev/findings/REVIEW-2.0.md](docs/dev/findings/REVIEW-2.0.md)). It
+removed ~170 lines of provably dead dispatch arms, fixed four oracle-verified
+parser divergences (`@a»²`, `∞ < 5`, `$(EXPR with X)`, `:16<…>` radix
+literals past 64 bits — the last un-blocked a 2,035-test Roast file), made
+named/slurpy `where` constraints smartmatch, and closed six compiler-only
+divergences — compiled anonymous subs and methods now have their `return`
+boundary (a compiled `sub { fail … }` used to abort the binary), and two AST
+fields that never survived the precomp cache now do. **The AST cache format
+is now v3**: existing caches are silently re-parsed once after upgrading.
+
+### `Supply.interval` is a real timer; `done` is a real control exception
+
+`Supply.interval($interval, $delay?)` was a finite stand-in that emitted 0..4
+instantly; it now ticks on real time, forever, with Rakudo's exact semantics
+(first value after `$delay`, immediately by default). Making it real exposed
+three long-standing async gaps, all fixed: `done` now *exits* the whenever
+block / supply body / react body it is in; `whenever $supplier` taps the
+supplier's `.Supply` instead of running the block eagerly; and `whenever
+$promise` on an unkept promise registers and fires once with the kept value —
+so the standard `react { whenever signal(SIGINT) {…}; whenever $kill { done } }`
+server-shutdown shape works end to end.
+
+### Performance
+
+`perf-guard --check` passes against the recorded v1.5.1 baseline: `fib`
+−4.3%, `asg` and `hash` at baseline, `loopsum` still carrying its known +5%
+(the per-loop `state`-frame allocation that correctness required — recorded
+debt, not a new regression; A/B of pre- and post-release binaries measures
+identical). The interpreter/compiler agreement gate (`run-optbench`) passes
+4-way on every kernel.
+
 ## v1.8.0 (2026-08-03) — other people's code
 
 The whole release is about running code nobody here wrote. v1.5.2 set the

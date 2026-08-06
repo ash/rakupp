@@ -28,9 +28,9 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-07-31 | **v1.5.2** | **a module counts as working only when its own test suite passes** — 630 Roast files, 180 regression tests |
 | 2026-08-01 | **v1.7.0** | **node specialization** — the largest single interpreter speed-up since the performance campaign (`$a OP $b` −18.3%); **18 / 59 distributions** pass their own suites (from 11) |
 | 2026-08-03 | **v1.8.0** | **other people's code** — `zef` installs and `use` works end to end; `URI` 88 → 222 of 222 on twenty general fixes; TLS runs with certificate verification; a precompiled-parse cache; **32 / 59 distributions** pass their own suites (from 18) |
-| 2026-07-22 → | *(in progress)* | **v2.0** — running the ecosystem's zef modules |
+| 2026-08-07 | **v2.0.0** | **other people's code, honestly counted** — **50 / 59 distributions** pass their own suites (from 32); Pair-form subtests actually RUN (the honest Roast bar: −2,340 vacuous passes, re-earned by real fixes); a nine-pass fresh-eyes review of the whole source; `Supply.interval` is a real timer and `done` is a real control exception |
 
-**By the numbers:** v0.1.0 → v1.8.0 in 32 days (2026-07-02 to 2026-08-03).
+**By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
 ---
 
@@ -149,6 +149,16 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   modules they use, so a compiled binary runs with the module tree deleted.
 - **The stretch flagship landed: `zef` itself runs under rakupp**, and its
   install writes a real repository entry, so `install` → `use` works end to end.
+- **Aug 7 — v2.0.0: 32 → 50 of 59 distributions, on an honest bar.** The
+  release-defining move was subtractive: Pair-form subtests (`subtest "…" =>
+  {…}` — most of the suite's) had never run their bodies and auto-passed;
+  making them run cost 2,340 vacuous passes and 39 "fully passing" files, and
+  the campaign then re-earned the total with real fixes — Cro::HTTP, DBIish,
+  HTTP::UserAgent and the rest of the top-50 among them. A nine-pass
+  fresh-eyes review of the whole hand-written source closed the cycle:
+  ~170 lines of dead dispatch arms out, four oracle-verified parser
+  divergences and six compiler-only ones fixed, `Supply.interval` became a
+  real timer, and `done` a real control exception.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

@@ -8,10 +8,10 @@ on every run.
 
 ## The one-line summary
 
-> **Per-test: ~90% of all declared tests pass. Coverage: ~43% of files fully pass.**
+> **Per-test: ~90% of all declared tests pass. Coverage: ~41% of files fully pass.**
 
 Quote both, per-test first. The ~90% is the primary correctness number (the fair
-per-test bar); the ~43% is the stricter all-or-nothing file bar.
+per-test bar); the ~41% is the stricter all-or-nothing file bar.
 
 ## The measures
 
@@ -22,12 +22,12 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 633 / 1,462 (**~43%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 197,060 / 201,240 (~98%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 197,060 / 214,247 (~92%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 197,060 / 217,110 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 594 / 1,462 (**~41%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 197,090 / 203,554 (~97%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 197,090 / 215,856 (~91%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 197,090 / 218,675 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
-**Measure 1 (files, ~43%)** and **measure 4 (all declared tests, ~90%)** are the
+**Measure 1 (files, ~41%)** and **measure 4 (all declared tests, ~90%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
 
 ## Why measure 4 is the honest per-test number
@@ -37,8 +37,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (217,110) is ~2.9k larger
-than 3's (214,247) — those 2,931 tests live in 87 no-TAP files (parse errors
+source and counts all N as failing. That is why 4's denominator (218,675) is ~2.8k larger
+than 3's (215,856) — those 2,819 tests live in 85 no-TAP files (parse errors
 and runtime aborts), recovered from source. A parse error can no longer hide
 its tests.
 
@@ -57,15 +57,15 @@ file (no-TAP), there is no static integer to read from source, so the file
 contributes **0** — its tests are genuinely uncountable for that run.
 
 The consequence: **a run that executes more of the suite gets a larger
-denominator.** Our current run recovers **217,110** declared tests. (This number
+denominator.** Our current run recovers **218,675** declared tests. (This number
 GROWS as parse fixes land: a file that used to die before announcing its plan now
 declares its real — often larger, dynamically computed — plan, so the percentage
-can dip while absolute passes rise.) Only **4 no-TAP files** still have no static
+can dip while absolute passes rise.) Only **3 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 197,060 passes read two ways:
+So our same 197,090 passes read two ways:
 
-- **~90%** against *our* denominator (197,060 / 217,110) — *"of the tests we can
+- **~90%** against *our* denominator (197,090 / 218,675) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
 - Essentially the **same ~90%** against the suite's *full* declared total —
@@ -100,7 +100,7 @@ The numerator is the **same** in every ratio — only the denominator widens.
   with no count) have no static test count, so they are **excluded** from every
   denominator (15 such files at present). A file that skips-all at runtime is
   scored as a *passing file* contributing 0 tests.
-- **Timeouts** (18 files — mostly sleep-heavy scheduler/IO tests that flap
+- **Timeouts** (10 files — mostly sleep-heavy scheduler/IO tests that flap
   under parallel-runner load) are excluded from the assertion denominators.
 - **`# SKIP` / `# TODO`** lines that rakupp itself emits count as **passed** in
   the numerator — this is standard TAP (a skip/todo is not a failure), and it is
