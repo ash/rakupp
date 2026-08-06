@@ -369,7 +369,7 @@ static bool isLetterCP(uint32_t cp) {
 static bool isIdentMarkCP(uint32_t c) {
     return (c >= 0x0300 && c <= 0x036F) || (c >= 0x0483 && c <= 0x0489) ||
            (c >= 0x0591 && c <= 0x05BD) || (c >= 0x0610 && c <= 0x061A) ||
-           (c >= 0x064B && c <= 0x065F) || (c >= 0x0300 && c <= 0x0489) ||
+           (c >= 0x064B && c <= 0x065F) ||
            (c >= 0x1AB0 && c <= 0x1AFF) || (c >= 0x1DC0 && c <= 0x1DFF) ||
            (c >= 0x20D0 && c <= 0x20FF) || (c >= 0xFE20 && c <= 0xFE2F);
 }
@@ -509,7 +509,6 @@ void Lexer::skipWhitespaceAndComments() {
         }
         if (podAtMargin && c == '=' && isIdentStart(peek(1))) {
             // read the directive word
-            size_t save = pos_;
             std::string word;
             advance(); // '='
             while (isIdentCont(peek())) word += advance();
@@ -591,7 +590,6 @@ void Lexer::skipWhitespaceAndComments() {
                 }
                 continue;
             }
-            (void)save;
         }
         break;
     }
@@ -870,10 +868,44 @@ Token Lexer::lexQuoted(char quote) {
     return make((quote == '\'' && !sqInterp) ? Tok::StrLit : Tok::StrInterp, raw);
 }
 
+// q/qq/Q interpolation-feature adverbs (q:c, qq:!s, q:closure, :qq, …): one rule
+// for every delimiter form. The Unicode-delimiter and «» paths used to carry
+// their own partial copies (long-form adverbs ignored; all-features-negated
+// still interpolating), so the ladder lives here once. `feats` comes in as the
+// form's default feature set and leaves as the effective one; the return value
+// says whether any feature adverb was present at all.
+static bool quoteFeatAdverbs(const std::string& adverbs, std::string& feats) {
+    bool anyFeat = false;
+    auto toggle = [&](const char* name, char f) {
+        if (adverbs.find(":" + std::string(name) + " ") != std::string::npos) {
+            anyFeat = true;
+            if (feats.find(f) == std::string::npos) feats += f;
+        }
+        if (adverbs.find(":!" + std::string(name) + " ") != std::string::npos) {
+            anyFeat = true;
+            size_t at = feats.find(f);
+            if (at != std::string::npos) feats.erase(at, 1);
+        }
+    };
+    toggle("s", 's'); toggle("scalar", 's');
+    toggle("a", 'a'); toggle("array", 'a');
+    toggle("h", 'h'); toggle("hash", 'h');
+    toggle("f", 'f'); toggle("function", 'f');
+    toggle("c", 'c'); toggle("closure", 'c');
+    toggle("b", 'b'); toggle("backslash", 'b');
+    if (adverbs.find(":qq ") != std::string::npos) { anyFeat = true; feats = "sahfcb"; }
+    return anyFeat;
+}
+
 bool Lexer::tryQuoteForm(Token& out) {
     size_t p = pos_;
     std::string w;
-    while (p < src_.size() && std::isalpha((unsigned char)src_[p])) { w += src_[p]; p++; }
+    // longest quote-form keyword is 4 chars ("qqww"): a longer alpha run can
+    // never match, so stop early instead of building every identifier's prefix
+    while (p < src_.size() && std::isalpha((unsigned char)src_[p])) {
+        if (w.size() >= 5) return false;
+        w += src_[p]; p++;
+    }
     bool isRegex = (w == "rx" || w == "m" || w == "ms" || w == "mm");
     bool isSubst = (w == "s" || w == "S" || w == "ss" || w == "SS");
     bool isTrans = (w == "tr"); // transliteration tr/from/to/ (Raku dropped y///)
@@ -970,21 +1002,9 @@ bool Lexer::tryQuoteForm(Token& out) {
             for (int k = 0; k < dlen; k++) advance(); // closing delimiter
             bool interp = (w == "qq");
             std::string feats = interp ? "sahfcb" : "";
-            bool anyFeat = false;
-            auto toggle = [&](const char* name, char f) {
-                if (adverbs.find(":" + std::string(name) + " ") != std::string::npos) {
-                    anyFeat = true;
-                    if (feats.find(f) == std::string::npos) feats += f;
-                }
-                if (adverbs.find(":!" + std::string(name) + " ") != std::string::npos) {
-                    anyFeat = true;
-                    size_t at = feats.find(f);
-                    if (at != std::string::npos) feats.erase(at, 1);
-                }
-            };
-            toggle("s", 's'); toggle("a", 'a'); toggle("h", 'h');
-            toggle("f", 'f'); toggle("c", 'c'); toggle("b", 'b');
-            if (anyFeat && !feats.empty()) out = make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
+            bool anyFeat = quoteFeatAdverbs(adverbs, feats);
+            if (anyFeat) out = feats.empty() ? make(Tok::StrLit, raw)
+                                             : make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
             else if (interp) out = make(Tok::StrInterp, raw);
             else out = make(Tok::StrLit, raw);
             return true;
@@ -1017,7 +1037,14 @@ bool Lexer::tryQuoteForm(Token& out) {
             for (int k = 0; k < opens; k++) { o += "\xC2\xAB"; c += "\xC2\xBB"; }
             runawayTerm(c, o, startLine);
         }
-        out = make(w == "qq" ? Tok::StrInterp : Tok::StrLit, raw);
+        {
+            bool interp = (w == "qq");
+            std::string feats = interp ? "sahfcb" : "";
+            bool anyFeat = quoteFeatAdverbs(adverbs, feats);
+            if (anyFeat) out = feats.empty() ? make(Tok::StrLit, raw)
+                                             : make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
+            else out = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
+        }
         return true;
     }
     char d = src_[p];
@@ -1272,26 +1299,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     // b=backslashes. Encoded as a "\x02feats\x02" prefix for parseInterpString.
     {
         std::string feats = interp ? "sahfcb" : "";
-        bool anyFeat = false;
-        auto toggle = [&](const char* name, char f) {
-            if (adverbs.find(":" + std::string(name) + " ") != std::string::npos) {
-                anyFeat = true;
-                if (feats.find(f) == std::string::npos) feats += f;
-            }
-            if (adverbs.find(":!" + std::string(name) + " ") != std::string::npos) {
-                anyFeat = true;
-                size_t at = feats.find(f);
-                if (at != std::string::npos) feats.erase(at, 1);
-            }
-        };
-        toggle("s", 's'); toggle("scalar", 's');
-        toggle("a", 'a'); toggle("array", 'a');
-        toggle("h", 'h'); toggle("hash", 'h');
-        toggle("f", 'f'); toggle("function", 'f');
-        toggle("c", 'c'); toggle("closure", 'c');
-        toggle("b", 'b'); toggle("backslash", 'b');
-        if (adverbs.find(":qq ") != std::string::npos) { anyFeat = true; feats = "sahfcb"; }
-        if (anyFeat) {
+        if (quoteFeatAdverbs(adverbs, feats)) {
             if (feats.empty()) { out = make(Tok::StrLit, raw); return true; }
             out = make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
             return true;
@@ -1502,7 +1510,6 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     std::string kw;
     while (!eof() && std::isalpha((unsigned char)peek())) kw += advance();
     if (kw != "token" && kw != "rule" && kw != "regex") { pos_ = save; return false; }
-    size_t afterKw = pos_;
     while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
     // optional rule name (ident, may include - ' :sym<...>)
     std::string name;
@@ -1583,7 +1590,6 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
         if (sd == 0 && ch == '}') { depth--; if (depth == 0) { advance(); break; } body += advance(); continue; }
         body += advance();
     }
-    (void)afterKw;
     Token kt = make(Tok::Ident, kw); kt.spaceBefore = spaced; out.push_back(kt);
     Token nt = make(Tok::Ident, name); nt.spaceBefore = true; out.push_back(nt);
     Token bt = make(Tok::RegexLit, body); bt.spaceBefore = true; out.push_back(bt);
@@ -1969,6 +1975,7 @@ static bool angleTermContext(const std::vector<Token>& out) {
             return pv.text != "++" && pv.text != "--" && pv.text != "!" &&
                    pv.text != ">" && pv.text != "<" && pv.text != ">>" && pv.text != "<<" &&
                    pv.text != ">=" && pv.text != "<=" && pv.text != "*" &&
+                   pv.text != "\xE2\x88\x9E" && // ∞ is a TERM lexed as an Op: `∞ < 5` compares
                    pv.text != "\xC2\xAB" && pv.text != "\xC2\xBB";
         case Tok::Ident: {
             static const std::set<std::string> kw = {
@@ -2088,7 +2095,7 @@ std::vector<Token> Lexer::tokenize() {
             bool afterTerm = lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var ||
                              lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident ||
                              (lk == Tok::Op && (out.back().text == "*" || // Whatever-curry `*²`
-                                                out.back().text == ">>" || out.back().text == "Â»")); // hyper `»²`
+                                                out.back().text == ">>" || out.back().text == "\xC2\xBB")); // hyper `»²`
             std::string digits;
             if (afterTerm && tryReadSuperscript(digits)) {
                 Token op = make(Tok::Op, "**"); op.spaceBefore = false; out.push_back(op);
@@ -2261,7 +2268,7 @@ std::vector<Token> Lexer::tokenize() {
         else if (angleWords_ > 0 && (t.kind == Tok::LBrace || t.kind == Tok::RBrace))
             angleWords_ = 0; // NB `;` is a legal WORD inside a list (`< $; $, >`), so only braces bail
         t.spaceBefore = spaced;
-        out.push_back(t);
+        out.push_back(std::move(t)); // t is dead after this (heredoc bookkeeping reads `out`)
         if (!heredocMarker_.empty()) { // a q:to/MARKER/ was just lexed
             pendingHeredocs_.emplace_back(heredocMarker_, out.size() - 1, heredocInterp_);
             pendingHeredocFeats_.push_back(heredocFeats_);

@@ -62,8 +62,8 @@ inline bool mul_ovf(long long a, long long b, long long* r) {
 inline int ctzll(unsigned long long x) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_ctzll(x);
-#elif defined(_MSC_VER)
-    unsigned long idx; _BitScanForward64(&idx, x); return (int)idx;
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+    unsigned long idx; _BitScanForward64(&idx, x); return (int)idx; // 64-bit MSVC only
 #else
     int n = 0; while (!(x & 1)) { x >>= 1; ++n; } return n;
 #endif
@@ -73,8 +73,8 @@ inline int ctzll(unsigned long long x) {
 inline int clzll(unsigned long long x) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_clzll(x);
-#elif defined(_MSC_VER)
-    unsigned long idx; _BitScanReverse64(&idx, x); return 63 - (int)idx;
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+    unsigned long idx; _BitScanReverse64(&idx, x); return 63 - (int)idx; // 64-bit MSVC only
 #else
     int n = 0; while (!(x & 0x8000000000000000ULL)) { x <<= 1; ++n; } return n;
 #endif

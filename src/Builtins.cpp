@@ -292,9 +292,9 @@ static void spawnCapture(const std::vector<std::string>& argv, double timeoutSec
     // exit races the last line away. The wall-clock timeout still bounds the wait.
     bool oEof = false, eEof = (efd < 0);
     while (!oEof || !eEof) {
-        struct pollfd pfds[2]; int nf = 0, oi = -1, ei = -1;
-        if (!oEof) { pfds[nf] = {fd, POLLIN, 0}; oi = nf; nf++; }
-        if (!eEof) { pfds[nf] = {efd, POLLIN, 0}; ei = nf; nf++; }
+        struct pollfd pfds[2]; int nf = 0;
+        if (!oEof) { pfds[nf] = {fd, POLLIN, 0}; nf++; }
+        if (!eEof) { pfds[nf] = {efd, POLLIN, 0}; nf++; }
         poll(pfds, nf, 50);
         if (!oEof) for (;;) {
             ssize_t n = read(fd, buf, sizeof buf);
@@ -409,7 +409,7 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     int wfd = inPipe[1], rfd = outPipe[0];
     fcntl(wfd, F_SETFL, O_NONBLOCK);
     fcntl(rfd, F_SETFL, O_NONBLOCK);
-    signal(SIGPIPE, SIG_IGN);
+    // (SIGPIPE is ignored process-wide at startup — Runtime.cpp)
     bool parked = gil ? gil->gilPark() : false; // drop the GIL for the feed/read wait below
     size_t written = 0;
     char buf[8192];
@@ -731,10 +731,8 @@ std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
         case VT::Num: { // Nums round-trip with an exponent so EVAL doesn't read a Rat
             std::string g = v.toStr();
             if (g == "Inf" || g == "-Inf" || g == "NaN") return g;
-            if (g.find('e') == std::string::npos && g.find('E') == std::string::npos) {
-                if (g.find('.') == std::string::npos) g += "e0";
-                else g += "e0";
-            }
+            if (g.find('e') == std::string::npos && g.find('E') == std::string::npos)
+                g += "e0";
             return g;
         }
         case VT::Match: {
@@ -1645,7 +1643,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
         (kind == "num" && width != 0 && width < 32))
         throw RakuError{Value::typeObj("X::Method::NotFound"), "No such method '" + m + "' for Buf"};
     long long off = args.size() > 0 ? args[0].toInt() : 0;
-    size_t vi = isWrite ? 1 : 1; // value index for writes; endian index varies
+    size_t vi = 1; // value index for writes; endian index varies
     Value val = (isWrite && args.size() > 1) ? args[1] : Value::number(0);
     int endian = 0;
     for (size_t k = vi + (isWrite ? 1 : 0); k < args.size(); k++)
@@ -2315,8 +2313,12 @@ static std::string jsonEncode(const Value& v) {
     switch (v.t) {
         case VT::Nil: case VT::Any: case VT::Type: return "null";
         case VT::Bool: return v.b ? "true" : "false";
-        case VT::Int:  return std::to_string(v.i);
-        case VT::Num: case VT::Rat: { std::ostringstream o; o << v.toNum(); return o.str(); }
+        case VT::Int:  return v.big ? v.big->toString() : std::to_string(v.i);
+        case VT::Num: case VT::Rat: {
+            std::ostringstream o;
+            o.precision(17); // round-trip doubles; default 6 digits silently truncated
+            o << v.toNum(); return o.str();
+        }
         case VT::Array: {
             std::string r = "[";
             if (v.arr) for (size_t k = 0; k < v.arr->size(); k++) { if (k) r += ","; r += jsonEncode((*v.arr)[k]); }
@@ -2355,25 +2357,6 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         r.s = "Seq";
     return r;
 }
-
-// The method NAME, compared against string literals. The literal's length is part
-// of its TYPE, so `m == "chars"` is a size test plus an inline memcmp and never
-// calls strlen — which matters because methodCallInner is ~8,900 lines with ~1,640
-// such comparisons, far past the point where clang will still inline
-// std::operator==(const string&, const char*). Out of line, that operator calls
-// strlen on the literal every time: the two together were 60% of a profile of
-// `for ^3000000 { "ab".chars }`.
-// Always-inline, portably. GCC and Clang take the attribute; MSVC does not know
-// `__attribute__` at all and derails on the `((` — which broke the windows-x64
-// build (and only that one: MinGW uses GCC) from the commit that introduced this
-// struct. `__forceinline` already implies `inline` on MSVC.
-#if defined(_MSC_VER)
-#define RAKUPP_ALWAYS_INLINE __forceinline
-#else
-#define RAKUPP_ALWAYS_INLINE __attribute__((always_inline)) inline
-#endif
-
-
 
 // A method `augment`-ed onto a BUILT-IN type: they are parked in builtinExt_ (keyed
 // by type name), and the native ancestry is walked so augmenting Cool/Any reaches
@@ -2840,11 +2823,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (i) s += " ";
             s += methodCall((*inv.arr)[i], "Str", ValueList{}).toStr();
         }
-        if (m == "Str") return Value::str(s);
         if (m == "sprintf") return Value::str(doSprintf(s, args, langRev_));
-        if (m == "printf") { std::cout << doSprintf(s, args, langRev_); return Value::boolean(true); }
-        if (m == "note") { std::cerr << s << "\n"; return Value::boolean(true); }
-        std::cout << s << (m == "print" ? "" : "\n");
+        std::cout << doSprintf(s, args, langRev_); // printf
         return Value::boolean(true);
     }
     // any other method on a junction AUTOTHREADS: call it on each eigenstate,
@@ -3653,8 +3633,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return c;
         }
         if (m == "allocate") {
-            size_t n = args.empty() ? 0 : (size_t)args[0].toInt();
-            Value c = Value::str(std::string(n * esz, '\0')); c.hashKind = "CArray";
+            long long n = args.empty() ? 0 : args[0].toInt();
+            if (n < 0) throw RakuError{Value::typeObj("X::AdHoc"), // Rakudo's message for a negative count
+                "Unable to allocate an array of " + std::to_string((unsigned long long)n) + " elements"};
+            Value c = Value::str(std::string((size_t)n * esz, '\0')); c.hashKind = "CArray";
             c.enumName = et;
             return c;
         }
@@ -3946,6 +3928,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         };
         if (m == "allocate") {
             long long n2 = args.empty() ? 0 : args[0].toInt();
+            if (n2 < 0) throw RakuError{Value::typeObj("X::AdHoc"), // Rakudo's message for a negative count
+                "Unable to allocate an array of " + std::to_string((unsigned long long)n2) + " elements"};
             bytes.assign((size_t)(n2 * w), '\0');
         }
         else for (auto& a : args) add(a);
@@ -4302,7 +4286,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // allocate(N) → N zero bytes; allocate(N, fill) → N fills;
             // allocate(N, (list)) → the list repeated cyclically
             long long an = args.empty() ? 0 : args[0].toInt();
-            if (an < 0) an = 0;
+            if (an < 0) throw RakuError{Value::typeObj("X::AdHoc"), // Rakudo's message for a negative count
+                "Unable to allocate an array of " + std::to_string((unsigned long long)an) + " elements"};
             std::string fill;
             if (args.size() > 1) {
                 if (args[1].t == VT::Array || args[1].t == VT::Range)
@@ -5987,7 +5972,7 @@ void Interpreter::registerBuiltins() {
         Value exp = a.size() > 1 ? a[1] : Value::any();
         isStrify(I, got); isStrify(I, exp);
         bool c = !isEq(got, exp);
-        I.emitTest(c, a.size() > 2 ? a[2].toStr() : "");
+        I.emitTest(c, testDesc(a, 2), testDirective(a)); // adverbs are not the description
         return Value::boolean(c);
     };
     auto likeTest = [](Interpreter& I, ValueList& a, bool want) -> Value {
@@ -6007,7 +5992,7 @@ void Interpreter::registerBuiltins() {
     B["unlike"] = [likeTest](Interpreter& I, ValueList& a) -> Value { return likeTest(I, a, false); };
     B["is-deeply"] = [](Interpreter& I, ValueList& a) -> Value {
         bool c = a.size() >= 2 && deepEq(a[0], a[1]);
-        I.emitTest(c, a.size() > 2 ? a[2].toStr() : "");
+        I.emitTest(c, testDesc(a, 2), testDirective(a)); // adverbs are not the description
         if (!c && a.size() >= 2) { // failure diagnostics (stderr), Rakudo-style
             std::cerr << "# expected: " << rakuRepr(a[1]) << "\n"
                       << "#      got: " << rakuRepr(a[0]) << "\n";
@@ -6919,9 +6904,9 @@ void Interpreter::registerBuiltins() {
         };
     // Same-named-method routines that forward the REMAINING args, invocant first:
     // rotate(@a,$n), substr($s,$f,$c), head(@a,$n), trim($s), samecase($s,$pat), …
-    for (auto nm : {"rotate", "head", "tail", "substr", "substr-rw", "trim", "trim-leading",
+    for (auto nm : {"rotate", "substr", "substr-rw", "trim", "trim-leading",
                     "trim-trailing", "flip", "tc", "tclc", "wordcase", "pairs", "antipairs", "chop",
-                    "samecase", "samemark", "chomp"})
+                    "samecase", "samemark", "chomp"}) // head/tail: count-first forms below
         if (!B.count(nm)) B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
             if (a.empty()) return Value::nil();
             Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
@@ -7249,17 +7234,18 @@ void Interpreter::registerBuiltins() {
     B["elems"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() > 1) throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
             "Calling elems() with more than one positional argument will never work"};
-        return Value::integer(a.empty() ? 0 : (long long)toList(a[0]).size());
+        if (a.empty()) return Value::integer(0);
+        // count without materializing (toList deep-copies every element)
+        const Value& v = a[0];
+        if (v.t == VT::Array && v.arr && !v.ext) return Value::integer((long long)v.arr->size());
+        if (v.t == VT::Hash && v.hash && v.hashKind.empty()) return Value::integer((long long)v.hash->size());
+        return Value::integer((long long)toList(v).size());
     };
     B["defined"] = [](Interpreter&, ValueList& a) -> Value { return Value::boolean(!a.empty() && defined(a[0])); };
     // Prefix forms of the metamethods: WHAT($x) === $x.WHAT, etc.
     for (const char* mm : {"WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY"})
         B[mm] = [mm](Interpreter& I, ValueList& a) -> Value { ValueList none; return I.methodCall(a.empty() ? Value::any() : a[0], mm, none); };
     B["chars"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::integer(0) : rtBChars(I, a[0]); };
-    auto univalOf = [](uint32_t cp) -> Value {
-        long long num, den; if (!uniNumValue(cp, num, den)) return Value::nil();
-        return den == 1 ? Value::integer(num) : Value::rat(BigInt(num), BigInt(den));
-    };
     auto cpOfArg = [](const Value& v, bool& ok) -> uint32_t {
         ok = true;
         if (v.t == VT::Int || v.t == VT::Bool) return (uint32_t)v.toInt();
@@ -7270,15 +7256,7 @@ void Interpreter::registerBuiltins() {
         ValueList rest{a[1], a[2]};
         return I.methodCall(a[0], "expmod", rest);
     };
-    B["unival"] = [univalOf, cpOfArg](Interpreter&, ValueList& a) -> Value {
-        if (a.empty() || a[0].t == VT::Type) throw RakuError{Value::typeObj("X::Numeric"), "Cannot get unival"};
-        bool ok; uint32_t cp = cpOfArg(a[0], ok); return ok ? univalOf(cp) : Value::nil();
-    };
-    B["univals"] = [univalOf](Interpreter&, ValueList& a) -> Value {
-        Value out = Value::array(); out.isList = true;
-        if (!a.empty()) for (uint32_t cp : utf8cp(a[0].toStr())) out.arr->push_back(univalOf(cp));
-        return out;
-    };
+    // (unival/univals sub forms are the method-delegating loop below)
     B["uninames"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::str("") : a[0];
         ValueList none; return I.methodCall(v, "uninames", none);
@@ -7594,10 +7572,13 @@ void Interpreter::registerBuiltins() {
         std::stable_sort(items.begin(), items.end(), [](const Value& x, const Value& y) { return valueCmp(x, y) < 0; });
         Value o = Value::array(items); o.isList = true; o.s = "Seq"; return o;
     };
-    B["sum"] = [](Interpreter&, ValueList& a) -> Value {
-        double s = 0; bool allInt = true;
-        for (auto& v : a) for (auto& x : toList(v)) { s += x.toNum(); if (x.t != VT::Int) allInt = false; }
-        return allInt ? Value::integer((long long)s) : Value::number(s);
+    B["sum"] = [](Interpreter& I, ValueList& a) -> Value {
+        // delegate to the method (like min/max): the exact tower keeps big Ints
+        // and Rats exact where the old double accumulator silently rounded
+        ValueList items;
+        for (auto& v : a) for (auto& x : toList(v)) items.push_back(x);
+        Value list = Value::array(items); list.isList = true;
+        ValueList none; return I.methodCall(list, "sum", none);
     };
     B["keys"] = [](Interpreter&, ValueList& a) -> Value {
         Value out = Value::array();
@@ -7989,7 +7970,8 @@ void Interpreter::registerBuiltins() {
     };
     B["emit"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : a[0];
-        if (std::getenv("RAKUPP_TAP_TRACE"))
+        static const bool kTapTrace = std::getenv("RAKUPP_TAP_TRACE") != nullptr; // hot path: probe once
+        if (kTapTrace)
             fprintf(stderr, "[emit] depth=%zu kind=%s collect=%d cb=%d\n", I.tctx_.tapStack.size(),
                     v.typeName().c_str(),
                     I.tctx_.tapStack.empty() ? -1 : (int)!!I.tctx_.tapStack.back()->collect,
@@ -8099,9 +8081,27 @@ void Interpreter::registerBuiltins() {
         return I.methodCall(list, "grep", margs); // one implementation
     };
     B["first"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() >= 2 && a[0].t == VT::Code)
-            for (auto& v : toList(a[1])) if (I.callCallable(a[0], {v}).truthy()) return v;
-        return Value::any();
+        // delegate to the method (like grep): any matcher works — Code, regex,
+        // literal, junction — and the :k/:v/:kv/:p/:end adverbs pass through
+        if (a.empty()) return Value::any();
+        Value mt = a[0];
+        Value list = Value::array(); list.isList = true;
+        ValueList margs{mt}, pos;
+        for (size_t i = 1; i < a.size(); i++) {
+            if (a[i].t == VT::Pair && (a[i].s == "k" || a[i].s == "v" || a[i].s == "kv" ||
+                                       a[i].s == "p" || a[i].s == "end"))
+                margs.push_back(a[i]); // adverb, pass through
+            else pos.push_back(a[i]);
+        }
+        bool singleList = (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Range) && !pos[0].itemized);
+        for (auto& x : pos) {
+            bool isSlip = (x.t == VT::Array && x.arr && x.s == "Slip");
+            if (isSlip || (singleList && (x.t == VT::Array || x.t == VT::Range))) {
+                if (x.t == VT::Range) for (auto& e : x.flatten()) list.arr->push_back(e);
+                else for (auto& e : *x.arr) list.arr->push_back(e);
+            } else list.arr->push_back(x);
+        }
+        return I.methodCall(list, "first", margs); // one implementation
     };
     B["push"] = [](Interpreter&, ValueList& a) -> Value {
         if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr->push_back(a[i]); return a[0]; }

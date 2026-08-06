@@ -169,12 +169,8 @@ struct Codegen {
         // A regex literal in argument position is the Regex object (not a $_ match).
         if (e->kind == NK::RegexLit)
             return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
-        // The sequence op consumes `*` itself (seed closures / infinite endpoint) —
-        // it is never a WhateverCode lambda.
-        if (e->kind == NK::Binary) {
-            auto* b = static_cast<Binary*>(e);
-            if (b->op == "..." || b->op == "...^") return ex(e);
-        }
+        // (the sequence op consumes `*` itself — hasWhatever already answers
+        // false for all four `...` forms, so no special case is needed here)
         if (!hasWhatever(e)) return ex(e);
         wcDepth++; wcArity.push_back(0);
         std::string an = "__w" + std::to_string(wcDepth);
@@ -211,7 +207,7 @@ struct Codegen {
     std::string emitArg(Expr* a) {
         if (a->kind == NK::Pair) {
             auto* pr = static_cast<PairExpr*>(a);
-            if (!pr->keyExpr && identKey(pr->key)) {
+            if (!pr->keyExpr && !pr->quotedKey && identKey(pr->key)) { // f('a' => 1) stays positional
                 std::string val = pr->value ? exArg(pr->value.get()) : "Value::boolean(true)";
                 return "rtNamedPair(" + cesc(pr->key) + ", " + val + ")";
             }
@@ -604,7 +600,11 @@ struct Codegen {
             }
             line(0, "return Value::any();");
         });
-        return "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
+        // a SUB body is a ReturnEx boundary (same rule as bodyDef): without the
+        // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
+        // frame — or clean out of main() as an uncaught-exception abort
+        return "Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
+               "} catch (ReturnEx& __r) { return __r.v; } })";
     }
 
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
@@ -649,7 +649,12 @@ struct Codegen {
             line(0, "return Value::any();");
         });
         if (pushed) topics.pop_back();
-        std::string mk = "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
+        // an anonymous `sub {…}` term is a ReturnEx boundary like any routine;
+        // a plain block stays TRANSPARENT so `return` reaches the enclosing sub
+        std::string mk = be->isSub
+            ? "Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
+              "} catch (ReturnEx& __r) { return __r.v; } })"
+            : "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
         // 2+-ary blocks (pointy params or $^a/$^b) must advertise their arity so
         // sort/map/for feed them the right number of elements per call.
         size_t nPos = phs.size();
@@ -766,8 +771,7 @@ struct Codegen {
                     return mangleVar(v->name); // bound as a parameter in this body
                 if ((v->name.size() > 1 && v->name[1] == '*') || v->name == "$!" || v->name == "$/")
                     return "RT.dynVar(" + cesc(v->name) + ")"; // resolved from the live env at runtime
-                if (v->name == "$?FILE") return "Value::str(RT.srcFile_)";       // compile-time constants
-                if (v->name == "$?LINE") return "Value::integer(" + std::to_string(v->line) + "LL)";
+                if (v->name == "$?FILE") return "Value::str(RT.srcFile_)";       // compile-time constant ($?LINE answered above)
                 if (v->name.size() > 1 && (v->name[1] == '?' || v->name[1] == '!'))
                     unsupported("special/dynamic variable '" + v->name + "'");
                 if (v->name.size() > 1 && v->name[0] == '$' &&
@@ -796,7 +800,9 @@ struct Codegen {
                 auto* r = static_cast<RangeExpr*>(e);
                 // integer literal endpoints keep the direct construction; anything else
                 // goes through rtRangeVal so string ranges ('a'..'z') materialise via succ
-                if (r->from->kind == NK::IntLit && r->to->kind == NK::IntLit)
+                if (r->from->kind == NK::IntLit && r->to->kind == NK::IntLit &&
+                    static_cast<IntLit*>(r->from.get())->big.empty() &&
+                    static_cast<IntLit*>(r->to.get())->big.empty()) // a bigint endpoint must not truncate
                     return "Value::range((" + ex(r->from.get()) + ").toInt(), (" + ex(r->to.get()) + ").toInt(), "
                          + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ")";
                 return "rtRangeVal(" + ex(r->from.get()) + ", " + ex(r->to.get()) + ", "
@@ -910,7 +916,15 @@ struct Codegen {
                                 Stmt* s = be->body[i].get();
                                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
                                     line(0, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
-                                else stmt(s, 0);
+                                else {
+                                    // a value-context loop collects per-iteration values —
+                                    // stmt() would discard them (`my @a = do for 1..3 {…}`)
+                                    if ((s->kind == NK::ForStmt   && static_cast<ForStmt*>(s)->asExpr) ||
+                                        (s->kind == NK::WhileStmt && static_cast<WhileStmt*>(s)->asExpr) ||
+                                        (s->kind == NK::LoopStmt  && static_cast<LoopStmt*>(s)->asExpr))
+                                        unsupported("a do-loop collecting values");
+                                    stmt(s, 0);
+                                }
                             }
                             line(0, "return Value::any();");
                         });
@@ -997,6 +1011,8 @@ struct Codegen {
                     return "([&]()->Value{ long long _n=(" + R + ").toInt(); Value _o=Value::array(); _o.isList=true; "
                            "for(long long _i=0;_i<_n;_i++) _o.arr->push_back(" + L + "); return _o; }())";
                 }
+                if (b->op == "^..." || b->op == "^...^")
+                    unsupported("a ^...-form sequence"); // no native arm: fall back rather than die in applyArith
                 if (b->op == "..." || b->op == "...^") {
                     // sequence operator: seeds emit per-element (a `* + *` seed becomes a
                     // generator closure); a bare `*`/Inf endpoint marks the sequence infinite.
@@ -1309,7 +1325,6 @@ struct Codegen {
     }
 
     void block(Block* b, int ind) { emitSeq(b->stmts, ind); }
-    void stmts(const std::vector<StmtPtr>& v, int ind) { for (auto& s : v) stmt(s.get(), ind); }
 
     std::set<std::string> hoisted; // expression-position `my` names pre-declared in this body
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
@@ -1503,7 +1518,7 @@ struct Codegen {
             case NK::IfStmt:   ifStmt(static_cast<IfStmt*>(s), ind); return;
             case NK::WhileStmt: {
                 auto* w = static_cast<WhileStmt*>(s);
-                if (!w->var.empty()) unsupported("while EXPR -> $x");
+                if (!w->var.empty() || !w->params.empty()) unsupported("while EXPR -> $x"); // incl. pointy signatures
                 std::string c = exBool(w->cond.get());
                 line(ind, "while (" + (w->isUntil ? "!" + c : c) + ") {");
                 loopBody(w->body.get(), ind + 1, w->label); line(ind, "}");
@@ -1740,6 +1755,8 @@ struct Codegen {
                          body.find("rtThrow") != std::string::npos ||
                          body.find("u_") != std::string::npos ||
                          body.find("m_") != std::string::npos ||
+                         body.find("rtCallB(") != std::string::npos || // a stored closure invoked via a builtin can signal too
+                         body.find("v_c") != std::string::npos ||      // code-var reads (grep(&f, @a) where &f says `last`)
                          body.find("Value::closure") != std::string::npos;
         if (!canSignal) { out << body; return; }
         line(ind, "try {");
@@ -1751,6 +1768,7 @@ struct Codegen {
     }
 
     void forStmt(ForStmt* f, int ind) {
+        if (f->rwVars) unsupported("a read-write (<->) loop parameter"); // every branch below binds a COPY
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
             // names live in f->vars, or — when the parser produced a real signature
             // (ForStmt.params, one param with a sub-signature) — in that sub-signature
@@ -1856,7 +1874,7 @@ struct Codegen {
             std::string topic = gensym("v__w");
             line(ind, "{");
             line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
-            std::string def = "(" + topic + ".t != VT::Nil && " + topic + ".t != VT::Any && " + topic + ".t != VT::Type)";
+            std::string def = "rtIsDefined(" + topic + ")"; // one definedness rule (Failure/enum-type aware), same as `//`
             line(ind + 1, "if (" + (g->defGuard == 1 ? def : "!" + def) + ") {");
             topics.push_back(topic);
             blockValue(g->body.get(), ind + 2, dst);
@@ -1897,7 +1915,7 @@ struct Codegen {
             std::string topic = gensym("v__w");
             line(ind, "{");
             line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
-            std::string def = "(" + topic + ".t != VT::Nil && " + topic + ".t != VT::Any && " + topic + ".t != VT::Type)";
+            std::string def = "rtIsDefined(" + topic + ")"; // one definedness rule (Failure/enum-type aware), same as `//`
             line(ind + 1, "if (" + (g->defGuard == 1 ? def : "!" + def) + ") {");
             topics.push_back(topic);
             block(g->body.get(), ind + 2);
@@ -2171,6 +2189,7 @@ struct Codegen {
                                             : methodFn(cd->name, md->name);
             BodyScope __bs{this, /*closure=*/false};
             line(0, "static Value " + fname + "(ValueList& __a) {");
+            line(1, "try {"); // a METHOD body is a ReturnEx boundary too (same rule as bodyDef)
             line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
             bindParams(md->params, 1, true);
             std::string saved = self_; self_ = "__self";
@@ -2188,6 +2207,7 @@ struct Codegen {
                 else stmt(s, 1);
             }
             line(1, "return Value::any();");
+            line(1, "} catch (ReturnEx& __r) { return __r.v; }");
             self_ = saved;
             line(0, "}");
         }
@@ -2330,6 +2350,13 @@ struct Codegen {
     // A multi: emit each candidate, then a dispatcher that tries candidates
     // most-specific first (most type constraints) and picks the first that matches.
     void multiDef(const std::string& name, std::vector<SubDecl*> cands) {
+        // a `where` clause or :D/:U smiley never enters the guards below, so the
+        // dispatcher would pick by declaration order — silently the WRONG candidate.
+        // Fall back to the interpreter for such multis instead.
+        for (SubDecl* c : cands)
+            for (auto& p : c->params)
+                if (p.whereExpr || p.defConstraint)
+                    unsupported("a multi candidate with a where/:D constraint");
         std::map<SubDecl*, int> idx;
         for (size_t i = 0; i < cands.size(); i++) {
             idx[cands[i]] = (int)i;

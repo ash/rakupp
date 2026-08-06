@@ -558,7 +558,7 @@ public:
     // callsame/nextsame reach the same method on the owning class's parent (recursively).
     Value invokeMethodChain(const std::string& name, ClassInfo* startCls, const Value& self,
                             ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr);
-    void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs, bool methodCtx);
+    void copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs);
     void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<ExprPtr>* rwArgs);
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);
     // shared hyper-operator core for every spelling (>>op<<, »op«, >>[&op]<<)
@@ -957,6 +957,7 @@ private:
     // builtin reference, which keeps the call path's check free.
     std::map<std::string, Value> builtinRefs_;
     std::vector<std::pair<Block*, std::shared_ptr<Env>>> deferredEnds_; // END blocks from EVAL, run at program end
+    const Value* envLookup(const std::string& name); // %*ENV<name>, or null
     bool envFlag(const std::string& name); // truthiness of %*ENV<name>
     std::string envStr(const std::string& name); // %*ENV<name> as a string
     std::string exceptionToJson(const Value& ex); // RAKU_EXCEPTIONS_HANDLER=JSON serialization
@@ -1019,7 +1020,6 @@ private:
 
 // helpers
 Value listToArray(const ValueList& items);
-ValueList argsToPositional(ValueList& args, std::map<std::string, Value>& named);
 Value applyArith(const std::string& op, const Value& l, const Value& r); // binary op dispatch (also used by codegen)
 
 // -O fast-path binary ops for native codegen: inline the small-int (non-bignum)

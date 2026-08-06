@@ -181,7 +181,7 @@ public:
         // as if they had been typed.
         if (!pending_.empty()) {
             size_t nl = pending_.find('\n');
-            result = pending_.substr(0, nl == std::string::npos ? nl : nl);
+            result = pending_.substr(0, nl); // npos = whole string
             pending_ = nl == std::string::npos ? "" : pending_.substr(nl + 1);
             out(prompt + highlightOf(result) + "\r\n");
             return true;

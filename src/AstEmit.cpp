@@ -90,7 +90,13 @@ void emitAstProgram(const Program& prog, std::ostream& out,
            "// lexing or parsing at run time.\n"
            "#include \"Ast.h\"\n#include \"AstSerial.h\"\n#include \"Runtime.h\"\n#include \"Interpreter.h\"\n"
            "#include <string>\n#include <vector>\n"
-           "#include <cstdlib>\n#include <unistd.h>\n"
+           "#include <cstdlib>\n"
+           "#ifdef _WIN32\n"
+           "#define RAKUPP_REALPATH(p, r) _fullpath((r), (p), 4096)\n"
+           "#else\n"
+           "#include <unistd.h>\n"
+           "#define RAKUPP_REALPATH(p, r) realpath((p), (r))\n"
+           "#endif\n"
            "using namespace rakupp;\n\n";
 
     emitBytes(out, "kAst", blob);
@@ -100,8 +106,9 @@ void emitAstProgram(const Program& prog, std::ostream& out,
         << moduleCalls
         << "  Program prog;\n"
            "  deserializeAst(std::string(reinterpret_cast<const char*>(kAst), sizeof kAst), prog);\n"
+           "  rakupp::setConsoleUtf8();\n"
            "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
-           "  std::string exe = argc > 0 ? argv[0] : \"program\"; char rp[4096]; if (realpath(exe.c_str(), rp)) exe = rp;\n"
+           "  std::string exe = argc > 0 ? argv[0] : \"program\"; char rp[4096]; if (RAKUPP_REALPATH(exe.c_str(), rp)) exe = rp;\n"
            "  return rakupp::rakuppRunProgramBigStack(prog, args, " << S(fileName) << ", exe, " << S(finish) << ");\n"
            "}\n";
 }

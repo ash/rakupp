@@ -300,8 +300,8 @@ Value numifyStr(const std::string& in) {
     // Non-ASCII decimal digits (category Nd: Arabic-Indic, Devanagari, …)
     // transliterate to ASCII so the ordinary positional parse handles them —
     // "٤٢".Int is 42, exactly as each digit's Numeric_Value says.
-    if ((unsigned char)s[0] >= 0x80 || s.find_first_of("\x80\xFF") != std::string::npos) {
-        bool anyHigh = false;
+    {
+        bool anyHigh = false; // any byte >= 0x80 anywhere ("1٢" — not only the first)
         for (unsigned char c : s) if (c >= 0x80) { anyHigh = true; break; }
         if (anyHigh) {
             std::string t2;
@@ -3730,7 +3730,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     // $*PROGRAM.parent(2).add("packages/Test-Helpers")`), so try `<base>/lib/` too —
     // this is the common case Rakudo resolves via META6.json.
     static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
-    if (std::getenv("RAKUPP_TRACE")) {
+    if (traceLoad) {
         std::cerr << "[LibPaths]"; for (auto& b : libPaths_) std::cerr << " [" << b << "]"; std::cerr << "\n";
     }
     for (auto& base : libPaths_) {
@@ -3738,7 +3738,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             for (auto ext : exts) {
                 std::ifstream in(dir + "/" + rel + ext);
                 if (!in) continue;
-                if (std::getenv("RAKUPP_TRACE"))
+                if (traceLoad)
                     std::cerr << "[Load] " << name << " <- source " << dir << "/" << rel << ext << "\n";
                 std::ostringstream ss; ss << in.rdbuf();
                 // Bind %?RESOURCES from the source checkout's META6. The dist root is
@@ -3774,7 +3774,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         if (lines.size() < 4 || lines[3].empty()) continue; // line 4 = source SHA
         std::ifstream src(repo + "/sources/" + lines[3]);
         if (!src) continue;
-        if (std::getenv("RAKUPP_TRACE"))
+        if (traceLoad)
             std::cerr << "[Load] " << name << " <- installed " << repo << " dist=" << entry << "\n";
         std::ostringstream ss; ss << src.rdbuf();
         // Bind %?RESOURCES for this module (the short-index filename is its dist
@@ -4304,6 +4304,22 @@ static std::vector<std::string> libCandidates(const std::string& l) {
     return cands;
 }
 
+// dlopen a library by its candidate spellings, or throw X::Libc naming the most
+// useful failure (an arch mismatch beats a generic not-found). One implementation
+// for callNative and cglobal — their copies had already been edited separately.
+static void* dlopenLib(const std::string& lib) {
+    std::string dlerr;
+    for (const std::string& cand : libCandidates(lib)) {
+        if (void* handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL)) return handle;
+        if (const char* e = dlerror()) {
+            std::string es = e;
+            if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
+        }
+    }
+    throw RakuError{Value::typeObj("X::Libc"),
+        "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
+}
+
 // An anonymous PUN of a parameterized role with its `[...]` params bound to
 // argv — what `P[%defaults].new` and `Q[Int].mk` dispatch on. A shallow copy of
 // the role's ClassInfo keeps its methods/attrs; only the param bindings differ.
@@ -4727,7 +4743,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     code.code->name = md->name;
                     code.code->params = &md->params;
                     code.code->retType = md->retType;
-                code.code->pod = md->pod;
                     code.code->pod = md->pod;
                     code.code->body = &md->body;
                     code.code->closure = tctx_.cur;
@@ -5009,9 +5024,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             for (auto& rn : cd->roles) {
                 auto it = classes_.find(rn);
                 if (it == classes_.end() && !tctx_.pkgPrefix.empty())
-                    it = classes_.find(tctx_.pkgPrefix + rn);
-                if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
-                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
                     it = classes_.find(tctx_.pkgPrefix + rn); // `does Handler` where the role is a sibling nested type
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
                 if (it != classes_.end() && it->second->isRole) composedRoles.push_back(it->second.get());
@@ -5189,7 +5201,6 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // a placeholder in an attribute default has no block to bind to
                 if (a.def) {
                     std::set<std::string> ph;
-                    std::vector<StmtPtr> tmp; // reuse the stmt walker via a shim below
                     collectPHExprPublic(a.def.get(), ph);
                     for (auto& n : ph)
                         if (n[1] == '^' || n[1] == ':')
@@ -5361,8 +5372,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         for (auto& s : sigsIt->second) if (!hasImpl(ci.get(), rq, &s)) { ok = false; break; }
                     }
                     else ok = hasImpl(ci.get(), rq, nullptr) ||
-                              classOwn.count(rq) || // an own stub is a deliberate promise
-                              attrCovers(ci.get(), rq);
+                              classOwn.count(rq); // an own stub is a deliberate promise
                     if (!ok && attrCovers(ci.get(), rq)) ok = true;
                     if (!ok) {
                         std::string rl; for (auto& r : reqFrom[rq]) { if (!rl.empty()) rl += ", "; rl += r; }
@@ -5538,9 +5548,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::IfStmt: {
             auto* is = static_cast<IfStmt*>(s);
+            Value lastCond; // last condition value, for `else -> $x` (no re-eval: side effects)
             for (size_t bi = 0; bi < is->branches.size(); bi++) {
                 auto& br = is->branches[bi];
                 Value cv = eval(br.first.get());
+                lastCond = cv;
                 bool c = boolify(cv);
                 if (is->isUnless) c = !c;
                 if (c) {
@@ -5566,9 +5578,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (is->elseBlock) {
                 auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
                 if (!is->elseVar.empty() && !is->branches.empty()) { // else -> $x gets the last cond value
-                    Value lv = eval(is->branches.back().first.get());
-                    if (is->elseVar[0] == '*') { Value l = Value::array({lv}); scope->define(is->elseVar.substr(1), l); }
-                    else scope->define(is->elseVar, lv);
+                    if (is->elseVar[0] == '*') { Value l = Value::array({lastCond}); scope->define(is->elseVar.substr(1), l); }
+                    else scope->define(is->elseVar, lastCond);
                 }
                 return execBlock(is->elseBlock.get(), scope);
             }
@@ -6879,8 +6890,10 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
         bool ok = false;
         try {
             Value cv = eval(slurpyParam->whereExpr.get());
-            if (cv.t == VT::Code && cv.code) cv = callCallable(cv, ValueList{lst});
-            ok = boolify(cv);
+            // `where EXPR` smartmatches (same rule as the positional arm below):
+            // a Code is called with the list, anything else matched against it.
+            if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{lst}));
+            else ok = boolify(applyBinOp("~~", lst, cv));
         } catch (...) { tctx_.cur = saved; return -1; }
         tctx_.cur = saved;
         if (!ok) return -1;
@@ -7094,8 +7107,10 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             bool ok = false;
             try {
                 Value cv = eval(p.whereExpr.get());
-                if (cv.t == VT::Code && cv.code) cv = callCallable(cv, ValueList{v});
-                ok = boolify(cv);
+                // smartmatch, same rule as the positional arm above (a Code is
+                // called; anything else is matched — `where Int` on a named param)
+                if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{v}));
+                else ok = boolify(applyBinOp("~~", v, cv));
             } catch (...) { tctx_.cur = saved; return -1; }
             tctx_.cur = saved;
             if (!ok) return -1;
@@ -7312,18 +7327,21 @@ Value Interpreter::getArgs() {
 
 // Push the current %*ENV hash into the real process environment so a child
 // launched by run()/shell() inherits any variables the program set/changed.
-bool Interpreter::envFlag(const std::string& name) {
+const Value* Interpreter::envLookup(const std::string& name) {
     auto it = global_->vars.find("%*ENV");
-    if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return false;
+    if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return nullptr;
     auto vit = it->second.hash->find(name);
-    return vit != it->second.hash->end() && vit->second.truthy();
+    return vit != it->second.hash->end() ? &vit->second : nullptr;
+}
+
+bool Interpreter::envFlag(const std::string& name) {
+    const Value* v = envLookup(name);
+    return v && v->truthy();
 }
 
 std::string Interpreter::envStr(const std::string& name) {
-    auto it = global_->vars.find("%*ENV");
-    if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash) return "";
-    auto vit = it->second.hash->find(name);
-    return vit != it->second.hash->end() ? vit->second.toStr() : "";
+    const Value* v = envLookup(name);
+    return v ? v->toStr() : "";
 }
 
 // Serialize an uncaught exception as JSON for RAKU_EXCEPTIONS_HANDLER=JSON:
@@ -7334,7 +7352,12 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
         for (char c : s) {
             switch (c) { case '"': o += "\\\""; break; case '\\': o += "\\\\"; break;
                          case '\n': o += "\\n"; break; case '\t': o += "\\t"; break;
-                         default: o += c; }
+                         case '\r': o += "\\r"; break;
+                         default:
+                             if ((unsigned char)c < 0x20) { // other C0 controls: \u00XX
+                                 char b[8]; snprintf(b, sizeof b, "\\u%04X", c);
+                                 o += b;
+                             } else o += c; }
         }
         return o + "\"";
     };
@@ -8284,20 +8307,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                 if (isDefined(r)) lib = r.toStr();
             } catch (RakuError&) {}
         }
-        if (!lib.empty()) {
-            // try the name as-is, then platform-decorated forms
-            const std::string& l = lib;
-            std::string dlerr;
-            for (const std::string& cand : libCandidates(l)) {
-                if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
-                if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
-                    std::string es = e;
-                    if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
-                }
-            }
-            if (!handle) throw RakuError{Value::typeObj("X::Libc"),
-                "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
-        }
+        if (!lib.empty()) handle = dlopenLib(lib); // name as-is, then platform-decorated forms
         sym = dlsym(handle, c.nativeSym.c_str());
         if (!sym) {
             // Some libraries expose a renamed symbol behind a compat macro the header
@@ -8633,18 +8643,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
 // Pointer; scalar types return the value).
 Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const std::string& type) {
     void* handle = RTLD_DEFAULT;
-    if (!lib.empty()) {
-        std::string dlerr;
-        for (const std::string& cand : libCandidates(lib)) {
-            if ((handle = dlopen(cand.c_str(), RTLD_LAZY | RTLD_GLOBAL))) break;
-            if (const char* e = dlerror()) { // keep the first failure, but an arch mismatch wins (it's the useful one)
-                std::string es = e;
-                if (dlerr.empty() || es.find("architecture") != std::string::npos) dlerr = es;
-            }
-        }
-        if (!handle) throw RakuError{Value::typeObj("X::Libc"),
-            "Cannot load native library '" + lib + "'" + (dlerr.empty() ? "" : ": " + dlerr)};
-    }
+    if (!lib.empty()) handle = dlopenLib(lib);
     void* addr = dlsym(handle, sym.c_str());
     if (!addr) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot find native symbol '" + sym + "'"};
     if (type == "Pointer" || type.rfind("Pointer[", 0) == 0) {
@@ -8933,7 +8932,6 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through
         if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
     } else if (!c.placeholders.empty()) {
-        implicitTopic_local = false;
         // $:name placeholders bind from :name(…) pair args; only when they are
         // present do Pair args stop binding positionally (a block mapping over
         // %h.pairs still receives each Pair as $^p)
@@ -8963,7 +8961,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 env->define(pn, v);
         }
         env->define("@_", Value::array(slurpyArgs(args)));
-        implicitTopic_local = false; // placeholders bound: no implicit topic
+        // placeholders bound: implicitTopic_local stays false
     } else {
         implicitTopic_local = true;
         // implicit $_ / @_ — NB: no implicit $a/$b (Perl-5 style sort vars are
@@ -9089,12 +9087,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                                 "Attempt to return outside of any Routine"};
             throw;
         }
-        copyOutRw(c.params, env, rwArgs, false);
+        copyOutRw(c.params, env, rwArgs);
         return c.retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
     } catch (BreakGivenEx& b) { // `when` matched in this block: its value is the block's result
         if (c.body) runLeavePhasers(*c.body);
         restore();
-        copyOutRw(c.params, env, rwArgs, false);
+        copyOutRw(c.params, env, rwArgs);
         return b.hasVal ? b.v : last;
     } catch (RakuError& e) {
         if (catchBlk) {
@@ -9115,7 +9113,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (c.body) runLeavePhasers(*c.body);
                 restore();
                 if (!isRoutine) throw;
-                copyOutRw(c.params, env, rwArgs, false);
+                copyOutRw(c.params, env, rwArgs);
                 return c.retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
             }
             catch (...) { if (c.body) runLeavePhasers(*c.body, /*ok=*/false); restore(); throw; } // die/rethrow from CATCH
@@ -9129,7 +9127,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             }
             if (c.body) runLeavePhasers(*c.body);
             restore();
-            copyOutRw(c.params, env, rwArgs, false);
+            copyOutRw(c.params, env, rwArgs);
             // A `return` inside the CATCH returns from this routine (R2).
             if (isRoutine && tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
             return Value::nil();
@@ -9155,7 +9153,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         auto it = env->vars.find("$_");
         if (it != env->vars.end()) *topicWB = it->second;
     }
-    copyOutRw(c.params, env, rwArgs, false);
+    copyOutRw(c.params, env, rwArgs);
     return c.retType.empty() ? std::move(last) : checkRetType(c, std::move(last));
 }
 
@@ -9225,7 +9223,7 @@ static Expr* peelIncDec(Expr* e) {
 
 // Copy `is rw` parameter final values back to the caller's argument lvalues.
 void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env,
-                            const std::vector<ExprPtr>* rwArgs, bool /*methodCtx*/) {
+                            const std::vector<ExprPtr>* rwArgs) {
     if (!params || !rwArgs) return;
     // `is rw` params write back explicitly; a sigilless capture param (`\a`) binds
     // the caller's container, so an assignment through it must write back too.
@@ -9648,13 +9646,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 }
             }
         }
-    } catch (ReturnEx& r) { tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
+    } catch (ReturnEx& r) { tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
                             return r.v; }
     catch (BreakGivenEx& b) {
         // a matched `when` in the method body: the routine is its topicalizer,
         // so it exits the method with the when-block's value (mirrors callCallable)
-        tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
+        tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
         return b.hasVal ? b.v : last;
     }
@@ -9670,7 +9668,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         catch (BreakGivenEx&) { matched = true; }   // a when/default matched
         catch (ResumeEx&)     { matched = true; }   // .resume: absorbed
         catch (ReturnEx& r) {                       // `return`/`fail` from the CATCH
-            tctx_.cur = saved; copyOutRw(c.params, env, rwArgs, true);
+            tctx_.cur = saved; copyOutRw(c.params, env, rwArgs);
             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
             return r.v;
         }
@@ -9678,14 +9676,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         // Only a matching when/default handles it; an unmatched CATCH rethrows.
         if (!matched) { tctx_.cur = saved; throw; }
         tctx_.cur = saved;
-        copyOutRw(c.params, env, rwArgs, true);
+        copyOutRw(c.params, env, rwArgs);
         if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
         if (tctx_.returning) { tctx_.returning = false; return std::move(tctx_.returnV); }
         return Value::nil();
     }
     catch (...) { tctx_.cur = saved; throw; }
     tctx_.cur = saved;
-    copyOutRw(c.params, env, rwArgs, true);
+    copyOutRw(c.params, env, rwArgs);
     // `self = …` in a method on a VALUE type (an `augment`ed Hash/Array/Str) has to
     // reach the caller's container — the invocant is passed by value, so the frame's
     // final `self` is copied back to the slot the call site named.
@@ -11748,7 +11746,6 @@ static std::map<std::string, double> setWeights(const Value& v, int tier) {
             // type objects ARE elements. They must key through baggyKeyStr like every
             // other element, or an operator result and a `set(…)` literal holding the
             // same type object end up with DIFFERENT keys and compare unequal.
-            else if (x.t == VT::Type || x.t == VT::Any) { std::string k = baggyKeyStr(x); setRep(k, x); m[k] += 1; }
             else { std::string k = baggyKeyStr(x); setRep(k, x); m[k] += 1; }
         }
     } else if (v.t == VT::Pair) {
@@ -12194,7 +12191,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         for (auto& x : a) for (auto& y : b) {
             if (sub.empty()) { Value t = Value::array({x, y}); t.isList = true; out.arr->push_back(t); }
-            else if (sub == "=>") out.arr->push_back(Value::pair(x.toStr(), y));
+            else if (sub == "=>") { // `1 X=> <a b>` keeps the Int key (like Z=> above)
+                Value pr = Value::pair(x.toStr(), y);
+                if (x.t != VT::Str) pr.pairKey = std::make_shared<Value>(x);
+                out.arr->push_back(pr);
+            }
             else out.arr->push_back(applyArith(sub, x, y));
         }
         return out;
@@ -12212,13 +12213,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         };
         for (auto& v : a) see(v);
         for (auto& v : bb) see(v);
+        if (first) { // no defined elements at all: Rakudo's empty minmax is Inf..-Inf
+            Value rr = Value::range(0, -1, false, false);
+            setRangeEnds(rr, Value::number(INFINITY), Value::number(-INFINITY));
+            return rr;
+        }
         Value rr = Value::range(lo.toInt(), hi.toInt(), false, false);
         // the resulting Range follows `..`'s endpoint rule, except that two Str
         // extremes stay Strs ("a" minmax "b" is "a".."b")
-        if (!first) {
-            if (lo.t == VT::Str && hi.t == VT::Str) attachRangeEnds(rr, lo, hi);
-            else setRangeEnds(rr, lo, hi);
-        }
+        if (lo.t == VT::Str && hi.t == VT::Str) attachRangeEnds(rr, lo, hi);
+        else setRangeEnds(rr, lo, hi);
         return rr;
     }
     // Whatever-currying: `* + 1`, `*.elems == 2`, `2 * *`, etc. yield a WhateverCode.
@@ -12427,7 +12431,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         }
         if (!c && aPlus != bPlus) c = aPlus ? 1 : -1; // `v1.0.1+` sorts after `v1.0.1`
         if (op == "cmp" || op == "<=>") return Value::orderVal(c);
-        if (op == "==" || op == "eqv" || op == "eq" || op == "~~") return Value::boolean(c == 0);
+        if (op == "==" || op == "eqv" || op == "eq") return Value::boolean(c == 0); // `~~` returned above
         if (op == "!=" || op == "ne") return Value::boolean(c != 0);
         if (op == "<"  || op == "before") return Value::boolean(c < 0);
         if (op == ">"  || op == "after")  return Value::boolean(c > 0);
@@ -12851,8 +12855,24 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                                               k < cb.size() ? cb[k] : 0));
         return Value::str(out);
     }
-    if (op == "gcd") { long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x); }
-    if (op == "lcm") { long long x = l.toInt(), y = r.toInt(); if (!x || !y) return Value::integer(0); long long g = std::llabs(x), h = std::llabs(y); while (h) { long long t = g % h; g = h; h = t; } return Value::integer(std::llabs(x / g * y)); }
+    if (op == "gcd") {
+        if (l.big || r.big) return Value::bigint(BigInt::gcd(l.toBig().abs(), r.toBig().abs()));
+        long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x);
+    }
+    if (op == "lcm") {
+        if (l.big || r.big) {
+            BigInt a = l.toBig().abs(), b = r.toBig().abs();
+            if (a.isZero() || b.isZero()) return Value::integer(0);
+            BigInt g = BigInt::gcd(a, b), q, rem;
+            BigInt::divmod(a, g, q, rem);
+            return Value::bigint(q * b);
+        }
+        long long x = l.toInt(), y = r.toInt(); if (!x || !y) return Value::integer(0); long long g = std::llabs(x), h = std::llabs(y); while (h) { long long t = g % h; g = h; h = t; }
+        long long res;
+        if (rakupp::mul_ovf(x / g, y, &res)) // exact past long long: redo big
+            return Value::bigint(BigInt(std::llabs(x / g)) * BigInt(std::llabs(y)));
+        return Value::integer(std::llabs(res));
+    }
     if (op == "min") return valueCmp(l, r) <= 0 ? l : r;
     if (op == "max") return valueCmp(l, r) >= 0 ? l : r;
 
@@ -13577,6 +13597,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                           : kind == "token" ? "r"        // token: ratchet (no backtracking)
                           : "";                          // regex: backtracking, no sigspace
         Regex sub(it->second, flags);
+        sub.runHooks = re.runHooks; // a `my regex` body still runs its {…} blocks / <?{…}>
         return sub.matchAt(subj, pos, out, resolver, &lexNames);
     };
     // Every Match — the top one and each capture — reports the WHOLE subject as
@@ -13665,12 +13686,17 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     std::shared_ptr<Value> inlineMade; // `{ make … }` inside a plain regex
     GrammarHooks rmHooks;
     bool wantHooks = false;
+    // The hook gates scan the pattern TEXT — but a `my regex` body referenced as
+    // a subrule carries its own `{…}`/`**{…}`, so the visible bodies scan too
+    // (over-arming is harmless: with no Code nodes the hooks are never called).
+    std::string hookScan = pat;
+    for (auto& nr : namedRegex_) hookScan += nr.second;
     // A `{…}` block in a plain regex runs when the match is ACCEPTED, not when the
     // engine walks past it: the matcher queues the block and unwinds the queue as it
     // backtracks (see Regex::MState::pending), so a block on a branch that is later
     // abandoned never fires and a branch that is retried never fires twice. Running
     // them eagerly instead is what broke subst.t and longest-alternative.t.
-    if (pat.find('{') != std::string::npos) {
+    if (hookScan.find('{') != std::string::npos) {
         rmHooks.runCaps = [this, &inlineMade, &build](
                               const std::string& code, long from, long to,
                               const GrammarHooks::NamedMap& named,
@@ -13718,7 +13744,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // `\w**{$n}` / `**{ 1..3 }` — a runtime-bounded quantifier in a plain `~~`
     // regex needs the range hook too (without it the bounds default to 0..* and
     // the quantifier matches greedily). Mirror the grammar range hook.
-    if (pat.find("**") != std::string::npos && pat.find('{') != std::string::npos) {
+    if (hookScan.find("**") != std::string::npos && hookScan.find('{') != std::string::npos) {
         rmHooks.range = [this](const std::string& code, const GrammarHooks::NamedMap&,
                                const GrammarHooks::ParamMap&) -> std::pair<long, long> {
             bool unbounded = code.find("..*") != std::string::npos || code.find("..Inf") != std::string::npos ||
@@ -13929,7 +13955,10 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
                 }
                 if (s[i + 1] == '<') { size_t j = s.find('>', i + 2); if (j != std::string::npos) {
                     std::string nm = s.substr(i + 2, j - i - 2);
-                    if (mv.t == VT::Match && mv.hash && mv.hash->count(nm)) r += (*mv.hash)[nm].toStr();
+                    if (mv.t == VT::Match && mv.hash) {
+                        auto hit = mv.hash->find(nm);
+                        if (hit != mv.hash->end()) r += hit->second.toStr();
+                    }
                     i = j; continue; } }
             }
             r += s[i];
@@ -14219,8 +14248,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         std::string folded; std::vector<long> foldStart, origStart; long ob = 0;
         for (size_t i = 0; i < scps.size();) {
             foldStart.push_back((long)folded.size()); origStart.push_back(ob);
-            std::string gtext; { size_t s = i; auto g = nextGrapheme(scps, i);
-                for (uint32_t cp : g) gtext += smEncode(cp); folded += baseOf(g); (void)s; }
+            std::string gtext; { auto g = nextGrapheme(scps, i);
+                for (uint32_t cp : g) gtext += smEncode(cp); folded += baseOf(g); }
             ob += (long)gtext.size();
         }
         foldStart.push_back((long)folded.size()); origStart.push_back(ob);
@@ -14418,10 +14447,18 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         };
         if (replArg && replArg->t == VT::Code) {
             bindCaps();
-            Value saved = tctx_.cur->vars.count("$_") ? tctx_.cur->vars["$_"] : Value::any();
+            // $_ may live in an OUTER scope: restore must ERASE our local shadow
+            // rather than leave a stray `$_ = Any` (same rule as the `~~` path)
+            bool hadLocalTopic = tctx_.cur->vars.count("$_") > 0;
+            Value saved = hadLocalTopic ? tctx_.cur->vars["$_"] : Value::any();
             tctx_.cur->define("$_", matchV);
-            r = callCallable(*replArg, ValueList{matchV}).toStr();
-            tctx_.cur->vars["$_"] = saved;
+            auto restoreTopic = [&] {
+                if (hadLocalTopic) tctx_.cur->vars["$_"] = saved;
+                else tctx_.cur->vars.erase("$_");
+            };
+            try { r = callCallable(*replArg, ValueList{matchV}).toStr(); }
+            catch (...) { restoreTopic(); throw; }
+            restoreTopic();
         } else if (tmplRepl) {
             // s/// replacement TEMPLATE: `{ code }` evaluated per match, else $N/$<name> interpolation
             std::string rt = *tmplRepl;
@@ -15141,13 +15178,16 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         };
         for (auto& v : a) see(v);
         for (auto& v : bb) see(v);
+        if (first) { // no defined elements at all: Rakudo's empty minmax is Inf..-Inf
+            Value rr = Value::range(0, -1, false, false);
+            setRangeEnds(rr, Value::number(INFINITY), Value::number(-INFINITY));
+            return rr;
+        }
         Value rr = Value::range(lo.toInt(), hi.toInt(), false, false);
         // the resulting Range follows `..`'s endpoint rule, except that two Str
         // extremes stay Strs ("a" minmax "b" is "a".."b")
-        if (!first) {
-            if (lo.t == VT::Str && hi.t == VT::Str) attachRangeEnds(rr, lo, hi);
-            else setRangeEnds(rr, lo, hi);
-        }
+        if (lo.t == VT::Str && hi.t == VT::Str) attachRangeEnds(rr, lo, hi);
+        else setRangeEnds(rr, lo, hi);
         return rr;
     }
     // hyper metaop over evaluated lists — also reachable via [>>+<<] reduce
@@ -15948,14 +15988,13 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         chain.push_back(cur);
         std::reverse(chain.begin(), chain.end());
-        Value found; bool haveTrue = false, haveAny = false; Value last;
+        Value found; bool haveTrue = false; Value last;
         for (Expr* e : chain) {
-            last = eval(e); haveAny = true;
+            last = eval(e);
             if (!boolify(last)) continue;
             if (haveTrue) return Value::nil();
             found = last; haveTrue = true;
         }
-        (void)haveAny;
         return haveTrue ? found : last;
     }
     if (op == "&" || op == "|" || op == "^") {
@@ -17084,12 +17123,13 @@ Value Interpreter::evalTempLet(Call* c) {
         }
         else if (base.t == VT::Hash && base.hash) {
             auto h = base.hash; std::string k = key.toStr();
-            Value snapshot = h->count(k) ? snap((*h)[k]) : Value::any();
-            bool existed = h->count(k) > 0;
+            auto it = h->find(k);
+            bool existed = it != h->end();
+            Value snapshot = existed ? snap(it->second) : Value::any();
             restores.push_back([h, k, snapshot, existed]() {
                 if (existed) (*h)[k] = snapshot; else h->erase(k);
             });
-            return h->count(k) ? (*h)[k] : Value::any();
+            return existed ? it->second : Value::any();
         }
     }
     if (pushVarRestore(tgt)) { // plain `temp $x` / `temp @a`: restore by env+name
@@ -17301,7 +17341,9 @@ Value Interpreter::evalCall(Call* c) {
             if (userCode) {
                 std::vector<Value*> slots{xs, ys};
                 pendingRwSlots_ = &slots;
-                Value r = callCallable(with, ValueList{x, y});
+                Value r;
+                try { r = callCallable(with, ValueList{x, y}); }
+                catch (...) { pendingRwSlots_ = nullptr; throw; } // never leave it aimed at dead stack
                 pendingRwSlots_ = nullptr; // in case no frame consumed it
                 return r;
             }
@@ -17568,7 +17610,11 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     if (op == "=>" || op == "**") {
         Value acc = items.back();
         for (size_t k = items.size() - 1; k-- > 0; ) {
-            if (op == "=>") { Value p = Value::pair(items[k].toStr(), acc); acc = p; }
+            if (op == "=>") { // `[=>] 1,2,3` keeps the Int keys (like Z=>)
+                Value p = Value::pair(items[k].toStr(), acc);
+                if (items[k].t != VT::Str) p.pairKey = std::make_shared<Value>(items[k]);
+                acc = p;
+            }
             else acc = applyBinOp(op, items[k], acc);
         }
         return acc;
@@ -18562,11 +18608,8 @@ Value Interpreter::evalIndex(Index* idx) {
             Value iv = eval(idx->index.get());
             // Whatever-star index: `@a[*-1]` (WhateverCode called with the length),
             // `@a[*]` (all elements).
-            bool wasWhatever = false;
-            if (iv.t == VT::Code && iv.code && iv.code->isWhateverCode) {
+            if (iv.t == VT::Code && iv.code && iv.code->isWhateverCode)
                 iv = callCallable(iv, ValueList{Value::integer(n)});
-                wasWhatever = true;
-            }
             if (iv.t == VT::Whatever) {
                 isSlice = true;
                 for (long long k = 0; k < n; k++) indices.push_back(k);
@@ -18596,7 +18639,6 @@ Value Interpreter::evalIndex(Index* idx) {
                 // A negative index is OUT OF RANGE in Raku (there is no Python-style
                 // from-the-end wraparound — that is what `@a[*-1]` is for). Both a
                 // literal `@a[-1]` and a `*-N` that resolves below 0 yield a Failure.
-                (void)wasWhatever;
                 if (i < 0) {
                     Value f = Value::makeHash(); f.hashKind = "Failure";
                     (*f.hash)["exception"] = Value::typeObj("X::OutOfRange");
@@ -19104,7 +19146,7 @@ Value Interpreter::eval(Expr* e) {
             // `Bool::` / `Foo::` — a bare trailing-::: name IS the package stash
             // (`Bool::.values` enumerates the enum's values). Same result as .WHO.
             if (n.size() > 2 && n.compare(n.size() - 2, 2, "::") == 0 &&
-                !nt->ofType.empty() == false && nt->defConstraint == 0) {
+                nt->ofType.empty() && nt->defConstraint == 0) {
                 Value base = Value::typeObj(n.substr(0, n.size() - 2));
                 ValueList none;
                 return methodCall(base, "WHO", none);

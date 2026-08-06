@@ -349,8 +349,6 @@ static std::string defaultOut(const std::string& srcName) {
 // Bundle a Raku program into a standalone native executable: generate a
 // small C++ stub that embeds the program source and calls the runtime, then
 // link it against librakupp_rt.a (statically, so the result needs no rakupp).
-static std::string g_bundleModuleCalls;   // filled while emitting the stub
-
 static int compileToExe(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe,
                         const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
@@ -391,6 +389,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
         // a single-file deliverable. A program whose source will not even parse
         // still bundles (that is this mode's job — it parses at run time), and
         // then simply carries no modules.
+        std::string bundleModuleCalls; // filled while emitting the stub
         {
             std::vector<BundledModule> mods;
             try {
@@ -403,12 +402,12 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls, /*withSources=*/true);
             stub << decls.str();
-            g_bundleModuleCalls = calls.str();
+            bundleModuleCalls = calls.str();
         }
         stub << "namespace rakupp { void rakuppRegisterModule(const std::string&, const char*, unsigned long, const std::string&);\n"
                 "                  void rakuppRegisterModuleSource(const std::string&, const char*, unsigned long); }\n";
         stub << "int main(int argc, char** argv) {\n"
-             << g_bundleModuleCalls
+             << bundleModuleCalls
              << "  rakupp::setConsoleUtf8();\n"
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
@@ -489,7 +488,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         // `--exe` still produces a correct binary for the full language.
         std::cerr << "note: " << e.msg << " — not yet natively compiled; "
                      "bundling the whole program with the interpreter instead.\n";
-        return compileToExe(src, srcName, outPath, selfExe);
+        return compileToExe(src, srcName, outPath, selfExe, libPaths); // keep -I modules bundled
     }
 
     std::string lib, inc;
@@ -542,7 +541,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         return 2;
     } catch (const AstEmitError& e) {
         std::cerr << "note: " << e.msg << " — falling back to source bundling.\n";
-        return compileToExe(src, srcName, outPath, selfExe);
+        return compileToExe(src, srcName, outPath, selfExe, libPaths); // keep -I modules bundled
     }
 
     std::string lib, inc;

@@ -84,7 +84,6 @@ struct RxMatch {
     std::map<int, std::vector<std::pair<long, long>>> capReps; // occurrences per list-valued positional capture
     std::set<int> listCaps;                             // which positional indices are list-valued ($n under */+/**)
     std::map<std::string, std::pair<long, long>> named; // named captures ($<name>) byte ranges
-    std::map<std::string, std::pair<long, long>> subs;  // subrule names matched (for $<name> tree access)
     std::map<std::string, std::vector<ParseNode>> children; // per-name occurrence list; repeated captures collate here
     std::shared_ptr<const std::set<std::string>> listNames; // subrule keys under a quantifier → always list-valued
     std::shared_ptr<const std::set<std::string>> hashNames; // `%<name>=…` keys → built as a Hash of matched strings
@@ -125,7 +124,6 @@ public:
     explicit Regex(const std::string& pattern, const std::string& flags = "");
     bool ok() const { return ok_; }
     const std::string& obsolete() const { return obsolete_; } // non-empty: retired P5 metachar
-    int nCaps() const { return ncaps_; }
     // Find the first match whose start is >= startPos (unanchored search).
     bool search(const std::string& subject, long startPos, RxMatch& out) const;
     bool search(const std::string& subject, long startPos, RxMatch& out, const SubResolver& r,
@@ -228,7 +226,6 @@ public:
         const std::string& s;
         std::vector<std::pair<long, long>> caps;
         std::map<std::string, std::pair<long, long>> named;
-        std::map<std::string, std::pair<long, long>> subs; // subrule names matched
         std::map<std::string, std::vector<ParseNode>> children; // named subrule sub-trees (grammar path)
         const SubResolver* resolver = nullptr;             // plain-regex subrule path (atomic)
         class GrammarMatcher* grammar = nullptr;           // grammar path (backtrackable)

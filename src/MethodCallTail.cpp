@@ -22,7 +22,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
-    (void)rwArgs;
     if (m == "fmt" && inv.t == VT::Pair)
         return Value::str(doSprintf(args.empty() ? "%s\t%s" : a0().toStr(),
                                     {inv.pairKey ? *inv.pairKey : Value::str(inv.s),
@@ -235,26 +234,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             (*inv.hash)[kkey(args[0])] = args[1]; return args[1];
         }
     }
-    if (inv.t == VT::Array && inv.arr) {
-        if (m == "AT-POS" && !args.empty()) {
-            long long i = args[0].toInt(), n = (long long)inv.arr->size();
-            if (i < 0) i += n;
-            return (i >= 0 && i < n) ? (*inv.arr)[i] : Value::any();
-        }
-        if (m == "EXISTS-POS" && !args.empty()) {
-            long long i = args[0].toInt(), n = (long long)inv.arr->size();
-            if (i < 0) i += n;
-            return Value::boolean(i >= 0 && i < n);
-        }
-        if (m == "ASSIGN-POS" && args.size() >= 2) {
-            long long i = args[0].toInt();
-            if (i >= 0) {
-                while ((long long)inv.arr->size() <= i) inv.arr->push_back(Value::any());
-                (*inv.arr)[i] = args[1];
-            }
-            return args[1];
-        }
-    }
+    // (Array AT-POS/EXISTS-POS/ASSIGN-POS/DELETE-POS are fully handled in
+    // methodCallPart3, which runs before this file — no Array arm here.)
     if (inv.t == VT::Pair) {
         if (m == "Pair") return inv;   // .Pair on a Pair is itself
         if (m == "key") return inv.pairKey ? *inv.pairKey : Value::str(inv.s); // object/array keys preserved
@@ -691,13 +672,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "elems") return Value::integer((long long)live.size());
         if (m == "end")   return Value::integer((long long)live.size() - 1);
         if (m == "Bool")  return Value::boolean(!live.empty());
-        if ((m == "AT-POS" || m == "EXISTS-POS") && !args.empty()) {
-            long long i = args[0].toInt(), n = (long long)live.size();
-            if (i < 0) i += n;
-            bool in = i >= 0 && i < n;
-            if (m == "EXISTS-POS") return Value::boolean(in);
-            return in ? live[(size_t)i] : Value::any();
-        }
+        // (AT-POS/EXISTS-POS answered in methodCallPart3 before this runs)
     }
     // A MATCH is Positional over its captures, so the list methods work on it:
     // `$0.flatmap({…})` / `$m.map(…)` (URI::Escape unescapes that way). Route it
@@ -727,7 +702,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                    m == "prepend" || m == "pop" || m == "shift" || m == "splice";
         };
         ValueList items;
-        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()))
+        // Hash push/append also skip the snapshot: their arm reads only args and
+        // inv.hash, and the per-call pair materialization made `%h.push` in an
+        // accumulate loop quadratic (same disease the Array gate cured).
+        bool hashPush = inv.t == VT::Hash && inv.hash && (m == "push" || m == "append");
+        if (!(inv.t == VT::Array && inv.arr && !inv.ext && throughHandle()) && !hashPush)
             items = toList(inv);
         // .collate — UCA-ordered sort (the coll infix already implements DUCET;
         // this just wires the method Rakudo exposes on lists)
@@ -1084,16 +1063,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             return h;
         }
-        if (m == "pairup") { // consecutive elements become Pairs (odd tail: X::Pairup::OddNumber)
-            ValueList items = inv.t == VT::Array && inv.arr ? *inv.arr : ValueList{};
-            Value out = Value::array(); out.isList = true; out.s = "Seq";
-            for (size_t i = 0; i + 1 < items.size(); i += 2)
-                out.arr->push_back(Value::pair(items[i].toStr(), items[i + 1]));
-            if (items.size() % 2)
-                throw RakuError{Value::typeObj("X::Pairup::OddNumber"),
-                    "Odd number of elements found where hash initializer expected"};
-            return out;
-        }
         if (m == "rotor" || m == "batch") { // chunk into sublists of a fixed size
             for (auto& a : args)
                 if (a.isNumeric() && a.toInt() <= 0)
@@ -1189,10 +1158,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (valueCmp(k, loK) < 0) { lo = v; loK = k; }
                 if (valueCmp(k, hiK) > 0) { hi = v; hiK = k; }
             }
-            if (started && lo.t == VT::Int && hi.t == VT::Int)
+            if (!started) { // no defined elements: Rakudo's empty minmax is Inf..-Inf
+                Value rr = Value::range(0, -1, false, false);
+                setRangeEnds(rr, Value::number(INFINITY), Value::number(-INFINITY));
+                return rr;
+            }
+            if (lo.t == VT::Int && hi.t == VT::Int)
                 return Value::range(lo.toInt(), hi.toInt(), false, false);
             Value out = Value::array(); out.isList = true; // non-Int endpoints (our Range is Int-only)
-            if (started) { out.arr->push_back(lo); out.arr->push_back(hi); }
+            out.arr->push_back(lo); out.arr->push_back(hi);
             return out;
         }
         if (m == "min" || m == "max") {
@@ -1727,18 +1701,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             else { Value tmp = inv; return applyEl(tmp); }
             return out;
         }
-        if (m == "tree") {
-            // .tree(&f, *@rest): f applied to the node's children, each child
-            // first transformed by .tree(|@rest); non-iterables return themselves
-            std::function<Value(const Value&, size_t)> tr = [&](const Value& v, size_t k) -> Value {
-                if (v.t != VT::Array || !v.arr) return v;
-                Value kids = Value::array(); kids.isList = true;
-                for (auto& e : *v.arr) kids.arr->push_back(tr(e, k + 1));
-                if (k < args.size() && args[k].t == VT::Code) return callCallable(args[k], ValueList{kids});
-                return kids;
-            };
-            return tr(inv, 0);
-        }
         if (m == "map" || m == "flatmap") { // flatmap == map that flattens list results one level
             // the mapper must be a Callable — `%h.map(Hash)` (a type object) dies
             if (!args.empty() && args[0].t == VT::Type)
@@ -2041,23 +2003,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             return out;
         }
-        if (m == "pairup") { // (1,2,3,4).pairup → (1=>2, 3=>4); odd tail pairs with Any
-            Value out = Value::array(); out.isList = true; out.s = "Seq";
-            for (size_t i = 0; i < items.size(); i += 2) {
-                Value key = items[i];
-                Value val = (i + 1 < items.size()) ? items[i + 1] : Value::any();
-                if (key.t == VT::Pair) out.arr->push_back(key); // an already-Pair element passes through
-                else out.arr->push_back(Value::pair(key.toStr(), val));
-            }
-            return out;
-        }
         if (m == "pairs" || m == "kv" || m == "antipairs") {
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             if (inv.t == VT::Hash) {
                 for (auto& kv : *inv.hash) {
                     Value key = hashEntryKey(inv, kv.first, kv.second);
                     if (m == "kv") { out.arr->push_back(key); out.arr->push_back(kv.second); }
-                    else if (m == "antipairs") { Value p = Value::pair(kv.second.toStr(), key); out.arr->push_back(std::move(p)); }
+                    // (Hash antipairs answered by its own arm above)
                     else { Value p = Value::pair(kv.first, kv.second);
                            if (key.t != VT::Str) p.pairKey = std::make_shared<Value>(std::move(key));
                            out.arr->push_back(std::move(p)); }

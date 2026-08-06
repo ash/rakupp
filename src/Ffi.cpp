@@ -142,13 +142,20 @@ bool resolve(void* h) {
 bool tryLoad(const std::string& c) {
     void* h = dlopen(c.c_str(), RTLD_LAZY | RTLD_GLOBAL);
     if (!h) return false;
-    if (!resolve(h)) { g.why = "loaded " + c + " but its entry points are missing"; return false; }
+    // on failure, unmap the rejected candidate: RTLD_GLOBAL keeps its symbols
+    // visible process-wide while the next candidate is probed
+    if (!resolve(h)) {
+        g.why = "loaded " + c + " but its entry points are missing";
+        dlclose(h);
+        return false;
+    }
     for (int abi : abiCandidates()) {
         if (!selfTest(abi)) continue;
         g.abi = abi; g.path = c; g.ok = true;
         return true;
     }
     g.why = "loaded " + c + " but no calling convention passed the self-test";
+    dlclose(h);
     return false;
 }
 

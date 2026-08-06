@@ -292,9 +292,6 @@ static int blockMargin(const std::vector<std::string>& lines, size_t start) {
 }
 
 static void parseSeq(const std::vector<std::string>& lines, size_t& i,
-                     const std::string& closeName, bool inBlock, ValueList& out, int margin);
-
-static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                      const std::string& closeName, bool inBlock, ValueList& out, int margin) {
     while (i < lines.size()) {
         std::string kw, rest;

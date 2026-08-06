@@ -14,8 +14,6 @@ namespace rakupp {
 
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
-    auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
-    (void)rwArgs;
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
         // This arm REWRITES the invocant (drainSupplyBlock) and then reads it for
         // the rest of the block. The parameter is a const reference — the dispatch
@@ -564,7 +562,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::str(name); // lenient: any other Distro/Kernel/VM accessor
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc") { // standard Proc from run()
-        if (m == "exitcode" || m == "signal") return m == "exitcode" ? (*inv.hash)["exitcode"] : Value::integer(0);
+        if (m == "exitcode") return (*inv.hash)["exitcode"];
+        if (m == "signal") return Value::integer(0);
         if (m == "so" || m == "Bool") return Value::boolean((*inv.hash)["exitcode"].toInt() == 0);
         if (m == "command") { auto it = inv.hash->find("argv"); return it != inv.hash->end() ? it->second : Value::array(); }
         if (m == "in") { Value h = inv; h.hashKind = "ProcIn"; return h; } // writable stdin handle (shares hash)
@@ -2017,7 +2016,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         }
                     Value self = Value::object(od);
                     if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
-                if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
+                    if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args); // post-BUILD hook
                     return self;
                 }
                 // A class subclassing a scalar built-in with its own `.new` (DateTime,
@@ -3112,7 +3111,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         return o;
     }
-    if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list" || m == "caps"
+    if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list"
                                || m == "hash" || m == "pairs" || m == "kv" || m == "elems")) {
         if (m == "hash") { Value h = Value::makeHash(); if (inv.hash) *h.hash = *inv.hash; return h; }
         if (m == "elems") return Value::integer(inv.arr ? (long long)inv.arr->size() : 0);
@@ -3124,7 +3123,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "keys") {
             if (inv.arr) for (size_t i = 0; i < inv.arr->size(); i++) o.arr->push_back(Value::integer((long long)i));
             if (inv.hash) for (auto& kv : *inv.hash) o.arr->push_back(typedKey(kv));
-        } else if (m == "values" || m == "list" || m == "caps") {
+        } else if (m == "values" || m == "list") {
             if (inv.arr) for (auto& e : *inv.arr) o.arr->push_back(e);
             if ((m == "values") && inv.hash) for (auto& kv : *inv.hash) o.arr->push_back(kv.second);
         } else { // pairs / kv

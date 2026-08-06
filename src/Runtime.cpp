@@ -108,7 +108,10 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
                 Interpreter interp;
                 interp.setArgs(std::move(args));
                 interp.finishData_ = cachedFinish;
-                interp.podData_ = Lexer(src).podData();   // pod is cheap and rarely wanted
+                if (g_docMode) { // pod comes from tokenize(); a fresh Lexer's podData() is empty
+                    Lexer plx(src); plx.tokenize();
+                    interp.podData_ = plx.podData();
+                }
                 interp.podDom_ = parsePod(src);
                 interp.docMode_ = g_docMode;
                 interp.srcFile_ = fileName;

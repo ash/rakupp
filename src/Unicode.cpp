@@ -203,9 +203,9 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         std::string val = p.substr(lt + 1, p.size() - lt - 2);
         if (prop == "bc" || prop == "bidiclass")
             return normProp(uniBidiClass(cp)) == normProp(val);
-        if (prop == "sc" || prop == "script" || prop == "gc" || prop == "generalcategory")
-            return uniMatchesProp(cp, val); // delegate to the bare-value handlers
-        return uniMatchesProp(cp, val);     // unknown property key: match on the value alone
+        // sc/script/gc/generalcategory and unknown property keys alike: the
+        // bare-value handlers match on the value alone
+        return uniMatchesProp(cp, val);
     }
     // script property: <:Latin> <:Syriac> <:Canadian_Aboriginal> … (bare script
     // value == <:Script<...>>). Loose-match p against the set of real script names.

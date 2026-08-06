@@ -1,4 +1,5 @@
 #include "Parser.h"
+#include "IntOps.h"
 #include <cstdint>
 #include <memory>
 #include <sstream>
@@ -386,9 +387,6 @@ bool Parser::startsTermToken(const Token& t) const {
         case Tok::Var: case Tok::LParen: case Tok::LBracket: case Tok::LBrace:
             return true;
         case Tok::Op:
-            // `&[+]` — the infix-as-Callable term (say &[+], @ops = "+", &[+], …)
-            if (t.text == "&" && &t == &cur() && peek().kind == Tok::LBracket && !peek().spaceBefore)
-                return true;
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `f 0, +^$x`
@@ -2188,6 +2186,7 @@ ExprPtr Parser::parseColonPair() {
         size_t star = digits.find('*');
         if (star != std::string::npos) { expPart = digits.substr(star + 1); digits = digits.substr(0, star); }
         long long val = 0, frac = 0, fdiv = 1; bool infrac = false;
+        bool overflowed = false; std::vector<int> intDigits; // exact recompute on long-long overflow
         // Iterate codepoints: accept ASCII alnum, fullwidth ASCII letters (folded),
         // and Nd digits (their 0-9 value). A single `.` starts the fractional part
         // (`:16<FF.F>` → a Rat). Nl/No numerals or non-radix scripts are malformed.
@@ -2212,13 +2211,39 @@ ExprPtr Parser::parseColonPair() {
             }
             if (d < 0 || d >= base) error("Malformed radix number");
             if (infrac) { frac = frac * base + d; fdiv *= base; }
-            else val = val * base + d;
+            else {
+                long long nv;
+                if (rakupp::mul_ovf(val, (long long)base, &nv) || rakupp::add_ovf(nv, d, &nv))
+                    overflowed = true; // recomputed exactly below (like 0x… literals)
+                else val = nv;
+                intDigits.push_back((int)d);
+            }
         }
         ExprPtr numNode;
         if (infrac) { // fractional radix → a Rat: (val*fdiv + frac) / fdiv
             auto nl = std::make_unique<NumLit>((double)(val * fdiv + frac) / (double)fdiv);
             nl->isRat = true; nl->ratNum = val * fdiv + frac; nl->ratDen = fdiv;
             numNode = std::move(nl);
+        }
+        else if (overflowed) {
+            // wider than long long: recompute exactly in decimal, the same way an
+            // over-wide 0x…/0b… literal is handled (`:16<FFFF_FFFF_FFFF_FFFF>`)
+            std::string dec = "0";
+            auto mulAdd = [](const std::string& n, int m, int add) { // decimal long multiply
+                std::string r; int carry = add;
+                for (int i = (int)n.size() - 1; i >= 0; i--) {
+                    int p = (n[i] - '0') * m + carry;
+                    r += (char)('0' + p % 10); carry = p / 10;
+                }
+                while (carry) { r += (char)('0' + carry % 10); carry /= 10; }
+                while (r.size() > 1 && r.back() == '0') r.pop_back();
+                std::reverse(r.begin(), r.end());
+                return r.empty() ? std::string("0") : r;
+            };
+            for (int d : intDigits) dec = mulAdd(dec, base, d);
+            auto il = std::make_unique<IntLit>(0);
+            il->big = dec;
+            numNode = std::move(il);
         }
         else numNode = std::make_unique<IntLit>(val);
         size_t ss = expPart.find("**");
@@ -4137,10 +4162,12 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
     if (std::isdigit((unsigned char)w[i]) && !neg) { // :42name — value-first pair
         size_t d = i; while (d < w.size() && std::isdigit((unsigned char)w[d])) d++;
         if (d < w.size() && (std::isalpha((unsigned char)w[d]) || w[d] == '_')) {
+            std::string ds = w.substr(i, d - i);
+            if (ds.size() > 18) return nullptr; // past long long: not a value-first pair
             auto pe = std::make_unique<PairExpr>();
             pe->colonForm = true;
             pe->key = w.substr(d);
-            pe->value = std::make_unique<IntLit>(std::stoll(w.substr(i, d - i)));
+            pe->value = std::make_unique<IntLit>(std::stoll(ds));
             return pe;
         }
         return nullptr;
@@ -4656,8 +4683,6 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (matchOp("-->")) {
             if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
-            else if (isKind(Tok::Ident) && (cur().text == "True" || cur().text == "False" || cur().text == "Nil"))
-                sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
             else if (isKind(Tok::Ident)) sigRetType_ = cur().text; // remember the return type
             else if (isKind(Tok::IntLit) || isKind(Tok::NumLit) || isKind(Tok::StrLit) || isKind(Tok::StrInterp))
                 sigRetLiteral_ = parsePrimary(); // `(… --> 1)`: literal return value
@@ -5070,7 +5095,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // invocant marker:  method m ($self: $arg)  — ':' separates invocant from rest
         if (isOp(":")) { advance(); p.invocant = true; params.push_back(std::move(p)); continue; }
         // where / is / returns / of trait clauses
-        while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of") || isIdent("of")) {
+        while (isIdent("where") || isIdent("is") || isIdent("returns") || isIdent("of")) {
             std::string trait = advance().text;
             if (trait == "where") p.whereExpr = parseExpr(BP_ASSIGN + 1); // stop before the `= default`
             else if (!isKind(Tok::Comma) && !isKind(Tok::RParen) && !isKind(Tok::End) && !isOp("=")) {
@@ -6104,7 +6129,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
         if (isIdent("if")) // C-style `else if` — Raku spells it elsif
             throw ParseError("Please use 'elsif' instead of 'else if'",
                              cur().line, "X::Syntax::Malformed::Elsif", {});
-        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->elseVar = (sl ? "*" : "") + advance().text; } // else -> $x / -> *@x
+        if (matchOp("->")) { bool sl = matchOp("*"); if (isKind(Tok::Var)) s->elseVar = (sl ? "*" : "") + advance().text; skipBindTraits(); } // else -> $x is copy / -> *@x
         s->elseBlock = parseBlock();
     }
     return s;
@@ -6195,6 +6220,21 @@ ExprPtr Parser::applyExprModifiers(ExprPtr e) {
             if (neg) { tern->then = std::move(empty); tern->els = std::move(e); }
             else     { tern->then = std::move(e); tern->els = std::move(empty); }
             e = std::move(tern);
+            continue;
+        }
+        if (isIdent("with") || isIdent("without")) {
+            // `$(EXPR with X)` — a topicalizer, like the plain-paren path:
+            // desugar to  do { with X { EXPR } }.
+            std::string mod = advance().text;
+            auto gs = std::make_unique<GivenStmt>();
+            gs->topic = parseExpression();
+            gs->defGuard = (mod == "with") ? 1 : 2;
+            auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+            gs->body = std::make_unique<Block>();
+            gs->body->stmts.push_back(std::move(es));
+            auto be = std::make_unique<BlockExpr>(); be->body.push_back(std::move(gs));
+            auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+            e = std::move(u);
             continue;
         }
         if (isIdent("for")) { // (EXPR for LIST) → map({ EXPR }, LIST)

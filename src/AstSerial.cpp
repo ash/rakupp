@@ -53,6 +53,15 @@ struct Reader {
         return v;
     }
     int64_t ivar() { uint64_t u = uvar(); return (int64_t)(u >> 1) ^ -(int64_t)(u & 1); }
+    // element count for a container about to be resize()d: every element costs
+    // at least one byte, so a count past the remaining bytes is corruption —
+    // throw the typed error the callers catch (cache miss + reparse) instead of
+    // letting resize() die with length_error/bad_alloc.
+    size_t count() {
+        uint64_t n = uvar();
+        if (n > (uint64_t)(end - p)) throw AstSerialError{"corrupt count in AST cache"};
+        return (size_t)n;
+    }
 };
 
 // ---- scalar field operations, one overload set per direction ------------
@@ -98,7 +107,7 @@ template <class IO> void ioParams(IO& io, std::vector<Param>& ps);
 template <class IO, class T>
 void ioVec(IO& io, std::vector<T>& v) {
     if constexpr (IO::reading) {
-        size_t n = (size_t)io.uvar();
+        size_t n = io.count();
         v.clear(); v.resize(n);
         for (auto& x : v) io_(io, x);
     } else {
@@ -110,7 +119,7 @@ void ioVec(IO& io, std::vector<T>& v) {
 // vector<ExprPtr> / vector<StmtPtr>
 template <class IO> void ioExprVec(IO& io, std::vector<ExprPtr>& v) {
     if constexpr (IO::reading) {
-        size_t n = (size_t)io.uvar(); v.clear(); v.resize(n);
+        size_t n = io.count(); v.clear(); v.resize(n);
         for (auto& x : v) ioExpr(io, x);
     } else {
         io.uvar(v.size());
@@ -119,7 +128,7 @@ template <class IO> void ioExprVec(IO& io, std::vector<ExprPtr>& v) {
 }
 template <class IO> void ioStmtVec(IO& io, std::vector<StmtPtr>& v) {
     if constexpr (IO::reading) {
-        size_t n = (size_t)io.uvar(); v.clear(); v.resize(n);
+        size_t n = io.count(); v.clear(); v.resize(n);
         for (auto& x : v) ioStmt(io, x);
     } else {
         io.uvar(v.size());
@@ -164,7 +173,7 @@ template <class IO> void ioParam(IO& io, Param& p) {
 
 template <class IO> void ioParams(IO& io, std::vector<Param>& ps) {
     if constexpr (IO::reading) {
-        size_t n = (size_t)io.uvar(); ps.clear(); ps.resize(n);
+        size_t n = io.count(); ps.clear(); ps.resize(n);
         for (auto& p : ps) ioParam(io, p);
     } else {
         io.uvar(ps.size());
@@ -207,7 +216,8 @@ template <class IO> void visit(IO& io, VarExpr& n)  { F(io, n.name); F(io, n.dec
                                                       ioExpr(io, n.declDefault);
                                                       F(io, n.declDynamic); F(io, n.declExport); F(io, n.pkgSymbol);
                                                       F(io, n.containerIs); F(io, n.containerOf);
-                                                      ioExpr(io, n.declShape); F(io, n.namedBind); }
+                                                      ioExpr(io, n.declShape); F(io, n.namedBind);
+                                                      F(io, n.processScoped); }
 template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); }
 template <class IO> void visit(IO& io, ListExpr& n) { ioExprVec(io, n.items); F(io, n.parenned); F(io, n.semicolon); }
 template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr); ioExprVec(io, n.segs);
@@ -241,7 +251,7 @@ template <class IO> void visit(IO& io, VarDecl& n)  { F(io, n.scope); ioVec(io, 
 template <class IO> void visit(IO& io, SubDecl& n)  {
     F(io, n.name); ioParams(io, n.params);
     if constexpr (IO::reading) {
-        size_t k = (size_t)io.uvar(); n.altParams.clear(); n.altParams.resize(k);
+        size_t k = io.count(); n.altParams.clear(); n.altParams.resize(k);
         for (auto& a : n.altParams) ioParams(io, a);
     } else {
         io.uvar(n.altParams.size());
@@ -249,7 +259,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     }
     ioStmtVec(io, n.body);
     if constexpr (IO::reading) {
-        size_t k = (size_t)io.uvar(); n.traits.clear(); n.traits.resize(k);
+        size_t k = io.count(); n.traits.clear(); n.traits.resize(k);
         for (auto& t : n.traits) ioTrait(io, t);
     } else {
         io.uvar(n.traits.size());
@@ -266,11 +276,11 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);
     if constexpr (IO::reading) {
-        size_t k = (size_t)io.uvar(); n.attrs.clear(); n.attrs.resize(k);
+        size_t k = io.count(); n.attrs.clear(); n.attrs.resize(k);
         for (auto& a : n.attrs) ioAttr(io, a);
-        k = (size_t)io.uvar(); n.methods.clear(); n.methods.resize(k);
+        k = io.count(); n.methods.clear(); n.methods.resize(k);
         for (auto& m : n.methods) ioSubDecl(io, m);
-        k = (size_t)io.uvar(); n.rules.clear(); n.rules.resize(k);
+        k = io.count(); n.rules.clear(); n.rules.resize(k);
         for (auto& r : n.rules) ioRule(io, r);
     } else {
         io.uvar(n.attrs.size());   for (auto& a : n.attrs) ioAttr(io, a);
@@ -283,7 +293,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
     ioExpr(io, n.verExpr); ioExpr(io, n.authExpr); ioExpr(io, n.apiExpr);
     F(io, n.repr); ioParams(io, n.roleParams);
     if constexpr (IO::reading) {
-        size_t k = (size_t)io.uvar(); n.roleArgs.clear(); n.roleArgs.resize(k);
+        size_t k = io.count(); n.roleArgs.clear(); n.roleArgs.resize(k);
         for (auto& ra : n.roleArgs) { F(io, ra.first); ioExprVec(io, ra.second); }
     } else {
         io.uvar(n.roleArgs.size());
@@ -297,7 +307,7 @@ template <class IO> void visit(IO& io, EnumDecl& n) { F(io, n.name); ioExpr(io, 
 template <class IO> void visit(IO& io, IfStmt& n)   {
     F(io, n.thenVar);
     if constexpr (IO::reading) {
-        size_t k = (size_t)io.uvar(); n.branches.clear(); n.branches.resize(k);
+        size_t k = io.count(); n.branches.clear(); n.branches.resize(k);
         for (auto& br : n.branches) { ioExpr(io, br.first); ioBlock(io, br.second); }
     } else {
         io.uvar(n.branches.size());
@@ -307,7 +317,8 @@ template <class IO> void visit(IO& io, IfStmt& n)   {
     F(io, n.isUnless); F(io, n.modifier);
 }
 template <class IO> void visit(IO& io, WhileStmt& n){ ioExpr(io, n.cond); ioBlock(io, n.body); F(io, n.isUntil);
-                                                      F(io, n.var); F(io, n.asExpr); F(io, n.modifier); }
+                                                      F(io, n.var); F(io, n.asExpr); F(io, n.modifier);
+                                                      ioParams(io, n.params); }
 template <class IO> void visit(IO& io, ForStmt& n)  { ioExpr(io, n.list); ioVec(io, n.vars); F(io, n.rwVars);
                                                       F(io, n.destructure); ioParams(io, n.params);
                                                       ioBlock(io, n.body); F(io, n.asExpr); F(io, n.modifier); }

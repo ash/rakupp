@@ -14,7 +14,6 @@ namespace rakupp {
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
-    (void)rwArgs;
     if (inv.t == VT::Hash && !inv.hashKind.empty()) {
         bool isSet = inv.hashKind.find("Set") == 0;
         if (m == "default") return isSet ? Value::boolean(false) : Value::integer(0);
@@ -151,9 +150,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         long long n = inv.toInt();
         if (n == 0) return Value::str("0");
         bool neg = n < 0; unsigned long long u = neg ? -(unsigned long long)n : (unsigned long long)n;
-        static const char* D = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         std::string s;
-        while (u) { s = std::string(1, D[u % b]) + s; u /= b; }
+        while (u) { s = std::string(1, BD[u % b]) + s; u /= b; }
         return Value::str(neg ? "-" + s : s);
     }
     if (m == "polymod" && (inv.t == VT::Num || inv.t == VT::Rat)) {
@@ -277,18 +275,6 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "roots") { // $x.roots($n) — same as roots($x, $n)
             auto it = builtins_.find("roots");
             if (it != builtins_.end()) { ValueList ra{inv, a0()}; return it->second(*this, ra); }
-        }
-        if (m == "roots") { // the n n-th roots, as Complexes around the circle
-            long long n = args.empty() ? 1 : a0().toInt();
-            Value out = Value::array(); out.isList = true;
-            if (n <= 0) { out.arr->push_back(Value::number(std::nan(""))); return out; }
-            double mag = std::pow(std::abs(x), 1.0 / (double)n);
-            double th0 = x < 0 ? 3.14159265358979323846 : 0.0;
-            for (long long k = 0; k < n; k++) {
-                double th = (th0 + 2 * 3.14159265358979323846 * k) / (double)n;
-                out.arr->push_back(Value::complex(mag * std::cos(th), mag * std::sin(th)));
-            }
-            return out;
         }
         if (m == "unpolar") { // $mag.unpolar($angle) — Complex from polar coordinates
             double ang = args.empty() ? 0.0 : a0().toNum();
@@ -964,7 +950,6 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (ioSpecMethod(*this, spec, "is-absolute", sa, r))
                     return m == "is-absolute" ? r : Value::boolean(!r.truthy());
             }
-            if (m == "path") return Value::str(inv.s);
             if (m == "raku") {
                 std::string q = inv.s; // escape for a double-quoted literal
                 std::string esc; for (char ch : q) { if (ch == '"' || ch == '\\') esc += '\\'; esc += ch; }
@@ -1850,20 +1835,6 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "uniprop") return cps.empty() ? Value::str("") : one(cps[0]);
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         for (uint32_t cp : cps) out.arr->push_back(one(cp));
-        return out;
-    }
-    if (m == "unival" || m == "univals") {
-        auto uv = [&](uint32_t cp) -> Value {
-            long long nu, de;
-            if (!uniNumValue(cp, nu, de)) return Value::number(std::nan(""));
-            return de == 1 ? Value::integer(nu) : Value::ratZ(BigInt(nu), BigInt(de));
-        };
-        std::vector<uint32_t> cps;
-        if (inv.t == VT::Int || inv.t == VT::Bool) cps.push_back((uint32_t)inv.toInt());
-        else cps = utf8cp(inv.toStr());
-        if (m == "unival") return cps.empty() ? Value::number(std::nan("")) : uv(cps[0]);
-        Value out = Value::array(); out.isList = true; out.s = "Seq";
-        for (uint32_t cp : cps) out.arr->push_back(uv(cp));
         return out;
     }
     if (m == "uc") return Value::str(mapCase(inv.toStr(), 1, 0));

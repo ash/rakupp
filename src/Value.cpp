@@ -10,16 +10,6 @@
 #include <limits>
 #include <sstream>
 
-// codepoint -> UTF-8 (for Str-Range element rendering)
-static std::string cpToU8(uint32_t cp) {
-    std::string o;
-    if (cp < 0x80) o += (char)cp;
-    else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
-    else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
-    else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
-    return o;
-}
-
 namespace rakupp {
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
@@ -121,13 +111,18 @@ long long Value::toInt() const {
             if (n <= -9223372036854775808.0) return -9223372036854775807LL - 1;
             return (long long)n;
         case VT::Rat:  { if (!ratN || !ratD || ratD->isZero()) return 0; BigInt q, r; BigInt::divmod(*ratN, *ratD, q, r); return q.toLL(); }
-        case VT::Str:  { try {
+        case VT::Str:  {
             // a Blob/Buf numifies to its ELEMENT COUNT (Rakudo: `8 * $msg` is
             // bits, `blob32 $M where $M == 16` counts words), never by parsing
             // its bytes as text
             if (hashKind == "Blob" || hashKind == "Buf") return blobElems();
-            size_t pos = 0;
-            long long v = std::stoll(s, &pos);
+            // strtoll, not stoll: the throw/catch on a non-numeric string costs
+            // ~7 µs per call (same fix toNum already carries — see strToNumOr0)
+            const char* p0 = s.c_str(); char* end = nullptr;
+            errno = 0;
+            long long v = std::strtoll(p0, &end, 10);
+            if (end == p0 || errno == ERANGE) return 0; // no digits / overflow: stoll-catch parity
+            size_t pos = (size_t)(end - p0);
             // the string is a wider numeric literal ("3.14", "1.23E4", "1/3"):
             // numify the whole thing, then truncate — like .Int on the numeric
             if (pos < s.size() && (s[pos] == '.' || s[pos] == 'e' || s[pos] == 'E' || s[pos] == '/')) {
@@ -142,8 +137,13 @@ long long Value::toInt() const {
                 } catch (...) {}
             }
             return v;
-        } catch (...) { return 0; } }
-        case VT::Match: { try { return std::stoll(s); } catch (...) { return 0; } } // matched text as a number
+        }
+        case VT::Match: { // matched text as a number (strtoll: no exception cost)
+            const char* p0 = s.c_str(); char* end = nullptr;
+            errno = 0;
+            long long v = std::strtoll(p0, &end, 10);
+            return (end == p0 || errno == ERANGE) ? 0 : v;
+        }
         case VT::Array: return arr ? (long long)arr->size() : 0;
         case VT::Hash:
             // A tr/// StrDistance numifies to the substitution count.
@@ -974,8 +974,15 @@ std::string strPred(const std::string& s, bool& ok) {
 }
 
 bool valueEq(const Value& a, const Value& b) {
-    if (a.isNumeric() && b.isNumeric())
+    if (a.isNumeric() && b.isNumeric()) {
+        // exact Int/Int first: as doubles, 2**53 == 2**53+1 (same lesson valueCmp
+        // already carries for its big-Int cross-multiply arm)
+        if (a.t == VT::Int && b.t == VT::Int) {
+            if (a.big || b.big) return BigInt::cmp(a.toBig(), b.toBig()) == 0;
+            return a.i == b.i;
+        }
         return a.toNum() == b.toNum();
+    }
     return a.toStr() == b.toStr();
 }
 

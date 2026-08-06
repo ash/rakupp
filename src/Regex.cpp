@@ -466,11 +466,9 @@ Regex::NodePtr Regex::parseAtom() {
             if (peek() == '>') pos_++;
             std::stable_sort(words.begin(), words.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
             auto alt = std::make_unique<Node>(); alt->k = K::Alt;
-            for (auto& w : words) {
-                if (w.size() == 1) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_; n->lit = w; alt->kids.push_back(std::move(n)); }
-                else { auto seq = std::make_unique<Node>(); seq->k = K::Seq;
-                    for (char ch : w) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
-                    alt->kids.push_back(std::move(seq)); }
+            for (auto& w : words) { // each word is ONE Lit: the :i fold matcher needs whole spans
+                auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_;
+                n->lit = w; alt->kids.push_back(std::move(n));
             }
             return alt;
         }
@@ -808,7 +806,8 @@ Regex::NodePtr Regex::parseAtom() {
                 if (name == "digit") fl = "d";
                 else if (name == "alpha") fl = "a";
                 else if (name == "alnum") fl = "ad"; // NB `ident` is multi-char → subrule path
-                else if (name == "space" || name == "blank") fl = "s";
+                else if (name == "space") fl = "s";
+                else if (name == "blank") fl = "b"; // horizontal ws only (space/tab), not \n
                 else if (name == "upper") fl = "u";
                 else if (name == "lower") fl = "l";
                 else if (name == "xdigit") fl = "x";
@@ -847,18 +846,21 @@ Regex::NodePtr Regex::parseAtom() {
                 return g;
             }
         }
-        while (peek() == ' ' || peek() == '\t') pos_++; // allow `<[ … ] >` (space before close)
-        if (peek() == '>') pos_++;
-        return node;
+        // (unreachable: every `<...>` branch above returns after eating its own `>`)
     }
     if (c == '\'' || c == '"') {
         char q = c;
         pos_++;
         auto seq = std::make_unique<Node>(); seq->k = K::Seq;
         std::string lit;
-        // a quoted multi-char literal: build a Seq of single-char Lits so quantifiers stay sane
+        // a quoted multi-char literal is ONE Lit node: the fold-aware :i matcher
+        // must see one-to-many case folds (text ß vs pattern SS) inside a single
+        // node — per-char Lits could never match them (m:i/'WEISS'/ vs Weiß).
+        // Quantifiers are unaffected: they bind the returned atom whole.
         auto flush = [&]() {
-            for (char ch : lit) { auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_; n->lit = std::string(1, ch); seq->kids.push_back(std::move(n)); }
+            if (lit.empty()) return;
+            auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->imark = curImark_;
+            n->lit = lit; seq->kids.push_back(std::move(n));
             lit.clear();
         };
         while (!eof() && peek() != q) {
@@ -1120,9 +1122,16 @@ void Regex::parseClassBodyMember(Node* node) {
                 // an escaped RANGE endpoint: `\x21..\xFF` (Cro::HTTP header
                 // field-content) / `\c32..\c126` (JSON::Tiny) / `\x21..z` —
                 // consume `..` and the second endpoint
-                bool loNum = toks.size() == 1 && (le != 'c' || (!toks[0].empty() && std::isdigit((unsigned char)toks[0][0])));
-                if (loNum && peek() == '.' && peek(1) == '.') {
-                    uint32_t lo = (uint32_t)std::strtol(toks[0].c_str(), nullptr, le == 'x' ? 16 : le == 'o' ? 8 : 10);
+                int32_t loCp = -1; // single token: candidate low endpoint of a range
+                if (toks.size() == 1 && !toks[0].empty()) {
+                    size_t la = toks[0].find_first_not_of(" \t"), lb = toks[0].find_last_not_of(" \t");
+                    std::string lt = la == std::string::npos ? "" : toks[0].substr(la, lb - la + 1);
+                    if (le != 'c') loCp = (int32_t)std::strtol(lt.c_str(), nullptr, le == 'x' ? 16 : 8);
+                    else if (!lt.empty() && std::isdigit((unsigned char)lt[0])) loCp = (int32_t)std::strtol(lt.c_str(), nullptr, 10);
+                    else if (!lt.empty()) loCp = namedCp(lt); // `\c[LATIN…A]..\c[LATIN…Z]` — named endpoints range too
+                }
+                if (loCp >= 0 && peek() == '.' && peek(1) == '.') {
+                    uint32_t lo = (uint32_t)loCp;
                     pos_ += 2;
                     while (std::isspace((unsigned char)peek())) pos_++;
                     int32_t hi = -1;
@@ -1346,10 +1355,16 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
     const long UNB = -1, CAP = 1000000000;
     switch (n->k) {
         case K::Lit: return {(long)n->lit.size(), n->imark ? UNB : (long)n->lit.size()}; // :ignoremark may consume trailing marks
-        case K::Any: return {1, 1};
+        case K::Any: return {1, 4}; // `.` consumes a whole grapheme — up to 4 bytes per codepoint
         case K::Class:
-            // uprop and \s classes decode whole codepoints — up to 4 bytes
-            if (!n->uprop.empty() || n->classFlags.find('s') != std::string::npos) return {1, 4};
+            // anything that can match beyond ASCII decodes whole codepoints (up to
+            // 4 bytes): uprop, cp ranges, cluster members, negation, and the
+            // codepoint-capable flags. The width is only a lookbehind scan bound,
+            // so widening is safe; understating it made `<?after \w>` fail after
+            // a multibyte char (the scan probed only pos-1, a continuation byte).
+            if (!n->uprop.empty() || !n->cpRanges.empty() || !n->clusterMembers.empty() ||
+                n->negate || !n->negClassFlags.empty() ||
+                n->classFlags.find_first_of("swadulp") != std::string::npos) return {1, 4};
             return {1, 1};
         case K::Seq: {
             long lo = 0, hi = 0;
@@ -1401,6 +1416,8 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
     return {0, UNB};
 }
 
+static const GrammarHooks::ParamMap kNoParams; // shared empty map for hook calls
+
 bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const {
     // Step budget: bounds catastrophic backtracking and unbounded CPS recursion.
     // ~8M steps is far beyond any real match yet trips in well under a second on
@@ -1417,7 +1434,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (!child) return k(pos);
             bool m = false;
             if (!n->behind) {
-                MState sub{st.s, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, st.resolver, st.grammar};
+                MState sub{st.s, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, st.resolver, st.grammar};
                 sub.hooks = st.hooks; sub.startPos = pos; // propagate hooks so embedded {code}/$var work
                 m = matchNode(child, sub, pos, [](long) { return true; });
             } else {
@@ -1431,7 +1448,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 long lo = n->lookMax < 0 ? 0 : pos - n->lookMax;
                 if (lo < 0) lo = 0;
                 for (long j = hi; j >= lo && !m; j--) {
-                    MState sub{st.s, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, st.resolver, st.grammar};
+                    MState sub{st.s, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, st.resolver, st.grammar};
                     sub.hooks = st.hooks; sub.startPos = j;
                     if (matchNode(child, sub, j, [&](long e) { return e == pos; })) m = true;
                 }
@@ -1486,7 +1503,6 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 auto savedN = st.named.count(cn) ? st.named[cn] : std::pair<long,long>{-1,-1};
                 bool had = st.named.count(cn);
                 st.named[cn] = {sub.from, sub.to};
-                st.subs[cn] = {sub.from, sub.to};
                 ParseNode leaf; leaf.name = cn; leaf.from = sub.from; leaf.to = sub.to;
                 for (auto& kv : sub.named) leaf.named[kv.first] = kv.second;
                 leaf.caps = sub.caps;
@@ -1504,7 +1520,6 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (k(sub.to)) return true;
                 st.children[cn].pop_back(); if (st.children[cn].empty()) st.children.erase(cn);
                 if (had) st.named[cn] = savedN; else st.named.erase(cn);
-                st.subs.erase(cn);
                 return false;
             }
             return k(sub.to);
@@ -1553,6 +1568,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         i += (size_t)lcl;
                         ip = (long)uniClusterEndUtf8(st.s, ip, len);
                     }
+                    // literal-prefix bookkeeping (LTM tie-break), same as the other Lit exits
+                    if (st.litPrefix < 0) st.litPrefix = st.startPos;
+                    if (st.litPrefix == pos) st.litPrefix = ip;
                     return k(ip);
                 }
             }
@@ -1741,8 +1759,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             return n->kids.empty() ? k(pos) : go(go, 0);
         }
         case K::Code: { // <?{…}>/<!{…}> assertion, or `:my …`/bare `{…}` side-effect (runOnly)
-            static const GrammarHooks::ParamMap noParams;
-            const auto& params = st.grammar ? st.grammar->currentParams() : noParams;
+            const auto& params = st.grammar ? st.grammar->currentParams() : kNoParams;
             if (n->runOnly) { // execute for side effects, zero-width, always pass
                 if (n->ltmStop && st.firstCode < 0) st.firstCode = pos; // a bare code block ends the LTM declarative prefix
                 if (st.hooks && st.hooks->runCaps) st.hooks->runCaps(n->lit, st.startPos, pos, st.named, st.caps, params);
@@ -1780,8 +1797,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 return false; // that group hasn't captured yet
             }
             if (!st.hooks || !st.hooks->str) return false;
-            static const GrammarHooks::ParamMap noParams;
-            const auto& params = st.grammar ? st.grammar->currentParams() : noParams;
+            const auto& params = st.grammar ? st.grammar->currentParams() : kNoParams;
             std::string v = st.hooks->str(n->lit, st.named, params);
             if (pos + (long)v.size() > (long)st.s.size()) return false;
             if (st.s.compare(pos, v.size(), v) != 0) return false;
@@ -1789,10 +1805,11 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
         }
         case K::Alt: {
             if (n->firstMatch) { // `||` — try branches in order, first that satisfies k wins
-                long cf0 = st.capFrom, ct0 = st.capTo, fc0 = st.firstCode;
+                long cf0 = st.capFrom, ct0 = st.capTo, fc0 = st.firstCode, lp0 = st.litPrefix;
                 for (auto& kid : n->kids) {
                     if (matchNode(kid.get(), st, pos, k)) return true;
                     st.capFrom = cf0; st.capTo = ct0; st.firstCode = fc0; // roll back a failed branch's <( )> / firstCode
+                    st.litPrefix = lp0; // …and its literal-prefix bookkeeping (LTM tie-break)
                 }
                 return false;
             }
@@ -1807,9 +1824,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // captures; snapshot the match-state containers so probing doesn't leak captures
             // into the commit (which would duplicate them into Arrays).
             auto savedCaps = st.caps; auto savedNamed = st.named;
-            auto savedSubs = st.subs; auto savedChildren = st.children;
+            auto savedChildren = st.children;
             auto savedReps = st.capReps;
-            long savedCapFrom = st.capFrom, savedCapTo = st.capTo, savedFirstCode = st.firstCode;
+            long savedCapFrom = st.capFrom, savedCapTo = st.capTo, savedFirstCode = st.firstCode, savedLitPrefix = st.litPrefix;
             std::vector<std::pair<long, size_t>> order; // (greedy end, branch index)
             for (size_t i = 0; i < n->kids.size(); i++) {
                 long e0 = -1;
@@ -1817,9 +1834,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (e0 >= 0) order.push_back({e0, i});
             }
             st.caps = std::move(savedCaps); st.named = std::move(savedNamed);
-            st.subs = std::move(savedSubs); st.children = std::move(savedChildren);
+            st.children = std::move(savedChildren);
             st.capReps = std::move(savedReps);
-            st.capFrom = savedCapFrom; st.capTo = savedCapTo; st.firstCode = savedFirstCode;
+            st.capFrom = savedCapFrom; st.capTo = savedCapTo; st.firstCode = savedFirstCode; st.litPrefix = savedLitPrefix;
             if (snap && st.hooks->restoreState) st.hooks->restoreState(snap);
             std::stable_sort(order.begin(), order.end(),
                              [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -1833,8 +1850,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             const Node* sep = n->sep.get(); // separator for `X+ % Y` (null if none)
             long mn = n->min, mx = n->max; bool greedy = n->greedy;
             if (!n->repCode.empty() && st.hooks && st.hooks->range) { // `** { … }` runtime bounds
-                static const GrammarHooks::ParamMap noParams;
-                const auto& params = st.grammar ? st.grammar->currentParams() : noParams;
+                const auto& params = st.grammar ? st.grammar->currentParams() : kNoParams;
                 auto rng = st.hooks->range(n->repCode, st.named, params); mn = rng.first; mx = rng.second;
             }
             auto rep = [&](auto&& self, long count, long p) -> bool {
@@ -1994,7 +2010,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
     if (!ok_ || !root_) return false;
     long budget = 0; // shared across start positions: a whole search is bounded, not each attempt
     for (long start = startPos; start <= (long)subject.size(); start++) {
-        MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+        MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
         st.lexNames = lexNames;
         st.hooks = runHooks; // standalone matches may still run {…} blocks
         st.startPos = start;  // where THIS attempt began — the `$/` a `{…}` block sees
@@ -2003,7 +2019,7 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
         try {
             if (matchNode(root_.get(), st, start, [&](long e) { endPos = e; return true; })) {
                 out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = st.capTo >= 0 ? st.capTo : endPos;
-                out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+                out.caps = st.caps; out.named = st.named;
                 out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
                 return true;
             }
@@ -2019,7 +2035,7 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
     if (!ok_ || !root_) return results;
     long budget = 0;
     for (long start = 0; start <= (long)subject.size(); start++) {
-        MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+        MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
         st.lexNames = lexNames;
         st.hooks = runHooks;
         st.startPos = start;
@@ -2030,7 +2046,7 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
             matchNode(root_.get(), st, start, [&](long e) -> bool {
                 RxMatch out;
                 out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : start; out.to = st.capTo >= 0 ? st.capTo : e;
-                out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+                out.caps = st.caps; out.named = st.named;
                 out.children = st.children; out.capReps = st.capReps;
                 out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
                 results.push_back(std::move(out));
@@ -2045,13 +2061,15 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
 bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const SubResolver& r,
                     const std::set<std::string>* lexNames) const {
     if (!ok_ || !root_) return false;
-    MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, {}, r ? &r : nullptr, nullptr};
+    MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
     st.lexNames = lexNames;
+    st.hooks = runHooks; // a `my regex` subrule still runs its {…} blocks (same as search)
+    st.startPos = pos;   // where this anchored attempt begins — the `$/` a block sees
     long endPos = -1;
     try {
         if (matchNode(root_.get(), st, pos, [&](long e) { endPos = e; return true; })) {
             out.matched = true; out.from = st.capFrom >= 0 ? st.capFrom : pos; out.to = st.capTo >= 0 ? st.capTo : endPos;
-            out.caps = st.caps; out.named = st.named; out.subs = st.subs;
+            out.caps = st.caps; out.named = st.named;
             out.children = st.children; out.capReps = st.capReps; out.listCaps = listCaps_; out.listNames = listNames_; out.hashNames = hashNames_;
             return true;
         }
@@ -2244,7 +2262,8 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     if (!rule) { // built-in char-class fallbacks for names the grammar doesn't define
         if (name == "digit") m.builtinClass = "d"; else if (name == "alpha") m.builtinClass = "a";
         else if (name == "alnum" || name == "ident") m.builtinClass = "ad";
-        else if (name == "space" || name == "blank") m.builtinClass = "s";
+        else if (name == "space") m.builtinClass = "s";
+        else if (name == "blank") m.builtinClass = "b"; // horizontal ws only
         else if (name == "upper") m.builtinClass = "u"; else if (name == "lower") m.builtinClass = "l";
         else if (name == "xdigit") m.builtinClass = "x";
     }
@@ -2313,38 +2332,44 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             if (matchSub(*r.cand, args, capKey, st, pos, k)) return true;
         return false;
     }
-    if (meta.isWs) { // built-in optional whitespace
-        long p = pos; while (p < (long)st.s.size() && std::isspace((unsigned char)st.s[p])) p++;
-        return k(p);
+    if (meta.isWs) { // built-in <ws>: \s* gated by <!ww> — same matcher as the plain-regex path
+        long p = builtinRuleMatch("ws", st.s, pos, (long)st.s.size());
+        return p < 0 ? false : k(p);
     }
-    // built-in char-class rules (<.alpha> …) when the grammar doesn't redefine them
+    // built-in rules (<.alpha> …, <ident>) when the grammar doesn't redefine them
     if (!meta.rule) {
-        const std::string& fl = meta.builtinClass;
-        if (!fl.empty()) {
+        long pend = -1;
+        if (name == "ident") { // real multi-char identifier, not a one-char class
+            pend = builtinRuleMatch("ident", st.s, pos, (long)st.s.size());
+            if (pend < 0) return false;
+        } else {
+            const std::string& fl = meta.builtinClass;
+            if (fl.empty()) return false; // unknown subrule
             if (pos >= (long)st.s.size()) return false;
             unsigned char c = (unsigned char)st.s[pos]; bool ok = false;
             for (char f : fl) switch (f) {
                 case 'd': ok |= (bool)std::isdigit(c); break; case 'a': ok |= (bool)std::isalpha(c); break;
                 case 's': ok |= (bool)std::isspace(c); break; case 'u': ok |= (bool)std::isupper(c); break;
                 case 'l': ok |= (bool)std::islower(c); break; case 'x': ok |= (bool)std::isxdigit(c); break;
+                case 'b': ok |= (c == ' ' || c == '\t'); break; // <blank>: horizontal ws
             }
             if (!ok) return false;
-            if (capKey.empty()) return k(pos + 1);
-            // A capturing built-in class inside a GRAMMAR records $<name> too — the
-            // plain-regex path already did, this one dropped it, so YAMLish's
-            // `x <xdigit>**2` saw an empty `$<xdigit>` and never decoded \xNN.
-            ParseNode pn; pn.name = name; pn.from = pos; pn.to = pos + 1;
-            bool hadSpan = st.named.count(capKey);
-            auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long,long>{-1,-1};
-            st.named[capKey] = {pos, pos + 1};
-            st.children[capKey].push_back(std::move(pn));
-            if (k(pos + 1)) return true;
-            st.children[capKey].pop_back();
-            if (st.children[capKey].empty()) st.children.erase(capKey);
-            if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
-            return false;
+            pend = pos + 1;
         }
-        return false; // unknown subrule
+        if (capKey.empty()) return k(pend);
+        // A capturing built-in rule inside a GRAMMAR records $<name> too — the
+        // plain-regex path already did, this one dropped it, so YAMLish's
+        // `x <xdigit>**2` saw an empty `$<xdigit>` and never decoded \xNN.
+        ParseNode pn; pn.name = name; pn.from = pos; pn.to = pend;
+        bool hadSpan = st.named.count(capKey);
+        auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long,long>{-1,-1};
+        st.named[capKey] = {pos, pend};
+        st.children[capKey].push_back(std::move(pn));
+        if (k(pend)) return true;
+        st.children[capKey].pop_back();
+        if (st.children[capKey].empty()) st.children.erase(capKey);
+        if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
+        return false;
     }
     // `<alias=rule>` captures under BOTH names in Rakudo: `<tags=tag-directive>`
     // fills `$<tags>` AND `$<tag-directive>`, which is how YAMLish's directives
@@ -2446,7 +2471,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         Regex* re = (args.empty() && meta.noArg) ? meta.noArg
                   : compiledFor(*static_cast<const Rule*>(meta.rule), name, args, bound);
         if (!re || !re->ok()) { if (memoise) memo_[mkey].matched = false; return false; }
-        Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
+        Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, nullptr, this};
         sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr;
         scope_.push_back(std::move(bound));
         // A `:my` rule opens a fresh dynamic scope: snapshot the interpreter's `:my` vars so
@@ -2503,7 +2528,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     Regex* re = (args.empty() && meta.noArg) ? meta.noArg
               : compiledFor(*static_cast<const Rule*>(meta.rule), name, args, bound);
     if (!re || !re->ok()) return false;
-    Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
+    Regex::MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, nullptr, this};
     sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr; // propagate hooks + candidate sym
     scope_.push_back(std::move(bound));
     std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
@@ -2549,7 +2574,7 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     // A proto rule used as the entry point (`.parse(:rule('lit'))`) dispatches to its
     // candidates with LTM, exactly as a `<lit>` subrule call would.
     if (protos.count(top)) {
-        Regex::MState st{input, {}, {}, {}, {}, nullptr, this};
+        Regex::MState st{input, {}, {}, {}, nullptr, this};
         st.startPos = 0; st.hooks = &hooks;
         long endPos = -1;
         scope_.push_back({});
@@ -2569,7 +2594,7 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     std::map<std::string, std::string> bound;
     Regex* re = compiled(top, "", bound);
     if (!re || !re->ok()) return false;
-    Regex::MState st{input, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, {}, nullptr, this};
+    Regex::MState st{input, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, nullptr, this};
     st.startPos = 0; st.hooks = &hooks; // top-level match starts at 0; wire the interpreter hooks
     long endPos = -1;
     scope_.push_back(std::move(bound)); // entry rule's params (defaults included) visible to its code blocks

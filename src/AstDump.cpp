@@ -16,7 +16,7 @@ struct Dumper {
 
     void params(const std::vector<Param>& ps, int ind) {
         for (auto& p : ps) {
-            std::string desc = std::string("param ") + p.sigil + (p.name.empty() ? "" : p.name.substr(p.name.empty() ? 0 : 1));
+            std::string desc = std::string("param ") + p.sigil + (p.name.empty() ? "" : p.name.substr(1));
             if (!p.type.empty()) desc += " : " + p.type;
             if (p.named) desc += " [named]";
             if (p.slurpy) desc += " [slurpy]";

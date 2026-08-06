@@ -58,10 +58,10 @@ static bool isBuiltin(const std::string& w) {
         // special terms & universal methods
         "self", "now", "time", "new", "bless", "clone", "gist", "raku", "perl",
         "say", "print", "put", "note", "printf", "sprintf", "warn", "die",
-        "fail", "abort", "exit", "sleep", "now", "time", "prompt", "dd",
+        "fail", "abort", "exit", "sleep", "prompt", "dd",
         "defined", "sqrt", "abs", "floor", "ceiling", "round", "truncate",
         "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos", "atan",
-        "atan2", "sign", "min", "max", "sum", "sum", "produce", "roundrobin",
+        "atan2", "sign", "min", "max", "sum", "produce", "roundrobin",
         "elems", "end", "keys", "values", "pairs", "kv", "antipairs", "invert",
         "map", "grep", "first", "sort", "reverse", "unique", "repeated",
         "squish", "rotor", "batch", "head", "tail", "flat", "list", "cache",
@@ -72,7 +72,7 @@ static bool isBuiltin(const std::string& w) {
         "pick", "roll", "zip", "cross", "reduce", "classify", "categorize",
         "slurp", "spurt", "open", "close", "unlink", "mkdir", "chdir",
         "run", "shell", "signal", "await", "start",
-        "so", "not", "chars", "bytes", "hyper", "race",
+        "so", "not", "bytes", "hyper", "race",
     };
     return nb.count(w) > 0;
 }
