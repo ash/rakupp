@@ -585,7 +585,7 @@ int main(int argc, char** argv) {
     if (argc >= 2 && argv[1][0] == '-' && argv[1][1] != '-' && argv[1][1] != '\0') {
         static const std::set<std::string> kLongNames = {
             "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
-            "ast", "dump-ast", "doc", "help", "version",
+            "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
         };
         std::string bare = argv[1] + 1;
         if (kLongNames.count(bare)) {
@@ -635,7 +635,9 @@ int main(int argc, char** argv) {
 "  rakupp --cpp SRC [-O]        Print the C++ that --exe would transpile to\n"
 "                               (add -O to print the optimized codegen instead)\n"
 "  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
-"                               reads stdin if no SRC), e.g. as a pygmentize drop-in\n"
+"                               reads stdin if no SRC), e.g. as a pygmentize drop-in.\n"
+"                               Flags compose in any order; bare `rakupp --ansi SRC`\n"
+"                               is a shorthand for `--highlight --ansi SRC`\n"
 "  rakupp --help, -h            Show this help\n"
 "  rakupp --version, -V         Show the version\n"
 "  rakupp --ffi-info            Show which FFI backend NativeCall will use\n"
@@ -674,11 +676,20 @@ int main(int argc, char** argv) {
 
     // --highlight [--html|--ansi] [FILE | -e CODE | -]  : syntax-highlight Raku
     // and exit. Default format is html (the course consumer); `-`/no file reads stdin,
-    // so it drops in for `pygmentize -f html -l raku`.
-    if (argc >= 2 && std::string(argv[1]) == "--highlight") {
-        std::string fmt = "html", src, srcFile;
+    // so it drops in for `pygmentize -f html -l raku`. The mode flags compose in
+    // any order (`--ansi --highlight` == `--highlight --ansi`), and a bare
+    // `--ansi`/`--terminal` implies --highlight (terminal output).
+    bool hlMode = false; std::string hlFmt = "html"; int hlStart = 1;
+    for (int k = 1; k < argc; k++) {
+        std::string a = argv[k];
+        if (a == "--highlight") { hlMode = true; hlStart = k + 1; }
+        else if (a == "--ansi" || a == "--terminal") { hlMode = true; hlFmt = "ansi"; hlStart = k + 1; }
+        else break; // the first non-mode argument ends the leading flag run
+    }
+    if (hlMode) {
+        std::string fmt = hlFmt, src, srcFile;
         bool haveSrc = false;
-        for (int k = 2; k < argc; k++) {
+        for (int k = hlStart; k < argc; k++) {
             std::string a = argv[k];
             if (a == "--html") fmt = "html";
             else if (a == "--ansi" || a == "--terminal") fmt = "ansi";
