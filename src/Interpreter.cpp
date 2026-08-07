@@ -1501,6 +1501,12 @@ static Value coerceHash(const Value& v, bool store = false) {
 // serialises who runs. See the declaration in Interpreter.h.
 static Interpreter* g_cbInterp = nullptr; // NativeCall callback trampoline target
 thread_local ExecContext Interpreter::tctx_;
+thread_local Value* Interpreter::topicWriteback_ = nullptr;
+thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
+thread_local bool Interpreter::noAutothread_ = false;
+thread_local int Interpreter::loopPhaserCtl_ = 0;
+thread_local const std::vector<Value*>* Interpreter::pendingRwSlots_ = nullptr;
+thread_local bool Interpreter::hoistingSubs_ = false;
 // Per-thread call-stack state (step 3a — see header).
 thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStack_;
 thread_local std::vector<std::shared_ptr<ReactCtx>> Interpreter::reactStack_;
@@ -1771,6 +1777,17 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, si
 bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Named subs are visible across their whole enclosing scope regardless of
     // textual position, so register them before executing the statements.
+    // Fast path first: most bodies (every loop body, most blocks) have nothing
+    // to hoist, and the thread_local flag save/restore is a TLV access on
+    // macOS — don't touch it unless a hoistable declaration actually exists.
+    bool anyDecl = false;
+    for (auto& s : stmts) {
+        if (s->kind == NK::SubDecl) {
+            auto* sd = static_cast<SubDecl*>(s.get());
+            if (!sd->isMethod && !sd->name.empty()) { anyDecl = true; break; }
+        }
+    }
+    if (!anyDecl) return false;
     bool any = false;
     bool saved = hoistingSubs_; hoistingSubs_ = true;
     for (auto& s : stmts) {

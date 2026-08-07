@@ -107,6 +107,18 @@ values, not your process), and how that compares to Rakudo. This is written
 
 ### P2 — runtime hardening (the "never corrupt the interpreter" work)
 
+**Progress (2026-08-07):** batch 1 thread-localed the per-thread execution
+state TSan ranked highest — the five one-shot call registers
+(`topicWriteback_`, `builtinTopicWB_`, `noAutothread_`, `loopPhaserCtl_`,
+`pendingRwSlots_`), plus `hoistingSubs_` and `curLine_`. parallel-map's
+TSan report count: **35 → 5**. The five survivors are a different class —
+lazily-computed caches on SHARED AST NODES (`hoistNeed` decided-once flags
+at Interpreter.cpp ~1711, and the per-loop-node state-scan cache inside
+`runLoopBody` from the v2.0.0 loopsum work): two threads deciding the same
+static property concurrently. Batch 2 needs `std::atomic<signed char>`
+with relaxed ordering (the value is idempotent), and a perf gate — those
+caches exist *because* the walk was 6% of fib.
+
 Audit and fix, in order of blast radius, everything the TSan job and the
 design doc's list point at:
 

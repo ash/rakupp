@@ -421,22 +421,30 @@ public:
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false);
+    // The one-shot CALL REGISTERS: set by a caller immediately before a call,
+    // consumed at callCallableRaw's entry. `static thread_local`, like
+    // redispatchStack_ — as plain members they were written by EVERY call on
+    // EVERY thread, which was ThreadSanitizer's top report (2,761 lines on a
+    // zero-sharing program) when the t/stress/ suite first ran under TSan.
+    // The set→consume window is contiguous within one thread, so thread-local
+    // is exactly their semantics.
+    //
     // When set (one-shot), a paramless block's mutated implicit $_ is copied back
     // here after the call — `@a.grep({ $_++; True })` writes into @a's element.
-    Value* topicWriteback_ = nullptr;
+    static thread_local Value* topicWriteback_;
     // The consumed topicWriteback_, re-exposed to a BUILTIN callable for the
     // duration of its run (builtins have no env for the $_ copy-back) — the
     // `++*` WhateverCode writes the driver's aliased element through it.
-    Value* builtinTopicWB_ = nullptr;
+    static thread_local Value* builtinTopicWB_;
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
-    bool noAutothread_ = false;
+    static thread_local bool noAutothread_;
     // one-shot: loop-phaser control for the next callCallable, set by an
     // iterating driver (.map over a block with FIRST/NEXT/LAST). Bits:
     // 1 = this call is the first iteration (run FIRST), 2 = the last (run LAST),
     // 4 = run NEXT after the body. Phasers run in the invocation env so block
     // params are visible (Base64's LAST reads its $c).
-    int loopPhaserCtl_ = 0;
+    static thread_local int loopPhaserCtl_;
     // depth of live CATCH handlers: .resume outside any handler dies catchably
     // (a bare ResumeEx with nothing to absorb it would reach std::terminate)
     int catchDepth_ = 0;
@@ -575,8 +583,9 @@ public:
     Value hyperPostfixApply(const std::string& op, Value v); // @a»++, %h»!, (2,3)»i — deep postfix
     void rwWriteThrough(Expr* target);
     // one-shot direct rw slots for the NEXT callCallableRaw activation (hyper-with
-    // element calls — same consume-at-top pattern as topicWriteback_)
-    const std::vector<Value*>* pendingRwSlots_ = nullptr;
+    // element calls — same consume-at-top pattern, and same thread_local
+    // reasoning, as topicWriteback_)
+    static thread_local const std::vector<Value*>* pendingRwSlots_;
     Value evalAssignInner(Assign* a, bool sink);
     bool anyRwLinks_ = false; // sticky: some frame created an rw link (guards the per-assignment hook)
     int scoreCandidate(const Value& cand, const ValueList& args); // -1 = no match, else specificity
@@ -613,7 +622,9 @@ public:
     static bool exprHasWhateverLit(const Expr* e); // does the expression contain a literal `*`? (curry test)
     // `»`.method over a container, shared by the direct and the curried paths
     Value hyperMethodEach(const Value& inv, const std::string& m, ValueList& args);
-    bool hoistingSubs_ = false;       // true while hoistSubs is registering (defers trait application)
+    // thread_local like the call registers above: written per-block / per-
+    // statement on every thread (the next TSan reports after the registers)
+    static thread_local bool hoistingSubs_; // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(Env* env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
@@ -953,7 +964,16 @@ private:
     int subtestDepth_ = 0;
     bool subtestFailed_ = false;
     bool bailedOut_ = false; // bail-out was called: suppress the trailing auto-plan
-    int curLine_ = 0;        // source line of the statement currently executing (for test diagnostics)
+    // Source line of the statement currently executing (test diagnostics).
+    // Written on EVERY statement, so a thread_local costs a TLV lookup per
+    // statement on macOS — measured +6% on loopsum. A relaxed atomic member
+    // is a plain store, defined under concurrency, and TSan-clean; the value
+    // being process-wide is the same arbitrariness diagnostics always had.
+    struct RelaxedLine {
+        std::atomic<int> v{0};
+        void operator=(int x) { v.store(x, std::memory_order_relaxed); }
+        operator int() const { return v.load(std::memory_order_relaxed); }
+    } curLine_;
     int todoRemaining_ = 0;  // number of upcoming tests marked TODO by a bare `todo` statement
     std::string todoReason_; // reason for the pending TODO block
     int dieOnFail_ = -1;     // cached RAKU_TEST_DIE_ON_FAIL flag (-1 = not yet read)
