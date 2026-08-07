@@ -160,11 +160,34 @@ disabled hooks cost nothing measurable, so there is no separate
 (`-o OUT`, `-O[level]`, `-I`) compose in any order with the mode, before or
 after the source file.
 
-## MAIN and the usage text
+## MAIN: how a program's own arguments parse
 
-A program with a `sub MAIN` gets Rakudo-compatible argument parsing and an
-auto-generated usage text: `--help` prints it to stdout (exit 0); a failed
+A program with a `sub MAIN` gets Rakudo-compatible argument parsing —
+byte-identical on a 30-case oracle matrix
+(`t/regression/main-args-conventions.raku`, which passes under both
+engines). The conventions, which are also the ordinary Unix ones:
+
+- **`--key=value` and `--key value` both work — the space form for
+  `Str`-typed named parameters.** `sub MAIN(Str :$foo, Bool :$verbose)`
+  accepts `prog --foo abc --verbose`. Only `Str`-typed named params pair
+  this way (Rakudo's rule, exactly: with `Int :$n`, `--n 42` fails — spell
+  it `--n=42`), and the next token is consumed unconditionally:
+  `--foo --verbose` makes `$foo eq "--verbose"`. Decided per multi
+  candidate.
+- **Options end at the first positional argument** (POSIX). After
+  `prog xx`, a later `--foo=abc` is the literal string `"--foo=abc"`. A
+  bare `--` is consumed and ends options — which is how you pass a
+  positional that starts with a dash: `prog -- -5`.
+- **Single-dash spellings are named options too**: `-v` is `:v`, `-n=3`
+  binds `:n(3)`, `-foo=bar` binds `:foo<bar>`. The whole rest of the token
+  is the name (`-xyz` is `:xyz`, not a `-x -y -z` cluster), and `--/key`
+  passes `False`.
+
+### The usage text
+
+The auto-generated usage: `--help` prints it to stdout (exit 0); a failed
 dispatch prints it to stderr (exit 2). `#|` docs the routine (the ` -- …`
 suffix on the usage line), a parameter's trailing `#=` docs that parameter
-in the option list, and a required named parameter prints without the
-optionality brackets. The text is byte-identical to Rakudo's.
+in the option list (and answers its `.WHY`), and a required named parameter
+prints without the optionality brackets. The text is byte-identical to
+Rakudo's.
