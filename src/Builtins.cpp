@@ -1,4 +1,6 @@
 #include "Interpreter.h"
+#include "Lexer.h"
+#include "Parser.h"
 #if !defined(_WIN32)
 #include <sys/resource.h>
 #endif
@@ -2470,6 +2472,75 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::object(od);
         };
         if (inv.t == VT::Type && inv.s == "CompUnit::RepositoryRegistry") {
+            // run-script("zef"): what an installed bin wrapper calls. Find the
+            // installed dist whose files map carries "bin/<name>", load the stored
+            // script from <repo>/resources/<id>, and run it AS THE PROGRAM (its
+            // `use Zef::CLI` mainline + MAIN dispatch; run-script never returns).
+            if (m == "run-script") {
+                std::string script = args.empty() ? "" : args[0].toStr();
+                for (auto& repo : rakuRepoPrefixes()) {
+                    std::string distDir = repo + "/dist";
+                    DIR* d = opendir(distDir.c_str());
+                    if (!d) continue;
+                    // among all dists providing this bin (stale versions linger
+                    // after upgrades), pick the highest "ver"
+                    auto verKey = [](const std::string& meta) {
+                        std::vector<long long> key;
+                        auto vp = meta.find("\"ver\"");
+                        if (vp == std::string::npos) return key;
+                        auto q1 = meta.find('"', meta.find(':', vp) + 1);
+                        auto q2 = meta.find('"', q1 + 1);
+                        if (q1 == std::string::npos || q2 == std::string::npos) return key;
+                        std::string v = meta.substr(q1 + 1, q2 - q1 - 1);
+                        long long cur = 0; bool any = false;
+                        for (char c : v) {
+                            if (c >= '0' && c <= '9') { cur = cur * 10 + (c - '0'); any = true; }
+                            else if (any) { key.push_back(cur); cur = 0; any = false; }
+                        }
+                        if (any) key.push_back(cur);
+                        return key;
+                    };
+                    std::string content, distId; std::vector<long long> bestVer;
+                    while (struct dirent* e = readdir(d)) {
+                        std::string n = e->d_name; if (n == "." || n == "..") continue;
+                        std::ifstream mf(distDir + "/" + n);
+                        if (!mf) continue;
+                        std::ostringstream ms; ms << mf.rdbuf(); std::string meta = ms.str();
+                        std::string tag = "\"bin/" + script + "\"";
+                        auto p = meta.find(tag);
+                        if (p == std::string::npos) continue;
+                        p = meta.find(':', p + tag.size());
+                        auto q1 = meta.find('"', p), q2 = q1 == std::string::npos ? q1 : meta.find('"', q1 + 1);
+                        if (p == std::string::npos || q2 == std::string::npos) continue;
+                        std::ifstream sf(repo + "/resources/" + meta.substr(q1 + 1, q2 - q1 - 1));
+                        if (!sf) continue;
+                        auto vk = verKey(meta);
+                        if (!distId.empty() && vk <= bestVer) continue;
+                        std::ostringstream sc; sc << sf.rdbuf();
+                        content = sc.str(); distId = n; bestVer = vk;
+                    }
+                    closedir(d);
+                    if (content.empty()) continue;
+                    resourceStack_.push_back(buildResourceMap(repo, distId));
+                    distStack_.push_back(buildInstalledDistribution(repo, distId));
+                    struct RG { std::vector<Value>& s; ~RG() { s.pop_back(); } } rg{resourceStack_};
+                    struct DG { std::vector<Value>& s; ~DG() { s.pop_back(); } } dg{distStack_};
+                    int code = 0;
+                    try {
+                        Lexer lx(content);
+                        Parser ps(lx.tokenize());
+                        Program prog = ps.parseProgram();
+                        code = run(prog);
+                    } catch (const ParseError& pe) {
+                        std::cerr << "===SORRY!=== Parse error at line " << pe.line
+                                  << " in installed script '" << script << "': " << pe.what() << "\n";
+                        code = 2;
+                    }
+                    throw ExitEx{code};
+                }
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    "Could not find an installed script named '" + script + "'"};
+            }
             if (m == "repository-for-name") {
                 std::string nm = args.empty() ? "" : args[0].toStr();
                 // rakupp resolves `use` from ~/.raku, so every writable name maps there;

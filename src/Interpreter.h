@@ -936,6 +936,7 @@ public:
     Value buildResourceMap(const std::string& repo, const std::string& distId); // dist files → resource Hash
     Value buildSourceResourceMap(const std::string& distRoot); // source checkout META6 `resources` → resource Hash
     Value buildDistribution(const std::string& distRoot);      // source checkout META6 → $?DISTRIBUTION
+    Value buildInstalledDistribution(const std::string& repo, const std::string& distId); // CURI dist/<id> meta → $?DISTRIBUTION
     std::string mainUsage();          // Rakudo-format usage text from &MAIN ($*USAGE)
     Value bufBitOp(Value& buf, const std::string& m, ValueList& args); // Buf read/write-(u)bits/-num/-int
     Value bufSplice(Value& buf, ValueList& args); // Buf.splice — mutates in place, answers the removed bytes
