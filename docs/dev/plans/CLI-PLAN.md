@@ -1,6 +1,12 @@
 # Plan: the command line — a real option surface
 
-**Status: planned, not started.** The smallest of the three **v3.0.0**
+**Status: in progress — step 1 (goldens + the option parser) landed
+2026-08-07.** 40 CLI goldens pin every pre-existing spelling in `t/run.raku`
+(written first, against the old binary); `main.cpp`'s argv[1] cascade is now
+one two-phase scan, and the measured breakages below all pass, plus `-v`,
+`--target=parse|ast`, position-independent `-h`/`-V`, mode-conflict errors,
+and `--` ending the options phase. Suite 355/355 both before and after.
+The smallest of the three **v3.0.0**
 pillars ([VERSIONS.md](VERSIONS.md); the others are
 [PARALLEL-PLAN.md](PARALLEL-PLAN.md) and [LTM-PLAN.md](LTM-PLAN.md)).
 Goal: make `rakupp`'s command line behave like a grown compiler's — options
@@ -183,6 +189,14 @@ all deltas inside the ±1.5% run-to-run noise band with no directional bias.
 Even with the hooks *firing* into a no-op counter, fib moved +0.7%. So the
 hooks ship always-compiled, gated by a runtime flag — no build variant, no
 `#ifdef`, no perf-guard risk.
+
+One portability lesson the prototype taught the hard way: it used
+`__attribute__((noinline))` and `__builtin_expect`, and when those lines
+accidentally reached CI they broke the MSVC build outright (run
+31168875033, 2026-08-07). The real hooks use portable spellings only —
+a plain `if` on the flag (the branch predictor needs no hint at this cost
+level, per the measurement) and MSVC-compatible attributes where one is
+truly needed.
 
 Scope for the first version, deliberately modest:
 

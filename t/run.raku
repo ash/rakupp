@@ -632,6 +632,147 @@ section('module loading and the precompiled-AST cache');
     ok($rt[1] == 0, 'the AST survives a serialize/deserialize round trip');
 }
 
+# ---- the CLI surface ---------------------------------------------------
+# Goldens for every command-line spelling that works today, written BEFORE
+# the v3 option-parser refactor (docs/dev/plans/CLI-PLAN.md, step 1) so the
+# refactor has something to be measured against. Each pin is a behavior to
+# PRESERVE; the position-dependence bugs the refactor fixes are deliberately
+# not pinned here.
+section('the CLI surface (goldens for the v3 parser refactor)');
+{
+    # Like run-rakupp, but stderr is part of the contract here.
+    sub run-rakupp-err(*@args) {
+        my $p = run($*EXECUTABLE, |@args, :out, :err);
+        ($p.out.slurp(:close), $p.err.slurp(:close), $p.exitcode)
+    }
+    my $work = $*TMPDIR.add("rakupp-cli-$*PID");
+    mkdir $work;
+
+    # -e, both spellings, and where the program's own args begin
+    is(run-rakupp('-e', 'say 42')[0], "42\n", '-e CODE');
+    is(run-rakupp('-esay 42')[0], "42\n", '-eCODE (glued)');
+    is(run-rakupp('-e', 'say @*ARGS.join(",")', 'a', 'b')[0], "a,b\n",
+       'args after the -e code reach @*ARGS');
+    is(run-rakupp('-e', 'say @*ARGS.join(",")', '--', '-x')[0], "--,-x\n",
+       'everything after the code is program args, -- included');
+
+    # the perl line-loop clusters
+    my $lines = $work.add('lines.txt'); $lines.spurt("a\nb\n");
+    my $more  = $work.add('more.txt');  $more.spurt("c\n");
+    is(run-rakupp('-n', '-e', 'say $_.uc', $lines.Str)[0], "A\nB\n", '-n -e loops over lines');
+    is(run-rakupp('-ne', 'say $_.uc', $lines.Str)[0], "A\nB\n", '-ne cluster');
+    is(run-rakupp('-pe', '$_ = $_ ~ "!"', $lines.Str)[0], "a!\nb!\n", '-pe prints $_ after the body');
+    is(run-rakupp('-ne', 'say $_', $lines.Str, $more.Str)[0], "a\nb\nc\n", '-n merges multiple files');
+
+    # the program arriving on stdin, both spellings
+    {
+        my $p = run($*EXECUTABLE, '-', :in, :out, :!err);
+        $p.in.print("say 7\n"); $p.in.close;
+        is($p.out.slurp(:close), "7\n", 'explicit - reads the program from stdin');
+    }
+    {
+        my $p = run($*EXECUTABLE, :in, :out, :!err);
+        $p.in.print("say 8\n"); $p.in.close;
+        is($p.out.slurp(:close), "8\n", 'bare rakupp with stdin redirected runs it as a program');
+    }
+
+    # -I, both spellings
+    my $mlib = $work.add('mlib'); mkdir $mlib;
+    $mlib.add('CliM.rakumod').spurt: q:to/END/;
+        unit module CliM;
+        sub cli-m() is export { 'from-module' }
+        END
+    my $useprog = $work.add('use.raku');
+    $useprog.spurt("use CliM;\nsay cli-m();\n");
+    is(run-rakupp('-I', $mlib.Str, $useprog.Str)[0], "from-module\n", '-I PATH (separate)');
+    is(run-rakupp("-I{$mlib.Str}", $useprog.Str)[0], "from-module\n", '-IPATH (attached)');
+
+    # a script's flags are its own business
+    my $argsee = $work.add('argsee.raku');
+    $argsee.spurt("say \@*ARGS.join(',');\n");
+    is(run-rakupp($argsee.Str, '--lint', '-h')[0], "--lint,-h\n",
+       'flags after the program file pass through untouched');
+
+    # --doc runs the program, then renders its pod
+    my $podp = $work.add('pod.raku');
+    $podp.spurt("=begin pod\nHello Pod\n=end pod\nsay 'ran';\n");
+    is(run-rakupp('--doc', $podp.Str)[0], "ran\nHello Pod\n", '--doc renders POD after running');
+
+    # help / version / ffi-info
+    my ($ho, $hx) = run-rakupp('--help');
+    ok($hx == 0 && $ho.contains('Usage:') && $ho.contains('--exe'), '--help prints usage, exit 0');
+    ok(run-rakupp('-h')[0] eq $ho, '-h is --help');
+    my ($vo, $vx) = run-rakupp('--version');
+    ok($vx == 0 && $vo.starts-with('Raku++ (rakupp)'), '--version identifies itself');
+    ok(run-rakupp('-V')[0] eq $vo, '-V is --version');
+    my ($fo, $fx) = run-rakupp('--ffi-info');
+    ok($fx == 0 && $fo.chars > 0, '--ffi-info answers');
+
+    # the single-dash long-option courtesy
+    {
+        my ($o, $e, $x) = run-rakupp-err('-version');
+        ok($x == 0 && $o.starts-with('Raku++ (rakupp)')
+                   && $e.contains("treating '-version' as '--version'"),
+           '-version is accepted as --version, with a note');
+    }
+
+    # -c: parse only
+    is(run-rakupp('-c', '-e', 'say 42')[0], "Syntax OK\n", '-c -e, clean');
+    my $cleanf = $work.add('clean.raku'); $cleanf.spurt("say 1;\n");
+    is(run-rakupp('-c', $cleanf.Str)[0], "Syntax OK\n", '-c FILE, clean');
+    {
+        my ($o, $e, $x) = run-rakupp-err('-c', '-e', 'my $x = ;');
+        ok($x == 2 && $e.contains('===SORRY!==='), '-c on a parse error: SORRY to stderr, exit 2');
+    }
+
+    # --lint: findings to stdout, summary to stderr, -q drops the summary
+    {
+        my ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'my $x = 1;');
+        ok($x == 1 && $o.contains('[unused-variable]') && $e.contains('1 warning'),
+           '--lint warns, exit 1, summary on stderr');
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'my $x = 1;', '-q');
+        ok($x == 1 && $o.contains('[unused-variable]') && !$e.contains('warning'),
+           '--lint -q keeps findings, drops the summary');
+        ($o, $e, $x) = run-rakupp-err('--lint', '-e', 'say 1');
+        ok($x == 0, '--lint on a clean program exits 0');
+    }
+
+    # --ast and its alias print the same tree
+    my ($ao, $ax) = run-rakupp('--ast', '-e', 'say 1');
+    ok($ax == 0 && $ao.chars > 0, '--ast prints a tree');
+    ok(run-rakupp('--dump-ast', '-e', 'say 1')[0] eq $ao, '--dump-ast is the same tree');
+
+    # --cpp emits C++
+    my ($go, $gx) = run-rakupp('--cpp', '-e', 'say 1');
+    ok($gx == 0 && $go.contains('#include'), '--cpp emits C++');
+
+    # --highlight family: html default, ansi variant, flags compose either way
+    my ($so, $sx) = run-rakupp('--highlight', '-e', 'say 42');
+    ok($sx == 0 && $so.contains('<span'), '--highlight emits HTML by default');
+    my $ansi = run-rakupp('--highlight', '--ansi', '-e', 'say 42')[0];
+    ok($ansi.contains(27.chr), '--highlight --ansi emits ANSI');
+    ok(run-rakupp('--ansi', '--highlight', '-e', 'say 42')[0] eq $ansi,
+       'highlight flags compose in any order');
+    ok(run-rakupp('--ansi', '-e', 'say 42')[0] eq $ansi, 'bare --ansi implies --highlight');
+
+    # a mode with no source is a usage error, exit 4
+    for <--exe --aot --bundle --ast --lint -c> -> $m {
+        my ($o, $e, $x) = run-rakupp-err($m);
+        ok($x == 4 && ($e.contains('Usage') || $o.contains('Usage')),
+           "$m with no source: usage error, exit 4");
+    }
+
+    # the unknown-option banner (Rakudo-compatible: exit 0), and a missing file
+    {
+        my ($o, $e, $x) = run-rakupp-err('-Z');
+        ok($x == 0 && $e.contains('Illegal option -Z'), 'unknown option: banner, exit 0');
+        ($o, $e, $x) = run-rakupp-err('/no/such/file.raku');
+        ok($x == 1 && $e.contains('Could not open'), 'missing file: error, exit 1');
+        ($o, $e, $x) = run-rakupp-err('--precomp-modules=bogus');
+        ok($x == 4 && $e.contains('Usage'), '--precomp-modules=bogus: usage error, exit 4');
+    }
+}
+
 # ---- summary ----------------------------------------------------------
 note "";
 say "1..$count";

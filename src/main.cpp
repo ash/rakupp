@@ -594,10 +594,175 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --help / -h : print usage and exit.  --version / -V : print the version.
-    if (argc >= 2) {
-        std::string a1 = argv[1];
-        if (a1 == "--help" || a1 == "-h") {
+    // ---- the option parser (v3 CLI plan, step 1) ---------------------------
+    // One two-phase scan replaces the old argv[1]-only mode cascade:
+    //   phase 1 (options) — flags in any order until the program token: a
+    //     source FILE, `-e CODE`, or `-`. A bare `--` ends the phase early.
+    //   phase 2 (program) — in run mode everything after the program token is
+    //     the program's @*ARGS, completely untouched. Tool modes (--lint,
+    //     --cpp, the compile modes, --highlight) keep scanning their own flags
+    //     after the source, which is why `--exe src.raku -o out` works.
+    // Mode flags are position-independent; combining two modes is an error.
+    // Flags that only exist in one mode (-q, -o, -O, --html) are collected
+    // wherever they appear and validated once the mode is known, so
+    // `-o out --exe src` is as good as `--exe src -o out`.
+    enum class Mode { Run, Help, Version, FfiInfo, Highlight, Ast, AstRoundtrip,
+                      PrecompSetting, PrecompInfo, PrecompClean, Check, Lint,
+                      Cpp, Bundle, Aot, Exe };
+    Mode mode = Mode::Run;
+    std::string modeTok;                  // the spelling that selected the mode (for messages)
+    std::vector<std::string> libPaths;    // -I, both spellings, any position
+    std::vector<std::string> progArgs;    // run mode: the program's @*ARGS
+    std::string src, fileName = "-e", outPath, ccOpt = "-O2";
+    std::string hlFmt = "html", precompKey, precompVal;
+    bool haveSrc = false, optionsDone = false;
+    bool optN = false, optP = false;      // the perl line-loop family
+    bool quiet = false;                   // --lint -q
+    bool optimize = false;                // -O (compile modes and --cpp)
+    bool sawHtml = false;                 // --html is only legal under --highlight
+
+    // Rakudo prints this banner for an unknown option and exits 0; we stay
+    // bug-compatible (the exit code included — it is pinned by the suite).
+    auto illegalOpt = [&](const std::string& a) -> int {
+        std::cerr << "Illegal option " << a.substr(0, a.find('=')) << "\n";
+        std::cerr << "  [switches] [--] [programfile] [arguments]\n";
+        return 0;
+    };
+    auto setMode = [&](Mode m, const std::string& tok) -> bool {
+        if (mode != Mode::Run && mode != m) {
+            std::cerr << "Cannot combine " << modeTok << " with " << tok << "\n";
+            return false;
+        }
+        mode = m; modeTok = tok; return true;
+    };
+    auto isCompileMode = [&](Mode m) {
+        return m == Mode::Bundle || m == Mode::Aot || m == Mode::Exe;
+    };
+
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        // phase 2: a running program's arguments are never ours to interpret
+        if (haveSrc && mode == Mode::Run) { progArgs.push_back(a); continue; }
+        if (!optionsDone && a == "--") { optionsDone = true; continue; }
+        bool isOpt = !optionsDone && a.size() > 1 && a[0] == '-';
+        if (isOpt) {
+            // the information modes win outright, from any position
+            if (a == "--help" || a == "-h")  { mode = Mode::Help; break; }
+            if (a == "--version" || a == "-V" || a == "-v") { mode = Mode::Version; break; }
+            if (a == "--ffi-info")           { mode = Mode::FfiInfo; break; }
+            if (a == "--doc") { rakupp::rakuppSetDocMode(true); continue; }
+            if (a == "-I") { if (i + 1 < argc) libPaths.push_back(argv[++i]); continue; }
+            if (a.rfind("-I", 0) == 0 && a.size() > 2) { libPaths.push_back(a.substr(2)); continue; }
+            // mode selectors
+            if (a == "--highlight") { if (!setMode(Mode::Highlight, a)) return 4; continue; }
+            if (a == "--ansi" || a == "--terminal") {
+                // a bare --ansi implies --highlight (terminal output)
+                if (mode != Mode::Run && mode != Mode::Highlight) return illegalOpt(a);
+                if (!setMode(Mode::Highlight, "--highlight")) return 4;
+                hlFmt = "ansi"; continue;
+            }
+            if (a == "--html") { sawHtml = true; hlFmt = "html"; continue; }
+            if (a == "--ast" || a == "--dump-ast") { if (!setMode(Mode::Ast, "--ast")) return 4; continue; }
+            if (a == "--ast-roundtrip") { if (!setMode(Mode::AstRoundtrip, a)) return 4; continue; }
+            if (a.rfind("--precomp-modules=", 0) == 0 || a.rfind("--precomp-files=", 0) == 0) {
+                if (!setMode(Mode::PrecompSetting, a.substr(0, a.find('=')))) return 4;
+                auto eq = a.find('=');
+                precompKey = a.substr(2, eq - 2); precompVal = a.substr(eq + 1);
+                continue;
+            }
+            if (a == "--precomp-info")  { if (!setMode(Mode::PrecompInfo, a)) return 4; continue; }
+            if (a == "--precomp-clean") { if (!setMode(Mode::PrecompClean, a)) return 4; continue; }
+            if (a == "-c")     { if (!setMode(Mode::Check, a)) return 4; continue; }
+            if (a == "--lint") { if (!setMode(Mode::Lint, a)) return 4; continue; }
+            if (a == "--cpp" || a == "--emit-cpp") { if (!setMode(Mode::Cpp, "--cpp")) return 4; continue; }
+            if (a == "--bundle") { if (!setMode(Mode::Bundle, a)) return 4; continue; }
+            if (a == "--aot")    { if (!setMode(Mode::Aot, a)) return 4; continue; }
+            if (a == "--exe")    { if (!setMode(Mode::Exe, a)) return 4; continue; }
+            if (a.rfind("--target=", 0) == 0) {  // Rakudo muscle memory
+                std::string t = a.substr(9);
+                if (t == "parse") { if (!setMode(Mode::Check, a)) return 4; }
+                else if (t == "ast") { if (!setMode(Mode::Ast, a)) return 4; }
+                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast)\n"; return 4; }
+                continue;
+            }
+            if (a == "--quiet" || a == "-q") { quiet = true; continue; }
+            if (a == "-o") { if (i + 1 < argc) outPath = argv[++i]; continue; }
+            if (a.rfind("-o", 0) == 0 && a.size() > 2) { outPath = a.substr(2); continue; }
+            // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/…)
+            // is forwarded to the C++ compiler for the generated binary.
+            if (a.rfind("-O", 0) == 0) { optimize = true; if (a.size() > 2) ccOpt = a; continue; }
+            if (a == "-e" || (a.rfind("-e", 0) == 0 && a.size() > 2)) {
+                if (!haveSrc) {
+                    if (a == "-e") {
+                        if (i + 1 >= argc) { std::cerr << "No code given for -e\n"; return 4; }
+                        src = argv[++i];
+                    }
+                    else { src = a.substr(2); } // attached form: -e"say 123"
+                    haveSrc = true; fileName = "-e";
+                }
+                continue;
+            }
+            // perl-style line-loop clusters: -n / -p / -np / -ne'CODE' … —
+            // scan left-to-right; 'e' ENDS the cluster with everything after
+            // it glued as the code (the shell strips the quotes).
+            if (mode == Mode::Run && !haveSrc) {
+                size_t j = 1; bool sawN = false, sawP = false, sawE = false;
+                while (j < a.size() && (a[j] == 'n' || a[j] == 'p' || a[j] == 'e')) {
+                    if (a[j] == 'n') sawN = true;
+                    else if (a[j] == 'p') sawP = true;
+                    else { sawE = true; j++; break; }
+                    j++;
+                }
+                if ((sawN || sawP) && (sawE || j >= a.size())) { // -nfoo is not a cluster
+                    optN |= sawN; optP |= sawP;
+                    if (sawE) {
+                        if (j < a.size()) { src = a.substr(j); }
+                        else {
+                            if (i + 1 >= argc) { std::cerr << "No code given for -e\n"; return 4; }
+                            src = argv[++i];
+                        }
+                        haveSrc = true; fileName = "-e";
+                    }
+                    continue;
+                }
+            }
+            return illegalOpt(a);
+        }
+        // a non-option token: the source program (or the tool's input)
+        if (a == "-" && !haveSrc) { // read it from stdin, explicitly
+            std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str();
+            haveSrc = true; fileName = "-";
+            continue;
+        }
+        if (!haveSrc) {
+            if (mode == Mode::Run) {
+                struct stat st;
+                if (stat(a.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                    std::cerr << "Can not run directory " << a << "\n"; return 1;
+                }
+            }
+            std::ifstream in(a);
+            if (!in) {
+                if (mode == Mode::Run) { std::cerr << "Could not open " << a << "\n"; return 1; }
+                std::cerr << "Cannot open file: " << a << "\n"; return 4;
+            }
+            std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fileName = a;
+            haveSrc = true;
+            continue;
+        }
+        // tool modes ignore stray extra non-options (as their old scans did)
+    }
+    // flags collected above that the final mode has no use for are illegal —
+    // same banner the flag would have earned in run mode all along
+    if (mode != Mode::Help && mode != Mode::Version && mode != Mode::FfiInfo) {
+        if (sawHtml && mode != Mode::Highlight) return illegalOpt("--html");
+        if (quiet && mode != Mode::Lint) return illegalOpt("-q");
+        if (!outPath.empty() && !isCompileMode(mode)) return illegalOpt("-o");
+        if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
+    }
+
+    if (mode == Mode::Help) {
+        {
             std::cout <<
 "Raku++ — a Raku interpreter and compiler in C++\n"
 "\n"
@@ -637,8 +802,10 @@ int main(int argc, char** argv) {
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in.\n"
 "                               Flags compose in any order; bare `rakupp --ansi SRC`\n"
 "                               is a shorthand for `--highlight --ansi SRC`\n"
+"  rakupp -c SRC                Check syntax only (parse and report, don't run)\n"
+"  rakupp --target=parse|ast    Rakudo-compatible aliases of -c / --ast\n"
 "  rakupp --help, -h            Show this help\n"
-"  rakupp --version, -V         Show the version\n"
+"  rakupp --version, -V, -v     Show the version\n"
 "  rakupp --ffi-info            Show which FFI backend NativeCall will use\n"
 "\n"
 "Environment:\n"
@@ -659,70 +826,35 @@ int main(int argc, char** argv) {
 "  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n";
             return 0;
         }
-        if (a1 == "--version" || a1 == "-V") {
+    }
+    if (mode == Mode::Version) {
 #ifndef RAKUPP_VERSION
 #define RAKUPP_VERSION "0.0.0"
 #endif
             std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
                          " — a Raku interpreter and compiler in C++ (implements Raku 6.d, with 6.e features)\n";
-            return 0;
-        }
-        // Which FFI backend NativeCall will use. The first question to ask of a
-        // native-call bug report, and how the test suite tells its two CI legs
-        // apart, so it is worth a flag of its own.
-        if (a1 == "--ffi-info") { std::cout << ffi::describe() << "\n"; return 0; }
+        return 0;
     }
+    // Which FFI backend NativeCall will use. The first question to ask of a
+    // native-call bug report, and how the test suite tells its two CI legs
+    // apart, so it is worth a flag of its own.
+    if (mode == Mode::FfiInfo) { std::cout << ffi::describe() << "\n"; return 0; }
 
     // --highlight [--html|--ansi] [FILE | -e CODE | -]  : syntax-highlight Raku
-    // and exit. Default format is html (the course consumer); `-`/no file reads stdin,
-    // so it drops in for `pygmentize -f html -l raku`. The mode flags compose in
-    // any order (`--ansi --highlight` == `--highlight --ansi`), and a bare
-    // `--ansi`/`--terminal` implies --highlight (terminal output).
-    bool hlMode = false; std::string hlFmt = "html"; int hlStart = 1;
-    for (int k = 1; k < argc; k++) {
-        std::string a = argv[k];
-        if (a == "--highlight") { hlMode = true; hlStart = k + 1; }
-        else if (a == "--ansi" || a == "--terminal") { hlMode = true; hlFmt = "ansi"; hlStart = k + 1; }
-        else break; // the first non-mode argument ends the leading flag run
-    }
-    if (hlMode) {
-        std::string fmt = hlFmt, src, srcFile;
-        bool haveSrc = false;
-        for (int k = hlStart; k < argc; k++) {
-            std::string a = argv[k];
-            if (a == "--html") fmt = "html";
-            else if (a == "--ansi" || a == "--terminal") fmt = "ansi";
-            else if (a == "-e" && k + 1 < argc) { src = argv[++k]; haveSrc = true; }
-            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; } // attached form: -e"say 123"
-            else if (a == "-") { /* explicit stdin */ }
-            else if (!haveSrc && a[0] != '-') { srcFile = a; }
-        }
-        if (!haveSrc) {
-            std::istream* in = &std::cin;
-            std::ifstream f;
-            if (!srcFile.empty()) {
-                f.open(srcFile);
-                if (!f) { std::cerr << "Cannot open file: " << srcFile << "\n"; return 4; }
-                in = &f;
-            }
-            std::ostringstream ss; ss << in->rdbuf(); src = ss.str();
-        }
-        std::cout << highlight(src, fmt);
+    // and exit. Default format is html (the course consumer); `-`/no file reads
+    // stdin, so it drops in for `pygmentize -f html -l raku`. Flag composition
+    // (`--ansi --highlight` == `--highlight --ansi`, bare `--ansi` implies
+    // --highlight) is the option parser's doing now.
+    if (mode == Mode::Highlight) {
+        if (!haveSrc) { std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str(); }
+        std::cout << highlight(src, hlFmt);
         return 0;
     }
 
     // --ast FILE | --ast -e CODE : print the parsed AST and exit
-    // (--dump-ast is kept as a backward-compatible alias)
-    if (argc >= 2 && (std::string(argv[1]) == "--ast" || std::string(argv[1]) == "--dump-ast")) {
-        std::string src, fname = "-e";
-        if (argc >= 4 && std::string(argv[2]) == "-e") src = argv[3];
-        else if (argc >= 3 && std::string(argv[2]).rfind("-e", 0) == 0 &&
-                 std::string(argv[2]).size() > 2) src = std::string(argv[2]).substr(2); // -e"say 123"
-        else if (argc >= 3) {
-            std::ifstream in(argv[2]);
-            if (!in) { std::cerr << "Cannot open file: " << argv[2] << "\n"; return 4; }
-            std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = argv[2];
-        } else { std::cerr << "Usage: rakupp --ast FILE | --ast -e CODE\n"; return 4; }
+    // (--dump-ast and --target=ast are kept as compatible aliases)
+    if (mode == Mode::Ast) {
+        if (!haveSrc) { std::cerr << "Usage: rakupp --ast FILE | --ast -e CODE\n"; return 4; }
         try {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
@@ -743,17 +875,15 @@ int main(int argc, char** argv) {
     //     writes, which the byte check alone cannot see.
     // Neither is redundant. This is the tool to run over a corpus after touching
     // Ast.h; the precompiled-module cache is only as trustworthy as it.
-    if (argc >= 3 && std::string(argv[1]) == "--ast-roundtrip") {
-        std::ifstream in(argv[2]);
-        if (!in) { std::cerr << "Cannot open file: " << argv[2] << "\n"; return 4; }
-        std::ostringstream ss; ss << in.rdbuf();
+    if (mode == Mode::AstRoundtrip) {
+        if (!haveSrc) { std::cerr << "Usage: rakupp --ast-roundtrip FILE\n"; return 4; }
         Program prog;
         try {
-            Lexer lexer(ss.str());
+            Lexer lexer(src);
             Parser parser(lexer.tokenize());
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
-            std::cerr << "PARSE " << argv[2] << ": " << e.what() << "\n";
+            std::cerr << "PARSE " << fileName << ": " << e.what() << "\n";
             return 3; // not a serializer failure — the file does not parse at all
         }
         try {
@@ -762,16 +892,16 @@ int main(int argc, char** argv) {
             deserializeAst(blob, back);
             std::string blob2 = serializeAst(back);
             if (blob != blob2) {
-                std::cerr << "ROUNDTRIP-BYTES " << argv[2] << " (" << blob.size()
+                std::cerr << "ROUNDTRIP-BYTES " << fileName << " (" << blob.size()
                           << " vs " << blob2.size() << ")\n";
                 return 1;
             }
             std::ostringstream d1, d2;
             dumpAst(prog, d1); dumpAst(back, d2);
-            if (d1.str() != d2.str()) { std::cerr << "ROUNDTRIP-DUMP " << argv[2] << "\n"; return 1; }
-            std::cout << "ok " << argv[2] << "  (" << blob.size() << " bytes)\n";
+            if (d1.str() != d2.str()) { std::cerr << "ROUNDTRIP-DUMP " << fileName << "\n"; return 1; }
+            std::cout << "ok " << fileName << "  (" << blob.size() << " bytes)\n";
         } catch (const AstSerialError& e) {
-            std::cerr << "SERIAL " << argv[2] << ": " << e.msg << "\n";
+            std::cerr << "SERIAL " << fileName << ": " << e.msg << "\n";
             return 1;
         }
         return 0;
@@ -786,11 +916,8 @@ int main(int argc, char** argv) {
     // module tree is a clear win, caching a small script's own parse is a wash —
     // so `modules` is the one likely to become a default later. See
     // docs/guide/CACHING.md for the measurements.
-    if (argc >= 2 && (std::string(argv[1]).rfind("--precomp-modules=", 0) == 0 ||
-                      std::string(argv[1]).rfind("--precomp-files=", 0) == 0)) {
-        std::string a = argv[1];
-        auto eq = a.find('=');
-        std::string key = a.substr(2, eq - 2), val = a.substr(eq + 1);
+    if (mode == Mode::PrecompSetting) {
+        const std::string& key = precompKey, & val = precompVal;
         bool on = (val == "on" || val == "1" || val == "true" || val == "yes");
         if (!on && !(val == "off" || val == "0" || val == "false" || val == "no")) {
             std::cerr << "Usage: rakupp --" << key << "=on|off\n";
@@ -804,15 +931,14 @@ int main(int argc, char** argv) {
                   << "   (saved in " << precompConfigPath() << ")\n";
         return 0;
     }
-    if (argc >= 2 && (std::string(argv[1]) == "--precomp-info" ||
-                      std::string(argv[1]) == "--precomp-clean")) {
+    if (mode == Mode::PrecompInfo || mode == Mode::PrecompClean) {
         std::string dir = precompCacheDir();
         if (dir.empty()) {
             std::cout << "precompiled-parse caching unavailable: no HOME, so there is "
                          "nowhere to put a cache\n";
             return 0;
         }
-        if (std::string(argv[1]) == "--precomp-clean") {
+        if (mode == Mode::PrecompClean) {
             auto [n, bytes] = precompCacheClear();
             std::cout << "removed " << n << " entr" << (n == 1 ? "y" : "ies")
                       << " (" << (bytes + 1023) / 1024 << " KB) from " << dir << "\n";
@@ -853,18 +979,8 @@ int main(int argc, char** argv) {
     }
 
     // -c : syntax check only (like Rakudo's -c) — parse, report, never execute
-    if (argc >= 2 && std::string(argv[1]) == "-c") {
-        std::string src, fname = "-e"; bool haveSrc = false;
-        for (int i = 2; i < argc; i++) {
-            std::string a = argv[i];
-            if (a == "-e" && i + 1 < argc) { src = argv[++i]; haveSrc = true; }
-            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; } // attached form: -e"say 123"
-            else if (!haveSrc) {
-                std::ifstream in(a);
-                if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
-                std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = a; haveSrc = true;
-            }
-        }
+    // (--target=parse is the Rakudo-compatible alias)
+    if (mode == Mode::Check) {
         if (!haveSrc) { std::cerr << "Usage: rakupp -c (FILE | -e CODE)\n"; return 4; }
         try {
             Lexer lexer(src);
@@ -881,19 +997,7 @@ int main(int argc, char** argv) {
     // --lint : static analysis only — parse, run the linter, report; never execute.
     // Prints `FILE:LINE: warning|note: message [rule]`. Exits 1 if any warning
     // was found (0 if only notes or nothing), 2 on a parse error.
-    if (argc >= 2 && std::string(argv[1]) == "--lint") {
-        std::string src, fname = "-e"; bool haveSrc = false, quiet = false;
-        for (int i = 2; i < argc; i++) {
-            std::string a = argv[i];
-            if (a == "--quiet" || a == "-q") { quiet = true; }
-            else if (a == "-e" && i + 1 < argc) { src = argv[++i]; haveSrc = true; }
-            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; }
-            else if (!haveSrc) {
-                std::ifstream in(a);
-                if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
-                std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = a; haveSrc = true;
-            }
-        }
+    if (mode == Mode::Lint) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --lint (FILE | -e CODE) [-q]\n"; return 4; }
         Program prog;
         try {
@@ -908,43 +1012,31 @@ int main(int argc, char** argv) {
         int warns = 0, notes = 0;
         for (auto& f : findings) {
             (f.severity == 'W' ? warns : notes)++;
-            std::cout << fname << ":" << f.line << ": "
+            std::cout << fileName << ":" << f.line << ": "
                       << (f.severity == 'W' ? "warning" : "note") << ": "
                       << f.message << " [" << f.rule << "]\n";
         }
         if (!quiet) {
-            if (findings.empty()) std::cerr << "rakupp --lint: no issues found in " << fname << "\n";
+            if (findings.empty()) std::cerr << "rakupp --lint: no issues found in " << fileName << "\n";
             else std::cerr << "rakupp --lint: " << warns << " warning"
                            << (warns == 1 ? "" : "s") << ", " << notes << " note"
-                           << (notes == 1 ? "" : "s") << " in " << fname << "\n";
+                           << (notes == 1 ? "" : "s") << " in " << fileName << "\n";
         }
         return warns ? 1 : 0;
     }
 
     // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)
-    if (argc >= 2 && (std::string(argv[1]) == "--cpp" || std::string(argv[1]) == "--emit-cpp")) {
-        std::string src, fname = "-e"; bool haveSrc = false, optimize = false;
-        for (int i = 2; i < argc; i++) {
-            std::string a = argv[i];
-            if (a == "-O" || a == "-O1") optimize = true;
-            else if (a == "-e" && i + 1 < argc) { src = argv[++i]; haveSrc = true; }
-            else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); haveSrc = true; } // attached form: -e"say 123"
-            else if (!haveSrc) {
-                std::ifstream in(a);
-                if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
-                std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fname = a; haveSrc = true;
-            }
-        }
+    if (mode == Mode::Cpp) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --cpp (FILE | -e CODE) [-O]\n"; return 4; }
         try {
             Lexer lexer(src);
             Parser parser(lexer.tokenize());
-            parser.libPaths_ = effectiveSearchPath({});
+            parser.libPaths_ = effectiveSearchPath(libPaths);
             Program prog = parser.parseProgram();
             // same module scan as --exe, so what this prints is what --exe compiles
             std::set<std::string> moduleExports;
-            collectModuleGraph(prog, effectiveSearchPath({}), &moduleExports);
-            std::cout << transpileToCpp(prog, optimize, absPath(fname), moduleExports);
+            collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports);
+            std::cout << transpileToCpp(prog, optimize, absPath(fileName), moduleExports);
         } catch (const ParseError& e) {
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
             return 2;
@@ -959,120 +1051,22 @@ int main(int argc, char** argv) {
     // --bundle : embed program source + runtime interpreter (parses at run time)
     // --aot    : parse ahead of time, embed the AST, interpret it (no run-time parse)
     // --exe    : native transpilation to C++ (no interpreter inside)
-    //   each: (FILE | -e CODE) [-o OUT]
-    {
-        std::string mode = argc >= 2 ? argv[1] : "";
-        if (mode == "--bundle" || mode == "--aot" || mode == "--exe") {
-            std::string src, srcName, outPath, ccOpt = "-O2";
-            std::vector<std::string> libPaths;
-            bool haveSrc = false, optimize = false;
-            for (int i = 2; i < argc; i++) {
-                std::string a = argv[i];
-                // -I matters at COMPILE time here: it is how the bundler finds the
-                // modules to embed, so a binary built with -I needs nothing at run time.
-                if (a == "-I" && i + 1 < argc) { libPaths.push_back(argv[++i]); }
-                else if (a.rfind("-I", 0) == 0 && a.size() > 2) { libPaths.push_back(a.substr(2)); }
-                else if (a == "-o" && i + 1 < argc) { outPath = argv[++i]; }
-                else if (a.rfind("-o", 0) == 0 && a.size() > 2) { outPath = a.substr(2); }
-                // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/-Ofast/…)
-                // is forwarded to the C++ compiler for the generated binary.
-                else if (a.rfind("-O", 0) == 0) { optimize = true; if (a.size() > 2) ccOpt = a; }
-                else if (a == "-e" && i + 1 < argc) { src = argv[++i]; srcName = "-e"; haveSrc = true; }
-                else if (a.rfind("-e", 0) == 0 && a.size() > 2) { src = a.substr(2); srcName = "-e"; haveSrc = true; }
-                else if (!haveSrc) { // a source file
-                    std::ifstream in(a);
-                    if (!in) { std::cerr << "Cannot open file: " << a << "\n"; return 4; }
-                    std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); srcName = a; haveSrc = true;
-                }
-            }
-            if (!haveSrc) { std::cerr << "Usage: rakupp " << mode << " (FILE | -e CODE) [-o OUT] [-I dir] [-O[level]]\n"; return 4; }
-            if (mode == "--exe") return compileNative(src, srcName, outPath, exePath, optimize, ccOpt, libPaths);
-            if (mode == "--aot") return compileAotAst(src, srcName, outPath, exePath, libPaths);
-            return compileToExe(src, srcName, outPath, exePath, libPaths); // --bundle
-        }
+    //   each: (FILE | -e CODE) [-o OUT] — and -I matters at COMPILE time here:
+    //   it is how the bundler finds the modules to embed, so a binary built
+    //   with -I needs nothing at run time.
+    if (isCompileMode(mode)) {
+        if (!haveSrc) { std::cerr << "Usage: rakupp " << modeTok << " (FILE | -e CODE) [-o OUT] [-I dir] [-O[level]]\n"; return 4; }
+        if (mode == Mode::Exe) return compileNative(src, fileName, outPath, exePath, optimize, ccOpt, libPaths);
+        if (mode == Mode::Aot) return compileAotAst(src, fileName, outPath, exePath, libPaths);
+        return compileToExe(src, fileName, outPath, exePath, libPaths); // --bundle
     }
 
-    std::string src;
-    std::string fileName = "-e";
-    std::vector<std::string> args;
-    // Collect leading -I <path> / -I<path> lib dirs (rakudo-compatible), then
-    // treat everything from the first non -I token as the program + its args.
-    std::vector<std::string> libPaths;
-    std::vector<std::string> rest; // argv[1..], with -I options removed
-    for (int i = 1; i < argc; i++) {
-        std::string a = argv[i];
-        if (a == "-I") {           // `-I PATH` : path is the next argument
-            if (i + 1 < argc) libPaths.push_back(argv[++i]);
-        } else if (a.rfind("-I", 0) == 0) { // `-IPATH` : path attached to the flag
-            libPaths.push_back(a.substr(2));
-        } else if (a == "--doc") { // render the program's POD to text after running
-            rakupp::rakuppSetDocMode(true);
-        } else {
-            for (int j = i; j < argc; j++) rest.push_back(argv[j]);
-            break;
+    // ---- run (the default mode) --------------------------------------------
+    if (!haveSrc) {
+        if (rakupp::stdinIsTerminal() || rakupp::replForced()) {
+            // Bare `rakupp` at a terminal: an interactive session.
+            return rakupp::rakuppRepl(exePath, libPaths);
         }
-    }
-    // perl-style line-loop flags: -n (loop over $*IN.lines), -p (loop + print $_),
-    // combinable with -e as -ne / -pe / -np (the trailing 'e' means -e follows).
-    bool optN = false, optP = false;
-    while (!rest.empty()) {
-        const std::string& a = rest[0];
-        if (a.size() < 2 || a[0] != '-' || a[1] == '-') break;
-        // scan the flag cluster left-to-right: -n / -p / -np, and 'e' ENDS the
-        // cluster with everything after it glued as the code (-ne'say $_' — the
-        // shell strips the quotes, so the whole thing is one argv entry)
-        size_t j = 1;
-        bool sawN = false, sawP = false, sawE = false;
-        while (j < a.size() && (a[j] == 'n' || a[j] == 'p' || a[j] == 'e')) {
-            if (a[j] == 'n') sawN = true;
-            else if (a[j] == 'p') sawP = true;
-            else { sawE = true; j++; break; }
-            j++;
-        }
-        if (!(sawN || sawP || sawE)) break;
-        if (!sawE && j < a.size()) break;      // -nfoo — not a flag cluster at all
-        optN |= sawN; optP |= sawP;
-        if (sawE) { rest[0] = "-e" + a.substr(j); break; } // glued code (or empty → next arg)
-        rest.erase(rest.begin());              // pure -n / -p / -np : consume and continue
-    }
-    size_t nrest = rest.size();
-    if (nrest >= 1 && rest[0].rfind("-e", 0) == 0) {
-        std::string a1 = rest[0];
-        if (a1 == "-e") {              // `-e CODE` : code is the next argument
-            if (nrest < 2) { std::cerr << "No code given for -e\n"; return 4; }
-            src = rest[1];
-            for (size_t i = 2; i < nrest; i++) args.push_back(rest[i]);
-        } else {                       // `-e'CODE'` / `-eCODE` : code attached to the flag
-            src = a1.substr(2);
-            for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
-        }
-    } else if (nrest >= 1 && rest[0] == "-") { // `-` : read the program from STDIN
-        std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str();
-        fileName = "-";
-        for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
-    } else if (nrest >= 1 && rest[0].size() > 1 && rest[0][0] == '-') {
-        // an unrecognized command-line option (the known ones — -I, --doc, -e,
-        // -n/-p, -, --help/-h, --version — are handled above). Rakudo prints a
-        // usage banner to STDERR and exits 0 without attempting to run anything.
-        std::cerr << "Illegal option " << rest[0].substr(0, rest[0].find('=')) << "\n";
-        std::cerr << "  [switches] [--] [programfile] [arguments]\n";
-        return 0;
-    } else if (nrest >= 1) {
-        struct stat st;
-        if (stat(rest[0].c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-            std::cerr << "Can not run directory " << rest[0] << "\n"; return 1;
-        }
-        std::ifstream in(rest[0]);
-        if (!in) { std::cerr << "Could not open " << rest[0] << "\n"; return 1; }
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        src = ss.str();
-        fileName = rest[0];
-        for (size_t i = 1; i < nrest; i++) args.push_back(rest[i]);
-    } else if (rakupp::stdinIsTerminal() || rakupp::replForced()) {
-        // Bare `rakupp` at a terminal: an interactive session.
-        return rakupp::rakuppRepl(exePath, libPaths);
-    } else {
         // Bare `rakupp` with stdin redirected — `echo … | rakupp`, `rakupp < f.raku`
         // — is a whole program arriving on stdin, exactly as before.
         std::ostringstream ss;
@@ -1081,5 +1075,5 @@ int main(int argc, char** argv) {
     }
     if (optN || optP) // wrap the program in a line loop over $*ARGFILES (files in @*ARGS, else $*IN)
         src = "for lines() -> $_ is copy {\n" + src + "\n" + (optP ? "$_.say;\n" : "") + "}\n";
-    return rakuppRunBigStack(src, std::move(args), fileName, exePath, libPaths);
+    return rakuppRunBigStack(src, std::move(progArgs), fileName, exePath, libPaths);
 }
