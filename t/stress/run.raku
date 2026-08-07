@@ -37,12 +37,15 @@
 my %known-bad;
 # Nondeterministic cases: a crash that only SOMETIMES happens. Tolerated in
 # both directions — a lucky pass proves nothing, so it neither fails the
-# suite nor stales the list. Promotion out of here requires the P3 fix, not
-# a green run.
-my %known-flaky =
-    'ub-array-push/parallel' => 'P3: unguarded array race can abort the runtime',
-    'ub-hash-write/parallel' => 'P3: unguarded hash race can abort the runtime',
-;
+# suite nor stales the list. Promotion out requires the fix, not a green
+# run — and that is how the P3 pair LEFT this list (2026-08-08): array
+# growth and hash find-or-insert now run under the container's stripe in
+# parallel mode (ParStripe), so the unguarded races those two programs
+# stage can garble values but no longer abort the runtime (40/40 hammer
+# runs). Residual crash shapes the CONTRACT does not yet cover — and the
+# next stress programs should stage: iteration during mutation, object
+# attribute races, and same-slot torn copies of pointer-carrying values.
+my %known-flaky;
 
 my $dir  = $?FILE.IO.parent;
 my $only = @*ARGS.first(*.starts-with('--only='));

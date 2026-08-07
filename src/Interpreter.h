@@ -599,7 +599,18 @@ public:
     // The striped-lock pool shared by cas, the atomic-* family, and Channel:
     // real mutual exclusion in parallel (no-GIL) mode, negligible uncontended
     // cost under the GIL. Recursive so a holder may re-enter its own stripe.
-    static std::recursive_mutex& atomicStripe(const void* p); // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
+    static std::recursive_mutex& atomicStripe(const void* p);
+    // Parallel-mode-only stripe over a USER container's structural op (Array
+    // growth, Hash find-or-insert) — the no-crash half of the memory model
+    // (P3). Under the GIL it constructs to nothing, so the single-threaded
+    // hot path pays a predicted branch and nothing else. Never hold one
+    // around user code.
+    struct ParStripe {
+        std::unique_lock<std::recursive_mutex> l;
+        ParStripe(const Interpreter& I, const void* p) {
+            if (I.parallelMode_) l = std::unique_lock<std::recursive_mutex>(atomicStripe(p));
+        }
+    }; // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
     struct SubsetInfo { std::string base; const Expr* where = nullptr; };

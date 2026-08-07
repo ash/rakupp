@@ -10252,7 +10252,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             }
             }
             if (base->t != VT::Hash) *base = Value::makeHash();
-            std::string key = hashSubKey(eval(idx->index.get()), base);
+            std::string key = hashSubKey(eval(idx->index.get()), base); // key eval BEFORE the stripe (user code)
+            // P3: the find-or-insert itself under the hash's stripe — a
+            // concurrent insert can no longer corrupt the tree. The returned
+            // node pointer is STABLE under later inserts (std::map), so the
+            // caller's write-through needs no lock to keep the runtime alive;
+            // same-slot torn values remain the user's race, as documented.
+            Interpreter::ParStripe insStripe(*this, base->hash.get());
             return &(*base->hash)[key];
         } else {
             // `$obj[$i] = v` on an OBJECT whose class defines AT-POS: assign through

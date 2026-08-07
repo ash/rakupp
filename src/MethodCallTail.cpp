@@ -2058,6 +2058,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         "Cannot " + m + " a fixed-dimension array"};
             }
             if (m == "push" || m == "unshift" || m == "append" || m == "prepend") for (auto& a : args) natCheck(a);
+            // P3 (the no-crash contract): in parallel mode the structural
+            // mutators below run under the array's stripe — unguarded
+            // concurrent pushes are still a race for the USER's data (loss is
+            // allowed), but vector growth can no longer corrupt the runtime.
+            Interpreter::ParStripe mutStripe(*this, inv.arr.get());
             // a native-int element array (`uint32 @W`) wraps each stored value to
             // its bit width (SHA1's `@W.push: S(...)` relies on uint32 overflow)
             auto natMask = [&](Value v) -> Value {
