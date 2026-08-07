@@ -1,7 +1,10 @@
 # Plan: the command line — a real option surface
 
-**Status: in progress — step 1 (goldens + the option parser) landed
-2026-08-07.** 40 CLI goldens pin every pre-existing spelling in `t/run.raku`
+**Status: in progress — steps 1 and 2 landed 2026-08-07.** Step 2 (MAIN
+usage fidelity, the section below): all four fixes in, six oracle cases
+byte-identical to Rakudo including streams and exit codes,
+`t/regression/main-usage-17.raku` passes under both engines, Roast
+197,091 (baseline band), local suite 356/356. Close issue #17 on push. 40 CLI goldens pin every pre-existing spelling in `t/run.raku`
 (written first, against the old binary); `main.cpp`'s argv[1] cascade is now
 one two-phase scan, and the measured breakages below all pass, plus `-v`,
 `--target=parse|ast`, position-independent `-h`/`-V`, mode-conflict errors,
@@ -177,6 +180,20 @@ Acceptance: the issue's example byte-identical to Rakudo with and without a
 `--foo=<Str> is required` + default-carrying mix; close #17 when it ships.
 Independent of the option-parser work — this lives in the usage generator,
 not `main.cpp` — so it can land any time.
+
+**Landed 2026-08-07** — and reproducing it surfaced two more divergences,
+both fixed and oracle-verified in the same pass: a `#=` on the line where
+the signature *closes* documents the ROUTINE (`sub MAIN(Int $x) {} #= doc`
+→ `<x> -- doc`, no option entry — the parser now defers param-doc claims
+until the closing line is known, since a comment runs to end-of-line a
+close-line `#=` is necessarily after the `)`); and an explicit `--help`
+prints the usage to *stdout* with exit 0, where a failed dispatch (bare
+`-h` included) keeps stderr/exit 2. `is required` now sets the param's
+required flag everywhere (previously only the `!` marker did). Regression:
+`t/regression/main-usage-17.raku`, byte-exact on both engines. Left open
+(pre-existing, confirmed against the pre-change binary): parameter-level
+`.WHY` returns Nil — the doc is parsed and stored but not plumbed into
+`Parameter` introspection.
 
 ## Step 5 — `--profile`, a first profiler
 

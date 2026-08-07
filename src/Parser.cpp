@@ -4674,6 +4674,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
 
 std::vector<Param> Parser::parseSignature(Tok closeTok) {
     std::vector<Param> params;
+    std::vector<std::pair<size_t, int>> podClaims; // (param index, `#=` line) — resolved at close
     while (!isKind(closeTok) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue; // multi-frame separator `;` / `;;` in signatures
         Param p;
@@ -4796,6 +4797,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                     p.isCopy = cur().text == "copy";
                     p.isRaw  = cur().text == "raw";
                 }
+                if (isIdent("required")) p.required = true;
                 if (isKind(Tok::Ident)) advance();
                 if (isKind(Tok::LParen)) {
                     int d = 0;
@@ -5009,6 +5011,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                     p.isCopy = cur().text == "copy";
                     p.isRaw  = cur().text == "raw";
                 }
+                if (isIdent("required")) p.required = true;
                 if (isKind(Tok::Ident)) advance();
                 if (isKind(Tok::LParen)) {
                     int d = 0;
@@ -5104,6 +5107,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                     p.isCopy = cur().text == "copy";
                     p.isRaw  = cur().text == "raw";
                 }
+                // `is required` — same meaning as the `!` marker ($*USAGE
+                // prints such a named param without brackets; issue #17)
+                if (trait == "is" && isIdent("required")) p.required = true;
                 advance(); // the trait word (rw/copy/encoded/…)
                 // a parenthesised trait argument: `is encoded('utf8')` — skip it
                 if (isKind(Tok::LParen)) {
@@ -5117,13 +5123,20 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // an rw param must bind a writable container, a default is a fresh value
         if (p.isRw && p.defaultVal)
             error("Cannot use trait 'is rw' on a parameter with a default value");
-        { // trailing `#= description` on this param's line (or continued next line)
+        { // trailing `#= description` on this param's line — DEFERRED. Whether
+          // the doc belongs to the param or to the ROUTINE depends on where the
+          // signature closes: a comment runs to end of line, so a `#=` sharing
+          // a line with the closing `)` necessarily sits after it, and Rakudo
+          // gives that one to the routine (`sub MAIN(Int $x) {}  #= doc` shows
+          // `-- doc` on the usage line and NO option entry). Recorded here,
+          // resolved below once the closing line is known (issue #17).
             auto di = declPod_.find(cur().line);
             if (di == declPod_.end() && pos_ > 0) di = declPod_.find(toks_[pos_ - 1].line);
-            if (di != declPod_.end()) p.pod = di->second;
+            if (di != declPod_.end()) podClaims.push_back({params.size(), di->first});
             // A `#|` above the param — but not the ROUTINE's own, which on a
-            // one-line signature is "above" the parameters too.
-            if (p.pod.empty() && cur().line > sigOwnerLine_) p.pod = leadingPodFor(cur().line);
+            // one-line signature is "above" the parameters too. (A resolved
+            // `#=` claim overrides this below — the old precedence.)
+            if (cur().line > sigOwnerLine_) p.pod = leadingPodFor(cur().line);
         }
         params.push_back(std::move(p));
         if (matchOp("-->")) { // return type — remember the name; skip the rest to end of signature
@@ -5186,6 +5199,17 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (opt && seen.empty()) seen = "optional";
         }
     }
+    { // resolve the deferred `#=` claims: a doc line strictly INSIDE the
+      // signature belongs to its parameter (and is marked claimed, so the
+      // routine's trailing-doc probe skips it); one on the closing line is
+      // left for the routine to pick up.
+        int closeLine = isKind(Tok::End) ? 0x7fffffff : cur().line;
+        for (auto& cl : podClaims)
+            if (cl.second < closeLine) {
+                params[cl.first].pod = declPod_.at(cl.second);
+                claimedPodLines_.insert(cl.second);
+            }
+    }
     return params;
 }
 
@@ -5198,9 +5222,8 @@ std::vector<Param> Parser::parsePointyParams() {
 StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // 'sub' already consumed by caller
     auto s = std::make_unique<SubDecl>();
-    s->pod = leadingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line); // `#|` above the decl
-    if (s->pod.empty()) // trailing `#=` run on/below the decl line
-        s->pod = trailingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line);
+    int subDeclLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+    s->pod = leadingPodFor(subDeclLine); // `#|` above the decl
     s->isMulti = isMulti;
     s->isProto = isProto;
     std::string declInfix; // set when this is an `infix:<…>` declaration (for precedence traits)
@@ -5319,6 +5342,11 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         s->altParams.push_back(parseSignature());
         expectKind(Tok::RParen, ")");
     }
+    // trailing `#=` run on/below the decl line — resolved only NOW, after the
+    // signature: a multi-line signature puts each parameter's `#=` on the lines
+    // just below the declaration, and those are the params' docs, not the
+    // routine's (parseSignature marked them claimed; issue #17)
+    if (s->pod.empty()) s->pod = trailingPodFor(subDeclLine);
     // optional return type / traits up to block: skip until '{'
     // (note whether an `is export` trait is present — governs module visibility;
     //  capture `of T` / `returns T` / `--> T` as the return type)

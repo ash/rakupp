@@ -751,7 +751,10 @@ std::string Interpreter::mainUsage() {
                 if (p.type == "Bool") { }
                 else if (p.type.empty()) label += "[=Any]";
                 else label += "=<" + p.type + ">";
-                named += " [" + label + "]";
+                // a REQUIRED named param (`:$foo!` or `is required`) prints
+                // without the optionality brackets, as in Rakudo (issue #17)
+                if (p.required) named += " " + label;
+                else named += " [" + label + "]";
             }
             else if (p.slurpy) { label = "[<" + bare(p) + "> ...]"; positional += " " + label; }
             else if (p.optional || p.defaultVal) { label = "[<" + bare(p) + ">]"; positional += " " + label; }
@@ -2621,14 +2624,20 @@ int Interpreter::run(Program& prog) {
             else if (mainSub->code && mainSub->code->params) // single MAIN: same bind check
                 mainMatches = scoreCandidate(*mainSub, margs) >= 0;
             if (!mainMatches) {
+                // an explicit --help is a REQUEST for the usage text, not a
+                // dispatch failure: Rakudo prints it to stdout and exits 0
+                // (a bare -h is NOT special — it stays the failure path)
+                bool wantHelp = false;
+                for (auto& a : argv_) if (a == "--help") { wantHelp = true; break; }
                 // a user-defined USAGE takes over (it prints to stdout, like Rakudo)
                 Value* usage = tctx_.cur->find("&USAGE");
                 if (!usage && global_) usage = global_->find("&USAGE");
                 if (usage) {
                     try { callCallable(*usage, {}); } catch (ExitEx& e) { code = e.code; goto mainDone; }
                 }
+                else if (wantHelp) std::cout << mainUsage();
                 else std::cerr << mainUsage();
-                code = 2;
+                code = wantHelp ? 0 : 2;
                 mainDone: ;
             } else {
                 callCallable(*mainSub, margs);

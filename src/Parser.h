@@ -61,14 +61,21 @@ private:
 public:
     std::map<int, std::string> declPod_; // `#= text` by line (from the Lexer)
     std::map<int, std::string> leadPod_; // `#| text` by line (from the Lexer)
-    // join the run of #= lines starting AT or just below `line`, "" if none
+    // `#=` lines already claimed by a PARAMETER (a multi-line signature puts
+    // param docs on the lines just below the declaration line, which is where
+    // the routine's own trailing-doc probe looks — the docs of `sub MAIN(\n
+    // Str :$foo, #= …` used to double as the routine's `-- …` usage suffix;
+    // issue #17)
+    std::set<int> claimedPodLines_;
+    // join the run of #= lines starting AT or just below `line`, "" if none;
+    // a line a parameter owns ends the run without contributing
     std::string trailingPodFor(int line) const {
         std::string out;
         for (int l : {line, line + 1}) {
             if (!out.empty()) break;
             for (int k = l; ; k++) {
                 auto it = declPod_.find(k);
-                if (it == declPod_.end()) break;
+                if (it == declPod_.end() || claimedPodLines_.count(k)) break;
                 out = out.empty() ? it->second : out + " " + it->second;
             }
         }
