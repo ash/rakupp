@@ -1,4 +1,5 @@
 #include "Runtime.h"
+#include "Profiler.h"
 #include <cstdint>
 #include <cstdio>
 #include "Codegen.h"
@@ -623,6 +624,7 @@ int main(int argc, char** argv) {
                                           // chomps and -p prints with .say)
     bool optI = false;                    // -i[.ext]: edit the argument files in place
     std::string backupExt;                // -i.bak — glued only, as in perl
+    std::string profileDest;              // --profile[-=FILE]: "-" = stderr table
     std::string fieldSep;                 // -F: separator (implies -a)
     bool haveF = false, fieldSepRegex = false;
     long recMode = -1;                    // -0[octal]: 0 = NUL records, 0777 = slurp
@@ -699,6 +701,12 @@ int main(int argc, char** argv) {
                 if (t == "parse") { if (!setMode(Mode::Check, a)) return 4; }
                 else if (t == "ast") { if (!setMode(Mode::Ast, a)) return 4; }
                 else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast)\n"; return 4; }
+                continue;
+            }
+            if (a == "--profile") { profileDest = "-"; continue; }
+            if (a.rfind("--profile=", 0) == 0) {
+                profileDest = a.substr(10);
+                if (profileDest.empty()) { std::cerr << "Usage: rakupp --profile[=FILE] PROGRAM\n"; return 4; }
                 continue;
             }
             if (a == "--quiet" || a == "-q") { quiet = true; continue; }
@@ -806,7 +814,11 @@ int main(int argc, char** argv) {
              mode == Mode::PrecompSetting || mode == Mode::PrecompInfo || mode == Mode::PrecompClean))
             return illegalOpt("-M");
         if (haveF && mode != Mode::Run) return illegalOpt("-F");
+        // --profile is for interpreted runs; a compiled binary has no
+        // interpreter inside — use the OS profiler there (see CLI-PLAN.md)
+        if (!profileDest.empty() && mode != Mode::Run) return illegalOpt("--profile");
     }
+    if (!profileDest.empty()) rakupp::prof::setDest(profileDest);
     // the perl-family implications (perl 5.20+): -F implies -a, -a implies -n
     if (haveF) optA = true;
     if (optA && !optP) optN = true;
@@ -876,6 +888,9 @@ int main(int argc, char** argv) {
 "  -i[.ext]                     With -n/-p: edit the argument files in place\n"
 "                               (extension glued, as in perl: -pi.bak keeps a\n"
 "                               backup; the current file is $*ARGV)\n"
+"  --profile[=FILE]             Routine-level wall-time profile after the run\n"
+"                               (stderr by default; a .json FILE gets JSON).\n"
+"                               Builtins are attributed to their caller\n"
 "\n"
 "Compile to a standalone binary (each takes FILE or -e CODE, plus -o OUT):\n"
 "  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
@@ -1259,5 +1274,7 @@ int main(int argc, char** argv) {
         }
     }
     if (!usePrefix.empty()) src = usePrefix + src; // -M: outside the -n/-p loop
-    return rakuppRunBigStack(src, std::move(progArgs), fileName, exePath, libPaths);
+    int rc = rakuppRunBigStack(src, std::move(progArgs), fileName, exePath, libPaths);
+    rakupp::prof::report(); // no-op unless --profile was given
+    return rc;
 }

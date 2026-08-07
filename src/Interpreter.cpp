@@ -17,6 +17,7 @@ extern char** environ;
 static char** rakupp_environ() { return environ; }
 #endif
 #include "Regex.h"
+#include "Profiler.h"
 #include "Ffi.h"
 #include "Lexer.h"
 #include "Parser.h"
@@ -8824,6 +8825,19 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
 }
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
+    // --profile: routine-level entry/exit (RAII — this function returns in many
+    // places). Bare blocks and builtins are skipped: block time lands in the
+    // enclosing routine, builtins in their caller. Off-cost: one branch.
+    struct ProfG {
+        bool armed = false;
+        ~ProfG() { if (armed) rakupp::prof::leave(); }
+    } profG;
+    if (rakupp::prof::on && codeVal.t == VT::Code && codeVal.code &&
+        !codeVal.code->isBlock && !codeVal.code->builtin && !codeVal.code->isMultiDispatcher) {
+        rakupp::prof::enter(codeVal.code.get(), codeVal.code->name.c_str(),
+                            codeVal.code->declFile.c_str());
+        profG.armed = true;
+    }
     // callsame/nextsame are ROUTINE-scoped: a routine activation sees only
     // redispatch frames pushed for it (ownFrame) or by its own body. Blocks
     // inherit the enclosing routine's floor.
@@ -9562,6 +9576,16 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
                                 Value* selfBack, bool skipWrappers) {
     if (codeVal.t != VT::Code || !codeVal.code) return Value::any();
+    // --profile: method entry/exit, same shape as callCallableRaw's hook
+    struct ProfG {
+        bool armed = false;
+        ~ProfG() { if (armed) rakupp::prof::leave(); }
+    } profG;
+    if (rakupp::prof::on && !codeVal.code->builtin && !codeVal.code->isMultiDispatcher) {
+        rakupp::prof::enter(codeVal.code.get(), codeVal.code->name.c_str(),
+                            codeVal.code->declFile.c_str());
+        profG.armed = true;
+    }
     // A wrapped method runs its wrapper stack first, exactly as callCallable
     // does for subs (`K.^find_method('add-tap').wrap: -> \s, |q {…}` —
     // Log::Async's import tests). The wrapper receives (self, |args);

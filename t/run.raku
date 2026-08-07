@@ -892,6 +892,31 @@ section('the CLI surface (goldens for the v3 parser refactor)');
             skip('perl differential: -pi.orig (no perl on PATH)');
         }
     }
+
+    # --profile — routine-level wall-time profiling (v3 CLI step 6). fib(15)
+    # makes the call count DETERMINISTIC: 2·F(16)−1 = 1973 — an exact number,
+    # not a smoke check.
+    {
+        my $fp = $work.add('fib15.raku');
+        $fp.spurt(q:to/END/);
+            sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }
+            say fib(15);
+            END
+        my ($po, $pe, $px) = run-rakupp-err('--profile', $fp.Str);
+        ok($px == 0 && $po eq "610\n"
+           && $pe.contains('Profile') && $pe.contains('fib') && $pe.contains('1973'),
+           '--profile: table on stderr, exact call count, clean exit');
+        ok(run-rakupp($fp.Str)[0] eq $po,
+           'a profiled run\'s program output is byte-identical to an unprofiled one');
+        my $pj = $work.add('prof.json');
+        run-rakupp('--profile=' ~ $pj.Str, $fp.Str);
+        ok($pj.IO.e && $pj.IO.slurp.contains('"name": "fib"')
+                    && $pj.IO.slurp.contains('"calls": 1973'),
+           '--profile=FILE.json writes the JSON form');
+        my ($xo, $xe, $xx) = run-rakupp-err('--lint', '--profile', '-e', '1');
+        ok($xx == 0 && $xe.contains('Illegal option --profile'),
+           '--profile outside run mode is illegal');
+    }
 }
 
 # ---- summary ----------------------------------------------------------
