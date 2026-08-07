@@ -1,9 +1,30 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <iosfwd>
 #include <memory>
 #include <string>
 #include <vector>
+
+
+// A decided-once cache slot on a node SHARED between threads: under
+// RAKUPP_PARALLEL any thread may (re)compute and store the same idempotent
+// value concurrently — a plain field makes that a data race (ThreadSanitizer's
+// remaining reports after the thread_local batch were exactly these). Relaxed
+// atomics make it defined at plain-load/plain-store cost on arm64/x86-64.
+// Copyable, so nodes keep their value-copy semantics.
+template <typename T>
+struct DecidedOnce {
+    std::atomic<T> v;
+    DecidedOnce(T init = T{}) : v(init) {}
+    DecidedOnce(const DecidedOnce& o) : v(o.v.load(std::memory_order_relaxed)) {}
+    DecidedOnce& operator=(const DecidedOnce& o) {
+        v.store(o.v.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
+    operator T() const { return v.load(std::memory_order_relaxed); }
+    DecidedOnce& operator=(T x) { v.store(x, std::memory_order_relaxed); return *this; }
+};
 
 namespace rakupp {
 
@@ -130,7 +151,7 @@ struct Binary : Expr {
     // eval-dispatch cache: -1 unknown, 0 needs a special-cased handler, 1 is a
     // plain operator that goes straight to eval-both-operands + applyArith.
     // (Computed once; a benign same-value race under RAKUPP_PARALLEL.)
-    mutable signed char simpleOp = -1;
+    mutable DecidedOnce<signed char> simpleOp{-1};
     // Fast-path SHAPE, decided once from the syntax and cached here: -1 not yet
     // looked at, 0 none, 1 `$var OP literal`, 2 `literal OP $var`,
     // 3 `$var OP $var`. litVal holds the literal's Value for shapes 1 and 2.
@@ -144,8 +165,8 @@ struct Binary : Expr {
     // re-assigned shared_ptr it cannot be yanked out from under a reader under
     // RAKUPP_PARALLEL (a racing double-build leaks one Value; it cannot dangle).
     // void* keeps Value out of Ast.h, the dodge the Rat literal cache uses.
-    mutable signed char fastShape = -1;
-    mutable const void* litVal = nullptr;
+    mutable DecidedOnce<signed char> fastShape{-1};
+    mutable DecidedOnce<const void*> litVal{nullptr};
     Binary(): Expr(NK::Binary) {}
 };
 
@@ -189,8 +210,8 @@ struct Index : Expr { // base[idx] or base{key}
     // index, 2 plain lexical base with an integer literal index. Same rule as
     // Binary::fastShape — the SHAPE is cached, never the container or the index
     // value, both of which are read and checked on every evaluation.
-    mutable signed char fastShape = -1;
-    mutable long long litIdx = 0; // the constant subscript, for shape 2
+    mutable DecidedOnce<signed char> fastShape{-1};
+    mutable DecidedOnce<long long> litIdx{0}; // the constant subscript, for shape 2 (same value from every thread)
     Index(): Expr(NK::Index) {}
 };
 
@@ -396,7 +417,7 @@ struct Block : Stmt {
     // -1 = not yet decided, 0 = no hoistable decl, 1 = has one. See
     // Interpreter::hoistExprDecls: a static property of this AST, so it is
     // decided once instead of re-walked on every entry to the block.
-    signed char hoistNeed = -1;
+    DecidedOnce<signed char> hoistNeed{-1};
     bool isCatch = false;   // CATCH { } phaser
     std::string phaser;     // "BEGIN"/"CHECK"/"INIT"/"END"/... (empty = plain block)
     bool stmtForm = false;  // `PHASER statement;` (no braces): runs in the ENCLOSING
@@ -423,7 +444,7 @@ struct IfStmt : Stmt {
 };
 
 struct WhileStmt : Stmt {
-    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
+    DecidedOnce<signed char> hasStateCache{-1}; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr cond;
     std::unique_ptr<Block> body;
     bool isUntil = false;
@@ -437,7 +458,7 @@ struct WhileStmt : Stmt {
 };
 
 struct ForStmt : Stmt {
-    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
+    DecidedOnce<signed char> hasStateCache{-1}; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr list;
     std::vector<std::string> vars; // loop variables ($_ if empty)
     bool rwVars = false;           // `<-> $i` / `-> $i is rw`: writes copy back to the source
@@ -502,7 +523,7 @@ struct WhenStmt : Stmt {
 };
 
 struct LoopStmt : Stmt {   // C-style: loop (init; cond; incr) { }
-    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
+    DecidedOnce<signed char> hasStateCache{-1}; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr init, cond, incr;
     std::unique_ptr<Block> body;
     bool asExpr = false; // used in value context: collect each iteration's value into a List
@@ -510,7 +531,7 @@ struct LoopStmt : Stmt {   // C-style: loop (init; cond; incr) { }
 };
 
 struct RepeatStmt : Stmt { // repeat { } while/until cond
-    signed char hasStateCache = -1; // derived: subtree has a `state` decl (-1 unknown); not serialized
+    DecidedOnce<signed char> hasStateCache{-1}; // derived: subtree has a `state` decl (-1 unknown); not serialized
     ExprPtr cond;
     bool isUntil = false;
     std::unique_ptr<Block> body;

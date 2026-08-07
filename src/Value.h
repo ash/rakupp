@@ -58,7 +58,7 @@ struct Callable {
     std::string name;
     const std::vector<Param>* params = nullptr;   // borrowed from AST
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
-    signed char hoistNeed = -1;                    // see Interpreter::hoistExprDecls (-1 = undecided)
+    DecidedOnce<signed char> hoistNeed{-1};        // see Interpreter::hoistExprDecls (-1 = undecided)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
     std::shared_ptr<Env> closure;
     std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)

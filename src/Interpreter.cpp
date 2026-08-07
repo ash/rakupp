@@ -1507,6 +1507,7 @@ thread_local bool Interpreter::noAutothread_ = false;
 thread_local int Interpreter::loopPhaserCtl_ = 0;
 thread_local const std::vector<Value*>* Interpreter::pendingRwSlots_ = nullptr;
 thread_local bool Interpreter::hoistingSubs_ = false;
+thread_local bool Interpreter::suppressLoopFirst_ = false;
 // Per-thread call-stack state (step 3a — see header).
 thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStack_;
 thread_local std::vector<std::shared_ptr<ReactCtx>> Interpreter::reactStack_;
@@ -1693,7 +1694,7 @@ void Interpreter::setMatchVar(Value v) {
 // in the block env so a sibling reference resolves. We descend through EXPRESSION
 // nodes only — never into a nested Block/BlockExpr/SubDecl body, which owns its
 // own scope. Zero-cost for blocks with no expression-buried declarations.
-void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, signed char* cache) {
+void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache) {
     // Narrow by design: only a plain `my` declared INSIDE a conditional branch
     // (a Ternary then/else, or an nqp::if/while/stmts arg) needs hoisting for a
     // SIBLING branch to see it. `state` is excluded (its persistence machinery
@@ -15610,10 +15611,10 @@ Value Interpreter::evalBinary(Binary* b) {
                         (p->t == VT::Int || p->t == VT::Num ||
                          p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
             };
-            const Value* lp = b->fastShape == 2 ? static_cast<const Value*>(b->litVal)
+            const Value* lp = b->fastShape == 2 ? static_cast<const Value*>((const void*)b->litVal)
                                                 : scal(b->lhs.get());
             if (lp) {
-                const Value* rp = b->fastShape == 1 ? static_cast<const Value*>(b->litVal)
+                const Value* rp = b->fastShape == 1 ? static_cast<const Value*>((const void*)b->litVal)
                                                     : scal(b->rhs.get());
                 // tagTemporal is a no-op unless an operand is Instant/Duration,
                 // and both hashKinds are empty here, so the result needs no tag.

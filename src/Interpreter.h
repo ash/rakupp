@@ -594,7 +594,7 @@ public:
     bool hoistSubs(const std::vector<StmtPtr>& stmts); // pre-register sub decls (whole-scope visibility); returns true if any named sub was hoisted
     // `cache` is the owner's decided-once flag (Block::hoistNeed / Callable::
     // hoistNeed): -1 undecided, 0 nothing to hoist, 1 something. See the definition.
-    void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, signed char* cache = nullptr); // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
+    void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache = nullptr); // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
     struct SubsetInfo { std::string base; const Expr* where = nullptr; };
@@ -635,7 +635,7 @@ public:
     // unsuccessful one (an exception / control exception leaving the block).
     void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
-    bool suppressLoopFirst_ = false; // set while running a loop body so execBlock skips FIRST
+    static thread_local bool suppressLoopFirst_; // set while running a loop body so execBlock skips FIRST (save/restore per thread, like the call registers)
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
     // into a soft "give me more" answer instead of a thrown syntax error.
     Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr);

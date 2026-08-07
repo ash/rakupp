@@ -1284,7 +1284,7 @@ static bool isUnicodeSpace(uint32_t cp) {
 bool Regex::classMatch(const Node* n, char ch) const {
     // The per-byte result (ranges + flags + icase + negate) is pure per node —
     // build a 256-bit table on first use, then every test is one bit probe.
-    if (!n->bytesetReady) {
+    if (!n->bytesetReady.load(std::memory_order_acquire)) {
         auto flagHit = [](char f, unsigned char c) -> bool {
             switch (f) {
                 case 'd': return std::isdigit(c); case 'w': return std::isalnum(c) || c == '_';
@@ -1321,7 +1321,10 @@ bool Regex::classMatch(const Node* n, char ch) const {
             if (in && subtracted(c)) in = false;
             if (in) n->byteset[v >> 5] |= (1u << (v & 31));
         }
-        n->bytesetReady = true;
+        // release-publish AFTER the words are written: an acquire reader that
+        // sees true also sees the finished table. Two threads may build it
+        // concurrently — the words are idempotent, |= of the same bits.
+        n->bytesetReady.store(true, std::memory_order_release);
     }
     unsigned char c = (unsigned char)ch;
     return (n->byteset[c >> 5] >> (c & 31)) & 1;

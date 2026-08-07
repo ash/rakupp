@@ -3,6 +3,7 @@
 #include <type_traits>
 #include <map>
 #include <set>
+#include <atomic>
 #include <cstdint>
 #include <unordered_map>
 #include <memory>
@@ -156,7 +157,9 @@ private:
         bool imark = false;              // Lit: :ignoremark — compare base codepoints, consume the whole grapheme
         bool multiline = false;          // AnchorStart/AnchorEnd: `^^`/`$$` (line) vs `^`/`$` (string)
         mutable uint32_t byteset[8];     // per-byte match result (incl. icase+negate), built on first use
-        mutable bool bytesetReady = false;
+        mutable std::atomic<bool> bytesetReady{false}; // release-published after the
+                                          // byteset words are filled; readers acquire-load (the flag
+                                          // gates a 32-byte array, so relaxed would not be enough)
         // Rep
         long min = 0, max = -1;          // max = -1 => unbounded
         bool greedy = true;
