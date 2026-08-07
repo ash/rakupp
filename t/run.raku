@@ -771,6 +771,37 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ($o, $e, $x) = run-rakupp-err('--precomp-modules=bogus');
         ok($x == 4 && $e.contains('Usage'), '--precomp-modules=bogus: usage error, exit 4');
     }
+
+    # -M / -m — load a module before the program (v3 CLI step 3)
+    {
+        my @I = ('-I', $mlib.Str);
+        is(run-rakupp(|@I, '-M', 'CliM', '-e', 'say cli-m()')[0], "from-module\n",
+           '-M MODULE (separate)');
+        is(run-rakupp(|@I, '-MCliM', '-e', 'say cli-m()')[0], "from-module\n",
+           '-MMODULE (glued)');
+        is(run-rakupp(|@I, '-m', 'CliM', '-e', 'say cli-m()')[0], "from-module\n",
+           '-m is the Perl-style alias');
+        $mlib.add('CliN.rakumod').spurt: q:to/END/;
+            unit module CliN;
+            sub cli-n() is export { 'second' }
+            END
+        is(run-rakupp(|@I, '-M', 'CliM', '-M', 'CliN', '-e', 'say cli-m() ~ cli-n()')[0],
+           "from-modulesecond\n", '-M is repeatable');
+        is(run-rakupp('-c', |@I, '-M', 'CliM', '-e', 'say cli-m()')[0], "Syntax OK\n",
+           '-c composes with -I and -M');
+        my $ml = $work.add('mlines.txt'); $ml.spurt("x\ny\n");
+        is(run-rakupp(|@I, '-M', 'CliM', '-ne', 'say cli-m()', $ml.Str)[0],
+           "from-module\nfrom-module\n", '-M sits outside the -n loop');
+        my ($o, $e, $x) = run-rakupp-err('--ast', '-M', 'CliM', '-e', 'say 1');
+        ok($x == 0 && $e.contains('Illegal option -M'),
+           '--ast is a source tool: -M is illegal there');
+        # line numbers must not shift: a parse error on line 2 still says line 2
+        # (the use-prefix joins the program's own first line)
+        my $errf = $work.add('lineno.raku');
+        $errf.spurt("my \$x = 1;\nmy \$y = ;\n");
+        ($o, $e, $x) = run-rakupp-err(|@I, '-M', 'CliM', $errf.Str);
+        ok($e.contains('line 2'), '-M does not shift error line numbers');
+    }
 }
 
 # ---- summary ----------------------------------------------------------

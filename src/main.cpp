@@ -612,6 +612,7 @@ int main(int argc, char** argv) {
     Mode mode = Mode::Run;
     std::string modeTok;                  // the spelling that selected the mode (for messages)
     std::vector<std::string> libPaths;    // -I, both spellings, any position
+    std::vector<std::string> preloadModules; // -M/-m modules, in order
     std::vector<std::string> progArgs;    // run mode: the program's @*ARGS
     std::string src, fileName = "-e", outPath, ccOpt = "-O2";
     std::string hlFmt = "html", precompKey, precompVal;
@@ -653,6 +654,13 @@ int main(int argc, char** argv) {
             if (a == "--doc") { rakupp::rakuppSetDocMode(true); continue; }
             if (a == "-I") { if (i + 1 < argc) libPaths.push_back(argv[++i]); continue; }
             if (a.rfind("-I", 0) == 0 && a.size() > 2) { libPaths.push_back(a.substr(2)); continue; }
+            // -M <module> loads a module before the program runs (Rakudo/Perl;
+            // repeatable, glued -MName works too). -m is the Perl-muscle-memory
+            // alias — Rakudo itself rejects -m, a deliberate borrow.
+            if (a == "-M" || a == "-m") { if (i + 1 < argc) preloadModules.push_back(argv[++i]); continue; }
+            if ((a.rfind("-M", 0) == 0 || a.rfind("-m", 0) == 0) && a.size() > 2) {
+                preloadModules.push_back(a.substr(2)); continue;
+            }
             // mode selectors
             if (a == "--highlight") { if (!setMode(Mode::Highlight, a)) return 4; continue; }
             if (a == "--ansi" || a == "--terminal") {
@@ -759,7 +767,20 @@ int main(int argc, char** argv) {
         if (quiet && mode != Mode::Lint) return illegalOpt("-q");
         if (!outPath.empty() && !isCompileMode(mode)) return illegalOpt("-o");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
+        // -M applies where the program is checked, compiled or run; the pure
+        // source tools see the file exactly as written
+        if (!preloadModules.empty() &&
+            (mode == Mode::Highlight || mode == Mode::Ast || mode == Mode::AstRoundtrip ||
+             mode == Mode::PrecompSetting || mode == Mode::PrecompInfo || mode == Mode::PrecompClean))
+            return illegalOpt("-M");
     }
+    // -M/-m: the program behaves as if it began with `use <module>; ` — joined
+    // on the program's own first line, so error line numbers do not shift.
+    // (Run mode applies it LAST, after the -n/-p wrap, so the `use` sits
+    // outside the implicit line loop.)
+    std::string usePrefix;
+    for (auto& m : preloadModules) usePrefix += "use " + m + "; ";
+    if (!usePrefix.empty() && haveSrc && mode != Mode::Run) src = usePrefix + src;
 
     if (mode == Mode::Help) {
         {
@@ -775,6 +796,8 @@ int main(int argc, char** argv) {
 "Options:\n"
 "  -I <path>                    Add a directory to the module search path\n"
 "                               (repeatable; -I<path> also works)\n"
+"  -M <module>                  Load the module before running the program\n"
+"                               (repeatable; -m and -M<module> also work)\n"
 "\n"
 "Compile to a standalone binary (each takes FILE or -e CODE, plus -o OUT):\n"
 "  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
@@ -1075,5 +1098,6 @@ int main(int argc, char** argv) {
     }
     if (optN || optP) // wrap the program in a line loop over $*ARGFILES (files in @*ARGS, else $*IN)
         src = "for lines() -> $_ is copy {\n" + src + "\n" + (optP ? "$_.say;\n" : "") + "}\n";
+    if (!usePrefix.empty()) src = usePrefix + src; // -M: outside the -n/-p loop
     return rakuppRunBigStack(src, std::move(progArgs), fileName, exePath, libPaths);
 }
