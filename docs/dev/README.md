@@ -14,10 +14,39 @@ The user-facing documentation is one level up, in [../](../README.md).
 
 ## plans/ — what we intend to build (and what we decided not to)
 
+- **[plans/VERSIONS.md](plans/VERSIONS.md)** — the single per-version plan
+  index: what each major release set out to do, where its plan lived, and
+  what it shipped — v1.0.0 through the **v3.0.0** campaign (2026-08-07).
+
+The three v3.0.0 pillar plans, smallest first:
+
+- **[plans/CLI-PLAN.md](plans/CLI-PLAN.md)** — a real command-line surface:
+  one option parser instead of the position-sensitive `argv[1]` cascade, the
+  completed Perl one-liner family (`-i` in-place editing, `-a`/`-F`
+  autosplit, `-0777`), flags borrowed from other compilers (`-M`, `-v`,
+  `--target`), each with a decision recorded, and `--profile` — a
+  routine-level instrumented profiler whose disabled hooks measured at zero
+  cost.
+- **[plans/PARALLEL-PLAN.md](plans/PARALLEL-PLAN.md)** — the campaign to make
+  true multicore parallelism the default: the measured starting point
+  (scaling curve, contention, the crash that defines the work), the phases
+  (memory model → TSan CI → runtime hardening → container strategy →
+  scheduler → flip), and the gates. Executes the Option-2 design chosen in
+  PLAN-gil-removal.md.
+- **[plans/LTM-PLAN.md](plans/LTM-PLAN.md)** — true Longest-Token Matching:
+  what LTM and the declarative prefix are, the two oracle-verified
+  divergences the current probe-and-rank approach has, and the design — a
+  side-effect-free NFA per alternative as the ranking oracle for `|` and
+  protoregex dispatch, with the probe path kept switchable during rollout.
+
+Earlier plans:
+
 - **[plans/100.md](plans/100.md)** — what stands between the current pass rate and
   100% of Roast, starting with the fact that 100% does not exist.
-- **[plans/PLAN-gil-removal.md](plans/PLAN-gil-removal.md)** — the design plan for
-  removing the GIL and reaching true CPU parallelism (incremental steps, risks, status).
+- **[plans/PLAN-gil-removal.md](plans/PLAN-gil-removal.md)** — the design doc
+  behind PARALLEL-PLAN.md: the three options for removing the GIL, why
+  Option 2 (harden the runtime, not every user structure) won, and the
+  related code.
 - **[plans/RAKUAST-PLAN.md](plans/RAKUAST-PLAN.md)** — how RakuAST would be added
   **without touching the hot path**: why it must be a view built on demand rather
   than our internal tree (measured: 2.2× the nodes, ~1.8× the visits in the fib

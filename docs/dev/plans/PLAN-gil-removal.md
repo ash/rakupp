@@ -1,9 +1,12 @@
 # Plan B: True multicore parallelism (GIL removal)
 
-Status: **future work**. This document is the design/roadmap for letting two or
-more threads interpret Raku code *simultaneously and correctly* — i.e. dropping
-the Global Interpreter Lock (GIL) as the default, so CPU-bound Raku can use
-multiple cores.
+Status: **design chosen; execution planned in
+[PARALLEL-PLAN.md](PARALLEL-PLAN.md)** (the v3.0.0 campaign plan, with the
+current measurements, phases and gates). This document remains the design
+record: the options for letting two or more threads interpret Raku code
+*simultaneously and correctly* — i.e. dropping the Global Interpreter Lock
+(GIL) as the default, so CPU-bound Raku can use multiple cores — and why
+Option 2 won.
 
 Plan A (interpreter safe points, so compute-bound `start` workers are
 preemptible and shut down cleanly) is a separate, already-landed change. Plan A

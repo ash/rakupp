@@ -132,6 +132,35 @@ Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 433 files):
 
 ## Next
 
+**The v3.0.0 campaign (2026-08-07).** Rakudo remains the reference — every
+divergence is still judged against it — but the next major is not framed as
+parity. Three pillars, each with a written plan gated the usual way (zero
+Roast regressions, battery unchanged, `perf-guard --check`); the
+per-version overview lives in
+[dev/plans/VERSIONS.md](../dev/plans/VERSIONS.md):
+
+1. **The command line, with a first profiler**
+   ([dev/plans/CLI-PLAN.md](../dev/plans/CLI-PLAN.md))
+   — one option parser instead of the position-sensitive mode cascade, the
+   completed Perl one-liner family with `-i` in-place editing, flags
+   borrowed from other compilers (`-M`, `-v`, `--target`), and `--profile`
+   (routine-level instrumented profiling; the disabled hooks measured at
+   zero cost). The small pillar; can land in v2.x minors ahead of the tag.
+2. **Real multicore parallelism, on by default**
+   ([dev/plans/PARALLEL-PLAN.md](../dev/plans/PARALLEL-PLAN.md)) — execute
+   the GIL-removal design: harden the runtime so a user data race can never
+   crash it, fix the measured contention, pool the workers, then flip
+   `RAKUPP_PARALLEL` from opt-in to default with `RAKUPP_GIL=1` as the
+   escape hatch.
+3. **True Longest-Token Matching**
+   ([dev/plans/LTM-PLAN.md](../dev/plans/LTM-PLAN.md)) — replace the regex
+   engine's probe-and-rank approximation with a side-effect-free
+   declarative-prefix NFA for `|` and protoregex dispatch, fixing the
+   oracle-verified divergences without giving back the engine's speed.
+
+As with 1.x → 2.0.0, finished work ships in v2.x minor releases along the
+way; v3.0.0 tags when all three pillars hold their gates at once.
+
 **The v2.0.0 campaign — ecosystem modules — shipped** (see
 [dev/ecosystem/V2-MODULES-PLAN.md](../dev/ecosystem/V2-MODULES-PLAN.md) for the plan and
 [dev/ecosystem/MODULE-FINDINGS.md](../dev/ecosystem/MODULE-FINDINGS.md) for the batch log):

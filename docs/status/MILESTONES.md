@@ -3,8 +3,10 @@
 A running timeline of the headline moments in Raku++'s development — the dates,
 the numbers, and what landed. This is the quick-reference companion to the
 narrative in [LONGREAD.md](../../LONGREAD.md) (the round-by-round story) and
-[JOURNEY.md](../dev/JOURNEY.md) (the method and principles). For the road to 100%
-Roast specifically, see [100.md](../dev/plans/100.md).
+[JOURNEY.md](../dev/JOURNEY.md) (the method and principles). The
+forward-looking counterpart — what each major version *set out* to do, and
+the plan for the next one — is [VERSIONS.md](../dev/plans/VERSIONS.md). For
+the road to 100% Roast specifically, see [100.md](../dev/plans/100.md).
 
 Every figure here is measured, not projected; the methodology is in
 [COUNTING.md](COUNTING.md).
