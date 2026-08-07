@@ -563,6 +563,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc") { // standard Proc from run()
         if (m == "exitcode") return (*inv.hash)["exitcode"];
+        if (m == "timedout") { // rakupp extension, set when :timeout(N) fired
+            auto it = inv.hash->find("timedout");
+            return it != inv.hash->end() ? it->second : Value::boolean(false);
+        }
         if (m == "signal") return Value::integer(0);
         if (m == "so" || m == "Bool") return Value::boolean((*inv.hash)["exitcode"].toInt() == 0);
         if (m == "command") { auto it = inv.hash->find("argv"); return it != inv.hash->end() ? it->second : Value::array(); }

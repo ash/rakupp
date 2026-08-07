@@ -6709,11 +6709,19 @@ void Interpreter::registerBuiltins() {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
+        double timeoutSec = 0;
         for (auto& v : flattenArgs(a)) {
             if (v.t == VT::Pair) {
                 if (v.s == "out") { wantOut = v.pairVal ? v.pairVal->truthy() : true; outMode = wantOut ? 1 : 0; }
                 else if (v.s == "err") { wantErr = v.pairVal ? v.pairVal->truthy() : true; errMode = wantErr ? 1 : 0; }
                 else if (v.s == "in") wantIn = v.pairVal ? v.pairVal->truthy() : true;
+                // :timeout(N) — a rakupp extension (Rakudo's run has no such
+                // adverb): SIGKILL the child's process group after N seconds.
+                // Advertised in this builtin's comment since the initial
+                // commit, but never actually parsed — every caller silently
+                // ran unbounded, which the stress suite discovered when a
+                // livelocked child pinned the machine for 25 minutes.
+                else if (v.s == "timeout" && v.pairVal) timeoutSec = v.pairVal->toNum();
                 else if (v.s == "env" && v.pairVal && v.pairVal->t == VT::Hash && v.pairVal->hash) {
                     // :env(%h) — the child's ENTIRE environment (Rakudo semantics).
                     // Silently ignored before: run(..., :env(%(%*ENV, RAKULIB =>
@@ -6745,13 +6753,14 @@ void Interpreter::registerBuiltins() {
         // :err captures; :!err captures-and-discards (so probes like
         // `zrun('git','--help', :!out, :!err)` stay silent); unspecified inherits.
         long long childPid = 0;
-        spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
+        spawnCapture(argv, timeoutSec, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
                      haveEnv ? &envKV : nullptr);
         if (outMode == -1) std::cout << out; // not capturing: echo child stdout (approximates inherit)
         if (errMode == -1) { /* stderr already inherited by the child */ }
         (*p.hash)["exitcode"] = Value::integer(code);
         (*p.hash)["out-str"] = Value::str(out);
         (*p.hash)["err-str"] = Value::str(err);
+        (*p.hash)["timedout"] = Value::boolean(timedout); // the shape the comment above promises
         if (childPid) (*p.hash)["pid"] = Value::integer(childPid);
         return p;
     };
