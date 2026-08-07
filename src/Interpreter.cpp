@@ -69,13 +69,6 @@ static bool stmtIsStub(const std::vector<StmtPtr>& body) {
 // statements is an unconditional handler.
 static thread_local bool g_rand_seeded = false;
 static thread_local unsigned short g_rand_xs[3];
-
-// --- PROF-PROTO: throwaway probe measuring the OFF-cost of profiler hooks ---
-bool g_rakuppProfOn = false;             // set from RAKUPP_PROFILE at startup
-static uint64_t g_profEnter = 0, g_profLeave = 0;
-__attribute__((noinline)) static void rakuppProfEnter() { g_profEnter++; }
-__attribute__((noinline)) static void rakuppProfLeave() { g_profLeave++; }
-// --- end PROF-PROTO ---
 // `srand($seed)` reseeds the generator (Raku returns the seed used). NB rakupp's PRNG
 // is erand48, not MoarVM's — the same seed does NOT reproduce Rakudo's exact sequence.
 void srandSeed(long long s) {
@@ -1549,7 +1542,6 @@ Interpreter::Interpreter() {
     (*defaultScheduler_.hash)["name"] = Value::str("ThreadPoolScheduler");
     mainThread_ = std::this_thread::get_id();
     parallelMode_ = std::getenv("RAKUPP_PARALLEL") != nullptr;
-    g_rakuppProfOn = std::getenv("RAKUPP_PROFILE") != nullptr; // PROF-PROTO
     global_ = std::make_shared<Env>();
     curPkgEnv_ = global_;
     tctx_.cur = global_;
@@ -8823,9 +8815,6 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
 }
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck) {
-    // PROF-PROTO: entry hook + exit hook (RAII — this function returns in many places)
-    if (__builtin_expect(g_rakuppProfOn, 0)) rakuppProfEnter();
-    struct ProfG { ~ProfG() { if (__builtin_expect(g_rakuppProfOn, 0)) rakuppProfLeave(); } } profG_;
     // callsame/nextsame are ROUTINE-scoped: a routine activation sees only
     // redispatch frames pushed for it (ownFrame) or by its own body. Blocks
     // inherit the enclosing routine's floor.
@@ -9564,9 +9553,6 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
                                 Value* selfBack, bool skipWrappers) {
     if (codeVal.t != VT::Code || !codeVal.code) return Value::any();
-    // PROF-PROTO: entry hook + exit hook (RAII)
-    if (__builtin_expect(g_rakuppProfOn, 0)) rakuppProfEnter();
-    struct ProfG { ~ProfG() { if (__builtin_expect(g_rakuppProfOn, 0)) rakuppProfLeave(); } } profG_;
     // A wrapped method runs its wrapper stack first, exactly as callCallable
     // does for subs (`K.^find_method('add-tap').wrap: -> \s, |q {…}` —
     // Log::Async's import tests). The wrapper receives (self, |args);
