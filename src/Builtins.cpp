@@ -4721,6 +4721,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Hash && inv.hashKind == "Supplier") {
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; (*s.hash)["supplier"] = inv; return s; } // live (no "values")
         if (m == "emit") { Value v = args.empty() ? Value::any() : args[0];
+            // Rakudo's contract: a Supplier's emissions are SERIALIZED per tap.
+            // Under the GIL that held by accident; in parallel mode concurrent
+            // emits ran the tap blocks simultaneously and interleaved into the
+            // taps vector — the stress suite measured 1,694 of 2,000 arrivals.
+            // The supplier's stripe serializes emit/done/quit AND registration.
+            std::lock_guard<std::recursive_mutex> emitLk(Interpreter::atomicStripe(inv.hash.get()));
             if (inv.hash->count("preserving") && (*inv.hash)["preserving"].truthy() && inv.hash->count("buffer"))
                 (*inv.hash)["buffer"].arr->push_back(v); // replayed to late taps
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) {
@@ -4767,6 +4773,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             return Value::boolean(true); }
         if (m == "done") {
+            std::lock_guard<std::recursive_mutex> doneLk(Interpreter::atomicStripe(inv.hash.get()));
             // Remember the done state so a tap that registers LATER (an eager
             // `start { $s.emit(…); $s.done }` that ran before the react tapped it)
             // is closed immediately instead of leaving its react source live forever.
@@ -4778,6 +4785,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             return Value::boolean(true); }
         if (m == "quit") {
+            std::lock_guard<std::recursive_mutex> quitLk(Interpreter::atomicStripe(inv.hash.get()));
             Value ex = args.empty() ? Value::any() : args[0];
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) { if (t.t == VT::Hash && t.hash->count("quit") && (*t.hash)["quit"].t == VT::Code) { ValueList one{ex}; callCallable((*t.hash)["quit"], one); } }
             return Value::boolean(true); }
@@ -5652,7 +5660,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             (*tapRec.hash)["chain"] = chain;
         }
         Value sup = h.at("supplier");
-        if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
+        if (sup.t == VT::Hash && sup.hash->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(Interpreter::atomicStripe(sup.hash.get())); (*sup.hash)["taps"].arr->push_back(tapRec); }
         // Supplier::Preserving: replay every buffered value to this fresh tap (through
         // its own transform chain), so a tap that connects after the emits still sees
         // them (Cro's request-into-$!in-before-connect pattern).
@@ -8098,7 +8106,7 @@ void Interpreter::registerBuiltins() {
                         { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
                     }
                     Value sup = (*s.hash)["supplier"];
-                    if (sup.t == VT::Hash && sup.hash->count("taps")) (*sup.hash)["taps"].arr->push_back(tapRec);
+                    if (sup.t == VT::Hash && sup.hash->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(Interpreter::atomicStripe(sup.hash.get())); (*sup.hash)["taps"].arr->push_back(tapRec); }
                     // The supplier already signalled done before this tap registered
                     // (eager worker ran first): close the tap now, so runReactLoop
                     // doesn't wait on a source that will never complete.

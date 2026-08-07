@@ -26,15 +26,15 @@
 # noted P2-adjacent finding. Native runs enforce both modes; nothing is
 # masked, one flag states the truth.
 
-my %known-bad =
-    # found by this suite's FIRST RUN (2026-08-07) — the plan's P4 phase
-    # ("some primitives serialize via the GIL today") named these in advance.
-    # Two are FIXED already, same day: atomic-counter/parallel (the lexer used
-    # to DROP the ⚛ marker; real striped-lock atomics now) and
-    # channel-pipeline/parallel (the queue was a bare vector — every Channel
-    # op now runs under the channel's stripe).
-    'supply-fanin/parallel'     => 'P4: Supplier.emit drops cross-thread emissions',
-;
+# The suite's FIRST RUN (2026-08-07) put three entries here — the plan's P4
+# phase ("some primitives serialize via the GIL today") had named them in
+# advance. ALL THREE were fixed the day they were found: atomic-counter (the
+# lexer used to DROP the ⚛ marker; real striped-lock atomics now),
+# channel-pipeline (the queue was a bare vector — every Channel op now runs
+# under the channel's stripe), and supply-fanin (Supplier emissions are now
+# genuinely serialized per supplier, the Rakudo contract). The hash stands
+# empty, waiting for the next honest entry.
+my %known-bad;
 # Nondeterministic cases: a crash that only SOMETIMES happens. Tolerated in
 # both directions — a lucky pass proves nothing, so it neither fails the
 # suite nor stales the list. Promotion out of here requires the P3 fix, not
