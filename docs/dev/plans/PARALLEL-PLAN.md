@@ -155,6 +155,17 @@ Candidates, to be prototyped and *measured* before committing:
 Whichever wins must leave the single-threaded hot path untouched —
 `perf-guard --check` is a hard gate here, per the standing release rule.
 
+**P4 primitives: DONE 2026-08-07/08, same days they were found.** All three
+first-run entries fixed and forced off the ratchet by their own passing
+runs: `atomicint` (the lexer DROPPED ⚛ — real operators now, lowered to
+atomic-* calls, RMW under a striped recursive-lock pool shared with `cas`;
+plus the typed-assign contract and `full-barrier`), `Channel` (every op
+under the channel's stripe; blocking `.receive` waits outside it and now
+also waits in parallel mode), and `Supplier` (emit/done/quit and tap
+registration under the supplier's stripe — the serialized-emissions
+contract). The deterministic known-bad list stands EMPTY; only the two
+flaky P3 contract cases remain, waiting on the container strategy.
+
 ### P4 — scheduler and contention
 
 - Replace unbounded thread-per-`start` (`workers_.push_back(BigStackThread(…))`
