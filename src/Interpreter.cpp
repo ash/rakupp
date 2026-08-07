@@ -818,18 +818,29 @@ ValueList rtMainArgs(const std::vector<std::string>& argv) {
     // VALUE — which is what makes `UInt` reject `-2` instead of merely inspecting
     // the spelling. See issue #11.
     auto allomorph = [](const std::string& str) { return valAllomorph(Value::str(str)); };
+    // Rakudo's (and POSIX getopt's) conventions, all oracle-verified:
+    // options are recognized only BEFORE the first positional argument (after
+    // one, `--foo=x` is the literal string "--foo=x"); a bare `--` is consumed
+    // and ends option parsing (how a positional `-5` is passed); and
+    // single-dash spellings are options too (`-v`, `-n=3`, `-foo=bar` — the
+    // whole rest of the token is the name, `=` splits off the value).
+    bool optionsDone = false;
     for (auto& a : argv) {
-        if (a.rfind("--", 0) == 0 && a.size() > 2) {
-            std::string rest = a.substr(2);
-            if (rest.rfind("/", 0) == 0) margs.push_back(named(rest.substr(1), Value::boolean(false)));
-            else {
-                auto eq = rest.find('=');
-                if (eq != std::string::npos) margs.push_back(named(rest.substr(0, eq), allomorph(rest.substr(eq + 1))));
-                else margs.push_back(named(rest, Value::boolean(true)));
+        if (!optionsDone) {
+            if (a == "--") { optionsDone = true; continue; }
+            if (a.size() > 1 && a[0] == '-' && a != "-") {
+                std::string rest = a[1] == '-' ? a.substr(2) : a.substr(1);
+                if (!rest.empty()) {
+                    if (rest[0] == '/') { margs.push_back(named(rest.substr(1), Value::boolean(false))); continue; }
+                    auto eq = rest.find('=');
+                    if (eq != std::string::npos) { margs.push_back(named(rest.substr(0, eq), allomorph(rest.substr(eq + 1)))); continue; }
+                    margs.push_back(named(rest, Value::boolean(true)));
+                    continue;
+                }
             }
-        } else {
-            margs.push_back(allomorph(a));
+            optionsDone = true; // the first positional: everything from here is positional
         }
+        margs.push_back(allomorph(a));
     }
     return margs;
 }
@@ -2611,7 +2622,51 @@ int Interpreter::run(Program& prog) {
         }
         // auto-invoke MAIN with command-line arguments, if defined
         if (Value* mainSub = tctx_.cur->find("&MAIN")) {
-            ValueList margs = rtMainArgs(argv_);
+            // Space-separated option values, Rakudo's exact (oracle-verified)
+            // rule: before the options-end boundary, `--foo abc` pairs into
+            // :foo<abc> iff the candidate declares :$foo with the Str type —
+            // untyped and Int/Num named params do NOT pair (`--n 42` genuinely
+            // fails dispatch under Rakudo). Consumption is unconditional:
+            // `--foo --verbose` makes foo eq "--verbose". Positionals need no
+            // special-casing — a positional token ends option parsing, which
+            // is what makes `prog xx --foo abc` fail exactly as in Rakudo.
+            // Decided per candidate; implemented as an argv rewrite
+            // (`--foo abc` -> `--foo=abc`) into the classic parse.
+            auto pairedArgs = [&](const Value& cand) -> ValueList {
+                if (!cand.code || !cand.code->params) return rtMainArgs(argv_);
+                std::set<std::string> keys;
+                for (auto& p : *cand.code->params) {
+                    if (!p.named || p.type != "Str") continue;
+                    std::string k = !p.namedKey.empty() ? p.namedKey
+                                  : (p.name.size() > 1 ? p.name.substr(1) : "");
+                    if (!k.empty()) keys.insert(k);
+                    for (auto& al : p.aliasKeys) keys.insert(al);
+                }
+                if (keys.empty()) return rtMainArgs(argv_);
+                std::vector<std::string> av;
+                bool done = false; // pairing obeys the same options-end-at-the-
+                                   // first-positional boundary as the parse itself
+                for (size_t i = 0; i < argv_.size(); i++) {
+                    const std::string& a = argv_[i];
+                    if (!done && a == "--") { av.push_back(a); done = true; continue; }
+                    std::string k;
+                    if (!done && a.size() > 1 && a[0] == '-' && a != "-" &&
+                        a.find('=') == std::string::npos) {
+                        k = a[1] == '-' ? a.substr(2) : a.substr(1); // --foo / -f / -foo
+                        if (!k.empty() && k[0] == '/') k.clear();    // --/k negation: not pairable
+                    }
+                    if (!k.empty() && keys.count(k) && i + 1 < argv_.size()) {
+                        av.push_back("--" + k + "=" + argv_[i + 1]);
+                        i++;
+                        continue;
+                    }
+                    if (!done && !(a.size() > 1 && a[0] == '-' && a != "-"))
+                        done = true; // the first positional token
+                    av.push_back(a);
+                }
+                return rtMainArgs(av);
+            };
+            ValueList margs;
             // Decide up front whether any MAIN candidate matches the argv. Checking
             // BEFORE the call means a nested X::Multi::NoMatch thrown from inside a
             // matched MAIN body propagates as a real error instead of being mistaken
@@ -2619,11 +2674,16 @@ int Interpreter::run(Program& prog) {
             bool mainMatches = true;
             if (mainSub->code && mainSub->code->isMultiDispatcher) {
                 mainMatches = false;
-                for (auto& cand : mainSub->code->candidates)
-                    if (scoreCandidate(cand, margs) >= 0) { mainMatches = true; break; }
+                for (auto& cand : mainSub->code->candidates) {
+                    ValueList mc = pairedArgs(cand);
+                    if (scoreCandidate(cand, mc) >= 0) { mainMatches = true; margs = std::move(mc); break; }
+                }
             }
-            else if (mainSub->code && mainSub->code->params) // single MAIN: same bind check
+            else if (mainSub->code && mainSub->code->params) { // single MAIN: same bind check
+                margs = pairedArgs(*mainSub);
                 mainMatches = scoreCandidate(*mainSub, margs) >= 0;
+            }
+            else margs = rtMainArgs(argv_);
             if (!mainMatches) {
                 // an explicit --help is a REQUEST for the usage text, not a
                 // dispatch failure: Rakudo prints it to stdout and exits 0
