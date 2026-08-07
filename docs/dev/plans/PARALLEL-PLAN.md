@@ -137,6 +137,17 @@ design doc's list point at:
 - confirm every remaining execution register / capture register is
   thread-local (most moved in the earlier steps).
 
+**P3 first delivery (2026-08-08): the no-crash contract holds for the
+pinned shapes.** TSan enumerated the two contract programs' entire race
+surface down to two choke points — the array-mutator block (vector growth)
+and the hash find-or-insert in `lvalue()` (tree balance) — now striped in
+parallel mode via `ParStripe` (constructs to nothing under the GIL;
+perf-guard unchanged). 40/40 hammer runs where SIGABRT was the norm; the
+stress matrix reads 18/18 with both ratchet lists EMPTY. Documented
+residuals for the next stress programs: iteration during mutation,
+object-attribute races, same-slot torn copies of pointer-carrying values —
+each wants its own contract program before its fix.
+
 ### P3 — container strategy (the crash-elimination decision)
 
 The design choice this plan must make concrete: how shared `Array`/`Hash`/
