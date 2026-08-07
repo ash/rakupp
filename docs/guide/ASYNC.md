@@ -117,6 +117,50 @@ rather than a single serialised bottleneck. Work dominated by external processes
 or I/O already overlaps in the default GIL mode (the waits release the lock), so
 parallel mode adds less there.
 
+## The memory model — what is guaranteed, what is yours to guard
+
+This is the contract the runtime aims at; the v3 parallelism campaign
+([dev/plans/PARALLEL-PLAN.md](../dev/plans/PARALLEL-PLAN.md)) is the work of
+making every line of it true in parallel mode. It is the same stance Raku
+itself (and Rakudo) takes.
+
+**Guaranteed, in both modes:**
+
+- The **synchronization primitives are correct**: `Lock.protect`/`.lock`,
+  `Lock::Async`, `Semaphore`, `Channel`, `Supply` (emissions are serialized
+  per tap), `Promise`, and `atomicint` with the `⚛` operators. Data handed
+  between threads through any of these arrives whole and in order.
+- **Independent data is safe.** `start` blocks that work on values they
+  don't share — or share only read-only — parallelize without ceremony.
+- The **runtime's own structures** (symbol tables, classes, the scheduler)
+  are protected: symbol tables freeze when concurrency engages, execution
+  registers are thread-local.
+
+**Undefined — for your data:**
+
+- **Unsynchronized mutation of shared plain data** — two `start` blocks
+  pushing to one `@array`, writing one `%hash`, or mutating the same
+  object's attribute without a `Lock` — has no defined result. Values may
+  be lost or duplicated. This is not a Raku++ limitation: the same program
+  is a race under Rakudo. Guard it (`Lock.protect`), route it (`Channel`),
+  or count it atomically (`atomicint`).
+
+**The line the campaign is drawing:** a race in *your* data may garbage
+*your* values, but it must never crash or corrupt the *runtime*. In GIL
+mode that holds trivially (everything is serialized). In parallel mode,
+today, it does not yet fully hold — a sufficiently unlucky unguarded
+structural race can still abort the process — and closing exactly that gap
+(then flipping parallel on by default, with `RAKUPP_GIL=1` as the escape
+hatch) is what the campaign's phases deliver. The stress suite in
+`t/stress/` is the measurable edge of this contract: what it exercises is
+guaranteed; what sits on its known-bad list is the remaining work, and
+that list only shrinks.
+
+Practical guidance, in preference order: **don't share** (partition the
+work, join results with `await`); **route** shared data through a
+`Channel` or `Supply`; **count** with `atomicint`; **guard** the rest with
+`Lock.protect`. Reach for raw shared mutation last, and only guarded.
+
 ---
 
 ## Promises

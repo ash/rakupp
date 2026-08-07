@@ -188,6 +188,12 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp t/run.raku
 
+      # The concurrency stress matrix, native build: BOTH modes enforced with
+      # the known-bad ratchet (the TSan leg lives in the linux-tsan job).
+      - name: Concurrency stress matrix (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/stress/run.raku
+
       # Package the --exe-capable install layout: bin/rakupp, lib/librakupp_rt.a,
       # include/rakupp/*.h (main.cpp's findRuntime() expects exactly this).
       - name: Install layout
@@ -342,6 +348,32 @@ jobs:
         run: cmake --build build -j 4
       - name: Smoke test
         run: build/rakupp tools/smoke.raku
+
+  # The concurrency gate (v3 parallelism campaign, phase P1): a
+  # ThreadSanitizer build running the t/stress/ matrix in both modes.
+  # Races are invisible without this job — a racy build can pass every
+  # functional test for months. The runner's known-bad list is the
+  # campaign's visible backlog: a NEW failure (including a TSan-detected
+  # race, surfaced via exitcode=66) fails this job; a known-bad entry that
+  # starts passing fails it too, so the list can only shrink honestly.
+  linux-tsan:
+    name: linux-tsan (concurrency stress)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure (Clang + ThreadSanitizer)
+        env: { CC: clang, CXX: clang++ }
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -O1 -g"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        run: cmake --build build -j 4
+      - name: Stress matrix (GIL strict; parallel = P2 backlog under TSan)
+        env:
+          TSAN_OPTIONS: exitcode=66
+          RAKUPP_STRESS_TSAN: 1
+        run: build/rakupp t/stress/run.raku
 
   # OpenBSD target. GitHub has no native BSD runner, so vmactions boots a real
   # OpenBSD guest under QEMU inside the Ubuntu runner and runs the build in it.

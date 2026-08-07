@@ -1,6 +1,17 @@
 # Plan: real multicore parallelism, on by default
 
-**Status: planned, not started.** One of the three **v3.0.0** pillars
+**Status: in progress — P0 and P1 landed 2026-08-07.** The memory model is
+written ([guide/ASYNC.md](../../guide/ASYNC.md), "The memory model");
+`t/stress/` runs a 9-program × 2-mode matrix with a known-bad ratchet (a
+new failure fails the suite; a known-bad that starts passing fails it too,
+so the list only shrinks); the `linux-tsan` CI job arms it with
+ThreadSanitizer. The suite's FIRST RUN found three P4 primitive gaps the
+plan had predicted: `atomicint` loses updates, `Channel` with N producers
+hangs, and `Supplier.emit` drops cross-thread emissions — all in parallel
+mode, all on the known-bad list. Bonus datum: Rakudo itself dies on the
+unguarded-hash race (`t/stress/ub-hash-write.raku` under real `raku`
+produced no output), so the no-crash contract aims higher than the
+reference's observed behavior. One of the three **v3.0.0** pillars
 ([VERSIONS.md](VERSIONS.md); the others are [CLI-PLAN.md](CLI-PLAN.md) and
 [LTM-PLAN.md](LTM-PLAN.md)). The *design*
 decision was already made in [PLAN-gil-removal.md](PLAN-gil-removal.md) —
