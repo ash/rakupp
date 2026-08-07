@@ -92,6 +92,47 @@ my $h2 = script('h2.raku', q:to/END/);
 check('multi: pairing picks the fitting candidate', first-line($h2, '--foo', 'v'), 'plain foo=[v]');
 check('multi: a literal positional ends options',   first-line($h2, 'cmd', '--foo', 'v'), 'USAGE');
 
-unlink $work.add($_) for <a.raku d.raku sp.raku o1.raku s2.raku neg.raku h2.raku>;
+# --- the type-sensitivity block: exactly which named params pair ----------
+my $e = script('e.raku', q:to/END/);
+    sub MAIN(:$u, Num :$x, Str:D :$s = "d", Str :$a, Str :$b, Str :$f) {
+        say "u=[{$u//'U'}] x=[{$x//'U'}] s=$s a=[{$a//'U'}] b=[{$b//'U'}] f=[{$f//'U'}]"
+    }
+    END
+check('an UNTYPED named does not pair',     first-line($e, '--u', 'val'), 'USAGE');
+check('a Num named does not pair either',   first-line($e, '--x', '1.5'), 'USAGE');
+check('Str:D pairs (the smiley is fine)',   first-line($e, '--s', 'val'),
+      'u=[U] x=[U] s=val a=[U] b=[U] f=[U]');
+check('two pairings in one command',        first-line($e, '--a', '1', '--b', '2'),
+      'u=[U] x=[U] s=d a=[1] b=[2] f=[U]');
+check('a one-letter -f pairs too',          first-line($e, '-f', 'val'),
+      'u=[U] x=[U] s=d a=[U] b=[U] f=[val]');
+
+my $b = script('b.raku', q:to/END/);
+    sub MAIN(Str :$foo, Bool :$verbose = False) { say "foo=[{$foo//'U'}] v=$verbose" }
+    END
+check('an OPTIONAL Str named pairs like a required one', first-line($b, '--foo', 'abc'),
+      'foo=[abc] v=False');
+
+my $g2 = script('g2.raku', q:to/END/);
+    sub MAIN(Str :$foo, *%named) { say "foo=[{$foo//'U'}] named={%named.raku}" }
+    END
+check('a *% slurpy does not disturb pairing', first-line($g2, '--foo', 'v'), 'foo=[v] named={}');
+
+my $o3 = script('o3.raku', q:to/END/);
+    sub MAIN(Str :$foo, Str :$bar) { say "foo=[{$foo//'U'}] bar=[{$bar//'U'}]" }
+    END
+check('a stray positional after a pairing still fails', first-line($o3, '--foo', 'a', 'b'), 'USAGE');
+
+my $c = script('c.raku', q:to/END/);
+    sub MAIN($pos, Str :$foo) { say "pos=$pos foo=[{$foo//'U'}]" }
+    END
+check('pairing cannot conjure a missing required positional', first-line($c, '--foo', 'abc'), 'USAGE');
+check('the = form is also literal after the boundary', first-line($c, 'xx', '--foo=abc'), 'USAGE');
+
+check('-xyz is one name, not a cluster',    first-line($s2, '-xyz'), 'USAGE');
+
+unlink $work.add($_)
+    for <a.raku d.raku sp.raku o1.raku s2.raku neg.raku h2.raku
+         e.raku b.raku g2.raku o3.raku c.raku>;
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit($fails ?? 1 !! 0);
