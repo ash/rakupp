@@ -56,6 +56,7 @@ enum {
 static const std::unordered_set<std::string> kAssignOps = {
     "=", "+=", "-=", "*=", "/=", "~=", "%=", "**=", "//=", "||=", "&&=", "^^=", "x=", ":=",
     "div=", "mod=", "gcd=", "lcm=", "xx=", "min=", "max=",
+    "\xE2\x9A\x9B=", "\xE2\x9A\x9B+=", "\xE2\x9A\x9B-=", // atomic assigns, lowered to atomic-* calls below
 };
 static const std::unordered_set<std::string> kBlockKeywords = {
     "if", "unless", "while", "until", "for", "else", "elsif", "given", "when",
@@ -391,6 +392,7 @@ bool Parser::startsTermToken(const Token& t) const {
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `f 0, +^$x`
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `f 0, ++$x`
+                   t.text == "\xE2\x9A\x9B" ||               // prefix ⚛ (atomic read): `f 0, ⚛$x`
                    t.text == "*" || t.text == "**" || // `*` Whatever, `**` HyperWhatever: `(1, **, 8)`
                    t.text == "->" || t.text == "<->" || t.text == "|" ||
                    t.text == "^" || // prefix `^N` (upto) after a comma: `1, ^10 .Seq` (infix ^ is impossible there)
@@ -461,6 +463,7 @@ bool Parser::startsListopArg(const Token& t) const {
                    t.text == ":" || t.text == "+" || t.text == "-" || t.text == "?" ||
                    t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `say +^$x`
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `say 0, ++$x`
+                   t.text == "\xE2\x9A\x9B" ||               // prefix ⚛ (atomic read): `say ⚛$x`
                    // `test *..1, …` — a Whatever RANGE endpoint can only be an arg
                    // (infix `*` would need a term after it, and `..` isn't one)
                    (t.text == "*" && &t == &cur() &&
@@ -973,6 +976,16 @@ ExprPtr Parser::parseExpr(int minbp) {
         ExprPtr rhs = parseExpr(nextMin);
 
         if (in.isAssign) {
+            if (in.op.rfind("\xE2\x9A\x9B", 0) == 0) { // \u269b= / +=/-= forms -> atomic calls
+                auto call = std::make_unique<Call>();
+                call->name = in.op == "\xE2\x9A\x9B=" ? "atomic-assign"
+                           : in.op == "\xE2\x9A\x9B+=" ? "atomic-add-fetch" // returns the value AFTER, per roast
+                           : "atomic-sub-fetch";
+                call->args.push_back(std::move(lhs));
+                call->args.push_back(std::move(rhs));
+                lhs = std::move(call);
+                continue;
+            }
             auto a = std::make_unique<Assign>();
             a->target = std::move(lhs); a->op = in.op; a->value = std::move(rhs);
             lhs = std::move(a);
@@ -1015,10 +1028,25 @@ ExprPtr Parser::parsePrefix(bool tight) {
             u->operand = parsePrefix(true);
             return parsePostfix(std::move(u), tight);
         }
+        if (o == "\xE2\x9A\x9B") { // prefix ⚛ — atomic read: ⚛$x → atomic-fetch($x)
+            advance();
+            auto call = std::make_unique<Call>();
+            call->name = "atomic-fetch";
+            call->args.push_back(parsePrefix(true));
+            return parsePostfix(std::move(call), tight);
+        }
         if (o == "!" || o == "-" || o == "+" || o == "~" || o == "?" ||
             o == "++" || o == "--" || o == "^" || o == "|" ||
             o == "+^" || o == "?^" || o == "~^") { // prefix bitwise/boolean NOT
             advance();
+            // ++⚛$x / --⚛$x — the atomic prefix forms return the NEW value
+            if ((o == "++" || o == "--") && isOp("\xE2\x9A\x9B")) {
+                advance();
+                auto call = std::make_unique<Call>();
+                call->name = o == "++" ? "atomic-inc-fetch" : "atomic-dec-fetch";
+                call->args.push_back(parsePrefix(true));
+                return parsePostfix(std::move(call), tight);
+            }
             auto u = std::make_unique<Unary>();
             // the operand parses "tight" (its own postfixes stop at a space-preceded
             // `.method`), so `^30 .map` is (^30).map while `^30.map` stays ^(30.map).
@@ -1699,6 +1727,13 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 }
             }
             base = std::move(mc);
+        } else if ((isOp("\xE2\x9A\x9B++") || isOp("\xE2\x9A\x9B--")) && !cur().spaceBefore) {
+            // $x⚛++ / $x⚛-- — the atomic postfix forms return the OLD value
+            std::string aop = advance().text;
+            auto call = std::make_unique<Call>();
+            call->name = aop == "\xE2\x9A\x9B++" ? "atomic-fetch-inc" : "atomic-fetch-dec";
+            call->args.push_back(std::move(base));
+            base = std::move(call);
         } else if ((isOp("++") || isOp("--")) && !cur().spaceBefore) {
             // postfix ++/-- binds tight only — `say ++$a` is prefix ++ on the argument
             auto u = std::make_unique<Unary>();

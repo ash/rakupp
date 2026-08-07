@@ -402,15 +402,6 @@ void Lexer::skipWhitespaceAndComments() {
             else if (b0 == 0xE3 && b1 == 0x80 && b2 == 0x80) uws = 3;         // IDEOGRAPHIC SPACE (U+3000)
             if (uws) { for (int k = 0; k < uws; k++) advance(); continue; }
         }
-        // atomic-operator marker ⚛ (U+269B): under the GIL, atomic ops are plain ops,
-        // so `$x⚛++`/`⚛$x`/`$x ⚛= v` reduce to `$x++`/`$x`/`$x = v` — just drop the ⚛.
-        // Remember where it ended: dropping it must NOT count as whitespace, or the
-        // following `++` loses its tight postfix position ($x⚛++ became $x ++).
-        if ((unsigned char)c == 0xE2 && (unsigned char)peek(1) == 0x9A && (unsigned char)peek(2) == 0x9B) {
-            advance(); advance(); advance();
-            atomDropEnd_ = pos_;
-            continue;
-        }
         // unspace: backslash + whitespace run is ignored and JOINS the tokens
         // (`.doit\ ()` parses like `.doit()` — the next token is not spaceBefore)
         if (c == '\\') {
@@ -2015,6 +2006,25 @@ std::vector<Token> Lexer::tokenize() {
         if (eof()) break;
         char c = peek();
         Token t;
+        // ⚛ (U+269B), the atomic-op marker — REAL operators now. The lexer used
+        // to drop it ("under the GIL, atomic ops are plain ops"), which compiled
+        // $x⚛++ to a plain, racy ++ in parallel mode — the stress suite measured
+        // 12,540 of 20,000 increments surviving. It now reaches the parser as
+        // ⚛++ / ⚛-- / ⚛= / prefix ⚛, which lower to the atomic-* calls.
+        if (angleWords_ == 0 && (unsigned char)c == 0xE2 &&
+            (unsigned char)peek(1) == 0x9A && (unsigned char)peek(2) == 0x9B) {
+            int ln = line_;
+            advance(); advance(); advance();
+            std::string op = "\xE2\x9A\x9B";
+            if (peek() == '+' && peek(1) == '+') { advance(); advance(); op += "++"; }
+            else if (peek() == '-' && peek(1) == '-') { advance(); advance(); op += "--"; }
+            else if (peek() == '=' && peek(1) != '=') { advance(); op += "="; }
+            else if (peek() == '+' && peek(1) == '=') { advance(); advance(); op += "+="; }
+            else if (peek() == '-' && peek(1) == '=') { advance(); advance(); op += "-="; }
+            t.kind = Tok::Op; t.text = op; t.line = ln; t.spaceBefore = spaced;
+            out.push_back(t);
+            continue;
+        }
         // inside a bare `< … >` word list the content is words: no quotes, no
         // regexes, no q-forms — those characters glue into words as-is
         const bool inAngle = angleWords_ > 0;

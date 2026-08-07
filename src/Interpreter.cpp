@@ -10051,7 +10051,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     init.pairVal = std::make_shared<Value>(dv);
                 else { init = dv; de->x().varDefault[ve->name] = dv; }
             }
-            else if (sigil == '$' && !ve->declType.empty() && std::isupper((unsigned char)ve->declType[0]))
+            else if (sigil == '$' && !ve->declType.empty() && (std::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint"))
                 de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
             if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
             de->define(ve->name, std::move(init));
@@ -17409,6 +17409,64 @@ Value Interpreter::evalTempLet(Call* c) {
     return Value::any();
 }
 
+// The typed-assign contract, shared by plain `=` (its own inline copy in
+// evalAssignInner predates this) and atomic-assign: a declared core nominal
+// type rejects a mismatched value; a declared atomicint coerces numerics to
+// Int (Rakudo: $x \u269b= 4.5 stores 4) and rejects the rest.
+void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
+    if (rhs.t == VT::Hash && rhs.hashKind == "Failure") return; // soaks into any container
+    static const std::set<std::string> kChecked = {
+        "Int", "Num", "Rat", "Complex", "Str", "Bool",
+    };
+    auto undefOk = [&](const std::string& want) {
+        std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
+        if (tn == want) return true;
+        if (want == "Int" && tn == "IntStr") return true;
+        if (want == "Num" && tn == "NumStr") return true;
+        if (want == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
+        if (want == "Str" && (tn == "IntStr" || tn == "NumStr" ||
+                              tn == "RatStr" || tn == "ComplexStr")) return true;
+        return false;
+    };
+    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+        auto di = en->xr().varDefault.find(nm);
+        if (di != en->xr().varDefault.end()) {
+            if (di->second.t != VT::Type) break;
+            const std::string& want = di->second.s;
+            if (want == "atomicint") {
+                if (!(rhs.t == VT::Int || rhs.t == VT::Num ||
+                      rhs.t == VT::Rat || rhs.t == VT::Bool))
+                    throwTypedV("X::TypeCheck::Assignment",
+                        {{"got", rhs}, {"expected", Value::typeObj("Int")},
+                         {"symbol", Value::str(nm)}},
+                        "Type check failed in assignment to " + nm +
+                        "; expected atomicint but got " + rhs.typeName());
+                rhs = Value::integer(rhs.toInt());
+                break;
+            }
+            if (kChecked.count(want) &&
+                (isDefined(rhs) ? !rtTypeMatch(rhs, want) : !undefOk(want)) &&
+                !(want == "Int" && rhs.t == VT::Bool))
+                throwTypedV("X::TypeCheck::Assignment",
+                    {{"got", rhs}, {"expected", Value::typeObj(want)},
+                     {"symbol", Value::str(nm)}},
+                    "Type check failed in assignment to " + nm +
+                    "; expected " + want + " but got " + rhs.typeName() +
+                    (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
+            break;
+        }
+        if (en->vars.count(nm)) break;
+    }
+}
+
+// The stripe pool for cas and the atomic-* family: real mutual exclusion in
+// parallel (no-GIL) mode, negligible uncontended cost under the GIL. Hashed by
+// the container's ADDRESS so ops on the same atomicint always share a lock.
+static std::recursive_mutex& atomicStripe(const void* p) {
+    static std::recursive_mutex stripes[64];
+    return stripes[(reinterpret_cast<uintptr_t>(p) >> 4) & 63];
+}
+
 Value Interpreter::evalCall(Call* c) {
     // temp/let take their argument by EXPRESSION — the generic args pre-eval
     // would run a `temp $a = 23` assignment before the snapshot is taken
@@ -17487,14 +17545,16 @@ Value Interpreter::evalCall(Call* c) {
             return h;
         }
         // cas $x, {code} — atomic read-modify-write; cas($x, $expected, $new) —
-        // conditional swap. Returns the value seen. Serialized by a mutex so it
-        // stays atomic in parallel (no-GIL) mode too.
+        // conditional swap. Returns the value seen. cas and the atomic-* family
+        // below share ONE striped-lock pool hashed by the container's address:
+        // if they used separate locks, cas vs $x⚛++ on the same variable would
+        // not be mutually atomic. Recursive, because cas's code form runs user
+        // code under the stripe and that code may touch the same variable.
         if (c->name == "cas" && c->args.size() >= 2 && !tctx_.cur->find("&cas")) {
             Value* lv = nullptr;
             try { lv = lvalue(c->args[0].get()); } catch (RakuError&) {}
             if (lv) {
-                static std::mutex casM;
-                std::lock_guard<std::mutex> lk(casM);
+                std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
                 Value seen = *lv;
                 if (args.size() >= 3) {
                     if (applyArith("eqv", seen, args[1]).truthy()) *lv = args[2];
@@ -17518,16 +17578,34 @@ Value Interpreter::evalCall(Call* c) {
         // container by reference, so operate on its lvalue.
         if (c->name.rfind("atomic-", 0) == 0 && !c->args.empty() && !tctx_.cur->find("&" + c->name)) {
             if (Value* lv = lvalue(c->args[0].get())) {
+                // REAL atomicity (the GIL used to be the only serialization —
+                // in parallel mode these lost updates: 12,540 of 20,000 in the
+                // stress suite's first run). Operands evaluate OUTSIDE the
+                // stripe — user code must never run under it from here.
+                Value arg2; bool haveArg2 = c->args.size() > 1;
+                if (haveArg2) arg2 = eval(c->args[1].get());
+                std::lock_guard<std::recursive_mutex> alock(atomicStripe(lv));
                 long long cur = lv->toInt();
-                auto argN = [&](size_t i) { return c->args.size() > i ? eval(c->args[i].get()).toInt() : 0; };
+                long long n2 = haveArg2 ? arg2.toInt() : 0;
                 if (c->name == "atomic-fetch")     return *lv;
-                if (c->name == "atomic-fetch-inc") { *lv = Value::integer(cur + 1);        return Value::integer(cur); }
-                if (c->name == "atomic-fetch-dec") { *lv = Value::integer(cur - 1);        return Value::integer(cur); }
-                if (c->name == "atomic-inc-fetch") { *lv = Value::integer(cur + 1);        return *lv; }
-                if (c->name == "atomic-dec-fetch") { *lv = Value::integer(cur - 1);        return *lv; }
-                if (c->name == "atomic-fetch-add") { *lv = Value::integer(cur + argN(1));  return Value::integer(cur); }
-                if (c->name == "atomic-fetch-sub") { *lv = Value::integer(cur - argN(1));  return Value::integer(cur); }
-                if (c->name == "atomic-assign")    { Value v = c->args.size() > 1 ? eval(c->args[1].get()) : Value::any(); *lv = v; return v; }
+                if (c->name == "atomic-fetch-inc") { *lv = Value::integer(cur + 1);   return Value::integer(cur); }
+                if (c->name == "atomic-fetch-dec") { *lv = Value::integer(cur - 1);   return Value::integer(cur); }
+                if (c->name == "atomic-inc-fetch") { *lv = Value::integer(cur + 1);   return *lv; }
+                if (c->name == "atomic-dec-fetch") { *lv = Value::integer(cur - 1);   return *lv; }
+                if (c->name == "atomic-fetch-add") { *lv = Value::integer(cur + n2);  return Value::integer(cur); }
+                if (c->name == "atomic-fetch-sub") { *lv = Value::integer(cur - n2);  return Value::integer(cur); }
+                if (c->name == "atomic-add-fetch") { *lv = Value::integer(cur + n2);  return *lv; }
+                if (c->name == "atomic-sub-fetch") { *lv = Value::integer(cur - n2);  return *lv; }
+                if (c->name == "atomic-assign") {
+                    // the same typed-assign contract as plain `=`: a declared
+                    // Int/Str/... rejects mismatches, atomicint coerces
+                    // numerics; an undeclared Scalar takes anything (⚛ on a
+                    // plain container is atomic REFERENCE assignment).
+                    if (c->args[0]->kind == NK::VarExpr)
+                        enforceTypedAssign(static_cast<VarExpr*>(c->args[0].get())->name, arg2);
+                    *lv = arg2;
+                    return arg2;
+                }
             }
         }
         if (Value* f = tctx_.cur->find("&" + c->name)) return callCallable(*f, std::move(args), &c->args, /*ownFrame=*/false, /*arityCheck=*/true);

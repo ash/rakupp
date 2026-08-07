@@ -6799,6 +6799,12 @@ void Interpreter::registerBuiltins() {
         if (childPid) (*p.hash)["pid"] = Value::integer(childPid);
         return p;
     };
+    // full-barrier — a sequentially-consistent memory fence (the ⚛ family's
+    // companion; under the GIL it is trivially a no-op that must still exist)
+    B["full-barrier"] = [](Interpreter&, ValueList&) -> Value {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        return Value::nil();
+    };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
         if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->pairVal = std::make_shared<Value>(v);
