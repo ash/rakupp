@@ -595,7 +595,11 @@ public:
     // `cache` is the owner's decided-once flag (Block::hoistNeed / Callable::
     // hoistNeed): -1 undecided, 0 nothing to hoist, 1 something. See the definition.
     void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, DecidedOnce<signed char>* cache = nullptr);
-    void enforceTypedAssign(const std::string& nm, Value& rhs); // typed-assign contract, shared by `=` and atomic-assign // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
+    void enforceTypedAssign(const std::string& nm, Value& rhs); // typed-assign contract, shared by `=` and atomic-assign
+    // The striped-lock pool shared by cas, the atomic-* family, and Channel:
+    // real mutual exclusion in parallel (no-GIL) mode, negligible uncontended
+    // cost under the GIL. Recursive so a holder may re-enter its own stripe.
+    static std::recursive_mutex& atomicStripe(const void* p); // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
     struct SubsetInfo { std::string base; const Expr* where = nullptr; };

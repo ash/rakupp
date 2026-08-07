@@ -4533,7 +4533,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // Channel — a thread-safe queue. Under the GIL send/receive are simple deque
     // ops; `.closed` is a Promise kept once the channel is closed AND drained.
     if (inv.t == VT::Hash && inv.hashKind == "Channel") {
-        auto& q = *(*inv.hash)["queue"].arr;
+        // "a thread-safe queue" is now true OUTSIDE the GIL too: every touch of
+        // the queue and the closed/failCause flags happens under the channel's
+        // stripe (keyed on the hash — the same pool cas and atomic-* use). The
+        // GIL made this free before; in parallel mode concurrent sends corrupted
+        // the vector — hangs, lost items, and a spurious "Promise broken" were
+        // all one bug. Blocking waits happen OUTSIDE the stripe, or no producer
+        // could ever get in to send.
+        std::recursive_mutex& chm = atomicStripe(inv.hash.get());
+        std::shared_ptr<ValueList> qp;
+        { std::lock_guard<std::recursive_mutex> lk(chm); qp = (*inv.hash)["queue"].arr; }
+        auto& q = *qp;
         auto isClosed = [&]() { return (*inv.hash)["closed"].b; };
         auto keepClosedIfDrained = [&]() {
             if (isClosed() && q.empty() && inv.ext) {
@@ -4550,10 +4560,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
         };
         if (m == "send") {
+            Value v = args.empty() ? Value::any() : args[0];
+            std::lock_guard<std::recursive_mutex> lk(chm);
             if (isClosed()) throw RakuError{Value::typeObj("X::Channel::SendOnClosed"), "Cannot send a message on a closed channel"};
-            Value v = args.empty() ? Value::any() : args[0]; q.push_back(v); return v;
+            q.push_back(v); return v;
         }
         if (m == "poll") {
+            std::lock_guard<std::recursive_mutex> lk(chm);
             if (q.empty()) { keepClosedIfDrained(); return Value::nil(); }
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
         }
@@ -4562,7 +4575,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // under the cooperative GIL that means handing off to the workers that
             // could send. With no async engaged nothing ever could, so answer Nil
             // rather than deadlock; likewise once every worker has finished.
-            if (q.empty() && !isClosed() && gilHeld_) {
+            if (q.empty() && !isClosed() && (gilHeld_ || parallelMode_)) {
                 // No wall-clock deadline. A 300 ms cap used to stand in for "blocks
                 // until an item arrives", which made the wait a RACE against the
                 // producer: `start { sleep 0.2; $c.send(...) }` lost it whenever
@@ -4580,11 +4593,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // A finer or backing-off quantum was tried and is WORSE — more GIL
                 // churn than the overshoot it saves: S17-channel/stress.t ran 12 s at
                 // 20 ms, 29-42 s at 0.5-2 ms. Leave it at 20 ms.
-                while (q.empty() && !isClosed()) {
+                for (;;) {
+                    { std::lock_guard<std::recursive_mutex> lk(chm);
+                      if (!q.empty() || isClosed()) break; }
                     if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
-                    yieldToWorkerFor(0.02);
+                    if (gilHeld_) yieldToWorkerFor(0.02);
+                    else std::this_thread::sleep_for(std::chrono::milliseconds(2)); // parallel mode: real wait
                 }
             }
+            std::lock_guard<std::recursive_mutex> lk(chm);
             if (q.empty()) {
                 if (isClosed()) {
                     if (inv.hash->count("failCause")) throw RakuError{(*inv.hash)["failCause"], "Channel failed"};
@@ -4594,8 +4611,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
         }
-        if (m == "close") { (*inv.hash)["closed"] = Value::boolean(true); keepClosedIfDrained(); return Value::boolean(true); }
+        if (m == "close") { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash)["closed"] = Value::boolean(true); keepClosedIfDrained(); return Value::boolean(true); }
         if (m == "fail") {
+            std::lock_guard<std::recursive_mutex> lk(chm);
             (*inv.hash)["closed"] = Value::boolean(true);
             Value cause = args.empty() ? Value::str("Died") : args[0];
             if (cause.t != VT::Object) { // wrap a plain cause in X::AdHoc (like die/break)
@@ -4613,11 +4631,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             return Value::boolean(true);
         }
-        if (m == "closed") { return (*inv.hash)["closedPromise"]; }
+        if (m == "closed") { std::lock_guard<std::recursive_mutex> lk(chm); return (*inv.hash)["closedPromise"]; }
         // `.list`/`.Seq` CONSUME a closed channel: they yield the queued values
         // and drain it (so the .closed Promise then keeps). `.Supply` snapshots
         // without draining (a Supply is a re-tappable stream).
         if (m == "list" || m == "Seq") {
+            std::lock_guard<std::recursive_mutex> lk(chm);
             Value o = Value::array(); *o.arr = q; o.isList = true;
             q.clear(); keepClosedIfDrained();
             return o;
@@ -4627,6 +4646,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // Supply on the SAME supplier, so `$s.Supply.Channel.Supply` forwards
             // emits (IO::Socket::Async::SSL's read path). A plain (from-list)
             // channel yields its queued snapshot as a list-backed Supply.
+            std::lock_guard<std::recursive_mutex> lk(chm);
             if (inv.hash->count("supplier")) {
                 Value s = Value::makeHash(); s.hashKind = "Supply";
                 (*s.hash)["supplier"] = (*inv.hash)["supplier"];
@@ -4634,7 +4654,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             Value o = Value::array(); *o.arr = q; o.isList = true; return o;
         }
-        if (m == "elems") return Value::integer((long long)q.size());
+        if (m == "elems") { std::lock_guard<std::recursive_mutex> lk(chm); return Value::integer((long long)q.size()); }
     }
     // Thread — under the GIL a Thread.start runs its block eagerly, but we bump
     // threadDepth_ so `is-initial-thread` correctly reads False inside the block.

@@ -17462,7 +17462,7 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
 // The stripe pool for cas and the atomic-* family: real mutual exclusion in
 // parallel (no-GIL) mode, negligible uncontended cost under the GIL. Hashed by
 // the container's ADDRESS so ops on the same atomicint always share a lock.
-static std::recursive_mutex& atomicStripe(const void* p) {
+std::recursive_mutex& Interpreter::atomicStripe(const void* p) {
     static std::recursive_mutex stripes[64];
     return stripes[(reinterpret_cast<uintptr_t>(p) >> 4) & 63];
 }

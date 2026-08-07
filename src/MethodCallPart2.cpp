@@ -110,6 +110,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*c.hash)["closedPromise"] = cp;
                 auto ch = c.hash;
                 auto settle = [ch, ps](bool failed, Value cause) {
+                    std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
                     (*ch)["closed"] = Value::boolean(true);
                     if (failed) (*ch)["failCause"] = cause;
                     if ((*ch)["queue"].arr->empty()) {
@@ -125,6 +126,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 };
                 Value emitCb; emitCb.t = VT::Code; emitCb.code = std::make_shared<Callable>();
                 emitCb.code->builtin = [ch](Interpreter&, ValueList& a) -> Value {
+                    std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
                     if (!a.empty()) (*ch)["queue"].arr->push_back(a[0]);
                     return Value::any();
                 };

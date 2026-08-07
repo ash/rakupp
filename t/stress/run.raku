@@ -29,9 +29,10 @@
 my %known-bad =
     # found by this suite's FIRST RUN (2026-08-07) — the plan's P4 phase
     # ("some primitives serialize via the GIL today") named these in advance.
-    # atomic-counter/parallel was the third entry: FIXED same day (the lexer
-    # used to DROP the ⚛ marker; real striped-lock atomics now).
-    'channel-pipeline/parallel' => 'P4: Channel with N producers hangs in parallel mode',
+    # Two are FIXED already, same day: atomic-counter/parallel (the lexer used
+    # to DROP the ⚛ marker; real striped-lock atomics now) and
+    # channel-pipeline/parallel (the queue was a bare vector — every Channel
+    # op now runs under the channel's stripe).
     'supply-fanin/parallel'     => 'P4: Supplier.emit drops cross-thread emissions',
 ;
 # Nondeterministic cases: a crash that only SOMETIMES happens. Tolerated in
