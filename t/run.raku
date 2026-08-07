@@ -802,6 +802,45 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ($o, $e, $x) = run-rakupp-err(|@I, '-M', 'CliM', $errf.Str);
         ok($e.contains('line 2'), '-M does not shift error line numbers');
     }
+
+    # -a / -F / -l / -0777 / -0 — the perl family completed (v3 CLI step 4)
+    {
+        my $ab  = $work.add('ab.txt');  $ab.spurt("a b\nc d\n");
+        my $csv = $work.add('c.csv');   $csv.spurt("a,b\nc,d\n");
+        my $tsv = $work.add('t.tsv');   $tsv.spurt("a\tb\n");
+        is(run-rakupp('-a', '-e', 'say @F[1]', $ab.Str)[0], "b\nd\n", '-a implies -n');
+        is(run-rakupp('-lane', 'say @F[1]', $ab.Str)[0], "b\nd\n", '-lane clusters (l is a no-op)');
+        is(run-rakupp('-F,', '-ane', 'say @F[1]', $csv.Str)[0], "b\nd\n", '-F, literal separator');
+        is(run-rakupp('-F\t', '-ane', 'say @F[1]', $tsv.Str)[0], "b\n", '-F\t escape means TAB');
+        is(run-rakupp('-F,', '-e', 'say @F[0]', $csv.Str)[0], "a\nc\n", '-F implies -a implies -n');
+        my $num = $work.add('n.txt'); $num.spurt("a1b22c\n");
+        is(run-rakupp('-F/\d+/', '-ane', 'say @F.join("|")', $num.Str)[0], "a|b|c\n",
+           '-F/…/ is a Raku regex separator');
+        my $s1 = $work.add('s1.txt'); $s1.spurt("x\ny\n");
+        my $s2 = $work.add('s2.txt'); $s2.spurt("z\n");
+        is(run-rakupp('-0777', '-ne', 'print $_.chars ~ ","', $s1.Str, $s2.Str)[0], "4,2,",
+           '-0777: one record per file');
+        is(run-rakupp('-0777', '-pe', '$_ = $_.subst("\n", ".", :g)', $s1.Str, $s2.Str)[0], "x.y.z.",
+           '-0777 -p prints records raw');
+        {   # NUL records in, one per line out (records arrive chomped)
+            my $p = run('/bin/sh', '-c',
+                        "printf 'aa\\0bb\\0' | " ~ $*EXECUTABLE ~ " -0ne 'say \"[\$_]\"'", :out, :!err);
+            is($p.out.slurp(:close), "[aa]\n[bb]\n", '-0: NUL-separated records');
+        }
+        # the perl differentials, where perl is present (the plan's own gate)
+        my $perl = run('/bin/sh', '-c', 'command -v perl', :out, :!err).out.slurp(:close).trim;
+        if $perl {
+            my $pl = run($perl, '-lane', 'print $F[1]', $ab.Str, :out, :!err).out.slurp(:close);
+            is(run-rakupp('-lane', 'say @F[1]', $ab.Str)[0], $pl, 'differential: -lane matches perl');
+            my $ps = run($perl, '-0777', '-pe', 's/\n/./g', $s1.Str, $s2.Str, :out, :!err).out.slurp(:close);
+            is(run-rakupp('-0777', '-pe', '$_ = $_.subst("\n", ".", :g)', $s1.Str, $s2.Str)[0], $ps,
+               'differential: -0777 -p matches perl');
+        }
+        else {
+            skip('perl differential: -lane (no perl on PATH)');
+            skip('perl differential: -0777 -p (no perl on PATH)');
+        }
+    }
 }
 
 # ---- summary ----------------------------------------------------------

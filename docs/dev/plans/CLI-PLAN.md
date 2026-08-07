@@ -1,6 +1,12 @@
 # Plan: the command line — a real option surface
 
-**Status: in progress — steps 1 and 2 landed 2026-08-07.** Step 2 (MAIN
+**Status: in progress — steps 1–4 landed 2026-08-07** (the parser, MAIN
+usage/#17, `-M`/`-m`, and the `-a`/`-F`/`-l`/`-0777`/`-0` family — the last
+with byte-identical perl differentials for `-lane` and `-0777 -p` in the
+suite). Remaining: `-i[.ext]` (step 5), `--profile` (step 6), guide/CLI.md
+(step 7). Two documented Raku-flavored divergences from perl: `-F STR` is a
+literal separator with `\t`-escapes (`-F/…/` is the regex form — perl regex
+syntax is not Raku regex syntax), and records arrive chomped. Step 2 (MAIN
 usage fidelity, the section below): all four fixes in, six oracle cases
 byte-identical to Rakudo including streams and exit codes,
 `t/regression/main-usage-17.raku` passes under both engines, Roast

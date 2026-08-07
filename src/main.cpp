@@ -618,6 +618,12 @@ int main(int argc, char** argv) {
     std::string hlFmt = "html", precompKey, precompVal;
     bool haveSrc = false, optionsDone = false;
     bool optN = false, optP = false;      // the perl line-loop family
+    bool optA = false;                    // -a: autosplit into @F (implies -n)
+    bool optL = false;                    // -l: accepted no-op (lines() already
+                                          // chomps and -p prints with .say)
+    std::string fieldSep;                 // -F: separator (implies -a)
+    bool haveF = false, fieldSepRegex = false;
+    long recMode = -1;                    // -0[octal]: 0 = NUL records, 0777 = slurp
     bool quiet = false;                   // --lint -q
     bool optimize = false;                // -O (compile modes and --cpp)
     bool sawHtml = false;                 // --html is only legal under --highlight
@@ -710,19 +716,37 @@ int main(int argc, char** argv) {
                 }
                 continue;
             }
-            // perl-style line-loop clusters: -n / -p / -np / -ne'CODE' … —
-            // scan left-to-right; 'e' ENDS the cluster with everything after
-            // it glued as the code (the shell strips the quotes).
+            // -F<sep>: the autosplit separator (implies -a, which implies -n).
+            // A literal string with \t-style escapes by default — perl regex
+            // syntax is not Raku regex syntax, so the regex form is the
+            // explicit /…/ spelling. Glued (perl's only form) or separate.
+            if (a == "-F") { if (i + 1 < argc) { fieldSep = argv[++i]; haveF = true; } continue; }
+            if (a.rfind("-F", 0) == 0 && a.size() > 2) { fieldSep = a.substr(2); haveF = true; continue; }
+            // perl-style line-loop clusters: -n / -p / -a / -l / -0[octal],
+            // combinable in one token (-lane, -0777pe); 'e' ENDS the cluster
+            // with everything after it glued as the code (the shell strips
+            // the quotes).
             if (mode == Mode::Run && !haveSrc) {
-                size_t j = 1; bool sawN = false, sawP = false, sawE = false;
-                while (j < a.size() && (a[j] == 'n' || a[j] == 'p' || a[j] == 'e')) {
-                    if (a[j] == 'n') sawN = true;
-                    else if (a[j] == 'p') sawP = true;
-                    else { sawE = true; j++; break; }
-                    j++;
+                size_t j = 1;
+                bool sawN = false, sawP = false, sawE = false, sawA = false, sawL = false, ok = true;
+                long saw0 = -1;
+                while (j < a.size()) {
+                    char c = a[j];
+                    if (c == 'n') { sawN = true; j++; }
+                    else if (c == 'p') { sawP = true; j++; }
+                    else if (c == 'a') { sawA = true; j++; }
+                    else if (c == 'l') { sawL = true; j++; }
+                    else if (c == '0') { // -0[octal]: value in octal, like perl
+                        j++; long v = 0;
+                        while (j < a.size() && a[j] >= '0' && a[j] <= '7') { v = v * 8 + (a[j] - '0'); j++; }
+                        saw0 = v;
+                    }
+                    else if (c == 'e') { sawE = true; j++; break; }
+                    else { ok = false; break; } // -nfoo is not a flag cluster at all
                 }
-                if ((sawN || sawP) && (sawE || j >= a.size())) { // -nfoo is not a cluster
-                    optN |= sawN; optP |= sawP;
+                if (ok && (sawN || sawP || sawA || sawL || sawE || saw0 >= 0)) {
+                    optN |= sawN; optP |= sawP; optA |= sawA; optL |= sawL;
+                    if (saw0 >= 0) recMode = saw0;
                     if (sawE) {
                         if (j < a.size()) { src = a.substr(j); }
                         else {
@@ -773,6 +797,31 @@ int main(int argc, char** argv) {
             (mode == Mode::Highlight || mode == Mode::Ast || mode == Mode::AstRoundtrip ||
              mode == Mode::PrecompSetting || mode == Mode::PrecompInfo || mode == Mode::PrecompClean))
             return illegalOpt("-M");
+        if (haveF && mode != Mode::Run) return illegalOpt("-F");
+    }
+    // the perl-family implications (perl 5.20+): -F implies -a, -a implies -n
+    if (haveF) optA = true;
+    if (optA && !optP) optN = true;
+    if (recMode > 0 && recMode != 0777) { // 0777 is C++ octal — 511, perl's slurp marker
+        std::cerr << "Only -0 (NUL records) and -0777 (slurp mode) are supported\n";
+        return 4;
+    }
+    if (haveF) { // -F/RE/ is a Raku regex; anything else is a literal separator
+        if (fieldSep.size() >= 2 && fieldSep.front() == '/' && fieldSep.back() == '/') {
+            fieldSep = fieldSep.substr(1, fieldSep.size() - 2);
+            fieldSepRegex = true;
+        }
+        else { // C-style escapes in the literal form: -F'\t' means a TAB
+            std::string t;
+            for (size_t k = 0; k < fieldSep.size(); k++) {
+                if (fieldSep[k] == '\\' && k + 1 < fieldSep.size()) {
+                    char n = fieldSep[++k];
+                    t += n == 't' ? '\t' : n == 'n' ? '\n' : n == 'r' ? '\r' : n == '0' ? '\0' : n;
+                }
+                else { t += fieldSep[k]; }
+            }
+            fieldSep = t;
+        }
     }
     // -M/-m: the program behaves as if it began with `use <module>; ` — joined
     // on the program's own first line, so error line numbers do not shift.
@@ -798,6 +847,14 @@ int main(int argc, char** argv) {
 "                               (repeatable; -I<path> also works)\n"
 "  -M <module>                  Load the module before running the program\n"
 "                               (repeatable; -m and -M<module> also work)\n"
+"  -n / -p                      Run the program once per input line ($_), from\n"
+"                               files in the arguments or stdin; -p also prints\n"
+"                               $_ after each line. Cluster like perl: -ne, -pe\n"
+"  -a                           Autosplit each record into @F (implies -n);\n"
+"                               -F<sep> sets the separator — a literal string\n"
+"                               (\\t-style escapes) or a Raku regex as -F/…/\n"
+"  -0777 / -0                   One record per FILE (slurp) / NUL-separated\n"
+"                               records; -l is accepted (lines already chomp)\n"
 "\n"
 "Compile to a standalone binary (each takes FILE or -e CODE, plus -o OUT):\n"
 "  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
@@ -1096,8 +1153,48 @@ int main(int argc, char** argv) {
         ss << std::cin.rdbuf();
         src = ss.str();
     }
-    if (optN || optP) // wrap the program in a line loop over $*ARGFILES (files in @*ARGS, else $*IN)
-        src = "for lines() -> $_ is copy {\n" + src + "\n" + (optP ? "$_.say;\n" : "") + "}\n";
+    if (optN || optP) { // wrap the program in a record loop (files in @*ARGS, else $*IN)
+        // -a: @F, split by .words or the -F separator, declared before the body.
+        // A literal separator is emitted as a double-quoted Raku string with
+        // per-char escaping (control chars as \x[..] — a raw NUL would truncate
+        // the generated source); the /…/ form is spliced as Raku regex text.
+        std::string pre;
+        if (optA) {
+            if (!haveF) pre = "my @F = .words; ";
+            else if (fieldSepRegex) pre = "my @F = $_.split(/" + fieldSep + "/); ";
+            else {
+                std::string lit;
+                for (unsigned char c : fieldSep) {
+                    if (c == '"' || c == '\\' || c == '$' || c == '@' || c == '{' || c == '}') { lit += '\\'; lit += (char)c; }
+                    else if (c < 0x20) { char b[16]; snprintf(b, sizeof b, "\\x[%02x]", c); lit += b; }
+                    else lit += (char)c;
+                }
+                pre = "my @F = $_.split(\"" + lit + "\"); ";
+            }
+        }
+        if (recMode == 0777) {
+            // slurp mode: the body runs once per FILE with the whole file in $_;
+            // -p prints the record raw (no appended newline), as perl does
+            src = "my @__files = @*ARGS.elems ?? @*ARGS !! ['-'];\n"
+                  "for @__files -> $__f {\n"
+                  "my $_ = $__f eq '-' ?? $*IN.slurp !! $__f.IO.slurp;\n"
+                  + pre + src + "\n" + (optP ? "print $_;\n" : "") + "}\n";
+        }
+        else if (recMode == 0) {
+            // NUL-separated records (the `find -print0` partner). Records arrive
+            // CHOMPED — the same Raku-side choice -n already makes for lines —
+            // and -p re-appends the NUL so pipelines round-trip.
+            src = "my $__all = @*ARGS.elems ?? @*ARGS.map(*.IO.slurp).join !! $*IN.slurp;\n"
+                  "my @__recs = $__all.split(\"\\0\");\n"
+                  "@__recs.pop if @__recs && @__recs[*-1] eq '';\n"
+                  "for @__recs -> $_ is copy {\n"
+                  + pre + src + "\n" + (optP ? "print $_ ~ \"\\0\";\n" : "") + "}\n";
+        }
+        else {
+            src = "for lines() -> $_ is copy {\n"
+                  + pre + src + "\n" + (optP ? "$_.say;\n" : "") + "}\n";
+        }
+    }
     if (!usePrefix.empty()) src = usePrefix + src; // -M: outside the -n/-p loop
     return rakuppRunBigStack(src, std::move(progArgs), fileName, exePath, libPaths);
 }
