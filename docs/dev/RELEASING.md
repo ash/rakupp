@@ -155,8 +155,9 @@ and since it only collects, never measures, nothing warns you.
 ```bash
 # in the raku.online checkout, sites/spec
 rakupp tools/gen-roast-map.raku /path/to/roast.txt $(date +%F)  # gate 1's output
-rakupp tools/gen-dashboard.raku --rakupp-repo=/path/to/raku++
-rakupp tools/snapshot.raku --rakupp=/path/to/rakupp --oracle=raku   # always last
+rakupp tools/snapshot.raku --rakupp=/path/to/rakupp --oracle=raku   # BEFORE the dashboard
+rakupp tools/gen-dashboard.raku --rakupp-repo=/path/to/raku++ --battery=/path/to/raku-module-battery
+../../../raku++/rakujs/build.sh    # the playground engine — see step 6 below
 ./verify.sh                                    # both sites, every example, publishes nothing
 cd ../.. && ./build.sh spec                    # sites/spec -> www/spec
 ```
@@ -166,13 +167,37 @@ workflow publishes `www/` **verbatim** — there is no build step in CI, so
 anything not built and committed locally does not go live, and the regenerated
 data files alone change nothing that a visitor sees.
 
-`snapshot.raku` runs last as a rule. It appends one line to
-`src/data/history.jsonl` describing whatever the other data files say *at that
-moment*, and that file is what the trend chart on
-[/spec/rules/divergences/](https://raku.online/spec/rules/divergences/) draws.
-Snapshot before regenerating and the release's line permanently records the
-previous release's numbers: the file is append-only and nothing ever rewrites an
-earlier line.
+`snapshot.raku` sits between two ordering hazards, one on each side — the
+v2.0.0 release hit the second one and shipped a dashboard whose conformance
+trend ended at the previous release:
+
+- **After gate 5's sweep, never before.** It appends one line to
+  `src/data/history.jsonl` describing whatever the other data files say *at
+  that moment*, and that file is what the trend chart on
+  [/spec/rules/divergences/](https://raku.online/spec/rules/divergences/)
+  draws. Snapshot before regenerating and the release's line permanently
+  records the previous release's numbers: the file is append-only and nothing
+  ever rewrites an earlier line.
+- **Before `gen-dashboard`, never after.** The dashboard's conformance series
+  is mined *from* `history.jsonl`, so a dashboard generated before the
+  snapshot lacks the release's own point. If the order slips, re-running
+  `gen-dashboard` is safe (it only collects); re-running `snapshot` is NOT
+  (it would append a duplicate line).
+
+Two more collectors go stale silently — neither fails, they just stop:
+
+- **The dashboard's modules series** is mined from the *battery repo's commit
+  subjects* (`Tier-2: N/50` for the old probe bar, `battery: N/59` for the
+  zef bar). Commit the battery repo with a subject in that shape before
+  running `gen-dashboard`, or the graph flatlines at the last such commit
+  while the README says something better.
+- **The playground engine** (`/play/` and every embedded run button) is the
+  Raku.js WASM bundle, built separately by `rakujs/build.sh` from the tagged
+  source and copied into the site's `www/` (`rakujs.js` + `rakujs.wasm`).
+  Nothing regenerates it: skip this and the playground banner keeps
+  announcing the previous release — v2.0.0 shipped while `/play/` still said
+  1.7.0. Rebuild it, copy the pair over, and let `build.sh` re-stamp the
+  cache-busting hashes.
 
 If a sweep was skipped, skip its regeneration too rather than re-running an old
 tool against new data — the point of the history is that each line is one
