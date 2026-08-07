@@ -621,6 +621,8 @@ int main(int argc, char** argv) {
     bool optA = false;                    // -a: autosplit into @F (implies -n)
     bool optL = false;                    // -l: accepted no-op (lines() already
                                           // chomps and -p prints with .say)
+    bool optI = false;                    // -i[.ext]: edit the argument files in place
+    std::string backupExt;                // -i.bak — glued only, as in perl
     std::string fieldSep;                 // -F: separator (implies -a)
     bool haveF = false, fieldSepRegex = false;
     long recMode = -1;                    // -0[octal]: 0 = NUL records, 0777 = slurp
@@ -741,10 +743,16 @@ int main(int argc, char** argv) {
                         while (j < a.size() && a[j] >= '0' && a[j] <= '7') { v = v * 8 + (a[j] - '0'); j++; }
                         saw0 = v;
                     }
+                    else if (c == 'i') { // -i[.ext]: the REST of the token is the
+                        // backup extension, exactly as in perl — which is also
+                        // perl's famous -pie trap: the 'e' becomes the extension
+                        optI = true; backupExt = a.substr(j + 1); j = a.size();
+                        break;
+                    }
                     else if (c == 'e') { sawE = true; j++; break; }
                     else { ok = false; break; } // -nfoo is not a flag cluster at all
                 }
-                if (ok && (sawN || sawP || sawA || sawL || sawE || saw0 >= 0)) {
+                if (ok && (sawN || sawP || sawA || sawL || sawE || saw0 >= 0 || optI)) {
                     optN |= sawN; optP |= sawP; optA |= sawA; optL |= sawL;
                     if (saw0 >= 0) recMode = saw0;
                     if (sawE) {
@@ -806,6 +814,16 @@ int main(int argc, char** argv) {
         std::cerr << "Only -0 (NUL records) and -0777 (slurp mode) are supported\n";
         return 4;
     }
+    // -i refusals — each a DELIBERATE divergence from perl, which silently
+    // no-ops -i without -n/-p and falls back to editing stdin(!) with no files
+    if (optI && !(optN || optP)) {
+        std::cerr << "-i is only meaningful together with -n or -p\n";
+        return 4;
+    }
+    if (optI && recMode == 0) {
+        std::cerr << "-0 (NUL records) does not combine with -i; use line mode or -0777\n";
+        return 4;
+    }
     if (haveF) { // -F/RE/ is a Raku regex; anything else is a literal separator
         if (fieldSep.size() >= 2 && fieldSep.front() == '/' && fieldSep.back() == '/') {
             fieldSep = fieldSep.substr(1, fieldSep.size() - 2);
@@ -855,6 +873,9 @@ int main(int argc, char** argv) {
 "                               (\\t-style escapes) or a Raku regex as -F/…/\n"
 "  -0777 / -0                   One record per FILE (slurp) / NUL-separated\n"
 "                               records; -l is accepted (lines already chomp)\n"
+"  -i[.ext]                     With -n/-p: edit the argument files in place\n"
+"                               (extension glued, as in perl: -pi.bak keeps a\n"
+"                               backup; the current file is $*ARGV)\n"
 "\n"
 "Compile to a standalone binary (each takes FILE or -e CODE, plus -o OUT):\n"
 "  rakupp --bundle SRC -o OUT   Embed source + interpreter (whole language)\n"
@@ -1154,25 +1175,67 @@ int main(int argc, char** argv) {
         src = ss.str();
     }
     if (optN || optP) { // wrap the program in a record loop (files in @*ARGS, else $*IN)
-        // -a: @F, split by .words or the -F separator, declared before the body.
-        // A literal separator is emitted as a double-quoted Raku string with
-        // per-char escaping (control chars as \x[..] — a raw NUL would truncate
-        // the generated source); the /…/ form is spliced as Raku regex text.
+        // emit a string as a double-quoted Raku literal with per-char escaping
+        // (control chars as \x[..] — a raw NUL would truncate the generated source)
+        auto rakuDq = [](const std::string& s) {
+            std::string lit;
+            for (unsigned char c : s) {
+                if (c == '"' || c == '\\' || c == '$' || c == '@' || c == '{' || c == '}') { lit += '\\'; lit += (char)c; }
+                else if (c < 0x20) { char b[16]; snprintf(b, sizeof b, "\\x[%02x]", c); lit += b; }
+                else lit += (char)c;
+            }
+            return lit;
+        };
+        // -a: @F, split by .words or the -F separator, declared before the body;
+        // the /…/ separator form is spliced as Raku regex text.
         std::string pre;
         if (optA) {
             if (!haveF) pre = "my @F = .words; ";
             else if (fieldSepRegex) pre = "my @F = $_.split(/" + fieldSep + "/); ";
-            else {
-                std::string lit;
-                for (unsigned char c : fieldSep) {
-                    if (c == '"' || c == '\\' || c == '$' || c == '@' || c == '{' || c == '}') { lit += '\\'; lit += (char)c; }
-                    else if (c < 0x20) { char b[16]; snprintf(b, sizeof b, "\\x[%02x]", c); lit += b; }
-                    else lit += (char)c;
-                }
-                pre = "my @F = $_.split(\"" + lit + "\"); ";
-            }
+            else pre = "my @F = $_.split(\"" + rakuDq(fieldSep) + "\"); ";
         }
-        if (recMode == 0777) {
+        if (optI) {
+            // -i[.ext]: edit the argument files in place. Per file: run the body
+            // with $*OUT rebound to a temp file in the same directory, preserve
+            // the mode, rename the original to its backup (if an extension was
+            // given), then the temp over the original. A file that cannot be
+            // opened is reported and skipped, and the exit code says so —
+            // unlike perl, which exits 0 (deliberate, per the plan).
+            // ($__mode round-trips via parse-base(8): .IO.mode is an octal
+            // STRING here, and chmod("0755") would read it as decimal.)
+            if (progArgs.empty()) {
+                std::cerr << "-i requires file arguments to edit in place\n";
+                return 1;
+            }
+            std::string inner;
+            if (recMode == 0777)
+                inner = "my $_ = $__f.IO.slurp;\n" + pre + src + "\n" + (optP ? "print $_;\n" : "");
+            else
+                inner = "for $__f.IO.lines -> $_ is copy {\n" + pre + src + "\n"
+                      + (optP ? "$_.say;\n" : "") + "}\n";
+            std::string bak;
+            if (!backupExt.empty())
+                bak = "rename($__f, $__f ~ \"" + rakuDq(backupExt) + "\");\n";
+            src = "my $__bad = 0;\n"
+                  "for @*ARGS -> $__f {\n"
+                  "if !$__f.IO.e { note \"Can't open $__f: No such file or directory.\"; $__bad = 1; next; }\n"
+                  "if !$__f.IO.r { note \"Can't open $__f: Permission denied.\"; $__bad = 1; next; }\n"
+                  "my $__mode = $__f.IO.mode;\n"
+                  "my $__tmp = $__f ~ \".\" ~ $*PID ~ \".rakupp-tmp\";\n"
+                  "my $__out = open($__tmp, :w);\n"
+                  "my $*ARGV = $__f;\n"
+                  "{\n"
+                  "my $*OUT = $__out;\n"
+                  + inner +
+                  "}\n"
+                  "$__out.close;\n"
+                  "try $__tmp.IO.chmod($__mode.parse-base(8));\n"
+                  + bak +
+                  "rename($__tmp, $__f);\n"
+                  "}\n"
+                  "exit(1) if $__bad;\n";
+        }
+        else if (recMode == 0777) {
             // slurp mode: the body runs once per FILE with the whole file in $_;
             // -p prints the record raw (no appended newline), as perl does
             src = "my @__files = @*ARGS.elems ?? @*ARGS !! ['-'];\n"

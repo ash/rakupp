@@ -2201,7 +2201,11 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
             for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
                 if (*it && (h = (*it)->find(dynVar))) break;
     }
-    if (h && h->t == VT::Object) {
+    // Route to the handle both for a user OBJECT (a custom IO class) and for a
+    // real FileHandle — `my $*OUT = open(...); say "x"` writes to the file, as
+    // in Rakudo. (The FileHandle arm was missing: rebinding $*OUT silently
+    // leaked say/print to stdout — found building -i in-place editing.)
+    if (h && (h->t == VT::Object || h->hashKind == "FileHandle")) {
         ValueList pa{Value::str(s)};
         return methodCall(*h, "print", pa);
     }

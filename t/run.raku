@@ -841,6 +841,57 @@ section('the CLI surface (goldens for the v3 parser refactor)');
             skip('perl differential: -0777 -p (no perl on PATH)');
         }
     }
+
+    # -i[.ext] — in-place editing (v3 CLI step 5). File contents are the
+    # assertions here, never captured stdout: an edit that leaks to stdout
+    # prints exactly what a working edit prints (that ambiguity hid the
+    # $*OUT-rebind interpreter bug this step found).
+    {
+        my $e1 = $work.add('e1.txt'); $e1.spurt("aa\nba\n");
+        my $e2 = $work.add('e2.txt'); $e2.spurt("ca\n");
+        my ($o, $x) = run-rakupp('-pi', '-e', '$_ = $_.subst("a", "X")', $e1.Str, $e2.Str);
+        ok($o eq '' && $x == 0 && $e1.IO.slurp eq "Xa\nbX\n" && $e2.IO.slurp eq "cX\n",
+           '-pi edits every file in place, nothing on stdout');
+        my $g = $work.add('g.txt'); $g.spurt("aa\n");
+        run-rakupp('-pi.bak', '-e', '$_ = $_.subst("a", "Y")', $g.Str);
+        ok($g.IO.slurp eq "Ya\n" && ($g.Str ~ '.bak').IO.slurp eq "aa\n",
+           '-pi.bak keeps the original as the backup');
+        my $k = $work.add('k.txt'); $k.spurt("k1\nk2\n");
+        run-rakupp('-ni', '-e', 'say $_.uc', $k.Str);
+        ok($k.IO.slurp eq "K1\nK2\n", '-n -i: explicit say goes to the file');
+        my $w7 = $work.add('w7.txt'); $w7.spurt("x\ny\n");
+        run-rakupp('-0777', '-pi', '-e', '$_ = $_.subst("\n", "|", :g)', $w7.Str);
+        ok($w7.IO.slurp eq "x|y|", '-0777 -pi: whole-file transform in place');
+        my ($ro, $re, $rx) = run-rakupp-err('-pi', '-e', '1');
+        ok($rx == 1 && $re.contains('requires file arguments'),
+           '-i with no files is refused (perl would read stdin)');
+        ($ro, $re, $rx) = run-rakupp-err('-i', '-e', '1', $g.Str);
+        ok($rx == 4 && $re.contains('only meaningful'),
+           '-i without -n/-p is refused (perl silently ignores it)');
+        my $h5 = $work.add('h5.txt'); $h5.spurt("dd\n");
+        ($ro, $re, $rx) = run-rakupp-err('-pi', '-e', '$_ = $_.subst("d", "D")',
+                                         $work.add('nosuch.txt').Str, $h5.Str);
+        ok($rx == 1 && $re.contains("Can't open") && $h5.IO.slurp eq "Dd\n",
+           'an unopenable file is reported and skipped; the rest are edited; exit 1');
+        # the current file is visible as $*ARGV
+        my $v5 = $work.add('v5.txt'); $v5.spurt("z\n");
+        run-rakupp('-ni', '-e', 'say $*ARGV.IO.basename ~ ":" ~ $_', $v5.Str);
+        ok($v5.IO.slurp eq "v5.txt:z\n", '$*ARGV names the file being edited');
+        # differential: same edit under perl, byte-identical files and backups
+        my $perl5 = run('/bin/sh', '-c', 'command -v perl', :out, :!err).out.slurp(:close).trim;
+        if $perl5 {
+            my $q1 = $work.add('q1.txt'); $q1.spurt("aa\nba\n");
+            my $q2 = $work.add('q2.txt'); $q2.spurt("aa\nba\n");
+            run($perl5, '-pi.orig', '-e', 's/a/Z/', $q1.Str, :!out, :!err);
+            run-rakupp('-pi.orig', '-e', '$_ = $_.subst("a", "Z")', $q2.Str);
+            ok($q1.IO.slurp eq $q2.IO.slurp
+               && ($q1.Str ~ '.orig').IO.slurp eq ($q2.Str ~ '.orig').IO.slurp,
+               'differential: -pi.orig matches perl, files and backups');
+        }
+        else {
+            skip('perl differential: -pi.orig (no perl on PATH)');
+        }
+    }
 }
 
 # ---- summary ----------------------------------------------------------
