@@ -2067,6 +2067,9 @@ Value makeSignature(const Callable* c) {
             if (!un.empty() && std::strchr("*?!.=~^:", un[0])) un = un.substr(1);
             (*pv.hash)["usage-name"] = Value::str(un);
         }
+        // the parameter's declarator doc (`#= …` / a leading `#|`) — .WHY
+        // reads it; it already drives $*USAGE's option list
+        if (!p.pod.empty()) (*pv.hash)["why"] = Value::str(p.pod);
         (*pv.hash)["type"] = Value::str(p.type);
         // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router).
         // Unconstrained is Mu; a slurpy/@-sigil param is Positional, %-sigil
@@ -2766,6 +2769,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // declarator pod: `#| text` above a sub/method/class answers .WHY
         if (inv.t == VT::Code && inv.code && !inv.code->pod.empty())
             return Value::str(inv.code->pod);
+        // a Parameter's own doc, plumbed from Param.pod at reflection time
+        if (inv.t == VT::Hash && inv.hashKind == "Parameter" && inv.hash && inv.hash->count("why"))
+            return (*inv.hash)["why"];
         if (inv.t == VT::Type) {
             auto it = classes_.find(inv.s);
             if (it != classes_.end() && !it->second->pod.empty())
