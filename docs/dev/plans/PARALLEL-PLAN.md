@@ -111,13 +111,20 @@ values, not your process), and how that compares to Rakudo. This is written
 state TSan ranked highest — the five one-shot call registers
 (`topicWriteback_`, `builtinTopicWB_`, `noAutothread_`, `loopPhaserCtl_`,
 `pendingRwSlots_`), plus `hoistingSubs_` and `curLine_`. parallel-map's
-TSan report count: **35 → 5**. The five survivors are a different class —
-lazily-computed caches on SHARED AST NODES (`hoistNeed` decided-once flags
-at Interpreter.cpp ~1711, and the per-loop-node state-scan cache inside
-`runLoopBody` from the v2.0.0 loopsum work): two threads deciding the same
-static property concurrently. Batch 2 needs `std::atomic<signed char>`
-with relaxed ordering (the value is idempotent), and a perf gate — those
-caches exist *because* the walk was 6% of fib.
+TSan report count: **35 → 6**. Batch 2 (same day) took it to **ZERO**: the
+survivors were decided-once caches on SHARED AST nodes (`hoistNeed`, the
+four `hasStateCache` loop flags, the node-specialization `simpleOp`/
+`fastShape`/`litVal`/`litIdx`), now relaxed atomics via a `DecidedOnce<T>`
+wrapper in Ast.h; the regex byteset flag became a real acquire/release
+pair (it gates a 32-byte table); `suppressLoopFirst_` joined the
+thread_local family. perf-guard passed with three new best-evers (fib
+−8.2%, asg −10.6%, hash −9.0%) — relaxed atomics are plain loads/stores
+here. Known remaining in this class, deliberately deferred: the Rat
+literal's `cacheN`/`cacheD` (`mutable shared_ptr` — needs atomic
+shared_ptr ops, a different mechanism), and whatever TSan finds when the
+OTHER stress programs run under it (parallel is currently skipped under
+TSan; un-skipping program by program as they come clean is the next
+ratchet turn).
 
 Audit and fix, in order of blast radius, everything the TSan job and the
 design doc's list point at:
