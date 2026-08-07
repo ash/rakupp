@@ -1,17 +1,19 @@
 # Plan: the command line — a real option surface
 
-**Status: in progress — steps 1–5 landed 2026-08-07** (the parser, MAIN
-usage/#17, `-M`/`-m`, the `-a`/`-F`/`-l`/`-0777`/`-0` family, and `-i[.ext]`
-in-place editing — the last two with byte-identical perl differentials in
-the suite, including `-pi.orig` files-and-backups). Building `-i` found a
-general interpreter bug: `my $*OUT = $handle` did not reroute say/print/put
-(ioEmit routed user objects but not real FileHandles) — fixed,
-Rakudo-verified, regression `t/regression/dynamic-handle-rebind.raku`.
-Remaining: `--profile` (step 6), guide/CLI.md (step 7). Documented
-divergences from perl, all deliberate: `-F STR` is a literal separator with
+**Status: COMPLETE — all seven steps landed 2026-08-07** (one working day:
+the parser with goldens-first, MAIN usage/#17, `-M`/`-m`, the
+`-a`/`-F`/`-l`/`-0777`/`-0` family, `-i[.ext]` in-place editing,
+`--profile`, and [guide/CLI.md](../../guide/CLI.md) + README). Final suite:
+389 checks, four live perl differentials. Two general interpreter finds
+along the way: the `$*OUT`-rebind routing bug (`-i` found it; fixed,
+regression `t/regression/dynamic-handle-rebind.raku`) and the
+`Parameter.WHY` gap (pre-existing, parked as its own task). Deliberate,
+documented divergences from perl: `-F STR` is a literal separator with
 `\t`-escapes (`-F/…/` is the regex form — perl regex syntax is not Raku
-regex syntax); records arrive chomped; and `-i` refuses loudly where perl
-is silent (no files / no `-n`/`-p` / a skipped file exits nonzero). Step 2 (MAIN
+regex syntax); records arrive chomped; `-i` refuses loudly where perl is
+silent (no files / no `-n`/`-p` / a skipped file exits nonzero). The first
+v3.0.0 pillar is done; what remains of v3 is
+[PARALLEL-PLAN.md](PARALLEL-PLAN.md) and [LTM-PLAN.md](LTM-PLAN.md). Step 2 (MAIN
 usage fidelity, the section below): all four fixes in, six oracle cases
 byte-identical to Rakudo including streams and exit codes,
 `t/regression/main-usage-17.raku` passes under both engines, Roast

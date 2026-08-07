@@ -63,13 +63,17 @@ judged against, but the headline items are capabilities, each with its plan
 written before any code:
 
 1. **A real command line, with a first profiler**
-   ([CLI-PLAN.md](CLI-PLAN.md)) — one option parser replacing the
-   position-sensitive mode cascade; the completed Perl one-liner family with
-   `-i` in-place editing, `-a`/`-F` autosplit and `-0777`; flags borrowed
-   from other compilers (`-M`, `-v`, `--target`); and **`--profile`** —
-   routine-level instrumented profiling, promoted from "deferred" after the
-   off-cost was measured at zero (hooks compiled in unconditionally behind a
-   runtime flag; fib with 1.66M calls: 724 → 724 ms with hooks disabled).
+   ([CLI-PLAN.md](CLI-PLAN.md)) — **DONE 2026-08-07**, the same day the
+   campaign was planned: one option parser replacing the position-sensitive
+   mode cascade (goldens written against the old binary first); the
+   completed Perl one-liner family with `-i` in-place editing, `-a`/`-F`
+   autosplit and `-0777` (four live perl differentials in the suite); flags
+   borrowed from other compilers (`-M`, `-v`, `--target`); `--profile` —
+   routine-level instrumented profiling whose disabled hooks measured at
+   zero cost; MAIN usage byte-identical to Rakudo (issue #17); and
+   [guide/CLI.md](../../guide/CLI.md). Building `-i` found and fixed a
+   general interpreter bug (`my $*OUT = $handle` did not reroute
+   say/print/put).
 2. **Real multicore parallelism, on by default**
    ([PARALLEL-PLAN.md](PARALLEL-PLAN.md)) — execute the GIL-removal design
    ([PLAN-gil-removal.md](PLAN-gil-removal.md), Option 2): a written memory

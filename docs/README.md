@@ -39,6 +39,7 @@ point; everything else lives here, in four places:
 
 ### Running and shipping programs
 
+- **[guide/CLI.md](guide/CLI.md)** — the command line: position-independent flags, the perl one-liner family (`-n`/`-p`/`-a`/`-F`, `-i` in-place editing, `-0777`), `-M`, the `--profile` wall-time profiler, and a perl↔rakupp cookbook with the deliberate divergences listed.
 - **[guide/NATIVE.md](guide/NATIVE.md)** — the `--exe` native compiler: interpreter vs. compiled on the example programs (byte-identical output).
 - **[guide/COMPILERS.md](guide/COMPILERS.md)** — which compiler and architecture to use: arm64 vs. x86_64 on macOS, GCC vs. Clang, MSVC vs. MinGW on Windows — both for building Raku++ and for the compiler `--exe` invokes.
 - **[guide/CACHING.md](guide/CACHING.md)** — the precompiled parse: opt-in caching of parsed ASTs, with two switches (`--precomp-modules`, `--precomp-files`) because they are worth measurably different amounts. What is stored (the AST, not bytecode), where it lives, exactly what invalidates an entry, and how it compares with Rakudo's `.precomp` and Python's `__pycache__`.

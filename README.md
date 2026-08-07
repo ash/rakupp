@@ -138,17 +138,21 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 | Option | Meaning |
 |---|---|
 | `FILE` / `-e 'CODE'` / *(stdin)* | Run a program from a file, a one-liner, or standard input |
-| `-I <path>` | Add a directory to the module search path (repeatable) |
+| `-I <path>` / `-M <module>` | Add a module search directory / load a module first (both repeatable) |
+| `-n` / `-p` / `-a` / `-F<sep>` | The perl one-liner family: line loop, autoprint, autosplit into `@F` (clusters: `-lane`) |
+| `-i[.ext]` | With `-n`/`-p`: edit the argument files in place (`-pi.bak` keeps backups) |
+| `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. ([LINT.md](docs/guide/LINT.md)) |
-| `--ast SRC` | Print the parsed AST |
+| `-c` / `--ast SRC` | Syntax-check only / print the parsed AST |
 | `--cpp SRC [-O]` | Print the C++ that `--exe` transpiles to (add `-O` to see the optimized codegen) |
 | `--help`, `--version` | Show help / version |
 
-`RAKUPP_PARALLEL=1` opts into true CPU parallelism for `start`/worker threads
-(default coordinates under a GIL). Full option and environment-variable reference:
-[the guide](docs/guide/GUIDE.md#command-line-options).
+Flags are position-independent and cluster like perl's (`rakupp -pi.bak -e
+'$_ = $_.subst("a", "b")' *.txt` works as you'd hope). `RAKUPP_PARALLEL=1`
+opts into true CPU parallelism for `start`/worker threads (default
+coordinates under a GIL). Full reference: [CLI.md](docs/guide/CLI.md).
 
 ## Modules
 
