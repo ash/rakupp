@@ -14013,6 +14013,20 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         };
         wantHooks = true;
     }
+    // A code assertion in a plain `~~` regex must evaluate for real: without
+    // this hook the engine's lenient default made a positive `<?{ 0 }>` PASS
+    // and a negative `<!{ 0 }>` FAIL (the constant-true default, negated).
+    // Only `regex {…}` values (`wired` below, which re-installs this in the
+    // closed-over scope) had it. The code runs in the match-site scope — for
+    // an inline /…/ that IS the definition scope; a stored bare pattern
+    // matched elsewhere reads the matcher's lexicals, a known approximation.
+    if (hookScan.find("?{") != std::string::npos || hookScan.find("!{") != std::string::npos) {
+        rmHooks.assertPass = [this](const std::string& code, long, long,
+                                    const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
+            try { return evalString(code).truthy(); } catch (...) { return false; }
+        };
+        wantHooks = true;
+    }
     // `\w**{$n}` / `**{ 1..3 }` — a runtime-bounded quantifier in a plain `~~`
     // regex needs the range hook too (without it the bounds default to 0..* and
     // the quantifier matches greedily). Mirror the grammar range hook.

@@ -97,12 +97,13 @@ check('a passing code assertion does not terminate the prefix',
 check('a failing code assertion fails its branch at commit',
       ltm-run('t12.raku', q{grammar G { token TOP { a <?{ 0 }> .+ | aa } }; say G.subparse("aaa").Str;}),
       "aa\n");
-# NOTE: the same check with a PLAIN regex (`"aaa" ~~ / a <?{ 0 }> .+ | aa /`)
-# fails on rakupp today: un-"wired" regexes never install the assertPass hook
-# (Interpreter::regexMatch — `wired` requires a `regex {…}` value), so a
-# positive <?{…}> silently passes and <!{…}> anti-passes. General default-
-# engine bug, found while pinning LTM behavior; fix is its own batch.
+#    ... and the same must hold in a PLAIN regex: un-"wired" matches used to
+#    skip the assertPass hook entirely, so a positive <?{ 0 }> silently
+#    PASSED (and <!{ 0 }> anti-failed via the negated constant-true default)
+check('a failing code assertion fails in a plain regex too',
+      ltm-run('t13.raku', q{say ("aaa" ~~ / a <?{ 0 }> .+ | aa /).Str;}),
+      "aa\n");
 
-unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku>;
+unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku t13.raku>;
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit($fails ?? 1 !! 0);
