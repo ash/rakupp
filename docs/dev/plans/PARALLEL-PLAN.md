@@ -246,6 +246,22 @@ NEXT for the flip: re-run the ~14-file timeout list in isolation (the
 cas fix may clear several), then the three consecutive parallel Roast
 runs.
 
+**The last crash (2026-08-08 night): supplyCloseStack_.** After the
+worker registry landed, syntax.t still segfaulted — the symbolized
+catch named `supplyCloseStack_.back()` on an empty vector: a PLAIN
+MEMBER stack shared by every thread, corrupted by two concurrent
+reacts. The fix was priced three ways: plain member = the crash;
+`static thread_local` = 6-7% of loopsum (adding a non-trivially-
+destructed thread_local reshuffles macOS TLV layout under the
+interpreter's hot per-statement thread-locals — the P2 curLine_
+mechanism, same magnitude, confirmed by four builds and an interleaved
+A/B); ON THE CONTEXT (`ReactCtx.closers` under its mutex,
+`SupplyTapCtx.closers`) = correct and +1.4%. Landed as 706c7c3;
+syntax.t under parallel is 10/10 crash-free at 64 ok vs the GIL's 63.
+Perf lesson recorded: fresh-configure builds differ a few percent from
+incremental ones (linker layout) — A/B claims need interleaved runs of
+fresh-vs-fresh binaries.
+
 **The wall, torn down piece by piece (same day):** after the cas fix,
 isolation re-runs showed procasync/basic and promise/then at their GIL
 scores, but S17-supply/syntax.t still WEDGED — the two-channel react.
