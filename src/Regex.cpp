@@ -811,21 +811,28 @@ Regex::NodePtr Regex::parseAtom() {
                 node->uprop = p;
                 return node;
             }
-            // Undotted built-in char-class names compile to a class; a DOTTED call
-            // (<.space>) is a rule call so a grammar's own `token space` wins (with a
-            // built-in fallback in matchSub). `<word>` is never a built-in.
-            std::string fl;
-            if (!dotless) {
-                if (name == "digit") fl = "d";
-                else if (name == "alpha") fl = "a";
-                else if (name == "alnum") fl = "ad"; // NB `ident` is multi-char → subrule path
-                else if (name == "space") fl = "s";
-                else if (name == "blank") fl = "b"; // horizontal ws only (space/tab), not \n
-                else if (name == "upper") fl = "u";
-                else if (name == "lower") fl = "l";
-                else if (name == "xdigit") fl = "x";
-            }
-            if (fl.empty()) {
+            // Built-in char-class names (<digit>, <alpha>, <blank>, …) are NOT
+            // decided here. They used to compile straight to a Class node, which
+            // settled the question before any grammar existed — so a grammar's own
+            // `token blank { \h* \n }` was silently ignored and the built-in
+            // horizontal-whitespace class answered instead. Rakudo resolves the
+            // other way: the grammar's definition wins and the built-in is only a
+            // fallback for names nothing defines.
+            //
+            // So every one of them takes the subrule path below, exactly as the
+            // dotted form <.blank> already did, and the decision moves to where the
+            // grammar is actually in scope:
+            //   - in a grammar   nameMeta() sets builtinClass only `if (!rule)`
+            //                    (the same reasoning <ws> has always had), and
+            //                    matchSubMeta keeps the one-byte class test
+            //   - a plain regex  has no grammar, so builtinRuleMatch answers —
+            //                    `/<alpha>/` keeps working, and a lexical
+            //                    `my regex digit {…}` now shadows it, which the
+            //                    compile-time path could not see either
+            // Capture is unchanged: the undotted form still fills $<digit>, now via
+            // the subrule's own capKey rather than a named Group wrapped round a
+            // Class node.
+            {
                 // subrule call <name> / <.name> / <name=other>
                 auto sr = std::make_unique<Node>();
                 sr->k = K::Subrule;
@@ -846,17 +853,6 @@ Regex::NodePtr Regex::parseAtom() {
                 }
                 sr->ruleName = nm;
                 return sr;
-            }
-            node->classFlags = fl;
-            // An UNDOTTED built-in class call still CAPTURES: `<xdigit>**2` fills
-            // `$<xdigit>` (YAMLish decodes `\xNN` from it). Compiling straight to a
-            // Class node dropped that; wrap it in a named group. `<.digit>` is dotted
-            // and never reaches here.
-            {
-                auto g = std::make_unique<Node>();
-                g->k = K::Group; g->capIndex = -1; g->capName = name;
-                g->kids.push_back(std::move(node));
-                return g;
             }
         }
         // (unreachable: every `<...>` branch above returns after eating its own `>`)
