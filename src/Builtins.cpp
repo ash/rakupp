@@ -5016,14 +5016,20 @@ static Value supplyPhaserCode(const Block* b, std::shared_ptr<Env> closure) {
 }
 // Collect LAST/QUIT/CLOSE phasers from a block's top-level statements.
 static void scanSupplyPhasers(const Value& blk, std::vector<Value>* lastP,
-                              std::vector<Value>* quitP, std::vector<Value>* closeP) {
+                              std::vector<Value>* quitP, std::vector<Value>* closeP,
+                              std::shared_ptr<Env> phaserEnv = nullptr) {
     if (blk.t != VT::Code || !blk.code || !blk.code->body) return;
+    // phaserEnv (issue #18): a LAST phaser reads the block's parameters as of
+    // the LAST invocation (`LAST { say "Done with $c" }`). The block's
+    // DEFINITION closure never holds $c — callers that drain through a
+    // param-mirroring shim pass the shim's env here instead.
+    auto env = [&](const Value& b2) { return phaserEnv ? phaserEnv : b2.code->closure; };
     for (auto& s : *blk.code->body) {
         if (s->kind != NK::Block) continue;
         auto* b = static_cast<Block*>(s.get());
-        if (lastP  && b->phaser == "LAST")  lastP->push_back(supplyPhaserCode(b, blk.code->closure));
-        if (quitP  && b->phaser == "QUIT")  quitP->push_back(supplyPhaserCode(b, blk.code->closure));
-        if (closeP && b->phaser == "CLOSE") closeP->push_back(supplyPhaserCode(b, blk.code->closure));
+        if (lastP  && b->phaser == "LAST")  lastP->push_back(supplyPhaserCode(b, env(blk)));
+        if (quitP  && b->phaser == "QUIT")  quitP->push_back(supplyPhaserCode(b, env(blk)));
+        if (closeP && b->phaser == "CLOSE") closeP->push_back(supplyPhaserCode(b, env(blk)));
     }
 }
 // A callable that runs `fn` with `ctx` re-established as the active supply
@@ -5437,6 +5443,19 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
                 catch (NextEx&) {}
                 catch (LastEx&) { lastEx = true; } // `last` ends THIS subscription
                 catch (DoneEx&) {} // `done` closed the ctx in its bookkeeping
+                catch (RakuError& e) {
+                    // a die in the whenever BODY kills the whole react and
+                    // propagates (issue #18 — the reference output shows QUIT
+                    // phasers do NOT catch a body die; they are for the
+                    // source's own quit). Without this the swallowed die left
+                    // the ticker running and the react waiting forever.
+                    if (ctx) {
+                        std::lock_guard<std::mutex> lk(ctx->m);
+                        if (!ctx->quitFlag) { ctx->quitFlag = true; ctx->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload; }
+                        ctx->closed = true; ctx->cv.notify_all();
+                    }
+                    lastEx = true;
+                }
                 catch (...) {}
             }
             if (ctx) self->reactStack_.pop_back();
@@ -7878,6 +7897,20 @@ void Interpreter::registerBuiltins() {
         catch (DoneEx&) {} // `done` in the react body: normal completion (ctx already closed)
         catch (...) { I.reactStack_.pop_back(); I.supplyCloseStack_.pop_back(); throw; }
         I.reactStack_.pop_back();
+        // Deferred whenever activations (issue #18): the body has finished, so
+        // statements after a `whenever` have run — now drain the synchronous
+        // sources, in registration order. A die inside a drained body kills
+        // the react with that exception, exactly like the body itself dying.
+        try {
+            for (;;) {
+                std::vector<std::function<void()>> ds;
+                { std::lock_guard<std::mutex> lk(ctx->m); ds.swap(ctx->deferred); }
+                if (ds.empty()) break;
+                for (auto& d : ds) d();
+            }
+        }
+        catch (DoneEx&) {}
+        catch (...) { I.supplyCloseStack_.pop_back(); throw; }
         I.runReactLoop(ctx); // block until every live whenever source is done
         {   // react is over: tear down externally-wired taps (OS-signal taps) so
             // their dispatcher stops firing the handler once the block is gone.
@@ -8146,7 +8179,47 @@ void Interpreter::registerBuiltins() {
                     }
                     return I.tapSupply(s, emitW, Value::nil(), quitW);
                 }
-                ValueList ta{blk}; return I.methodCall(s, "tap", ta); // from-list: eager
+                {   // from-list: drain AFTER the react body (deferred activation,
+                    // issue #18); LAST phasers fire when the list is exhausted or
+                    // a `last` ends the subscription. A die in the body escapes
+                    // the drain and kills the react, as in Rakudo.
+                    std::shared_ptr<ReactCtx> rctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                    // the phasers close over a shim env that mirrors each
+                    // call's parameter bindings, so `LAST { "Done with $c" }`
+                    // sees the LAST value of $c (Rakudo semantics)
+                    auto phEnv = std::make_shared<Env>();
+                    phEnv->parent = blk.code ? blk.code->closure : nullptr;
+                    std::vector<Value> lastP, quitP;
+                    scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
+                    std::vector<std::string> pnames;
+                    if (blk.code && blk.code->params)
+                        for (auto& p : *blk.code->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    Value blkInner = blk;
+                    Value shim; shim.t = VT::Code; shim.code = std::make_shared<Callable>();
+                    shim.code->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
+                        for (size_t i = 0; i < pnames.size(); i++)
+                            phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
+                        if (!args.empty()) phEnv->define("$_", args[0]);
+                        ValueList one = args;
+                        return I2.callCallable(blkInner, one); // control exceptions reach the tap loop
+                    };
+                    Interpreter* self = &I;
+                    Value sCopy = s, blkCopy = shim;
+                    auto drain = [self, sCopy, blkCopy, lastP, rctx]() {
+                        if (rctx) { std::lock_guard<std::mutex> lk(rctx->m); if (rctx->closed) return; }
+                        if (rctx) self->reactStack_.push_back(rctx);
+                        try { Value sv = sCopy; ValueList ta{blkCopy}; self->methodCall(sv, "tap", ta); }
+                        catch (...) { if (rctx) self->reactStack_.pop_back(); throw; }
+                        if (rctx) self->reactStack_.pop_back();
+                        for (auto& p : lastP) { ValueList na; try { self->callCallable(p, na); } catch (...) {} }
+                    };
+                    if (rctx) {
+                        { std::lock_guard<std::mutex> lk(rctx->m); rctx->deferred.push_back(drain); }
+                        Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+                    }
+                    drain(); // no react ctx (bare whenever in a plain block): keep the eager order
+                    Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+                }
             }
             // `whenever $channel { … }` — one run per received value, completing when
             // the channel closes (Log::Async's tests pump their output through one)

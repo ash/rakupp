@@ -399,6 +399,11 @@ struct ReactCtx {
     // the cause once its loop unwinds (a refused connect fails the react)
     bool quitFlag = false;
     Value quitErr;
+    // Deferred whenever activations (issue #18): Rakudo runs the react BODY
+    // first and only then activates subscriptions — a `say` after a
+    // `whenever <a b c>.Supply` prints before the first emitted value. The
+    // synchronous drains queue here; B["react"] runs them after the body.
+    std::vector<std::function<void()>> deferred;
 };
 
 class Interpreter {
