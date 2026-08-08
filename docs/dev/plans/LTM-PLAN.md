@@ -231,6 +231,16 @@ gap list, starting with subrule expansion — each gap closed converts
 probe-fallback alternations to NFA ranking and should carry
 longest-alternative.t further toward the fudged-Rakudo score.
 
+**Phase 3a: DELIVERED 2026-08-08 (commit edfa20e).** Lexical named-regex
+expansion via `GrammarHooks::namedRule` (text + flags; the NFA compiles
+and owns callees, inlines prefixes recursively; recursion = spec prefix
+end; text doubles as the staleness stamp against last-wins
+re-registration). longest-alternative.t 45 → 47 with the LTM fail-set a
+strict subset of default's; **full Roast under the flag now scores
+HIGHER than the probe on the same binary** (196,968/593 vs 196,960/592,
+zero down-movers). Remaining for 3b: grammar-path expansion + the proto
+dispatch NFA, `<ws>` modeling for sigspace rules, `:m` folding.
+
 1. **NFA builder + offline harness.** `LtmNfa` with unit tests; a dump tool
    (`--ltm-dump` or a debug env var) that prints, for a given regex and
    input, the ranked order under probe vs NFA. Run it over a corpus
