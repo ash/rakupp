@@ -226,6 +226,26 @@ parallel mode). Bisecting thread.t is the next session's first move; the
 default does NOT flip until this class is gone and three consecutive
 parallel Roast runs hold parity.
 
+**RESOLVED 2026-08-08 — it was cas, not the waits.** `sample` on the
+hung pid showed one worker queued on the cas stripe and two more blocked
+on `ParStripe` *inside* the cas code-form's user call: `cas`'s code form
+ran the block WHILE HOLDING its pool stripe (the one deliberate
+exception to the family's "no user code under the stripe" rule), so
+three threads doing `cas %seen{$_}, {.succ}` each held one element's
+stripe while the closure's `$_` read took another — a 64-slot collision
+makes that ABBA. The code form is now a true compare-and-swap retry
+loop: read under the stripe, run the block unlocked, commit only if the
+value is unchanged, else retry — Rakudo's documented contract (the
+block may run more than once). thread.t: 4 concurrent + 6 sequential
+parallel runs all 29/29 (was: zero output, ever); the whole cas roast
+family holds its baselines. AUDIT of the same class: `Supplier.emit`
+still runs tap blocks under the supplier's pool stripe — same deadlock
+shape, needs a per-supplier mutex (serialization stays, cross-object
+collisions go); Channel ops only move queue entries under theirs, fine.
+NEXT for the flip: re-run the ~14-file timeout list in isolation (the
+cas fix may clear several), then the three consecutive parallel Roast
+runs.
+
 ### P5 — flip the default
 
 `RAKUPP_PARALLEL` behavior becomes the default; `RAKUPP_GIL=1` remains as

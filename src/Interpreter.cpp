@@ -17627,14 +17627,33 @@ Value Interpreter::evalCall(Call* c) {
             Value* lv = nullptr;
             try { lv = lvalue(c->args[0].get()); } catch (RakuError&) {}
             if (lv) {
-                std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
-                Value seen = *lv;
                 if (args.size() >= 3) {
+                    std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
+                    Value seen = *lv;
                     if (applyArith("eqv", seen, args[1]).truthy()) *lv = args[2];
                     return seen;
                 }
-                if (args[1].t == VT::Code) *lv = callCallable(args[1], ValueList{seen});
-                return *lv; // the code form returns the value it stored (Rakudo behavior)
+                if (args[1].t == VT::Code) {
+                    // The code form is a real compare-and-swap RETRY LOOP: read
+                    // under the stripe, run the user code with NO lock held,
+                    // then commit only if the container still holds the value
+                    // we read — else retry with the fresh one. Running the code
+                    // UNDER the stripe (the old shape) deadlocked: with three
+                    // threads doing `cas %seen{$_}, {.succ}` each holds its
+                    // element's stripe while the closure's `$_` read takes
+                    // another pool stripe — a 64-slot collision makes that ABBA
+                    // (thread.t's parallel livelock, the P5 blocker). Rakudo
+                    // documents the block may be invoked more than once.
+                    for (;;) {
+                        Value seen;
+                        { std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv)); seen = *lv; }
+                        Value next = callCallable(args[1], ValueList{seen});
+                        std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
+                        if (applyArith("eqv", *lv, seen).truthy()) { *lv = next; return next; }
+                    }
+                }
+                std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
+                return *lv;
             }
         }
         // undefine($x) resets its argument container to the type's undefined value
