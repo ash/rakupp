@@ -94,8 +94,16 @@ for @programs -> $prog {
                         && (%tsan-parallel-racy{$name}:exists);
         $ran++;
         my %env = %*ENV;
-        %env<RAKUPP_PARALLEL> = '1' if $mode eq 'parallel';
-        %env<RAKUPP_PARALLEL>:delete if $mode eq 'gil';
+        # parallel is the DEFAULT since the v3 flip; the gil leg pins the
+        # escape hatch explicitly (deleting the var now selects parallel)
+        if $mode eq 'parallel' {
+            %env<RAKUPP_PARALLEL> = '1';
+            %env<RAKUPP_GIL>:delete;
+        }
+        else {
+            %env<RAKUPP_GIL> = '1';
+            %env<RAKUPP_PARALLEL>:delete;
+        }
         my $p = run($*EXECUTABLE, $prog, :out, :err, :env(%env), :timeout(30));
         my $out  = $p.out.slurp(:close);
         my $err  = $p.err.slurp(:close);

@@ -18,12 +18,15 @@ your machine; the ratios are the point.
 
 ## Two things have to be true before there is anything to measure
 
-**1. You have to be in parallel mode.** By default Raku++ runs Raku under a
-global interpreter lock, so `start` blocks doing pure Raku computation take
-turns rather than running at once. The knob is read once at startup:
+**1. You have to be in parallel mode — which since v3 is the default.**
+Before v3, Raku++ ran Raku under a global interpreter lock unless
+`RAKUPP_PARALLEL=1` was set; the tables below carry that spelling because the
+numbers were measured then. Today the same runs need no env var at all, and
+`RAKUPP_GIL=1` selects the old cooperative mode:
 
 ```sh
-RAKUPP_PARALLEL=1 ./build/rakupp myprogram.raku
+./build/rakupp myprogram.raku              # parallel (the default)
+RAKUPP_GIL=1 ./build/rakupp myprogram.raku # the pre-v3 GIL mode
 ```
 
 Under the default GIL, a CPU-bound fan-out measures at **0.95×–0.99×** at every

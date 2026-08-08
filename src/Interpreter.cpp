@@ -1580,7 +1580,17 @@ Interpreter::Interpreter() {
     defaultScheduler_ = Value::makeHash(); defaultScheduler_.hashKind = "Scheduler";
     (*defaultScheduler_.hash)["name"] = Value::str("ThreadPoolScheduler");
     mainThread_ = std::this_thread::get_id();
-    parallelMode_ = std::getenv("RAKUPP_PARALLEL") != nullptr;
+    // PARALLEL BY DEFAULT (v3, PARALLEL-PLAN P5): start/worker threads run
+    // on all cores. RAKUPP_GIL=1 selects the cooperative GIL — the escape
+    // hatch, the bisection tool, and a CI leg. RAKUPP_PARALLEL=0 is honored
+    // as a synonym for symmetry with the old opt-in spelling.
+    {
+        const char* g = std::getenv("RAKUPP_GIL");
+        const char* p = std::getenv("RAKUPP_PARALLEL");
+        bool gilWanted = (g && *g && std::string(g) != "0") ||
+                         (p && std::string(p) == "0");
+        parallelMode_ = !gilWanted;
+    }
     global_ = std::make_shared<Env>();
     curPkgEnv_ = global_;
     tctx_.cur = global_;

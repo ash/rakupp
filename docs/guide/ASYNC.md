@@ -45,15 +45,18 @@ threads run interpreter code in parallel — see the next section.
 
 ---
 
-## The two modes: GIL (default) and true parallelism
+## The two modes: true parallelism (default) and the GIL
 
-There is exactly one knob — the **`RAKUPP_PARALLEL` environment variable** — and it
+There is exactly one knob — the **`RAKUPP_GIL` environment variable** — and it
 is read once at startup. You don't change anything in your Raku code; the same
-program runs under either mode.
+program runs under either mode. **Since v3, parallel is the default**: `start`
+and worker threads run on all cores. `RAKUPP_GIL=1` selects the cooperative
+global-interpreter-lock mode — the pre-v3 default, kept as the escape hatch.
+(`RAKUPP_PARALLEL=0` is honored as a synonym.)
 
-| | **GIL mode** (default) | **Parallel mode** (`RAKUPP_PARALLEL=1`) |
+| | **GIL mode** (`RAKUPP_GIL=1`) | **Parallel mode** (default) |
 |---|---|---|
-| How to select | *(nothing — this is the default)* | set the env var |
+| How to select | set the env var | *(nothing — this is the default)* |
 | Pure-Raku CPU work | one thread at a time | runs on all cores |
 | `sleep`/`await`/subprocess waits | overlap (GIL released) | overlap |
 | `Lock` / `Semaphore` | no-ops (the GIL already serialises) | real mutual exclusion |
@@ -356,4 +359,4 @@ which preserves small relative delays but not real wall-clock durations.
 
 Under `RAKUPP_PARALLEL=1` sleep-sort still sorts — the workers now run on
 independent threads outright rather than being handed off one at a time — but the
-observable result is the same. See [The two modes](#the-two-modes-gil-default-and-true-parallelism).
+observable result is the same. See [The two modes](#the-two-modes-true-parallelism-default-and-the-gil).

@@ -4656,9 +4656,27 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // and drain it (so the .closed Promise then keeps). `.Supply` snapshots
         // without draining (a Supply is a re-tappable stream).
         if (m == "list" || m == "Seq") {
+            // Rakudo: `.list` DRAINS the channel — it blocks until close and
+            // yields everything sent. Snapshotting only the current queue
+            // raced the producer once parallel became the default (the GIL's
+            // spawn-time handoff used to let the producer finish first).
+            // Same wait discipline as `.receive`: patience while somebody
+            // could still send, never a deadlock once nobody can.
+            Value o = Value::array(); o.isList = true;
+            for (;;) {
+                bool done = false;
+                {   std::lock_guard<std::recursive_mutex> lk(chm);
+                    for (auto& x : q) o.arr->push_back(x);
+                    q.clear();
+                    done = isClosed();
+                }
+                if (done) break;
+                if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
+                if (gilHeld_) yieldToWorkerFor(0.02);
+                else std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
             std::lock_guard<std::recursive_mutex> lk(chm);
-            Value o = Value::array(); *o.arr = q; o.isList = true;
-            q.clear(); keepClosedIfDrained();
+            keepClosedIfDrained();
             return o;
         }
         if (m == "Supply") {
@@ -5109,7 +5127,15 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     // wait for those one-shots to fire before treating the supply as finished —
     // but only while a worker exists that could still settle them, so a
     // never-kept promise doesn't hang `.list`.
-    if (ctx->pending > 0 && gilHeld_ && !parallelMode_ && liveWorkers_.load() > 0) {
+    if (ctx->pending > 0 && parallelMode_) {
+        // parallel mode: the one-shots fire on their own threads — just wait
+        // for them (bounded by "somebody could still settle them"), or the
+        // drain returns before a promise-whenever delivered (cro-core's
+        // drain-waits test caught this the day parallel became the default)
+        while (ctx->pending > 0 && liveWorkers_.load() > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    else if (ctx->pending > 0 && gilHeld_ && !parallelMode_ && liveWorkers_.load() > 0) {
         static thread_local ExecContext parked;
         saveCtx(parked);
         gilYieldNotify();

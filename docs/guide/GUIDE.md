@@ -125,7 +125,7 @@ battery.
 - **[COOKBOOK.md](COOKBOOK.md)** — a cookbook of runnable snippets, each verified against `rakupp`.
 - **[examples/](../../examples)** — complete example programs (see [examples/README.md](../../examples/README.md)).
 - **[showcase/](../../showcase)** — mid-size showcase programs (see [showcase/README.md](../../showcase/README.md)).
-- **[ASYNC.md](ASYNC.md)** — concurrency & async cookbook: promises, supplies, channels, threads, and the two execution modes (GIL by default, opt-in true CPU parallelism via `RAKUPP_PARALLEL`).
+- **[ASYNC.md](ASYNC.md)** — concurrency & async cookbook: promises, supplies, channels, threads, and the two execution modes (true CPU parallelism by default since v3; `RAKUPP_GIL=1` selects the cooperative GIL).
 - **[PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md)** — measuring whether `start` actually made a program faster: the method, and two runnable benchmarks in [tools/bench/parallel/](../../tools/bench/parallel).
 - **[ARCHITECTURE.md](../internals/ARCHITECTURE.md)** — how it's built, and what happens to a program in each run mode.
 - **[ROADMAP.md](../status/ROADMAP.md)** — done / in-progress / next.
