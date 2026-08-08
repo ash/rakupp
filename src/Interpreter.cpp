@@ -5985,9 +5985,22 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 else if (rw) {
                     auto arr = lv.arr;
                     for (size_t i = 0; i < arr->size(); i++) {
-                        env->vars["$_"] = (*arr)[i];
+                        {   // P3 no-crash contract: the element COPY takes the
+                            // container's stripe (same key as the push/mutator
+                            // stripe) — copying unstriped raced a sibling
+                            // thread's push-realloc, and the torn shared_ptr
+                            // copy crashed on Linux (ub-iterate-during-push,
+                            // native CI leg; glibc surfaces what macOS's
+                            // allocator forgives). Under the GIL this is one
+                            // predicted branch.
+                            ParStripe es(*this, arr.get());
+                            if (i >= arr->size()) break;
+                            env->vars["$_"] = (*arr)[i];
+                        }
                         bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == arr->size(), col);
-                        (*arr)[i] = env->vars["$_"];
+                        {   ParStripe es(*this, arr.get());
+                            if (i < arr->size()) (*arr)[i] = env->vars["$_"];
+                        }
                         if (!cont) break;
                     }
                 } else {
@@ -5998,7 +6011,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                          static_cast<VarExpr*>(fs->list.get())->name[0] == '$'));
                     if (oneItem) items.push_back(lv);
-                    else if (lv.t == VT::Array && lv.arr) items = *lv.arr;
+                    else if (lv.t == VT::Array && lv.arr) { ParStripe cs(*this, lv.arr.get()); items = *lv.arr; } // snapshot under the stripe (torn-copy contract)
                     else if (lv.t == VT::Range) items = lv.flatten();
                     // a non-itemized Blob/Buf iterates its ELEMENTS (see the block
                     // form below; Digest::MD5's digest loop is this modifier shape)
@@ -6152,10 +6165,19 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
                     for (size_t i = 0; i < arr->size(); i++) {
                         freshScope();
-                        scope->define(var, (*arr)[i]);
-                        auto rb = [&] { if (!rw) scope->define(var, (*arr)[i]); }; // redo re-copies (aliases keep writes)
+                        {   // striped element copy — see the rw modifier loop above
+                            ParStripe es(*this, arr.get());
+                            if (i >= arr->size()) break;
+                            scope->define(var, (*arr)[i]);
+                        }
+                        auto rb = [&] { // redo re-copies (aliases keep writes)
+                            if (!rw) { ParStripe es2(*this, arr.get()); if (i < arr->size()) scope->define(var, (*arr)[i]); }
+                        };
                         bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == arr->size(), col, rb);
-                        if (rw) { auto it = scope->vars.find(var); if (it != scope->vars.end()) (*arr)[i] = it->second; }
+                        if (rw) {
+                            auto it = scope->vars.find(var);
+                            if (it != scope->vars.end()) { ParStripe es3(*this, arr.get()); if (i < arr->size()) (*arr)[i] = it->second; }
+                        }
                         if (!cont) break;
                     }
                     return forResult();
@@ -6172,7 +6194,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 items = listv.blobList(); // elements (bytes, or LE words for blob16/32/64)
             }
             else if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
-            else if (listv.t == VT::Array && listv.arr) items = *listv.arr; // one-level
+            else if (listv.t == VT::Array && listv.arr) { ParStripe cs(*this, listv.arr.get()); items = *listv.arr; } // one-level, snapshot under the stripe
             else if (listv.t == VT::Range) items = listv.flatten();
             else if (listv.t == VT::Hash && listv.hash &&
                      (listv.hashKind.empty() || listv.hashKind == "Map" ||

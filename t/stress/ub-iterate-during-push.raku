@@ -13,7 +13,8 @@ my @writers = (^$N).map: {
 my $reader = start {
     my $sum = 0;
     for ^50 {
-        $sum += $_ for @shared;   # iterate while writers grow the vector
+        $sum += $_ for @shared;   # iterate while writers grow the vector (rw-alias path)
+        for @shared -> $x { $sum += $x }   # block form (snapshot path) — both raced push's realloc
         $sum += @shared.elems;
     }
     $sum
