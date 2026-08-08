@@ -1,5 +1,14 @@
 #include "Regex.h"
 #include "LtmNfa.h"
+
+namespace rakupp { bool ltmModeOn(); }
+bool rakupp::ltmModeOn() {
+    static const bool on = [] {
+        const char* e = std::getenv("RAKUPP_LTM");
+        return e && *e && std::string(e) != "0";
+    }();
+    return on;
+}
 #include <iostream>
 #include <mutex>
 #include <map>
@@ -623,7 +632,7 @@ Regex::NodePtr Regex::parseAtom() {
             bool haveBase = node->negate || !node->ranges.empty() || !node->cpRanges.empty() || !node->classFlags.empty();
             if (plusSubs.empty() && plusProps.empty() && !posExtra) seq->kids.push_back(std::move(node));
             else {
-                auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true;
+                auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true; altN->classCombo = true;
                 if (posExtra) altN->kids.push_back(std::move(posExtra)); // union members win over the complement
                 if (haveBase) altN->kids.push_back(std::move(node));
                 for (auto& ps : plusSubs) altN->kids.push_back(mkSub(ps));
@@ -677,7 +686,7 @@ Regex::NodePtr Regex::parseAtom() {
             auto any = std::make_unique<Node>(); any->k = K::Any;
             fall->kids.push_back(std::move(any));
             if (poss.empty()) return fall;
-            auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true;
+            auto altN = std::make_unique<Node>(); altN->k = K::Alt; altN->firstMatch = true; altN->classCombo = true;
             for (auto& p : poss) altN->kids.push_back(mkSubN(p, false)); // positives first: '::' beats not-':'
             altN->kids.push_back(std::move(fall));
             return altN;
@@ -1829,22 +1838,31 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // engine. Branches whose prefix cannot match the input are not
             // candidates at all; empty-prefix branches rank last but are
             // tried, per S05.
-            static const bool ltmMode = [] {
-                const char* e = std::getenv("RAKUPP_LTM");
-                return e && *e && std::string(e) != "0";
-            }();
+            static const bool ltmMode = ltmModeOn();
             if (ltmMode) {
                 static std::mutex ltmBuildM2;
                 LtmNfa* nfa = nullptr;
+                LtmExpand ectx;
+                ectx.hooks = st.hooks;
+                if (st.grammar)
+                    ectx.grammar = [&st](const std::string& nm, const void*& reOut, char& fl) {
+                        return st.grammar->ltmResolve(nm, reOut, fl);
+                    };
                 {
                     std::lock_guard<std::mutex> lk(ltmBuildM2);
                     if (n->ltmNfa && !n->ltmNfa->stillValid(st.hooks))
                         n->ltmNfa.reset(); // a named rule was re-declared: rebuild
-                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n, st.hooks);
+                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n, &ectx);
                     nfa = n->ltmNfa.get();
                 }
                 if (nfa && !nfa->anyModelGap()) {
                     auto ranked = nfa->rank(st.s, pos);
+                    static const bool rankDump = std::getenv("RAKUPP_LTM_RANKDUMP") != nullptr;
+                    if (rankDump) {
+                        fprintf(stderr, "[rank] pos=%ld kids=%zu:", pos, n->kids.size());
+                        for (auto& r : ranked) fprintf(stderr, " b%d end=%ld lit=%ld", r.branch, r.prefixEnd, r.litPrefix);
+                        fprintf(stderr, "\n");
+                    }
                     for (auto& r : ranked)
                         if (matchNode(n->kids[r.branch].get(), st, pos, k)) return true;
                     return false;
@@ -1892,11 +1910,17 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (ltmDebug) {
                 static std::mutex ltmBuildM;
                 LtmNfa* nfa = nullptr;
+                LtmExpand ectx;
+                ectx.hooks = st.hooks;
+                if (st.grammar)
+                    ectx.grammar = [&st](const std::string& nm, const void*& reOut, char& fl) {
+                        return st.grammar->ltmResolve(nm, reOut, fl);
+                    };
                 {
                     std::lock_guard<std::mutex> lk(ltmBuildM);
                     if (n->ltmNfa && !n->ltmNfa->stillValid(st.hooks))
                         n->ltmNfa.reset();
-                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n, st.hooks);
+                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n, &ectx);
                     nfa = n->ltmNfa.get();
                 }
                 if (nfa) {
@@ -2351,6 +2375,27 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
     return matchSubMeta(nameMeta(name), name, args, capKey, st, pos, k);
 }
 
+int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, char& flagOut) {
+    const NameMeta& m = nameMeta(name);
+    if (m.isWs) return 2;
+    if (m.proto) return 0;             // nested proto: not unioned here (yet)
+    if (m.dynDep) return 0;            // caller-state-dependent body
+    if (m.rule) {
+        auto* rl = static_cast<const Rule*>(m.rule);
+        if (!rl->params.empty()) return 0;
+        Regex* body = m.noArg;
+        if (!body) {                   // compile-and-cache, same as a first call would
+            std::map<std::string, std::string> bound;
+            body = compiledFor(*rl, name, "", bound);
+        }
+        if (!body || !body->ok()) return 0;
+        regexOut = body;
+        return 1;
+    }
+    if (m.builtinClass.size() == 1) { flagOut = m.builtinClass[0]; return 3; }
+    return 0;
+}
+
 bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string& name,
                                   const std::string& args, const std::string& capKey,
                                   Regex::MState& st, long pos, const FnRef& k,
@@ -2386,6 +2431,55 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     // protoregex: `<element>` dispatches to its `element:<sym>` candidates, longest wins (LTM)
     if (meta.proto) {
         const auto& cands = *meta.proto;
+        // RAKUPP_LTM=1: rank candidates with the union NFA over their
+        // declarative prefixes — one linear scan, no probe descents, no user
+        // code. <sym> inlines as each candidate's literal. Any model gap in
+        // any candidate falls the whole proto back to the probe (the same
+        // never-less-correct hybrid the Alt site uses). The matcher is
+        // per-parse, so the meta-cached NFA cannot go stale.
+        if (rakupp::ltmModeOn() && args.empty()) {
+            if (!meta.protoNfaTried) {
+                meta.protoNfaTried = true;
+                std::vector<const void*> bodies;
+                std::vector<std::string> syms;
+                bool ok = true;
+                for (auto& cand : cands) {
+                    const void* reOut = nullptr; char fl = 0;
+                    if (ltmResolve(cand, reOut, fl) != 1) { ok = false; break; }
+                    bodies.push_back(reOut);
+                    std::string sym;
+                    auto sp = cand.find(":sym<");
+                    if (sp != std::string::npos) {
+                        auto e = cand.find('>', sp + 5);
+                        if (e != std::string::npos) sym = cand.substr(sp + 5, e - (sp + 5));
+                    }
+                    else {
+                        sp = cand.find(":sym\xC2\xAB");
+                        if (sp != std::string::npos) {
+                            auto e = cand.find("\xC2\xBB", sp + 6);
+                            if (e != std::string::npos) sym = cand.substr(sp + 6, e - (sp + 6));
+                        }
+                    }
+                    syms.push_back(std::move(sym));
+                }
+                if (ok) {
+                    LtmExpand ectx;
+                    ectx.hooks = st.hooks;
+                    ectx.grammar = [this](const std::string& nm, const void*& reOut2, char& fl2) {
+                        return ltmResolve(nm, reOut2, fl2);
+                    };
+                    auto built = LtmNfa::buildForBranches(bodies, syms, &ectx);
+                    if (built && !built->anyModelGap())
+                        meta.protoNfa = std::move(built);
+                }
+            }
+            if (meta.protoNfa) {
+                auto ranked = meta.protoNfa->rank(st.s, pos);
+                for (auto& r : ranked)
+                    if (matchSub(cands[r.branch], args, capKey, st, pos, k)) return true;
+                return false;
+            }
+        }
         // Longest-token-match ranks candidates by their DECLARATIVE-prefix length — the span
         // matched before the first bare `{…}` code block (which ends the declarative part);
         // a candidate with no code block ranks by its full match. First pass: measure each.

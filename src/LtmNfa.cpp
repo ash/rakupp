@@ -73,14 +73,17 @@ bool LtmNfa::classMatch(const void* nodeV, uint32_t c) {
     return n->negate ? !in : in;
 }
 bool LtmNfa::predMatch(const Pred& p, uint32_t c) {
-    if (p.isLit) {
-        if (c == p.lit) return true;
-        if (p.icase && c < 128 && p.lit < 128)
-            return std::tolower((int)c) == std::tolower((int)p.lit);
-        return false;
+    switch (p.kind) {
+        case 'L':
+            if (c == p.lit) return true;
+            if (p.icase && c < 128 && p.lit < 128)
+                return std::tolower((int)c) == std::tolower((int)p.lit);
+            return false;
+        case 'C': return classMatch(p.node, c);
+        case 'S': return c < 128 && std::isspace((int)c);
+        case 'F': return flagHit((char)p.lit, c);
+        case 'A': default: return true; // `.` matches every codepoint in Raku
     }
-    if (!p.node) return true; // `.` — Any matches every codepoint in Raku
-    return classMatch(p.node, c);
 }
 
 // ---- construction ----------------------------------------------------------
@@ -120,7 +123,7 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                 if (n->icase && cp >= 128) return acceptGap(cur); // non-ASCII folding: not in phase 1
                 int nxt = addState();
                 states_[nxt].litDepth = ++litDepth;
-                Pred p; p.isLit = true; p.lit = cp; p.icase = n->icase;
+                Pred p; p.kind = 'L'; p.lit = cp; p.icase = n->icase;
                 states_[cur].edges.push_back({addPred(p), nxt});
                 cur = nxt;
                 i += w;
@@ -133,7 +136,9 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                 return acceptGap(from); // needs machinery phase 1 does not model
             int nxt = addState();
             states_[nxt].litDepth = litDepth; // classes do not extend the LITERAL prefix
-            Pred p; p.node = n->k == K::Class ? nv : nullptr;
+            Pred p;
+            if (n->k == K::Class) { p.kind = 'C'; p.node = nv; }
+            else p.kind = 'A';
             states_[from].edges.push_back({addPred(p), nxt});
             return nxt;
         }
@@ -149,7 +154,12 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             return n->kids.empty() ? from
                  : buildNode(n->kids[0].get(), from, branch, litDepth, depth + 1);
         case K::Alt: {
-            if (n->firstMatch) // `||`: only the FIRST branch contributes (S05)
+            // `||`: only the FIRST branch contributes (S05) — but NOT for the
+            // parser-synthesized composed-class Alt (`<+a +b>`), which is a
+            // one-char UNION: modeling it as kid 0 under-matched the prefix and
+            // wrongly pruned the whole branch (longest-alternative.t test 41,
+            // the URI grammar's `<[\-+.] +uri_alpha +digit>*`).
+            if (n->firstMatch && !n->classCombo)
                 return n->kids.empty() ? from
                      : buildNode(n->kids[0].get(), from, branch, litDepth, depth + 1);
             int join = -1;
@@ -210,19 +220,76 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
         }
         case K::Code:
             if (n->ltmStop) return accept(from);   // a bare {…} ends the prefix
-            if (n->runOnly) return from;           // :my etc. — transparent to LTM
-            return accept(from);                   // <?{…}>/<!{…}> — a spec prefix end
+            // :my declarations AND the <?{…}>/<!{…}> assertions are zero-width
+            // and DO NOT terminate LTM (protoregex.t 23-24; oracle: on "aaa",
+            // `a <?{1}> .+ | aa` matches "aaa"). ε for the RANKING is
+            // over-permissive in the failing-assertion direction, and the
+            // commit engine enforces the assertion for real — same contract
+            // as anchors.
+            return from;
         case K::VarMatch: // a back-reference IS the spec's prefix end
             return accept(from);
         case K::Subrule: { // phase 3: inline the callee's declarative prefix
+            // <sym> is the candidate's literal token (proto dispatch)
+            if (n->ruleName == "sym" && !curSym_.empty()) {
+                int cur = from;
+                long i = 0;
+                while (i < (long)curSym_.size()) {
+                    uint32_t cp; int w = cpAt(curSym_, i, cp);
+                    if (!w) break;
+                    int nxt = addState();
+                    states_[nxt].litDepth = ++litDepth;
+                    Pred p; p.kind = 'L'; p.lit = cp;
+                    states_[cur].edges.push_back({addPred(p), nxt});
+                    cur = nxt;
+                    i += w;
+                }
+                return cur;
+            }
             // recursion IS the spec's prefix end (a rule already being
             // expanded ends the prefix there, as in Rakudo)
             for (auto& nm : expandStack_)
                 if (nm == n->ruleName) return accept(from);
-            if (!buildHooks_ || !buildHooks_->namedRule || !n->ruleArgs.empty())
+            if (!buildCtx_ || !n->ruleArgs.empty())
                 return acceptGap(from); // parameterized / no resolution: a gap
+            // grammar route first: already-compiled rules, <ws>, builtin classes
+            if (buildCtx_->grammar) {
+                const void* reOut = nullptr; char flag = 0;
+                switch (buildCtx_->grammar(n->ruleName, reOut, flag)) {
+                    case 1: {
+                        auto* callee = static_cast<const Regex*>(reOut);
+                        expandStack_.push_back(n->ruleName);
+                        int e = buildNode(callee->root_.get(), from, branch, litDepth, depth + 1);
+                        expandStack_.pop_back();
+                        return e; // callee Regex is owned by the matcher, which outlives us
+                    }
+                    case 2: { // <ws> as \s* — ranking-grade
+                        int join = addState();
+                        states_[join].litDepth = litDepth;
+                        int s1 = addState();
+                        states_[s1].litDepth = litDepth;
+                        Pred p; p.kind = 'S';
+                        int pi = addPred(p);
+                        states_[from].edges.push_back({pi, s1});
+                        states_[s1].edges.push_back({pi, s1});
+                        states_[from].eps.push_back({join, 0});
+                        states_[s1].eps.push_back({join, 0});
+                        return join;
+                    }
+                    case 3: { // single built-in class: one predicate edge
+                        int nxt = addState();
+                        states_[nxt].litDepth = litDepth;
+                        Pred p; p.kind = 'F'; p.lit = (uint32_t)(unsigned char)flag;
+                        states_[from].edges.push_back({addPred(p), nxt});
+                        return nxt;
+                    }
+                    default: break; // fall through to the lexical route
+                }
+            }
+            if (!buildCtx_->hooks || !buildCtx_->hooks->namedRule)
+                return acceptGap(from);
             std::string text, flags;
-            if (!buildHooks_->namedRule(n->ruleName, text, flags))
+            if (!buildCtx_->hooks->namedRule(n->ruleName, text, flags))
                 return acceptGap(from); // builtins, protos, qualified names, rules
             auto callee = std::make_unique<Regex>(text, flags);
             if (!callee->ok()) return acceptGap(from);
@@ -240,12 +307,12 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
 }
 
 std::unique_ptr<LtmNfa> LtmNfa::buildForAlt(const Regex& re, const void* altNode,
-                                            const GrammarHooks* hooks) {
+                                            const LtmExpand* ctx) {
     auto* alt = static_cast<const Regex::Node*>(altNode);
     if (!alt || alt->k != Regex::K::Alt) return nullptr;
     std::unique_ptr<LtmNfa> nfa(new LtmNfa());
     nfa->owner_ = &re;
-    nfa->buildHooks_ = hooks;
+    nfa->buildCtx_ = ctx;
     nfa->nBranches_ = (int)alt->kids.size();
     nfa->addState(); // state 0 = entry
     for (int b = 0; b < (int)alt->kids.size(); b++) {
@@ -259,7 +326,28 @@ std::unique_ptr<LtmNfa> LtmNfa::buildForAlt(const Regex& re, const void* altNode
         int e = nfa->buildNode(alt->kids[b].get(), entry, b, 0, 0);
         if (e >= 0) nfa->states_[e].acceptBranch = b; // fully declarative: accept at the end
     }
-    nfa->buildHooks_ = nullptr; // build-time only; rank() never resolves anything
+    nfa->buildCtx_ = nullptr; // build-time only; rank() never resolves anything
+    return nfa;
+}
+
+std::unique_ptr<LtmNfa> LtmNfa::buildForBranches(const std::vector<const void*>& regexes,
+                                                 const std::vector<std::string>& syms,
+                                                 const LtmExpand* ctx) {
+    std::unique_ptr<LtmNfa> nfa(new LtmNfa());
+    nfa->buildCtx_ = ctx;
+    nfa->nBranches_ = (int)regexes.size();
+    nfa->addState(); // state 0 = entry
+    for (int b = 0; b < (int)regexes.size(); b++) {
+        auto* re = static_cast<const Regex*>(regexes[b]);
+        if (!re || !re->root_) { nfa->anyGap_ = true; continue; }
+        int entry = nfa->addState();
+        nfa->states_[0].eps.push_back({entry, 0});
+        nfa->curSym_ = b < (int)syms.size() ? syms[b] : std::string();
+        int e = nfa->buildNode(re->root_.get(), entry, b, 0, 0);
+        if (e >= 0) nfa->states_[e].acceptBranch = b;
+    }
+    nfa->curSym_.clear();
+    nfa->buildCtx_ = nullptr;
     return nfa;
 }
 
@@ -277,35 +365,55 @@ bool LtmNfa::stillValid(const GrammarHooks* hooks) const {
 // ---- the ranking runner -----------------------------------------------------
 std::vector<LtmNfa::Ranked> LtmNfa::rank(const std::string& s, long pos) const {
     const int N = (int)states_.size();
-    std::vector<char> cur(N, 0), nxt(N, 0);
+    // Per live state we carry the PATH-DEPENDENT leading-literal run: the
+    // count of consecutive literal edges from the scan start, FROZEN at the
+    // first non-literal edge. It must be path-dependent — a static per-state
+    // value poisons ties: in `token bar { aa | <foo> }` the dead `aa` path's
+    // literal count leaked onto the join state and beat `foo` on input the
+    // `aa` path never matched (longest-alternative.t test 35).
+    // Encoding: -1 = dead; else (run << 1) | frozenBit. Bigger raw value =
+    // longer run (frozen compares equal-run below unfrozen, which is fine —
+    // an unfrozen equal run can only grow).
+    auto runOf   = [](long v) { return v >> 1; };
+    auto frozen  = [](long v) { return (v & 1) != 0; };
+    auto mk      = [](long run, bool fr) { return (run << 1) | (fr ? 1 : 0); };
+    std::vector<long> cur(N, -1), nxt(N, -1);
     std::vector<long> bestEnd(nBranches_, -1), bestLit(nBranches_, 0);
-    // ε-closure of a set, recording accepts at position `at`
-    auto close = [&](std::vector<char>& set, long at) {
+    // ε-closure, recording accepts at position `at` with the PATH's run
+    auto close = [&](std::vector<long>& set, long at) {
         std::vector<int> work;
-        for (int i = 0; i < N; i++) if (set[i]) work.push_back(i);
+        for (int i = 0; i < N; i++) if (set[i] >= 0) work.push_back(i);
         while (!work.empty()) {
             int st = work.back(); work.pop_back();
             int b = states_[st].acceptBranch;
-            if (b >= 0 && (at > bestEnd[b] ||
-                           (at == bestEnd[b] && states_[st].litDepth > bestLit[b]))) {
-                bestEnd[b] = at; bestLit[b] = states_[st].litDepth;
+            if (b >= 0) {
+                long lit = runOf(set[st]);
+                if (at > bestEnd[b] || (at == bestEnd[b] && lit > bestLit[b])) {
+                    bestEnd[b] = at; bestLit[b] = lit;
+                }
             }
             for (auto& e : states_[st].eps)
-                if (!set[e.first]) { set[e.first] = 1; work.push_back(e.first); }
+                if (set[e.first] < set[st]) { set[e.first] = set[st]; work.push_back(e.first); }
         }
     };
-    cur[0] = 1;
+    cur[0] = mk(0, false);
     close(cur, pos);
     long p = pos;
     while (p < (long)s.size()) {
         uint32_t cp; int w = cpAt(s, p, cp);
         if (!w) break;
-        std::fill(nxt.begin(), nxt.end(), 0);
+        std::fill(nxt.begin(), nxt.end(), -1L);
         bool any = false;
         for (int i = 0; i < N; i++) {
-            if (!cur[i]) continue;
-            for (auto& e : states_[i].edges)
-                if (!nxt[e.second] && predMatch(preds_[e.first], cp)) { nxt[e.second] = 1; any = true; }
+            if (cur[i] < 0) continue;
+            for (auto& e : states_[i].edges) {
+                if (!predMatch(preds_[e.first], cp)) continue;
+                bool isLit = preds_[e.first].kind == 'L';
+                long v = frozen(cur[i]) ? cur[i]
+                       : isLit          ? mk(runOf(cur[i]) + 1, false)
+                                        : mk(runOf(cur[i]), true); // first non-lit edge freezes
+                if (v > nxt[e.second]) { nxt[e.second] = v; any = true; }
+            }
         }
         if (!any) break;
         p += w;

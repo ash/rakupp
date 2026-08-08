@@ -241,6 +241,37 @@ HIGHER than the probe on the same binary** (196,968/593 vs 196,960/592,
 zero down-movers). Remaining for 3b: grammar-path expansion + the proto
 dispatch NFA, `<ws>` modeling for sigspace rules, `:m` folding.
 
+**Phase 3b: DELIVERED 2026-08-08.** Grammar-path expansion
+(`GrammarMatcher::ltmResolve` — a second `LtmExpand` route that hands the
+NFA already-compiled rule bodies to inline, `<ws>` as a `\s*` predicate
+loop, single-char builtin classes as flag predicates; refuses protos,
+parameterized rules, and dyn-dependent bodies) and the proto-dispatch
+union NFA (`buildForBranches`: one branch per candidate, `<sym>` inlined
+as that candidate's literal, cached on the `GrammarRuleMeta` — safe
+because the matcher is per-parse). Two real ranking bugs found and fixed
+by the roast diff, both now regression-pinned:
+- the literal tie-break was PATH-INSENSITIVE (static per-state
+  `litDepth`, max-merged at joins), so a dead literal path inside
+  `token bar { aa | <foo> }` outranked the earlier-declared `foo` on
+  input the `aa` path never matched (test 35). `rank()` now carries the
+  leading-literal run per live path, frozen at the first non-literal
+  edge.
+- the parser lowers a composed char class (`<[\-+.] +uri_alpha +digit>`)
+  to a synthesized first-match Alt; modeling that like user `||` (first
+  branch only) under-matched the prefix and PRUNED the whole `<URI>`
+  branch (test 41). Such Alts are now tagged `classCombo` and unioned;
+  user `||` keeps first-branch-continues (oracle-confirmed).
+longest-alternative.t holds 47/62 under the flag (45 default), fail set
+a strict subset of default's; proto-token-ltm.t 10/10 both settings;
+grammar bench 28–34 ms both; suite 393/393 both; perf-guard OK.
+Oracle discovery worth recording: Rakudo ranks proto candidates by
+declarative prefix only for PLAIN `token t:sym<x>` declarations —
+`multi token` candidates dispatch in declaration order (plain multi
+dispatch), and a direct `G.subparse(:rule<proto>)` call does too. Both
+our engines (probe and NFA) rank `multi token` candidates as well — a
+pre-existing divergence in the default engine, deferred (recording
+multi-ness on `GrammarRuleMeta` is the entry ticket).
+
 1. **NFA builder + offline harness.** `LtmNfa` with unit tests; a dump tool
    (`--ltm-dump` or a debug env var) that prints, for a given regex and
    input, the ranked order under probe vs NFA. Run it over a corpus

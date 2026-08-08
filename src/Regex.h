@@ -118,6 +118,11 @@ struct GrammarRuleMeta {
     bool dynDep = false;           // body declares `:my` or reads a dynamic var ($*/@*/%*): its match
                                    // can depend on caller state not in the packrat key, so don't memoise
     std::string builtinClass;      // unknown name: built-in char-class flags ("d","a",…), else empty
+    // proto dispatch, RAKUPP_LTM=1: the union NFA over the candidates'
+    // declarative prefixes, built once per (matcher, proto) — the matcher is
+    // per-parse, so there is no cross-parse staleness to manage
+    mutable std::shared_ptr<LtmNfa> protoNfa;
+    mutable bool protoNfaTried = false; // a failed build is not retried per position
 };
 
 // A compiled Raku regex supporting a pragmatic core of the language:
@@ -181,6 +186,9 @@ private:
         bool ltmStop = false; // a bare `{…}` code block — ends the LTM declarative prefix (`:my`/assertions do not)
         // Alt
         bool firstMatch = false;         // `||` (sequential first-match) vs `|` (LTM, longest wins)
+        bool classCombo = false;         // SYNTHESIZED first-match Alt for a composed char class
+                                         // (`<+a +b>` / `<-a +b>`): semantically a one-char UNION,
+                                         // so the LTM prefix model must union it, not take kid 0
         // Group
         int capIndex = -1;               // -1 => non-capturing
         std::string capName;
@@ -345,6 +353,10 @@ public:
 
     using NameMeta = GrammarRuleMeta;
     const NameMeta& nameMeta(const std::string& name);      // cached per-name metadata (see GrammarRuleMeta)
+    // The LTM expansion route for this grammar's rules (see LtmExpand::grammar):
+    // 0 refuse, 1 = regexOut is the rule's compiled no-arg body, 2 = <ws>,
+    // 3 = a single-char builtin class in flagOut.
+    int ltmResolve(const std::string& name, const void*& regexOut, char& flagOut);
 
 private:
     std::unordered_map<uint64_t, MemoEntry> memo_;          // ratchet-token packrat cache (per parse), integer-keyed

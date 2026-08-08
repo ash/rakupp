@@ -28,6 +28,7 @@
 // print disagreements for classification against Rakudo.
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -38,15 +39,33 @@ namespace rakupp {
 class Regex;
 struct GrammarHooks;
 
+// The expansion context handed to the NFA builder. Two resolution routes:
+// `hooks` (lexical named regexes — text + flags, recompiled and owned) and
+// `grammar` (a GrammarMatcher's already-compiled rules — no recompile).
+// `grammar` answers: 0 refuse (a model gap), 1 = out is a const Regex* whose
+// body to inline, 2 = the built-in <ws> (modeled as \s* — ranking-grade;
+// the commit engine enforces the real <!ww> gate), 3 = a single-char
+// built-in class, flag = its letter ('d','a','w',…).
+struct LtmExpand {
+    const GrammarHooks* hooks = nullptr;
+    std::function<int(const std::string& name, const void*& regexOut, char& flagOut)> grammar;
+};
+
 class LtmNfa {
 public:
     // Build the union NFA for an Alt node's branches. Every branch gets an
     // entry ε-edge from state 0 and its accepts tagged with its index.
     // Returns null only on allocation-level failure; an unbuildable branch
     // simply contributes an accept-at-entry (empty prefix, ranks last).
-    // `hooks` (optional) enables subrule expansion via GrammarHooks::namedRule.
+    // `ctx` (optional) enables subrule expansion (see LtmExpand).
     static std::unique_ptr<LtmNfa> buildForAlt(const Regex& re, const void* altNode,
-                                               const GrammarHooks* hooks = nullptr);
+                                               const LtmExpand* ctx = nullptr);
+    // The proto-dispatch union: one branch per candidate — `regexes[i]` is the
+    // candidate's compiled body (const Regex*), `syms[i]` its :sym<…> literal
+    // ("" = none), inlined wherever the body says <sym>.
+    static std::unique_ptr<LtmNfa> buildForBranches(const std::vector<const void*>& regexes,
+                                                    const std::vector<std::string>& syms,
+                                                    const LtmExpand* ctx);
     // A cached NFA that expanded subrules must be revalidated per use: named
     // regexes register last-wins, so a re-declared token in another scope
     // changes what the same compiled node resolves to.
@@ -80,23 +99,28 @@ private:
     // was built from. `node` borrows the Regex's Node (the Regex outlives
     // its cached NFA — same lifetime the byteset cache already relies on).
     struct Pred {
-        const void* node = nullptr;   // Regex::Node* — class-style predicate
-        uint32_t lit = 0;             // or a single literal codepoint (node == null)
-        bool isLit = false;
+        char kind = 'A';              // 'L' literal cp, 'C' class node, 'A' any,
+                                      // 'S' whitespace (<ws>), 'F' builtin flag class
+        const void* node = nullptr;   // 'C': the Regex::Node
+        uint32_t lit = 0;             // 'L': the codepoint; 'F': the flag letter
         bool icase = false;
     };
     struct State {
         std::vector<std::pair<int, int>> eps;   // ε-edges (to-state, unused)
         std::vector<std::pair<int, int>> edges; // (pred index, to-state)
         int acceptBranch = -1;                  // >=0: this state accepts for that branch
-        int litDepth = 0;                       // literal-edge count from entry (for the tie-break)
+        int litDepth = 0;                       // build-time literal-edge counter. NOT the ranking
+                                                // tie-break: that is computed PER PATH during rank()
+                                                // (a static per-state value max-merged at joins let a
+                                                // dead literal path poison a live one's tie)
     };
     std::vector<Pred> preds_;
     std::vector<State> states_;
     int nBranches_ = 0;
     bool anyGap_ = false;
     const Regex* owner_ = nullptr;
-    const GrammarHooks* buildHooks_ = nullptr;        // build-time only
+    const LtmExpand* buildCtx_ = nullptr;             // build-time only
+    std::string curSym_;                              // current branch's <sym> literal (build-time)
     std::vector<std::string> expandStack_;            // recursion guard (build-time)
     std::vector<std::unique_ptr<Regex>> owned_;       // compiled callees the NFA borrows Nodes from
     std::map<std::string, std::string> expandStamps_; // name -> pattern text used
