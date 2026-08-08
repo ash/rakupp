@@ -5506,38 +5506,66 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
     Interpreter* self = this;
     workers_.push_back({BigStackThread([self, chan, blk, ctx, fin, spawnScope]() mutable {
         t_isWorker = true;
-        self->gil_.lock();
+        // Parallel mode has no GIL discipline: taking (and never releasing)
+        // the lock here made the FIRST channel worker the accidental GIL
+        // owner for its whole lifetime — every later channel whenever's
+        // worker starved at this line (the two-channel react in
+        // S17-supply/syntax.t, the last of the P5 isolation livelocks).
+        // Under the GIL the lock is real and yieldToWorkerFor cycles it.
+        if (!self->parallelMode_) self->gil_.lock();
         ExecContext wctx; self->loadCtx(wctx);
         tctx_.cur = spawnScope;
         tctx_.dynStack.push_back(spawnScope.get());
         if (ctx) self->reactStack_.push_back(ctx);
-        auto closed = [&] {
-            if (!chan.hash) return true;
-            auto c = chan.hash->find("closed");
-            return c != chan.hash->end() && c->second.truthy();
-        };
-        auto queue = [&]() -> ValueList* {
-            if (!chan.hash) return nullptr;
-            auto q = chan.hash->find("queue");
-            return q != chan.hash->end() && q->second.arr ? q->second.arr.get() : nullptr;
-        };
         for (;;) {
             if (ctx && ctx->closed) break;
-            ValueList* q = queue();
-            if (!q) break;
-            if (q->empty()) {
-                if (closed()) break;
-                self->yieldToWorkerFor(0.02);
+            // Poll and POP under the channel's stripe — the same lock send and
+            // receive use. The old loop read "closed"/"queue" and erased the
+            // front element with NO lock, racing send's striped push_back and
+            // close's map insert; under RAKUPP_PARALLEL a torn read made this
+            // worker break early or miss a value, wedging every construct
+            // downstream of the whenever (S17-supply/syntax.t's two-channel
+            // react — the last isolation livelock of the P5 wall).
+            Value v; bool got = false, fin = false;
+            {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash.get()));
+                auto qi = chan.hash ? chan.hash->find("queue") : std::map<std::string, Value>::iterator{};
+                ValueList* q = chan.hash && qi != chan.hash->end() && qi->second.arr ? qi->second.arr.get() : nullptr;
+                if (!q) fin = true;
+                else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; }
+                else {
+                    auto ci = chan.hash->find("closed");
+                    fin = ci != chan.hash->end() && ci->second.truthy();
+                }
+            }
+            if (fin) break;
+            if (!got) {
+                // yieldToWorkerFor is a no-op in parallel mode (nothing to
+                // yield) — without the sleep this loop was a hot spin
+                if (self->parallelMode_) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                else self->yieldToWorkerFor(0.02);
                 continue;
             }
-            Value v = q->front(); q->erase(q->begin());
             ValueList one{v};
-            try { self->callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; } catch (...) {}
+            try { self->callCallable(blk, one); }
+            catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; }
+            catch (RakuError& e) {
+                // a die in the whenever body kills the react and propagates
+                // (issue-18 semantics, same as the interval arm) — the old
+                // silent catch also swallowed real errors from the block,
+                // which made this exact spot undebuggable
+                if (ctx) {
+                    std::lock_guard<std::mutex> lk(ctx->m);
+                    if (!ctx->quitFlag) { ctx->quitFlag = true; ctx->quitErr = e.payload.t == VT::Nil ? Value::str(e.message) : e.payload; }
+                    ctx->closed = true; ctx->cv.notify_all();
+                }
+                break;
+            }
+            catch (...) {}
             if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->closed) break; }
         }
         if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
-        self->gilYieldNotify();
+        if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
     }), fin});
