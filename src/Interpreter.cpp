@@ -974,6 +974,13 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             for (auto& sv : seed) if (sv.t != VT::Int && sv.t != VT::Bool && sv.t != VT::Rat) seedsExact = false;
             if (seedsExact && seed.size() >= 2) {
                 ratioV = applyArith("/", seed[1], seed[0]);
+                // an integral ratio must STAY Int: Int/Int yields a Rat here,
+                // and Int × Rat(2/1) walks the whole sequence into integral
+                // Rats (8.0 in .raku, Rat in .WHAT — Rakudo's 1,2,4 ... * are
+                // plain Ints). div is exact and bigint-safe.
+                if (ratioV.t == VT::Rat && seed[1].t != VT::Rat && seed[0].t != VT::Rat &&
+                    !applyArith("%", seed[1], seed[0]).truthy())
+                    ratioV = applyArith("div", seed[1], seed[0]);
                 exactRatio = (ratioV.t == VT::Rat || ratioV.t == VT::Int);
             }
         }
@@ -1048,16 +1055,24 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     }
                 } else if (geometric) {
                     const Value& lastE = cache.back();
-                    if (allInt && ratio == std::floor(ratio)) next = Value::integer((long long)std::llround(lastV * ratio));
-                    else if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
-                        next = applyArith("*", lastE, ratioV); // stays Rat
+                    // exact multiply FIRST: the llround-through-a-double fast
+                    // path saturated at int64 max, so 1, 2, 4 ... * flatlined
+                    // at 9223372036854775807 from 2^63 on. applyArith promotes
+                    // Ints to bigints and keeps Rat ratios exact.
+                    if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
+                        next = applyArith("*", lastE, ratioV);
+                    else if (allInt && ratio == std::floor(ratio)) next = Value::integer((long long)std::llround(lastV * ratio));
                     else next = Value::number(lastV * ratio);
                 } else if (exactStep && (cache.back().t == VT::Int || cache.back().t == VT::Rat ||
                                          cache.back().t == VT::Bool)) {
                     next = applyArith("+", cache.back(), stepV); // stays Rat
                 } else {
                     double nv = lastV + step;
-                    next = allInt ? Value::integer((long long)nv) : Value::number(nv);
+                    // an int walk that reaches |2^62| leaves the double-safe
+                    // zone: continue with exact addition (bigint promotion)
+                    if (allInt && stepV.t == VT::Int && std::abs(nv) > 4.6e18)
+                        next = applyArith("+", cache.back(), stepV);
+                    else next = allInt ? Value::integer((long long)nv) : Value::number(nv);
                 }
                 cache.push_back(next);
                 return true;
@@ -1108,16 +1123,18 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 }
             } else if (geometric) {
                 const Value& lastE = out.arr->back();
-                if (allInt && ratio == std::floor(ratio)) next = Value::integer((long long)std::llround(lastV * ratio));
-                else if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
-                    next = applyArith("*", lastE, ratioV); // stays Rat
+                if (exactRatio && (lastE.t == VT::Int || lastE.t == VT::Rat || lastE.t == VT::Bool))
+                    next = applyArith("*", lastE, ratioV); // exact first — see the lazy twin
+                else if (allInt && ratio == std::floor(ratio)) next = Value::integer((long long)std::llround(lastV * ratio));
                 else next = Value::number(lastV * ratio);
             } else if (exactStep && (out.arr->back().t == VT::Int || out.arr->back().t == VT::Rat ||
                                      out.arr->back().t == VT::Bool)) {
                 next = applyArith("+", out.arr->back(), stepV); // stays Rat
             } else {
                 double nv = lastV + step;
-                next = allInt ? Value::integer((long long)nv) : Value::number(nv);
+                if (allInt && stepV.t == VT::Int && std::abs(nv) > 4.6e18)
+                    next = applyArith("+", out.arr->back(), stepV); // exact past the double-safe zone
+                else next = allInt ? Value::integer((long long)nv) : Value::number(nv);
             }
             if (endCode) {
                 if (endAccepts(next)) { if (!exclusive) out.arr->push_back(next); break; }

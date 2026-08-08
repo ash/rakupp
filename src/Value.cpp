@@ -478,6 +478,9 @@ std::string Value::gist() const {
             }
             std::string out = isList ? "(" : "[";
             if (arr) for (size_t k = 0; k < arr->size(); k++) {
+                // Rakudo caps a list's gist at 100 elements and marks the rest
+                // with an ellipsis (`.Str`/`.raku` stay complete)
+                if (k == 100) { out += " ..."; break; }
                 if (k) out += " ";
                 out += (*arr)[k].gist();
             }
