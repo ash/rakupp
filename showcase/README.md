@@ -17,6 +17,7 @@ together they answer "what can it actually build?"
 | [**chat/**](chat) | Concurrency — many clients, one thread each | TCP chat server you connect to with `nc` |
 | [**kvstore/**](kvstore) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
 | [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
+| [**raytracer/**](raytracer) | Compute — floating-point in a tight loop, `--exe`, allocation discipline (13× measured) | path tracer: renders a PPM image to stdout |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -289,6 +290,37 @@ runs all thirteen commands under Rakudo and under Raku++ and diffs STDOUT —
 byte-identical, and byte-identical again over the 61 real distributions of the
 module battery. See [`modinfo/README.md`](modinfo/README.md) for the module map
 and what each fixture is for.
+
+## raytracer — the compute story
+
+A path tracer in the "Ray Tracing in One Weekend" tradition: a floor and a
+ring of spheres in three materials — matte, metal, glass — rendered by
+recursive ray bounces to a PPM on stdout. Almost pure floating-point
+arithmetic in a tight loop, which makes it the showcase for `--exe` and for
+what allocation discipline is worth.
+
+```sh
+build/rakupp --exe -o raytrace showcase/raytracer/raytrace.raku
+./raytrace > out.ppm                      # then: convert out.ppm out.png
+RT_WIDTH=600 RT_SAMPLES=100 RT_DEPTH=16 ./raytrace > hero.ppm
+```
+
+Two implementations render the same scene (`srand`-pinned, so each is
+deterministic):
+
+- [`raytrace.raku`](raytracer/raytrace.raku) — the object-oriented version: a
+  `V3` vector class, `Material`/`Sphere` objects, recursive `ray-colour`.
+  Idiomatic, and every vector operation allocates.
+- [`raytrace-fast.raku`](raytracer/raytrace-fast.raku) — the same math with no
+  per-operation allocation: vectors as native `num` locals, the scene as flat
+  parallel arrays, the bounce loop iterative. Under `--exe` the reference
+  frame (300×200, 40 spp) renders in ~56 s against ~731 s for the OO version —
+  about 13×, all from the allocation-free rewrite.
+
+Both run unchanged under Rakudo. The render loop is single-threaded; a
+per-scanline-band `start` pool is the natural next step (see
+[PARALLEL-SPEEDUP.md](../docs/guide/PARALLEL-SPEEDUP.md) for how to measure
+whether it pays).
 
 ## In the browser — [`web/`](web)
 
