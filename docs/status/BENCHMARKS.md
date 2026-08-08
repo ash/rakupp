@@ -210,6 +210,30 @@ the compiled AST, resolving tail-position `return` without a C++ exception, and
 non-owning match continuations. An earlier build of this same parse took ~195 s;
 that was an unbounded lookbehind scan on a document this large.
 
+## Parallel scaling (`RAKUPP_PARALLEL=1`)
+
+`tools/bench/parmap.raku` is the scaling kernel the v3 parallelism campaign
+gates on ([PARALLEL-PLAN.md](../dev/plans/PARALLEL-PLAN.md)): an
+embarrassingly parallel map — each `start` block sums squares over its own
+range, no sharing — with the **total work held constant** while the worker
+count varies. Measured 2026-08-08 on the 8-core (4P+4E) reference machine,
+same binary throughout:
+
+| workers | wall | speed-up | total CPU | CPU inflation |
+|---:|---:|---:|---:|---:|
+| 1 | 989 ms | 1.00× | 0.99 s | 1.00× |
+| 2 | 531 ms | 1.86× | 1.05 s | 1.06× |
+| 4 | 334 ms | 2.96× | 1.27 s | 1.28× |
+| 8 | 273 ms | 3.62× | 1.40 s | 1.41× |
+
+Two honest notes. The 8-worker row spills onto the efficiency cores, so the
+marginal gain past 4 workers is small — 3.6×, not 5× — exactly as
+[ASYNC.md](../guide/ASYNC.md) advises when sizing a fan-out. And the
+single-thread row is the same speed as GIL mode (987 vs 996 ms measured):
+the safety machinery the campaign added (striped containers, torn-copy
+protection) engages only while workers are actually live, so a
+single-threaded program pays two predicted branches and nothing else.
+
 ## How to read this
 
 - **The short kernels are startup-inclusive — read them that way.** Every row is

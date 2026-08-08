@@ -14,17 +14,14 @@
 #
 # Under a ThreadSanitizer build, run with TSAN_OPTIONS=exitcode=66 (the CI
 # job does): a detected race turns into a non-zero exit and lands here as
-# an ordinary failure. Additionally, RAKUPP_STRESS_TSAN=1 SKIPS the
-# parallel-mode cases entirely: the interpreter's own internals still race
-# under parallelism (phase P2 — first named item: the one-shot call
-# registers topicWriteback_/pendingRwSlots_/noAutothread_/loopPhaserCtl_
-# at Interpreter.cpp ~8912 are plain members, not thread-locals), so under
-# TSan only GIL mode is held strict until P2 lands. Skipped, not
-# run-and-tolerated: a tolerated run buys no signal, costs minutes of
-# TSan slowdown, and once WEDGED this suite for 25 minutes when the
-# channel hang outlived run()'s :timeout under TSan scheduling — itself a
-# noted P2-adjacent finding. Native runs enforce both modes; nothing is
-# masked, one flag states the truth.
+# an ordinary failure. RAKUPP_STRESS_TSAN=1 additionally consults
+# %tsan-parallel-skip below — the per-program ratchet that replaced the
+# original blanket parallel-skip once P2 drove the interpreter's own races
+# to zero on the correctness programs. An entry leaves that list the same
+# way known-bad entries leave theirs: by being fixed. (History note: the
+# blanket skip existed because a tolerated TSan run buys no signal, costs
+# minutes of slowdown, and once wedged this suite for 25 minutes when a
+# channel hang outlived run()'s :timeout under TSan scheduling.)
 
 # The suite's FIRST RUN (2026-08-07) put three entries here — the plan's P4
 # phase ("some primitives serialize via the GIL today") had named them in
@@ -46,6 +43,22 @@ my %known-bad;
 # next stress programs should stage: iteration during mutation, object
 # attribute races, and same-slot torn copies of pointer-carrying values.
 my %known-flaky;
+# The TSan-parallel ratchet (2026-08-08): the blanket parallel-skip is GONE —
+# seven correctness programs now run STRICT under ThreadSanitizer in parallel
+# mode (atomic-counter, channel-pipeline, hash-guarded, lock-counter,
+# parallel-map, supply-fanin — all zero-report). What still skips, and why:
+my %tsan-parallel-skip =
+    'promise-chain'          => 'P2 residue: 3 reports left in eval — the last of the class',
+    # the ub-* family stages DELIBERATE user races: under TSan every run is a
+    # detected race by design, so the sanitizer leg proves nothing by running
+    # them (the NATIVE matrix is where their no-crash contract is enforced)
+    'ub-array-push'          => 'stages a deliberate race',
+    'ub-hash-write'          => 'stages a deliberate race',
+    'ub-iterate-during-push' => 'stages a deliberate race',
+    'ub-object-attrs'        => 'stages a deliberate race',
+    'ub-torn-values'         => 'stages a deliberate race',
+    'ub-env-sharing'         => 'stages a deliberate race',
+;
 
 my $dir  = $?FILE.IO.parent;
 my $only = @*ARGS.first(*.starts-with('--only='));
@@ -62,8 +75,9 @@ for @programs -> $prog {
     next if $only && $name ne $only;
     for <gil parallel> -> $mode {
         my $id = "$name/$mode";
-        if %*ENV<RAKUPP_STRESS_TSAN> && $mode eq 'parallel' {
-            say "ok - $id # SKIP under TSan (P2 backlog: runtime internals race under parallelism)";
+        if %*ENV<RAKUPP_STRESS_TSAN> && $mode eq 'parallel'
+           && (%tsan-parallel-skip{$name}:exists) {
+            say "ok - $id # SKIP under TSan ({%tsan-parallel-skip{$name}})";
             next;
         }
         $ran++;

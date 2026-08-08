@@ -11785,6 +11785,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (a->op == "=" && (rhs.t == VT::Array || rhs.t == VT::Hash) && !rhs.itemized &&
                 sigil == '$')
                 rhs.itemized = true;
+            ParStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
             *lv = rhs;
         }
         if (nb) wrapNative(*lv, nb, ns, nf);
@@ -11829,7 +11830,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
             Value rhs = eval(a->value.get());
             int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
-            *lv = rhs;
+            { ParStripe ws(*this, lv); *lv = rhs; } // torn-copy contract
             if (nb) wrapNative(*lv, nb, ns, nf);
             return sink ? Value::any() : *lv;
         }
@@ -19148,7 +19149,16 @@ Value Interpreter::eval(Expr* e) {
             if (!ve->declare && ve->name.size() > 1 &&
                 (std::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
                 if (Value* p = tctx_.cur->find(ve->name)) {
-                    if (!(p->t == VT::Hash && p->hashKind == "Proxy")) return *p;
+                    if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
+                        // P3 torn-copy contract: in parallel mode the copy-out
+                        // happens under the slot's stripe, paired with the
+                        // striped store in evalAssignInner — a reader can no
+                        // longer copy a half-overwritten pointer-carrying
+                        // Value (refcount corruption). Under the GIL this is
+                        // one predicted branch.
+                        ParStripe rs(*this, p);
+                        return *p;
+                    }
                 }
             }
             // a placeholder's caret/colon spelling reads its BARE slot ($^b and a

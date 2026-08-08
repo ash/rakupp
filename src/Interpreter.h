@@ -608,7 +608,15 @@ public:
     struct ParStripe {
         std::unique_lock<std::recursive_mutex> l;
         ParStripe(const Interpreter& I, const void* p) {
-            if (I.parallelMode_) l = std::unique_lock<std::recursive_mutex>(atomicStripe(p));
+            // engage only in parallel mode AND while workers are LIVE: before
+            // the first spawn and after the last join a single thread cannot
+            // race itself, so a single-threaded program under
+            // RAKUPP_PARALLEL=1 pays two predicted branches and nothing else
+            // (the P5 gate: the machinery must be free when one thread runs —
+            // the stripe tax was pushing big compute files past the roast
+            // timeout with zero threads in them).
+            if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)
+                l = std::unique_lock<std::recursive_mutex>(atomicStripe(p));
         }
     }; // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
