@@ -214,6 +214,23 @@ whole 392-check suite and proto-token-ltm.t, 56 in longest-alternative.t
 S05-mass/rx.t (one empty-rank shape included) — that worklist is phase 2's
 entry ticket.
 
+**Phase 2: DELIVERED 2026-08-08 (commit 1e9e964).** The worklist
+classified to zero real divergences (and caught the Node*-keyed debug
+cache being poisoned by recycled addresses — the NFA now lives ON the
+node). `RAKUPP_LTM=1` wires the Alt site as a GAP-AWARE HYBRID: the NFA
+decides only when every branch's prefix ended for a spec reason; a model
+gap (subrule — expansion is phase 3 — `:m`, uprop, non-ASCII `:i`,
+lookaround, conjunction) falls back to the probe for that alternation,
+so the flag is never less correct than the default. Measured: naive
+NFA-always scored 41/62 on longest-alternative.t vs the probe's 45; the
+hybrid scores 46 (the `||`-exclusion fix is the honest gain). Both
+oracle divergences fixed under the flag; grammar bench 29 ms in both
+settings; full Roast LTM=1 at the idle-baseline figures with zero real
+regressions; default bit-identical. Phase 3's job is now precisely the
+gap list, starting with subrule expansion — each gap closed converts
+probe-fallback alternations to NFA ranking and should carry
+longest-alternative.t further toward the fudged-Rakudo score.
+
 1. **NFA builder + offline harness.** `LtmNfa` with unit tests; a dump tool
    (`--ltm-dump` or a debug env var) that prints, for a given regex and
    input, the ranked order under probe vs NFA. Run it over a corpus
