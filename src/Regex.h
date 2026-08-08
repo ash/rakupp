@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include <atomic>
+#include "LtmNfa.h"
 #include <cstdint>
 #include <unordered_map>
 #include <memory>
@@ -191,6 +192,12 @@ private:
         // once — bounds the start-position scan to O(width) instead of O(pos)
         mutable long lookMin = 0, lookMax = -1;
         mutable bool lookWidthReady = false;
+        // Alt: the declarative-prefix ranking NFA, built once on first use.
+        // Cached ON the node (the byteset precedent) — a process compiles
+        // many regexes, and a map keyed by Node* was poisoned when freed
+        // node addresses were recycled (found by the phase-1 harness on
+        // S05-mass/rx.t: stale NFAs produced empty or nonsense ranks).
+        mutable std::unique_ptr<LtmNfa> ltmNfa;
     };
     using NodePtr = std::unique_ptr<Node>;
 

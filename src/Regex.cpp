@@ -1820,8 +1820,41 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 }
                 return false;
             }
-            // `|` — longest-token match. True LTM needs each branch's set of reachable
-            // ends; enumerating them (a trivial `return false` continuation) explodes
+            // `|` — longest-token match, two selectable rankers during the v3
+            // rollout (LTM-PLAN.md phase 2):
+            //
+            // RAKUPP_LTM=1 — TRUE LTM: rank by each branch's DECLARATIVE
+            // PREFIX via the LtmNfa (one linear scan, no user code, no
+            // backtracking), then commit branches in that order with the real
+            // engine. Branches whose prefix cannot match the input are not
+            // candidates at all; empty-prefix branches rank last but are
+            // tried, per S05.
+            static const bool ltmMode = [] {
+                const char* e = std::getenv("RAKUPP_LTM");
+                return e && *e && std::string(e) != "0";
+            }();
+            if (ltmMode) {
+                static std::mutex ltmBuildM2;
+                LtmNfa* nfa = nullptr;
+                {
+                    std::lock_guard<std::mutex> lk(ltmBuildM2);
+                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n);
+                    nfa = n->ltmNfa.get();
+                }
+                if (nfa && !nfa->anyModelGap()) {
+                    auto ranked = nfa->rank(st.s, pos);
+                    for (auto& r : ranked)
+                        if (matchNode(n->kids[r.branch].get(), st, pos, k)) return true;
+                    return false;
+                }
+                // fall through to the probe when the NFA could not build OR
+                // some branch's prefix ended at a construct the model does
+                // not cover yet (subrule expansion is phase 3) — a hybrid,
+                // so RAKUPP_LTM=1 is never LESS correct than the probe
+            }
+            // Default (probe) path: rank by each branch's greedy full-match
+            // end. True LTM needs each branch's set of reachable ends;
+            // enumerating them (a trivial `return false` continuation) explodes
             // combinatorially on recursive grammars. So probe each branch ONCE for its
             // greedy end (cheap, single descent), snapshotting interpreter side-effects,
             // then commit branches in longest-end-first order with the real continuation.
@@ -1855,14 +1888,12 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // NFA in for real (LTM-PLAN.md).
             static const bool ltmDebug = std::getenv("RAKUPP_LTM_DEBUG") != nullptr;
             if (ltmDebug) {
-                static std::map<const Node*, std::unique_ptr<LtmNfa>> ltmCache;
-                static std::mutex ltmCacheM;
+                static std::mutex ltmBuildM;
                 LtmNfa* nfa = nullptr;
                 {
-                    std::lock_guard<std::mutex> lk(ltmCacheM);
-                    auto& slot = ltmCache[n];
-                    if (!slot) slot = LtmNfa::buildForAlt(*this, n);
-                    nfa = slot.get();
+                    std::lock_guard<std::mutex> lk(ltmBuildM);
+                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n);
+                    nfa = n->ltmNfa.get();
                 }
                 if (nfa) {
                     auto ranked = nfa->rank(st.s, pos);
@@ -1874,7 +1905,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         std::string a, b;
                         for (auto& o : order)  a += std::to_string(o.second) + "@" + std::to_string(o.first) + " ";
                         for (auto& r : ranked) b += std::to_string(r.branch) + "@" + std::to_string(r.prefixEnd) + " ";
-                        std::cerr << "[LTM] pos " << pos << "  probe: " << a << " nfa: " << b << "\n";
+                        std::string pv = pat_.size() > 60 ? pat_.substr(0, 60) + "…" : pat_;
+                        std::string sv = st.s.size() > 40 ? st.s.substr(0, 40) + "…" : st.s;
+                        std::cerr << "[LTM] /" << pv << "/ on \"" << sv << "\" pos " << pos
+                                  << "  probe: " << a << " nfa: " << b << "\n";
                     }
                 }
             }

@@ -89,11 +89,15 @@ bool LtmNfa::predMatch(const Pred& p, uint32_t c) {
 // the prefix reached.
 int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int depth) {
     using K = Regex::K;
-    auto accept = [&](int st) {
+    auto accept = [&](int st) { // the SPEC's prefix end — a fair ranking point
         if (states_[st].acceptBranch < 0) states_[st].acceptBranch = branch;
         return -1;
     };
-    if (depth > 200 || states_.size() > 4000) return accept(from); // bound: shorter prefix, never wrong
+    auto acceptGap = [&](int st) { // a MODEL gap — ranking may be unfair here
+        anyGap_ = true;
+        return accept(st);
+    };
+    if (depth > 200 || states_.size() > 4000) return acceptGap(from); // bound blown: unfair, not wrong
     if (!nv) return from;
     auto* n = static_cast<const Regex::Node*>(nv);
     switch (n->k) {
@@ -107,13 +111,13 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             // RANKING only; the commit engine enforces them for real
             return from;
         case K::Lit: {
-            if (n->imark) return accept(from);
+            if (n->imark) return acceptGap(from);
             int cur = from;
             long i = 0;
             while (i < (long)n->lit.size()) {
                 uint32_t cp; int w = cpAt(n->lit, i, cp);
                 if (!w) break;
-                if (n->icase && cp >= 128) return accept(cur); // non-ASCII folding: not in phase 1
+                if (n->icase && cp >= 128) return acceptGap(cur); // non-ASCII folding: not in phase 1
                 int nxt = addState();
                 states_[nxt].litDepth = ++litDepth;
                 Pred p; p.isLit = true; p.lit = cp; p.icase = n->icase;
@@ -126,7 +130,7 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
         case K::Any: case K::Class: {
             if (n->k == K::Class &&
                 (!n->uprop.empty() || !n->clusterMembers.empty() || n->imark))
-                return accept(from); // needs machinery phase 1 does not model
+                return acceptGap(from); // needs machinery phase 1 does not model
             int nxt = addState();
             states_[nxt].litDepth = litDepth; // classes do not extend the LITERAL prefix
             Pred p; p.node = n->k == K::Class ? nv : nullptr;
@@ -160,7 +164,7 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             return join; // -1 if every path terminated (accepts are placed)
         }
         case K::Conj:
-            return accept(from); // `&` — not worth NFA intersection (plan)
+            return acceptGap(from); // `&` — not worth NFA intersection (plan)
         case K::Rep: {
             if (!n->repCode.empty()) return accept(from); // runtime bounds end the prefix
             const Regex::Node* body = n->kids.empty() ? nullptr : n->kids[0].get();
@@ -207,12 +211,13 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
         case K::Code:
             if (n->ltmStop) return accept(from);   // a bare {…} ends the prefix
             if (n->runOnly) return from;           // :my etc. — transparent to LTM
-            return accept(from);                   // <?{…}>/<!{…}> — conservative
-        case K::Subrule:  // phase 2 inlines the callee's prefix; phase 1 stops here
-        case K::Look:
-        case K::VarMatch:
-        default:
+            return accept(from);                   // <?{…}>/<!{…}> — a spec prefix end
+        case K::VarMatch: // a back-reference IS the spec's prefix end
             return accept(from);
+        case K::Subrule:  // phase 3 inlines the callee's prefix — until then, a gap
+        case K::Look:     // conservative (Rakudo is subtler); a gap for now
+        default:
+            return acceptGap(from);
     }
 }
 

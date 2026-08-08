@@ -55,6 +55,14 @@ public:
     std::vector<Ranked> rank(const std::string& s, long pos) const;
 
     int states() const { return (int)preds_.size(); }
+    // True when some branch's prefix ended at a construct phase 2 does not
+    // MODEL (subrule call, :m literal, uprop/cluster class, non-ASCII :i,
+    // lookaround, conjunction, a blown build bound) — as opposed to a
+    // construct that IS the spec's prefix end (code block, <?{}>,
+    // back-reference, || tail, runtime bounds). A gap means the ranking
+    // may unfairly demote that branch, so the caller should fall back to
+    // the probe for this alternation until expansion lands (phase 3).
+    bool anyModelGap() const { return anyGap_; }
 
 private:
     LtmNfa() = default;
@@ -78,6 +86,7 @@ private:
     std::vector<Pred> preds_;
     std::vector<State> states_;
     int nBranches_ = 0;
+    bool anyGap_ = false;
     const Regex* owner_ = nullptr;
 
     int addState();
