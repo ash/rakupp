@@ -97,6 +97,39 @@ fudged-Rakudo score; and the one-liner cookbook runs byte-identical to Perl's
 minor releases along the way; **v3.0.0 tags when all three pillars hold
 their gates at once**.
 
+## v4.0.0 — Raku that travels (forming, 2026-08-08)
+
+Not yet a settled campaign: two pillars are decided and written, and the rest
+of the list is open. Both are about the same thing from different directions —
+**Raku++ working somewhere other than a developer's own shell**, which is the
+one capability the earlier majors never targeted.
+
+1. **Modules that travel** ([MODULES-PLAN.md](MODULES-PLAN.md)) — `rakupp
+   install`, so getting a module no longer requires installing Rakudo and zef;
+   and binaries from the `--exe`/`--aot`/`--bundle` family that carry their
+   modules with a *guarantee* rather than by luck. The compile modes already
+   embed the module graph as serialized ASTs, and it already works — what is
+   missing is that a module which cannot be embedded is skipped **silently**,
+   so a binary that needs the disk at run time builds without complaint. The
+   installer is a Raku program shipped with the release, dispatched by `rakupp
+   install`, deliberately *not* C++ in the binary — an `--exe` output and an
+   embedded rakupp must carry no HTTP client, index parser or tar reader.
+2. **rakupp as a library, embedded in other languages**
+   ([EMBED-PLAN.md](EMBED-PLAN.md)) — one C API (`rakupp.h`), then thin
+   bindings: Python, Node/TypeScript, Rust, and the existing WebAssembly build
+   folded onto the same surface. An embedding already ships — the 95-line
+   `extern "C"` shim behind raku.online — which is both the proof the idea
+   works and the evidence for what a real API has to add: calling a Raku sub,
+   getting a value back, and host functions callable from Raku. Zero `exit()`
+   calls in the runtime means the hardest precondition already holds; what
+   blocks it is a 1 GiB stack thread, a process-wide SIGPIPE change and an
+   owned stdout, all of which must become opt-in.
+
+**The numbers a stranger can re-measure** will be written here when the
+campaign is settled. The two candidates today: a program using an ecosystem
+module, compiled and run on a machine with no Raku and no module store; and
+Raku called from a stock CPython, with the module installed by rakupp alone.
+
 ---
 
 *Keeping this current: when a campaign is decided, add its section here

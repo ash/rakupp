@@ -1,8 +1,9 @@
 # Plan: modules that travel
 
-*Written 2026-08-08, before any code. A **candidate pillar for v4** — one item
-among others still to be decided, so it is not yet a section in
-[VERSIONS.md](VERSIONS.md); that gets written when the campaign is.*
+*Written 2026-08-08, before any code. A **v4 pillar** alongside
+[EMBED-PLAN.md](EMBED-PLAN.md) — see the forming v4 section in
+[VERSIONS.md](VERSIONS.md#v400--raku-that-travels-forming-2026-08-08). The rest
+of v4's list is still open.*
 
 Two ends of the same story, which is why they are one plan:
 
@@ -29,6 +30,36 @@ are the durable reference.
 `~/.raku` plus the Homebrew Rakudo `site`/`vendor` repos, and
 `findModuleSourceFor()` resolves through the CURI `short/<sha>` index
 (`Interpreter.cpp`, ~3469). Fifty distributions exercise this.
+
+**What the store actually is** — inspected on this machine, because the write
+side and especially the *delete* side turn entirely on its shape:
+
+```
+~/.raku/version              store format version (here: 2)
+        repo.lock            the lock every writer must take
+        dist/<dist-id>       JSON: name, ver, auth, provides{module→path},
+                             files{path→source-id}
+        sources/<source-id>  one file's content, addressed by its own hash
+        short/<sha1(name)>/<dist-id>
+                             the index: one DIRECTORY per module name,
+                             one FILE per distribution providing it
+        resources/<id>       %?RESOURCES payloads
+        bin/                 installed scripts
+        precomp/             Rakudo's precompiled artifacts
+```
+
+Three consequences, and they are what makes update/uninstall a design problem
+rather than a flag:
+
+- **It is content-addressed and shared.** Two distributions — or two versions of
+  one — that contain an identical file point at the *same* `sources/<id>` blob.
+  Deleting a distribution therefore cannot unlink its blobs directly; it has to
+  establish that nothing else references them.
+- **`short/<name>/` is a directory of distributions, not a single entry.** Many
+  versions coexist by design (`use Foo:ver<1.2>`), so *installing a newer
+  version does not replace the old one* — it adds an entry beside it.
+- **`repo.lock` exists**, which says concurrency was designed for. A writer that
+  ignores it can corrupt the store while zef or Rakudo is using it.
 
 **All three compile modes already embed the module graph** as serialized ASTs —
 `collectModuleGraph()` + `emitModuleTable()`, called from `--bundle`
@@ -121,14 +152,71 @@ vice versa.
   fetch, unpack, install, then `use` it **from rakupp and from Rakudo**. Both,
   or the shared-store claim is false.
 - **M4 — the graph**, plus the test gate from step 6.
-- **M5 — `--list`, `--uninstall`, version pinning.** Deliberately last.
+- **M5 — update.** See below; it is not what `pip install -U` means.
+- **M6 — uninstall, and a store checker.** The destructive half, last, and
+  gated hardest.
+
+### M5 — update, which is not replacement
+
+Raku's store holds many versions at once and resolution picks among them, so
+**there is no in-place upgrade**. `rakupp install Foo` on an already-installed
+`Foo` writes another distribution beside the existing one and leaves resolution
+to pick the newest satisfying version. That is the whole of "update", and it is
+*already* what M3/M4 do — no separate mechanism, only a decision to state:
+
+- `rakupp install Foo` — install the newest satisfying version, additively.
+- `rakupp install Foo:ver<1.2.3>` — a specific version, likewise additively.
+- Nothing is removed. Reclaiming space is M6's job, deliberately separate, so
+  that "get the new one" is never coupled to "destroy the old one".
+
+The cost of additive updates is disk and a growing store, which is the right
+trade for a package manager whose delete path is the dangerous one.
+
+### M6 — uninstall as garbage collection
+
+Removing a distribution means, from its `dist/<dist-id>` record:
+
+1. delete `short/<sha1(name)>/<dist-id>` for **every** name it provides;
+2. delete its `bin/` wrappers;
+3. release its `sources/`, `resources/` and `precomp/` blobs **only if nothing
+   else references them** — they are content-addressed and shared;
+4. delete `dist/<dist-id>` last, so a crash mid-way leaves a record that still
+   describes what to finish rather than orphans nobody can identify.
+
+That is a mark-and-sweep over a content-addressed store, not an `rm -rf`, and
+it runs on a store **shared with zef and Rakudo**. So:
+
+- **Take `repo.lock`.** Non-negotiable; the store is not ours alone.
+- **Order matters.** Unlink index entries *before* blobs: a missing blob behind
+  a live index entry is a broken `use`; an orphaned blob behind no index entry
+  is only wasted disk.
+- **Check reverse dependencies** and refuse by default when something installed
+  still `depends` on the target, with an explicit override.
+- **Do not delete what we did not install, by default.** A distribution zef put
+  there is zef's; removing it silently is a surprise in someone else's tool.
+  `--force` exists for people who mean it.
+- **`rakupp install --check`** — a store checker that reports dangling index
+  entries, unreferenced blobs and unreadable records, and fixes nothing unless
+  asked. Written *before* the delete path, because it is how the delete path is
+  tested: run it before and after every uninstall in the suite.
+- **Stale `precomp/`.** Rakudo's precompiled artifacts are keyed to
+  distributions; whether removing a distribution requires invalidating them,
+  and how Rakudo behaves if it does not, is **unverified** — measure before
+  designing, and if zef's own uninstall has semantics here, match them rather
+  than invent.
+
+`rakupp install --list` belongs here too: what is installed, and where a name
+resolves when several distributions provide it — the question the shape of
+`short/` makes worth asking.
 
 ### Non-goals for Part A
 
 Replacing zef. A plugin architecture. Build backends: a distribution needing a
 real build step prints *this one needs zef* and stops — the target is the
 pure-Raku majority. Publishing (`fez upload`) stays out entirely, consistent
-with the standing rule on the module repo.
+with the standing rule on the module repo. No lockfile or project manifest:
+`rakupp install` manages a store, not a project — if per-project dependency
+sets are ever wanted, that is a different design and a different plan.
 
 ---
 
@@ -180,6 +268,12 @@ Plus, for this campaign specifically:
 4. **The cross-engine store test** (Part A): a distribution installed by
    `rakupp install` is loadable by **Rakudo**, and one installed by `zef` is
    loadable by rakupp. Both directions, every batch.
+4b. **The store survives destruction** (M6): `rakupp install --check` is clean
+   before and after every uninstall in the suite; everything *not* uninstalled
+   still loads under **both** engines; and a distribution installed by zef is
+   still intact after rakupp uninstalls a different one. Run against a scratch
+   store, never the developer's own — this is the one operation in the campaign
+   that can destroy someone's working environment.
 5. **The empty-`HOME` standalone gate** (Part B), over a set of module-using
    programs.
 6. **No new dependency in the binary** — `--exe` output size and the linked
@@ -202,6 +296,14 @@ Plus, for this campaign specifically:
   precomp cache exposed is the precedent for how these surface.
 - **Scope creep into a package manager.** Naive version resolution is a
   decision, not an omission.
+- **The delete path is the only genuinely dangerous code in this campaign.** It
+  mutates a store that zef and Rakudo also own, over blobs that are shared by
+  content hash, and its failure mode is a `use` that stops working in a *third*
+  tool. Everything about M6 — the checker first, the lock, the ordering, the
+  refusal to touch what we did not install — exists because of that, and it is
+  why it is last rather than first.
+- **Additive updates grow the store.** Chosen deliberately (M5): the
+  alternative couples "get the new version" to "run the dangerous path".
 - **Bundle size.** Embedding modules (and later resources) grows the binary;
   the runtime already dominates it. Measure per phase and report it.
 
