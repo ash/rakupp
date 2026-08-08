@@ -841,6 +841,16 @@ class, `<-[abc]>` negated, `+ * ? **N **N..M` quantifiers, `|` alternation, `( )
 capture, `[ ]` non-capture group, `<name>` subrule, `<?before>`/`<?after>`
 look-around, anchors `^ $ « »`.
 
+`|` is not first-match: branches are ranked by longest **declarative prefix**
+(the leading literals/classes/quantifiers, up to the first code block or
+back-reference), and ranking runs no user code. `||` is the sequential
+opt-out — first branch that matches wins.
+
+```raku
+say ("abcd" ~~ / [ ab { } cd ] | abc /).Str;   # → abc  (prefix 2 vs 3 — the {} caps branch 1)
+say ("ab"   ~~ /  a || ab /).Str;              # → a    (|| takes the first match)
+```
+
 Char classes **compose**: members are added with `+` and removed with `-`, and a
 `-member` subtracts from the finished set, so it still applies when a leading `-`
 has negated the class.
