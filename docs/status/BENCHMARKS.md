@@ -210,29 +210,33 @@ the compiled AST, resolving tail-position `return` without a C++ exception, and
 non-owning match continuations. An earlier build of this same parse took ~195 s;
 that was an unbounded lookbehind scan on a document this large.
 
-## Parallel scaling (`RAKUPP_PARALLEL=1`)
+## Parallel scaling (the default since v3.0.0)
 
 `tools/bench/parmap.raku` is the scaling kernel the v3 parallelism campaign
-gates on ([PARALLEL-PLAN.md](../dev/plans/PARALLEL-PLAN.md)): an
+gated on ([PARALLEL-PLAN.md](../dev/plans/PARALLEL-PLAN.md)): an
 embarrassingly parallel map — each `start` block sums squares over its own
 range, no sharing — with the **total work held constant** while the worker
-count varies. Measured 2026-08-08 on the 8-core (4P+4E) reference machine,
-same binary throughout:
+count varies. Re-measured 2026-08-09 at the v3.0.0 flip (no env var — this
+is the shipping default now) on the 8-core (4P+4E) reference machine:
 
-| workers | wall | speed-up | total CPU | CPU inflation |
-|---:|---:|---:|---:|---:|
-| 1 | 989 ms | 1.00× | 0.99 s | 1.00× |
-| 2 | 531 ms | 1.86× | 1.05 s | 1.06× |
-| 4 | 334 ms | 2.96× | 1.27 s | 1.28× |
-| 8 | 273 ms | 3.62× | 1.40 s | 1.41× |
+| workers | wall | speed-up | at 2026-08-08 |
+|---:|---:|---:|---:|
+| 1 | 996 ms | 1.00× | 1.00× |
+| 2 | 494 ms | 2.02× | 1.86× |
+| 4 | 258 ms | 3.86× | 2.96× |
+| 8 | 192 ms | 5.19× | 3.62× |
 
-Two honest notes. The 8-worker row spills onto the efficiency cores, so the
-marginal gain past 4 workers is small — 3.6×, not 5× — exactly as
-[ASYNC.md](../guide/ASYNC.md) advises when sizing a fan-out. And the
-single-thread row is the same speed as GIL mode (987 vs 996 ms measured):
-the safety machinery the campaign added (striped containers, torn-copy
-protection) engages only while workers are actually live, so a
-single-threaded program pays two predicted branches and nothing else.
+The right-hand column is the same kernel one day earlier: the campaign's
+final lock work — the thread-safe worker registry, per-supplier mutexes off
+the shared stripe pool, channel workers that no longer hold or spin on the
+GIL, daemon teardown — bought the difference (3.62× → 5.19× at 8 workers)
+with no change to the kernel. Two honest notes stand. The 8-worker row
+spills onto the efficiency cores, so the marginal gain past 4 full-speed
+cores stays sub-linear — exactly as [ASYNC.md](../guide/ASYNC.md) advises
+when sizing a fan-out. And the single-thread row is the same speed as GIL
+mode (996 vs 1005 ms measured at the flip): the safety machinery engages
+only while workers are actually live, so a single-threaded program pays a
+few predicted branches and nothing else.
 
 ## How to read this
 
