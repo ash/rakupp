@@ -12,7 +12,10 @@
 
 my $ROOT    = (%*ENV<ROAST> // '/Users/ash/roast').IO.absolute;  # set $ROAST to your Roast checkout
 my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness
-my $TIMEOUT = 10;
+my $TIMEOUT = (%*ENV<ROAST_TIMEOUT> // 10).Int; # parallel-mode legs need headroom:
+    # under RAKUPP_PARALLEL a thread-spawning file pays real contention (cas
+    # retries, worker scheduling) that the GIL leg never sees — thread.t takes
+    # ~20 s there and PASSES. The GIL baseline keeps the default 10.
 
 # The I/O tests write RELATIVE paths, so they land in whatever directory the
 # harness was started from — the repo root. Several never clean up (open.t's
