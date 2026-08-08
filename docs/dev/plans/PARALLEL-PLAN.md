@@ -190,6 +190,42 @@ flaky P3 contract cases remain, waiting on the container strategy.
 - Verify `Channel`/`Supply`/`Promise` internals under parallel mode are
   lock-correct rather than GIL-reliant (some serialize via the GIL today).
 
+**Pillar status after day 2 (2026-08-08)** — everything short of the flip:
+
+- **Contract programs**: four more staged (`ub-iterate-during-push`,
+  `ub-object-attrs`, `ub-torn-values`, `ub-env-sharing` — the last covers
+  this plan's named Env risk). Torn-values crashed 5/5 → fixed by striping
+  the scalar copy WINDOW (VarExpr fast-path copy-out + evalAssignInner
+  stores, keyed on the slot); 20/20 after. The native matrix reads
+  **26/26, all strict, no tolerances**.
+- **Free-when-alone**: `ParStripe` engages only while `liveWorkers_ > 0` —
+  the first cut taxed single-threaded programs under `RAKUPP_PARALLEL=1`
+  and pushed big compute files (set_addition, relational) past the roast
+  timeout with zero threads in them; both back at exact GIL scores now.
+- **Scaling gate: met and published** — `tools/bench/parmap.raku`, table
+  in [BENCHMARKS.md](../../status/BENCHMARKS.md): 2.96× at 4 workers,
+  3.62× at 8, CPU inflation 1.41×, single-thread parity with GIL
+  (987 vs 996 ms). **The P4 thread pool is deferred on these numbers** —
+  at 1.4× inflation it is an optimization, not a gate.
+- **TSan ratchet**: blanket parallel-skip replaced by a per-program list —
+  six correctness programs run STRICT under TSan in parallel mode at zero
+  reports; the list holds `promise-chain` (3 reports in eval, the last of
+  the P2 class) and the deliberate-race `ub-*` family.
+- **Parallel-mode Roast distance**: run 1 585 full/37 timeouts; run 2
+  (after free-when-alone) **590 full / 33 timeouts** vs GIL's 593/19.
+  Real count-drops: only the documented flappers.
+
+**THE FLIP BLOCKER, named and reproducible**: ~14 thread-spawning files
+(S17 thread/procasync/promise/supply, S16-io/watch) time out under
+parallel mode *in isolation* — and `S17-lowlevel/thread.t` does not finish
+in FIVE MINUTES: a livelock, not a tax. Minimal `Thread.start`+`join`
+works, so a specific construct inside those files livelocks under real
+parallelism (suspects: cooperative-GIL assumptions in waits — code shaped
+like "loop until the worker ran" that yields under the GIL but spins in
+parallel mode). Bisecting thread.t is the next session's first move; the
+default does NOT flip until this class is gone and three consecutive
+parallel Roast runs hold parity.
+
 ### P5 — flip the default
 
 `RAKUPP_PARALLEL` behavior becomes the default; `RAKUPP_GIL=1` remains as
