@@ -3,6 +3,65 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.0.0 (2026-08-09) — faster by default
+
+| | v2.0.0 | v3.0.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 197,090 | **197,191** |
+| Roast files fully passing | 594 | **594** |
+| Documentation examples byte-identical | 952 | **945**† |
+| Distributions passing their own suite | 50 / 59 | **34 / 59**\* |
+| Local regression suite (`t/run.raku`) | 312 | **397** |
+
+The v3.0.0 Roast figure is measured **with both new defaults on** — the
+configuration users actually get — and sits at the top of a four-run band
+(197,186–197,191) with an identical 5-file timeout list per run, against the
+GIL's 11 timeouts. †±5 documented band (Rakudo randomizes hash order per
+process; the moved rows are Rakudo-vs-doc drift, not ours). \*A bar-raise in
+the reference environment, not a regression: at v2.0.0 Rakudo could not load
+the `Test::META` dependency chain, so `t/*meta*` files sat outside every
+comparison; they now count, and they hit pre-existing Raku++ module gaps
+(e.g. `License::SPDX.from-json` method resolution — tracked for v3.x),
+verified identical under the pre-v3 modes.
+
+### The three pillars
+
+Planned 2026-08-07 ([VERSIONS.md](docs/dev/plans/VERSIONS.md)), landed in two
+days of gated batches:
+
+- **A grown-up CLI** ([CLI-PLAN.md](docs/dev/plans/CLI-PLAN.md)): one
+  two-phase option parser; the perl one-liner surface (`-n -p -a -F -l -0`,
+  in-place `-i[.bak]`, `-M`/`-m`, clusters like `-lane`) with live `perl`
+  differentials in the suite; `--profile` with a routine-level wall profiler
+  (fib(15) golden: exactly 1,973 calls); MAIN usage and Unix argument
+  conventions oracle-verified against Rakudo, 34-case matrix.
+- **Parallel by default** ([PARALLEL-PLAN.md](docs/dev/plans/PARALLEL-PLAN.md)):
+  `start`/worker threads run on all cores; `RAKUPP_GIL=1` is the escape hatch
+  (one release). The campaign hardened the runtime to the written memory
+  model — a race in user data must never corrupt the interpreter: thread-local
+  execution registers, decided-once atomic AST caches, striped containers, a
+  locked worker registry, per-supplier mutexes, channel workers with parallel
+  manners, daemon teardown, and a real compare-and-swap retry loop for `cas`
+  (the thread.t livelock was three threads ABBA-deadlocked on the stripe
+  pool). Parallel-mode measurement discipline lives in
+  [PARALLEL-SPEEDUP.md](docs/guide/PARALLEL-SPEEDUP.md): 3.72× contention-free
+  at N=4 on 4P cores.
+- **True LTM by default** ([LTM-PLAN.md](docs/dev/plans/LTM-PLAN.md)):
+  `|` alternation and protoregex dispatch rank by declarative prefix via a
+  Thompson NFA per alternation — never executing user code during ranking —
+  with lexical/grammar/`<sym>` expansion routes, `:m` literals and modeled
+  `<ws>`; `RAKUPP_LTM=0` is the legacy probe (one release). Gates: the flag
+  beat the probe on full Roast in every pair of the campaign with its fail
+  set a strict subset; battery verdicts identical; spec-site 368/368 runnable
+  examples in both settings. `internals/REGEX-LTM.md` documents the machinery.
+
+Fixed along the way, each with a both-engine regression file: react/whenever
+deferred activation with LAST/QUIT phasers (issue #18), geometric sequences
+going exact past int64 (`(1, 2, 4 ... *)[110]` is now 2^110, not int64-max),
+the 100-element list-gist cap, `Channel.list` draining until close, plain-regex
+`<?{…}>` assertions evaluating for real, and the `@arr` interpolation ranking
+as the LTM `|` it is in Rakudo.
+
 ## v2.0.0 (2026-08-07) — other people's code, honestly counted
 
 | | v1.8.0 | v2.0.0 |

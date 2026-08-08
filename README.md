@@ -10,23 +10,31 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v2.0.0** (2026-08-07) — *other people's code,
-honestly counted*:
+**Status:** current release **v3.0.0** (2026-08-09) — *faster by default,
+honestly counted*: `start` runs on all cores and `|` ranks by true LTM out of
+the box (`RAKUPP_GIL=1` / `RAKUPP_LTM=0` are the one-release escape hatches).
 
-| | v2.0.0 | at v1.8.0 |
+| | v3.0.0 | at v2.0.0 |
 |---|---:|---:|
-| Ecosystem distributions passing their own `zef` install-time test suite | **50 / 59** | 32 / 59 |
-| Official documentation examples byte-identical on both engines | **952** | 945 |
-| Roast, per individual test — of ~218,700 the suite declares | **197,090 (90%)** | 197,060\* |
-| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 633\* |
+| Roast, per individual test — of ~218,800 the suite declares | **197,191 (90%)** | 197,090 |
+| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
+| Official documentation examples byte-identical on both engines | **945**† | 952 |
+| Ecosystem distributions passing their own `zef` install-time test suite | **34 / 59**\* | 50 / 59 |
+| Local regression suite | **397** | 312 |
 
 The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
-*every* assertion in it passes. \*The v1.8.0 Roast figures were **inflated**:
-`subtest "…" => {…}` bodies — the Pair form, most of the suite's subtests —
-silently never ran and auto-passed. v2.0.0 fixes that, which removed ~2,340
-vacuous passes and 39 "fully passing" files, then re-earned the total honestly;
-compare the two columns knowing the new one clears a stricter bar.
+*every* assertion in it passes — and the v3.0.0 Roast figures are measured
+**with parallelism and true LTM on**, the same binary configuration users get.
+†The doc-example count carries a documented ±5 band: Rakudo randomizes hash
+iteration order per process, and the moved rows are ones where *Rakudo's*
+output drifted from the documentation. \*The distribution bar RAISED itself at
+v3.0.0: at v2.0.0 Rakudo's own environment could not load the `Test::META`
+dependency chain, so every dist's `t/*meta*` files were excluded from the
+comparison; that chain now loads, those files count, and they expose
+pre-existing Raku++ module gaps (tracked for v3.x) that the flips did not
+cause — verified identical under the pre-v3 modes. Compare the columns knowing
+the new one clears a stricter bar, as with every release here.
 Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/guide/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/guide/GUIDE.md) for the complete picture,
