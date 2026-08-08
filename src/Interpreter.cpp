@@ -14056,6 +14056,28 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         };
         wantHooks = true;
     }
+    // LTM phase 3 (subrule expansion): the NFA builder may inline a named
+    // rule's declarative prefix. Mirrors the match path's precedence exactly:
+    // any name in namedRegex_ resolves lexically (it shadows builtins, which
+    // is why presence in the map is sufficient), except the hardcoded <ws>;
+    // `rule`-kind (sigspace) declines until the builder models <.ws>. The
+    // returned text doubles as the staleness stamp — registration is
+    // last-wins, so LtmNfa::stillValid re-asks and rebuilds on change.
+    if (!namedRegex_.empty()) {
+        rmHooks.namedRule = [this](const std::string& name, std::string& text,
+                                   std::string& flags) -> bool {
+            if (name == "ws") return false; // the match path hardcodes <ws>
+            auto it = namedRegex_.find(name);
+            if (it == namedRegex_.end()) return false;
+            auto kit = namedRegexKind_.find(name);
+            const std::string kind = kit != namedRegexKind_.end() ? kit->second : "";
+            if (kind == "rule") return false;
+            text = it->second;
+            flags = kind == "token" ? "r" : "";
+            return true;
+        };
+        wantHooks = true;
+    }
     if (wantHooks) re.runHooks = &rmHooks;
 
     if (haveNth) { // m:nth(...)/ — enumerate all matches, keep the selected ones

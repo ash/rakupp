@@ -28,6 +28,7 @@
 // print disagreements for classification against Rakudo.
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,6 +36,7 @@
 namespace rakupp {
 
 class Regex;
+struct GrammarHooks;
 
 class LtmNfa {
 public:
@@ -42,7 +44,13 @@ public:
     // entry ε-edge from state 0 and its accepts tagged with its index.
     // Returns null only on allocation-level failure; an unbuildable branch
     // simply contributes an accept-at-entry (empty prefix, ranks last).
-    static std::unique_ptr<LtmNfa> buildForAlt(const Regex& re, const void* altNode);
+    // `hooks` (optional) enables subrule expansion via GrammarHooks::namedRule.
+    static std::unique_ptr<LtmNfa> buildForAlt(const Regex& re, const void* altNode,
+                                               const GrammarHooks* hooks = nullptr);
+    // A cached NFA that expanded subrules must be revalidated per use: named
+    // regexes register last-wins, so a re-declared token in another scope
+    // changes what the same compiled node resolves to.
+    bool stillValid(const GrammarHooks* hooks) const;
 
     struct Ranked {
         int branch;        // index into the Alt's kids
@@ -88,6 +96,10 @@ private:
     int nBranches_ = 0;
     bool anyGap_ = false;
     const Regex* owner_ = nullptr;
+    const GrammarHooks* buildHooks_ = nullptr;        // build-time only
+    std::vector<std::string> expandStack_;            // recursion guard (build-time)
+    std::vector<std::unique_ptr<Regex>> owned_;       // compiled callees the NFA borrows Nodes from
+    std::map<std::string, std::string> expandStamps_; // name -> pattern text used
 
     int addState();
     int addPred(Pred p);

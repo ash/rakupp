@@ -51,6 +51,13 @@ struct GrammarHooks {
     // collect pass can measure branch lengths without polluting the commit pass.
     std::function<std::shared_ptr<void>()> saveState;
     std::function<void(std::shared_ptr<void>)> restoreState;
+    // LTM subrule expansion (phase 3): hand the NFA builder a named rule's
+    // PATTERN TEXT + compile flags, or answer false for anything it will not
+    // vouch for (builtins unless lexically shadowed, qualified names, protos,
+    // sigspace rules). The NFA compiles and OWNS the callee; the text also
+    // serves as a staleness stamp, since named-regex registration is
+    // last-wins and a re-declared token must invalidate cached expansions.
+    std::function<bool(const std::string& name, std::string& text, std::string& flags)> namedRule;
 };
 
 // A node of the parse tree recorded by the backtracking GrammarMatcher: which rule

@@ -1838,7 +1838,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 LtmNfa* nfa = nullptr;
                 {
                     std::lock_guard<std::mutex> lk(ltmBuildM2);
-                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n);
+                    if (n->ltmNfa && !n->ltmNfa->stillValid(st.hooks))
+                        n->ltmNfa.reset(); // a named rule was re-declared: rebuild
+                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n, st.hooks);
                     nfa = n->ltmNfa.get();
                 }
                 if (nfa && !nfa->anyModelGap()) {
@@ -1892,7 +1894,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 LtmNfa* nfa = nullptr;
                 {
                     std::lock_guard<std::mutex> lk(ltmBuildM);
-                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n);
+                    if (n->ltmNfa && !n->ltmNfa->stillValid(st.hooks))
+                        n->ltmNfa.reset();
+                    if (!n->ltmNfa) n->ltmNfa = LtmNfa::buildForAlt(*this, n, st.hooks);
                     nfa = n->ltmNfa.get();
                 }
                 if (nfa) {

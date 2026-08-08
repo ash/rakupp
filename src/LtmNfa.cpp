@@ -214,18 +214,38 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             return accept(from);                   // <?{…}>/<!{…}> — a spec prefix end
         case K::VarMatch: // a back-reference IS the spec's prefix end
             return accept(from);
-        case K::Subrule:  // phase 3 inlines the callee's prefix — until then, a gap
+        case K::Subrule: { // phase 3: inline the callee's declarative prefix
+            // recursion IS the spec's prefix end (a rule already being
+            // expanded ends the prefix there, as in Rakudo)
+            for (auto& nm : expandStack_)
+                if (nm == n->ruleName) return accept(from);
+            if (!buildHooks_ || !buildHooks_->namedRule || !n->ruleArgs.empty())
+                return acceptGap(from); // parameterized / no resolution: a gap
+            std::string text, flags;
+            if (!buildHooks_->namedRule(n->ruleName, text, flags))
+                return acceptGap(from); // builtins, protos, qualified names, rules
+            auto callee = std::make_unique<Regex>(text, flags);
+            if (!callee->ok()) return acceptGap(from);
+            expandStamps_[n->ruleName] = text;
+            expandStack_.push_back(n->ruleName);
+            int e = buildNode(callee->root_.get(), from, branch, litDepth, depth + 1); // friend access
+            expandStack_.pop_back();
+            owned_.push_back(std::move(callee)); // the NFA borrows its Nodes: keep it alive
+            return e; // -1 propagates: the callee's own prefix end was recorded
+        }
         case K::Look:     // conservative (Rakudo is subtler); a gap for now
         default:
             return acceptGap(from);
     }
 }
 
-std::unique_ptr<LtmNfa> LtmNfa::buildForAlt(const Regex& re, const void* altNode) {
+std::unique_ptr<LtmNfa> LtmNfa::buildForAlt(const Regex& re, const void* altNode,
+                                            const GrammarHooks* hooks) {
     auto* alt = static_cast<const Regex::Node*>(altNode);
     if (!alt || alt->k != Regex::K::Alt) return nullptr;
     std::unique_ptr<LtmNfa> nfa(new LtmNfa());
     nfa->owner_ = &re;
+    nfa->buildHooks_ = hooks;
     nfa->nBranches_ = (int)alt->kids.size();
     nfa->addState(); // state 0 = entry
     for (int b = 0; b < (int)alt->kids.size(); b++) {
@@ -239,7 +259,19 @@ std::unique_ptr<LtmNfa> LtmNfa::buildForAlt(const Regex& re, const void* altNode
         int e = nfa->buildNode(alt->kids[b].get(), entry, b, 0, 0);
         if (e >= 0) nfa->states_[e].acceptBranch = b; // fully declarative: accept at the end
     }
+    nfa->buildHooks_ = nullptr; // build-time only; rank() never resolves anything
     return nfa;
+}
+
+bool LtmNfa::stillValid(const GrammarHooks* hooks) const {
+    if (expandStamps_.empty()) return true; // nothing expanded: always valid
+    if (!hooks || !hooks->namedRule) return false;
+    for (auto& kv : expandStamps_) {
+        std::string text, flags;
+        if (!hooks->namedRule(kv.first, text, flags) || text != kv.second)
+            return false; // the name resolves differently now: rebuild
+    }
+    return true;
 }
 
 // ---- the ranking runner -----------------------------------------------------
