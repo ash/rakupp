@@ -65,9 +65,12 @@ a `||` tail (the first branch's prefix continues, per S05), runtime
 quantifier bounds (`** {$n}`), `&` conjunction.
 
 **Model gaps** (the *builder* couldn't model the construct; ranking might
-unfairly demote this branch): an unexpandable subrule, `:m`/`:ignoremark`
-literals, Unicode-property and grapheme-cluster classes, non-ASCII `:i`
-folding, lookarounds, a blown build bound (200 depth / 4000 states).
+unfairly demote this branch): an unexpandable subrule, Unicode-property
+and grapheme-cluster classes, `:m` on a character *class*, non-ASCII `:i`
+folding, lookarounds, `&` conjunction, a blown build bound (200 depth /
+4000 states). `:m` *literals* are modeled: an `M` predicate compares
+NFD-first-starter base codepoints and a mark self-loop consumes the rest
+of the input cluster, mirroring the commit path's cluster advance.
 
 Zero-width assertions are **transparent**: anchors, word boundaries, `:my`
 declarations, and the code assertions `<?{…}>`/`<!{…}>` are ε for the
@@ -107,10 +110,12 @@ resolves to, so the stored pattern text doubles as a staleness stamp.
 A `<name>` inside a branch resolves through `LtmExpand`:
 
 1. **Lexical** (`GrammarHooks::namedRule`): interpreter-registered `my
-   token/regex` bodies as text + flags; the NFA compiles and owns the
-   callee, inlines its prefix recursively. Recursion is a spec prefix end.
-   `rule`-kind bodies decline until `<ws>` modeling covers the lexical
-   route too.
+   token/rule/regex` bodies as text + the match path's exact flag
+   spellings (`rule` → `sr`, `token` → `r`); the NFA compiles and owns
+   the callee, inlines its prefix recursively. Recursion is a spec prefix
+   end. A `rule`'s inserted `<ws>` subrules model as the `\s*` loop — the
+   match path hardcodes `<ws>` for lexical regexes (no shadowing), so
+   that model is universal on this route.
 2. **Grammar** (`GrammarMatcher::ltmResolve`): already-compiled rule bodies
    from the grammar's own table — no recompile, the NFA borrows the
    `Regex`'s nodes. `<ws>` answers as the `\s*` predicate loop, single-char

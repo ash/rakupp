@@ -5,6 +5,7 @@
 // the commit phase still runs the real engine.
 #include "LtmNfa.h"
 #include "Regex.h"
+#include "Unicode.h"
 #include <algorithm>
 #include <cctype>
 
@@ -80,6 +81,20 @@ bool LtmNfa::predMatch(const Pred& p, uint32_t c) {
                 return std::tolower((int)c) == std::tolower((int)p.lit);
             return false;
         case 'C': return classMatch(p.node, c);
+        case 'M': { // :m literal — compare BASE codepoints (NFD first starter)
+            auto base = [](uint32_t cp) -> uint32_t {
+                if (cp < 0x80) return cp;
+                for (uint32_t b : uniNormalize({cp}, 0))
+                    if (uniCombiningClass(b) == 0) return b;
+                return cp;
+            };
+            uint32_t cb = base(c), lb = base(p.lit);
+            if (cb == lb) return true;
+            if (p.icase && cb < 128 && lb < 128)
+                return std::tolower((int)cb) == std::tolower((int)lb);
+            return false;
+        }
+        case 'k': return c >= 0x80 && uniCombiningClass(c) != 0; // trailing combining mark
         case 'S': return c < 128 && std::isspace((int)c);
         case 'F': return flagHit((char)p.lit, c);
         case 'A': default: return true; // `.` matches every codepoint in Raku
@@ -100,6 +115,19 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
         anyGap_ = true;
         return accept(st);
     };
+    auto wsLoop = [&](int st, int ld) { // <ws> modeled as \s* — ranking-grade;
+        int join = addState();          // the commit engine enforces the real <!ww>
+        states_[join].litDepth = ld;
+        int s1 = addState();
+        states_[s1].litDepth = ld;
+        Pred p; p.kind = 'S';
+        int pi = addPred(p);
+        states_[st].edges.push_back({pi, s1});
+        states_[s1].edges.push_back({pi, s1});
+        states_[st].eps.push_back({join, 0});
+        states_[s1].eps.push_back({join, 0});
+        return join;
+    };
     if (depth > 200 || states_.size() > 4000) return acceptGap(from); // bound blown: unfair, not wrong
     if (!nv) return from;
     auto* n = static_cast<const Regex::Node*>(nv);
@@ -114,7 +142,6 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             // RANKING only; the commit engine enforces them for real
             return from;
         case K::Lit: {
-            if (n->imark) return acceptGap(from);
             int cur = from;
             long i = 0;
             while (i < (long)n->lit.size()) {
@@ -123,9 +150,17 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                 if (n->icase && cp >= 128) return acceptGap(cur); // non-ASCII folding: not in phase 1
                 int nxt = addState();
                 states_[nxt].litDepth = ++litDepth;
-                Pred p; p.kind = 'L'; p.lit = cp; p.icase = n->icase;
+                Pred p; p.kind = n->imark ? 'M' : 'L'; p.lit = cp; p.icase = n->icase;
                 states_[cur].edges.push_back({addPred(p), nxt});
                 cur = nxt;
+                if (n->imark) {
+                    // :m consumes the WHOLE input cluster: base compare above,
+                    // then any combining marks — a self-loop mark predicate,
+                    // mirroring the commit path's uniClusterEndUtf8 advance
+                    Pred mk; mk.kind = 'k';
+                    int mi = addPred(mk);
+                    states_[cur].edges.push_back({mi, cur});
+                }
                 i += w;
             }
             return cur;
@@ -263,19 +298,7 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                         expandStack_.pop_back();
                         return e; // callee Regex is owned by the matcher, which outlives us
                     }
-                    case 2: { // <ws> as \s* — ranking-grade
-                        int join = addState();
-                        states_[join].litDepth = litDepth;
-                        int s1 = addState();
-                        states_[s1].litDepth = litDepth;
-                        Pred p; p.kind = 'S';
-                        int pi = addPred(p);
-                        states_[from].edges.push_back({pi, s1});
-                        states_[s1].edges.push_back({pi, s1});
-                        states_[from].eps.push_back({join, 0});
-                        states_[s1].eps.push_back({join, 0});
-                        return join;
-                    }
+                    case 2: return wsLoop(from, litDepth); // <ws> as \s* — ranking-grade
                     case 3: { // single built-in class: one predicate edge
                         int nxt = addState();
                         states_[nxt].litDepth = litDepth;
@@ -286,6 +309,9 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                     default: break; // fall through to the lexical route
                 }
             }
+            // the match path hardcodes <ws> for lexical regexes (no shadowing),
+            // so the \s* model applies whenever the grammar route didn't claim it
+            if (n->ruleName == "ws") return wsLoop(from, litDepth);
             if (!buildCtx_->hooks || !buildCtx_->hooks->namedRule)
                 return acceptGap(from);
             std::string text, flags;

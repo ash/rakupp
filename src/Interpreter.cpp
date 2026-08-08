@@ -13513,9 +13513,9 @@ static std::string quoteMetaRx(const std::string& s) {
     return out;
 }
 
-// Interpolate @array variables into a regex as a first-match alternation of the
+// Interpolate @array variables into a regex as an LTM `|` alternation of the
 // elements' literal (quotemeta'd) text, LONGEST-FIRST — `/@alpha/` matches any
-// element, as in Rakudo (LTM over literal alternatives == longest-first || here).
+// element, as in Rakudo.
 // Base64 decodes via `$str.comb(/@alpha/)`. Left untouched: `@<name>` list
 // captures, escaped `\@`, '…' literal spans, and unknown/empty arrays.
 std::string Interpreter::rxInterpArrays(const std::string& pat) {
@@ -13544,7 +13544,14 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                 if (inAngle) out.pop_back();        // drop the '<'
                 out += "[ ";
                 for (size_t k = 0; k < els.size(); k++) {
-                    if (k) out += " || ";
+                    // `|`, not `||`: Rakudo interpolates @arr as an LTM
+                    // alternation. Under the probe the two are equivalent for
+                    // literals (greedy end == literal length, longest-first
+                    // sort keeps ties right), but under RAKUPP_LTM=1 a `||`
+                    // rewrite gave the branch ONLY the first element as its
+                    // declarative prefix — `[ arrow || time ] flies` on
+                    // "timeflies" pruned the whole branch (exhaustive.t 71).
+                    if (k) out += " | ";
                     if (inAngle) { out += "[ "; out += els[k]; out += " ]"; }
                     else out += quoteMetaRx(els[k]);
                 }
@@ -14085,9 +14092,10 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (it == namedRegex_.end()) return false;
             auto kit = namedRegexKind_.find(name);
             const std::string kind = kit != namedRegexKind_.end() ? kit->second : "";
-            if (kind == "rule") return false;
             text = it->second;
-            flags = kind == "token" ? "r" : "";
+            flags = kind == "rule" ? "sr"     // sigspace + ratchet — the match
+                  : kind == "token" ? "r"     // path's exact flag spellings; the
+                  : "";                       // NFA models the inserted <ws> as \s*
             return true;
         };
         wantHooks = true;

@@ -104,6 +104,15 @@ check('a failing code assertion fails in a plain regex too',
       ltm-run('t13.raku', q{say ("aaa" ~~ / a <?{ 0 }> .+ | aa /).Str;}),
       "aa\n");
 
-unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku t13.raku>;
+# 8. phase-3 tail: :m literals rank (base-codepoint compare, marks consumed),
+#    and a lexical `my rule` expands with its sigspace <ws> modeled as \s*
+check(':m literals participate in ranking',
+      ltm-run('t14.raku', q{say ("noël!" ~~ m:m/ noel | no /).Str;}),
+      "noël\n");
+check('a lexical rule (sigspace) expands into the prefix',
+      ltm-run('t15.raku', q{my rule r { foo bar }; say ("foo  bar" ~~ / <r> | foob /).Str;}),
+      "foo  bar\n");
+
+unlink $work.add($_) for <t1.raku t2.raku t3.raku t4.raku t5.raku t6.raku t7.raku t8.raku t9.raku t10.raku t11.raku t12.raku t13.raku t14.raku t15.raku>;
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit($fails ?? 1 !! 0);

@@ -264,6 +264,38 @@ by the roast diff, both now regression-pinned:
 longest-alternative.t holds 47/62 under the flag (45 default), fail set
 a strict subset of default's; proto-token-ltm.t 10/10 both settings;
 grammar bench 28–34 ms both; suite 393/393 both; perf-guard OK.
+A third ranking bug surfaced in the full-Roast gate (protoregex.t
+23-24): `<?{…}>`/`<!{…}>` are zero-width and TRANSPARENT to LTM — ε for
+the ranking, enforced at commit — not spec prefix-enders as this plan
+originally listed them. Fixing the pin also exposed a general
+default-engine bug (plain `~~` regexes never installed the assertPass
+hook, so a positive `<?{ 0 }>` silently passed), fixed as its own
+gated batch.
+
+**Phase 3 tail: DELIVERED 2026-08-08.** `:m` literals now rank (an 'M'
+predicate compares NFD-first-starter base codepoints, an ε-adjacent
+mark self-loop consumes the rest of the input cluster — mirroring the
+commit path's cluster advance; `:i`-ASCII tolerance carried on the
+predicate) and the lexical route expands `rule`-kind named regexes:
+the interpreter hook hands the body over with the match path's exact
+"sr" flags, the compiled tree's inserted `<ws>` subrules are modeled
+as the same \s* loop the grammar route uses (the match path hardcodes
+`<ws>` for lexical regexes, so the model is universal there — a
+grammar's custom `ws` still resolves through `ltmResolve` first).
+Remaining model gaps, deliberately parked: lookarounds, non-ASCII `:i`
+folding, uprop/cluster classes, `&` conjunction, `Class`-node `:m`.
+Regression file at 15 checks. Next: the phase-4 flip gates.
+The full-Roast gate caught one more real divergence, in the
+INTERPOLATOR rather than the NFA: `rxInterpArrays` rewrote `@arr` as a
+longest-first `||` alternation (the issue-#15 approximation — exact
+under the probe), but under true LTM a `||` contributes only its FIRST
+alternative to the prefix, so `[ arrow || time ] flies` on "timeflies"
+pruned the whole branch (exhaustive.t 71/76/81/86). `@arr` now
+interpolates as the LTM `|` Rakudo uses; probe behavior is unchanged
+(greedy end == literal length). Oracle note: the pruning itself is
+CORRECT Rakudo behavior for explicit `||` — `/ [ a || b ] z | bx /` on
+"bz" is Nil there too; the default probe matching it is a pre-existing
+divergence the flip will close.
 Oracle discovery worth recording: Rakudo ranks proto candidates by
 declarative prefix only for PLAIN `token t:sym<x>` declarations —
 `multi token` candidates dispatch in declaration order (plain multi
