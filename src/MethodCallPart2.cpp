@@ -156,7 +156,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::lock_guard<std::mutex> lk(th->m);
                 if (!th->closed) { th->closePhasers.push_back(args[0]); return inv; }
             }
-            if (!args.empty() && !supplyCloseStack_.empty()) supplyCloseStack_.back().push_back(args[0]);
+            // no real tap: the callback belongs to the INNERMOST enclosing
+            // context — an eager supply drain (tapStack) or a react block
+            if (!args.empty() && !tctx_.tapStack.empty()) { tctx_.tapStack.back()->closers.push_back(args[0]); return inv; }
+            if (!args.empty() && !reactStack_.empty()) {
+                auto ctx = reactStack_.back();
+                std::lock_guard<std::mutex> lk(ctx->m);
+                ctx->closers.push_back(args[0]);
+            }
             return inv;
         }
         if (m == "list" || m == "List" || m == "Seq" || m == "eager") { Value o = Value::array(); *o.arr = vals(); o.isList = true; return o; }

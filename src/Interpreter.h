@@ -283,6 +283,7 @@ struct SupplyTapCtx {
     int pending = 0;                // inner taps not yet done
     bool blockDone = false;         // the supply block returned
     bool doneFired = false;         // downstream done already delivered
+    ValueList closers;              // Supply.on-close callbacks for THIS activation
 };
 
 // Per-thread execution "registers": the state that belongs to a single thread
@@ -399,6 +400,7 @@ struct ReactCtx {
     // the cause once its loop unwinds (a refused connect fails the react)
     bool quitFlag = false;
     Value quitErr;
+    std::vector<Value> closers; // Supply.on-close callbacks for THIS react (guard with m)
     // Deferred whenever activations (issue #18): Rakudo runs the react BODY
     // first and only then activates subscriptions — a `say` after a
     // `whenever <a b c>.Supply` prints before the first emitted value. The
@@ -453,9 +455,12 @@ public:
     // depth of live CATCH handlers: .resume outside any handler dies catchably
     // (a bare ResumeEx with nothing to absorb it would reach std::terminate)
     int catchDepth_ = 0;
-    // Supply.on-close callbacks registered while a supply/react block runs;
-    // fired when that block finishes (our model's "tap closed" moment)
-    std::vector<std::vector<Value>> supplyCloseStack_;
+    // (supplyCloseStack_ is gone: on-close callbacks now live ON the owning
+    // ReactCtx / SupplyTapCtx. As a plain member the stack was shared across
+    // worker threads — two concurrent reacts corrupted it (the syntax.t
+    // crash); as a thread_local it cost loopsum 6% by reshuffling macOS TLV
+    // layout under the interpreter's hot thread-locals. The context object
+    // travels with the block, is already thread-correct, and is free.)
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false, bool arityCheck = false); // no wrap layer
     Value callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs = nullptr); // `is native` C FFI
     // NativeCall pointer helpers: a live Pointer / CArray return holds a raw

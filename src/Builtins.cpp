@@ -5097,13 +5097,12 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     auto ctx = std::make_shared<SupplyTapCtx>();
     ctx->collect = &vals;
     tctx_.tapStack.push_back(ctx);
-    supplyCloseStack_.emplace_back();
     try {
         if (blk.t == VT::Code) { ValueList na; callCallable(blk, na); }
     }
     catch (RakuError& e) { quit = true; quitReason = exceptionFor(e); quitMsg = e.message; }
     catch (DoneEx&) {} // `done` in the body: normal end of the stream
-    catch (...) { tctx_.tapStack.pop_back(); supplyCloseStack_.pop_back(); throw; }
+    catch (...) { tctx_.tapStack.pop_back(); throw; }
     tctx_.tapStack.pop_back();
     // A whenever on a still-pending Promise holds the supply open (Cro's connector
     // `establish` awaits connect() inside the supply block). The eager drain must
@@ -5124,8 +5123,7 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     }
     ctx->collect = nullptr; // vals is about to go out of scope with this frame
     {
-        auto closers = std::move(supplyCloseStack_.back());
-        supplyCloseStack_.pop_back();
+        auto closers = std::move(ctx->closers); // on-close callbacks registered during the drain
         for (auto& cb : closers) if (cb.t == VT::Code) { try { ValueList na; callCallable(cb, na); } catch (...) {} }
     }
     Value out = Value::makeHash(); out.hashKind = "Supply";
@@ -7940,10 +7938,9 @@ void Interpreter::registerBuiltins() {
         if (a.empty() || a.back().t != VT::Code) return Value::nil();
         auto ctx = std::make_shared<ReactCtx>();
         I.reactStack_.push_back(ctx);
-        I.supplyCloseStack_.emplace_back();
         try { I.callCallable(a.back(), {}); }
         catch (DoneEx&) {} // `done` in the react body: normal completion (ctx already closed)
-        catch (...) { I.reactStack_.pop_back(); I.supplyCloseStack_.pop_back(); throw; }
+        catch (...) { I.reactStack_.pop_back(); throw; }
         I.reactStack_.pop_back();
         // Deferred whenever activations (issue #18): the body has finished, so
         // statements after a `whenever` have run — now drain the synchronous
@@ -7958,7 +7955,6 @@ void Interpreter::registerBuiltins() {
             }
         }
         catch (DoneEx&) {}
-        catch (...) { I.supplyCloseStack_.pop_back(); throw; }
         I.runReactLoop(ctx); // block until every live whenever source is done
         {   // react is over: tear down externally-wired taps (OS-signal taps) so
             // their dispatcher stops firing the handler once the block is gone.
@@ -7967,8 +7963,8 @@ void Interpreter::registerBuiltins() {
             for (auto& h : extTaps) if (h) I.closeTapHandle(h);
         }
         {   // react is over: its whenever taps close — run on-close callbacks
-            auto closers = std::move(I.supplyCloseStack_.back());
-            I.supplyCloseStack_.pop_back();
+            std::vector<Value> closers;
+            { std::lock_guard<std::mutex> lk(ctx->m); closers.swap(ctx->closers); }
             for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
         }
         if (ctx->quitFlag) { // a whenever'd supply quit unhandled: the react dies with it
