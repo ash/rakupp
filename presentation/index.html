@@ -286,7 +286,7 @@
         <span class="chip">runs in the <b>browser</b> via WebAssembly</span>
         <span class="chip">runs <b>zef-installed</b> modules</span>
         <span class="chip"><b>Zero</b> third-party dependencies</span>
-        <span class="chip mono">v1.7.0</span>
+        <span class="chip mono">v2.0.0</span>
       </div>
     </div>
   </section>
@@ -310,11 +310,11 @@
   <section class="slide" data-sect="Conformance">
     <div class="gutter"><div class="num">03<small>/13</small></div><div class="sect">Conformance</div></div>
     <div class="stage">
-      <div class="eyebrow">graded against Roast · measured on v1.7.0</div>
+      <div class="eyebrow">graded against Roast · measured on v2.0.0</div>
       <h2>How much Raku actually runs.</h2>
       <div class="stats">
-        <div class="stat"><div class="n">90<small>%</small></div><div class="l"><b>196,590 / 217,055</b> declared tests pass — 98% of the tests that actually run.</div></div>
-        <div class="stat t"><div class="n">631<small>/ 1,462</small></div><div class="l">files pass on the strict <b>all-or-nothing</b> bar — every assertion in the file must pass (~43%).</div></div>
+        <div class="stat"><div class="n">90<small>%</small></div><div class="l"><b>197,090 / 218,675</b> declared tests pass — 97% of the tests that actually run.</div></div>
+        <div class="stat t"><div class="n">594<small>/ 1,462</small></div><div class="l">files pass on the strict <b>all-or-nothing</b> bar — every assertion in the file must pass (~41%). v2.0.0 made Pair-form subtests actually run, which removed ~2,340 vacuous passes: a stricter bar than the 43% before it.</div></div>
         <div class="stat a"><div class="n">100<small>%</small></div><div class="l">of <b>S15</b> — Unicode, strings, NFG — <b>91,752 / 91,752</b> assertions, closed completely for v1.1.</div></div>
       </div>
       <p class="lede" style="margin-top:clamp(20px,3vh,32px)">Every release is gated on the full suite with <strong>zero fully-passing-file regressions</strong> — and, since v1.5.0, on <strong>performance</strong> too. Numbers are measured on each tag, never projected; the whole suite runs in ~3½ minutes through a harness written in Raku and run by Raku++ itself.</p>
@@ -429,7 +429,7 @@
       <h2>Modules from the ecosystem, <span class="accent">as installed</span>.</h2>
       <p class="lede">Raku++ ships no package manager. It reads the <strong>same store zef already populates</strong> — install a module the normal way, then <code>use</code> it from Raku++ with no flags and no reinstall.</p>
       <div class="grid g3">
-        <div class="card"><span class="tag">the bar</span><h3>18 / 59 distributions</h3><p>pass <em>their own</em> test suites — the files zef runs at install time, not a one-line API probe. 11 → 18 in one release.</p></div>
+        <div class="card"><span class="tag">the bar</span><h3>50 / 59 distributions</h3><p>pass <em>their own</em> test suites — the files zef runs at install time, not a one-line API probe. 32 → 50 in one release.</p></div>
         <div class="card"><span class="tag">the set</span><h3>Top 50 by reverse-deps</h3><p>JSON::Fast, XML, YAMLish, URI, File::Temp, File::Find, Terminal::ANSIColor, Digest, Encode — ranked over the ecosystem archive, version-pinned.</p></div>
         <div class="card"><span class="tag">the method</span><h3>Every fix is general</h3><p>No module accommodations: <code>is raw</code> write-back, <code>CALL-ME</code> by name, <code>method FALLBACK</code>, <code>END</code> at process exit — all landed as interpreter fixes.</p></div>
       </div>
@@ -463,10 +463,10 @@ say <span class="s">"café"</span>.chars;               <span class="c"># 4  (gr
       <h2>Not there yet.</h2>
       <ul class="plain">
         <li><span class="m">▹</span><span><b>Macros / RakuAST / slangs</b> — compile-time metaprogramming and pluggable syntax. Deliberately deferred, with the scope measured first.</span></li>
-        <li><span class="m">▹</span><span><b>libffi-grade NativeCall</b> — structs, callbacks, mixed int/float args. Integer, pointer, <code>Str</code> and float FFI already works via <code>dlsym</code>, with no libffi at all — enough for OpenSSL.</span></li>
+        <li><span class="m">▹</span><span><b>C structs passed by value</b>, and callbacks fired from a thread the C library owns. The rest of NativeCall landed: <code>libffi</code> found at run time with nothing to install, plus structs, unions, pointers, callbacks and variadics.</span></li>
         <li><span class="m">▹</span><span><b>Regex code blocks under backtracking</b> — <code>/(\d) { say $0 }/</code> re-fires its side effects; the fix has to defer them to the accepted path.</span></li>
-        <li><span class="m">▹</span><span>Some <b>IO</b> and <b>POD</b> corners; <b>lock-free parallel atomics</b>.</span></li>
-        <li><span class="m">▹</span><span>The remaining <b>41 of 59</b> distributions, and <b>zef itself</b> running under Raku++ — the v2.0 flagship.</span></li>
+        <li><span class="m">▹</span><span>Some <b>IO</b> and <b>POD</b> corners; <b>true parallelism by default</b> — the primitives (<code>atomicint</code>, <code>Channel</code>, <code>Supplier</code>) are done, the thread pool and the gates are not.</span></li>
+        <li><span class="m">▹</span><span>The last <b>9 of 59</b> distributions — <code>NativeHelpers::Blob</code> is MoarVM-bound by design, <code>AttrX::Mooish</code> wants deep metamodel emulation.</span></li>
       </ul>
       <p class="lede">The cheap Roast wins are spent; moving the count now takes whole features — parse, runtime and dispatch together. Every release stays gated on no regressions, in conformance <em>and</em> in speed.</p>
     </div>
