@@ -378,6 +378,15 @@ void Lexer::skipWhitespaceAndComments() {
     for (;;) {
         char c = peek();
         bool atLineStart = (col_ == 1);
+        // A pending heredoc owns the rest of the line: tokenize() fills its body
+        // when it sees the newline that ends the marker line, and processHeredocs
+        // reads the body starting from that newline. So stop here rather than
+        // consuming it — otherwise anything between the marker and the line end
+        // (`q:to/A/;  # note`, or just trailing spaces) carries the skipper into
+        // the body, and the heredoc silently loses its first line to the token
+        // stream. Only the newline is withheld; the spaces and the comment before
+        // it are still skipped by the iterations that got us here.
+        if (c == '\n' && !pendingHeredocs_.empty()) return;
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n' ||
             c == '\v' || c == '\f') { // VT (U+000B), FF (U+000C)
             advance();
@@ -2001,6 +2010,10 @@ std::vector<Token> Lexer::tokenize() {
         if (!pendingHeredocs_.empty() && peek() == '\n') processHeredocs(out);
         size_t before = pos_;
         skipWhitespaceAndComments();
+        // …and again once trailing spaces and any comment after the marker have
+        // been skipped: the skipper stops on that newline rather than consuming
+        // it (see there), so this is where `q:to/A/;  # note` lands.
+        if (!pendingHeredocs_.empty() && peek() == '\n') { processHeredocs(out); continue; }
         // a dropped ⚛ marker isn't whitespace: `$x⚛++` keeps `++` tight-postfix
         bool spaced = (pos_ > before && pos_ != atomDropEnd_) || before == 0;
         if (eof()) break;
