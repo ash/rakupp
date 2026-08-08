@@ -399,7 +399,15 @@ class Actions {
     method small:sym<global>($/)   { make %( t => 'global', names => nstrs($<name>) ) }
     method small:sym<del>($/)      { make %( t => 'del', target => $<testlist>.made ) }
     method small:sym<expr>($/) {
-        my $first = $<testlist>.made;
+        # This rule names `testlist` three times — once plainly, and twice more
+        # through the aliases <rhs=testlist> and <more=testlist>. A capture whose
+        # name is used more than once is a LIST of all of them, so $<testlist> is
+        # not the plain match: it is every testlist in the statement, in order,
+        # and the assignment target is the first. (Both engines agree on that as
+        # soon as an alias matches; rakupp still hands back a bare Match when
+        # none did, so accept either shape.)
+        my @all   = $<testlist> ~~ Positional ?? $<testlist>.list !! ($<testlist>,);
+        my $first = @all[0].made;
         if $<augop> {
             make %( t => 'augassign', op => (~$<augop>).trim, target => $first, value => $<rhs>.made );
         }
