@@ -31,6 +31,7 @@ point; everything else lives here, in four places:
 
 - **[guide/UNICODE.md](guide/UNICODE.md)** — Unicode support: graphemes, normalization, UCA collation, character introspection.
 - **[guide/ASYNC.md](guide/ASYNC.md)** — concurrency & async: promises, supplies, channels, threads, and the two execution modes.
+- **[guide/PARALLEL-SPEEDUP.md](guide/PARALLEL-SPEEDUP.md)** — how to measure whether `start` actually made a program faster, with two runnable benchmarks and the numbers they produce.
 - **[guide/NETWORKING.md](guide/NETWORKING.md)** — TCP over `IO::Socket::Async`, graceful shutdown with `signal()`, and TLS through the system OpenSSL.
 - **[guide/FFI.md](guide/FFI.md)** — NativeCall: calling C from Raku++. Whether you need to install libffi (no — it is found at run time, and there is a fallback when it is missing), whether it works compiled as well as interpreted (yes, one marshaller serves both), the type map, structs and unions, callbacks, and variadic C functions, whose spelling matches Rakudo's.
 - **[guide/HTTPS.md](guide/HTTPS.md)** — the story of one real HTTPS request, from "OpenSSL won't even load" to a live `HTTP/1.1 200 OK` over TLS.
@@ -57,6 +58,7 @@ point; everything else lives here, in four places:
 - **[internals/MODULE-LOADING.md](internals/MODULE-LOADING.md)** — how modules work *inside* the compiler: what `use Foo;` does at parse time (a text scan, for operators only) versus at run time, the `Env` a module lives in during its load and what survives after, why a module's AST is executed once and then kept alive only as storage, why calling into a module is not a distinct operation, and the divergence table — starting with the fact that a module's whole environment is published to the global scope. (The *user-facing* guide is [guide/MODULES.md](guide/MODULES.md).)
 - **[internals/OPTIMIZATION.md](internals/OPTIMIZATION.md)** — the `--exe -O` optimizer: the codegen passes and how fast they get.
 - **[internals/DISPATCH.md](internals/DISPATCH.md)** — call dispatch in `--exe` code: what each call shape costs (measured), the cached-builtin/inline-string-compare cuts, and what's deliberately left on the table.
+- **[internals/REGEX-LTM.md](internals/REGEX-LTM.md)** — Longest-Token Matching: what the declarative prefix is, the probe and NFA rankers, the gap-aware hybrid contract behind `RAKUPP_LTM=1`, subrule expansion, proto dispatch, and the oracle-confirmed corner cases.
 - **[internals/NODE-SPECIALIZATION.md](internals/NODE-SPECIALIZATION.md)** — the interpreter fast paths for `$a OP $b`, `$n OP literal` and `@a[$i]`: what is cached (the syntactic SHAPE, never the variable or its value), the guards that decline it, why it is not a new node kind, the measured numbers with a control kernel, and the three mistakes made getting there.
 
 ### In the browser

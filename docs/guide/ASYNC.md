@@ -79,19 +79,25 @@ without a `Lock` is a data race, exactly as it is under Rakudo.
 sub work($n) { my $s = 0; $s += $_ for 1 .. 4_000_000; $s + $n }
 my @p = (^4).map(-> $n { start work($n) });
 say (await @p).elems;                     # → 4
-#   GIL mode: ~5.6 s   |   RAKUPP_PARALLEL=1: ~2.2 s  (2.5× — 4-perf-core Mac)
+#   On an M3 (4P+4E): 3.5 s under RAKUPP_PARALLEL=1, against 7.4 s for the same
+#   four calls in a plain loop — 2.1×. Under the GIL: 8.3 s with `start`, 7.7 s
+#   without it — the thread setup, bought and not paid back.
 ```
+
+The number that means something is **7.4 s → 3.5 s**: the same work, same mode,
+with and without `start`. Comparing parallel mode against GIL mode instead
+folds two different changes into one ratio.
 
 `start EXPR` thunks `EXPR` and runs it *on the worker* (it is not evaluated eagerly
 on the spawning thread), so `start work($n)` parallelises just like `start { work($n) }`.
 
 **Match the fan-out to the physical *performance* cores.** The speed-up tops out
-at the number of full-speed cores, not the logical-CPU count. On the 4P+4E Apple
-Silicon machine above, four `start` blocks scale ~2.5×; spawning eight does *not*
-reach ~5× — the extra work spills onto the efficiency cores (~⅓ the speed) and
-GIL-handoff contention grows, so eight threads land around 1.4×, *slower* per
-task than four. `$*KERNEL.cpu-cores` reports the logical count; size the fan-out
-to the performance cores you actually have.
+at the number of full-speed cores, not the logical-CPU count. On the 4P+4E
+machine above, eight `start` blocks do *not* reach ~5×: the extra work spills
+onto the efficiency cores (~⅓ the speed) and scheduling contention grows, so
+eight land at 1.6× (15.6 s → 9.9 s) against four at 2.1× — more total threads,
+*less* speed-up. `$*KERNEL.cpu-cores` reports the logical count (8 on this
+machine); size the fan-out to the performance cores you actually have.
 
 ### Sharing state safely
 
@@ -108,14 +114,29 @@ say $total;                               # → 80000   (no lost updates in eith
 ### When it helps
 
 CPU-bound fan-out (parsing, transforms, number crunching across `start` blocks)
-scales with the number of **full-speed cores** — roughly 2.5× on a 4-performance-core
-machine, and correspondingly more on a box with more true cores. Two caveats
-decide whether you see it: keep the fan-out at or below the performance-core
-count (oversubscribing onto efficiency cores or hyperthreads gives diminishing,
-then negative, returns), and make sure the parallel unit is a real `start` thunk
-rather than a single serialised bottleneck. Work dominated by external processes
-or I/O already overlaps in the default GIL mode (the waits release the lock), so
+scales with the number of **full-speed cores**, but *how close to that ceiling
+you get is a property of the loop, not of the machine*. Four `start` blocks on
+the four performance cores above measure anywhere from **2.1× to 3.7×** depending
+on what is inside them — 2.1× for the `$s += $_ for 1 .. 4_000_000` above, 3.7×
+for the same fan-out over native `int` arithmetic. Quote a speed-up for your
+workload, not a number from a page like this one.
+
+Three things decide whether you see it: keep the fan-out at or below the
+performance-core count (oversubscribing onto efficiency cores or hyperthreads
+gives diminishing, then negative, returns); make sure the parallel unit is a
+real `start` thunk rather than a single serialised bottleneck; and keep shared
+mutable state out of the inner loop — N workers incrementing one shared counter
+lose most of the gain to contention, where N workers each incrementing their own
+and summing after the `await` keep it. Work dominated by external processes or
+I/O already overlaps in the default GIL mode (the waits release the lock), so
 parallel mode adds less there.
+
+[PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md) turns this into a measurement: how to
+set the comparison up so `start` is the only variable, two runnable benchmarks
+in [tools/bench/parallel/](../../tools/bench/parallel), and the numbers they
+produce (3.72× at N=4 contention-free, 3.51× for N per-worker counters summed at
+the end, 2.93× for one shared `atomicint`, and 1.45× for a shared-counter loop
+with nothing else in it — all on this machine).
 
 ## The memory model — what is guaranteed, what is yours to guard
 
