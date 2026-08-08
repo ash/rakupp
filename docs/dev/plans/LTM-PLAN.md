@@ -316,6 +316,13 @@ multi-ness on `GrammarRuleMeta` is the entry ticket).
    10/10, `longest-alternative.t` target: everything fudged Rakudo passes.
 4. **Flip the default**, keep `RAKUPP_LTM=0` one release, then remove the
    probe path (or park it under `#ifdef` if the diff tool stays useful).
+   **DONE 2026-08-09.** Gates held: full Roast (the flag beat the probe in
+   every pair of the campaign, fail set a strict subset), battery 40
+   match / 10 diff IDENTICAL in both settings, spec-site 368/368
+   examples zero mismatches in both. The flip pair confirmed clean:
+   new default 197,110 (the LTM-leg family, flappers only), legacy leg
+   197,111 (the old probe numbers). `RAKUPP_LTM=0` stays for one
+   release as the escape hatch and bisection tool.
 5. **Adjacent cleanup enabled by the new machinery**: the deferred
    "code blocks re-run under backtracking" item — with ranking now
    side-effect-free, the remaining re-runs are only in the committed

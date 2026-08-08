@@ -3,9 +3,13 @@
 
 namespace rakupp { bool ltmModeOn(); }
 bool rakupp::ltmModeOn() {
+    // TRUE LTM IS THE DEFAULT (v3, LTM-PLAN phase 4): `|` alternations and
+    // proto dispatch rank by declarative prefix via the NFA. RAKUPP_LTM=0
+    // selects the legacy greedy-probe ranker — kept for one release as the
+    // escape hatch and bisection tool, then the probe path retires.
     static const bool on = [] {
         const char* e = std::getenv("RAKUPP_LTM");
-        return e && *e && std::string(e) != "0";
+        return !(e && *e && std::string(e) == "0");
     }();
     return on;
 }
