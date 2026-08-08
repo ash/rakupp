@@ -56,7 +56,7 @@ methodology in [COUNTING.md](../../status/COUNTING.md)).
   Almost none of the work was module-specific: the modules were the *finder*
   for general interpreter bugs.
 
-## v3.0.0 — the compiler grows up (planned, 2026-08-07)
+## v3.0.0 — the compiler grows up (LANDED 2026-08-09; planned 2026-08-07)
 
 Not framed as Rakudo parity — Rakudo stays the oracle every divergence is
 judged against, but the headline items are capabilities, each with its plan
@@ -96,6 +96,16 @@ fudged-Rakudo score; and the one-liner cookbook runs byte-identical to Perl's
 `-i`/`-a`/`-F` behaviour. As with 1.x → 2.0.0, finished work lands in v2.x
 minor releases along the way; **v3.0.0 tags when all three pillars hold
 their gates at once**.
+
+**All three pillars hold their gates (2026-08-09).** CLI: complete since
+2026-08-07. LTM: true NFA ranking is the default (`RAKUPP_LTM=0` = the
+legacy probe, one release); Roast/battery/spec-site gates all green in
+both settings. Parallel: on by default (`RAKUPP_GIL=1` = the escape
+hatch); three consecutive quiet parity runs at 197,186–197,190 with an
+identical 5-file timeout list against the GIL's 11, and the shipping
+default measures **197,191 / 218,772 declared (90.1%)** — the highest
+total recorded on this codebase. Two ledgered post-flip exceptions
+(PARALLEL-PLAN.md): nonblocking-await.t and bug-coverage-stress.t.
 
 ## v4.0.0 — Raku that travels (forming, 2026-08-08)
 

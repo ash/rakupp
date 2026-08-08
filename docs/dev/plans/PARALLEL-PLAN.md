@@ -287,6 +287,20 @@ parity.
 the escape hatch (and the GIL build keeps running in CI — it is also our
 bisection tool). Only after every gate below is green.
 
+**DONE 2026-08-09 (7d21e14).** The parity trio: three consecutive quiet
+serial runs at 197,186–197,190 assertions with an IDENTICAL 5-file
+timeout list (four of the five are GIL-TIME files too) against the
+GIL's 11; the shipping default measures 197,191. The flip surfaced and
+fixed two drain-semantics gaps the GIL's spawn handoff had hidden
+(Channel.list drains-until-close; eager supply drains await their
+promise-whenevers in parallel). Ledgered exceptions, stable across
+every run and accepted with the flip: `S17-promise/nonblocking-await.t`
+(completes in isolation, slow and 4 tests short of its GIL 15/28) and
+`6.c/MISC/bug-coverage-stress.t` (−1 in a timing-stress file) — against
+EIGHT GIL-TIME files the flip recovers (every.t to full PASS; at.t,
+in.t, unique.t, lock.t, misc.t now run). Both are open items for the
+first v3.x minor.
+
 ## Gates (all must hold, both modes)
 
 - **Full Roast**: parity with the GIL baseline, three consecutive runs
