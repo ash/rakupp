@@ -1,4 +1,8 @@
 #include "Regex.h"
+#include "LtmNfa.h"
+#include <iostream>
+#include <mutex>
+#include <map>
 #include <cstdint>
 #include <memory>
 #include <cstring>
@@ -1843,6 +1847,37 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (snap && st.hooks->restoreState) st.hooks->restoreState(snap);
             std::stable_sort(order.begin(), order.end(),
                              [](const auto& a, const auto& b) { return a.first > b.first; });
+            // ---- LTM phase-1 harness (RAKUPP_LTM_DEBUG=1): rank the same
+            // branches with the declarative-prefix NFA and report ORDER
+            // disagreements with the probe. The probe's answer still decides —
+            // this block changes no behavior; it exists to classify every
+            // disagreement against the Rakudo oracle before phase 2 wires the
+            // NFA in for real (LTM-PLAN.md).
+            static const bool ltmDebug = std::getenv("RAKUPP_LTM_DEBUG") != nullptr;
+            if (ltmDebug) {
+                static std::map<const Node*, std::unique_ptr<LtmNfa>> ltmCache;
+                static std::mutex ltmCacheM;
+                LtmNfa* nfa = nullptr;
+                {
+                    std::lock_guard<std::mutex> lk(ltmCacheM);
+                    auto& slot = ltmCache[n];
+                    if (!slot) slot = LtmNfa::buildForAlt(*this, n);
+                    nfa = slot.get();
+                }
+                if (nfa) {
+                    auto ranked = nfa->rank(st.s, pos);
+                    bool differ = ranked.size() != order.size();
+                    if (!differ)
+                        for (size_t i = 0; i < ranked.size(); i++)
+                            if (ranked[i].branch != (int)order[i].second) { differ = true; break; }
+                    if (differ) {
+                        std::string a, b;
+                        for (auto& o : order)  a += std::to_string(o.second) + "@" + std::to_string(o.first) + " ";
+                        for (auto& r : ranked) b += std::to_string(r.branch) + "@" + std::to_string(r.prefixEnd) + " ";
+                        std::cerr << "[LTM] pos " << pos << "  probe: " << a << " nfa: " << b << "\n";
+                    }
+                }
+            }
             for (auto& pr : order) {
                 if (matchNode(n->kids[pr.second].get(), st, pos, k)) return true;
             }

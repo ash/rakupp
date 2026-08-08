@@ -140,6 +140,7 @@ public:
     const GrammarHooks* runHooks = nullptr;
 
 private:
+    friend class LtmNfa; // the declarative-prefix ranking NFA reads Node directly
     enum class K { Lit, Any, Class, Seq, Alt, Conj, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart, CapEnd };
     struct Node {
         K k;
