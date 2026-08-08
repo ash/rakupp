@@ -2216,12 +2216,23 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
 void Interpreter::drainWorkers() {
     if (!gilHeld_) return;
     if (parallelMode_) {
-        // Workers already run freely; just join them. They may spawn more (guarded by
-        // sharedMut_), so loop until the queue drains.
-        for (;;) {
-            std::vector<WorkerSlot> batch;
-            { std::lock_guard<std::mutex> lk(sharedMut_); batch.swap(workers_); }
-            if (batch.empty()) break;
+        // Workers already run freely — but daemon-ish ones (a server's accept
+        // loop, a tapSupply pump, an :app_lifetime sleeper) never finish on
+        // their own, and joining them UNCONDITIONALLY kept the process alive
+        // until the harness's kill: socket-recv-vs-read.t passed every test,
+        // then sat in this join for the full 30 s timeout. Same daemon
+        // semantics as the GIL branch below: ask workers to unwind, give the
+        // stragglers a short grace, then abandon them so the program can exit.
+        workerAbort_.store(true, std::memory_order_relaxed);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::vector<WorkerSlot> batch;
+        { std::lock_guard<std::mutex> lk(sharedMut_); batch.swap(workers_); }
+        if (liveWorkers_.load() > 0) {
+            for (auto& t : batch) t.th.detach(); // daemon: don't wait on it
+            abandonedWorkers_ = true;
+        } else {
             for (auto& t : batch) if (t.th.joinable()) t.th.join();
         }
         gilHeld_ = false;
