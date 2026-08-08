@@ -203,6 +203,17 @@ that a requirement, not a hope:
 
 ## Phases
 
+**Phase 1: DELIVERED 2026-08-08 (commit 2de65f7).** `src/LtmNfa.{h,cpp}`
+builds and ranks; `RAKUPP_LTM_DEBUG=1` diffs NFA-vs-probe order at the Alt
+site with zero behavior change. Day-one results: both oracle divergences
+reproduce with the NFA on Rakudo's side; the harness caught its own first
+builder bug (shared entry states let a sibling's `a*` re-anchor other
+branches — per-branch entries now); corpus: ZERO disagreements across the
+whole 392-check suite and proto-token-ltm.t, 56 in longest-alternative.t
+(the divergence being fixed), and a 6-item hand-classification worklist in
+S05-mass/rx.t (one empty-rank shape included) — that worklist is phase 2's
+entry ticket.
+
 1. **NFA builder + offline harness.** `LtmNfa` with unit tests; a dump tool
    (`--ltm-dump` or a debug env var) that prints, for a given regex and
    input, the ranked order under probe vs NFA. Run it over a corpus
