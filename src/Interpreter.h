@@ -851,6 +851,31 @@ public:
         std::shared_ptr<std::atomic<bool>> done;
     };
     std::vector<WorkerSlot> workers_;      // outstanding `start`/async worker threads
+    // The ONLY safe way to register a worker thread. In parallel mode spawns
+    // happen from worker threads too (a start block tapping a supply spawns
+    // the interval ticker), and the old per-site `reapFinishedWorkers(); …
+    // push_back(…)` pattern mutated the vector from several threads at once —
+    // vector::erase corrupted it and the process SEGFAULTED (syntax.t's
+    // CLOSE-phaser stress, crash report: erase inside spawnSupplyInterval on
+    // thread 5 of 292). Under the GIL the lock is uncontended.
+    void addWorker(BigStackThread&& th, std::shared_ptr<std::atomic<bool>> fin) {
+        // Collect finished slots under the lock, JOIN THEM OUTSIDE IT. Joining
+        // under sharedMut_ deadlocked: the joinee had set its done flag but was
+        // still unwinding through code that itself wants sharedMut_ (a worker
+        // spawning a nested worker) — the reaper held the lock waiting for the
+        // joinee, the joinee waited for the lock.
+        std::vector<WorkerSlot> dead;
+        {
+            std::lock_guard<std::mutex> lk(sharedMut_);
+            auto mid = std::partition(workers_.begin(), workers_.end(), [](WorkerSlot& w) {
+                return !(w.done && w.done->load(std::memory_order_acquire));
+            });
+            for (auto it = mid; it != workers_.end(); ++it) dead.push_back(std::move(*it));
+            workers_.erase(mid, workers_.end());
+            workers_.push_back({std::move(th), std::move(fin)});
+        }
+        for (auto& w : dead) if (w.th.joinable()) w.th.join();
+    }
     void reapFinishedWorkers() {           // caller must hold the GIL or sharedMut_
         workers_.erase(std::remove_if(workers_.begin(), workers_.end(), [](WorkerSlot& w) {
             if (w.done && w.done->load(std::memory_order_acquire)) { w.th.join(); return true; }
@@ -858,6 +883,30 @@ public:
         }), workers_.end());
     }
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
+    // Backpressure for worker creation, PARALLEL MODE ONLY. A tap-and-close
+    // loop over interval supplies (syntax.t's CLOSE-phaser stress: 4 spawners
+    // x 1000 activations, each a real thread with a 256 MiB virtual stack)
+    // outran teardown and SEGFAULTED the process on thread/address-space
+    // exhaustion. Above the cap a spawner reaps finished workers and waits
+    // for the herd to thin — a closed ticker exits within one poll tick.
+    // Under the GIL this must stay off: a spawner spinning while HOLDING the
+    // lock would keep the very workers it waits for from finishing.
+    void throttleSpawn() {
+        if (!parallelMode_) return;
+        while (liveWorkers_.load(std::memory_order_relaxed) >= 384) {
+            std::vector<WorkerSlot> dead;
+            {
+                std::lock_guard<std::mutex> lk(sharedMut_);
+                auto mid = std::partition(workers_.begin(), workers_.end(), [](WorkerSlot& w) {
+                    return !(w.done && w.done->load(std::memory_order_acquire));
+                });
+                for (auto it = mid; it != workers_.end(); ++it) dead.push_back(std::move(*it));
+                workers_.erase(mid, workers_.end());
+            }
+            for (auto& w : dead) if (w.th.joinable()) w.th.join(); // outside the lock
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
     bool abandonedWorkers_ = false;        // a fire-and-forget worker outlived the mainline (daemon)
     std::atomic<bool> workerAbort_{false}; // set at teardown: workers unwind at their next safe point
     // Interpreter safe point: cheap check woven into the hot loop so a background

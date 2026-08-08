@@ -5291,7 +5291,6 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     engageGil();
     ctx->pending++;
     liveWorkers_++;
-    reapFinishedWorkers();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
@@ -5302,7 +5301,8 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         I2.maybeFinishSupply(ctx);
         return Value::any();
     });
-    workers_.push_back({BigStackThread([self, secs, fireW, fin, spawnScope, ctx]() mutable {
+    throttleSpawn();
+    addWorker(BigStackThread([self, secs, fireW, fin, spawnScope, ctx]() mutable {
         t_isWorker = true;
         double slept = 0;
         while (slept < secs && !ctx->done && !ctx->doneFired) { // GIL not held; cancellable
@@ -5317,7 +5317,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         self->gilYieldNotify();
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
-    }), fin});
+    }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
 }
 
@@ -5331,7 +5331,6 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     engageGil();
     ctx->pending++;
     liveWorkers_++;
-    reapFinishedWorkers();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
@@ -5345,7 +5344,8 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
         }
         return Value::any();
     });
-    workers_.push_back({BigStackThread([self, interval, delay, fireW, ctx, fin, spawnScope]() mutable {
+    throttleSpawn();
+    addWorker(BigStackThread([self, interval, delay, fireW, ctx, fin, spawnScope]() mutable {
         t_isWorker = true;
         auto stop = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
@@ -5381,7 +5381,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
         self->gilYieldNotify();
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
-    }), fin});
+    }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
 }
 
@@ -5389,13 +5389,13 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
     liveWorkers_++;
-    reapFinishedWorkers();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
     if (secs < 0) secs = 0;
     if (secs > 35) secs = 35; // bounded like sleepYield, so a stray huge timer can't hang the process
-    workers_.push_back({BigStackThread([self, secs, blk, ctx, fin, spawnScope]() mutable {
+    throttleSpawn();
+    addWorker(BigStackThread([self, secs, blk, ctx, fin, spawnScope]() mutable {
         t_isWorker = true;
         std::this_thread::sleep_for(std::chrono::duration<double>(secs)); // GIL not held
         self->gil_.lock();
@@ -5412,7 +5412,7 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
         self->gilYieldNotify();
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
-    }), fin});
+    }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
 }
 
@@ -5426,13 +5426,13 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
     liveWorkers_++;
-    reapFinishedWorkers();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
     if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
     if (delay < 0) delay = 0;
-    workers_.push_back({BigStackThread([self, interval, delay, blk, ctx, handle, fin, spawnScope]() mutable {
+    throttleSpawn();
+    addWorker(BigStackThread([self, interval, delay, blk, ctx, handle, fin, spawnScope]() mutable {
         t_isWorker = true;
         auto closedNow = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true; // mainline done: stop ticking
@@ -5486,7 +5486,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
-    }), fin});
+    }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap";
     if (handle) { t.ext = handle; (*t.hash)["wired"] = Value::boolean(true); } // .close stops the ticker
     return t;
@@ -5500,11 +5500,11 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
     liveWorkers_++;
-    reapFinishedWorkers();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
-    workers_.push_back({BigStackThread([self, chan, blk, ctx, fin, spawnScope]() mutable {
+    throttleSpawn();
+    addWorker(BigStackThread([self, chan, blk, ctx, fin, spawnScope]() mutable {
         t_isWorker = true;
         // Parallel mode has no GIL discipline: taking (and never releasing)
         // the lock here made the FIRST channel worker the accidental GIL
@@ -5568,7 +5568,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
         if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
         self->liveWorkers_--;
         fin->store(true, std::memory_order_release);
-    }), fin});
+    }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
 }
 
@@ -5596,9 +5596,9 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
     std::call_once(pipeOnce, [&] {
         if (::pipe(g_sigPipe) != 0) { g_sigPipe[0] = g_sigPipe[1] = -1; return; }
         liveWorkers_++;
-        reapFinishedWorkers();
         auto fin = std::make_shared<std::atomic<bool>>(false);
-        workers_.push_back({BigStackThread([self, spawnScope, fin]() mutable {
+        throttleSpawn();
+        addWorker(BigStackThread([self, spawnScope, fin]() mutable {
             t_isWorker = true;
             for (;;) {
                 unsigned char c;
@@ -5633,7 +5633,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
             }
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
-        }), fin});
+        }), fin);
     });
 
     // Register the tap and install a handler for each signal (once each).
@@ -5788,11 +5788,11 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto handle = std::make_shared<TapHandle>();
         handle->closers.push_back([lfd] { ::shutdown(lfd, SHUT_RDWR); ::close(lfd); });
         liveWorkers_++;
-        reapFinishedWorkers();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
         Interpreter* self = this;
-        workers_.push_back({BigStackThread([self, lfd, emitCb, handle, fin, spawnScope]() mutable {
+        throttleSpawn();
+        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope]() mutable {
             t_isWorker = true;
             for (;;) {
                 int cfd = ::accept(lfd, nullptr, nullptr);       // GIL not held
@@ -5812,7 +5812,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             }
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
-        }), fin});
+        }), fin);
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
         (*t.hash)["wired"] = Value::boolean(true);
         return t;
@@ -5825,12 +5825,12 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto handle = std::make_shared<TapHandle>();
         handle->closers.push_back([fd] { if (fd >= 0) ::shutdown(fd, SHUT_RD); });
         liveWorkers_++;
-        reapFinishedWorkers();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
         bool bin = h.count("bin") && h.at("bin").truthy();
         Interpreter* self = this;
-        workers_.push_back({BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin]() mutable {
+        throttleSpawn();
+        addWorker(BigStackThread([self, fd, emitCb, doneCb, handle, fin, spawnScope, bin]() mutable {
             t_isWorker = true;
             std::vector<char> buf(65536);
             for (;;) {
@@ -5859,7 +5859,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             if (fd >= 0) ::close(fd);   // the read worker owns the fd's lifetime
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
-        }), fin});
+        }), fin);
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.ext = handle;
         (*t.hash)["wired"] = Value::boolean(true);
         return t;

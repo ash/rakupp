@@ -2028,13 +2028,15 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         // True-parallel worker: runs interpreter compute concurrently with the main
         // thread and its siblings — no GIL. Its registers/stacks are thread_local
         // (fresh & empty on this new thread, steps 1/3a); the symbol tables are frozen
-        // (step 2); the promise settle and the workers_ push are mutex-guarded.
-        std::lock_guard<std::mutex> wlk(sharedMut_);
+        // (step 2); the promise settle is guarded by ps->m and the workers_ push
+        // by addWorker's own sharedMut_ scope — holding sharedMut_ HERE
+        // self-deadlocked against addWorker/throttleSpawn (std::mutex is not
+        // recursive).
         liveWorkers_++;
-        reapFinishedWorkers();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx_.cur ? tctx_.cur : global_;
-        workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
+        throttleSpawn();
+        addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
             t_isWorker = true;
             if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
             tctx_.cur = spawnScope;        // anchor: dynamics visible at the spawn point
@@ -2056,14 +2058,14 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             for (auto& f : fire) f();
             self->liveWorkers_--;
             fin->store(true, std::memory_order_release);
-        }), fin});
+        }), fin);
         return p;
     }
     liveWorkers_++;
-    reapFinishedWorkers();                 // release stacks of already-finished workers
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_; // dynamics visible at the spawn point
-    workers_.push_back({BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
+    throttleSpawn();
+    addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
         t_isWorker = true;
         if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
@@ -2090,7 +2092,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         self->gilYieldNotify();            // release the GIL (waking any cooperative yielder)
         ps->cv.notify_all();
         fin->store(true, std::memory_order_release);
-    }), fin});
+    }), fin);
     return p;
 }
 
@@ -2104,11 +2106,11 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
     cancellation.ext = cs;
     cuedLoads_++;
     liveWorkers_++;
-    reapFinishedWorkers();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx_.cur ? tctx_.cur : global_;
     Interpreter* self = this;
-    workers_.push_back({BigStackThread([self, code, cs, fin, spawnScope, delaySecs, everySecs, times, stopF, catchF]() mutable {
+    throttleSpawn();
+    addWorker(BigStackThread([self, code, cs, fin, spawnScope, delaySecs, everySecs, times, stopF, catchF]() mutable {
         t_isWorker = true;
         auto clock0 = std::chrono::steady_clock::now();
         auto napUntil = [&](double secsFromStart) { // GIL not held here; drift-free deadline
@@ -2162,7 +2164,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
         self->liveWorkers_--;
         self->gilYieldNotify();
         fin->store(true, std::memory_order_release);
-    }), fin});
+    }), fin);
     return cancellation;
 }
 
