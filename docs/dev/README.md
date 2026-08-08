@@ -122,6 +122,11 @@ classified and (mostly) repro'd.
 - **[experiments/METHOD-DISPATCH-EXPERIMENT.md](experiments/METHOD-DISPATCH-EXPERIMENT.md)**
   — why the interpreter's `if (m == …)` dispatch chain was **not** replaced with a
   hash map or a switch: the measurements, and the direction that would actually pay.
+- **[experiments/IR-EXPERIMENT.md](experiments/IR-EXPERIMENT.md)** — why the
+  tree-walker was **not** replaced with a bytecode/register IR: opcode dispatch
+  is worth 0.28 ns per node, the tree-walk fallback costs 11.2 ns per node, and
+  the `Env` + `ValueList` a call allocates are ~46% of the whole
+  interpreted-vs-compiled gap. Measured before any opcode was written.
 - **[experiments/QUOTE-WORD-SHADOWING.md](experiments/QUOTE-WORD-SHADOWING.md)** —
   a declared `sub s` / `sub q` / `sub ms` versus the quoting syntax. Attempted,
   measured, reverted; the record exists so it does not have to be rediscovered.
