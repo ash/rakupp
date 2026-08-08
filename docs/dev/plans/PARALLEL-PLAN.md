@@ -246,6 +246,25 @@ NEXT for the flip: re-run the ~14-file timeout list in isolation (the
 cas fix may clear several), then the three consecutive parallel Roast
 runs.
 
+**The wall, torn down piece by piece (same day):** after the cas fix,
+isolation re-runs showed procasync/basic and promise/then at their GIL
+scores, but S17-supply/syntax.t still WEDGED — the two-channel react.
+Debug ladder + an env trace found `spawnChannelWhenever` was never
+parallel-audited: the worker took the GIL once at startup and never
+released it in parallel mode (yieldToWorkerFor no-ops there), so the
+FIRST channel worker owned the lock for life and every later channel
+whenever starved at its own gil_.lock(); the idle poll also hot-spun
+(same no-op yield) and the pop raced send. All fixed (32a96b7);
+syntax.t completes in ~5 s ×3 (50 ok vs GIL 63 = ordinary parity
+distance now). Supplier serialization moved off the stripe pool to a
+per-supplier mutex (9ace1de) — pool stripes hold user code NOWHERE.
+Parity attempt 1 (pre-channel-fix): 41 timeouts at 8 harness workers,
+29 at 4 — largely oversubscription tax (pure list files timed out;
+thread.t passes in isolation but needs >10 s under load: cas retries
+are a tax, not a hang). The harness's fixed TIMEOUT=10 penalizes
+parallel legs; consider a ROAST_TIMEOUT env for them before judging
+parity.
+
 ### P5 — flip the default
 
 `RAKUPP_PARALLEL` behavior becomes the default; `RAKUPP_GIL=1` remains as
