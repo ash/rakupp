@@ -163,3 +163,27 @@ not a semantics bug, but worth aligning with Rakudo eventually:
   one-arg rule (a later flattening duplicate registration shadowed the
   constructors); junction ARGUMENTS autothread plain calls recursively.
   S03-junctions: misc.t 105→129, associative.t 10/10, autothreading.t 3→5.
+
+## `$?FILE` in a module is the main program's path, not the module's
+
+Found 2026-08-09 building Rakupp::JSON, whose Raku half locates its compiled
+half relative to itself.
+
+```raku
+# lib/F.rakumod
+unit module F;
+our sub f() is export { say $?FILE }
+```
+
+```
+rakupp -I. -e 'use F; f()'   # /cwd/-e          <- the MAIN PROGRAM
+raku   -I. -e 'use F; f()'   # /path/F.rakumod (F)
+```
+
+So any module computing a path from `$?FILE` — resources, sibling data files,
+a `Build` hook's output — lands somewhere unrelated under rakupp. The workaround
+in that module is to use `%?RESOURCES` (which is correct on both engines) with a
+`$*CWD` fallback, and a comment saying why `$?FILE` is not the third candidate.
+
+Rakudo's spelling appends ` (ModuleName)` to the path, which is its own oddity,
+but the directory is right and that is what callers use.

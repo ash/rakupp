@@ -6156,6 +6156,27 @@ Value rtBAtanh(Interpreter& I, const Value& v) { return rtBMath1(I, v, "atanh", 
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
+    // Native extension loading (src/rakupp_ext.h). A BUILTIN rather than
+    // something `use Rakupp::Ext` installs, because a module that wants a
+    // compiled fast path with a portable fallback has to ask for it WITHOUT
+    // writing anything Rakudo cannot compile:
+    //
+    //     my &load = try &::('rakupp-ext-load');   # Nil on Rakudo, sub here
+    //
+    // `&::(…)` is a runtime lookup, so that line compiles on both engines and
+    // the module degrades to its pure-Raku path everywhere else. Reachable via
+    // `use Rakupp::Ext` too, which is the discoverable spelling for code that is
+    // rakupp-only by design.
+    B["rakupp-ext-load"] = [](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::boolean(false);
+        std::string err;
+        std::vector<std::pair<std::string, Value>> subs;
+        Value ok = extLoadModule(a[0].toStr(), err, subs);
+        if (!err.empty()) throw RakuError{Value::typeObj("X::AdHoc"), err};
+        for (auto& s : subs) I.tctx_.cur->define("&" + s.first, s.second);
+        return ok;
+    };
+
     B["say"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.size() == 1) return rtBSay(I, a[0]);
         std::string out;

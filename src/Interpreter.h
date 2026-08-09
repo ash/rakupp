@@ -227,9 +227,6 @@ bool rtIsDefined(const Value& v);
 // scope (JsonNative.cpp). Under RAKUPP_NATIVE_JSON=1 the same natives are also
 // installed over `use JSON::Fast`, which is opt-in on purpose: silently
 // answering another module's name would fork its semantics behind its back.
-void installRakuppJson(Env* env);
-void installRakuppJsonOver(Env* env); // from-json only — see the comment at the call site
-
 // Native extension modules (src/rakupp_ext.h): dlopen `path`, check its ABI
 // against RAKUPP_EXT_ABI, and hand back the subs it declares. On failure the
 // message lands in errOut and the return value is undefined. ExtApi.cpp.
