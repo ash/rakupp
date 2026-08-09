@@ -1,0 +1,6 @@
+# json-gen.raku writes its corpus next to itself by default, and the size ladder
+# in the README is ~1 MB of it. Generated, reproducible from the generator in
+# one command, and never worth committing — regenerate rather than clone:
+#
+#     for n in 200 400 800 1600; do rakupp json-gen.raku --out=d$n.json $n; done
+*.json
