@@ -15,7 +15,7 @@ ROAST=/path/to/roast rakupp tools/run-roast.raku --workers=4 | tee roast.txt
 
 Compare against the previous release's figure in [CHANGELOG.md](../../CHANGELOG.md).
 
-Keep that `roast.txt` — the per-file `[PASS] 3/3 …` lines are what step 5 below
+Keep that `roast.txt` — the per-file `[PASS] 3/3 …` lines are what step 6 below
 feeds to `gen-roast-map.raku`, and re-running the suite just to get them back
 costs an hour.
 
@@ -197,7 +197,7 @@ Both halves feed <https://raku.online/spec/rules/divergences/>. This is slow
 batch.
 
 This leaves `src/data/typerun.raku` and `src/data/matrix.raku` rewritten but
-**unpublished** — step 5 in the next section is what turns them into pages.
+**unpublished** — step 6 in the next section is what turns them into pages.
 
 The count has a **±5 flap band**: the `Set`/`Bag`/`Mix`/`Map` examples move in
 both directions between runs of identical code, because Rakudo randomizes hash
@@ -262,11 +262,36 @@ iteration order per process. Do not read a ±5 move as progress.
 
    **Never move a tag that has already been published.** Cut a new patch
    version instead.
-5. **Republish the site data** — the graphs and listings under
+5. **Bump the Homebrew tap** —
+   [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp), a separate
+   repository that nothing here and nothing in CI touches.
+
+   ```bash
+   # after the release assets exist
+   curl -sL https://github.com/ash/rakupp/releases/download/vX.Y.Z/rakupp-macos-universal.tar.gz.sha256
+   curl -sL -o /tmp/src.tgz https://github.com/ash/rakupp/archive/refs/tags/vX.Y.Z.tar.gz
+   shasum -a 256 /tmp/src.tgz
+   # edit Formula/rakupp.rb: both urls, both sha256s, and version "X.Y.Z"
+   brew fetch --formula ash/rakupp/rakupp     # must print ✔︎ Formula rakupp (X.Y.Z)
+   ```
+
+   `brew install rakupp` is the **first** install route the README and
+   raku.online offer for macOS, and the tap sat on 1.1.0 until v3.0.1 — eleven
+   releases, roughly three weeks, handing every `brew` user a build from 24
+   July. Nothing failed; the formula simply kept pointing at an old tag.
+
+   Two traps. The formula carries the version in **three** places (the source
+   `url`, the `on_macos` `url`/`sha256`, and `version`) and a partial edit
+   installs a mismatched binary rather than erroring. And the checkout under
+   `/usr/local/Homebrew/Library/Taps/ash/homebrew-rakupp` is a **separate
+   clone** from your working copy — `brew audit`/`brew fetch` read *that* one,
+   so testing your edit means copying the file in (then `git checkout --` to
+   leave it clean) or pushing first.
+6. **Republish the site data** — the graphs and listings under
    <https://raku.online/spec/> and <https://raku.online/spec/rules/>, *and* the
    hand-written figures on the front page (see below).
 
-Step 5 is the one that gets forgotten, because the release itself is already
+Step 6 is the one that gets forgotten, because the release itself is already
 out by then and everything looks finished. It isn't: gate 7 rewrote the
 conformance data in the raku.online checkout and left it sitting there, so until
 this runs, the site shows the *previous* release's divergences, coverage meters
