@@ -4821,8 +4821,39 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 for (auto& p : paths)
                     if (!p.empty()) libPaths_.insert(libPaths_.begin(), p);
             }
+            else if (u->module == "Rakupp::JSON") installRakuppJson(tctx_.cur.get());
+            // `use Rakupp::Ext` brings in the loader a native module's Raku half
+            // calls to pull in its compiled half. Nothing is loaded here — the
+            // module names its own library, because only it knows where its
+            // build hook put it.
+            else if (u->module == "Rakupp::Ext") {
+                tctx_.cur->define("&rakupp-ext-load", Value::closure(
+                    [this](ValueList& a) -> Value {
+                        if (a.empty()) return Value::boolean(false);
+                        std::string err;
+                        std::vector<std::pair<std::string, Value>> subs;
+                        Value ok = extLoadModule(a[0].toStr(), err, subs);
+                        if (!err.empty())
+                            throw RakuError{Value::typeObj("X::AdHoc"), err};
+                        // Installed into the CALLER's scope, so a module's
+                        // `rakupp-ext-load` puts the subs where its own `our`
+                        // declarations would go and its exports carry them on.
+                        for (auto& s : subs) tctx_.cur->define("&" + s.first, s.second);
+                        return ok;
+                    }));
+            }
             else if (!u->module.empty()) {
                 loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq);
+                // RAKUPP_NATIVE_JSON=1: run JSON::Fast's `from-json` natively.
+                // The module is still LOADED first, so everything else it
+                // exports — to-json, X::JSON::AdditionalContent — is its own;
+                // only the parse is substituted, and only when asked. Off by
+                // default because answering another module's name behind its
+                // back forks its semantics without saying so.
+                if (u->module == "JSON::Fast") {
+                    const char* nj = std::getenv("RAKUPP_NATIVE_JSON");
+                    if (nj && *nj && *nj != '0') installRakuppJsonOver(tctx_.cur.get());
+                }
                 // `use Mod <name:alias>` — import that routine under a second name.
                 // (rakupp imports a module's whole export set; the alias is the part
                 // that has to be honoured, or the name simply is not there.)

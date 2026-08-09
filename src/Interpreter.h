@@ -223,6 +223,19 @@ struct Env {
 // claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
 bool rtIsDefined(const Value& v);
 
+// `use Rakupp::JSON` — installs native `from-json`/`to-json` into the using
+// scope (JsonNative.cpp). Under RAKUPP_NATIVE_JSON=1 the same natives are also
+// installed over `use JSON::Fast`, which is opt-in on purpose: silently
+// answering another module's name would fork its semantics behind its back.
+void installRakuppJson(Env* env);
+void installRakuppJsonOver(Env* env); // from-json only — see the comment at the call site
+
+// Native extension modules (src/rakupp_ext.h): dlopen `path`, check its ABI
+// against RAKUPP_EXT_ABI, and hand back the subs it declares. On failure the
+// message lands in errOut and the return value is undefined. ExtApi.cpp.
+Value extLoadModule(const std::string& path, std::string& errOut,
+                    std::vector<std::pair<std::string, Value>>& subsOut);
+
 // "Cannot modify an immutable Set (Set(1 2))" — ONE sentence and ONE class for
 // every immutable-container write. The `:delete` path threw X::Immutable where
 // assignment threw X::Assignment::RO, so `CATCH { when X::Assignment::RO }`
