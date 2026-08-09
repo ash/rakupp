@@ -483,6 +483,7 @@ struct RedoStmt : Stmt { std::string target; RedoStmt(): Stmt(NK::RedoStmt) {} }
 
 struct UseStmt : Stmt {
     std::string module;
+    std::string verReq; // `use Foo:ver<0.0.14+>` — version constraint ('' = any)
     std::string arg; // first string argument, e.g. `use lib 'lib'`
     std::vector<std::string> importArgs; // `use Mod <tag !flag>` — passed to sub EXPORT
     ExprPtr argExpr; // computed argument, e.g. `use lib $?FILE.IO.parent`

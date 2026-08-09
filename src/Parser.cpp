@@ -6638,6 +6638,23 @@ StmtPtr Parser::parseStatementImpl() {
                 return u; // a version pragma loads no module — exec() only reads langRev from u->module
             }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End)) u->module = advance().text;
+            // name adverbs on the USE: `use JSON::Class:ver<0.0.14+>` — capture
+            // the version constraint so the loader can SKIP too-old candidates
+            // (License::SPDX needs 0.0.14+; the vendored battery copy is 0.0.6,
+            // and taking it broke the whole Test::META chain). :auth/:api are
+            // read and dropped, as the module-decl parser does.
+            while (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident) {
+                advance();                          // :
+                std::string adv = advance().text;   // ver / auth / api
+                std::string val;
+                if (isKind(Tok::QwList) && !cur().spaceBefore) val = advance().text;
+                else if (isOp("<") && !cur().spaceBefore) {
+                    advance();
+                    auto ws = readAngleWords(">");
+                    val = ws.empty() ? std::string() : ws[0];
+                }
+                if (adv == "ver") u->verReq = val;
+            }
             if (!u->isNo) scanModuleOps(u->module); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
                 monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)

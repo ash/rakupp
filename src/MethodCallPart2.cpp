@@ -2831,6 +2831,43 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // (Cro's serializer selectors: `.return if .is-applicable(...)`)
     if (m == "return") throw ReturnEx{inv};
     if (m == "return-rw") throw ReturnEx{inv};
+    // On a HOW — the persistent metaobject or a bare Metamodel::* type:
+    // .archetypes answers the standard booleans and ^can/can admits the
+    // meta-methods this HOW actually dispatches. JSON::Unmarshal's ClassLike
+    // subset gates on `.HOW.archetypes.nominal && .HOW.^can('attributes')`;
+    // without these it fell to the plain-Hash multi and unmarshal returned
+    // Hash+{JSON::Class} instead of the typed object (the License::SPDX /
+    // Test::META chain).
+    {
+        bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0) ||
+                      (inv.t == VT::Object && inv.obj && inv.obj->cls &&
+                       inv.obj->cls->name == "Metamodel::ClassHOW");
+        if (howInv) {
+            if (m == "archetypes") {
+                Value a = Value::makeHash(); a.hashKind = "Archetypes";
+                bool role = inv.t == VT::Type && inv.s.find("Role") != std::string::npos;
+                (*a.hash)["nominal"]       = Value::boolean(!role);
+                (*a.hash)["nominalizable"] = Value::boolean(false);
+                (*a.hash)["parametric"]    = Value::boolean(role);
+                (*a.hash)["generic"]       = Value::boolean(false);
+                (*a.hash)["coercive"]      = Value::boolean(false);
+                (*a.hash)["definite"]      = Value::boolean(false);
+                (*a.hash)["augmentable"]   = Value::boolean(!role);
+                return a;
+            }
+            if ((m == "can" || m == "^can") && !args.empty()) {
+                static const std::set<std::string> howCan = {
+                    "attributes", "methods", "name", "archetypes", "add_method",
+                    "add_attribute", "compose", "roles", "parents", "mro"};
+                return Value::boolean(howCan.count(args[0].toStr()) > 0);
+            }
+        }
+    }
+    // the Archetypes value itself: every query is a stored boolean (absent = False)
+    if (inv.t == VT::Hash && inv.hashKind == "Archetypes") {
+        auto it = inv.hash->find(m);
+        return it != inv.hash->end() ? it->second : Value::boolean(false);
+    }
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
         std::string mn = args.empty() ? "" : args[0].toStr();
         Value out = Value::array(); out.isList = true;

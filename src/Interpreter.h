@@ -684,7 +684,7 @@ public:
     // `use Foo::Bar` -> compile lib file into global scope. `quiet` suppresses the
     // not-found warning: a runtime `require` reports failure by THROWING instead
     // (so `try require ::($m)` is silent, as in Rakudo).
-    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false);
+    void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "");
     std::vector<std::string> libPaths_{"lib", ".", "rakulib"}; // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // each loaded module's `sub EXPORT(*@_)`, kept so a REPEAT `use` can run the

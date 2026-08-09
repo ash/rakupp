@@ -3636,7 +3636,55 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
     return out;
 }
 
-void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet) {
+// Does a candidate module version satisfy a `use Foo:ver<...>` constraint?
+// Forms: "0.0.14+" (>= — the common ecosystem spelling), an exact version, or
+// a prefix with ".*". Segments compare numerically; a missing segment is 0.
+static bool verSatisfies(const std::string& have, const std::string& want) {
+    if (want.empty()) return true;
+    if (have.empty()) return false;   // constrained use, versionless candidate: skip it
+    std::string w = want;
+    bool plus = !w.empty() && w.back() == '+';
+    if (plus) w.pop_back();
+    bool star = w.size() >= 2 && w.compare(w.size() - 2, 2, ".*") == 0;
+    if (star) w = w.substr(0, w.size() - 2);
+    auto segs = [](const std::string& s) {
+        std::vector<long> out; long cur = 0; bool any = false;
+        for (char ch : s) {
+            if (ch >= '0' && ch <= '9') { cur = cur * 10 + (ch - '0'); any = true; }
+            else if (ch == '.') { out.push_back(any ? cur : 0); cur = 0; any = false; }
+        }
+        out.push_back(any ? cur : 0);
+        return out;
+    };
+    auto a = segs(have), b = segs(w);
+    if (star) { // prefix match on the written segments
+        for (size_t i = 0; i < b.size(); i++)
+            if ((i < a.size() ? a[i] : 0) != b[i]) return false;
+        return true;
+    }
+    size_t n = std::max(a.size(), b.size());
+    for (size_t i = 0; i < n; i++) {
+        long x = i < a.size() ? a[i] : 0, y = i < b.size() ? b[i] : 0;
+        if (x != y) return plus ? x > y : false;
+    }
+    return true; // equal
+}
+
+// The "version" field of a dist root's META6.json ('' when absent/unreadable).
+static std::string metaVersion(const std::string& distRoot) {
+    std::ifstream in(distRoot + "/META6.json");
+    if (!in) return "";
+    std::ostringstream ss; ss << in.rdbuf();
+    const std::string& s = ss.str();
+    size_t k = s.find("\"version\"");
+    if (k == std::string::npos) return "";
+    k = s.find(':', k); if (k == std::string::npos) return "";
+    k = s.find('"', k); if (k == std::string::npos) return "";
+    size_t e = s.find('"', k + 1); if (e == std::string::npos) return "";
+    return s.substr(k + 1, e - k - 1);
+}
+
+void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq) {
     if (loadedModules_.count(name)) {
         // The module body ran once and stays run — but a repeat `use` still
         // IMPORTS into the new scope. Only the `sub EXPORT(*@_)` protocol needs
@@ -3881,8 +3929,24 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             for (auto ext : exts) {
                 std::ifstream in(dir + "/" + rel + ext);
                 if (!in) continue;
+                if (!verReq.empty()) {
+                    // `use Foo:ver<0.0.14+>`: a too-old candidate must NOT win
+                    // just by being first on the path — skip it and let a later
+                    // path (or the installed repos below) satisfy the constraint.
+                    std::string dr = dir;
+                    if (dr == "lib") dr = ".";
+                    else if (dr.size() > 4 && dr.compare(dr.size() - 4, 4, "/lib") == 0)
+                        dr = dr.substr(0, dr.size() - 4);
+                    std::string mv = metaVersion(dr);
+                    if (!verSatisfies(mv, verReq)) {
+                        if (traceLoad)
+                            std::cerr << "[Load] " << name << " skip " << dir << "/" << rel << ext
+                                      << " (ver " << (mv.empty() ? "?" : mv) << " !~ " << verReq << ")\n";
+                        continue;
+                    }
+                }
                 if (traceLoad)
-                    std::cerr << "[Load] " << name << " <- source " << dir << "/" << rel << ext << "\n";
+                    std::cerr << "[Load] " << name << " <- source " << dir << "/" << rel + ext << "\n";
                 std::ostringstream ss; ss << in.rdbuf();
                 // Bind %?RESOURCES from the source checkout's META6. The dist root is
                 // the parent of the lib dir that matched: for `-I <root>` we matched
@@ -3907,14 +3971,22 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         std::string shortDir = repo + "/short/" + nameSha;
         DIR* dd = opendir(shortDir.c_str());
         if (!dd) continue;
-        std::string entry;
-        while (struct dirent* e = readdir(dd)) { std::string n = e->d_name; if (n != "." && n != "..") { entry = n; break; } }
+        std::vector<std::string> entries;
+        while (struct dirent* e = readdir(dd)) { std::string n = e->d_name; if (n != "." && n != "..") entries.push_back(n); }
         closedir(dd);
+        if (entries.empty()) continue;
+        // several installed versions may share the short name: take the first
+        // that satisfies the `use` constraint (line 1 of the index = version)
+        std::string entry; std::vector<std::string> lines;
+        for (auto& cand : entries) {
+            std::ifstream meta(shortDir + "/" + cand);
+            std::vector<std::string> ls; std::string ln;
+            while (std::getline(meta, ln)) ls.push_back(ln);
+            if (ls.size() < 4 || ls[3].empty()) continue;
+            if (!verReq.empty() && !verSatisfies(ls[0], verReq)) continue;
+            entry = cand; lines = std::move(ls); break;
+        }
         if (entry.empty()) continue;
-        std::ifstream meta(shortDir + "/" + entry);
-        std::vector<std::string> lines; std::string ln;
-        while (std::getline(meta, ln)) lines.push_back(ln);
-        if (lines.size() < 4 || lines[3].empty()) continue; // line 4 = source SHA
         std::ifstream src(repo + "/sources/" + lines[3]);
         if (!src) continue;
         if (traceLoad)
@@ -4740,7 +4812,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (!p.empty()) libPaths_.insert(libPaths_.begin(), p);
             }
             else if (!u->module.empty()) {
-                loadModule(u->module, u->importArgs, !u->isNeed);
+                loadModule(u->module, u->importArgs, !u->isNeed, /*quiet=*/false, u->verReq);
                 // `use Mod <name:alias>` — import that routine under a second name.
                 // (rakupp imports a module's whole export set; the alias is the part
                 // that has to be honoured, or the name simply is not there.)
@@ -5417,7 +5489,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // Parameterized-role value params: bind each composed role's `[...]`
             // params to this class's `does R[args]` arguments, so the role body
             // (methods/submethods) sees them (e.g. Cro::Policy::Timeout[%phase-defaults]).
-            if (!cd->roleArgs.empty()) {
+            // Runs even with NO roleArgs: a bare `does R` must still bind the
+            // role's parameter DEFAULTS (License::SPDX's `does JSON::Class`).
+            {
                 auto tailMatch = [](const std::string& full, const std::string& part) {
                     if (full == part) return true;
                     if (full.size() > part.size() && full.compare(full.size() - part.size(), part.size(), part) == 0
@@ -5430,9 +5504,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (!role->decl || role->decl->roleParams.empty()) continue;
                     const std::vector<ExprPtr>* rargs = nullptr;
                     for (auto& ra : cd->roleArgs) if (tailMatch(role->name, ra.first)) { rargs = &ra.second; break; }
-                    if (!rargs) continue;
+                    // NO `continue` when the class wrote a bare `does R`: the
+                    // role's parameter DEFAULTS must still bind — License::SPDX's
+                    // `does JSON::Class` needs $opt-in = False in scope, or every
+                    // role method that mentions it dies "not declared" (the
+                    // Test::META chain, 11 dists' meta tests).
                     ValueList argv;
-                    for (auto& e : *rargs) {
+                    if (rargs) for (auto& e : *rargs) {
                         Value v = eval(e.get());
                         if (e->kind == NK::Pair) v.namedArg = true; // `does R[:opt]` → named arg
                         argv.push_back(std::move(v));
@@ -10504,6 +10582,24 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         auto* nt = static_cast<NameTerm*>(e);
         if (Value* p = tctx_.cur->find(nt->name)) return p;
     }
+    // `OUR::{'&name'} := v` — binding into the current package's namespace by
+    // subscript. JSON::Class re-exports `trait_mod:<is>` exactly this way from
+    // its `my package EXPORT::DEFAULT`; refusing the bind aborted the module
+    // load and took the whole Test::META chain down with it. The slot is the
+    // package-qualified global symbol, same spelling the OUR::name reader
+    // resolves through.
+    if (e->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(e);
+        if (ix->base && ix->base->kind == NK::NameTerm && ix->index) {
+            const std::string& bn = static_cast<NameTerm*>(ix->base.get())->name;
+            if (bn == "OUR::" || bn == "OUR") {
+                std::string sym = tctx_.pkgPrefix + eval(ix->index.get()).toStr();
+                if (Value* p = global_->find(sym)) return p;
+                global_->define(sym, Value::any());
+                return global_->find(sym);
+            }
+        }
+    }
     throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
 }
 
@@ -11151,6 +11247,24 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
          a->target->kind == NK::StrLit))
         throwTyped("X::Assignment::RO", {},
                    "Cannot modify an immutable value");
+    // `OUR::{'&name'} := v` (or `= v`) — a package-namespace bind by
+    // subscript. JSON::Class's `my package EXPORT::DEFAULT` re-exports
+    // trait_mod:<is> this way; the generic Index path treats the pseudo-
+    // package as a non-container and refused, killing the module load (and
+    // the whole Test::META chain behind it). The slot is the package-
+    // qualified global symbol — the same spelling OUR::name reads resolve to.
+    if ((a->op == ":=" || a->op == "=") && a->target->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(a->target.get());
+        if (ix->base && ix->base->kind == NK::NameTerm && ix->index) {
+            const std::string& bn = static_cast<NameTerm*>(ix->base.get())->name;
+            if (bn == "OUR::" || bn == "OUR") {
+                std::string sym = tctx_.pkgPrefix + eval(ix->index.get()).toStr();
+                Value rhs = eval(a->value.get());
+                global_->define(sym, rhs);
+                return sink ? Value::any() : rhs;
+            }
+        }
+    }
     if (a->op == ":=") {
         // Perl-6-level bind diagnostics (roast S32-exceptions/misc2.t)
         if (a->target->kind == NK::Call || a->target->kind == NK::MethodCall)
