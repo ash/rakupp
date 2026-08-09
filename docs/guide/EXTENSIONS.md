@@ -49,6 +49,16 @@ and keep it working across compiler releases, which is the entire point.
 The corollary: this is plain C. No C++ types cross the boundary, no exceptions
 cross it, and nothing you receive needs freeing.
 
+**Why C, when the interpreter is C++?** Because C++ has no stable binary
+interface: `std::string` alone has a different layout under libstdc++ and
+libc++, and the Linux release links `libstdc++` statically — so a C++ type
+crossing this boundary would be crossing between two different copies of the
+standard library. In C your extension builds with whatever compiler you have
+and loads into whatever rakupp the user installed. You do not give up C++ to
+write one, either: compile your extension as C++ if you like, and keep the
+`extern "C"` entry points. The longer version, including what the choice costs,
+is in [ABI-PLAN.md](../dev/plans/ABI-PLAN.md#why-c-and-not-c).
+
 ## Hello, world
 
 `hello.c`:

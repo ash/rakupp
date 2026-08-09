@@ -4,6 +4,14 @@
 [MODULES-PLAN.md](MODULES-PLAN.md) — see the forming v4 section in
 [VERSIONS.md](VERSIONS.md#v400--raku-that-travels-forming-2026-08-08).*
 
+> **Read [ABI-PLAN.md](ABI-PLAN.md) first.** The native extension ABI shipped
+> on 2026-08-09, one day after this was written, and it is the harder half of
+> an embedding API — already designed, already proven by `Rakupp::JSON`. This
+> plan's *value* API is superseded by it (`RkValue`, not `rakupp_value*`), and
+> the per-language cost estimates below are pessimistic: a stable C ABI means
+> most bindings need no compiled glue at all. The phases, the per-host examples
+> and the threading contract here still stand.
+
 Two asks that arrived together:
 
 1. **rakupp as a library** — link the interpreter into another program.
@@ -83,10 +91,14 @@ types in the header, UTF-8 everywhere. Roughly fifteen functions:
   returning a status code and a value handle.
 - **call** — `rakupp_call(rk, "name", argv, argc, &out)` to invoke a Raku sub
   with marshalled arguments.
-- **values** — an opaque `rakupp_value*` with typed accessors both directions
-  (int / num / str / bool / list / hash), plus `rakupp_value_free`. This is the
-  part that decides whether the bindings are pleasant, so it gets designed
-  against two hosts at once, not one.
+- **values** — ~~an opaque `rakupp_value*` … plus `rakupp_value_free`~~
+  **superseded.** The native extension ABI shipped the day after this was
+  written and already defines the vocabulary: `RkValue`, `RkType`, `rk_int` /
+  `rk_str` / `rk_hash` / `rk_at_pos` and the rest, in
+  [`src/rakupp_ext.h`](../../../src/rakupp_ext.h). There will not be a second
+  value type for the same values — see [ABI-PLAN.md](ABI-PLAN.md), which is the
+  layer beneath this plan. What embedding adds there is a **rooted** lifetime,
+  since the extension arena is deliberately call-scoped.
 - **errors** — every entry point returns a status; `rakupp_last_error(rk)`
   yields message, line and file. A Raku exception becomes an error, never a
   C++ exception unwinding through the host's frames.
