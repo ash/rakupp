@@ -59,7 +59,7 @@ namespace rakupp {
 // (two suppliers emitting into each other's taps), which serializing
 // implementations cannot avoid. Registry entries are never reclaimed — one
 // mutex per supplier ever created, and address reuse just reuses a mutex.
-static std::recursive_mutex& supplierMutex(const void* key) {
+std::recursive_mutex& supplierMutex(const void* key) {
     static std::mutex regM;
     static std::map<const void*, std::unique_ptr<std::recursive_mutex>> reg;
     std::lock_guard<std::mutex> lk(regM);
@@ -4908,6 +4908,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::boolean(true); }
         if (m == "quit") {
             std::lock_guard<std::recursive_mutex> quitLk(supplierMutex(inv.hash.get()));
+            // Recorded for the same reason as done_state: a Supply.wait on a
+            // supplier that quits must return, not block forever.
+            (*inv.hash)["quit_state"] = Value::boolean(true);
             Value ex = args.empty() ? Value::any() : args[0];
             if (inv.hash->count("taps")) for (auto& t : *(*inv.hash)["taps"].arr) { if (t.t == VT::Hash && t.hash->count("quit") && (*t.hash)["quit"].t == VT::Code) { ValueList one{ex}; callCallable((*t.hash)["quit"], one); } }
             return Value::boolean(true); }

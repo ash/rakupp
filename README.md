@@ -22,8 +22,8 @@ stood in for the module, so **JSON::Fast is much slower here than in v3.0.0**
 
 | | v3.0.1 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of ~218,600 the suite declares | **197,053 (90%)** | 197,090 |
-| Roast, all-or-nothing — files fully passing, of 1,462 | **593 (41%)** | 594 |
+| Roast, per individual test — of ~218,600 the suite declares | **197,080 (90%)** | 197,090 |
+| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
 | Official documentation examples byte-identical on both engines | **952**† | 952 |
 | Ecosystem distributions passing their own `zef` install-time test suite | **47 / 59**\* | 50 / 59 |
 | Local regression suite | **398** | 312 |
@@ -32,9 +32,10 @@ The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
 *every* assertion in it passes — and the Roast figures are measured **with
 parallelism and true LTM on**, the same binary configuration users get. They
-are the repeating profile of three runs on one machine (197,063 / 197,048 /
-197,053, with 14/15/14 files timing out), not the best run seen: the
-scheduler and IO timing files flap under runner load. †The doc-example count
+are the repeating profile of four runs on one machine (197,082 / 197,056 /
+197,098 / 197,080 assertions; 595 / 593 / 594 / 594 files), not the best run
+seen: the scheduler and IO timing files flap under runner load, and the fourth
+run was taken because the first three gave no repeating file count. †The doc-example count
 carries a documented ±5 band: Rakudo randomizes hash iteration order per
 process, and the moved rows are ones where *Rakudo's* output drifted from the
 documentation. \*The distribution bar RAISED itself at v3.0.0: at v2.0.0

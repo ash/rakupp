@@ -108,6 +108,58 @@ amortises growth and the fat struct is noise next to dispatch. A packed
 native-int array representation is still worth having for memory, but it is not
 where the time goes.
 
+## 4a. What the speedup exposed: `Supply.wait` never blocked — FIXED (v3.0.1)
+
+Worth recording because of *how* it was found. Re-measuring the module battery
+after the work above, `Log::Async` dropped from 15/17 to 13/17, and
+`t/13-remove-tap.rakutest` printed the memorable
+
+```
+# expected: ["one", "three"]
+#      got: ["one", "three"]
+```
+
+Two identical gists comparing unequal reads as an equality bug, and that was
+the first (wrong) diagnosis. It was a race: the list was still being filled.
+Log::Async's `done` is
+
+```raku
+method done() {
+    start { sleep 0.1; $.source.done };
+    $.source.Supply.wait;
+}
+```
+
+and `Supply.wait` returned `True` immediately for *every* Supply — the
+`m == "wait"` case sat next to `done`/`close`/`quit` in the trivially-true
+list. Measured: 0 ms against Rakudo's 317 ms on a supplier completed after
+300 ms. So any code using `wait` as a barrier was never synchronised, and
+whether it worked came down to interpreter speed. The old binary won that race
+in this test; a faster main thread lost it.
+
+A live Supply (`$supplier.Supply`) carries `["supplier"]`, and `done` records
+`done_state` under the supplier's stripe, so `wait` now polls that under the
+same lock with `sleepYield` between checks (which releases the GIL, so the
+emitter can actually run). `quit` records `quit_state` for the same reason —
+otherwise a quit supply would block `wait` forever.
+
+Results: `wait` blocks 304 ms where Rakudo blocks 317; Log::Async goes to
+17/17, better than the 15/17 it managed before any of this work; and Roast
+gained two fully-passing files (593 -> 595, S17 +1). The lesson is that a
+performance change is a **concurrency** change: it reorders every race in the
+system, and the module battery caught what the unit suites did not.
+
+Two things left open here, neither blocking:
+
+- **`wait` does not rethrow on quit.** Rakudo throws the quit exception out of
+  `wait`; we return `True`. Not hanging was the important part; matching the
+  throw is a small, separate change that was not worth making under release
+  pressure.
+- **`Log::Async` `t/14-frame.rakutest` is flaky in parallel mode** — 6/6, 5/6,
+  4/6 or 1/6 across runs, on the *old* binary as well, and stable under
+  `RAKUPP_GIL=1`. Pre-existing, unrelated to the above, and looks like
+  `callframe` under worker threads.
+
 ## 5. Where else this pattern probably lives — OPEN
 
 The seven ops fixed here were found by profiling one module. The same

@@ -12,18 +12,19 @@ why the numbers here disagree with the ones v3.0.0 published.
 
 | | v3.0.0 published | v3.0.1 measured |
 |---|---:|---:|
-| Roast assertions (all declared) | 197,191 | **197,053** |
-| Roast files fully passing | 594 | **593** |
+| Roast assertions (all declared) | 197,191 | **197,080** |
+| Roast files fully passing | 594 | **594** |
 | Documentation examples byte-identical | 945 | **952** |
 | Distributions passing their own suite | 47 / 59 | **47 / 59** |
 | Local regression suite (`t/run.raku`) | 398 | **398** |
 
 The Roast figures are lower because they are real: three runs on this machine
-give 197,060 / 197,036 / 197,060 for the v3.0.0 code and 197,063 / 197,048 /
-197,053 for this one, with 13–16 files timing out per run rather than the 5 the
-v3.0.0 notes claim. The figure quoted is the repeating profile of the three,
-not the best of them.
-The recurring timeouts are the scheduler and IO timing files, which are
+give 197,060 / 197,036 / 197,060 for the v3.0.0 code, and four runs of this one
+give 197,082 / 197,056 / 197,098 / 197,080 across 595 / 593 / 594 / 594 files,
+with 12–16 files timing out per run rather than the 5 the v3.0.0 notes claim.
+The quoted figure is the repeating profile, not the best of them; the fourth
+run exists because the first three produced no repeating file count. The
+recurring timeouts are the scheduler and IO timing files, which are
 load-sensitive; the count is reported here rather than tuned away.
 
 ### What v3.0.0 shipped wrong
@@ -128,6 +129,31 @@ regression is the deliberate price of not shipping someone else's module
 inside the compiler; the engine improvement is what keeps the price at 153×
 rather than 2,800×. If the gap matters for your workload, the parse is still
 available as ordinary Raku — it is simply no longer secretly replaced.
+
+### `Supply.wait` never blocked
+
+Found by re-measuring the module battery after the speedup, which is the
+point of re-measuring: a performance change is also a concurrency change,
+because it reorders every race in the system. `Log::Async` dropped two test
+files, and the failing one reported `expected: ["one", "three"]` against
+`got: ["one", "three"]` — not an equality bug but a list still being filled.
+
+`Supply.wait` returned `True` immediately for every Supply; the `wait` case
+sat in the same trivially-true line as `done`/`close`/`quit`. Measured, 0 ms
+against Rakudo's 317 ms on a supplier completed after 300 ms. Anything using
+it as a barrier was never synchronised, and whether it worked came down to
+interpreter speed — the pre-3.0.1 binary won that race in Log::Async's suite
+and a faster one lost it. A live Supply now waits on its Supplier's recorded
+completion, polling under the supplier's own stripe with `sleepYield` between
+checks so the emitter can run; `quit` records its state too, so a quit supply
+releases `wait` instead of hanging it.
+
+It blocks 304 ms where Rakudo blocks 317. Log::Async goes to 17/17 — better
+than the 15/17 it managed before any of this release's work — and Roast gained
+two fully-passing files, S17 among them. Left open: Rakudo also rethrows the
+quit exception out of `wait` and we return `True`; and `Log::Async`'s
+`t/14-frame` is flaky in parallel mode on the previous binary too, which looks
+like `callframe` under worker threads.
 
 Gate results on the 3.0.1 binary: `t/run.raku` 398/398; `perf-guard --check`
 OK, no kernel more than 5% slower (fib −5.3%, asg −7.0%, hash −4.3%, loopsum

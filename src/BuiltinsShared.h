@@ -35,6 +35,11 @@ bool byteIsGraphemeIndex(const std::string& s);
 // The scanning ops call these once per character examined, so the difference
 // between memoized and not is the difference between a linear tokenizer and a
 // quadratic one. See the definitions in Builtins.cpp.
+// One stripe per Supplier, serializing emit/done/quit and tap registration.
+// Shared so `Supply.wait` can read the supplier's completion state without
+// racing an emit on another thread. Defined in Builtins.cpp.
+std::recursive_mutex& supplierMutex(const void* key);
+
 bool cowAllAscii(const CowStr& s);
 bool cowByteIsGraphemeIndex(const CowStr& s);
 long long cowGraphemeCount(const CowStr& s);

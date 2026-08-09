@@ -22,10 +22,10 @@ narrowest:
 
 | # | Measure | Current | Definition |
 |---|---|---|---|
-| 1 | **Files fully passing** | 593 / 1,462 (**~41%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
-| 2 | Assertions of **tests that ran** | 197,053 / 203,478 (~97%) | numerator ÷ assertions the files actually emitted |
-| 3 | Assertions of **tests planned** | 197,053 / 215,770 (~91%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
-| 4 | Assertions of **all declared tests** | 197,053 / 218,589 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
+| 1 | **Files fully passing** | 594 / 1,462 (**~41%**) | a file counts only if *every* planned assertion passes (or it legitimately `plan skip-all`s) |
+| 2 | Assertions of **tests that ran** | 197,080 / 203,502 (~97%) | numerator ÷ assertions the files actually emitted |
+| 3 | Assertions of **tests planned** | 197,080 / 215,794 (~91%) | ÷ the plan `N` of every file that emitted a plan (so tests lost to a mid-file abort count against us) |
+| 4 | Assertions of **all declared tests** | 197,080 / 218,613 (**~90%**) | ÷ every test any file declares — including files that abort before emitting TAP, whose `plan N` is read from source |
 
 **Measure 1 (files, ~41%)** and **measure 4 (all declared tests, ~90%)** are the
 two headline numbers. 2 and 3 are diagnostic context, not headlines.
@@ -37,8 +37,8 @@ its `1..N` line, so it emits *nothing*. Under measures 2 and 3 that file
 contributes 0 to both numerator and denominator — its tests simply vanish, which
 silently flatters the rate. Measure 4 closes that hole: for any file that emitted
 no plan at runtime, the harness reads the intended `plan N` straight from the
-source and counts all N as failing. That is why 4's denominator (218,589) is ~2.8k larger
-than 3's (215,770) — those 2,819 tests live in 85 no-TAP files (parse errors
+source and counts all N as failing. That is why 4's denominator (218,613) is ~2.8k larger
+than 3's (215,794) — those 2,819 tests live in 85 no-TAP files (parse errors
 and runtime aborts), recovered from source. A parse error can no longer hide
 its tests.
 
@@ -57,15 +57,15 @@ file (no-TAP), there is no static integer to read from source, so the file
 contributes **0** — its tests are genuinely uncountable for that run.
 
 The consequence: **a run that executes more of the suite gets a larger
-denominator.** Our current run recovers **218,589** declared tests. (This number
+denominator.** Our current run recovers **218,613** declared tests. (This number
 GROWS as parse fixes land: a file that used to die before announcing its plan now
 declares its real — often larger, dynamically computed — plan, so the percentage
 can dip while absolute passes rise.) Only **3 no-TAP files** still have no static
 plan to read, so the uncountable remainder is now marginal.
 
-So our same 197,053 passes read two ways:
+So our same 197,080 passes read two ways:
 
-- **~90%** against *our* denominator (197,053 / 218,589) — *"of the tests we can
+- **~90%** against *our* denominator (197,080 / 218,613) — *"of the tests we can
   account for, how many pass."* This is what a single harness run can measure,
   and it is the number we quote.
 - Essentially the **same ~90%** against the suite's *full* declared total —
@@ -209,12 +209,14 @@ the kill still count. A handful of borderline mega-files (the two
 2,282-assertion sprintf files, the S03/S32 minmax pair, several S15 tables)
 sit right at the timeout on the default binary, so how far each gets before
 the kill moves the total by **thousands per run** with machine conditions.
-Concretely: the v3.0.1 release band (197,048–197,063, three runs, 14/15/14
-files timing out) was measured on a machine carrying the release campaign's
-own build load, and the quoted figure is the repeating profile of the three
-rather than the best of them — the v3.0.0 notes quoted the top of their own
-band, which is part of why the two releases' headline numbers differ by more
-than the code does. An earlier
+Concretely: the v3.0.1 release band (197,056–197,098 over four runs, 595 /
+593 / 594 / 594 files, 13/13/12/14 timing out) was measured on a machine
+carrying the release campaign's own build load, and the quoted figure is the
+repeating profile rather than the best of them — the fourth run exists only
+because the first three produced no repeating file count, which is the
+situation this rule is for. The v3.0.0 notes quoted the top of their own band,
+which is part of why the two releases' headline numbers differ by more than
+the code does. An earlier
 commit configuration re-measured twice on an idle machine scored
 210,239/216,557 with an identical 9-file timeout list (±2 assertions
 between runs). Neither number is wrong — they are the same binary under

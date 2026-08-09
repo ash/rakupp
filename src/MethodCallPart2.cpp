@@ -434,7 +434,32 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (r.t == VT::Array) return mkSupply(*r.arr);
             return mkSupply(ValueList{r});
         }
-        if (m == "done" || m == "close" || m == "quit" || m == "wait") return Value::boolean(true);
+        if (m == "wait") {
+            // Rakudo BLOCKS here until the supply completes. Returning True at
+            // once made `$supplier.Supply.wait` a no-op, so every use of it as
+            // a barrier silently raced — Log::Async's `done` is exactly that
+            // (`start { sleep 0.1; $.source.done }; $.source.Supply.wait`), and
+            // its remove-tap test passed or failed on interpreter speed alone.
+            // A list-backed Supply is already complete; a live one waits on the
+            // Supplier that feeds it.
+            if (!listy && inv.hash->count("supplier")) {
+                Value sup = (*inv.hash)["supplier"];
+                if (sup.t == VT::Hash && sup.hash) {
+                    for (;;) {
+                        bool finished;
+                        {   // the supplier's own stripe — done/quit are written under it
+                            std::lock_guard<std::recursive_mutex> lk(supplierMutex(sup.hash.get()));
+                            finished = (sup.hash->count("done_state") && (*sup.hash)["done_state"].truthy())
+                                    || (sup.hash->count("quit_state") && (*sup.hash)["quit_state"].truthy());
+                        }
+                        if (finished) break;
+                        sleepYield(0.001);   // releases the GIL, so the emitter can run
+                    }
+                }
+            }
+            return Value::boolean(true);
+        }
+        if (m == "done" || m == "close" || m == "quit") return Value::boolean(true);
     }
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
         // .close removes the tap from its source: mark it closed so emit skips it;
