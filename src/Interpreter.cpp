@@ -17689,6 +17689,12 @@ std::string Interpreter::gistOf(const Value& v) {
         // first, which is its own piece of work.
         if (v.obj->cls->name.rfind("X::", 0) == 0) {
             auto it = v.obj->attrs.find("message");
+            // a hand-built `X::AdHoc.new(payload => …)` has no message attribute:
+            // its message IS the payload (see the .message accessor)
+            if (v.obj->cls->name == "X::AdHoc" && (it == v.obj->attrs.end() || !rtIsDefined(it->second))) {
+                auto pl = v.obj->attrs.find("payload");
+                if (pl != v.obj->attrs.end() && rtIsDefined(pl->second)) return pl->second.toStr();
+            }
             if (it != v.obj->attrs.end()) return it->second.toStr();
         }
     }

@@ -509,6 +509,10 @@ public:
     // grep/map/head/… steps. Returns the values to forward; sets `complete` when the
     // chain has finished (head/first reached its limit) so `done` should fire.
     ValueList applyTapChain(Value& tap, const Value& in, bool& complete);
+    // Same chain, but for a KIND-based live supply (interval/signal/async-read):
+    // those have no tap record to hang the chain on, so it rides on the Supply
+    // value and this wraps the consumer block with it. See the definition.
+    Value wrapSupplyChain(const Value& supply, Value consumer);
     Value callBuiltin(const std::string& name, ValueList args); // invoke a named builtin (used by codegen)
     // Same, but with the INTERPRETER's resolution order: a routine bound in the
     // environment wins over the built-in of that name (evalCall's

@@ -419,6 +419,28 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*s.hash)["chain"] = chain;
             return s;
         }
+        // Same for a kind-based live supply (Supply.interval, signal(…), the async
+        // socket streams): keep the whole spec — every `kind` check downstream must
+        // still recognise it — and record the step. wrapSupplyChain applies it when
+        // the supply is finally tapped or `whenever`ed. Without this the combinator
+        // fell through to the generic Hash path and called the block ONCE, with the
+        // spec hash itself as the topic.
+        if (!listy && !inv.hash->count("supplier") && inv.hash->count("kind") &&
+            (m == "map" || m == "grep" || m == "head" || m == "skip" ||
+             m == "first" || m == "unique" || m == "squish")) {
+            Value s = Value::makeHash(); s.hashKind = "Supply";
+            *s.hash = *inv.hash;
+            Value chain = Value::array();
+            if (inv.hash->count("chain")) *chain.arr = *(*inv.hash)["chain"].arr;
+            Value step = Value::makeHash();
+            (*step.hash)["op"] = Value::str(m);
+            for (auto& a : args) if (a.t != VT::Pair) { (*step.hash)["arg"] = a; break; }
+            for (auto& a : args) if (a.t == VT::Pair && a.pairVal && (a.s == "as" || a.s == "with")) (*step.hash)[a.s] = *a.pairVal;
+            (*step.hash)["state"] = Value::makeHash();
+            chain.arr->push_back(step);
+            (*s.hash)["chain"] = chain;
+            return s;
+        }
         if (listy && (m == "map" || m == "grep" || m == "head" || m == "tail" || m == "skip" ||
                       m == "first" ||
                       m == "reverse" || m == "sort" || m == "unique" || m == "squish" || m == "rotor" ||
@@ -2395,6 +2417,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         const ClassAttr* at = ci->findAttr(m);
         if (at && at->pub) {
             auto it = inv.obj->attrs.find(m);
+            // X::AdHoc.message IS its payload stringified (Rakudo defines the
+            // method that way), so `X::AdHoc.new(payload => "boom").message`
+            // answers "boom" and not an undefined attribute. Only the
+            // hand-built form needs it — `die "boom"` sets both.
+            if ((it == inv.obj->attrs.end() || !rtIsDefined(it->second)) &&
+                m == "message" && ci->name == "X::AdHoc") {
+                auto pl = inv.obj->attrs.find("payload");
+                if (pl != inv.obj->attrs.end() && rtIsDefined(pl->second)) return Value::str(pl->second.toStr());
+            }
             return it != inv.obj->attrs.end() ? it->second : Value::any();
         }
         // `has %.h handles <iterator list …>` — a NAMED delegation is a real method

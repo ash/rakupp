@@ -5432,6 +5432,52 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
 }
 
+// `Supply.interval(1).map({…})` — a kind-based live supply keeps the combinators
+// it was given as a transform CHAIN on the Supply value itself: unlike a
+// Supplier-backed supply there is no tap record to hang them on, because the
+// values come from a worker, not from a fan-out over registered taps. So the
+// chain is applied here, by wrapping the consumer: each value goes through
+// map/grep/head/… before the block or emit callback sees it.
+//
+// A transform that dies is the SOURCE failing, not the consumer, so it QUITS
+// this subscription: the block's QUIT phasers get the exception and the
+// subscription ends. A die in the block BODY is a different thing entirely and
+// must not be caught here (it kills the react — see spawnIntervalWhenever).
+Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
+    if (consumer.t != VT::Code) return consumer;
+    if (!(supply.t == VT::Hash && supply.hash && supply.hash->count("chain"))) return consumer;
+    // this subscription's OWN copy of the chain, each step with fresh state
+    // (head/skip/unique count per subscription, exactly as in tapSupply)
+    auto rec = std::make_shared<Value>(Value::makeHash());
+    Value chain = Value::array();
+    for (auto& step : *supply.hash->at("chain").arr) {
+        Value s2 = Value::makeHash(); *s2.hash = *step.hash;
+        (*s2.hash)["state"] = Value::makeHash();
+        chain.arr->push_back(s2);
+    }
+    (*rec->hash)["chain"] = chain;
+    std::vector<Value> quitP;
+    scanSupplyPhasers(consumer, nullptr, &quitP, nullptr);
+    Value w; w.t = VT::Code; w.code = std::make_shared<Callable>();
+    w.code->builtin = [rec, consumer, quitP](Interpreter& I, ValueList& a) -> Value {
+        Value in = a.empty() ? Value::any() : a[0];
+        bool complete = false;
+        ValueList outs;
+        try { outs = I.applyTapChain(*rec, in, complete); }
+        catch (RakuError& e) {
+            if (quitP.empty()) throw;   // nothing handles the quit: it leaves the react
+            Value ex = I.exceptionFor(e);
+            for (auto& q : quitP) { ValueList one{ex}; I.callCallable(q, one); }
+            throw LastEx{};             // handled: this subscription is over
+        }
+        Value last = Value::any();
+        for (auto& o : outs) { ValueList one{o}; last = I.callCallable(consumer, one); }
+        if (complete) throw LastEx{};   // head/first reached its limit
+        return last;
+    };
+    return w;
+}
+
 // `whenever Supply.interval(N)` inside a supply {…} block: a repeating ticker
 // that holds the activation open (pending) and fires each tick under it, so the
 // body's emits reach the downstream tap. Stops on `done`, on the activation's
@@ -5448,10 +5494,26 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
     if (delay < 0) delay = 0;
     auto tick = std::make_shared<long long>(0);
-    Value fireW = ctxCallable(ctx, [blk, ctx, tick](Interpreter& I2, ValueList&) -> Value {
+    std::vector<Value> quitP;
+    scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
+    Value fireW = ctxCallable(ctx, [blk, ctx, tick, quitP](Interpreter& I2, ValueList&) -> Value {
         if (!ctx->done && !ctx->doneFired) {
             ValueList one{Value::integer((*tick)++)};
-            try { I2.callCallable(blk, one); } catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) {}
+            try { I2.callCallable(blk, one); }
+            catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) {}
+            catch (RakuError& e) {
+                // a die in the tick body QUITS the enclosing supply (same rule as
+                // the generic whenever path): its own QUIT phasers see it first,
+                // otherwise it goes downstream and closes the activation. The
+                // worker used to swallow it, so the failure vanished and the
+                // ticker kept running.
+                Value ex = I2.exceptionFor(e);
+                bool handled = false;
+                for (auto& q : quitP) { ValueList o2{ex}; try { I2.callCallable(q, o2); handled = true; } catch (...) {} }
+                if (!handled && ctx->quitCb.t == VT::Code) { ValueList o2{ex}; try { I2.callCallable(ctx->quitCb, o2); } catch (...) {} }
+                ctx->done = true;
+                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+            }
         }
         return Value::any();
     });
@@ -5787,6 +5849,10 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
     }
     auto& h = *s.hash;
+    // a chain on a kind-based supply rides on the Supply itself (there is no tap
+    // record to carry it), so apply it to the emit callback for every kind below
+    if (h.count("chain") && !h.count("supplier") && !h.count("values"))
+        emitCb = wrapSupplyChain(s, emitCb);
     // 1) on-demand block: run it now; whenevers inside wire inner taps that may
     //    outlive this call (fed by I/O workers).
     if (h.count("block")) {
@@ -8120,7 +8186,7 @@ void Interpreter::registerBuiltins() {
                 (*src.hash)["kind"].toStr() == "interval") {
                 double iv = src.hash->count("interval") ? (*src.hash)["interval"].toNum() : 1;
                 double dl = src.hash->count("delay") ? (*src.hash)["delay"].toNum() : 0;
-                return I.spawnSupplyInterval(iv, dl, blk, ctx);
+                return I.spawnSupplyInterval(iv, dl, I.wrapSupplyChain(src, blk), ctx);
             }
             // whenever over a Promise: register an ASYNC one-shot — the block runs
             // once, with the promise's RESULT, when the promise settles. Must NOT
@@ -8242,7 +8308,7 @@ void Interpreter::registerBuiltins() {
                     try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                     return Value::any();
                 };
-                return I.tapSignal(sigs, emitW, Value::nil(), ctx);
+                return I.tapSignal(sigs, I.wrapSupplyChain(s, emitW), Value::nil(), ctx);
             }
             // whenever Supply.interval(N) { … } in a react: a live ticker source —
             // the react waits on it (forever, unless `done`/`last` ends it).
@@ -8251,7 +8317,7 @@ void Interpreter::registerBuiltins() {
                 double iv = s.hash->count("interval") ? (*s.hash)["interval"].toNum() : 1;
                 double dl = s.hash->count("delay") ? (*s.hash)["delay"].toNum() : 0;
                 std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
-                return I.spawnIntervalWhenever(iv, dl, blk, ctx, nullptr);
+                return I.spawnIntervalWhenever(iv, dl, I.wrapSupplyChain(s, blk), ctx, nullptr);
             }
             // whenever $socket.Supply { … } — an async-read/async-listen stream in a
             // react: count it as a live source so the block waits for data, and
@@ -8280,8 +8346,31 @@ void Interpreter::registerBuiltins() {
                 if (s.hash->count("supplier")) {
                     // live supply: register a tap; count it as a react source so the
                     // enclosing react blocks until this supplier signals done.
+                    //
+                    // The block's LAST/QUIT phasers ARE this tap's done/quit
+                    // handlers — `$supplier.done`/`.quit` fan out to them. Without
+                    // them a LAST never fired and, worse, `.quit` left the react
+                    // source live: the whole react waited forever on a supply that
+                    // had already failed. The phasers close over a shim env that
+                    // mirrors each call's parameter bindings, so `LAST { say $c }`
+                    // sees the last value (same trick as the from-list path below).
+                    auto phEnv = std::make_shared<Env>();
+                    phEnv->parent = blk.code ? blk.code->closure : nullptr;
+                    std::vector<Value> lastP, quitP;
+                    scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
+                    std::vector<std::string> pnames;
+                    if (blk.code && blk.code->params)
+                        for (auto& p : *blk.code->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    Value blkInner = blk, shim; shim.t = VT::Code; shim.code = std::make_shared<Callable>();
+                    shim.code->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
+                        for (size_t i = 0; i < pnames.size(); i++)
+                            phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
+                        if (!args.empty()) phEnv->define("$_", args[0]);
+                        ValueList one = args;
+                        return I2.callCallable(blkInner, one); // control exceptions reach the tap loop
+                    };
                     Value tapRec = Value::makeHash();
-                    (*tapRec.hash)["emit"] = blk;
+                    (*tapRec.hash)["emit"] = lastP.empty() ? blk : shim; // the shim costs a frame: only when a LAST needs it
                     // Carry the Supply's transform chain (head/grep/map/…) onto the tap,
                     // each step with its OWN fresh state — same as tapSupply's live branch.
                     // Without it `whenever $s.Supply.head(1)` never limits and, worse,
@@ -8295,10 +8384,47 @@ void Interpreter::registerBuiltins() {
                         }
                         (*tapRec.hash)["chain"] = chain;
                     }
+                    std::shared_ptr<ReactCtx> rctx;
                     if (!I.reactStack_.empty()) {
-                        auto ctx = I.reactStack_.back();
-                        tapRec.ext = ctx;
-                        { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
+                        rctx = I.reactStack_.back();
+                        tapRec.ext = rctx;
+                        { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
+                    }
+                    if (!lastP.empty()) {
+                        Value doneW; doneW.t = VT::Code; doneW.code = std::make_shared<Callable>();
+                        doneW.code->builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
+                            for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                            return Value::any();
+                        };
+                        (*tapRec.hash)["done"] = doneW;
+                    }
+                    {   // the supply quitting ends THIS subscription: a QUIT phaser
+                        // handles it (like a CATCH), and with no QUIT phaser the
+                        // exception is fatal to the whole react, as in Rakudo.
+                        std::weak_ptr<ReactCtx> wctx = rctx;
+                        auto th = tapRec.hash;
+                        Value quitW; quitW.t = VT::Code; quitW.code = std::make_shared<Callable>();
+                        quitW.code->builtin = [quitP, wctx, th](Interpreter& I2, ValueList& a) -> Value {
+                            (*th)["closed"] = Value::boolean(true);
+                            auto c = wctx.lock();
+                            // run the phasers under the react ctx: `done` inside a
+                            // QUIT block has to find the react it belongs to
+                            if (c) I2.reactStack_.push_back(c);
+                            for (auto& p : quitP) { ValueList one = a; try { I2.callCallable(p, one); } catch (...) {} }
+                            if (c) I2.reactStack_.pop_back();
+                            if (c) {
+                                std::lock_guard<std::mutex> lk(c->m);
+                                if (quitP.empty() && !c->quitFlag) { // nothing handled it
+                                    c->quitFlag = true;
+                                    c->quitErr = a.empty() ? Value::str("quit") : a[0];
+                                    c->closed = true;
+                                }
+                                if (c->liveSources > 0) c->liveSources--;
+                                c->cv.notify_all();
+                            }
+                            return Value::any();
+                        };
+                        (*tapRec.hash)["quit"] = quitW;
                     }
                     Value sup = (*s.hash)["supplier"];
                     if (sup.t == VT::Hash && sup.hash->count("taps")) { std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash.get())); (*sup.hash)["taps"].arr->push_back(tapRec); }
@@ -8315,10 +8441,15 @@ void Interpreter::registerBuiltins() {
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
                 if (s.hash->count("block")) {
-                    // on-demand supply in a react: tap it with a quit hook that fails
-                    // the react (no QUIT phaser on the whenever ⇒ the quit is fatal —
-                    // Cro::TCP's `whenever Connector.establish(...)` on a dead port)
+                    // on-demand supply in a react: tap it with a quit hook that runs
+                    // the whenever's QUIT phasers, and — with no QUIT phaser — fails
+                    // the react, the quit being fatal (Cro::TCP's `whenever
+                    // Connector.establish(...)` on a dead port). A `supply {…}` block
+                    // that dies quits its tap (see tapSupply), so this is the path
+                    // `whenever $producer { QUIT {…} }` arrives on.
                     std::shared_ptr<ReactCtx> rctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
+                    std::vector<Value> lastP, quitP;
+                    scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
                     Value emitW; emitW.t = VT::Code; emitW.code = std::make_shared<Callable>();
                     Value blkCopy = blk;
                     emitW.code->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
@@ -8326,20 +8457,43 @@ void Interpreter::registerBuiltins() {
                         try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                         return Value::any();
                     };
-                    Value quitW;
-                    if (rctx) {
-                        std::weak_ptr<ReactCtx> wctx = rctx;
-                        quitW.t = VT::Code; quitW.code = std::make_shared<Callable>();
-                        quitW.code->builtin = [wctx](Interpreter&, ValueList& a) -> Value {
-                            if (auto c = wctx.lock()) {
-                                std::lock_guard<std::mutex> lk(c->m);
-                                if (!c->quitFlag) { c->quitFlag = true; c->quitErr = a.empty() ? Value::str("quit") : a[0]; }
-                                c->closed = true; c->cv.notify_all();
-                            }
-                            return Value::any();
-                        };
-                    }
-                    return I.tapSupply(s, emitW, Value::nil(), quitW);
+                    // The producer is a live react source until it says done or
+                    // quits: an on-demand block whose own whenevers keep ticking
+                    // outlives the react body, and without this the react returned
+                    // at once and the program raced its own producer. `released`
+                    // keeps the count balanced if done and quit both arrive.
+                    auto released = std::make_shared<std::atomic<bool>>(false);
+                    if (rctx) { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
+                    std::weak_ptr<ReactCtx> wctx = rctx;
+                    auto release = [wctx, released]() {
+                        if (released->exchange(true)) return;
+                        if (auto c = wctx.lock()) {
+                            std::lock_guard<std::mutex> lk(c->m);
+                            if (c->liveSources > 0) c->liveSources--;
+                            c->cv.notify_all();
+                        }
+                    };
+                    Value quitW; quitW.t = VT::Code; quitW.code = std::make_shared<Callable>();
+                    quitW.code->builtin = [wctx, quitP, release](Interpreter& I2, ValueList& a) -> Value {
+                        auto c = wctx.lock();
+                        if (c) I2.reactStack_.push_back(c); // `done` in a QUIT block finds its react
+                        for (auto& p : quitP) { ValueList one = a; try { I2.callCallable(p, one); } catch (...) {} }
+                        if (c) I2.reactStack_.pop_back();
+                        if (c && quitP.empty()) {   // unhandled: fatal to the react
+                            std::lock_guard<std::mutex> lk(c->m);
+                            if (!c->quitFlag) { c->quitFlag = true; c->quitErr = a.empty() ? Value::str("quit") : a[0]; }
+                            c->closed = true; c->cv.notify_all();
+                        }
+                        release();
+                        return Value::any();
+                    };
+                    Value doneW; doneW.t = VT::Code; doneW.code = std::make_shared<Callable>();
+                    doneW.code->builtin = [lastP, release](Interpreter& I2, ValueList&) -> Value {
+                        for (auto& p : lastP) { ValueList na; try { I2.callCallable(p, na); } catch (...) {} }
+                        release();
+                        return Value::any();
+                    };
+                    return I.tapSupply(s, emitW, doneW, quitW);
                 }
                 {   // from-list: drain AFTER the react body (deferred activation,
                     // issue #18); LAST phasers fire when the list is exhausted or
