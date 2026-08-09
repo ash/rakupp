@@ -222,6 +222,10 @@ into `tools/perf-baseline.raku` beside the numbers.
 The general check, cheap to run against any candidate: time the operation over
 inputs of n, 2n, 4n and 8n. A ×2 per doubling is fine; a ×4 is this bug.
 
+Every program used to measure anything in this file is kept, with the procedure
+and the two ways it is easy to fool yourself, in
+[tools/bench/diagnose/](../../../tools/bench/diagnose/README.md).
+
 ## 6. The per-call and per-op tax — REDUCED (2026-08-09)
 
 §4 concluded that the residual gap to Rakudo is architecture. That is still true
