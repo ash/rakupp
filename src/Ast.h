@@ -379,6 +379,11 @@ struct AttrDecl {
     bool objKeyed = false; // `has %!h{Mu:U}` — an object-keyed hash: TYPE-OBJECT
                            // subscript keys stay distinct ("(Name)") instead of
                            // stringifying to "" like a plain hash's
+    // USER traits (`is json-name('licenseId')`, `is unmarshalled-by(-> $d {…})`,
+    // bare `is json-skip`): name + argument expression (null for bare). The
+    // built-in traits above never appear here; these are what the JSON::Name /
+    // JSON::Unmarshal trait_mods would store on the Attribute meta-object.
+    std::vector<std::pair<std::string, ExprPtr>> userTraits;
     ExprPtr def;        // optional default
 };
 

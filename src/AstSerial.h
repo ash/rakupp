@@ -20,7 +20,7 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 3; // v3: VarExpr.processScoped, WhileStmt.params
+inline constexpr uint32_t kAstSerialVersion = 5; // v5: AttrDecl.userTraits (is json-name/…), UseStmt.verReq
 
 struct AstSerialError { std::string msg; };
 

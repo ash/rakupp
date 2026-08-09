@@ -452,6 +452,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto& h = *inv.hash;
         if (m == "name") return h.count("name") ? h["name"] : Value::str("");
         if (m == "type" || m == "of" || m == "returns") return h.count("type") ? h["type"] : Value::typeObj("Mu");
+        if (m == "package") return h.count("package") ? h["package"] : Value::any();
+        // the JSON::Name / JSON::Unmarshal / JSON::Marshal attribute-role
+        // surface: the traits were stored on the ClassAttr at declaration time
+        // (see userTraits) instead of mixing roles into this meta-object.
+        if (m == "json-name" && h.count("trait:json-name")) return h["trait:json-name"];
+        // META6's MetaAttribute::Specification accessors, off the stored
+        // `is specification(Optionality, Version?)` trait payload
+        if ((m == "optionality" || m == "spec-version") && h.count("trait:specification")) {
+            Value& sp = h["trait:specification"];
+            bool isList = sp.t == VT::Array && sp.arr;
+            if (m == "optionality") return isList ? (sp.arr->empty() ? Value::any() : (*sp.arr)[0]) : sp;
+            if (isList && sp.arr->size() > 1) return (*sp.arr)[1];
+            Value v0 = Value::str("0"); v0.hashKind = "Version"; return v0;
+        }
+        if ((m == "unmarshal" || m == "marshal") && !args.empty()) {
+            std::string tk = m == "unmarshal" ? "trait:unmarshalled-by" : "trait:marshalled-by";
+            if (h.count(tk)) {
+                Value& by = h[tk];
+                // `is unmarshalled-by(-> $d {…})` calls the code with the JSON
+                // value; `is unmarshalled-by('method')` calls that method on the
+                // attribute's type with it (JSON::Unmarshal passes the type as
+                // the second argument).
+                if (by.t == VT::Code) return callCallable(by, ValueList{args[0]});
+                Value ty = args.size() > 1 ? args[1]
+                         : h.count("type") ? h["type"] : Value::typeObj("Mu");
+                return methodCall(ty, by.toStr(), ValueList{args[0]});
+            }
+            return args[0]; // no custom (un)marshaller: identity
+        }
         if (m == "readonly") return h.count("readonly") ? h["readonly"] : Value::boolean(true);
         if (m == "rw") return Value::boolean(h.count("readonly") && !h["readonly"].truthy());
         if (m == "has_accessor") return h.count("has_accessor") ? h["has_accessor"] : Value::boolean(false);
@@ -1796,6 +1825,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     (*at.hash)["type"] = attrTypeValue(a);
                     (*at.hash)["readonly"] = Value::boolean(!a.rw);
                     (*at.hash)["has_accessor"] = Value::boolean(a.pub);
+                    (*at.hash)["package"] = Value::typeObj(ci->name);
+                    for (auto& ut : a.userTraits) (*at.hash)["trait:" + ut.first] = ut.second;
                     (*out.hash)[an] = at;
                 }
                 return out;
@@ -1925,6 +1956,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         (*at.hash)["type"] = attrTypeValue(a);
                         (*at.hash)["readonly"] = Value::boolean(!a.rw);
                         (*at.hash)["has_accessor"] = Value::boolean(a.pub);
+                        (*at.hash)["package"] = Value::typeObj(c->name);
+                        for (auto& ut : a.userTraits) (*at.hash)["trait:" + ut.first] = ut.second;
                         out.arr->push_back(at);
                     }
                     if (local) return;
@@ -3379,6 +3412,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return methodCall(args[0], "does", ValueList{args[1]}, rwArgs);
         std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);
+        // an Attribute meta-object answering the JSON/META attribute-role
+        // checks (`$attr.does(META6::MetaAttribute)`) — same trait-key mapping
+        // `~~` uses (typeMatchesArg owns it, reached via typeOrSubsetMatches)
+        if (inv.t == VT::Hash && inv.hashKind == "Attribute")
+            return Value::boolean(typeOrSubsetMatches(inv, rn));
         bool res = inv.typeName() == rn;
         ClassInfo* ci = nullptr;
         if (inv.t == VT::Object && inv.obj) ci = inv.obj->cls.get();

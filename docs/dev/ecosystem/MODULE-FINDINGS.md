@@ -2212,3 +2212,74 @@ En route to AttrX::Mooish, general machinery that stands on its own:
 
 Gates at the end of it: t/run.raku 310/310, battery back to the pre-reckoning
 shape minus the honest AttrX::Mooish row, perf-guard OK.
+
+## 2026-08-09 — JSON::Fast goes native; the Test::META chain runs end to end
+
+The Test::META wall came down in two layers, one per commit.
+
+**Layer 1: JSON::Fast ships inside the interpreter.** The ecosystem's rank-1
+module was also the one interpreted execution could not serve: its parser
+walks the text one grapheme at a time, and the 332 KB SPDX license file
+License::SPDX loads cost 52.66 s (Rakudo, compiled: ~1 s). No general
+interpreter speedup closes a 50× gap on a hot inner loop, so the parser moved
+into C++ (the existing META6 JSON reader in Builtins.cpp, upgraded to full
+JSON::Fast fidelity: Str.Numeric number typing — Int/bigint, Rat for
+decimals, Num for exponents — surrogate pairs both ways, strict escapes,
+:immutable → Map/List, :allow-jsonc comments, grapheme-accurate
+X::JSON::AdditionalContent positions). `use JSON::Fast` now loads an embedded
+shim — the module's OWN 0.19 source with the parse machinery swapped for the
+builtin; to-json, the exception class, and the EXPORT protocol stay the
+module's own code (NativeJsonFast.cpp; RAKUPP_JSON_FAST=0 falls back to disk
+for one release). The module's own 14-file suite is the oracle: 14/14 under
+the shim (one fidelity round: lone surrogates must DIE, not degrade to
+U+FFFD). The SPDX parse is now 6.6 ms — faster than compiled Rakudo's 32 ms.
+
+**Layer 2: what the parse speed uncovered.** With the 52 s wall gone,
+License::SPDX.new recursed forever, then unmarshalled nothing, then Test::META
+mis-resolved its files — six general faults deep, each Rakudo-verified:
+
+- **A `*%named` slurpy's `where` clause was never consulted in multi
+  dispatch** — the slurpy-hash param is invisible to the positional scan in
+  scoreCandidate, so `multi method new(*%v where { not $_.keys })`
+  (License::SPDX's resource-loading constructor) matched EVERY .new call and
+  recursed: new(args) → empty-branch → from-json(332 KB) → new(args)… Now the
+  where runs against the hash of unclaimed nameds, like the slurpy-list rule.
+- **Attribute USER traits existed only as parser noise.** `is json-name('x')`,
+  `is unmarshalled-by(-> $d {…})`, `is specification(Mandatory)` — the whole
+  JSON::Name/JSON::Unmarshal/META6 attribute-role protocol — now flow
+  parser → AttrDecl.userTraits → ClassAttr (evaluated AFTER the class body
+  runs, in its scope: META6's unmarshaller is a `my multi sub` declared inside
+  the class) → the Attribute meta-object (trait:* keys), with the role checks
+  (`~~`/`.does` on NamedAttribute, CustomUnmarshaller, OptedInAttribute,
+  META6::MetaAttribute) answered from those keys and the accessors
+  (.json-name, .unmarshal, .optionality, .spec-version) reading them.
+- **The precomp cache DROPPED `use Foo:ver<…>` constraints** — UseStmt.verReq
+  was never serialized, so a cache-hit load resolved ANY version: META6's
+  `use JSON::Class:ver(v0.0.20+)` silently took the vendored 0.0.6 (a
+  different lineage entirely) on the second run and every run after. The
+  poisoned-run symptom (works fresh, breaks cached) cost most of a debugging
+  cycle. AST serial format v5; AttrDecl.userTraits ride along.
+- **The paren spelling `use JSON::Class:ver(v0.0.20+)` wasn't captured** at
+  all (only :ver<…>) — META6 uses the paren form.
+- **An unbound dynamic read as a defined empty container**, so
+  `@*META-CANDIDATES // <META6.json META.info>` kept the empty array and
+  Test::META searched for NO candidate files. Undefined now (Rakudo hands
+  back a Failure; undefined is the soft equivalent). And a `my @*dyn = …`
+  declaration is visible (empty) WHILE its own initializer runs — Test::META's
+  internals test calls get-meta() mid-initializer. Restricted to dynamics:
+  the unrestricted form put a map probe on every `my $x = …` and perf-guard
+  caught loopsum +12%.
+- **`".".IO.parent` answered "."** — Rakudo climbs to ".." (and "../..").
+  Test::META resolves its dist dir as $*PROGRAM.parent.parent.
+
+Test::META: 3/3 (was 1/3 with two timeouts). License::SPDX.new: 727 licenses
+in 0.3 s (was: never completes).
+
+Two lab notes. The battery's recurring junk directory (`lib ` + a deep
+space-joined tree inside JSON--Fast-0.19) is SOLVED: hand Rakudo a
+space-joined lib list as ONE RAKULIB entry and it mkdir -p's that whole
+string as a repo prefix for its .precomp store, dying at PATH_MAX mid-tree —
+the harness now sweeps `lib\s*` junk before staging. And this shell runs
+under Rosetta: a default cmake configure produces an x86_64 build that runs
+the whole interpreter under translation (the main build/ tree is one) —
+perf measurements happen on build-arm64 only.

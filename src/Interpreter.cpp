@@ -3900,6 +3900,22 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     };
 
 
+    // JSON::Fast ships NATIVE (NativeJsonFast.cpp): the shim is the module's
+    // own 0.19 source with the parser swapped for the C++ one, taken ahead of
+    // any disk copy — the interpreted parser is the wall (52 s for the 332 KB
+    // SPDX file), not something a faster search path could fix.
+    // RAKUPP_JSON_FAST=0 falls back to the disk module for one release.
+    if (name == "JSON::Fast" &&
+        (verReq.empty() || verSatisfies("0.19", verReq))) {
+        const char* jf = std::getenv("RAKUPP_JSON_FAST");
+        if (!(jf && *jf == '0')) {
+            extern const char* rakuppJsonFastShimSource();
+            if (traceLoad) fprintf(stderr, "[Load] JSON::Fast <- native shim\n");
+            loadSource(rakuppJsonFastShimSource(), "");
+            return;
+        }
+    }
+
     // A module compiled INTO this binary needs no file at all — take it before
     // the search path is even consulted, so a `--exe` binary runs with its
     // dependencies deleted from the machine.
@@ -5575,6 +5591,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ca.objKeyed = a.objKeyed;
                 ca.def = a.def.get();
                 ca.declId = &a;
+                // user traits (`is json-name(…)`) evaluate AFTER the class body
+                // runs — see the deferred pass below the body-exec block
                 ci->attrs.push_back(ca);
             }
             std::set<const void*> ownParams; // this declaration's own method signatures
@@ -5833,6 +5851,29 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                 tctx_.cur = saved;
                 tctx_.pkgPrefix = savedPrefix;
+            }
+            // USER attribute traits evaluate now, in the EXECUTED class-body
+            // scope: `is unmarshalled-by(&unmarsh-version)` (META6) names a
+            // `my multi sub` declared inside the body, which exists only after
+            // the body ran. Only this declaration's own attrs — a ClassAttr
+            // composed from a role arrived with its traits already evaluated
+            // in the role's own scope.
+            {
+                std::set<const void*> ownDecls;
+                for (auto& a : cd->attrs) ownDecls.insert(&a);
+                auto saved = tctx_.cur;
+                tctx_.cur = bodyEnv;
+                for (auto& ca2 : ci->attrs) {
+                    if (!ca2.declId || !ownDecls.count(ca2.declId) || !ca2.userTraits.empty()) continue;
+                    auto* ad = static_cast<const AttrDecl*>(ca2.declId);
+                    for (auto& ut : ad->userTraits) {
+                        Value tv = Value::boolean(true); // bare trait: `is json-skip`
+                        if (ut.second)
+                            try { tv = eval(ut.second.get()); } catch (...) {}
+                        ca2.userTraits.emplace_back(ut.first, tv);
+                    }
+                }
+                tctx_.cur = saved;
             }
             // Composition hook: a role mixed into the class's persistent .HOW (via a
             // method trait — Method::Also's AliasableClassHOW) may define `compose`;
@@ -7086,6 +7127,32 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
 
 static bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // an Attribute meta-object matching the JSON ecosystem's attribute ROLES:
+    // rakupp stores the traits on the attribute (trait:* keys) instead of
+    // mixing the roles in, so answer the role checks from those keys. Matched
+    // by the name's TAIL — JSON::Unmarshal spells them lexically, other code
+    // fully qualified.
+    if (arg.t == VT::Hash && arg.hashKind == "Attribute" && arg.hash) {
+        auto tail = type.rfind("::") == std::string::npos
+                  ? type : type.substr(type.rfind("::") + 2);
+        auto has = [&](const char* k) { return arg.hash->count(k) != 0; };
+        if (tail == "NamedAttribute") return has("trait:json-name");
+        if (tail == "CustomUnmarshaller")     return has("trait:unmarshalled-by");
+        if (tail == "CustomUnmarshallerCode") return has("trait:unmarshalled-by") && (*arg.hash)["trait:unmarshalled-by"].t == VT::Code;
+        if (tail == "CustomUnmarshallerMethod") return has("trait:unmarshalled-by") && (*arg.hash)["trait:unmarshalled-by"].t != VT::Code;
+        if (tail == "CustomMarshaller")       return has("trait:marshalled-by");
+        if (tail == "CustomMarshallerCode")   return has("trait:marshalled-by") && (*arg.hash)["trait:marshalled-by"].t == VT::Code;
+        if (tail == "CustomMarshallerMethod") return has("trait:marshalled-by") && (*arg.hash)["trait:marshalled-by"].t != VT::Code;
+        if (tail == "SkippedAttribute")       return has("trait:json-skip");
+        if (tail == "SkippedNullAttribute")   return has("trait:json-skip-null");
+        if (tail == "OptedInAttribute")
+            return has("trait:json") || has("trait:json-name") ||
+                   has("trait:unmarshalled-by") || has("trait:marshalled-by");
+        // META6's own attribute role: `is specification(Optional, v1)` applies
+        // MetaAttribute::Specification (check-mandatory walks attributes by it)
+        if (type.find("MetaAttribute") != std::string::npos)
+            return has("trait:specification");
+    }
     // an enum VALUE as a parameter type (`multi f(\b, int $i, LittleEndian)`)
     // matches exactly that value; the enum TYPE name matches any of its values
     if (!arg.enumName.empty() && (type == arg.enumName || type == arg.enumType ||
@@ -7306,6 +7373,36 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
             // a Code is called with the list, anything else matched against it.
             if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{lst}));
             else ok = boolify(applyBinOp("~~", lst, cv));
+        } catch (...) { tctx_.cur = saved; return -1; }
+        tctx_.cur = saved;
+        if (!ok) return -1;
+    }
+    // …and a `where` on a *%named slurpy is checked against the HASH it would
+    // bind. The slurpy-hash param is invisible to the positional scan above, so
+    // without this check a `multi method new(*%v where { not $_.keys })`
+    // (License::SPDX's resource-loading constructor) matched EVERY .new call:
+    // the args it was built to reject were dropped and new(x => 5) recursed
+    // into the no-args branch forever.
+    for (auto& p : params) {
+        if (!(p.slurpy && p.sigil == '%' && p.whereExpr)) continue;
+        Value h = Value::makeHash();
+        for (auto& a : args) {
+            if (!isNamedArg(a)) continue;
+            bool claimed = false;
+            for (auto& q : params)
+                if (q.named && !q.slurpy && !q.name.empty() &&
+                    q.name.substr(1) == a.s) { claimed = true; break; }
+            if (!claimed) (*h.hash)[a.s] = a.pairVal ? *a.pairVal : Value::boolean(true);
+        }
+        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+        if (!p.name.empty()) env->define(p.name, h);
+        env->define("$_", h);
+        auto saved = tctx_.cur; tctx_.cur = env;
+        bool ok = false;
+        try {
+            Value cv = eval(p.whereExpr.get());
+            if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{h}));
+            else ok = boolify(applyBinOp("~~", h, cv));
         } catch (...) { tctx_.cur = saved; return -1; }
         tctx_.cur = saved;
         if (!ok) return -1;
@@ -10952,6 +11049,23 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
 
+    // A `my` DYNAMIC declaration is visible WHILE its own initializer runs —
+    // Raku declares at compile time. Test::META's internals test does
+    // `my @*META-CANDIDATES = <a b>/ok(get-meta())`: the ok() call runs during
+    // the RHS and must see the (empty) freshly-declared dynamic, not fall back
+    // to an outer/default binding. Restricted to `$*`/`@*`/`%*` names: only a
+    // dynamic (or closure, which rakupp resolves at call time anyway) can
+    // observe the binding mid-initializer, and the unrestricted form put a map
+    // probe on every `my $x = …` (perf-guard caught loopsum +12%).
+    if (a->op == "=" && a->target->kind == NK::VarExpr) {
+        auto* ve = static_cast<VarExpr*>(a->target.get());
+        if (ve->declare && ve->declScope == "my" && ve->name.size() > 2 &&
+            ve->name[1] == '*' &&
+            (ve->name[0] == '$' || ve->name[0] == '@' || ve->name[0] == '%') &&
+            !tctx_.cur->vars.count(ve->name))
+            tctx_.cur->define(ve->name, defaultFor(ve->name[0]));
+    }
+
     // NativeCall CStruct field write: `$s.field = v` writes native memory at the
     // field's offset (there is no Value container to hand back as an lvalue).
     if (a->op == "=" && a->target->kind == NK::MethodCall) {
@@ -13588,6 +13702,11 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
                 res = typeMatchesArg(l, r.s) || r.s == "Str" || r.s == "Stringy";
             // an object matches its class ancestry incl. a built-in parent (`is DateTime`)
             if (!res && l.t == VT::Object) res = typeMatchesArg(l, r.s);
+            // an Attribute meta-object answering the JSON attribute-role checks
+            // (`$attr ~~ JSON::Name::NamedAttribute`) — typeMatchesArg owns the
+            // trait-key → role mapping
+            if (!res && l.t == VT::Hash && l.hashKind == "Attribute")
+                res = typeMatchesArg(l, r.s);
             // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
             // array[int] ~~ Positional[int], Mix ~~ Associative, …)
             // (an INSTANCE consults the same table under its own type name, so
@@ -19735,6 +19854,11 @@ Value Interpreter::eval(Expr* e) {
             if (!isSpecialVar(ve->name) && !noStrict_)
                 throwTyped("X::Undeclared", {{"symbol", ve->name}},
                            "Variable '" + ve->name + "' is not declared");
+            // an UNBOUND dynamic (`@*META-CANDIDATES // <defaults>`) must read as
+            // undefined so `//` takes the fallback — a defined empty array made
+            // Test::META search zero META candidates. (Rakudo hands back a
+            // Failure; undefined is the soft equivalent.)
+            if (ve->name.size() > 1 && ve->name[1] == '*') return Value::any();
             return defaultFor(sigil);
         }
         case NK::SymbolicRef: {

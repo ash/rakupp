@@ -186,6 +186,14 @@ template <class IO> void ioAttr(IO& io, AttrDecl& a) {
     F(io, a.required); F(io, a.built); F(io, a.requiredWhy); F(io, a.type);
     F(io, a.coerce); ioVec(io, a.handles); F(io, a.defConstraint);
     F(io, a.objKeyed);
+    if constexpr (IO::reading) {
+        size_t n = io.count();
+        a.userTraits.clear(); a.userTraits.resize(n);
+        for (auto& ut : a.userTraits) { F(io, ut.first); ioExpr(io, ut.second); }
+    } else {
+        io.uvar(a.userTraits.size());
+        for (auto& ut : a.userTraits) { F(io, ut.first); ioExpr(io, ut.second); }
+    }
     ioExpr(io, a.def);
 }
 
@@ -327,7 +335,9 @@ template <class IO> void visit(IO& io, LastStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, NextStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, RedoStmt& n) { F(io, n.target); }
 template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.arg); ioVec(io, n.importArgs);
-                                                      ioExpr(io, n.argExpr); F(io, n.isNo); F(io, n.isNeed); }
+                                                      ioExpr(io, n.argExpr); F(io, n.isNo); F(io, n.isNeed);
+                                                      F(io, n.verReq); } // dropping the :ver<…> constraint from the
+                                                                         // cache made run 2 load ANY version
 template <class IO> void visit(IO&, EmptyStmt&)     {}
 template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); ioExpr(io, n.where); }
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);

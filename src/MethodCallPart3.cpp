@@ -960,7 +960,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "parent") {
             long long up = args.empty() ? 1 : a0().toInt();
             std::string s = inv.toStr();
-            for (long long k = 0; k < up; k++) s = dirOf(s);
+            for (long long k = 0; k < up; k++) {
+                // relative tops climb: ".".parent is "..", "..".parent "../.."
+                // (dirOf answers "." for both, which is the DIRNAME rule, not
+                // the parent rule — Test::META resolves its dist dir this way)
+                if (s == ".") s = "..";
+                else if (s == ".." || (s.size() > 2 && s.compare(s.size() - 3, 3, "/..") == 0)) s += "/..";
+                else s = dirOf(s);
+            }
             return asIO(s);
         }
         if (m == "dirname") return Value::str(dirOf(inv.toStr()));

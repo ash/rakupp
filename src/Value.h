@@ -355,6 +355,11 @@ struct ClassAttr {
     int defConstraint = 0; // type smiley on the attr type: 0=none, 1=:D (defined), 2=:U (undefined)
     bool objKeyed = false; // `has %!h{Mu:U}` — object-keyed hash (type-object keys stay distinct)
     const void* declId = nullptr;     // identity of the declaring AttrDecl (diamond-composition dedup)
+    // user traits, evaluated at class-declaration time (`is json-name('x')` →
+    // {"json-name", Str}; `is unmarshalled-by({…})` → {"unmarshalled-by", Code};
+    // a bare `is json-skip` → {"json-skip", True}). Surfaced on the Attribute
+    // meta-object so JSON::Unmarshal's role checks and accessors see them.
+    std::vector<std::pair<std::string, Value>> userTraits;
 };
 
 struct ClassInfo {

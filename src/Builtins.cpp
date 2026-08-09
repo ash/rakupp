@@ -2247,74 +2247,121 @@ const char* quantValueType(const std::string& kind) {
 
 static Value makeAsyncSocket(int fd); // defined with the supply-wiring block below
 
-// ---- minimal JSON parser (Rakudo::Internals::JSON.from-json) ----------------
-// Recursive descent producing rakupp Values: object→Hash, array→List, string→
-// Str, number→Int/Num, true/false→Bool, null→Any. Enough for module resource
-// files and META-style data (OpenSSL's libraries.json, dist configs).
-static void jsonSkipWs(const std::string& s, size_t& i) {
-    while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
+// ---- JSON parser (native JSON::Fast + Rakudo::Internals::JSON) ---------------
+// ONE recursive-descent parser serves both the internal readers (jsonParseDoc:
+// META6, resource maps, OpenSSL's libraries.json) and the native JSON::Fast
+// from-json builtin: object→Hash/Map, array→Array/List, string→Str, number
+// typed exactly like Str.Numeric (Int with arbitrary precision, Rat for
+// decimals, Num for exponents), true/false→Bool, null→Any. Full JSON::Fast
+// fidelity — surrogate pairs, strict escapes, :immutable containers, JSONC
+// comments — lives HERE rather than in a second parser because the interpreted
+// one is the single thing rakupp could not serve: the 332 KB SPDX license file
+// costs 52 s interpreted and milliseconds native.
+struct JsonCfg {
+    bool immutable = false; // containers become Map/List instead of Hash/Array
+    bool jsonc     = false; // JSON::Fast :allow-jsonc — // and /* */ comments
+    int  depth     = 0;     // recursion guard: hostile nesting must die, not crash
+};
+static void jsonSkipWs(const std::string& s, size_t& i, const JsonCfg& cfg) {
+    for (;;) {
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
+        if (!cfg.jsonc || i + 1 >= s.size() || s[i] != '/') return;
+        if (s[i + 1] == '/') { i += 2; while (i < s.size() && s[i] != '\n') i++; }
+        else if (s[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < s.size() && !(s[i] == '*' && s[i + 1] == '/')) i++;
+            i = i + 1 < s.size() ? i + 2 : s.size();
+        }
+        else return; // a lone '/' is the next token's parse error, not whitespace
+    }
 }
-static bool jsonParseValue(const std::string& s, size_t& i, Value& out);
+static bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg);
 static bool jsonParseString(const std::string& s, size_t& i, std::string& out) {
     if (i >= s.size() || s[i] != '"') return false;
     i++;
     out.clear();
     while (i < s.size() && s[i] != '"') {
-        char c = s[i++];
-        if (c == '\\' && i < s.size()) {
-            char e = s[i++];
-            switch (e) {
-                case 'n': out += '\n'; break;  case 't': out += '\t'; break;
-                case 'r': out += '\r'; break;  case 'b': out += '\b'; break;
-                case 'f': out += '\f'; break;  case '/': out += '/';  break;
-                case '"': out += '"';  break;  case '\\': out += '\\'; break;
-                case 'u': {
-                    if (i + 4 > s.size()) return false;
-                    unsigned cp = std::strtoul(s.substr(i, 4).c_str(), nullptr, 16); i += 4;
-                    // encode the code point as UTF-8 (BMP only; surrogate pairs rare here)
-                    if (cp < 0x80) out += (char)cp;
-                    else if (cp < 0x800) { out += (char)(0xC0|(cp>>6)); out += (char)(0x80|(cp&0x3F)); }
-                    else { out += (char)(0xE0|(cp>>12)); out += (char)(0x80|((cp>>6)&0x3F)); out += (char)(0x80|(cp&0x3F)); }
-                    break;
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20) return false; // raw control characters must arrive \u-escaped
+        i++;
+        if (c != '\\') { out += (char)c; continue; }
+        if (i >= s.size()) return false;
+        char e = s[i++];
+        switch (e) {
+            case 'n': out += '\n'; break;  case 't': out += '\t'; break;
+            case 'r': out += '\r'; break;  case 'b': out += '\b'; break;
+            case 'f': out += '\f'; break;  case '/': out += '/';  break;
+            case '"': out += '"';  break;  case '\\': out += '\\'; break;
+            case 'u': {
+                auto hex4 = [&](size_t p, unsigned& v) {
+                    if (p + 4 > s.size()) return false;
+                    v = 0;
+                    for (int k = 0; k < 4; k++) {
+                        char h = s[p + k]; v <<= 4;
+                        if (h >= '0' && h <= '9') v |= (unsigned)(h - '0');
+                        else if (h >= 'a' && h <= 'f') v |= (unsigned)(h - 'a' + 10);
+                        else if (h >= 'A' && h <= 'F') v |= (unsigned)(h - 'A' + 10);
+                        else return false;
+                    }
+                    return true;
+                };
+                unsigned cp;
+                if (!hex4(i, cp)) return false;
+                i += 4;
+                // a high surrogate followed by \u-escaped low surrogate is ONE
+                // astral character (03-unicode.t round-trips flag emoji this way)
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size() &&
+                    s[i] == '\\' && s[i + 1] == 'u') {
+                    unsigned lo;
+                    if (hex4(i + 2, lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        i += 6;
+                    }
                 }
-                default: out += e; break;
+                if (cp >= 0xD800 && cp <= 0xDFFF) return false; // a LONE surrogate is not a character — die, like chr() would
+                out += cpToU8(cp);
+                break;
             }
-        } else out += c;
+            default: return false; // JSON::Fast dies on unknown escapes; so do we
+        }
     }
     if (i >= s.size()) return false;
     i++; // closing quote
     return true;
 }
-static bool jsonParseValue(const std::string& s, size_t& i, Value& out) {
-    jsonSkipWs(s, i);
+static bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg) {
+    if (++cfg.depth > 20000) return false; // ~3 MB of C++ frames; no real document nests this deep
+    jsonSkipWs(s, i, cfg);
     if (i >= s.size()) return false;
     char c = s[i];
     if (c == '"') { std::string str; if (!jsonParseString(s, i, str)) return false; out = Value::str(str); return true; }
     if (c == '{') {
         i++; out = Value::makeHash();
-        jsonSkipWs(s, i);
+        if (cfg.immutable) out.hashKind = "Map";
+        jsonSkipWs(s, i, cfg);
         if (i < s.size() && s[i] == '}') { i++; return true; }
         for (;;) {
-            jsonSkipWs(s, i);
+            jsonSkipWs(s, i, cfg);
             std::string key; if (!jsonParseString(s, i, key)) return false;
-            jsonSkipWs(s, i);
+            jsonSkipWs(s, i, cfg);
             if (i >= s.size() || s[i] != ':') return false; i++;
-            Value v; if (!jsonParseValue(s, i, v)) return false;
+            Value v; if (!jsonParseValue(s, i, v, cfg)) return false;
             (*out.hash)[key] = v;
-            jsonSkipWs(s, i);
+            jsonSkipWs(s, i, cfg);
             if (i < s.size() && s[i] == ',') { i++; continue; }
             if (i < s.size() && s[i] == '}') { i++; return true; }
             return false;
         }
     }
     if (c == '[') {
-        i++; out = Value::array(); out.isList = true;
-        jsonSkipWs(s, i);
+        i++; out = Value::array();
+        out.isList = cfg.immutable; // List under :immutable, Array otherwise — is-deeply tells them apart
+        jsonSkipWs(s, i, cfg);
         if (i < s.size() && s[i] == ']') { i++; return true; }
         for (;;) {
-            Value v; if (!jsonParseValue(s, i, v)) return false;
+            Value v; if (!jsonParseValue(s, i, v, cfg)) return false;
             out.arr->push_back(v);
-            jsonSkipWs(s, i);
+            jsonSkipWs(s, i, cfg);
             if (i < s.size() && s[i] == ',') { i++; continue; }
             if (i < s.size() && s[i] == ']') { i++; return true; }
             return false;
@@ -2323,19 +2370,16 @@ static bool jsonParseValue(const std::string& s, size_t& i, Value& out) {
     if (s.compare(i, 4, "true") == 0)  { i += 4; out = Value::boolean(true);  return true; }
     if (s.compare(i, 5, "false") == 0) { i += 5; out = Value::boolean(false); return true; }
     if (s.compare(i, 4, "null") == 0)  { i += 4; out = Value::any();           return true; }
-    // number
+    // number: scan the same loose token JSON::Fast does, then type it exactly
+    // like Str.Numeric does — that is what the real module calls on the token.
+    if (c != '-' && !std::isdigit((unsigned char)c)) return false; // JSON has no leading '+'
     size_t st = i;
-    if (c == '-' || c == '+') i++;
-    bool isFloat = false;
-    while (i < s.size() && (std::isdigit((unsigned char)s[i]) || s[i]=='.' || s[i]=='e' || s[i]=='E' || s[i]=='+' || s[i]=='-')) {
-        if (s[i]=='.' || s[i]=='e' || s[i]=='E') isFloat = true;
-        i++;
-    }
+    if (c == '-') i++;
+    while (i < s.size() && (std::isdigit((unsigned char)s[i]) || s[i] == '.' ||
+                            s[i] == 'e' || s[i] == 'E' || s[i] == '+' || s[i] == '-')) i++;
     if (i == st) return false;
-    std::string num = s.substr(st, i - st);
-    if (isFloat) out = Value::number(std::strtod(num.c_str(), nullptr));
-    else         out = Value::integer(std::strtoll(num.c_str(), nullptr, 10));
-    return true;
+    out = numifyStr(s.substr(st, i - st));
+    return out.t != VT::Any && out.t != VT::Nil; // "5." scans but does not numify — die like .Numeric
 }
 
 static std::string jsonEncode(const Value& v) {
@@ -2393,7 +2437,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
 // method table.
 Value jsonParseDoc(const std::string& text) {
     size_t i = 0; Value out;
-    if (!jsonParseValue(text, i, out)) return Value::any();
+    if (!jsonParseValue(text, i, out, JsonCfg{})) return Value::any();
     return out;
 }
 
@@ -3782,7 +3826,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "from-json") {
             std::string j = args.empty() ? "" : args[0].toStr();
             size_t i = 0; Value out;
-            if (!jsonParseValue(j, i, out))
+            if (!jsonParseValue(j, i, out, JsonCfg{}))
                 throw RakuError{Value::typeObj("X::AdHoc"), "Invalid JSON"};
             return out;
         }
@@ -8804,6 +8848,32 @@ void Interpreter::registerBuiltins() {
         std::string base = "/tmp/rakupp-tmpdir-" + std::to_string((long long)getpid()) + "-" + std::to_string(ctr);
         ::mkdir(base.c_str(), 0700);
         Value p = Value::str(base); p.hashKind = "IO"; return p;
+    };
+    // INTERNAL — the native JSON::Fast parser behind the embedded shim (see
+    // NativeJsonFast.cpp). Args: (text, immutable?, allow-jsonc?). Returns
+    // [parsed, parsed-length, rest-position, ok]: ok is False when the document
+    // ends before the text does, and the two positions — in graphemes, the unit
+    // .substr counts — let the shim throw X::JSON::AdditionalContent exactly
+    // like the real module. Malformed JSON dies here, like the real parser.
+    B["rakupp-json-from-parts"] = [](Interpreter&, ValueList& a) -> Value {
+        std::string text = a.empty() ? std::string() : a[0].toStr();
+        JsonCfg cfg;
+        if (a.size() > 1) cfg.immutable = a[1].truthy();
+        if (a.size() > 2) cfg.jsonc     = a[2].truthy();
+        size_t i = 0;
+        Value parsed;
+        if (!jsonParseValue(text, i, parsed, cfg))
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "Invalid JSON at character " + std::to_string(graphemeCount(text.substr(0, i)))};
+        size_t endParse = i;
+        jsonSkipWs(text, i, cfg);
+        bool ok = i == text.size();
+        Value ret = Value::array(); ret.isList = true;
+        ret.arr->push_back(parsed);
+        ret.arr->push_back(Value::integer(ok ? 0 : graphemeCount(text.substr(0, endParse))));
+        ret.arr->push_back(Value::integer(ok ? 0 : graphemeCount(text.substr(0, i))));
+        ret.arr->push_back(Value::boolean(ok));
+        return ret;
     };
     // `start` runs the block on a real worker thread, then cooperatively yields
     // the GIL until the worker reaches its first blocking point (or finishes). A

@@ -5950,6 +5950,26 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                             continue;
                         }
                     }
+                    // any OTHER lowercase `is trait` is a USER trait — keep the
+                    // name and parse its parenthesised argument as a real
+                    // expression instead of skipping it, because the JSON
+                    // ecosystem's attribute traits carry their payload there:
+                    // `is json-name('licenseId')`, `is unmarshalled-by(-> $d {…})`.
+                    if (tr == "is" && isKind(Tok::Ident)) {
+                        std::string utn = advance().text;
+                        static const std::set<std::string> builtinAttrTraits =
+                            {"rw", "readonly", "required", "built", "default", "DEPRECATED"};
+                        bool known = builtinAttrTraits.count(utn) != 0;
+                        if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                            advance();
+                            ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
+                            while (!isKind(Tok::RParen) && !isKind(Tok::End)) advance();
+                            if (isKind(Tok::RParen)) advance();
+                            if (!known) a.userTraits.emplace_back(utn, std::move(arg));
+                        }
+                        else if (!known) a.userTraits.emplace_back(utn, nullptr);
+                        continue;
+                    }
                     if (isKind(Tok::Ident) || isKind(Tok::Var)) advance();
                     if (isKind(Tok::LParen)) { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
                 }
@@ -6652,6 +6672,16 @@ StmtPtr Parser::parseStatementImpl() {
                     advance();
                     auto ws = readAngleWords(">");
                     val = ws.empty() ? std::string() : ws[0];
+                }
+                else if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                    // the PAREN spelling: `use JSON::Class:ver(v0.0.20+);` — a
+                    // version literal or string, not an angle list (META6 uses
+                    // this form; missing it silently loaded ANY version)
+                    advance();
+                    while (!isKind(Tok::RParen) && !isKind(Tok::End)) val += advance().text;
+                    if (isKind(Tok::RParen)) advance();
+                    if (!val.empty() && val[0] == 'v') val = val.substr(1);
+                    if (val.size() > 1 && (val[0] == '"' || val[0] == '\'')) val = val.substr(1, val.size() - 2);
                 }
                 if (adv == "ver") u->verReq = val;
             }
