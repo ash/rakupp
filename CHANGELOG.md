@@ -3,6 +3,147 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.0.1 (2026-08-09) — the procedure, run
+
+v3.0.0 was tagged without running [the release procedure](docs/dev/RELEASING.md).
+This release runs it. Every figure below was measured on the 3.0.1 binary, on
+one machine, in one pass — which is the whole point of the procedure, and is
+why the numbers here disagree with the ones v3.0.0 published.
+
+| | v3.0.0 published | v3.0.1 measured |
+|---|---:|---:|
+| Roast assertions (all declared) | 197,191 | **197,053** |
+| Roast files fully passing | 594 | **593** |
+| Documentation examples byte-identical | 945 | **952** |
+| Distributions passing their own suite | 47 / 59 | **47 / 59** |
+| Local regression suite (`t/run.raku`) | 398 | **398** |
+
+The Roast figures are lower because they are real: three runs on this machine
+give 197,060 / 197,036 / 197,060 for the v3.0.0 code and 197,063 / 197,048 /
+197,053 for this one, with 13–16 files timing out per run rather than the 5 the
+v3.0.0 notes claim. The figure quoted is the repeating profile of the three,
+not the best of them.
+The recurring timeouts are the scheduler and IO timing files, which are
+load-sensitive; the count is reported here rather than tuned away.
+
+### What v3.0.0 shipped wrong
+
+- **The version was never bumped.** `project(RakuPP VERSION …)`, the Guix
+  package and `flake.nix` all still said `2.0.0`, so every v3.0.0 binary
+  answered `rakupp --version` with `2.0.0`.
+- **The MSVC build did not link.** `rakuppJsonFastShimSource` was declared as
+  a block-scope `extern` inside a function in `namespace rakupp`. That names
+  `rakupp::…` under Clang and GCC but `::…` under MSVC, so the Windows job
+  failed with `LNK2019` while the MinGW job (GCC) stayed green — which is
+  exactly the shape a single-toolchain check misses.
+- **Three of the five platform binaries on the release are from the wrong
+  commit.** The tag was moved after the release was published: the
+  `linux-x86_64`, `macos-universal` and `windows-x64` assets are dated
+  2026-08-08 22:59 and were built before the JSON::Fast batch. Only the
+  OpenBSD and MinGW assets came from the tagged commit, because those were the
+  only jobs that passed on it.
+- **A regression case passed only on machines that had two zef modules.**
+  `t/regression/module-compat-cluster.raku` imports `JSON::Name` and
+  `JSON::Unmarshal`, and `is json-name` is a trait, so the import has to be
+  compile-time and cannot be probed from inside the file. It now declares
+  `#?requires` for both, which the runner already understood.
+- **The documentation figures disagreed with each other.** `docs/status/ROAST.md`
+  and the README carried 197,191 / 218,772 while COUNTING, FEATURES, GUIDE,
+  HIGHLIGHTS, OVERVIEW and ROADMAP still carried 197,090 / 218,675, and the
+  timeout count read 5 in one file and 10 in another.
+
+### JSON::Fast is no longer vendored
+
+v3.0.0 compiled JSON::Fast's own source into the binary as a C++ string
+literal and served it ahead of any copy on disk. It is not our module to
+carry: the arrangement pinned users to 0.19 whatever they had installed,
+silently, and put a third-party source tree inside the compiler with nothing
+but a comment recording it — in a project whose first line advertises no
+third-party dependencies. `NativeJsonFast.cpp`, the `loadModule` intercept
+and the internal `rakupp-json-from-parts` builtin are all gone, along with the
+`RAKUPP_JSON_FAST` escape hatch that existed only to switch between them.
+`use JSON::Fast` now loads the module from disk and runs it as ordinary Raku.
+
+The dist bar is unchanged at 47/59 with the shim removed, and JSON::Fast's own
+suite matches Rakudo file for file (13/14 against Rakudo's 13/14).
+
+### Strings are shared, not copied
+
+Removing the shim was only affordable because the reason for it turned out to
+be a defect rather than a fact about interpretation. `Value` held its Str as a
+`std::string` **by value**, and `Value` is copied on every argument pass, every
+operand evaluation and every list element — so a long string was memcpy'd once
+per operation. On top of that the "ASCII fast path" in the `nqp` scanning ops
+re-scanned the string prefix on each call to decide whether a byte index was a
+codepoint index. Both costs are O(length) per *character examined*, which makes
+any tokenizer written in Raku O(n²) no matter how it is written.
+
+`CowStr` (see [Value.h](src/Value.h)) keeps short strings inline, where
+`std::string`'s own small-buffer optimisation already makes a copy free, and
+promotes anything from 64 bytes up into a shared immutable body — so copying
+becomes a refcount bump. Promotion is eager rather than lazy-on-first-copy
+because rakupp runs work in parallel: a lazy promotion would have to mutate the
+source from a const copy constructor. Because the promoted body is immutable it
+is also a sound place to cache the two properties the scanning ops kept
+recomputing, so `nqp::ordat`/`eqat`/`substr`/`chars` and `.chars` now answer
+from it.
+
+JSON::Fast parsing the same generated documents. Both rakupp columns run the
+module as ordinary Raku; the v3.0.0 shim column is what v3.0.0 actually did
+instead, and is a C++ parser rather than the module:
+
+| input | v3.0.0 code, shim off | v3.0.1 | Rakudo | v3.0.0 as shipped (shim) |
+|---|---:|---:|---:|---:|
+| 51 KB | 255 ms | 102 ms | — | — |
+| 103 KB | 777 ms | 190 ms | — | — |
+| 208 KB | 3,245 ms | 381 ms | — | — |
+| 421 KB | 13,969 ms | **764 ms** | 51 ms | 5 ms |
+
+The scaling matters more than any single row: doubling the input used to
+quadruple the time, and now doubles it — the rows above step by 1.86×, 2.00×,
+2.00×. rakupp remains ~15× slower than compiled Rakudo on this workload, and
+that residue is not an algorithmic defect: measured directly, a loop iteration
+costs ~0.46 µs here against Rakudo's ~0.02 µs, so ~23× is what tree-walking an
+AST costs against JIT-compiled bytecode. JSON::Fast is a per-character `nqp::`
+loop, the worst possible shape for a tree-walker. Closing that gap is a
+bytecode VM, not an optimisation.
+
+Four sites were fixed, each the same mistake in a different place: an "ASCII
+fast path" that re-derived whether the text was ASCII on every call, by
+scanning it. `nqp::ordat`, `eqat`, `substr` and `chars` were the first three;
+`nqp::index`, `findnotcclass` and `iscclass` were found afterwards by asking
+why Rakudo was still faster than the remaining gap explained, and
+`findnotcclass` alone — called once per string token, scanning the whole
+document each time — was still quadratic on its own. `nqp::strtocodes` also
+ran a full Unicode normalization pass over ASCII, which every normalization
+form leaves unchanged.
+
+**Read that table against the shim, not only against the column next to it.**
+The middle column is the same interpreter with the shim switched off, so the
+11× is the honest measure of what changed in the engine — but it is not what
+v3.0.0 users had. v3.0.0 as shipped parsed that file in **5 ms**, because a
+C++ parser was doing the work. Against that, 764 ms is **153× slower**, and
+anyone who came to depend on v3.0.0's JSON::Fast speed will feel it. That
+regression is the deliberate price of not shipping someone else's module
+inside the compiler; the engine improvement is what keeps the price at 153×
+rather than 2,800×. If the gap matters for your workload, the parse is still
+available as ordinary Raku — it is simply no longer secretly replaced.
+
+Gate results on the 3.0.1 binary: `t/run.raku` 398/398; `perf-guard --check`
+OK, no kernel more than 5% slower (fib −5.3%, asg −7.0%, hash −4.3%, loopsum
++4.5% and still behind its best — standing debt, not new); `run-optbench` OK,
+interpreter, `--exe`, `--exe -O` and Rakudo agreeing on every kernel; the
+conformance sweep at 952 documentation examples and 24 operator divergences in
+4 clusters over 121 operators and 833 expressions.
+
+Left open deliberately: the `perf-guard` baseline is still the one recorded at
+v1.5.1 — it was not re-recorded for v2.0.0 or v3.0.0, so the gate has been
+comparing against an old reference. It passes against it, so re-recording is a
+separate decision rather than something to slip into this release. The guard
+also has no string kernel, which is why a change of this size in the string
+representation could pass it without being measured; the JSON table above is
+standing in for one.
+
 ## v3.0.0 (2026-08-09) — faster by default
 
 | | v2.0.0 | v3.0.0 |

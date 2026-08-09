@@ -3900,22 +3900,6 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     };
 
 
-    // JSON::Fast ships NATIVE (NativeJsonFast.cpp): the shim is the module's
-    // own 0.19 source with the parser swapped for the C++ one, taken ahead of
-    // any disk copy — the interpreted parser is the wall (52 s for the 332 KB
-    // SPDX file), not something a faster search path could fix.
-    // RAKUPP_JSON_FAST=0 falls back to the disk module for one release.
-    if (name == "JSON::Fast" &&
-        (verReq.empty() || verSatisfies("0.19", verReq))) {
-        const char* jf = std::getenv("RAKUPP_JSON_FAST");
-        if (!(jf && *jf == '0')) {
-            extern const char* rakuppJsonFastShimSource();
-            if (traceLoad) fprintf(stderr, "[Load] JSON::Fast <- native shim\n");
-            loadSource(rakuppJsonFastShimSource(), "");
-            return;
-        }
-    }
-
     // A module compiled INTO this binary needs no file at all — take it before
     // the search path is even consulted, so a `--exe` binary runs with its
     // dependencies deleted from the machine.
@@ -11320,7 +11304,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         unsigned long long x2 = (v.t == VT::Int && v.big)
                             ? v.big->toU64Wrap() : (unsigned long long)v.toInt();
                         for (int b = 0; b < w; b++)
-                            bp->s[(size_t)j * w + b] = (char)(unsigned char)((x2 >> (8 * b)) & 0xFF);
+                            bp->s.mut()[(size_t)j * w + b] = (char)(unsigned char)((x2 >> (8 * b)) & 0xFF);
                     }
                     rwWriteThrough(idx->base.get());
                     return sink ? Value::any() : eval(a->target.get());
@@ -11337,7 +11321,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 unsigned long long x = (rhs.t == VT::Int && rhs.big)
                     ? rhs.big->toU64Wrap() : (unsigned long long)rhs.toInt();
                 for (int k = 0; k < w; k++)               // little-endian, truncating
-                    bp->s[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
+                    bp->s.mut()[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
                 rwWriteThrough(idx->base.get());
                 return sink ? Value::any() : bp->blobElemAt(i);
             }
@@ -11681,7 +11665,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 unsigned long long w = v.big ? v.big->toU64Wrap()
                                                              : (unsigned long long)v.toInt();
                                 for (int b = 0; b < esz; b++)
-                                    bp->s[(size_t)j * esz + b] = (char)((w >> (8 * b)) & 0xFF);
+                                    bp->s.mut()[(size_t)j * esz + b] = (char)((w >> (8 * b)) & 0xFF);
                                 outB.arr->push_back(v);
                             }
                             return sink ? Value::any() : outB;
@@ -12177,7 +12161,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     Value nv = applyBinOp(binop, cur, rhsB);
                     unsigned long long w = nv.big ? nv.big->toU64Wrap() : (unsigned long long)nv.toInt();
                     for (int b = 0; b < esz; b++)
-                        bp->s[(size_t)i * esz + b] = (char)((w >> (8 * b)) & 0xFF);
+                        bp->s.mut()[(size_t)i * esz + b] = (char)((w >> (8 * b)) & 0xFF);
                     return sink ? Value::any() : bp->blobElemAt(i);
                 }
             }
@@ -17569,7 +17553,7 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     // caught value is a bare Str and `.message` in CATCH dies, masking the error.
     bool strTypeName = e.payload.t == VT::Str && e.payload.s.rfind("X::", 0) == 0;
     if (e.payload.t != VT::Type && !strTypeName) return e.payload; // die $obj / die "msg"
-    std::string tn = e.payload.s.empty() ? "X::AdHoc" : e.payload.s;
+    std::string tn = e.payload.s.empty() ? std::string("X::AdHoc") : e.payload.s.str();
     std::shared_ptr<ClassInfo> ci;
     auto it = classes_.find(tn);
     if (it != classes_.end()) ci = it->second;
@@ -20322,7 +20306,7 @@ Value Interpreter::eval(Expr* e) {
                 if (mc->method == "pop" || mc->method == "shift") {
                     Value* lv = nullptr; try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
                     Value* tgt = lv ? lv : nullptr;
-                    std::string& s = tgt ? tgt->s : inv.s;
+                    std::string& s = tgt ? tgt->s.mut() : inv.s.mut();
                     if (s.empty())
                         throw RakuError{Value::typeObj("X::Cannot::Empty"),
                             "Cannot " + mc->method + " from an empty " + inv.hashKind};

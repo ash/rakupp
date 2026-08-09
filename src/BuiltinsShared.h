@@ -31,6 +31,13 @@ bool allAscii(const std::string& s);
 // True when a byte index into `s` is also a grapheme index — ASCII and CR-free,
 // so Raku's grapheme-indexed string methods can work on bytes without decoding.
 bool byteIsGraphemeIndex(const std::string& s);
+// The cached forms: same answers, memoized on a long string's immutable body.
+// The scanning ops call these once per character examined, so the difference
+// between memoized and not is the difference between a linear tokenizer and a
+// quadratic one. See the definitions in Builtins.cpp.
+bool cowAllAscii(const CowStr& s);
+bool cowByteIsGraphemeIndex(const CowStr& s);
+long long cowGraphemeCount(const CowStr& s);
 
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);

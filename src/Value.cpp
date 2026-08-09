@@ -305,7 +305,7 @@ std::string Value::toStr() const {
         // files. baggyKeyStr now opens with its own `v.t == VT::Type` arm that
         // keys on the gist, which is exactly the "give makeBaggy its own key
         // function first" the old note asked for — so the blocker is gone.
-        case VT::Type: return s == "IterationEnd" ? s : "";
+        case VT::Type: return s == "IterationEnd" ? s.str() : std::string();
         case VT::Pair: return s + "\t" + (pairVal ? pairVal->toStr() : "");
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
@@ -544,8 +544,8 @@ std::string Value::gist() const {
             // families: Kind(elems). Everything else (Date, Failure, …) keeps
             // its toStr form via the default below.
             if (hashKind == "Attribute" && hash) { // Str $!name
-                std::string tn = hash->count("type") ? hash->at("type").s : "Mu";
-                std::string nm = hash->count("name") ? hash->at("name").s : "";
+                std::string tn = hash->count("type") ? hash->at("type").s.str() : std::string("Mu");
+                std::string nm = hash->count("name") ? hash->at("name").s.str() : std::string();
                 return (tn.empty() ? "Mu" : tn) + " " + nm;
             }
             // $*RAKU / $*RAKU.compiler. These carry no data of their own — every

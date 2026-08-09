@@ -10,33 +10,39 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v3.0.0** (2026-08-09) — *faster by default,
-honestly counted*: `start` runs on all cores and `|` ranks by true LTM out of
-the box (`RAKUPP_GIL=1` / `RAKUPP_LTM=0` are the one-release escape hatches).
+**Status:** current release **v3.0.1** (2026-08-09) — *the procedure, run*:
+v3.0.0's figures were published without it, and these were measured with it.
+`start` still runs on all cores and `|` still ranks by true LTM out of the box
+(`RAKUPP_GIL=1` / `RAKUPP_LTM=0` are the one-release escape hatches); the
+JSON::Fast source v3.0.0 compiled into the binary is gone, and strings are
+shared rather than copied, which cut a 421 KB JSON parse from 13,969 ms to
+764 ms. Note the trade: v3.0.0 parsed that file in 5 ms because a C++ parser
+stood in for the module, so **JSON::Fast is much slower here than in v3.0.0**
+— by choice, because that module is not ours to ship.
 
-| | v3.0.0 | at v2.0.0 |
+| | v3.0.1 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of ~218,800 the suite declares | **197,191 (90%)** | 197,090 |
-| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
-| Official documentation examples byte-identical on both engines | **945**† | 952 |
+| Roast, per individual test — of ~218,600 the suite declares | **197,053 (90%)** | 197,090 |
+| Roast, all-or-nothing — files fully passing, of 1,462 | **593 (41%)** | 594 |
+| Official documentation examples byte-identical on both engines | **952**† | 952 |
 | Ecosystem distributions passing their own `zef` install-time test suite | **47 / 59**\* | 50 / 59 |
 | Local regression suite | **398** | 312 |
 
 The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
-*every* assertion in it passes — and the v3.0.0 Roast figures are measured
-**with parallelism and true LTM on**, the same binary configuration users get.
-†The doc-example count carries a documented ±5 band: Rakudo randomizes hash
-iteration order per process, and the moved rows are ones where *Rakudo's*
-output drifted from the documentation. \*The distribution bar RAISED itself at
-v3.0.0: at v2.0.0 Rakudo's own environment could not load the `Test::META`
-dependency chain, so every dist's `t/*meta*` files were excluded from the
-comparison; that chain now loads and those files count. 47/59 clears that
-stricter bar — JSON::Fast ships native inside the interpreter (its own
-14-file suite passes against the built-in parser; the 332 KB SPDX license
-list parses in 6.6 ms where interpreting the module took 52.7 s), and the
-Test::META chain runs end to end. Compare the columns knowing the new one
-clears a stricter bar, as with every release here.
+*every* assertion in it passes — and the Roast figures are measured **with
+parallelism and true LTM on**, the same binary configuration users get. They
+are the repeating profile of three runs on one machine (197,063 / 197,048 /
+197,053, with 14/15/14 files timing out), not the best run seen: the
+scheduler and IO timing files flap under runner load. †The doc-example count
+carries a documented ±5 band: Rakudo randomizes hash iteration order per
+process, and the moved rows are ones where *Rakudo's* output drifted from the
+documentation. \*The distribution bar RAISED itself at v3.0.0: at v2.0.0
+Rakudo's own environment could not load the `Test::META` dependency chain, so
+every dist's `t/*meta*` files were excluded from the comparison; that chain
+now loads and those files count, and 47/59 clears that stricter bar. Compare
+the columns knowing the new one clears a stricter bar, as with every release
+here.
 Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/guide/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/guide/GUIDE.md) for the complete picture,
@@ -160,9 +166,10 @@ build/rakupp -e 'say (1..100).grep(*.is-prime).sum'    # → 1060
 | `--help`, `--version` | Show help / version |
 
 Flags are position-independent and cluster like perl's (`rakupp -pi.bak -e
-'$_ = $_.subst("a", "b")' *.txt` works as you'd hope). `RAKUPP_PARALLEL=1`
-opts into true CPU parallelism for `start`/worker threads (default
-coordinates under a GIL). Full reference: [CLI.md](docs/guide/CLI.md).
+'$_ = $_.subst("a", "b")' *.txt` works as you'd hope). `start`/worker threads
+use every core by default since v3.0.0; `RAKUPP_GIL=1` (or `RAKUPP_PARALLEL=0`)
+selects the cooperative global lock instead. Full reference:
+[CLI.md](docs/guide/CLI.md).
 
 ## Modules
 

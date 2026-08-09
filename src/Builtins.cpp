@@ -1058,6 +1058,46 @@ size_t asciiRun(const std::string& s, size_t limit) {
 }
 bool allAscii(const std::string& s) { return asciiRun(s, s.size()) == s.size(); }
 
+// The same three questions, answered once per string instead of once per
+// character. A CowStr long enough to have been promoted carries an immutable
+// body (StrBody), and these properties are pure functions of that text — so the
+// answer can be cached there. Without the cache the "ASCII fast path" in the
+// scanning ops below still walked the prefix on every single call, which is
+// what made a pure-Raku tokenizer quadratic no matter how cheap the walk was.
+// A short (unpromoted) string has no body; rescanning ~64 bytes is free.
+bool cowAllAscii(const CowStr& s) {
+    const StrBody* b = s.body();
+    if (!b) return allAscii(s.str());
+    signed char c = b->allAscii.load(std::memory_order_relaxed);
+    if (c < 0) {
+        c = allAscii(b->text) ? 1 : 0;
+        b->allAscii.store(c, std::memory_order_relaxed);
+    }
+    return c == 1;
+}
+bool cowByteIsGraphemeIndex(const CowStr& s) {
+    const StrBody* b = s.body();
+    if (!b) return byteIsGraphemeIndex(s.str());
+    if (!cowAllAscii(s)) return false;
+    signed char c = b->crFree.load(std::memory_order_relaxed);
+    if (c < 0) {
+        c = std::memchr(b->text.data(), '\r', b->text.size()) == nullptr ? 1 : 0;
+        b->crFree.store(c, std::memory_order_relaxed);
+    }
+    return c == 1;
+}
+long long cowGraphemeCount(const CowStr& s) {
+    const StrBody* b = s.body();
+    if (!b) return graphemeCount(s.str());
+    long long n = b->nGraphemes.load(std::memory_order_relaxed);
+    if (n < 0) {
+        n = cowByteIsGraphemeIndex(s) ? (long long)b->text.size()
+                                      : (long long)uniGraphemeCount(utf8cp(b->text));
+        b->nGraphemes.store(n, std::memory_order_relaxed);
+    }
+    return n;
+}
+
 // True when a BYTE index into `s` is also a GRAPHEME index — which is what Raku
 // string positions actually are. Needs two things: every byte ASCII (so one byte
 // is one codepoint), and no CR, because CR LF is the one ASCII sequence that
@@ -1601,7 +1641,7 @@ Value Interpreter::bufSplice(Value& buf, ValueList& args) {
 }
 
 Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
-    std::string& bytes = buf.s;
+    std::string& bytes = buf.s.mut();
     auto endianOf = [&](const Value& v) -> int { // 0 native, 1 little, 2 big
         std::string e = !v.enumName.empty() ? v.enumName : v.toStr();
         if (e == "LittleEndian") return 1;
@@ -6002,7 +6042,12 @@ Value rtBPut(Interpreter& I, const Value& v)   { std::string out = I.strOf(v); o
 Value rtBNote(Interpreter& I, const Value& v)  { std::string out = I.gistOf(v); out += "\n"; return I.ioEmit(out, "$*ERR", true); }
 Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 1, 0)); }
 Value rtBLc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 0, 0)); }
-Value rtBChars(Interpreter&, const Value& v) { return Value::integer(graphemeCount(v.toStr())); }
+Value rtBChars(Interpreter&, const Value& v) {
+    // Straight off the cache for a plain Str: `.chars` in a scanning loop was
+    // the other per-character O(n).
+    if (v.t == VT::Str) return Value::integer(cowGraphemeCount(v.s));
+    return Value::integer(graphemeCount(v.toStr()));
+}
 Value rtBSqrt(Interpreter& I, const Value& v) {
     if (v.t == VT::Complex) return complexSqrt(v.n, v.im);
     ValueList one{v};
@@ -6192,7 +6237,7 @@ void Interpreter::registerBuiltins() {
         // a bare `fail` with no $! still carries an exception — X::AdHoc
         // "Failed" — so `.exception.message` answers rather than dying on Any
         if (ex.t != VT::Object)
-            ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s : "Failed");
+            ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s.str() : std::string("Failed"));
         Value f = Value::makeHash(); f.hashKind = "Failure";
         (*f.hash)["exception"] = ex;
         (*f.hash)["message"] = ex.obj && ex.obj->attrs.count("message")
@@ -8849,32 +8894,6 @@ void Interpreter::registerBuiltins() {
         ::mkdir(base.c_str(), 0700);
         Value p = Value::str(base); p.hashKind = "IO"; return p;
     };
-    // INTERNAL — the native JSON::Fast parser behind the embedded shim (see
-    // NativeJsonFast.cpp). Args: (text, immutable?, allow-jsonc?). Returns
-    // [parsed, parsed-length, rest-position, ok]: ok is False when the document
-    // ends before the text does, and the two positions — in graphemes, the unit
-    // .substr counts — let the shim throw X::JSON::AdditionalContent exactly
-    // like the real module. Malformed JSON dies here, like the real parser.
-    B["rakupp-json-from-parts"] = [](Interpreter&, ValueList& a) -> Value {
-        std::string text = a.empty() ? std::string() : a[0].toStr();
-        JsonCfg cfg;
-        if (a.size() > 1) cfg.immutable = a[1].truthy();
-        if (a.size() > 2) cfg.jsonc     = a[2].truthy();
-        size_t i = 0;
-        Value parsed;
-        if (!jsonParseValue(text, i, parsed, cfg))
-            throw RakuError{Value::typeObj("X::AdHoc"),
-                "Invalid JSON at character " + std::to_string(graphemeCount(text.substr(0, i)))};
-        size_t endParse = i;
-        jsonSkipWs(text, i, cfg);
-        bool ok = i == text.size();
-        Value ret = Value::array(); ret.isList = true;
-        ret.arr->push_back(parsed);
-        ret.arr->push_back(Value::integer(ok ? 0 : graphemeCount(text.substr(0, endParse))));
-        ret.arr->push_back(Value::integer(ok ? 0 : graphemeCount(text.substr(0, i))));
-        ret.arr->push_back(Value::boolean(ok));
-        return ret;
-    };
     // `start` runs the block on a real worker thread, then cooperatively yields
     // the GIL until the worker reaches its first blocking point (or finishes). A
     // pure-compute block therefore runs to completion right away (its effects are
@@ -9196,7 +9215,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 if (lv) {
                     if (lv->t != VT::Str) { lv->t = VT::Str; lv->s.clear(); }
                     if (lv->hashKind.empty()) { lv->hashKind = "Buf"; identify(*lv); }
-                    nqpBufWrite(lv->s, off, val, nb, en, kind);
+                    nqpBufWrite(lv->s.mut(), off, val, nb, en, kind);
                 }
                 return val;
             }
@@ -9242,7 +9261,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 long long off = a.size() > 2 ? eval(a[2].get()).toInt() : 0;
                 long long cnt = a.size() > 3 ? eval(a[3].get()).toInt() : 0;
                 if (lv) {
-                    std::string& t = lv->s;
+                    std::string& t = lv->s.mut();
                     if (off < 0) off = 0;
                     if (off > (long long)t.size()) t.resize(off, '\0');
                     if (cnt < 0 || off + cnt > (long long)t.size()) cnt = t.size() - off;
@@ -9279,11 +9298,14 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
     auto I = [&](size_t i) -> long long { return i < v.size() ? v[i].toInt() : 0; };
     // By reference: a Str argument is returned as-is, so the scanning ops below
     // don't copy the whole haystack once per character examined.
-    static const std::string kEmptyStr;
+    static const CowStr kEmptyStr;
     // One slot per argument: an op may hold references to two coerced operands
     // at once (nqp::concat, nqp::eqat), so they can't share a scratch buffer.
-    std::string sTmp[8];
-    auto S = [&](size_t i) -> const std::string& {
+    // CowStr rather than std::string so a Str argument is handed back with its
+    // cached ASCII/grapheme state intact — that cache is what keeps the
+    // scanning ops below O(1) per character instead of O(position).
+    CowStr sTmp[8];
+    auto S = [&](size_t i) -> const CowStr& {
         if (i >= v.size()) return kEmptyStr;
         if (v[i].t == VT::Str) return v[i].s;
         if (i >= 8) { sTmp[7] = v[i].toStr(); return sTmp[7]; }
@@ -9328,27 +9350,31 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // turns an O(n) scan into O(n^2) — 68 KB of JSON cost 1.9 s. On an
         // ASCII run a codepoint index is a byte index, so no decode is needed;
         // anything non-ASCII still falls through to utf8cp() unchanged.
+        //
+        // The ASCII test itself must be CACHED, not merely cheap: as a per-call
+        // prefix scan it was still O(position), which left the quadratic exactly
+        // where it was (13.9 s to parse 421 KB of JSON). cowAllAscii answers it
+        // once per string — see its definition above.
         case O::Ordat: {
-            const std::string& s = S(0);
+            const CowStr& cs = S(0);
+            const std::string& s = cs.str();
             long long i = I(1);
             if (i < 0) return Value::integer(-1);
-            size_t run = asciiRun(s, (size_t)i + 1);
-            // Either we reached the character asked for, or the whole string is
-            // ASCII and it lies past the end (so the count is the byte count).
-            if (run == (size_t)i + 1 || run == s.size())
+            if (cowAllAscii(cs))
                 return Value::integer((size_t)i < s.size() ? (long long)(unsigned char)s[i] : -1);
             auto cps = utf8cp(s);
             return Value::integer(i < (long long)cps.size() ? (long long)cps[i] : -1);
         }
         case O::Eqat: {
-            const std::string& h = S(0);
-            const std::string& nd = S(1);
+            const CowStr& hc0 = S(0);
+            const CowStr& ndc0 = S(1);
+            const std::string& h = hc0.str();
+            const std::string& nd = ndc0.str();
             long long at = I(2);
             if (at < 0) return Value::integer(0);
             size_t want = (size_t)at + nd.size();
-            if (want <= h.size() && asciiRun(h, want) == want && allAscii(nd))
-                return Value::integer(h.compare((size_t)at, nd.size(), nd) == 0 ? 1 : 0);
-            if (want > h.size() && allAscii(h)) return Value::integer(0);
+            if (cowAllAscii(hc0) && cowAllAscii(ndc0))
+                return Value::integer(want <= h.size() && h.compare((size_t)at, nd.size(), nd) == 0 ? 1 : 0);
             auto hc = utf8cp(h), ndc = utf8cp(nd);
             if (at + (long long)ndc.size() > (long long)hc.size()) return Value::integer(0);
             for (size_t k = 0; k < ndc.size(); k++)
@@ -9356,9 +9382,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::integer(1);
         }
         case O::Substr: {
-            const std::string& s = S(0);
+            const CowStr& cs = S(0);
+            const std::string& s = cs.str();
             long long from = I(1);
-            if (allAscii(s)) {
+            if (cowAllAscii(cs)) {
                 long long len = v.size() > 2 ? I(2) : (long long)s.size() - from;
                 if (from < 0) from = 0;
                 if (from > (long long)s.size()) from = s.size();
@@ -9375,9 +9402,9 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::str(out);
         }
         case O::Chars: {
-            const std::string& s = S(0);
-            if (allAscii(s)) return Value::integer((long long)s.size());
-            return Value::integer((long long)utf8cp(s).size());
+            const CowStr& cs = S(0);
+            if (cowAllAscii(cs)) return Value::integer((long long)cs.size());
+            return Value::integer((long long)utf8cp(cs.str()).size());
         }
         // NFC-composed, as Rakudo's NFG strings are: chaining nqp::concat with a
         // combining char must yield the composed grapheme (JSON::Fast's \u parser)
@@ -9391,11 +9418,13 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
         }
         case O::Index: {
-            const std::string& hs = S(0);
-            const std::string& nds = S(1);
+            const CowStr& hcs = S(0);
+            const CowStr& ncs = S(1);
+            const std::string& hs = hcs.str();
+            const std::string& nds = ncs.str();
             long long from = v.size() > 2 ? I(2) : 0;
             if (from < 0) from = 0;
-            if (allAscii(hs) && allAscii(nds)) {   // byte search — std::string::find is vectorized
+            if (cowAllAscii(hcs) && cowAllAscii(ncs)) {   // byte search — std::string::find is vectorized
                 if ((size_t)from > hs.size()) return Value::integer(-1);
                 auto at = hs.find(nds, (size_t)from);
                 return Value::integer(at == std::string::npos ? -1 : (long long)at);
@@ -9421,22 +9450,29 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::StrToCodes: {
             // (str, NORMALIZE_* const, target-list) — fills target, returns it
-            auto cps = utf8cp(S(0));
+            const CowStr& cs = S(0);
+            auto cps = utf8cp(cs.str());
             long long nm = I(1); // our const values: 1 NFC, 2 NFD, 3 NFKC, 4 NFKD
             int mode = nm == 1 ? 1 : nm == 2 ? 0 : nm == 3 ? 3 : nm == 4 ? 2 : -1;
-            if (mode >= 0) cps = uniNormalize(cps, mode);
+            // Every normalization form is the identity on ASCII: nothing there
+            // composes, decomposes or reorders. JSON::Fast asks for NFD once per
+            // escaped string, so the full uniNormalize walk was ~4 us a call for
+            // text that could not change.
+            if (mode >= 0 && !cowAllAscii(cs)) cps = uniNormalize(cps, mode);
             Value target = v.size() > 2 ? v[2] : Value::array();
             if (target.t != VT::Array || !target.arr) target = Value::array();
             target.arr->clear();
+            target.arr->reserve(cps.size());
             for (auto cp : cps) target.arr->push_back(Value::integer((long long)cp));
             return target;
         }
         case O::FindNotCClass: {
-            const std::string& s = S(1);
+            const CowStr& cs = S(1);
+            const std::string& s = cs.str();
             long long mask = I(0), start = I(2), len = I(3);
             long long from = std::max<long long>(start, 0);
             long long want = start + len;
-            if (allAscii(s)) {   // byte index == codepoint index throughout
+            if (cowAllAscii(cs)) {   // byte index == codepoint index throughout
                 long long end = std::min<long long>(want, (long long)s.size());
                 for (long long k = from; k < end; k++)
                     if (!cclassHas(mask, (uint32_t)(unsigned char)s[k])) return Value::integer(k);
@@ -9449,13 +9485,13 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::integer(end);
         }
         case O::IsCClass: {
-            const std::string& s = S(1);
+            const CowStr& cs = S(1);
+            const std::string& s = cs.str();
             long long i = I(2);
             if (i < 0) return Value::integer(0);
-            size_t run = asciiRun(s, (size_t)i + 1);
-            if (run == (size_t)i + 1)
-                return Value::integer(cclassHas(I(0), (uint32_t)(unsigned char)s[i]) ? 1 : 0);
-            if (run == s.size()) return Value::integer(0);   // all ASCII, index past the end
+            if (cowAllAscii(cs))
+                return Value::integer((size_t)i < s.size() &&
+                                      cclassHas(I(0), (uint32_t)(unsigned char)s[i]) ? 1 : 0);
             auto cps = utf8cp(s);
             return Value::integer(i < (long long)cps.size() &&
                                   cclassHas(I(0), cps[i]) ? 1 : 0);

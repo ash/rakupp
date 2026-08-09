@@ -2234,6 +2234,24 @@ for one release). The module's own 14-file suite is the oracle: 14/14 under
 the shim (one fidelity round: lone surrogates must DIE, not degrade to
 U+FFFD). The SPDX parse is now 6.6 ms — faster than compiled Rakudo's 32 ms.
 
+> **REVERSED at v3.0.1.** Vendoring another author's module source into the
+> compiler was the wrong trade whatever it bought: it pinned users to 0.19
+> against whatever they had installed, and it did so silently. NativeJsonFast.cpp,
+> the loadModule intercept, the `rakupp-json-from-parts` builtin and the
+> `RAKUPP_JSON_FAST` switch are all removed; `use JSON::Fast` loads from disk
+> and parses as ordinary Raku. What made that affordable was fixing the actual
+> cause of the 52 s: `Value` copied its Str by value on every argument pass and
+> operand evaluation, and the nqp scanning ops re-scanned the prefix per
+> character — two O(length)-per-operation costs that made any Raku tokenizer
+> quadratic. With copy-on-write strings and the scan cached on the shared body
+> (CowStr in Value.h, plus seven nqp ops that re-derived it per call), a 421 KB
+> parse went 13,969 ms -> 764 ms and the
+> scaling became linear. Measure that against the shim, though, not only
+> against the unshimmed engine: v3.0.0 as shipped parsed the same file in 5 ms,
+> so for a JSON::Fast user this release is 153x SLOWER, deliberately. The dist
+> bar is unchanged at 47/59, so nothing in the battery depended on the
+> difference.
+
 **Layer 2: what the parse speed uncovered.** With the 52 s wall gone,
 License::SPDX.new recursed forever, then unmarshalled nothing, then Test::META
 mis-resolved its files — six general faults deep, each Rakudo-verified:

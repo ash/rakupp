@@ -1,6 +1,14 @@
 # Four general gaps found burning down the v3 dist-suite bar (the Test::META
 # chain: License::SPDX -> JSON::Class -> JSON::Unmarshal). Each verified
 # against Rakudo. Runs under both engines.
+#
+# Section 5 imports the two dists by name, and `is json-name` is a trait, so
+# the import has to happen at compile time — there is no probing it from
+# inside. Hence the declarations below: without them this file passed on
+# every developer machine (where zef has installed them) and failed on every
+# CI runner, which is how it shipped in v3.0.0.
+#?requires JSON::Name
+#?requires JSON::Unmarshal
 
 my $fails = 0;
 sub check(Str $desc, $got, $want) {

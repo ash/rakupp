@@ -550,7 +550,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "contents") return h.count("contents") ? h["contents"] : Value::array();
         if (m == "level")    return h.count("level") ? h["level"] : Value::integer(1);
         if (m == "config")   return h.count("config") ? h["config"] : Value::makeHash();
-        if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s : "Pod::Block");
+        if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s.str() : std::string("Pod::Block"));
         if (m == "defined" || m == "Bool") return Value::boolean(true);
         if (m == "Str" || m == "gist" || m == "raku") {
             // stringify to the concatenated text of the contents (paragraphs/children)
@@ -779,7 +779,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 } else in.push_back((uint32_t)a.toInt());
             }
             if (inv.s != "Uni") in = uniNormalize(in, inv.s == "NFD" ? 0 : inv.s == "NFC" ? 1 : inv.s == "NFKD" ? 2 : 3);
-            Value out = Value::array(); out.s = inv.s == "Uni" ? "Uni" : inv.s; for (uint32_t c : in) out.arr->push_back(Value::integer((long long)c));
+            Value out = Value::array(); out.s = (inv.s == "Uni" ? std::string("Uni") : inv.s.str()); for (uint32_t c : in) out.arr->push_back(Value::integer((long long)c));
             return out;
         }
     }
@@ -1839,7 +1839,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     a.sigil = an.empty() ? '$' : an[0];
                     while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
                     a.name = an;
-                    a.type = av.hash->count("type") && (*av.hash)["type"].t == VT::Type ? (*av.hash)["type"].s : "";
+                    a.type = av.hash->count("type") && (*av.hash)["type"].t == VT::Type ? (*av.hash)["type"].s.str() : std::string();
                     a.rw = av.hash->count("readonly") ? !(*av.hash)["readonly"].truthy() : false;
                     a.pub = av.hash->count("has_accessor") ? (*av.hash)["has_accessor"].truthy() : false;
                     noteSymbolMutation("runtime .^add_attribute");
@@ -2748,7 +2748,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "Str" || (inv.t == VT::Type && m == "Stringy")) {
         // type objects stringify empty (with a warning in Rakudo) — but
         // IterationEnd is a SENTINEL, and stringifies to its own name
-        if (inv.t == VT::Type) return Value::str(inv.s == "IterationEnd" ? inv.s : "");
+        if (inv.t == VT::Type) return Value::str(inv.s == "IterationEnd" ? inv.s.str() : std::string());
         // `Int.Str(:superscript)` / `(:subscript)` render the digits (and a leading
         // minus) in the Unicode super/subscript forms. Note ¹²³ are NOT in the
         // U+2070 run — a `0x2070 + d` table is wrong for exactly those three.

@@ -1596,7 +1596,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "replacement" && (!a.pairVal || a.pairVal->truthy())) {
                     haveRepl = true;
-                    repl = (a.pairVal && a.pairVal->t == VT::Str) ? a.pairVal->s : "?";
+                    repl = (a.pairVal && a.pairVal->t == VT::Str) ? a.pairVal->s.str() : std::string("?");
                 }
             bool ascii = norm == "ascii" || norm == "usascii";
             Value b;
@@ -1729,7 +1729,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(inv.s);
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
-        if (m == "chars") return Value::integer(graphemeCount(inv.toStr())); // graphemes
+        if (m == "chars") return Value::integer(inv.t == VT::Str ? cowGraphemeCount(inv.s)
+                                                             : graphemeCount(inv.toStr())); // graphemes
         if (m == "codes") return Value::integer(cpCount(inv.toStr()));       // codepoints
         int mode = m == "NFD" ? 0 : m == "NFC" ? 1 : m == "NFKD" ? 2 : 3;
         auto norm = uniNormalize(utf8cp(inv.toStr()), mode);

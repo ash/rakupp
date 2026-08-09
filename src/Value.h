@@ -1,6 +1,9 @@
 #pragma once
 #include "Ast.h"
 #include "BigInt.h"
+#include <atomic>
+#include <cstring>
+#include <ostream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -12,6 +15,147 @@
 namespace rakupp {
 
 struct Value;
+
+// A Raku Str inside a Value.
+//
+// Value is copied by value everywhere — every argument pass, every operand
+// evaluation, every list element — so holding a bare std::string meant a long
+// string was memcpy'd on each of those. The cost is O(length) per OPERATION,
+// which makes any pure-Raku tokenizer O(n^2): JSON::Fast spent 13.9 s on a
+// 421 KB document that Rakudo parses in 50 ms, and the profile was all copying,
+// not parsing.
+//
+// So: short strings stay inline, where std::string's own small-buffer
+// optimisation already makes a copy free, and anything longer is promoted ONCE,
+// at construction, into a shared immutable body. Copying then costs a refcount
+// bump. Promotion is eager rather than lazy-on-first-copy precisely because
+// rakupp runs work in parallel — a lazy promotion would have to mutate the
+// source from a const copy constructor, and two threads copying the same Value
+// would race. Eager promotion means a const CowStr is never written to at all.
+//
+// Because the promoted body is immutable, it is also the right place to cache
+// the two string properties the scanning ops recompute per character (see
+// asciiState/nGraphemes below).
+struct StrBody {
+    std::string text;
+    // All -1 until computed, then 0/1. Racing threads may each compute one of
+    // these, but the text is immutable so they compute the same answer — the
+    // store is idempotent and needs no lock.
+    mutable std::atomic<signed char> allAscii{-1};   // every byte < 0x80: a byte index is a codepoint index
+    mutable std::atomic<signed char> crFree{-1};     // no CR: with allAscii, a byte index is a GRAPHEME index
+                                                     // (CR LF is the one ASCII sequence that clusters, GB3)
+    mutable std::atomic<long long>   nGraphemes{-1}; // .chars
+    explicit StrBody(std::string t) : text(std::move(t)) {}
+};
+
+class CowStr {
+    // Exactly one of these carries the value: `p_` when set, otherwise `s_`.
+    std::string s_;
+    std::shared_ptr<const StrBody> p_;
+    // Below this, a copy is a couple of words and sharing would cost more than
+    // it saves (an allocation per string). Above it, copying is the thing we are
+    // here to avoid.
+    static constexpr size_t kPromote = 64;
+
+    void take(std::string x) {
+        if (x.size() >= kPromote) { p_ = std::make_shared<const StrBody>(std::move(x)); s_.clear(); }
+        else { s_ = std::move(x); p_.reset(); }
+    }
+
+public:
+    CowStr() = default;
+    // Both converting constructors are explicit ON PURPOSE. With an implicit
+    // std::string -> CowStr alongside the CowStr -> const std::string& below,
+    // every `cond ? value.s : someString` became an ambiguous conversion in
+    // both directions. Assignment (operator= just below) covers the cases that
+    // actually want to convert.
+    explicit CowStr(const char* x) { take(std::string(x)); }
+    explicit CowStr(std::string x) { take(std::move(x)); }
+    CowStr(const CowStr&) = default;
+    CowStr(CowStr&&) noexcept = default;
+    CowStr& operator=(const CowStr&) = default;
+    CowStr& operator=(CowStr&&) noexcept = default;
+    CowStr& operator=(std::string x) { take(std::move(x)); return *this; }
+    CowStr& operator=(const char* x) { take(std::string(x)); return *this; }
+
+    const std::string& str() const { return p_ ? p_->text : s_; }
+    operator const std::string&() const { return str(); }         // NOLINT(google-explicit-constructor)
+
+    // Write access. Detaches from the shared body first, so a mutation never
+    // reaches another Value holding the same text. The result stays inline
+    // until it is next assigned — which is where promotion happens again.
+    std::string& mut() {
+        if (p_) { s_ = p_->text; p_.reset(); }
+        return s_;
+    }
+    // The cache lives on the shared body, so it survives only for promoted
+    // strings — which is exactly the case that needs it. Short strings are
+    // cheap to rescan.
+    const StrBody* body() const { return p_.get(); }
+
+    // const std::string forwarding — keeps the ~1,100 read sites unchanged.
+    size_t size()  const { return str().size(); }
+    bool   empty() const { return str().empty(); }
+    const char* c_str() const { return str().c_str(); }
+    const char* data()  const { return str().data(); }
+    char   back()  const { return str().back(); }
+    char operator[](size_t i) const { return str()[i]; }
+    std::string substr(size_t p = 0, size_t n = std::string::npos) const { return str().substr(p, n); }
+    size_t find(const std::string& x, size_t p = 0) const { return str().find(x, p); }
+    size_t find(char x, size_t p = 0) const { return str().find(x, p); }
+    size_t find(const char* x, size_t p = 0) const { return str().find(x, p); }
+    size_t rfind(const std::string& x, size_t p = std::string::npos) const { return str().rfind(x, p); }
+    size_t rfind(char x, size_t p = std::string::npos) const { return str().rfind(x, p); }
+    size_t rfind(const char* x, size_t p = std::string::npos) const { return str().rfind(x, p); }
+    size_t find_first_not_of(const char* x, size_t p = 0) const { return str().find_first_not_of(x, p); }
+    int compare(const std::string& x) const { return str().compare(x); }
+    int compare(size_t p, size_t n, const std::string& x) const { return str().compare(p, n, x); }
+    std::string::const_iterator begin() const { return str().begin(); }
+    std::string::const_iterator end()   const { return str().end(); }
+
+    // Mutating forwards — each detaches.
+    void clear() { p_.reset(); s_.clear(); }
+    void pop_back() { mut().pop_back(); }
+    void resize(size_t n) { mut().resize(n); }
+    void resize(size_t n, char c) { mut().resize(n, c); }
+    void erase(size_t p, size_t n = std::string::npos) { mut().erase(p, n); }
+    void replace(size_t p, size_t n, const std::string& x) { mut().replace(p, n, x); }
+    CowStr& operator+=(const std::string& x) { mut() += x; return *this; }
+    CowStr& operator+=(const char* x) { mut() += x; return *this; }
+    CowStr& operator+=(char x) { mut() += x; return *this; }
+};
+
+// The implicit CowStr -> const std::string& conversion does not apply when BOTH
+// operands are CowStr (no conversion is considered for a built-in operator with
+// no candidate), so the comparisons and concatenation are spelled out.
+inline bool operator==(const CowStr& a, const CowStr& b) { return a.str() == b.str(); }
+inline bool operator!=(const CowStr& a, const CowStr& b) { return a.str() != b.str(); }
+inline bool operator<(const CowStr& a, const CowStr& b)  { return a.str() <  b.str(); }
+inline bool operator>(const CowStr& a, const CowStr& b)  { return a.str() >  b.str(); }
+inline bool operator<=(const CowStr& a, const CowStr& b) { return a.str() <= b.str(); }
+inline bool operator>=(const CowStr& a, const CowStr& b) { return a.str() >= b.str(); }
+inline std::string operator+(const CowStr& a, const CowStr& b) { return a.str() + b.str(); }
+inline std::string operator+(const CowStr& a, const std::string& b) { return a.str() + b; }
+inline std::string operator+(const std::string& a, const CowStr& b) { return a + b.str(); }
+inline std::string operator+(const CowStr& a, const char* b) { return a.str() + b; }
+inline std::string operator+(const char* a, const CowStr& b) { return a + b.str(); }
+inline std::string operator+(const CowStr& a, char b) { return a.str() + b; }
+// std::string's own comparisons are templates, and template deduction never
+// considers a user-defined conversion — so `value.s == "Int"` needs real
+// candidates rather than the conversion operator above.
+#define RAKUPP_COWSTR_CMP(OP)                                                                  \
+    inline bool operator OP(const CowStr& a, const char* b)        { return a.str() OP b; }    \
+    inline bool operator OP(const char* a, const CowStr& b)        { return a OP b.str(); }    \
+    inline bool operator OP(const CowStr& a, const std::string& b) { return a.str() OP b; }    \
+    inline bool operator OP(const std::string& a, const CowStr& b) { return a OP b.str(); }
+RAKUPP_COWSTR_CMP(==)
+RAKUPP_COWSTR_CMP(!=)
+RAKUPP_COWSTR_CMP(<)
+RAKUPP_COWSTR_CMP(>)
+RAKUPP_COWSTR_CMP(<=)
+RAKUPP_COWSTR_CMP(>=)
+#undef RAKUPP_COWSTR_CMP
+inline std::ostream& operator<<(std::ostream& o, const CowStr& x) { return o << x.str(); }
 
 // codepoint -> UTF-8 (shared: Str-Range endpoints derive their text from rFrom/rTo)
 inline std::string cpToU8(uint32_t cp) {
@@ -111,7 +255,7 @@ struct Value {
     long long i = 0;
     double n = 0;
     double im = 0; // imaginary part for VT::Complex (real part is n)
-    std::string s; // also holds type name for VT::Type, key for VT::Pair
+    CowStr s; // also holds type name for VT::Type, key for VT::Pair
     std::string hashKind; // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/...
     bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
     bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
