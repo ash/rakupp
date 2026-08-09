@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "IStr.h"
+
 namespace rakupp {
 
 struct Value;
@@ -264,7 +266,11 @@ struct Value {
     double n = 0;
     double im = 0; // imaginary part for VT::Complex (real part is n)
     CowStr s; // also holds type name for VT::Type, key for VT::Pair
-    std::string hashKind; // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/...
+    // "" normal Hash; else "Set"/"Bag"/"Mix"/"SetHash"/... — a secondary type
+    // tag drawn from a closed vocabulary, so it is INTERNED (IStr.h): 8 bytes
+    // and a trivial copy, where a std::string was 24 bytes with a constructor
+    // and a destructor run on every Value copy.
+    IStr hashKind;
     bool isList = false;  // VT::Array that is a List/Seq (gists with parens)
     bool itemized = false; // $[...] / $(...): a single scalar item that does NOT flatten in list context
     bool objKeyed = false; // hash declared with a key shape (`has %!h{Mu:U}`): type-object
@@ -290,8 +296,15 @@ struct Value {
     // endpoints in the otherwise-unused `n`/`im` doubles; elements step by 1 from
     // `n` while <= `im`. Integer ranges leave this false and use rFrom/rTo.
     bool rNum = false;
-    std::string enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
-    std::string enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
+    IStr enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
+    IStr enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
+    // NOT interned, unlike the three tags above, and it must stay that way
+    // until one site moves: `IO::Path`'s `:CWD` rides in `ofType` because a path
+    // value has no other use for it (Builtins.cpp:4242), so this field can hold
+    // a runtime DIRECTORY NAME rather than a type name. The intern table is
+    // append-only by design, so a program walking many directories would add an
+    // entry per directory and never release it. Everything else here is drawn
+    // from the program's own vocabulary of type names and is safe to intern.
     std::string ofType;   // parameter/element type: `Array[Int]` type object, or a typed `my Int @a`/`%h`
                           // (comma-joined for multiple params, e.g. Hash[Int,Str] -> "Int,Str")
     int natBits = 0;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment

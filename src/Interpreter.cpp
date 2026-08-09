@@ -11533,7 +11533,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (bp && bp->t == VT::Str && bp->hashKind == "CArray") {
                     long long i = eval(ix->index.get()).toInt();
                     Value v = evalValueOf(a->value.get());
-                    const std::string et = bp->enumName.empty() ? "int64" : bp->enumName;
+                    const std::string et = bp->enumName.empty() ? std::string("int64") : bp->enumName.str();
                     int esz = ncElemSize(et);
                     if (i >= 0) {
                         size_t need = (size_t)(i + 1) * (size_t)esz;
@@ -13734,7 +13734,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (r.i == 2 && isDefined(l))  return Value::boolean(op != "~~");
             res = (l.typeName() == r.s) || r.s == "Any" || r.s == "Mu" ||
                   // an enum VALUE does the Enumeration role (and its own type)
-                  (!l.enumName.empty() && (r.s == "Enumeration" || r.s == l.enumType)) ||
+                  (!l.enumName.empty() && (r.s == "Enumeration" || r.s == l.enumType.str())) ||
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    (r.s == "WhateverCode" && l.code && l.code->isWhateverCode))) ||
                   (r.s == "Numeric" && l.isNumeric()) ||
@@ -15695,7 +15695,7 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
             return makeBaggy(pl, src.hashKind);
         }
         Value out = Value::makeHash();
-        out.hashKind = src.t == VT::Hash ? src.hashKind : "";
+        if (src.t == VT::Hash) out.hashKind = src.hashKind; else out.hashKind.clear();
         for (auto& kv : pairs) (*out.hash)[kv.first] = kv.second;
         return out;
     };
@@ -18778,7 +18778,7 @@ Value Interpreter::evalIndex(Index* idx) {
             if (kv.t == VT::Range || (kv.t == VT::Array && kv.arr)) {
                 bool live = base.t == VT::Hash;
                 std::string et = live ? (base.hash->count("of") ? (*base.hash)["of"].toStr() : "int64")
-                                      : (base.enumName.empty() ? "int64" : base.enumName);
+                                      : (base.enumName.empty() ? std::string("int64") : base.enumName.str());
                 long long addr = live ? (*base.hash)["addr"].toInt()
                                       : (long long)(intptr_t)base.s.data();
                 long long lim = live ? -1 : (long long)(base.s.size() / (size_t)ncElemSize(et));
@@ -18793,7 +18793,7 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         if (base.t == VT::Str && base.hashKind == "CArray") {
             long long i = eval(idx->index.get()).toInt();
-            std::string et = base.enumName.empty() ? "int64" : base.enumName;
+            std::string et = base.enumName.empty() ? std::string("int64") : base.enumName.str();
             int w = ncElemSize(et);
             if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
             Value el = ncReadElem((long long)(intptr_t)base.s.data(), et, i);

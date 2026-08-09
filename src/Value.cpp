@@ -686,7 +686,7 @@ std::string Value::typeName() const {
         // A CArray is stored as raw bytes in a Str, and reported itself as "Str" —
         // so `.^name` lied and `$c ~~ CArray` was False. The element type lives in
         // enumName, which is what makes the parameterized spelling possible.
-        case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName.empty() ? "Blob" : enumName) : hashKind == "Buf" ? "Buf" : hashKind == "IO::Special" ? "IO::Special" : hashKind == "CArray" ? (enumName.empty() ? "CArray" : "CArray[" + enumName + "]") : "Str";
+        case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName.empty() ? std::string("Blob") : enumName.str()) : hashKind == "Buf" ? "Buf" : hashKind == "IO::Special" ? "IO::Special" : hashKind == "CArray" ? (enumName.empty() ? "CArray" : "CArray[" + enumName + "]") : "Str";
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
@@ -703,7 +703,7 @@ std::string Value::typeName() const {
                         // the one signature a server naturally writes — pass me
                         // a listener — could not be written at all.
                         if (hashKind == "Socket") return "IO::Socket::INET";
-                        return hashKind.empty() ? "Hash" : hashKind; // the TYPE name (gist is via toStr)
+                        return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
         case VT::Code:  return code && code->isWhateverCode ? "WhateverCode"
                              : code && code->isRegexRoutine ? "Regex"
                              : code && code->isMethod ? "Method" : code && code->isBlock ? "Block" : "Sub";

@@ -84,6 +84,11 @@ against Rakudo's 36 ms — **~12.7× faster**, from 13.1× slower. That is the
 ratio swapped, and every step of the arithmetic above is measured rather than
 assumed.
 
+*Re-measured after phase 1 batch 1, which banked part of the size win: the
+structure build is 265 ns/entry and the two remaining changes are worth 4.34×
+together, so the projection is 0.69 + 11.26/4.34 ≈ **3.3 ms**, ~11× faster than
+Rakudo. The prediction survives the first batch.*
+
 ### The same two causes dominate the interpreted path
 
 A `RelWithDebInfo` `sample` of the d800 parse, self time by source line:
@@ -131,17 +136,39 @@ copyable and trivially destructible, with the same operator surface `MName`
 already uses for method names.
 
 That surface is the point. ~1,300 call sites read `.hashKind == "Buf"` or
-`.ofType.empty()`, and **seven** needed editing — all of them ternaries mixing
-an `IStr` with a string literal, where C++ has no common type to pick, plus one
+`.ofType.empty()`, and **eight** needed editing: seven ternaries mixing an
+`IStr` with a string literal, where C++ has no common type to pick, and one
 `CowStr == IStr` ambiguity. The compiler found every one; there is no silent
 failure mode in this change.
 
-| | |
-|---|---:|
-| `sizeof(Value)` | 392 → **344** |
-| non-trivial members removed | 3 of 15 |
-| `json-parse` d800 | 470 → **455 ms** (−3.2%) |
-| `json-parse` d200 | 117 → **113 ms** (−3.4%) |
+A/B against a `git worktree` build of HEAD, both binaries on the same idle
+machine in the same session — the only comparison this file's own rules allow:
+
+| | base | now | |
+|---|---:|---:|---:|
+| `sizeof(Value)` | 392 | **344** | |
+| non-trivial members | 15 | **12** | |
+| `json-parse` d200 | 115 ms | **110 ms** | −4.3% |
+| `json-parse` d400 | 232 ms | **221 ms** | −4.7% |
+| `json-parse` d800 | 468 ms | **441 ms** | −5.8% |
+| `json-parse` d1600 | 934 ms | **888 ms** | −4.9% |
+| Hash build (12k entries) | 302 ns | **265 ns** | −12% |
+
+Still ×2 per doubling, so nothing about the scaling shape changed. Against
+Rakudo the d800 ratio goes 13.1× → 12.2×.
+
+Gates: local suite 398/398; `perf-guard --check` green on all seven kernels
+(fib −14.1%, asg −12.9%, hash −9.5%, strscan −8.2% against the v1.5.1
+baseline); Roast **197,025 / 593 files** against the baseline build's
+**197,069 / 593**, with all seven per-file differences being timeout flips on
+concurrency and I/O files (+1 subst, +20 cas, +4 scalar-assign, −28
+atomic-ops, −29 move, −5 channel, −7 permutations = −44).
+
+A first run of this batch reported −591, which was **one spurious timeout**:
+`S03-operators/set_addition.t` is a 613-assertion file that passes in under a
+second on the same binary. Worth recording, because a single flaky timeout in a
+large file moves the headline number by ten times the real noise band and looks
+exactly like a regression. Read the per-file diff, not the total.
 
 The constructors are deliberately `explicit`: implicit ones make `k == "Buf"`
 ambiguous, because the literal converts to `IStr` as readily as `IStr` converts
