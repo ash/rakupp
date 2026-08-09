@@ -1,0 +1,92 @@
+% Preamble for "Raku++ Internals". XeLaTeX (tectonic).
+\usepackage{newunicodechar}
+\usepackage{fancyhdr}
+\usepackage{emptypage}
+\usepackage{needspace}
+\usepackage{etoolbox}
+
+% ---------------------------------------------------------------- glyph fallbacks
+% Charter is the text face; it does not carry arrows, box drawing, or the
+% mathematical and typographic marks the source excerpts use. Two fallback
+% families cover them: STIX for symbols and Greek, Menlo for box drawing.
+\newfontfamily\symfont{STIX Two Text}
+\newfontfamily\boxfont{Menlo}
+\newcommand{\fbs}[1]{{\symfont #1}}
+\newcommand{\fbb}[1]{{\boxfont #1}}
+\newunicodechar{→}{\fbb{→}}
+\newunicodechar{←}{\fbb{←}}
+\newunicodechar{↦}{\fbb{↦}}
+\newunicodechar{⇒}{\fbb{⇒}}
+\newunicodechar{≥}{\fbs{≥}}
+\newunicodechar{≤}{\fbs{≤}}
+\newunicodechar{≠}{\fbs{≠}}
+\newunicodechar{≈}{\fbs{≈}}
+\newunicodechar{×}{\fbs{×}}
+\newunicodechar{±}{\fbs{±}}
+\newunicodechar{·}{\fbs{·}}
+\newunicodechar{⋅}{\fbb{⋅}}
+\newunicodechar{∞}{\fbb{∞}}
+\newunicodechar{∈}{\fbb{∈}}
+\newunicodechar{√}{\fbb{√}}
+\newunicodechar{ε}{\fbs{ε}}
+\newunicodechar{π}{\fbs{π}}
+\newunicodechar{µ}{\fbs{µ}}
+\newunicodechar{²}{\fbs{²}}
+\newunicodechar{³}{\fbs{³}}
+\newunicodechar{✓}{\fbs{✓}}
+\newunicodechar{✗}{\fbs{✗}}
+\newunicodechar{◑}{\fbs{◑}}
+\newunicodechar{…}{\fbs{…}}
+\newunicodechar{—}{\fbs{—}}
+\newunicodechar{«}{\fbs{«}}
+\newunicodechar{»}{\fbs{»}}
+\newunicodechar{─}{\fbb{─}}
+\newunicodechar{│}{\fbb{│}}
+\newunicodechar{┬}{\fbb{┬}}
+\newunicodechar{├}{\fbb{├}}
+\newunicodechar{└}{\fbb{└}}
+\newunicodechar{┼}{\fbb{┼}}
+\newunicodechar{►}{\fbb{►}}
+\newunicodechar{▸}{\fbb{▸}}
+
+% ---------------------------------------------------------------- page furniture
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE]{\small\nouppercase\leftmark}
+\fancyhead[RO]{\small\nouppercase\rightmark}
+\fancyfoot[LE,RO]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\setlength{\headheight}{14pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[LE,RO]{\small\thepage}%
+  \renewcommand{\headrulewidth}{0pt}}
+
+% Code blocks: pandoc wraps highlighted listings in `Shaded` (from `framed`).
+% Tint the panel and set the listing a size down, so it reads as an object on
+% the page rather than as indented prose.
+\definecolor{shadecolor}{gray}{0.965}
+\makeatletter
+\AtBeginDocument{%
+  \@ifundefined{Shaded}{}{%
+    \let\rkpp@Shaded\Shaded
+    \let\rkpp@endShaded\endShaded
+    \renewenvironment{Shaded}{\small\rkpp@Shaded}{\rkpp@endShaded}}%
+}
+\makeatother
+
+% Tables are set a size down and may break across pages.
+\AtBeginEnvironment{longtable}{\small}
+
+% Keep a heading from stranding itself at the foot of a page.
+\widowpenalty=10000
+\clubpenalty=10000
+
+% Justification. Prose here is full of unbreakable `\texttt{}` identifiers, so
+% give TeX room to stretch a problem line rather than letting it run into the
+% margin; microtype does the rest.
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}
+
+% Prose here is full of unbreakable identifiers set in \texttt. Allow the
+% typewriter face to hyphenate, so a long identifier at a line end wraps
+% instead of running into the margin.
+\usepackage[htt]{hyphenat}

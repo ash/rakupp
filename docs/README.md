@@ -7,6 +7,7 @@ point; everything else lives here, in four places:
 |---|---|
 | **[guide/](guide/)** | the manual — how to *use* Raku++ |
 | **[internals/](internals/)** | how it works inside |
+| **[book/](book/)** | *Raku++ Internals* — the same ground at book length, as a PDF |
 | **[status/](status/)** | how good it is: conformance, speed, roadmap |
 | **[dev/](dev/)** | working notes: plans, findings, experiments |
 
@@ -46,6 +47,21 @@ point; everything else lives here, in four places:
 - **[guide/COMPILERS.md](guide/COMPILERS.md)** — which compiler and architecture to use: arm64 vs. x86_64 on macOS, GCC vs. Clang, MSVC vs. MinGW on Windows — both for building Raku++ and for the compiler `--exe` invokes.
 - **[guide/CACHING.md](guide/CACHING.md)** — the precompiled parse: opt-in caching of parsed ASTs, with two switches (`--precomp-modules`, `--precomp-files`) because they are worth measurably different amounts. What is stored (the AST, not bytecode), where it lives, exactly what invalidates an entry, and how it compares with Rakudo's `.precomp` and Python's `__pycache__`.
 - **[guide/MEMORY.md](guide/MEMORY.md)** — memory demands and limits: reserved vs. resident, stack sizes and measured recursion depths per mode (interpreter / `--exe` / wasm), and the data-side guardrails.
+
+---
+
+## book/ — the compiler book
+
+- **[book/Raku++-Internals.pdf](book/Raku++-Internals.pdf)** — *Raku++
+  Internals*, 200 pages in nine parts: the front end, the value model, the
+  interpreter, the regex and grammar engine, Unicode, the four run modes and the
+  native code generator, the boundaries (modules, `use nqp`, NativeCall, the
+  extension ABI, concurrency), and the tooling built on the AST. It covers
+  several areas that have no page in `internals/` — `Value` in depth, the regex
+  engine itself, NativeCall's internals, the extension ABI, and the concurrency
+  runtime — and carries the reasons and measurements behind the designs, plus an
+  "honest limitations" section per chapter. Built with
+  `rakupp docs/book/build.raku`; see **[book/README.md](book/README.md)**.
 
 ---
 

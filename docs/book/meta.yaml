@@ -1,0 +1,29 @@
+---
+title: "Raku++ Internals"
+subtitle: "How a hand-written C++ implementation of Raku works — from source text to native code"
+author: "The Raku++ project"
+rights: "Artistic License 2.0, as the rest of Raku++"
+lang: en-GB
+documentclass: book
+classoption:
+  - 11pt
+  - openany
+geometry:
+  - paperwidth=7in
+  - paperheight=9.25in
+  - inner=0.85in
+  - outer=0.7in
+  - top=0.8in
+  - bottom=0.85in
+mainfont: "Charter"
+sansfont: "Helvetica Neue"
+monofont: "Menlo"
+monofontoptions:
+  - "Scale=0.80"
+colorlinks: true
+linkcolor: [0,0.25,0.5]
+urlcolor: [0,0.25,0.5]
+toccolor: black
+linestretch: 1.05
+secnumdepth: 2
+---
