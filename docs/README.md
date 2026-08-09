@@ -36,6 +36,7 @@ point; everything else lives here, in four places:
 - **[guide/FFI.md](guide/FFI.md)** — NativeCall: calling C from Raku++. Whether you need to install libffi (no — it is found at run time, and there is a fallback when it is missing), whether it works compiled as well as interpreted (yes, one marshaller serves both), the type map, structs and unions, callbacks, and variadic C functions, whose spelling matches Rakudo's.
 - **[guide/HTTPS.md](guide/HTTPS.md)** — the story of one real HTTPS request, from "OpenSSL won't even load" to a live `HTTP/1.1 200 OK` over TLS.
 - **[guide/MODULES.md](guide/MODULES.md)** — working with modules: the ones you write, and the ones zef installs from the ecosystem.
+- **[guide/EXTENSIONS.md](guide/EXTENSIONS.md)** — native extension modules, the XS analogue: a distribution ships C, the build step compiles it against Raku++'s C ABI at install time, and the routines become ordinary Raku subs — so the module versions independently of the compiler. Why an extension never sees `Value`, the handle lifetime rules, how to write one that still runs on Rakudo (and why `&::('rakupp-ext-load')` rather than a plain call), packaging with `Build.rakumod`, the `Rakupp::` naming convention, and the current limits.
 - **[guide/LINT.md](guide/LINT.md)** — `rakupp --lint`: the static-analysis rules that run over the AST without executing the program.
 
 ### Running and shipping programs
