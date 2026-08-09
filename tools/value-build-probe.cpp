@@ -108,5 +108,29 @@ int main() {
     printf("\n  container alone (A/B)  %.2fx\n", a / b);
     printf("  Value size alone (A/C) %.2fx\n", a / c);
     printf("  both      (A/D)        %.2fx\n", a / d);
+
+    // The rows above build ONE map of 12,000 entries. That is not the shape a
+    // document has: d800.json is ~800 records of ~15 fields, i.e. 800 SMALL
+    // hashes. The distinction matters — a hash table amortises its bucket array
+    // over many entries, and at 15 entries there is little to amortise, while a
+    // red-black tree's per-node malloc is the same either way. Measuring the
+    // wrong shape is how a container change gets adopted on a number it will
+    // never deliver.
+    printf("\n  same 12,000 entries as 800 hashes of 15 (the real shape):\n");
+    const int kHashes = 800, kFields = 15;
+    double sa = bench("A2. map, 800 x 15", [&] {
+        for (int h = 0; h < kHashes; h++) {
+            std::map<std::string, Value> m;
+            for (int i = 0; i < kFields; i++) m[K[h * kFields + i]] = Value::integer(i);
+        }
+    });
+    double sb = bench("B2. unordered_map, 800 x 15", [&] {
+        for (int h = 0; h < kHashes; h++) {
+            std::unordered_map<std::string, Value> m;
+            for (int i = 0; i < kFields; i++) m[K[h * kFields + i]] = Value::integer(i);
+        }
+    });
+    printf("\n  container, ONE big hash (A/B)  %.2fx\n", a / b);
+    printf("  container, REAL shape (A2/B2)  %.2fx\n", sa / sb);
     return 0;
 }

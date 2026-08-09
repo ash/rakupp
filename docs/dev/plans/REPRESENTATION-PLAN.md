@@ -266,7 +266,65 @@ That is a batch of its own.
 1.64×), is ~1,550 sites, and IS source-compatible if the replacement exposes
 `std::map`'s API. On the measurements, phase 2 should come first.
 
-### Phase 2 — `Hash` stops being a red-black tree
+### Phase 2 — MEASURED AND REVERTED, and what it found instead (2026-08-09)
+
+Phase 2 was written and it works: `RakuHash` — `unordered_map` storage with a
+lazily-built sorted view, so `gist()`'s key order survives — landed behind the
+same source-compatible surface trick as batch 1. One compile error across ~1,550
+sites. It is **not** shipped, because the number it was adopted on was measured
+on the wrong shape.
+
+**The probe built ONE map of 12,000 entries. A document is ~800 hashes of 15.**
+
+| shape | `std::map` | `unordered_map` | |
+|---|---:|---:|---:|
+| one hash of 12,000 | 215 ns/entry | 133 ns/entry | **1.81×** |
+| 800 hashes of 15 | **76 ns/entry** | 98 ns/entry | **0.78×** |
+
+A hash table amortises its bucket array over many entries; at 15 entries there
+is nothing to amortise, while a tree's per-node malloc is the same either way.
+`RakuHash` measured 0.80× on the real shape and 1.62× on the big one — a trade,
+not a win, and a regression on the workload this campaign exists for. Reverted.
+
+A small-hash design (a sorted vector of nodes) would beat both, but the nodes
+must stay individually heap-allocated: `lvalue()` hands out `Value*` into a hash
+and the interpreter writes through it, so anything that relocates elements on
+growth turns a held pointer into a dangling write. That constraint is why
+`unordered_map` was chosen over open addressing in the first place, and it caps
+what a small-hash rewrite can win.
+
+**What the shape error uncovered.** Once the container was ruled out, the
+remaining structure-build time had to be somewhere, so it was decomposed:
+
+| | before | after |
+|---|---:|---:|
+| `BigInt::gcd` (values fitting in 64 bits) | 15,761 ns | **183 ns** |
+| `BigInt::divmod` (same) | 2,071 ns | **76 ns** |
+| `Value::rat(1/7)` | 9,239 ns | **484 ns** |
+
+`divmod` did a **binary search over [0, 10⁹) per limb**, each step a full BigInt
+multiplication — about thirty of them to divide a one-limb number. `gcd` is
+Euclid over `divmod`, and `Value::rat()` calls `gcd` plus two `divmod`s on
+**every Rat it constructs** — which is every decimal literal and every `p/q` in
+Raku. Both now take a 64-bit fast path, which is the case almost all real
+arithmetic is in.
+
+That, and not the container or `sizeof(Value)`, was the JSON structure build:
+
+| | before | after |
+|---|---:|---:|
+| native parse of d800 | 11.95 ms | **2.91 ms** |
+| ↳ structure build | 11.34 ms | 2.31 ms |
+| throughput | 23.3 MB/s | **95.4 MB/s** |
+| Rat-heavy loop, sum | 717 ms | **72 ms** |
+| Rat-heavy loop, construct | 669 ms | **82 ms** |
+
+**2.91 ms against Rakudo's 36 ms is 12.4× — the ratio, swapped**, on the native
+path. The plan predicted 2.8 ms and got 2.91; it had the number about right and
+the *cause* entirely wrong, which is worth more than being right for the wrong
+reason would have been.
+
+### Phase 2 (original text) — `Hash` stops being a red-black tree
 
 Replace `std::map<std::string, Value>` with an open-addressing hash map exposing
 the same API (`operator[]`, `find`, `begin`/`end`, `erase`, `count`, `size`), so
