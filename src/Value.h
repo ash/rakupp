@@ -277,6 +277,19 @@ struct Value {
                            // subscript keys stay distinct ("(Name)") instead of "" like a plain hash
     bool readonly = false; // a readonly-bound parameter ($x with no `is rw`/`is copy`) — s/// dies on it
     bool namedArg = false; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
+#ifdef RAKUPP_PTR_CENSUS
+    // Phase 1 batch 2 wants to collapse the eleven pointers below into a small
+    // number of tag-dispatched slots, which is only sound if the sets that can
+    // be live AT THE SAME TIME are what the type tags suggest. This build counts
+    // the combinations that actually occur instead of reasoning about them.
+    // Compiled out of every normal build; see tools/ptr-census.md.
+    ~Value();
+    unsigned ptrMask() const {
+        return (arr ? 1u : 0) | (hash ? 2u : 0) | (code ? 4u : 0) | (pairVal ? 8u : 0) |
+               (pairKey ? 16u : 0) | (obj ? 32u : 0) | (ext ? 64u : 0) | (big ? 128u : 0) |
+               (ratN ? 256u : 0) | (ratD ? 512u : 0) | (shape ? 1024u : 0);
+    }
+#endif
     std::shared_ptr<ValueList> arr;
     std::shared_ptr<std::map<std::string, Value>> hash;
     std::shared_ptr<Callable> code;

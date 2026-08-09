@@ -202,6 +202,70 @@ storage moves.
   and stay inline; `enumName`/`enumType`/`ofType`/`hashKind`/`shape`/`ratN`/
   `ratD`/`big`/`ext`/`pairKey`/`pairVal` are the candidates to move.
 
+#### Batch 2 — the pointer union, MEASURED AND ABANDONED AS DESIGNED (2026-08-09)
+
+The plan for batch 2 was: `Value`'s eleven `shared_ptr`s are mutually exclusive
+by type tag — a value cannot be both an Array and a Hash — so they collapse into
+two tag-dispatched slots, worth 144 bytes and nine non-trivial members.
+
+**That premise is false, and a census says so.** A `-DRAKUPP_PTR_CENSUS` build
+(the destructor records which pointers are live; compiled out of every normal
+build) over the local suite and a feature-targeted Roast slice — 30M `Value`
+destructions:
+
+| live pointers | count |
+|---|---:|
+| (none) | 25,583,692 |
+| `arr` | 4,268,636 |
+| `big` | 539,483 |
+| `ratN ratD` | 466,950 |
+| `obj` | 181,374 |
+| `code` | 67,662 |
+| `hash` | 45,444 |
+| `pairVal` | 40,354 |
+| `ext` | 30,924 |
+| **`arr hash`** | 16,803 |
+| **`arr hash pairVal`** | 7,090 |
+| **`arr hash ext`** | 2,373 |
+| `pairVal pairKey` | 1,496 |
+| `hash ext` | 522 |
+| `pairKey` | 289 |
+| `arr ext` | 117 |
+| `arr shape` | 24 |
+| **`arr hash pairVal ext`** | 4 |
+
+**Four pointers are live at once**, not two: `arr`, `hash`, `pairVal` and `ext`
+co-occur, because a Capture and a Match legitimately carry positionals in `arr`
+and nameds in `hash` at the same time. Two tagged slots cannot express that, and
+a build that assumed they could would have corrupted Captures in ways the type
+tag would never reveal.
+
+What the census DOES license, because these combinations never occur:
+
+- `big` is always alone;
+- `ratN`/`ratD` occur only with each other;
+- `obj` and `code` are always alone;
+- `shape` only with `arr`; `pairKey` only with `pairVal`.
+
+So the revised batch 2 is not a union but a **lazily-allocated cold block**:
+move `big`, `ratN`, `ratD`, `fatRat`, `shape`, `pairKey`, `ext`, `im`, the four
+range fields and `ofType` into one `shared_ptr<ValueExt>`, keeping `arr`,
+`hash`, `code`, `obj`, `pairVal` and the `CowStr` inline. ~148 bytes leave and
+16 come back: **`sizeof(Value)` 344 → ~204, and 12 non-trivial members → 6.**
+
+Two things make that better than it first looks. The `BigInt`s go in **by
+value**, so a `Rat` costs *one* allocation instead of today's two — 466,950 of
+those in the census. And `ofType` rides along, which is where the `:CWD` problem
+from batch 1 goes away without interning it.
+
+It is also ~800 call sites and NOT source-compatible: `v.big` becomes an
+accessor with a read path that must not allocate and a write path that must.
+That is a batch of its own.
+
+**Sequencing note.** Phase 2 below is worth *more* than this (1.99× against
+1.64×), is ~1,550 sites, and IS source-compatible if the replacement exposes
+`std::map`'s API. On the measurements, phase 2 should come first.
+
 ### Phase 2 — `Hash` stops being a red-black tree
 
 Replace `std::map<std::string, Value>` with an open-addressing hash map exposing

@@ -1,5 +1,35 @@
 #include "Value.h"
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
+
+#ifdef RAKUPP_PTR_CENSUS
+#include <atomic>
+namespace rakupp {
+// One counter per combination of live pointers (2^11). Written from every
+// thread, so the counters are atomic and relaxed — an exact total is not the
+// point, the SET of combinations that ever occurs is.
+static std::atomic<unsigned long long> g_ptrCensus[2048];
+Value::~Value() { g_ptrCensus[ptrMask()].fetch_add(1, std::memory_order_relaxed); }
+// Dumped at exit by a static destructor, one line per observed combination.
+struct PtrCensusDump {
+    ~PtrCensusDump() {
+        static const char* kName[11] = {"arr","hash","code","pairVal","pairKey",
+                                        "obj","ext","big","ratN","ratD","shape"};
+        FILE* f = fopen("/tmp/ptr-census.txt", "a");
+        if (!f) return;
+        for (unsigned m = 0; m < 2048; m++) {
+            unsigned long long n = g_ptrCensus[m].load(std::memory_order_relaxed);
+            if (!n) continue;
+            fprintf(f, "%llu\t", n);
+            if (!m) fprintf(f, "(none)");
+            for (int b = 0; b < 11; b++) if (m & (1u << b)) fprintf(f, "%s ", kName[b]);
+            fprintf(f, "\n");
+        }
+        fclose(f);
+    }
+};
+static PtrCensusDump g_ptrCensusDump;
+} // namespace rakupp
+#endif
 #include "Unicode.h"     // uniGeneralCategory (magic-increment window over non-ASCII)
 #include <algorithm>
 #include <cmath>
