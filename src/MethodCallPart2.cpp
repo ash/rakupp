@@ -12,6 +12,25 @@
 // "not handled here".
 namespace rakupp {
 
+// An attribute's .type carries the CONTAINER shape, as in Rakudo:
+// `has License @.licenses` answers Positional[License] (and %-attrs
+// Associative[T]) — JSON::Unmarshal's array multi dispatches on exactly
+// that, and flattening to the element type sent typed-array attributes
+// to the Mu fallback (the Test::META chain's last wall).
+static Value attrTypeValue(const ClassAttr& a) {
+    if (a.sigil == '@') {
+        Value v = Value::typeObj("Positional");
+        v.ofType = a.type;
+        return v;
+    }
+    if (a.sigil == '%') {
+        Value v = Value::typeObj("Associative");
+        v.ofType = a.type;
+        return v;
+    }
+    return Value::typeObj(a.type.empty() ? "Mu" : a.type);
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     if (inv.t == VT::Hash && inv.hashKind == "Supply") {
@@ -1774,7 +1793,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     Value at = Value::makeHash(); at.hashKind = "Attribute";
                     std::string an = std::string(1, a.sigil) + "!" + a.name;
                     (*at.hash)["name"] = Value::str(an);
-                    (*at.hash)["type"] = Value::typeObj(a.type.empty() ? "Mu" : a.type);
+                    (*at.hash)["type"] = attrTypeValue(a);
                     (*at.hash)["readonly"] = Value::boolean(!a.rw);
                     (*at.hash)["has_accessor"] = Value::boolean(a.pub);
                     (*out.hash)[an] = at;
@@ -1903,7 +1922,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& a : c->attrs) {
                         Value at = Value::makeHash(); at.hashKind = "Attribute";
                         (*at.hash)["name"] = Value::str(std::string(1, a.sigil) + "!" + a.name);
-                        (*at.hash)["type"] = Value::typeObj(a.type.empty() ? "Mu" : a.type);
+                        (*at.hash)["type"] = attrTypeValue(a);
                         (*at.hash)["readonly"] = Value::boolean(!a.rw);
                         (*at.hash)["has_accessor"] = Value::boolean(a.pub);
                         out.arr->push_back(at);

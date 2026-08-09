@@ -6915,12 +6915,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // visible outside. Only `is copy` (and a List/itemized/lazy source,
             // which has to be materialised) makes a fresh buffer.
             if (p.sigil == '@') {
-                if (v.t == VT::Array && v.itemized) { Value u = v; u.itemized = false; v = coerceArray(u); }
+                if (v.t == VT::Type && (v.s == "Positional" || v.s == "Array" || v.s == "List")) {
+                    /* a Positional TYPE OBJECT binds raw: `multi f($j, @x)` called
+                       with Positional[License] must answer @x.of == License, not
+                       wrap the type in a one-element array (JSON::Unmarshal) */
+                }
+                else if (v.t == VT::Array && v.itemized) { Value u = v; u.itemized = false; v = coerceArray(u); }
                 else if (v.t == VT::Array && !p.isCopy && !v.isList && !v.ext) { /* bind: share the buffer */ }
                 else v = coerceArray(v);
             }
             else if (p.sigil == '%') {
-                if (!(v.t == VT::Hash && v.hash && !p.isCopy)) v = coerceHash(v);
+                if (v.t == VT::Type && (v.s == "Associative" || v.s == "Hash" || v.s == "Map")) { /* raw, as above */ }
+                else if (!(v.t == VT::Hash && v.hash && !p.isCopy)) v = coerceHash(v);
             }
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
@@ -7178,10 +7184,32 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
 // Does value v satisfy subset `name` (base type chain + where constraint)?
 bool Interpreter::subsetMatches(const std::string& name, const Value& v, int depth) {
     if (depth > 16) return false; // subset cycle backstop
+    // TYPE-OBJECT arguments memoize per (subset, type): a where-clause over a
+    // type object is deterministic per type (it introspects the type, not
+    // runtime state — the same bet Rakudo's type-check cache makes), and
+    // multi dispatch re-runs these constantly. JSON::Unmarshal's ClassLike /
+    // PosNoAccessor subsets each run `.^attributes.first({...})` per check;
+    // uncached, License::SPDX's 700-license unmarshal (~6,000 dispatches)
+    // ran for minutes. Instance arguments stay uncached — their where
+    // clauses see values.
+    thread_local std::map<std::string, bool> typeSubsetCache;
+    std::string cacheKey;
+    if (v.t == VT::Type) {
+        cacheKey = name + "|" + v.s + "[" + v.ofType + "]";
+        auto ci = typeSubsetCache.find(cacheKey);
+        if (ci != typeSubsetCache.end()) return ci->second;
+    }
     auto it = subsets_.find(name);
-    if (it == subsets_.end()) return typeMatchesArg(v, name);
+    if (it == subsets_.end()) {
+        bool r = typeMatchesArg(v, name);
+        if (!cacheKey.empty()) typeSubsetCache[cacheKey] = r;
+        return r;
+    }
     const SubsetInfo& si = it->second;
-    if (!si.base.empty() && !subsetMatches(si.base, v, depth + 1)) return false;
+    if (!si.base.empty() && !subsetMatches(si.base, v, depth + 1)) {
+        if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
+        return false;
+    }
     if (si.where) {
         auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
         env->define("$_", v);
@@ -7195,10 +7223,12 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
             if (cv.t == VT::Code && cv.code) ok = boolify(callCallable(cv, ValueList{v}));
             else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(v), cv.s));
             else ok = boolify(applyBinOp("~~", v, cv));
-        } catch (...) { tctx_.cur = saved; return false; }
+        } catch (...) { tctx_.cur = saved; if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
         tctx_.cur = saved;
+        if (!cacheKey.empty()) typeSubsetCache[cacheKey] = ok;
         return ok;
     }
+    if (!cacheKey.empty()) typeSubsetCache[cacheKey] = true;
     return true;
 }
 
@@ -7366,8 +7396,10 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args) {
                  (p->type.empty() || p->type == "Any" || p->type == "Mu")) {
             const Value& av = pos[i];
             bool ok = p->sigil == '@'
-                          ? (typeMatchesArg(av, "Positional") || av.t == VT::Range)
-                          : typeMatchesArg(av, "Associative");
+                          ? (typeMatchesArg(av, "Positional") || av.t == VT::Range ||
+                             (av.t == VT::Type && (av.s == "Positional" || av.s == "Array" || av.s == "List")))
+                          : (typeMatchesArg(av, "Associative") ||
+                             (av.t == VT::Type && (av.s == "Associative" || av.s == "Hash" || av.s == "Map")));
             if (!ok) return -1;
             // Outranks a coercion parameter, which scores 2 by accepting anything
             // convertible: `read(@paths)` must beat `read(IO() $path)` for a list.
@@ -13434,7 +13466,15 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         return Value::boolean(op == "===" ? same : !same); // !== and !=== both negate identity
     }
     if (op == "%%") { long long b = r.toInt(); return Value::boolean(b != 0 && l.toInt() % b == 0); }
-    if (op == "=:=") return Value::boolean(l.t == r.t && valueEq(l, r));
+    if (op == "=:=") {
+        // container identity — but on TYPE OBJECTS it must discriminate like
+        // ===: valueEq treated L =:= Any as True, so JSON::Unmarshal's
+        // `@x.of =:= Any` guard always took the untyped branch and typed-array
+        // attributes unmarshalled as plain Hashes.
+        if (l.t == VT::Type && r.t == VT::Type)
+            return Value::boolean(l.s == r.s && l.ofType == r.ofType);
+        return Value::boolean(l.t == r.t && valueEq(l, r));
+    }
     if (op == "~~" || op == "!~~") {
         bool res;
         // Whatever on the RHS matches anything (Whatever.ACCEPTS is always True):
@@ -16066,7 +16106,12 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         else {
             Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
-            same = (l.t == r.t) && valueEq(l, r);
+            // TYPE OBJECTS discriminate like ===: valueEq called L =:= Any True,
+            // so JSON::Unmarshal's `@x.of =:= Any` always took the untyped
+            // branch and typed-array attributes unmarshalled as plain Hashes
+            if (l.t == VT::Type && r.t == VT::Type)
+                same = (l.s == r.s && l.ofType == r.ofType);
+            else same = (l.t == r.t) && valueEq(l, r);
         }
         return Value::boolean(op[0] == '!' ? !same : same);
     }
