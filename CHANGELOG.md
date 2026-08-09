@@ -10,8 +10,8 @@ methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/CO
 | Roast assertions (all declared) | 197,090 | **197,191** |
 | Roast files fully passing | 594 | **594** |
 | Documentation examples byte-identical | 952 | **945**† |
-| Distributions passing their own suite | 50 / 59 | **34 / 59**\* |
-| Local regression suite (`t/run.raku`) | 312 | **397** |
+| Distributions passing their own suite | 50 / 59 | **47 / 59**\* |
+| Local regression suite (`t/run.raku`) | 312 | **398** |
 
 The v3.0.0 Roast figure is measured **with both new defaults on** — the
 configuration users actually get — and sits at the top of a four-run band
@@ -20,9 +20,35 @@ GIL's 11 timeouts. †±5 documented band (Rakudo randomizes hash order per
 process; the moved rows are Rakudo-vs-doc drift, not ours). \*A bar-raise in
 the reference environment, not a regression: at v2.0.0 Rakudo could not load
 the `Test::META` dependency chain, so `t/*meta*` files sat outside every
-comparison; they now count, and they hit pre-existing Raku++ module gaps
-(e.g. `License::SPDX.from-json` method resolution — tracked for v3.x),
-verified identical under the pre-v3 modes.
+comparison; they now count — and 47/59 clears that stricter bar.
+
+### JSON::Fast ships native
+
+The ecosystem's most-depended-on module is the one module an interpreter
+cannot serve: its parser walks text one grapheme at a time, and the 332 KB
+SPDX license list `License::SPDX` loads cost 52.7 s (compiled Rakudo: ~1 s).
+`use JSON::Fast` now loads an embedded shim — the module's own source with
+only the parse machinery swapped for a C++ parser at full fidelity
+(`Str.Numeric` number typing with arbitrary-precision `Int` and exact `Rat`,
+surrogate pairs, strict escapes, `:immutable` `Map`/`List`, `:allow-jsonc`,
+grapheme-accurate `X::JSON::AdditionalContent` positions). `to-json`, the
+exception class and the `EXPORT` protocol stay the module's own code, and its
+own 14-file suite is the acceptance gate: 14/14. The SPDX parse is 6.6 ms —
+faster than compiled Rakudo's 32 ms. `RAKUPP_JSON_FAST=0` falls back to the
+disk module for one release.
+
+The speed uncovered six general faults, each fixed and Rakudo-verified: a
+`*%named` slurpy's `where` clause was invisible to multi dispatch (an
+empty-only `.new` candidate swallowed every call and recursed); attribute
+user traits (`is json-name`, `is unmarshalled-by`, `is specification`) now
+reach the Attribute meta-object, with the JSON::Name / JSON::Unmarshal /
+META6 role checks and accessors answered from them; the precomp cache
+dropped `use Foo:ver<…>` constraints entirely (works-fresh, breaks-cached);
+the paren spelling `:ver(v0.0.20+)` wasn't parsed; an unbound dynamic read
+as a defined empty container so `@*META-CANDIDATES // <defaults>` never fell
+back (and a `my @*dyn` is now visible to its own initializer); and
+`".".IO.parent` answered `"."` instead of `".."`. `License::SPDX.new`: 727
+licenses in 0.3 s, previously never completed. `Test::META` passes 3/3.
 
 ### The three pillars
 

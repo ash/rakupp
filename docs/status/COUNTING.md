@@ -200,3 +200,21 @@ Assertions passed:    194901 / 216222  (90.0%)  of ALL declared tests (+3258 fro
 
 (No `ROAST` env var is required — the tests' own `use lib` resolves the
 Test-Helpers now. Setting `ROAST=<checkout>` is still harmless.)
+
+## Timeout-partial sensitivity (found 2026-08-09)
+
+The per-assertion top line is **load-banded** through one mechanism: a file
+that hits `ROAST_TIMEOUT` is killed, but the assertions it printed *before*
+the kill still count. A handful of borderline mega-files (the two
+2,282-assertion sprintf files, the S03/S32 minmax pair, several S15 tables)
+sit right at the timeout on the default binary, so how far each gets before
+the kill moves the total by **thousands per run** with machine conditions.
+Concretely: the v3.0.0 release band (197,186–197,191, four runs) was
+measured on a machine carrying the release campaign's own build load; the
+same commit configuration re-measured twice on an idle machine scored
+210,239/216,557 with an identical 9-file timeout list (±2 assertions
+between runs). Neither number is wrong — they are the same binary under
+different load — but only same-day, same-conditions runs are comparable,
+which is how the batch gate has always used them. The all-or-nothing
+files-fully-passing bar and the distribution bar do not have this
+sensitivity.

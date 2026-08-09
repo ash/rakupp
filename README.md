@@ -19,8 +19,8 @@ the box (`RAKUPP_GIL=1` / `RAKUPP_LTM=0` are the one-release escape hatches).
 | Roast, per individual test — of ~218,800 the suite declares | **197,191 (90%)** | 197,090 |
 | Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
 | Official documentation examples byte-identical on both engines | **945**† | 952 |
-| Ecosystem distributions passing their own `zef` install-time test suite | **34 / 59**\* | 50 / 59 |
-| Local regression suite | **397** | 312 |
+| Ecosystem distributions passing their own `zef` install-time test suite | **47 / 59**\* | 50 / 59 |
+| Local regression suite | **398** | 312 |
 
 The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
@@ -31,10 +31,12 @@ iteration order per process, and the moved rows are ones where *Rakudo's*
 output drifted from the documentation. \*The distribution bar RAISED itself at
 v3.0.0: at v2.0.0 Rakudo's own environment could not load the `Test::META`
 dependency chain, so every dist's `t/*meta*` files were excluded from the
-comparison; that chain now loads, those files count, and they expose
-pre-existing Raku++ module gaps (tracked for v3.x) that the flips did not
-cause — verified identical under the pre-v3 modes. Compare the columns knowing
-the new one clears a stricter bar, as with every release here.
+comparison; that chain now loads and those files count. 47/59 clears that
+stricter bar — JSON::Fast ships native inside the interpreter (its own
+14-file suite passes against the built-in parser; the 332 KB SPDX license
+list parses in 6.6 ms where interpreting the module took 52.7 s), and the
+Test::META chain runs end to end. Compare the columns knowing the new one
+clears a stricter bar, as with every release here.
 Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
 for the key features in bullets, [the overview](docs/guide/OVERVIEW.md) for
 a one-page tour, [the full guide](docs/guide/GUIDE.md) for the complete picture,
