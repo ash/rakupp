@@ -1,5 +1,7 @@
 # Raku++ — Highlights
 
+**Write it. Run it. Compile it.**
+
 *The key features on one page, in bullets. More detail: [OVERVIEW.md](OVERVIEW.md)
 (prose tour) → [GUIDE.md](GUIDE.md) (full picture) → [FEATURES.md](FEATURES.md)
 (exhaustive inventory).*

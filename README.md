@@ -133,6 +133,14 @@ From a checkout, `nix build` produces `./result/bin/rakupp`.
 
 ## Quick start
 
+**Write it. Run it. Compile it.**
+
+```sh
+rakupp app.raku                  # write it, run it — no build step
+rakupp --exe app.raku -o app     # compile it
+./app                            # one file, and it needs nothing you have
+```
+
 ```sh
 # Run
 rakupp -e 'say "hello, world"'            # a one-liner  (build/rakupp if not installed)

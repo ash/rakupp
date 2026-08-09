@@ -1,5 +1,13 @@
 # Interpreter vs compiled (`--exe`) — the examples
 
+> **Write it. Run it. Compile it.**
+>
+> ```sh
+> rakupp app.raku                  # write it, run it — no build step
+> rakupp --exe app.raku -o app     # compile it
+> ./app                            # one file, and it needs nothing you have
+> ```
+
 Every program in [examples/](../../examples) compiles to a standalone native binary
 with `rakupp --exe`, and every binary produces byte-identical output to the
 interpreter run (`life.raku` is seeded random, so its check uses an
