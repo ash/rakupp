@@ -1,8 +1,12 @@
 # Per-character string ops, and what the ASCII fast path actually cost
 
 Found 9 August 2026, working the v3.0.1 release, by asking why JSON::Fast
-needed 13.9 s to parse a 421 KB document that Rakudo parses in 51 ms. Most of
-this is fixed and shipped in v3.0.1; the last two sections are open.
+needed 13.9 s to parse a 421 KB document that Rakudo parses in 51 ms. §1–§3
+shipped in v3.0.1. §5, §5a and §6 were the follow-up pass later the same day,
+which closed the two gaps v3.0.1 left open (the uncached `.substr`/`.index`
+sites, and a perf gate that could not see string work at all) and took another
+22% off the parse. Nothing here is open now except what §4 and §6 agree is
+architecture.
 
 The reason it is worth writing down is that the defect was **invisible in the
 shape of the code**. Every site looked like an optimisation, was commented as
@@ -161,15 +165,112 @@ Two things left open here, neither blocking:
   `RAKUPP_GIL=1`. Pre-existing, unrelated to the above, and looks like
   `callframe` under worker threads.
 
-## 5. Where else this pattern probably lives — OPEN
+## 5. Where else this pattern lives — the `.substr`/`.index` sites, FIXED (2026-08-09)
 
-The seven ops fixed here were found by profiling one module. The same
-"establish a string property by scanning, per call" shape is worth grepping for
-elsewhere — `MethodCallPart3.cpp` has `byteIsGraphemeIndex(raw)` and
-`byteIsGraphemeIndex(hay)`/`(ndl)` at the `.index`/substitution sites, which are
-uncached and sit on paths a regex-driven loop can hit per character. They were
-left alone in v3.0.1 because no measurement drove them; they should be measured
-rather than converted on faith.
+The suspicion recorded here was right, and understated. `MethodCallPart3.cpp`
+did call `byteIsGraphemeIndex` uncached at the `substr` and `index`/`rindex`
+sites — but each of those lines was preceded by an `inv.toStr()`, which **copies
+the whole invocant**. So the per-call cost was O(length) twice over, on the
+methods a scanning loop calls per character.
+
+Measured with the ×4 test this file recommends — 5,000 `.substr($n, 1)` calls
+against strings of 50 KB, 100 KB, 200 KB and 400 KB:
+
+| string length | before | after |
+|---|---:|---:|
+| 50 KB | 29 ms | 5 ms |
+| 100 KB | 44 ms | 5 ms |
+| 200 KB | 74 ms | 5 ms |
+| 400 KB | 135 ms | 5 ms |
+
+The tell is not the ratio but the shape: the *same* 5,000 operations cost more
+on a longer string, which is the signature of per-call O(length) work. After the
+fix the column is flat, which is what "the string's length no longer enters the
+per-call cost" looks like.
+
+Both sites now read the invocant's `CowStr` in place and take the verdict off
+the shared body. Two caveats are in the code and worth repeating: `substr-rw`
+keeps the snapshot copy (its write-back may reach the same storage), and a
+Str-valued **enum** stringifies to its key, so `inv.s` is only interchangeable
+with `inv.toStr()` when `enumName` is empty. That second one was a live bug in
+the first cut of the fix.
+
+Straight-line effect, 20,000 calls over a 200 KB string: `.substr($n,1)`
+296 → 22 ms, `.index` 359 → 91 ms.
+
+## 5a. The guard could not see any of this — FIXED (2026-08-09)
+
+v3.0.1 left a note that the perf-guard baseline was v1.5.1's and had no string
+kernel, "which is why a change of this size in the string representation could
+pass it unmeasured". That was exactly right, and it is why §5 survived a
+release: all four kernels were Int-and-Array work, so a build could make string
+operations six times slower and the gate would call it green.
+
+Three kernels added, each guarding a distinct thing:
+
+| kernel | what it catches | v3.0.1 | now |
+|---|---|---:|---:|
+| `strscan` | per-call O(length) work in a string method | 2883.0 ms | 221.6 ms |
+| `strpass` | a regression in CowStr promotion/sharing | 184.3 ms | 153.8 ms |
+| `subcall` | per-call work that belongs on the AST | 375.3 ms | 281.1 ms |
+
+Their first baseline is the number measured the day they landed, not the last
+release's — recording v3.0.1's `strscan` would have left the gate open to
+readmitting the very regression it was added to stop. The reasoning is written
+into `tools/perf-baseline.raku` beside the numbers.
 
 The general check, cheap to run against any candidate: time the operation over
 inputs of n, 2n, 4n and 8n. A ×2 per doubling is fine; a ×4 is this bug.
+
+## 6. The per-call and per-op tax — REDUCED (2026-08-09)
+
+§4 concluded that the residual gap to Rakudo is architecture. That is still true
+of most of it, but "most" was doing more work in that sentence than it should
+have: profiling the same JSON::Fast parse again found ordinary waste worth 22%,
+none of it in the parser and none of it needing an architecture change.
+
+The pattern, four times over, was **a static property of the AST recomputed on
+every call**. The codebase already had the tool for this (`DecidedOnce<T>`, and
+the comment in `hoistExprDecls` describing precisely this bug) — these sites had
+simply not been looked at:
+
+- **The binder's fast path excluded `is rw`.** The only thing the slow path did
+  differently for an rw scalar was leave `readonly` clear, but excluding it sent
+  every `(str $t, int $p is rw)` signature down a path that allocates a
+  `ValueList`, a `std::map` and a `std::set` before binding anything. That
+  signature is `nom-ws`, called 73,603 times in a 278 KB parse. Whether a
+  signature qualifies is now decided once and kept on the parameter list.
+- **`Value::natWidthOfType` ran per typed parameter per call** — and it
+  `substr`s the type name, so it *allocated* each time. Cached on the `Param`.
+- **`typeCheckBind` did four keyed lookups per bind** (two hashes, a prefix
+  chain, a 17-element `std::set`) to decide whether the type name was
+  enforceable. Cached, but only the positive answer: a name that is unresolvable
+  now can resolve later, so the negative must not stick.
+- **The arity pre-check and the inline-`CATCH` scan** both walked the signature
+  and the whole statement list per call. Both are static; both are now decided
+  once on the `Callable`.
+- **`hoistExprDecls` built two `std::function`s per call** — two heap
+  allocations before any walking — on exactly the bodies where its existing
+  cache cannot short-circuit. Self-recursive lambdas instead.
+
+And one that was not a cached-property bug but the same shape of waste:
+
+- **Every nqp op built a fresh `ValueList` for its arguments**, so an nqp-heavy
+  program paid a malloc and a free per op — roughly 1.5M of each on a 278 KB
+  document. The buffers now come from a per-thread, depth-indexed pool on
+  `ExecContext` (a `std::deque`, because an argument's own evaluation re-enters
+  the function and a growing `vector` would reallocate under the outer frame's
+  live reference). Contents are still cleared on exit, so argument lifetimes are
+  unchanged. Allocation fell from 23.6% of the profile to 14.0%.
+
+Measured end to end, `from-json` on the same 278 KB document: **597 → 464 ms**,
+against Rakudo's 34 ms. So the gap closes from ~17.6× to ~13.6×, and §4's claim
+survives in a narrower form: what is left really is the AST walk. The top line
+of the profile is now `Value`'s own copy constructor and destructor at ~10%,
+which is `sizeof(Value) == 392` and not something an optimisation removes.
+
+Two candidates measured and NOT taken, recorded so they are not re-proposed
+without numbers: LTO on the runtime (slower than `-O2`, and 10× the link time),
+and blaming `Value`'s size for array work (§4's rejected hypothesis still
+holds — the fat struct is noise next to dispatch *there*; it is the copying on
+the argument path that shows up, not the size in containers).

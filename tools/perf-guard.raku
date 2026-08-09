@@ -9,8 +9,13 @@
 #   asg     — a plain scalar `=` assignment loop
 #   loopsum — a `+=` compound assignment over a Range with the `$_` topic
 #   hash    — hash-index post-increment in a loop
+#   strscan — per-character .substr over a long string
+#   strpass — a long string passed to a sub, 200k times
+#   subcall — a typed `is rw` signature called 200k times
 # (loopsum/hash were added after a ~8-22% interp regression on exactly these
-# shapes slipped past the old fib+asg-only guard over the 0.7.1->0.9.0 cycle.)
+# shapes slipped past the old fib+asg-only guard over the 0.7.1->0.9.0 cycle.
+# strscan/strpass/subcall were added after v3.0.1 replaced the string
+# representation and the guard, being all-Int, could not see it either way.)
 #
 # Usage — A/B two binaries:
 #     RAKUPP=/path/to/old rakupp tools/perf-guard.raku
@@ -68,7 +73,34 @@ my %kernels =
     fib     => 'sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }; say fib(29);',
     asg     => 'my $x = 0; for ^2_000_000 { $x = $x + 1 }; say $x;',
     loopsum => 'my $t = 0; for 1 .. 1_000_000 { $t += $_ }; say $t;',
-    hash    => 'my %c; for 1 .. 100_000 { %c{$_ % 1_000}++ }; say %c.elems;';
+    hash    => 'my %c; for 1 .. 100_000 { %c{$_ % 1_000}++ }; say %c.elems;',
+    # The three string/call kernels below were added 2026-08-09, after v3.0.1
+    # changed the string representation (CowStr) and the guard could not see it:
+    # every kernel above is Int-and-Array work, so a release that made string
+    # operations 6x slower would have passed. Each guards a distinct thing that
+    # the JSON::Fast work depended on, and each FAILS LOUDLY if it comes back:
+    #   strscan — per-character .substr over a long string. Catches any op that
+    #             re-derives a string property by scanning, or copies the whole
+    #             invocant, per call (STRING-SCAN-QUADRATICS.md). Nearly flat in
+    #             the string's length when it is right, O(n) per call when not.
+    #   strpass — a long string passed to a sub 200k times. Catches a regression
+    #             in CowStr promotion/sharing: without it this is a 200 KB memcpy
+    #             per call.
+    #   subcall — a typed `is rw` signature called 200k times. Catches per-call
+    #             work that belongs on the AST: signature rescans, type-name
+    #             string lookups, the binder's slow path.
+    strscan => 'my $s = "abcdefghij" x 20000; my int $n = 0; my $a = 0;
+                while $n < 200000 { $a = $a + $s.substr($n % 199000, 1).ord; $n = $n + 1 }; say $a;',
+    strpass => 'use nqp; sub f(str $t) { nqp::chars($t) }; my str $s = "abcdefghij" x 20000;
+                my int $n = 0; my $a = 0; while $n < 200000 { $a = $a + f($s); $n = $n + 1 }; say $a;',
+    subcall => 'use nqp; my str $s = "   x" x 200000;
+                sub nomws(str $t, int $p is rw --> Nil) { nqp::while(nqp::iseq_i(nqp::ordat($t,$p),32), ++$p) }
+                my int $n = 0; my int $p = 0;
+                while $n < 200000 { nomws($s, $p); $p = $p + 4; $n = $n + 1 }; say $p;';
+
+# The kernel list, in one place: the run loop and the gate loop must agree, and
+# they used to carry two hardcoded copies of it.
+my @KERNELS = <fib asg loopsum hash strscan strpass subcall>;
 
 
 # The 1-minute load average, and how many cores there are to carry it. A busy
@@ -113,7 +145,7 @@ say "perf-guard: $RAKUPP";
 my %now;
 say "kernel      best (ms)";
 say "-" x 24;
-for <fib asg loopsum hash> -> $k {
+for @KERNELS -> $k {
     %now{$k} = measure(%kernels{$k});
     printf "%-10s %8.1f\n", $k, %now{$k};
 }
@@ -170,7 +202,7 @@ if $check {
     say "gate: baseline {$BASEFILE.basename} (recorded %b<recorded>), tolerance {$tol}%";
     say "kernel        now   baseline    delta   vs best";
     say "-" x 52;
-    for <fib asg loopsum hash> -> $k {
+    for @KERNELS -> $k {
         my $base = %b<kernels>{$k}<baseline>;
         my $best = %b<kernels>{$k}<best>;
         my $d    = 100 * (%now{$k} - $base) / $base;
@@ -187,7 +219,7 @@ if $check {
     if @bad {
         note "perf-guard: {@bad.elems} kernel(s) over tolerance — re-measuring before believing it";
         my @still;
-        for <fib asg loopsum hash> -> $k {
+        for @KERNELS -> $k {
             my $base = %b<kernels>{$k}<baseline>;
             next unless 100 * (%now{$k} - $base) / $base > $tol;
             my $again = measure(%kernels{$k});

@@ -1924,8 +1924,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // none of that machinery is needed, and skipping it is what stops a
         // `.substr($i, 1)` loop being quadratic in the string. Only these two
         // primitives differ; every argument shape below is decided once.
-        const std::string raw = inv.toStr();
-        const bool plain = byteIsGraphemeIndex(raw);
+        // Both of these used to be O(length) on EVERY call: toStr() copies the
+        // whole invocant, and byteIsGraphemeIndex rescans it. A `.substr($i, 1)`
+        // loop calls this per character, so the pair put the quadratic straight
+        // back that the caching in cowByteIsGraphemeIndex exists to remove
+        // (STRING-SCAN-QUADRATICS.md §5). When the invocant is already a Str,
+        // read its CowStr in place and take the verdict off the shared body.
+        // `substr-rw` keeps the snapshot: its write-back path may reach the same
+        // storage, and a reference into it would be reading a moving target.
+        // `enumName` is the catch: Value::toStr on a Str-valued ENUM answers the
+        // enum key, not the string, so `inv.s` is not interchangeable with
+        // `inv.toStr()` for those. Everything else with t == VT::Str is.
+        const bool cowStr = inv.t == VT::Str && inv.enumName.empty();
+        const bool cowOk = cowStr && m == "substr";
+        std::string rawCopy;
+        if (!cowOk) rawCopy = inv.toStr();
+        const std::string& raw = cowOk ? inv.s.str() : rawCopy;
+        const bool plain = cowStr ? cowByteIsGraphemeIndex(inv.s)
+                                  : byteIsGraphemeIndex(raw);
         std::vector<uint32_t> cps;
         std::unique_ptr<GraphemeMap> gm;
         if (!plain) { cps = utf8cp(raw); gm.reset(new GraphemeMap(cps)); }
@@ -2034,13 +2050,28 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 // the ORIGINAL string
                 else if (av.s == "m" || av.s == "ignoremark") imark = !av.pairVal || av.pairVal->truthy();
             }
-        std::string hay = inv.toStr(), ndl = a0().toStr();
-        if (imark) { hay = markFold(hay); ndl = markFold(ndl); }
+        // Same pair of O(length)-per-call costs as `substr` above, on a method
+        // a scanning loop calls per character: two whole-string copies and two
+        // uncached rescans. With no `:ignoremark` fold nothing is rewritten, so
+        // the two operands can be read in place and their verdicts taken off the
+        // shared bodies (STRING-SCAN-QUADRATICS.md §5).
+        // …with the same enum caveat as `substr` above: a Str-valued enum
+        // stringifies to its KEY, so only a plain Str may be read in place.
+        const bool cowHay = !imark && inv.t == VT::Str && inv.enumName.empty();
+        const bool cowNdl = !imark && !args.empty() && args[0].t == VT::Str &&
+                            args[0].enumName.empty();
+        std::string hayCopy, ndlCopy;
+        if (!cowHay) { hayCopy = inv.toStr(); if (imark) hayCopy = markFold(hayCopy); }
+        if (!cowNdl) { ndlCopy = a0().toStr(); if (imark) ndlCopy = markFold(ndlCopy); }
+        const std::string& hay = cowHay ? inv.s.str() : hayCopy;
+        const std::string& ndl = cowNdl ? args[0].s.str() : ndlCopy;
         // Plain needle in a plain haystack, no folding: positions are byte
         // positions and std::string::find is the whole algorithm. Worth taking
         // before the decode, since a scan over a long string calls this per
         // character. `from` is still parsed below in the general path.
-        if (!icase && !imark && byteIsGraphemeIndex(hay) && byteIsGraphemeIndex(ndl) &&
+        if (!icase && !imark &&
+            (cowHay ? cowByteIsGraphemeIndex(inv.s) : byteIsGraphemeIndex(hay)) &&
+            (cowNdl ? cowByteIsGraphemeIndex(args[0].s) : byteIsGraphemeIndex(ndl)) &&
             (args.size() <= 1 || !args[1].isNumeric())) {
             size_t at = m == "index" ? hay.find(ndl) : hay.rfind(ndl);
             return at == std::string::npos ? Value::nil() : Value::integer((long long)at);

@@ -1737,7 +1737,12 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
     // std::function and so also allocates. Decide once per body and remember it.
     if (cache && *cache == 0) return;   // decided already: nothing here to hoist
     bool found = false;
-    std::function<void(const Expr*, bool)> walkE = [&](const Expr* e, bool cond) {
+    // Self-recursive lambdas rather than std::function: for a body that DOES
+    // have something to hoist the cache above cannot short-circuit, so this runs
+    // per call — and two std::functions per call is two heap allocations before
+    // any walking happens. `auto&&` self-reference keeps the recursion without
+    // the type erasure.
+    auto walkE = [&](auto&& self, const Expr* e, bool cond) -> void {
         if (!e) return;
         switch (e->kind) {
             case NK::VarExpr: {
@@ -1750,19 +1755,19 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
                     if (!env->vars.count(v->name))
                         env->vars[v->name] = typedDefault(v->declType, v->name[0]);
                 }
-                if (v->declDefault) walkE(v->declDefault.get(), cond);
+                if (v->declDefault) self(self, v->declDefault.get(), cond);
                 break;
             }
-            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); walkE(t->cond.get(), cond); walkE(t->then.get(), true); walkE(t->els.get(), true); break; }
-            case NK::NqpOp:   { for (auto& x : static_cast<const NqpOp*>(e)->args) walkE(x.get(), true); break; }
-            case NK::Binary:  { auto* b = static_cast<const Binary*>(e); walkE(b->lhs.get(), cond); walkE(b->rhs.get(), cond); break; }
-            case NK::Unary:   walkE(static_cast<const Unary*>(e)->operand.get(), cond); break;
-            case NK::Assign:  { auto* a = static_cast<const Assign*>(e); walkE(a->target.get(), cond); walkE(a->value.get(), cond); break; }
-            case NK::Call:    { auto* c = static_cast<const Call*>(e); if (c->callee) walkE(c->callee.get(), cond); for (auto& x : c->args) walkE(x.get(), cond); break; }
-            case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); walkE(m->inv.get(), cond); for (auto& x : m->args) walkE(x.get(), cond); break; }
-            case NK::Index:   { auto* i = static_cast<const Index*>(e); walkE(i->base.get(), cond); walkE(i->index.get(), cond); break; }
-            case NK::ListExpr:{ for (auto& x : static_cast<const ListExpr*>(e)->items) walkE(x.get(), cond); break; }
-            case NK::ChainExpr: { for (auto& x : static_cast<const ChainExpr*>(e)->operands) walkE(x.get(), cond); break; }
+            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); self(self, t->cond.get(), cond); self(self, t->then.get(), true); self(self, t->els.get(), true); break; }
+            case NK::NqpOp:   { for (auto& x : static_cast<const NqpOp*>(e)->args) self(self, x.get(), true); break; }
+            case NK::Binary:  { auto* b = static_cast<const Binary*>(e); self(self, b->lhs.get(), cond); self(self, b->rhs.get(), cond); break; }
+            case NK::Unary:   self(self, static_cast<const Unary*>(e)->operand.get(), cond); break;
+            case NK::Assign:  { auto* a = static_cast<const Assign*>(e); self(self, a->target.get(), cond); self(self, a->value.get(), cond); break; }
+            case NK::Call:    { auto* c = static_cast<const Call*>(e); if (c->callee) self(self, c->callee.get(), cond); for (auto& x : c->args) self(self, x.get(), cond); break; }
+            case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); self(self, m->inv.get(), cond); for (auto& x : m->args) self(self, x.get(), cond); break; }
+            case NK::Index:   { auto* i = static_cast<const Index*>(e); self(self, i->base.get(), cond); self(self, i->index.get(), cond); break; }
+            case NK::ListExpr:{ for (auto& x : static_cast<const ListExpr*>(e)->items) self(self, x.get(), cond); break; }
+            case NK::ChainExpr: { for (auto& x : static_cast<const ChainExpr*>(e)->operands) self(self, x.get(), cond); break; }
             // Block / BlockExpr / lambda bodies own their scope — do NOT descend.
             default: break;
         }
@@ -1773,13 +1778,13 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
     // (`my $a = "u" if False; $a ~= "host"` must give "host", not X::Undeclared).
     // Hoist declarations out of every modifier wrapper; modifiers chain
     // (`E if A for B` nests one wrapper inside another), hence the recursion.
-    std::function<void(const Stmt*)> walkModStmt = [&](const Stmt* st) {
+    auto walkModStmt = [&](auto&& selfM, const Stmt* st) -> void {
         if (!st) return;
         auto walkBlock = [&](const Block* b) {
             if (!b) return;
             for (auto& bs : b->stmts) {
-                if (bs->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(bs.get())->e.get(), true);
-                else walkModStmt(bs.get());
+                if (bs->kind == NK::ExprStmt) walkE(walkE, static_cast<const ExprStmt*>(bs.get())->e.get(), true);
+                else selfM(selfM, bs.get());
             }
         };
         switch (st->kind) {
@@ -1796,8 +1801,8 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
         }
     };
     for (auto& s : stmts) {
-        if (s->kind == NK::ExprStmt) walkE(static_cast<const ExprStmt*>(s.get())->e.get(), false);
-        else walkModStmt(s.get());
+        if (s->kind == NK::ExprStmt) walkE(walkE, static_cast<const ExprStmt*>(s.get())->e.get(), false);
+        else walkModStmt(walkModStmt, s.get());
     }
     if (cache) *cache = found ? 1 : 0;
 }
@@ -1878,6 +1883,11 @@ void Interpreter::saveCtx(ExecContext& c) {
     c.tapStack    = std::move(tctx_.tapStack);
     c.makeTargets = std::move(tctx_.makeTargets);
     c.pkgPrefix   = std::move(tctx_.pkgPrefix);
+    // NOT nqpArgs/nqpDepth, deliberately. They are scratch buffers belonging to
+    // the OS THREAD, not to the Raku context being parked: a suspended nqp op
+    // further up this thread's C++ stack still holds a live reference into the
+    // deque, and moving it out from under that reference would dangle. The
+    // thread blocks while parked, so nothing else can be using them meanwhile.
 }
 // … and back out when it resumes (or when another thread is scheduled in).
 void Interpreter::loadCtx(ExecContext& c) {
@@ -6689,6 +6699,19 @@ std::string typeCheckRepr(const Value& v) {
     return r.size() > 23 ? r.substr(0, 20) + "..." : r;
 }
 
+// Value::natWidthOfType, memoised per parameter: it substr()s the type name, so
+// calling it per bind allocated a std::string for every typed parameter of every
+// call. Answer encoded as bits<<1 | signed (0 = not a native-width type).
+int paramNatSpec(const Param& p) {
+    int spec = p.natSpec;
+    if (spec < 0) {
+        bool sg; int bits = Value::natWidthOfType(p.type, sg);
+        spec = (bits << 1) | (sg ? 1 : 0);
+        p.natSpec = spec;
+    }
+    return spec;
+}
+
 void Interpreter::typeCheckBind(const Param& p, const Value& v) {
     if (v.t == VT::Type || v.t == VT::Nil || v.t == VT::Any) return;
     if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
@@ -6696,8 +6719,14 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v) {
     // a type name we can't resolve (a `::T` capture, an unimported module type)
     // cannot be enforced — bind freely like before. Native lowercase names are
     // resolvable even though isKnownTypeName (boxed names) doesn't list them.
-    if (!classes_.count(p.type) && !subsets_.count(p.type) &&
-        !isKnownTypeName(p.type) && !isNativeTypeName(p.type)) return;
+    // Four keyed lookups (two hashes, a prefix chain, a std::set of 17 strings)
+    // that ran on every bind of every typed parameter. Once the name resolves it
+    // stays resolved, so the TRUE answer is remembered; the false one is not.
+    if (!p.typeKnown) {
+        if (!classes_.count(p.type) && !subsets_.count(p.type) &&
+            !isKnownTypeName(p.type) && !isNativeTypeName(p.type)) return;
+        p.typeKnown = 1;
+    }
     if (typeOrSubsetMatches(v, p.type)) return;
     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
         "Type check failed in binding to parameter '" + p.name + "'; expected " +
@@ -6710,25 +6739,41 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     // named arguments were passed — the overwhelmingly common signature. Bind
     // positionally, skipping the named-map / explicit-named-set / substr /
     // default-eval machinery below (all pure allocation for this case).
-    {
-        bool simple = true;
-        for (auto& p : params)
-            if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
-                p.isRw || p.isCopy || p.defaultVal || p.subSig || p.litVal ||
-                p.whereExpr || p.defConstraint || p.coerce ||
-                (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) // attributive: writes through to self
-                { simple = false; break; }
+    //
+    // `is rw` qualifies. The write-through itself is not bindParams' job — it is
+    // set up separately by setupRwLinks — and the ONLY thing the slow path does
+    // differently for an rw scalar is leave `readonly` clear (the sole `isRw`
+    // test in the whole slow path). Excluding it sent every `(str $t, int $p is
+    // rw)` signature down the slow path, which allocates a ValueList, a
+    // std::map and a std::set per call before binding anything. That signature
+    // is JSON::Fast's `nom-ws`, called 73,603 times in a 278 KB parse.
+    //
+    // Whether the list qualifies is a static property of the signature, so it
+    // is decided once and remembered on the Param vector's first element rather
+    // than rescanned per call.
+    if (!params.empty()) {
+        signed char simple = params[0].sigSimple;
+        if (simple < 0) {
+            simple = 1;
+            for (auto& p : params)
+                if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
+                    p.isCopy || p.defaultVal || p.subSig || p.litVal ||
+                    p.whereExpr || p.defConstraint || p.coerce ||
+                    (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) // attributive: writes through to self
+                    { simple = 0; break; }
+            params[0].sigSimple = simple;
+        }
         if (simple)
-            for (auto& a : args) if (isNamedArg(a)) { simple = false; break; }
+            for (auto& a : args) if (isNamedArg(a)) { simple = 0; break; }
         if (simple) {
             for (size_t i = 0; i < params.size(); i++) {
                 if (i < args.size()) {
                     Value v = args[i];
                     if (!params[i].type.empty()) typeCheckBind(params[i], v);
                     // a native-int param truncates on bind (see the slow path)
-                    { bool sg; int bits = Value::natWidthOfType(params[i].type, sg);
-                      if (bits) wrapNative(v, bits, sg); }
-                    v.readonly = true;               // plain scalar param is readonly
+                    { int spec = paramNatSpec(params[i]);
+                      if (spec >> 1) wrapNative(v, spec >> 1, spec & 1); }
+                    v.readonly = !params[i].isRw;    // plain scalar param is readonly; `is rw` is not
                     env->define(params[i].name, std::move(v));
                 } else {
                     env->define(params[i].name, typedDefault(params[i].type, '$'));
@@ -9392,24 +9437,36 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // Arity enforcement for NAMED plain user subs (Rakudo rejects these at
     // compile time; we reject at call time with the same message shape).
     // Blocks, methods, multis/protos and builtins keep their lax binding.
-    if (arityCheck && c.hadSig &&
-        !c.name.empty() && !c.isMethod && !c.isProto && !c.isMultiDispatcher &&
-        !c.isWhateverCode && !c.isNative && !c.builtin && !c.hasPrimed &&
-        c.placeholders.empty() && !c.usesArgs) { // `sub f { @_ }` slurps implicitly
-        bool unbounded = false;
-        int maxPos = 0, reqPos = 0;
-        if (c.params)
-            for (auto& p : *c.params) {
-                if (p.invocant || p.named) continue;
-                if (p.slurpy || p.sigil == '|' || p.sigil == '\\') { unbounded = true; continue; }
-                // an @-positional historically absorbs capture-interpolated
-                // argument lists (foo(|$c) with sub foo(@arr) — roast-blessed),
-                // and the interpolation is invisible after flattening: treat it
-                // as unbounded for the too-many test (still required below)
-                if (p.sigil == '@') unbounded = true;
-                maxPos++;
-                if (!p.optional && !p.defaultVal && !p.litVal) reqPos++;
-            }
+    // Which callables the check applies to, and the bounds it compares against,
+    // are both static — decided on the first call and reread after that. Only
+    // the argument tally below is per-call.
+    if (c.arityShape < 0) {
+        signed char applies = (c.hadSig &&
+            !c.name.empty() && !c.isMethod && !c.isProto && !c.isMultiDispatcher &&
+            !c.isWhateverCode && !c.isNative && !c.builtin && !c.hasPrimed &&
+            c.placeholders.empty() && !c.usesArgs) ? 1 : 0; // `sub f { @_ }` slurps implicitly
+        if (applies) {
+            bool unbounded = false;
+            int maxPos = 0, reqPos = 0;
+            if (c.params)
+                for (auto& p : *c.params) {
+                    if (p.invocant || p.named) continue;
+                    if (p.slurpy || p.sigil == '|' || p.sigil == '\\') { unbounded = true; continue; }
+                    // an @-positional historically absorbs capture-interpolated
+                    // argument lists (foo(|$c) with sub foo(@arr) — roast-blessed),
+                    // and the interpolation is invisible after flattening: treat it
+                    // as unbounded for the too-many test (still required below)
+                    if (p.sigil == '@') unbounded = true;
+                    maxPos++;
+                    if (!p.optional && !p.defaultVal && !p.litVal) reqPos++;
+                }
+            c.arityMaxPos = maxPos; c.arityReqPos = reqPos; c.arityUnbounded = unbounded;
+        }
+        c.arityShape = applies;
+    }
+    if (arityCheck && c.arityShape == 1) {
+        const bool unbounded = c.arityUnbounded;
+        const int maxPos = c.arityMaxPos, reqPos = c.arityReqPos;
         // Pairs are ambiguous at this level (quoted-key pairs bind
         // positionally; capture-flattened named args LOSE the namedArg bit),
         // so the too-many test counts only non-Pair positionals and the
@@ -9530,9 +9587,16 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.body) hasNestedSub = hoistSubs(*c.body); // nested named subs are visible throughout the body
     if (c.body) hoistExprDecls(*c.body, tctx_.cur.get(), &c.hoistNeed); // `my` buried in ternary/nqp branches → routine scope
     // an inline CATCH {} anywhere in the body handles exceptions from the whole block
-    Block* catchBlk = nullptr;
-    if (c.body) for (auto& s : *c.body)
-        if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
+    // (which statement, if any, is a static property — this used to rescan the
+    // whole statement list on every call, for a body that almost never has one)
+    if (c.catchScan < 0) {
+        Stmt* found = nullptr;
+        if (c.body) for (auto& s : *c.body)
+            if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) found = s.get();
+        c.catchBlkCache = found;
+        c.catchScan = found ? 1 : 0;
+    }
+    Block* catchBlk = c.catchScan == 1 ? static_cast<Block*>(c.catchBlkCache) : nullptr;
     try {
         // Loop-phaser control from an iterating driver (.map over a block with
         // FIRST/NEXT/LAST): FIRST fires only on the first iteration (and must not
@@ -9787,7 +9851,11 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         // parameter and the caller emits the same buffer.
         else if (p.sigil == '$' && !p.isCopy && !p.named && pi < rwArgs->size()) {
             auto it = env->vars.find(p.name);
+            // `hashKind` is empty on every ordinary value, and this runs for every
+            // plain scalar parameter of every call — so test that before comparing
+            // it against two literals (each of those is a strlen plus a memcmp).
             if (it != env->vars.end() && it->second.t == VT::Str &&
+                !it->second.hashKind.empty() &&
                 (it->second.hashKind == "Buf" || it->second.hashKind == "Blob"))
                 env->x().rwSynced[p.name] = it->second;
         }
@@ -10307,8 +10375,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             else if (sigil == '$' && !ve->declType.empty() && (std::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint"))
                 de->x().varDefault[ve->name] = Value::typeObj(ve->declType); // `$x = Nil` resets to (Type)
             if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
-            de->define(ve->name, std::move(init));
-            return &de->vars[ve->name];
+            return &de->define(ve->name, std::move(init));
         }
         // attribute lvalue: $.x / $!x
         if (ve->name.size() > 2 && (ve->name[1] == '.' || ve->name[1] == '!')) {

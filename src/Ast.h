@@ -300,6 +300,24 @@ struct Param {
     // destructuring sub-signature: `[$a,$b]` / `($a,$b)` / `|c($x)` — the inner
     // params the argument is unpacked into (null when not a destructuring param).
     std::shared_ptr<std::vector<Param>> subSig;
+    // Whether the WHOLE signature this param belongs to qualifies for
+    // bindParams' positional fast path. A static property of the signature, so
+    // it is decided on first call and read from the first param thereafter
+    // (-1 = undecided). Only element [0] is ever consulted.
+    mutable DecidedOnce<signed char> sigSimple{-1};
+    // Two more things every bind used to re-derive from the `type` STRING:
+    //   natSpec  — Value::natWidthOfType's answer, as bits<<1|signed. That
+    //              function substr()s the type name, so it ALLOCATED once per
+    //              typed parameter per call. Pure function of `type`; cached
+    //              unconditionally. -1 = undecided.
+    //   typeKnown — that `type` names something we can enforce, i.e. the four
+    //              classes_/subsets_/isKnownTypeName/isNativeTypeName lookups at
+    //              the top of typeCheckBind. Cached only once TRUE: a name that
+    //              is unresolvable now can become resolvable later (a class
+    //              declared further down, a module loaded), so the negative
+    //              answer must never stick.
+    mutable DecidedOnce<int> natSpec{-1};
+    mutable DecidedOnce<signed char> typeKnown{0};
 };
 
 struct BlockExpr : Expr {

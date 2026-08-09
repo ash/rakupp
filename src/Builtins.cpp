@@ -9276,7 +9276,19 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         }
         default: break;
     }
-    ValueList v;
+    // The argument list comes from the per-thread depth-indexed pool rather than
+    // a fresh vector: see ExecContext::nqpArgs. The guard both restores the depth
+    // and clears the buffer on every exit path, including a throw — clearing is
+    // what keeps argument lifetimes identical to the old local-vector version,
+    // and it is why the capacity (not the contents) is what gets reused.
+    if (tctx_.nqpDepth >= tctx_.nqpArgs.size()) tctx_.nqpArgs.emplace_back();
+    ValueList& v = tctx_.nqpArgs[tctx_.nqpDepth];
+    struct ArgGuard {
+        ExecContext& t; ValueList& buf;
+        ArgGuard(ExecContext& tc, ValueList& b) : t(tc), buf(b) { ++t.nqpDepth; }
+        ~ArgGuard() { --t.nqpDepth; buf.clear(); }
+    } argGuard{tctx_, v};
+    v.clear();
     v.reserve(a.size());
     // nqp ops operate on CONTAINERS: a variable holding a Proxy passes the proxy
     // itself (nqp::istype_nd($attr-var, AttrProxy) / nqp::iscont must see it),

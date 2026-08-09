@@ -211,7 +211,9 @@ struct Env {
         if (parent) return parent->find(name);
         return nullptr;
     }
-    void define(const std::string& name, Value v) { vars[name] = std::move(v); }
+    // Returns the slot: a caller that needs the address of what it just defined
+    // was hashing the name a second time to get it (`define(n, v); &vars[n]`).
+    Value& define(const std::string& name, Value v) { return vars[name] = std::move(v); }
 };
 
 // control-flow signals
@@ -299,6 +301,19 @@ struct ExecContext {
     std::shared_ptr<Env> cur;
     std::vector<Env*> dynStack;
     int callDepth = 0;
+    // Reusable argument buffers for evalNqpOp, one per nesting depth. Every nqp
+    // op used to build a fresh ValueList, so an nqp-heavy program (a tokenizer
+    // written in Raku — JSON::Fast is 1.5M ops on a 278 KB document) paid a
+    // malloc and a free per op for a vector of one to four Values. Keeping the
+    // buffers keeps their capacity; the contents are still cleared on the way
+    // out, so argument lifetimes are exactly what they were.
+    //
+    // A DEQUE, not a vector: an argument's own evaluation can re-enter
+    // evalNqpOp, and growing a vector would reallocate under the outer frame's
+    // live reference. deque never moves the elements it already holds.
+    // Per-thread because ExecContext is (`static thread_local tctx_`).
+    std::deque<ValueList> nqpArgs;
+    size_t nqpDepth = 0;
     Env* curStateEnv = nullptr;
     std::vector<std::shared_ptr<ValueList>> gatherStack;
     std::vector<size_t> gatherLimits; // per-gather take cap (0 = unlimited); a take past it throws StopGatherEx

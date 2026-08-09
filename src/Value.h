@@ -203,6 +203,14 @@ struct Callable {
     const std::vector<Param>* params = nullptr;   // borrowed from AST
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
     DecidedOnce<signed char> hoistNeed{-1};        // see Interpreter::hoistExprDecls (-1 = undecided)
+    // Three more static properties of the AST that callCallableRaw used to
+    // recompute on EVERY call. Each is cheap once and worthless repeated; a
+    // 73,603-call parse pays for them 73,603 times. -1/undecided as above.
+    DecidedOnce<signed char> arityShape{-1};       // 1 = the arity pre-check applies to this callable
+    int arityMaxPos = 0, arityReqPos = 0;          // …and its precomputed bounds (valid when arityShape == 1)
+    bool arityUnbounded = false;
+    DecidedOnce<signed char> catchScan{-1};        // 1 = body holds an inline CATCH block
+    Stmt* catchBlkCache = nullptr;                 // …which one (valid when catchScan == 1)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
     std::shared_ptr<Env> closure;
     std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)

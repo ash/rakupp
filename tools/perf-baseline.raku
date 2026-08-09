@@ -22,6 +22,19 @@
         'asg'     => { 'baseline' => 512.2, 'best' => 501.5, 'best-version' => '1.5.1', 'best-date' => '2026-07-29' },
         'loopsum' => { 'baseline' => 201.6, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
         'hash'    => { 'baseline' => 39.1, 'best' => 38.7, 'best-version' => '1.5.1', 'best-date' => '2026-07-29' },
+        # The three string/call kernels were added 2026-08-09 and have no release
+        # history, so their FIRST baseline is the number measured the day they
+        # landed rather than the last release's. That is deliberate: v3.0.1
+        # measured strscan at 2883.0, strpass 184.3 and subcall 375.3 on this
+        # machine, and recording those would have let a 13x regression back in
+        # through the very gate added to stop it. The v3.0.1 figures are kept
+        # here as the record of what the kernels were introduced to catch.
+        #   strscan  2883.0 -> 221.6   (.substr stopped copying and rescanning)
+        #   strpass   184.3 -> 153.8
+        #   subcall   375.3 -> 281.1   (binder fast path, cached signature facts)
+        'strscan' => { 'baseline' => 221.6, 'best' => 221.6, 'best-version' => 'unreleased', 'best-date' => '2026-08-09' },
+        'strpass' => { 'baseline' => 153.8, 'best' => 153.8, 'best-version' => 'unreleased', 'best-date' => '2026-08-09' },
+        'subcall' => { 'baseline' => 281.1, 'best' => 281.1, 'best-version' => 'unreleased', 'best-date' => '2026-08-09' },
     },
     # Recorded 2026-07-29 at 625/1462 Roast files. The baseline is deliberately
     # the CURRENT (slower) state rather than `best`: a permanently-red gate gets
