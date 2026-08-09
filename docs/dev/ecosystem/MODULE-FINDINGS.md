@@ -2249,8 +2249,9 @@ U+FFFD). The SPDX parse is now 6.6 ms — faster than compiled Rakudo's 32 ms.
 > scaling became linear. Measure that against the shim, though, not only
 > against the unshimmed engine: v3.0.0 as shipped parsed the same file in 5 ms,
 > so for a JSON::Fast user this release is 153x SLOWER, deliberately. The dist
-> bar is unchanged at 47/59, so nothing in the battery depended on the
-> difference.
+> bar did not drop: it went 47/59 to 48/59, the gain being Log::Async once
+> re-measuring exposed Supply.wait never blocking (see
+> STRING-SCAN-QUADRATICS.md). Nothing in the battery depended on the shim.
 
 **Layer 2: what the parse speed uncovered.** With the 52 s wall gone,
 License::SPDX.new recursed forever, then unmarshalled nothing, then Test::META

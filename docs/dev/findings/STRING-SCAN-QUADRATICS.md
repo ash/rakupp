@@ -144,8 +144,9 @@ emitter can actually run). `quit` records `quit_state` for the same reason —
 otherwise a quit supply would block `wait` forever.
 
 Results: `wait` blocks 304 ms where Rakudo blocks 317; Log::Async goes to
-17/17, better than the 15/17 it managed before any of this work; and Roast
-gained two fully-passing files (593 -> 595, S17 +1). The lesson is that a
+17/17, better than the 15/17 it managed before any of this work — which lifts
+the distribution bar from 47/59 to 48/59; and Roast gained a fully-passing
+file (593 -> 594, S17 +1). The lesson is that a
 performance change is a **concurrency** change: it reorders every race in the
 system, and the module battery caught what the unit suites did not.
 

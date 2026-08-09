@@ -15,7 +15,7 @@ why the numbers here disagree with the ones v3.0.0 published.
 | Roast assertions (all declared) | 197,191 | **197,080** |
 | Roast files fully passing | 594 | **594** |
 | Documentation examples byte-identical | 945 | **952** |
-| Distributions passing their own suite | 47 / 59 | **47 / 59** |
+| Distributions passing their own suite | 47 / 59 | **48 / 59** |
 | Local regression suite (`t/run.raku`) | 398 | **398** |
 
 The Roast figures are lower because they are real: three runs on this machine
@@ -65,8 +65,9 @@ and the internal `rakupp-json-from-parts` builtin are all gone, along with the
 `RAKUPP_JSON_FAST` escape hatch that existed only to switch between them.
 `use JSON::Fast` now loads the module from disk and runs it as ordinary Raku.
 
-The dist bar is unchanged at 47/59 with the shim removed, and JSON::Fast's own
-suite matches Rakudo file for file (13/14 against Rakudo's 13/14).
+The dist bar does not drop with the shim removed — it goes UP, 47/59 to 48/59,
+for a reason unrelated to JSON (see Supply.wait below); JSON::Fast's own suite
+matches Rakudo file for file, 13/14 against Rakudo's 13/14.
 
 ### Strings are shared, not copied
 
@@ -149,8 +150,9 @@ checks so the emitter can run; `quit` records its state too, so a quit supply
 releases `wait` instead of hanging it.
 
 It blocks 304 ms where Rakudo blocks 317. Log::Async goes to 17/17 — better
-than the 15/17 it managed before any of this release's work — and Roast gained
-two fully-passing files, S17 among them. Left open: Rakudo also rethrows the
+than the 15/17 it managed before any of this release's work — which is what
+takes the distribution bar from 47/59 to 48/59. Roast gained a fully-passing
+file too, S17 among them. Left open: Rakudo also rethrows the
 quit exception out of `wait` and we return `True`; and `Log::Async`'s
 `t/14-frame` is flaky in parallel mode on the previous binary too, which looks
 like `callframe` under worker threads.

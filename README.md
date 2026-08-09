@@ -25,7 +25,7 @@ stood in for the module, so **JSON::Fast is much slower here than in v3.0.0**
 | Roast, per individual test — of ~218,600 the suite declares | **197,080 (90%)** | 197,090 |
 | Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
 | Official documentation examples byte-identical on both engines | **952**† | 952 |
-| Ecosystem distributions passing their own `zef` install-time test suite | **47 / 59**\* | 50 / 59 |
+| Ecosystem distributions passing their own `zef` install-time test suite | **48 / 59**\* | 50 / 59 |
 | Local regression suite | **398** | 312 |
 
 The per-test figure counts the tests in files that abort before running (their
@@ -41,7 +41,7 @@ process, and the moved rows are ones where *Rakudo's* output drifted from the
 documentation. \*The distribution bar RAISED itself at v3.0.0: at v2.0.0
 Rakudo's own environment could not load the `Test::META` dependency chain, so
 every dist's `t/*meta*` files were excluded from the comparison; that chain
-now loads and those files count, and 47/59 clears that stricter bar. Compare
+now loads and those files count, and 48/59 clears that stricter bar. Compare
 the columns knowing the new one clears a stricter bar, as with every release
 here.
 Early-stage, growing test-first. See [the highlights](docs/guide/HIGHLIGHTS.md)
