@@ -81,7 +81,8 @@ enum class VT { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range,
 struct Value {
     VT t = VT::Any;              // the discriminator — which fields are live
     bool b;  long long i;  double n, im;   // Bool / Int / Num / (Complex imag)
-    std::string s;               // Str; also the type name for Type, key for Pair
+    CowStr s;                    // Str; also the type name for Type, key for Pair
+                                 // (copy-on-write above 64 bytes — see STRINGS.md)
     // ... flags: isList, itemized, readonly, namedArg, fatRat, ...
     std::shared_ptr<ValueList> arr;              // Array / List / Seq elements
     std::shared_ptr<std::map<std::string, Value>> hash;   // Hash entries
