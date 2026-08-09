@@ -18,6 +18,17 @@ The user-facing documentation is one level up, in [../](../README.md).
   index: what each major release set out to do, where its plan lived, and
   what it shipped — v1.0.0 through the **v3.0.0** campaign (2026-08-07).
 
+Next up:
+
+- **[plans/SLIM-PLAN.md](plans/SLIM-PLAN.md)** — the **v3.14.0** campaign
+  (planned 2026-08-09, starts after v3.0.1): `--exe` output stops carrying
+  the parts of Raku the program cannot reach. Where the 9.8 MB actually
+  goes, why `-dead_strip` and LTO cannot help, the accessor-and-stub seam
+  that makes Unicode tables and the parser optional, the single
+  `--slim[=SPEC]` key (levels, `±feature`, directives) with a plan to make
+  even that unnecessary, and — the centre of the plan — the six defences
+  that make cutting something needed impossible or loud.
+
 The three v3.0.0 pillar plans, smallest first:
 
 - **[plans/CLI-PLAN.md](plans/CLI-PLAN.md)** — a real command-line surface:

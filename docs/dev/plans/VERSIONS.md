@@ -107,6 +107,46 @@ default measures **197,191 / 218,772 declared (90.1%)** — the highest
 total recorded on this codebase. Two ledgered post-flip exceptions
 (PARALLEL-PLAN.md): nonblocking-await.t and bug-coverage-stress.t.
 
+## v3.14.0 — only what the program needs (planned 2026-08-09)
+
+A single-subject minor in the shape of v1.1.0, starting after v3.0.1 ships:
+a compiled program should stop carrying the parts of Raku it cannot reach.
+
+- **The number:** `say "Hello"` compiled with `--exe --slim` is **≤ 5.5 MB**,
+  down from **9,830,680 bytes** today — while every program in `t/`,
+  `examples/` and the module battery produces byte-identical stdout, stderr
+  and exit status built slim and built full. The size is only half the
+  claim; the differential is the other half.
+- **The plan:** [SLIM-PLAN.md](SLIM-PLAN.md), written before any code, off a
+  measured breakdown of where the 9.8 MB goes. Today the size is a *constant*
+  — 24 examples span 0.8% — because the runtime is one archive in which
+  everything is genuinely reachable from `Interpreter::Interpreter()`.
+  `-dead_strip` buys 200 KB and LTO measures *worse* than `-O2`, so the cut
+  has to be made in the source: Unicode data tables and the parser move
+  behind accessors with stub counterparts, and `--exe` links the real archive
+  or the stub per feature. Measured on hand-pruned builds that run correctly:
+  **−45%** for the Unicode tables, **−51%** with the parser as well.
+- **One key, and a plan to make it unnecessary:** the whole surface is
+  `--slim[=SPEC]`, where SPEC is a level (`none` / `safe` / `auto` / `max`),
+  `±feature` overrides, and directives (`help`, `list`, `why:`, `verify`) —
+  the `-fsanitize=`/`-march=native+crypto` idiom rather than six new flags
+  on a command line v3.0.0 had just tidied. `safe` (the free 16%: dead-strip
+  and symbols, no feature removed) is on with no flag; bare `--slim` is the
+  sound automatic level and the only thing most users type. Because `auto`
+  is sound by construction, the end state is that it becomes the default
+  with `--slim=safe` as the escape — the shape `RAKUPP_PARALLEL` and
+  `RAKUPP_LTM` took in v3.0.0. That flip is a phase of its own, explicitly
+  outside the 3.14 tag, gated on the differential suite holding across
+  several consecutive releases rather than one clean run.
+- **Why it is a campaign and not a patch:** the risk is not size, it is
+  cutting something a program needs. The plan's centre is the six defences
+  that make that impossible-or-loud — prove-unused rather than guess-unused,
+  a force-full trigger list, stubs that throw a named exception naming the
+  rebuild flag instead of returning empty tables, a manifest in the binary,
+  and the differential and negative suites as release gates. Per-builtin code
+  pruning is a stated non-goal: cutting only *data* keeps the entire failure
+  surface at one function.
+
 ## v4.0.0 — Raku that travels (forming, 2026-08-08)
 
 Not yet a settled campaign: two pillars are decided and written, and the rest
