@@ -9701,7 +9701,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         c.catchBlkCache = found;
         c.catchScan = found ? 1 : 0;
     }
-    Block* catchBlk = c.catchScan == 1 ? static_cast<Block*>(c.catchBlkCache) : nullptr;
+    // (Stmt*) first: catchBlkCache is an atomic cache slot, so the load has to
+    // happen before the downcast rather than through it.
+    Block* catchBlk = c.catchScan == 1 ? static_cast<Block*>((Stmt*)c.catchBlkCache) : nullptr;
     try {
         // Loop-phaser control from an iterating driver (.map over a block with
         // FIRST/NEXT/LAST): FIRST fires only on the first iteration (and must not

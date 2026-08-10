@@ -208,11 +208,19 @@ struct Callable {
     // Three more static properties of the AST that callCallableRaw used to
     // recompute on EVERY call. Each is cheap once and worthless repeated; a
     // 73,603-call parse pays for them 73,603 times. -1/undecided as above.
-    DecidedOnce<signed char> arityShape{-1};       // 1 = the arity pre-check applies to this callable
-    int arityMaxPos = 0, arityReqPos = 0;          // …and its precomputed bounds (valid when arityShape == 1)
-    bool arityUnbounded = false;
-    DecidedOnce<signed char> catchScan{-1};        // 1 = body holds an inline CATCH block
-    Stmt* catchBlkCache = nullptr;                 // …which one (valid when catchScan == 1)
+    // These two flags PUBLISH the fields under them, so they are PublishedOnce
+    // (release/acquire) rather than DecidedOnce (relaxed), and the payloads are
+    // atomic rather than plain. As plain ints under a relaxed flag, two threads
+    // calling one `sub` at the same time raced writing the bounds — which is
+    // undefined behaviour even though both compute the same numbers, and worse,
+    // a reader could see arityShape == 1 while the bounds were still 0 and
+    // reject a perfectly good call. ThreadSanitizer had been reporting it from
+    // t/stress/parallel-map.raku, the case that shares nothing at all.
+    PublishedOnce<signed char> arityShape{-1};     // 1 = the arity pre-check applies to this callable
+    DecidedOnce<int> arityMaxPos{0}, arityReqPos{0}; // …and its precomputed bounds (valid when arityShape == 1)
+    DecidedOnce<bool> arityUnbounded{false};
+    PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
+    DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
     std::string declFile;                          // source file the routine was declared in (backtrace .file)
     std::shared_ptr<Env> closure;
     std::shared_ptr<Env> stateEnv;                 // persistent storage for `state` vars (across calls)

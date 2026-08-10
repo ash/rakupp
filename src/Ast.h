@@ -52,6 +52,14 @@ struct PublishedOnce {
     }
     // Null until published — a reader that sees null simply takes the slow path.
     T get() const { return v.load(std::memory_order_acquire); }
+    // The same drop-in shape DecidedOnce has, so a flag can be upgraded from one
+    // to the other without touching a single use site — only the ORDERING
+    // changes. Use these when the flag guards SEPARATE payload fields written
+    // just before it: the release store publishes them, the acquire load makes
+    // them visible, and a reader that sees the flag set cannot see a stale
+    // payload. (DecidedOnce's relaxed pair cannot promise that.)
+    operator T() const { return v.load(std::memory_order_acquire); }
+    PublishedOnce& operator=(T x) { v.store(x, std::memory_order_release); return *this; }
     // Returns whichever pointer is now published: `x` if we won, the winner's
     // if we lost. `p.publish(mine) != mine` is the caller's cue to free `mine`.
     T publish(T x) {

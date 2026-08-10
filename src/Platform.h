@@ -42,8 +42,15 @@ using ssize_t = long long;
 #endif
 
 // --- dynamic loading: <dlfcn.h> -> LoadLibrary/GetProcAddress ---
+// The flags are all 0 because LoadLibraryA has no equivalent knob: a Windows
+// DLL's exports never join a process-global namespace the way an ELF object's
+// can, so LOCAL is what you get and GLOBAL cannot be asked for.
 #define RTLD_LAZY   0
 #define RTLD_GLOBAL 0
+// Missing until 2026-08-10, which broke both Windows builds the moment the
+// extension loader started passing it (ExtApi.cpp's dlopen call) — MSVC and
+// MinGW have been red since the ABI landed.
+#define RTLD_LOCAL  0
 #define RTLD_NOW    0
 #define RTLD_DEFAULT ((void*)0)
 inline void* dlopen(const char* path, int) { return path ? (void*)::LoadLibraryA(path) : (void*)::GetModuleHandleA(nullptr); }
