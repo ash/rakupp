@@ -296,16 +296,29 @@ test, and this is the feature its README names as blocked.
 > **The three bugs the gate found**, each general and each now filed rather
 > than folded in here:
 >
-> 1. **`|c` flattens a single Array argument** — `sub f(|c)` gets 3 positionals
+> 1. **`|c` flattened a single Array argument** — `sub f(|c)` got 3 positionals
 >    from `f([1,2,3])` where Rakudo gets 1. This had *already* broken the
 >    shipped module: `to-json([1,2,3])` returned `1`, because the sub was
->    declared `(|c)`. The idiom `sub wrapper(|c) { inner(|c) }` is everywhere,
->    so this is unlikely to be the only victim.
-> 2. **`my $x; $x === Any` is False** — an untyped undefined slot holds a
+>    declared `(|c)`. The idiom `sub wrapper(|c) { inner(|c) }` is everywhere.
+>    **Fixed**: a capture was sharing `+@a`'s single-argument rule, and now takes
+>    the no-flatten path — it is the argument list as passed, not a slurpy that
+>    gets to reinterpret it. Roast exactly neutral.
+> 2. **`my $x; $x === Any` was False** — an untyped undefined slot holds a
 >    different representation from the `Any` type object, while a typed one
->    (`my Int $y; $y === Int`) is correct.
-> 3. **An untyped parameter accepts `Mu`**, where Rakudo applies the implicit
->    `Any` constraint and refuses.
+>    (`my Int $y; $y === Int`) was correct. **Fixed**: identity now agrees with
+>    `.WHICH`, which already rendered both as `Any|`. Worth +5 Roast assertions
+>    in `S02-types/{nil,autovivification}.t`, and it was the ABI's own bug too —
+>    every JSON null an extension returned failed the idiom used to test for one.
+> 3. **An untyped parameter accepted `Mu`**, where Rakudo applies the implicit
+>    `Any` constraint and refuses. **Fixed**, and the fix turned up the rule that
+>    made it subtle: an untyped parameter is Any-constrained only in a ROUTINE.
+>    A Block's is Mu-constrained, so `(-> $x {…})(Mu)` is legal while
+>    `sub f($x) {…}; f(Mu)` is not — and `for (Mu) -> $x` and `.map(-> $x {…})`
+>    depend on that, which is how a too-eager version announces itself. Still
+>    open, and deliberately: the same laxness in *assignment*
+>    (`my Any $x = Mu`), which is a separate allow-list where admitting `Any`
+>    needs `undefOk` to understand subtyping first, or `my Any $x = Int` starts
+>    failing wrongly.
 >
 > That is the argument for gates that use a real distribution rather than a
 > test double: none of the three is about the ABI, and all three were sitting
@@ -317,6 +330,60 @@ test, and this is the feature its README names as blocked.
 module author never sees the embedding surface. Then **port Raku.js onto it**
 and delete `rakupp_web.cpp`'s private shim — the proof the API is usable by a
 real embedder, available before any binding exists.
+
+> **Outcome (2026-08-10).** Landed, and the port did the job it was put in the
+> plan to do: it changed the header.
+>
+> [`src/rakupp.h`](../../../src/rakupp.h) + `EmbedApi.cpp`. `rk_new`/`rk_free`
+> with an `RkConfig` carrying the three host-hostile behaviours — the 1 GiB
+> stack thread, the process-wide `SIGPIPE`, the owned stdout — **all default
+> off**, and the struct carries its own `size` so it can grow without breaking a
+> host compiled against an older copy. `rk_eval` over `Interpreter::evalString`,
+> so an interpreter is a *session*: `my $x = 41` then `$x + 1` gives 42, which
+> is not a new mechanism but the one the REPL has always used. `rk_last_error`,
+> `rk_set_output`, `rk_set_input`.
+>
+> **`rk_ctx` is where the two directions meet.** It hands back the same `ExtCtx`
+> an extension is given, so a host gets `rk_int_get`, `rk_at_pos`, `rk_root` —
+> and `rk_call`, meaning **a host calls a Raku routine through the entry point
+> A1 built for extensions**. One vocabulary, and the C host proves it.
+>
+> **What the port changed.** Raku.js does not want `rk_eval`. A playground needs
+> whole-*program* semantics: MAIN dispatch, `exit`, and a parse error printed as
+> `===SORRY!===` rather than handed back as a string. So **`rk_run` was added**,
+> and `Runtime.cpp` grew `rakuppRunOn(Interpreter&, …)` — `rakuppRun` is now
+> that plus "make me an interpreter first", which is what lets a host run a
+> program in the interpreter it already has instead of silently acquiring a
+> second one whose construction would take the process globals off the first.
+> That is the difference between an API designed against its callers and one
+> designed against the C++ it wraps, which is the failure mode EMBED-PLAN names.
+>
+> `rakujs/rakupp_web.cpp` now includes `rakupp.h` and nothing from the
+> interpreter: the hand-rolled `std::cin` rdbuf swap is `rk_set_input`, and
+> `rakuppRun` + `Interpreter` is `rk_run`. The `fsync` dance stays, correctly —
+> that is Emscripten's TTY device, not something an embedding ABI should own.
+> A fresh interpreter per run is what keeps one program's `my $x` out of the
+> next, and it is now one `rk_new`/`rk_free` pair rather than an implicit
+> consequence of how `rakuppRun` happened to work.
+>
+> **Verified**, with the caveat that Emscripten is not installed on this
+> machine: the ported file compiles and links against the real headers and
+> runtime natively (only the `EMSCRIPTEN_KEEPALIVE` macro stubbed), and running
+> it reproduces the old behaviour — stdin fed, exit code 0, `===SORRY!===` and
+> exit 1 on a parse error, highlight and version intact, and no sub, variable or
+> stdin leaking between runs. **A real `rakujs/build.sh` run is still owed.**
+>
+> **Gates:** the C host (`tools/embed/embed-host.c`, plain C99 — every FFI
+> binding reaches this ABI through a C declaration, so if it needed C++ the
+> header would be wrong) passes 20 checks in `embed-smoke.raku`; `librakupp`
+> exports all 42 `rk_*` with no internals leaked; plain `rakupp` grew 48 bytes
+> with an unchanged library list and unmoved startup.
+>
+> **Still open from EMBED-PLAN's list:** host functions callable from Raku
+> (`rakupp_register`) — an extension can already be loaded to do this, so it is
+> a convenience rather than a gap, and it wants the threading contract settled
+> first; and multiple interpreters per process, still E5. `rk_new` returns NULL
+> for a second live interpreter rather than corrupting the first.
 
 ### A3 — the FFI bindings
 

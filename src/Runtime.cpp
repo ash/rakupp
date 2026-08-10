@@ -93,6 +93,14 @@ static std::vector<std::string> precompSearchPath(const std::vector<std::string>
 int rakuppRun(const std::string& src, std::vector<std::string> args,
               const std::string& fileName, const std::string& exePath,
               const std::vector<std::string>& libPaths) {
+    // The CLI's shape: make an interpreter, then run the program in it.
+    Interpreter interp;
+    return rakuppRunOn(interp, src, std::move(args), fileName, exePath, libPaths);
+}
+
+int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::string> args,
+                const std::string& fileName, const std::string& exePath,
+                const std::vector<std::string>& libPaths) {
     try {
         // The main program gets the same precompiled-AST cache its modules do —
         // keyed on this file's path, validated against its contents. A cache hit
@@ -105,7 +113,6 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
             std::string cachedFinish;
             if (fileName != "-e" && !fileName.empty() &&
                 precompLoadProgram(fileName, src, sp, cachedProg, cachedFinish)) {
-                Interpreter interp;
                 interp.setArgs(std::move(args));
                 interp.finishData_ = cachedFinish;
                 if (g_docMode) { // pod comes from tokenize(); a fresh Lexer's podData() is empty
@@ -147,7 +154,6 @@ int rakuppRun(const std::string& src, std::vector<std::string> args,
             if (fileName != "-e" && !fileName.empty())
                 precompStoreProgram(fileName, src, sp, prog, finish, parser.opScanned_);
         }
-        Interpreter interp;
         interp.setArgs(std::move(args));
         interp.finishData_ = finish;
         interp.podData_ = pod;

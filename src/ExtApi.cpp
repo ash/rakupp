@@ -12,13 +12,12 @@
 // call, after the returned value has been copied out — so an extension frees
 // nothing and cannot leak, and a handle saved across calls is dangling by
 // construction rather than by accident.
+#include "ExtCtx.h"   // the arena and handle casts, shared with EmbedApi.cpp
 #include "Interpreter.h"
 #include "Platform.h" // dlopen/dlsym and their Win32 shims
 #include "Value.h"
 #include "rakupp_ext.h"
 
-#include <deque>
-#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_set>
@@ -26,55 +25,6 @@
 namespace rakupp {
 
 namespace {
-
-struct ExtCtx {
-    std::deque<Value> arena;
-    ValueList* args = nullptr;
-    Interpreter* interp = nullptr;   // ABI 2: rk_call re-enters through this
-    std::string error;
-    bool failed = false;
-    // A Raku exception caught at the rk_call boundary. Kept whole rather than
-    // flattened to a message so that returning NULL re-raises the ORIGINAL
-    // exception, type included — a native fast path must not turn every
-    // X::Whatever into an X::AdHoc on its way through C.
-    bool     hasPending = false;
-    RakuError pending{Value::any(), ""};
-
-    // rk_key_at/rk_val_at walk an ordered map, and walking it from begin()
-    // every time makes iterating a hash quadratic — which is why the first
-    // native module left its serializer in Raku. One remembered position turns
-    // the sequential case (every serializer, every iteration) into O(1) per
-    // step. Keyed by the hash actually being walked, so alternating between two
-    // hashes degrades to the old behaviour instead of returning wrong keys.
-    const std::map<std::string, Value>* memoHash = nullptr;
-    std::map<std::string, Value>::const_iterator memoIt;
-    size_t memoIdx = 0;
-
-    RkValue make(Value v) {
-        arena.push_back(std::move(v));
-        return reinterpret_cast<RkValue>(&arena.back());
-    }
-
-    // Positioned at `i` in `h`, reusing the remembered iterator when it is at
-    // or before `i` in the same hash. Returns end() when `i` is out of range.
-    std::map<std::string, Value>::const_iterator at(const std::map<std::string, Value>* h,
-                                                    size_t i) {
-        if (i >= h->size()) return h->end();
-        if (memoHash == h && memoIdx <= i) {
-            std::advance(memoIt, (long)(i - memoIdx));
-        }
-        else {
-            memoIt = h->begin();
-            std::advance(memoIt, (long)i);
-            memoHash = h;
-        }
-        memoIdx = i;
-        return memoIt;
-    }
-};
-
-inline ExtCtx* C(RkCtx c) { return reinterpret_cast<ExtCtx*>(c); }
-inline Value*  V(RkValue v) { return reinterpret_cast<Value*>(v); }
 
 // Rooted values (ABI 2). Heap slots rather than arena elements, because the
 // point is to outlive the arena; the set is what makes rk_unroot able to

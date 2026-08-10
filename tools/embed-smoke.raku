@@ -56,6 +56,42 @@ else {
     say "ok - static-host check # SKIP no librakupp_rt.a in $BUILD";
 }
 
+# ---- 1b. a C host embedding the interpreter (ABI-PLAN A2) -------------------
+
+if $rt.e {
+    $checked++;
+    my $cc   = %*ENV<CC> // 'cc';
+    my $cxx  = %*ENV<CXX> // 'c++';
+    # rakupp.h says `#include <rakupp/rakupp.h>`, so the include path has to be
+    # the directory CONTAINING a `rakupp/` — the same symlink the extension
+    # build below uses.
+    my $inc0 = $BUILD.add('ext-include');
+    $inc0.mkdir;
+    my $ln = $inc0.add('rakupp');
+    run 'ln', '-sfn', $ROOT.add('src').Str, $ln.Str, :err unless $ln.e;
+
+    my $obj  = $BUILD.add('embed-host.o');
+    my $host = $BUILD.add('embed-host');
+    # Compiled as C — every FFI binding reaches this ABI through a C
+    # declaration, so if the header needs C++ to be usable it is wrong.
+    my $cp = run $cc, '-std=c99', '-c', "-I$inc0",
+                 $ROOT.add('tools/embed/embed-host.c').Str, '-o', $obj.Str, :err;
+    check $cp.exitcode == 0, "embed-host.c compiles as plain C against rakupp.h",
+          $cp.err.slurp(:close);
+    if $cp.exitcode == 0 {
+        # …but linked with the C++ driver, since the runtime it calls is C++.
+        my $lp = run $cxx, $obj.Str, $rt.Str, '-lpthread', '-o', $host.Str, :err;
+        check $lp.exitcode == 0, "…and links against the runtime", $lp.err.slurp(:close);
+        if $lp.exitcode == 0 {
+            my $p = run $host.Str, :out, :err;
+            my $out = $p.out.slurp(:close);
+            check $p.exitcode == 0 && $out.contains('embed host: ok'),
+                  "the C host drives the interpreter (eval, state, values, errors, output)",
+                  $out ~ $p.err.slurp(:close);
+        }
+    }
+}
+
 # ---- 2. an extension that calls back into Raku ------------------------------
 
 # Headers live in src/ in a checkout, under include/rakupp after an install;
@@ -104,13 +140,17 @@ for 'librakupp.dylib', 'librakupp.so' -> $name {
 
 if $shared {
     $checked++;
-    # Ground truth: every RK_API-marked entry point in the published header.
+    # Ground truth: every RK_API-marked entry point in the published headers —
+    # both of them, since rakupp.h (embedding) is exported the same way
+    # rakupp_ext.h (extensions) is.
     my @want;
-    for $ROOT.add('src/rakupp_ext.h').IO.lines -> $line {
-        next unless $line.starts-with('RK_API');
-        @want.push(~$0) if $line ~~ /('rk_' <[a..z_]>+) \s* '('/;
+    for 'src/rakupp_ext.h', 'src/rakupp.h' -> $hdr {
+        for $ROOT.add($hdr).IO.lines -> $line {
+            next unless $line.starts-with('RK_API');
+            @want.push(~$0) if $line ~~ /('rk_' <[a..z_]>+) \s* '('/;
+        }
     }
-    check @want.elems >= 26, "the header still declares the rk_* surface ({@want.elems} found)";
+    check @want.elems >= 33, "the headers still declare the rk_* surface ({@want.elems} found)";
 
     my $nm = run 'nm', '-g', '--defined-only', $shared, :out, :err;
     my @exported;

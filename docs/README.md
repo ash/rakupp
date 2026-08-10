@@ -38,6 +38,7 @@ point; everything else lives here, in four places:
 - **[guide/HTTPS.md](guide/HTTPS.md)** — the story of one real HTTPS request, from "OpenSSL won't even load" to a live `HTTP/1.1 200 OK` over TLS.
 - **[guide/MODULES.md](guide/MODULES.md)** — working with modules: the ones you write, and the ones zef installs from the ecosystem.
 - **[guide/EXTENSIONS.md](guide/EXTENSIONS.md)** — native extension modules, the XS analogue: a distribution ships C, the build step compiles it against Raku++'s C ABI at install time, and the routines become ordinary Raku subs — so the module versions independently of the compiler. Why an extension never sees `Value`, the handle lifetime rules, how to write one that still runs on Rakudo (and why `&::('rakupp-ext-load')` rather than a plain call), packaging with `Build.rakumod`, the `Rakupp::` naming convention, and the current limits.
+- **[guide/EMBEDDING.md](guide/EMBEDDING.md)** — the other direction: running Raku *from* your own program. One C API for lifecycle, evaluation and calling Raku routines, sharing the extension ABI's value vocabulary rather than inventing a second one; what a library must not do to its host uninvited (the big stack, `SIGPIPE`, stdout), when to reach for `rk_run` instead of `rk_eval`, capturing output, the rooted-handle lifetime, and the one-interpreter-per-process limit.
 - **[guide/LINT.md](guide/LINT.md)** — `rakupp --lint`: the static-analysis rules that run over the AST without executing the program.
 
 ### Running and shipping programs

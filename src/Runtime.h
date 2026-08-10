@@ -5,6 +5,7 @@
 namespace rakupp {
 
 struct Program;
+class Interpreter;
 
 void rakuppSetDocMode(bool on); // enable --doc (run DOC phasers + print rendered POD)
 
@@ -15,6 +16,15 @@ void rakuppSetDocMode(bool on); // enable --doc (run DOC phasers + print rendere
 int rakuppRun(const std::string& src, std::vector<std::string> args,
               const std::string& fileName, const std::string& exePath,
               const std::vector<std::string>& libPaths = {});
+
+// The same, run IN an interpreter the caller already has. rakuppRun() is this
+// plus "make me one first"; the embedding API (rakupp.h's rk_run) is this with
+// the host's own session interpreter, so a host embedding rakupp does not end
+// up with a second, hidden one whose construction would steal the process
+// globals from the first.
+int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::string> args,
+                const std::string& fileName, const std::string& exePath,
+                const std::vector<std::string>& libPaths = {});
 
 // Same as rakuppRun, but executes on a thread with a large stack so deep
 // (but bounded) recursion works and the interpreter's recursion guard fires
