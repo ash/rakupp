@@ -321,10 +321,130 @@ program printed and not the footer the page added.
 A run that produced nothing says so, because an empty pane is indistinguishable
 from a pane that never updated.
 
-## Live coding: one script tag
+## Live mode: running as you type
 
-The playground is one page. The *live-coding* mode is the interesting part,
-because it turns any page on any site into a Raku environment:
+The playground's toolbar carries a **Live** checkbox. With it on, nothing is
+pressed: the program runs itself a beat after typing stops, so the output pane
+always shows what the source in front of you does.
+
+The scheduling is a debounce, and the two constants are the whole policy:
+
+```js
+// play/index.html
+const LIVE_DELAY   = 400;   // ms of quiet before a live run starts
+const LIVE_TIMEOUT = 2000;  // ms a live run may take before it is killed
+
+function scheduleLive() {
+  if (!live) return;
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(liveRun, LIVE_DELAY);
+}
+```
+
+Every repaint of the editor calls `scheduleLive`, and so does the standard-input
+box — *the program's input is part of the program*, so changing it re-runs too.
+
+`liveRun` then declines in two situations, and both matter:
+
+```js
+// play/index.html
+function liveRun() {
+  if (!live || !ready) return;
+  if (codeEl.value === lastSrc && stdinEl.value === lastStdin) return;
+  if (running) { liveTimer = setTimeout(liveRun, 120); return; }
+  startRun(true);
+}
+```
+
+Nothing changed means nothing runs — moving the caret is not an edit. And if a
+run is already in flight it is **left alone** and retried shortly, rather than
+killed: restarting the worker costs a fresh WebAssembly instantiation, and
+paying that on every keystroke would make typing worse, not better.
+
+### Why it does not blank while you type
+
+The obvious implementation streams output into the pane as it arrives, which is
+what pressing Run does. For live mode that is unusable: every keystroke mid-word
+leaves a half-written program, and a half-written program is usually a **parse
+error**. The pane would blank and flash a diagnostic between every two
+characters.
+
+So a live run's output is **double-buffered**. Instead of feeding the screen
+model directly, it accumulates:
+
+```js
+// play/index.html
+if (buf) bufPush(m.text, m.cls); else feed(m.text, m.cls);
+```
+
+and only when the run finishes is the buffer swapped in as one atomic change:
+
+```js
+// play/index.html
+function flushBuf() {
+  const b = buf;
+  buf = null; bufChars = 0;
+  if (!b) return;
+  clearScreen();
+  for (const [t, c] of b) feed(t, c);
+}
+```
+
+The pane therefore only ever changes from one *complete* result to the next.
+That single decision is what makes the mode bearable to type into, and it is
+the reason the screen is a model rather than the DOM (above) — buffering a list
+of `[text, class]` pairs and swapping it in is trivial; buffering rendered
+markup would not be.
+
+### The watchdog, and when Live gives up
+
+A live run is on a timer. Exceed it and the worker is killed:
+
+```js
+// play/index.html
+function liveTimedOut() {
+  if (!running || !curLive) return;
+  flushBuf();      // whatever it printed before the kill is still worth seeing
+  pushText(`\n— live run stopped after ${LIVE_TIMEOUT / 1000} s —\n`, "meta");
+  killAndRecreate();
+  …
+  if (++liveStalls >= 2) { setLive(false); … }
+}
+```
+
+Note that the buffer is flushed *before* the kill is reported: a program that
+printed something useful and then hung has still told you something, and
+throwing that away to report a timeout would be a worse trade.
+
+The stall counter is the part worth copying. **Two watchdog kills in a row turn
+the mode off**, with a line in the output saying why — because each kill costs a
+fresh WebAssembly instantiation, and re-killing the worker on every keystroke of
+a genuinely long-running program helps nobody. A feature that cannot serve you
+should switch itself off and say so, rather than degrade silently.
+
+The setting persists in local storage, with one exception: a visitor who arrived
+from a `?live=1` link gets it on for that visit only. They came from a page
+*about* Live mode, which is not the same as choosing it for every future visit.
+
+### No incremental compilation, on purpose
+
+There is no REPL here, no partial re-evaluation, no caching of a parse between
+keystrokes. Every live run lexes, parses and executes the whole program from
+scratch.
+
+That is not a shortcut around a hard problem — it is the measurement. A whole
+run of a typical example is a few milliseconds of WebAssembly, comfortably
+inside the 400 ms debounce, so re-running everything is *also* the fast thing.
+Incremental machinery would add state to keep correct, in exchange for latency
+nobody can perceive.
+
+It is the same reasoning as Chapter 18's: count the opportunity before building
+the clever version.
+
+## Embedded editors: one script tag
+
+The playground is one page. The embed is the part that turns any page on any
+site into a Raku environment:
 
 ```html
 <script src="https://raku.online/raku.js"></script>
