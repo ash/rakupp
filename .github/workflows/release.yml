@@ -41,9 +41,20 @@ jobs:
       # artifact runs on any Mac from 2020 on, regardless of which macOS the
       # runner image happens to be (macos-latest rotates, e.g. to macOS 26 —
       # without this pin the binary's minimum OS would silently drift up).
+      # -DRAKUPP_BUILD_SHARED=ON on every platform: the release has to CARRY
+      # librakupp, or the embedding API (docs/guide/EMBEDDING.md) exists only
+      # for people who build from source, and no language binding has anything
+      # to dlopen. It is off by default because it recompiles every runtime
+      # source with PIC and hidden visibility -- roughly doubling a build -- and
+      # a local edit-compile loop never needs it. `cmake --install` then picks
+      # it up on its own, so the packaging step below is unchanged.
+      #
+      # Built on every push rather than only on tags, deliberately: a shared
+      # build that breaks would otherwise stay hidden until the tag, which is
+      # the shape of failure v3.0.0 shipped.
       - name: Configure (macOS universal)
         if: runner.os == 'macOS'
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 
       # Clang, not GCC: on rakupp's tree-walker Clang -O3 measures 1.2-2.0x
       # faster than GCC across the whole bench suite (fib +28%, loopsum +46%;
@@ -54,7 +65,7 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
 
       # No pinned -G: windows-latest rotates its Visual Studio version (2022 is
       # already gone); CMake's default generator picks whatever VS is installed.
@@ -63,7 +74,7 @@ jobs:
       # same self-contained philosophy as the static libstdc++ on Linux.
       - name: Configure (Windows, MSVC x64)
         if: runner.os == 'Windows' && matrix.mingw != true
-        run: cmake -S . -B build -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+        run: cmake -S . -B build -A x64 -DRAKUPP_BUILD_SHARED=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
       # MinGW-w64 (GCC) Windows build — the GNU toolchain MSYS2 users have,
       # and what `--exe` invokes there (g++ on PATH). -static bundles
@@ -80,7 +91,7 @@ jobs:
       - name: Configure (Windows, MinGW-w64)
         if: matrix.mingw == true
         shell: msys2 {0}
-        run: cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_EXE_LINKER_FLAGS=-static"
+        run: cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON "-DCMAKE_EXE_LINKER_FLAGS=-static"
 
       - name: Build
         if: matrix.mingw != true
@@ -193,6 +204,20 @@ jobs:
       - name: Concurrency stress matrix (POSIX)
         if: runner.os != 'Windows'
         run: build/rakupp t/stress/run.raku
+
+      # The embed/ABI gate (ABI-PLAN A0-A2): compiles a C++ host and a C
+      # extension against the headers, loads the extension, and checks
+      # librakupp's export table against rakupp_ext.h + rakupp.h.
+      #
+      # This is the step that proves the LINUX extension story, which cannot be
+      # checked on macOS at all: a plain ELF executable keeps its symbols out of
+      # .dynsym, so until the --dynamic-list link option landed, an extension's
+      # first rk_* call died with an undefined symbol -- extensions had never
+      # actually worked on Linux, and a well-written module falls back quietly
+      # enough that nobody saw an error.
+      - name: Embed + extension ABI gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp tools/embed-smoke.raku build
 
       # Package the --exe-capable install layout: bin/rakupp, lib/librakupp_rt.a,
       # include/rakupp/*.h (main.cpp's findRuntime() expects exactly this).
