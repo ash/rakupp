@@ -366,9 +366,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Shared too: the release now SHIPS librakupp, and hidden visibility plus
+      # the dynamic-list are the parts most likely to differ between compilers.
+      # Clang builds the artifact; this is what stops GCC from silently drifting.
       - name: Configure (GCC)
         env: { CC: gcc, CXX: g++ }
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
       - name: Build
         run: cmake --build build -j 4
       - name: Smoke test

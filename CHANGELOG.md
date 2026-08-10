@@ -3,6 +3,121 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.1.0 (2026-08-11) — Raku++ becomes something you can link against
+
+| | v3.0.1 | v3.1.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 197,080 | **197,111** |
+| Roast files fully passing | 594 | **595** |
+| Documentation examples byte-identical | 952 | **951** |
+| Distributions passing their own suite | 48 / 59 | **48 / 59** |
+| Local regression suite (`t/run.raku`) | 398 | **406** |
+
+Three Roast runs on one machine gave 197,110 / 197,112 / 197,111 assertions
+across 595 / 595 / 595 files with 11 timeouts each — an unusually tight band,
+so the quoted figure is the middle of three identical profiles rather than a
+repeating count picked out of a spread.
+
+**The gate that matters is the file LIST, and it is clean.** Diffed against a
+v3.0.1 build in a worktree: zero regressions, and zero real gains. Three files
+looked like gains and were not — `S17-procasync/{stress,no-runaway-file-limit,
+many-processes-no-close-stdin}.t` timed out in a loaded reference run and pass
+on the v3.0.1 binary when run alone. They are reported here as noise because
+that is what they are.
+
+### rakupp is now a library, in both directions
+
+The headline is an ABI, and it has two halves that share one value vocabulary
+rather than growing two.
+
+- **`librakupp` exists.** Built with `-DRAKUPP_BUILD_SHARED=ON` and now shipped
+  in every release archive beside `librakupp_rt.a` — PIC, hidden visibility,
+  soname, and an export table that is exactly the 43 `rk_*` entry points the
+  headers declare, with no interpreter internals leaked. That last part is
+  checked by `tools/embed-smoke.raku` on every CI run rather than assumed.
+- **Extension ABI 2** ([EXTENSIONS.md](docs/guide/EXTENSIONS.md)) — `rk_call`,
+  `rk_call_value` and `rk_can` let native code call back INTO Raku, which was
+  missing in both directions; `rk_error`/`rk_clear_error` carry a Raku exception
+  across a C frame without unwinding through it, and re-raise it with its
+  ORIGINAL type if the extension declines to handle it; `rk_root`/`rk_unroot`
+  give a value that outlives its call. Additive, with a downgrade handshake, so
+  an extension built against ABI 1 keeps loading unchanged — proven against a
+  binary compiled from the previous header.
+- **An embedding API** ([EMBEDDING.md](docs/guide/EMBEDDING.md), `rakupp.h`) —
+  `rk_new`/`rk_free` with the three host-hostile behaviours (the 1 GiB stack
+  thread, the process-wide `SIGPIPE`, the owned stdout) all opt-in; `rk_eval`
+  over the REPL's own mechanism, so an interpreter is a session; `rk_run` for
+  whole-program semantics; output capture and stdin feeding. `rk_ctx` hands a
+  host the same context an extension gets, so a host reaches every accessor —
+  and `rk_call` — through one vocabulary.
+- **Raku.js runs on the public API.** `rakujs/rakupp_web.cpp` includes
+  `rakupp.h` and nothing from the interpreter; the hand-rolled `std::cin` rdbuf
+  swap it carried for two years is now `rk_set_input`. Porting it is what added
+  `rk_run`: a playground wants a program, not an expression.
+
+**Extensions had never worked on Linux or the BSDs.** A plain ELF executable
+keeps its symbols out of `.dynsym`, so the first `rk_*` call died with an
+undefined-symbol error — and because a well-written module falls back quietly,
+the only symptom was the fallback's timings. Fixed with a `--dynamic-list` that
+exports the `rk_*` glob and nothing else. Windows was broken too, in the plain
+sense that neither MSVC nor MinGW would compile the loader.
+
+### Two crashes, and a silent data loss
+
+All three are reachable from ordinary code, because v3.0.0 made parallel the
+default — no `start` block or thread of your own is required to hit them.
+
+- **Concurrent regex matching segfaulted**, roughly one run in four. Two
+  independent data races found with ThreadSanitizer: a string literal
+  NFC-normalized itself *in place* on first evaluation, mutating a `std::string`
+  inside an AST node every thread shares; and `$/` scoped outward to a frame
+  that every worker shares, so N threads assigned into one `std::map` at once.
+- **Concurrent writes to an open handle lost data** — twelve threads writing a
+  line each to a rebound `$*OUT` produced eleven lines, because appending to the
+  handle's buffer was a read-modify-write on shared state.
+- **The per-node eval caches published a pointer without its payload.** Relaxed
+  atomics let a reader see the pointer without the bytes it addressed — benign
+  on x86, not on arm64, which is what this project ships.
+
+### Behaviour changes that may affect your code
+
+- **`eqv` is now type-aware about containers.** A `List`, an `Array`, a `Seq`
+  and a `Slip` are different types, so `(1,2) eqv [1,2]` is now `False`, as it
+  is on Rakudo. Itemization still does not count: `[1,2] eqv $[1,2]` stays
+  `True`. If a test compares a `.map`/`.grep` result against a `(…)` literal it
+  will start failing — correctly; add `.List` to the left side. This flushed out
+  seven such comparisons in this repo's own suite.
+- **An untyped routine parameter is `Any`-constrained**, so `sub f($x) { }; f(Mu)`
+  is now a type-check failure. A *block*'s untyped parameter stays
+  `Mu`-constrained, so `(-> $x {…})(Mu)`, `for (Mu) -> $x` and `.map(-> $x {…})`
+  are unaffected.
+- **`|c` no longer flattens a single `Array` argument**, so
+  `sub wrapper(|c) { inner(|c) }` forwards what it was given. This had been
+  silently breaking real code: `Rakupp::JSON`'s `to-json([1,2,3])` returned `1`.
+- **`printf` honours a rebound `$*OUT`** instead of writing to the terminal.
+- **`my $x; $x === Any` is `True`**, matching Rakudo.
+
+### Performance
+
+No regression, and the baseline was **re-recorded at this release** — it had
+been reading `2026-07-29 (v1.5.1)`, three releases stale, which
+[RELEASING.md](docs/dev/RELEASING.md) lists as a known blind spot. Every kernel
+had drifted faster than that reference (`fib` −14.6%, `hash` −10.2%, `strscan`
+−9.6%), so it could no longer have caught anything short of a tenth. `loopsum`
+keeps its 1.0.0 `best` so the old debt stays visible rather than being reset.
+
+### Deliberately left open
+
+- A real `rakujs/build.sh` run: emscripten is not installed on the machine this
+  was cut from, so the Raku.js port was verified by compiling and linking it
+  natively against the real headers, with only `EMSCRIPTEN_KEEPALIVE` stubbed.
+- `my Any $x = Mu` is still accepted in *assignment* — a different mechanism
+  from binding, with a conservative allow-list that needs subtyping before `Any`
+  can join it.
+- A `my` inside the parenthesised `((my $y = 5) for ^1)` form does not leak to
+  the enclosing scope as Rakudo's does. The plain statement-modifier spelling is
+  correct on both engines.
+
 ## v3.0.1 (2026-08-09) — the procedure, run
 
 v3.0.0 was tagged without running [the release procedure](docs/dev/RELEASING.md).

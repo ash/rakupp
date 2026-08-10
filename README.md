@@ -10,20 +10,29 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v3.0.1** (2026-08-09) — *the procedure, run*:
-v3.0.0's figures were published without it, and these were measured with it.
-`start` still runs on all cores and `|` still ranks by true LTM out of the box
-(`RAKUPP_GIL=1` / `RAKUPP_LTM=0` are the one-release escape hatches); the
-JSON::Fast source v3.0.0 compiled into the binary is gone, and strings are
-shared rather than copied, which cut a 421 KB JSON parse from 13,969 ms to
-764 ms. Note the trade: v3.0.0 parsed that file in 5 ms because a C++ parser
-stood in for the module, so **JSON::Fast is much slower here than in v3.0.0**
-— by choice, because that module is not ours to ship.
+**Status:** current release **v3.1.0** (2026-08-11) — *something you can link
+against*: Raku++ now ships `librakupp`, a C API for **embedding Raku in another
+program** ([EMBEDDING.md](docs/guide/EMBEDDING.md)) and an extension ABI that
+lets native code call back **into** Raku ([EXTENSIONS.md](docs/guide/EXTENSIONS.md)).
+Both directions share one value vocabulary, and the WebAssembly playground now
+runs on the same public API rather than a private shim.
 
-| | v3.0.1 | at v2.0.0 |
+It also fixes two crashes and a silent data loss that ordinary code could reach,
+because parallelism has been the default since v3.0.0: concurrent regex matching
+segfaulted about one run in four, and concurrent writes to an open handle lost
+lines. Extensions, meanwhile, had never actually worked on Linux or the BSDs —
+a plain ELF executable keeps its symbols out of `.dynsym`, so the fallback path
+ran and only the timings showed it.
+
+Two behaviour changes can affect existing code: `eqv` now distinguishes a `List`
+from an `Array` or `Seq` as Rakudo does, and an untyped *routine* parameter is
+`Any`-constrained (a block's stays `Mu`). See the
+[CHANGELOG](CHANGELOG.md#v310-2026-08-11--raku-becomes-something-you-can-link-against).
+
+| | v3.1.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of ~218,600 the suite declares | **197,080 (90%)** | 197,090 |
-| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
+| Roast, per individual test — of ~218,600 the suite declares | **197,111 (90%)** | 197,090 |
+| Roast, all-or-nothing — files fully passing, of 1,462 | **595 (41%)** | 594 |
 | Official documentation examples byte-identical on both engines | **952**† | 952 |
 | Ecosystem distributions passing their own `zef` install-time test suite | **48 / 59**\* | 50 / 59 |
 | Local regression suite | **398** | 312 |
@@ -32,10 +41,10 @@ The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
 *every* assertion in it passes — and the Roast figures are measured **with
 parallelism and true LTM on**, the same binary configuration users get. They
-are the repeating profile of four runs on one machine (197,082 / 197,056 /
-197,098 / 197,080 assertions; 595 / 593 / 594 / 594 files), not the best run
-seen: the scheduler and IO timing files flap under runner load, and the fourth
-run was taken because the first three gave no repeating file count. †The doc-example count
+are the repeating profile of three runs on one machine (197,110 / 197,112 /
+197,111 assertions; 595 / 595 / 595 files), not the best run seen: the
+scheduler and IO timing files flap under runner load, and v3.0.1 needed a
+fourth run because its first three gave no repeating file count. †The doc-example count
 carries a documented ±5 band: Rakudo randomizes hash iteration order per
 process, and the moved rows are ones where *Rakudo's* output drifted from the
 documentation. \*The distribution bar RAISED itself at v3.0.0: at v2.0.0
