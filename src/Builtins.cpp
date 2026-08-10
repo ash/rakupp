@@ -2255,6 +2255,15 @@ Value makeSignature(const Callable* c) {
 // say/print/put/note honour a user-overridden $*OUT/$*ERR: if the dynamic
 // variable holds a user object (e.g. a mock IO capturing output), send the text
 // to its .print method; otherwise write straight to the real stream.
+// The one lock every runtime write to the process's own streams takes. A
+// function-local static rather than a namespace-scope object so it is
+// constructed on first use — output can happen during static initialisation,
+// and an ordering bug there would be maddening to find.
+std::mutex& rtOutMutex() {
+    static std::mutex m;
+    return m;
+}
+
 Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) {
     // Dynamic ($*) lookup: the current lexical scope, then the caller chain.
     Value* h = nullptr;
@@ -2270,9 +2279,28 @@ Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) 
     // leaked say/print to stdout — found building -i in-place editing.)
     if (h && (h->t == VT::Object || h->hashKind == "FileHandle")) {
         ValueList pa{Value::str(s)};
+        // Outside the lock below on purpose: this re-enters the interpreter to
+        // run a user `print` method, which may itself print. Holding a
+        // non-recursive mutex across that would deadlock.
         return methodCall(*h, "print", pa);
     }
-    (toErr ? std::cerr : std::cout) << s;
+    // ONE writer at a time. std::cout guarantees the BYTES of a single `<<` are
+    // not interleaved (libc++ writes through the FILE*, which locks), but the
+    // stream's own state word is touched by every sentry without
+    // synchronisation — ThreadSanitizer reports a data race on any program that
+    // prints from two threads, which since v3.0.0 means any program using the
+    // default parallelism. A real lock rather than a suppression: it is what
+    // makes the report go away honestly, it keeps TSan quiet enough for the
+    // NEXT race to be visible, and it guarantees whole-write atomicity on
+    // platforms whose streams are not FILE-backed (the WASM build).
+    //
+    // One mutex for both streams, not one each: stdout and stderr are usually
+    // the same terminal or the same redirected file, so interleaving BETWEEN
+    // them matters as much as within one.
+    {
+        std::lock_guard<std::mutex> lk(rtOutMutex());
+        (toErr ? std::cerr : std::cout) << s;
+    }
     return Value::boolean(true);
 }
 
@@ -3009,8 +3037,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             s += methodCall((*inv.arr)[i], "Str", ValueList{}).toStr();
         }
         if (m == "sprintf") return Value::str(doSprintf(s, args, langRev_));
-        std::cout << doSprintf(s, args, langRev_); // printf
-        return Value::boolean(true);
+        // `.printf` — through ioEmit for the output lock and a rebound $*OUT,
+        // exactly like the printf builtin.
+        return ioEmit(doSprintf(s, args, langRev_), "$*OUT", false);
     }
     // any other method on a junction AUTOTHREADS: call it on each eigenstate,
     // return a junction of the results (`($a & $b).finish`, `$j.defined`, …)
@@ -8769,12 +8798,16 @@ void Interpreter::registerBuiltins() {
              a[1].enumName == "one" || a[1].enumName == "none")) {
             for (auto& e : *a[1].arr) {
                 ValueList one{e};
-                std::cout << doSprintf(a[0].toStr(), one, I.langRev_);
+                I.ioEmit(doSprintf(a[0].toStr(), one, I.langRev_), "$*OUT", false);
             }
             return Value::boolean(true);
         }
         ValueList rest = sprintfArgs(a);
-        std::cout << doSprintf(a[0].toStr(), rest, I.langRev_); return Value::boolean(true);
+        // ioEmit, not std::cout: it takes the output lock, and it honours a
+        // rebound `$*OUT`. Writing the stream directly meant
+        // `my $*OUT = open(…); printf(…)` printed to the terminal while `say`
+        // on the next line went to the file.
+        return I.ioEmit(doSprintf(a[0].toStr(), rest, I.langRev_), "$*OUT", false);
     };
     // 6.e sub form: snip(PRED(s), *@list) — first arg is the predicate or a (p1,p2)
     // list of predicates; the rest is the list. Delegates to the .snip method.

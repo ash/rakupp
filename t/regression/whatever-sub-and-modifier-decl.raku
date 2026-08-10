@@ -15,8 +15,8 @@ my @fail;
 # 1. *.&sub currying
 sub ident($x) { $x }
 sub twice($x) { $x * 2 }
-@fail.push('and-sub-identity') unless <a b c>.map(*.&ident) eqv ('a', 'b', 'c');
-@fail.push('and-sub-arith')    unless (1, 2, 3).map(*.&twice) eqv (2, 4, 6);
+@fail.push('and-sub-identity') unless <a b c>.map(*.&ident).List eqv ("a", "b", "c");  # .List: a map gives a Seq
+@fail.push('and-sub-arith')    unless (1, 2, 3).map(*.&twice).List eqv (2, 4, 6);  # .List: a map gives a Seq
 @fail.push('and-sub-scalar')   unless (*.&ident)(42) == 42;
 
 # 2. my … if
@@ -31,7 +31,7 @@ sub run-it { my $v = bumped() if True;  my $w = bumped() if False; ($v // -1, $w
 @fail.push('my-if-sideeffect') unless run-it() eqv (5, False) && $n == 1;
 
 # 3. grep flattens Slip args
-@fail.push('grep-slip')       unless (grep *.defined, (1, 2).Slip, (3, 4).Slip) eqv (1, 2, 3, 4);
+@fail.push('grep-slip')       unless (grep *.defined, (1, 2).Slip, (3, 4).Slip).List eqv (1, 2, 3, 4);  # .List: a grep gives a Seq
 @fail.push('grep-empty-slip') unless (grep *.defined, ().Slip, ().Slip).elems == 0;
 @fail.push('grep-single-arg') unless (grep *.so, [1, 2], [3, 4]).elems == 2; # single-arg rule intact
 

@@ -13,7 +13,7 @@ my $b = blob32.new(0x11223344, 5);
 # 2. @$blob and coerce to a native-int array
 my uint32 @W = $b;
 @fail.push('coerce-array') unless @W[0] == 0x11223344;
-@fail.push('at-slip') unless (my @x = @$b) eqv (0x11223344, 5);
+@fail.push('at-slip') unless (my @x = @$b).List eqv (0x11223344, 5);  # .List: the assignment yields an Array
 
 # 3. radix digit-list
 @fail.push('radix-list') unless :256[97, 98, 99, 128] == 0x61626380;

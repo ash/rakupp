@@ -16,7 +16,7 @@ my @fail;
     sleep 0.5;
     @fail.push("t1-done ({@events.grep('T1done').elems})") unless @events.grep('T1done').elems == 1;
     @fail.push("t2-done ({@events.grep('T2done').elems})") unless @events.grep('T2done').elems == 1;
-    @fail.push('values') unless @events.grep(*.starts-with('T1v')) eqv ['T1v1'];
+    @fail.push('values') unless @events.grep(*.starts-with('T1v')).Array eqv ['T1v1'];  # .Array: a grep gives a Seq
 }
 
 # single-tap head still delivers one value + one done

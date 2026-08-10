@@ -10,10 +10,10 @@ my @fail;
 
 # 1. @%h / @$hash -> Pairs
 my %h = a => 1, b => 2;
-@fail.push('at-hash')  unless @%h.map(*.^name).unique eqv ('Pair',);
-@fail.push('at-hash-kv') unless @%h.sort(*.key).map(*.value) eqv (1, 2);
+@fail.push('at-hash')  unless @%h.map(*.^name).unique.List eqv ('Pair',);  # .List: map/unique give a Seq
+@fail.push('at-hash-kv') unless @%h.sort(*.key).map(*.value).List eqv (1, 2);  # .List: a map gives a Seq
 my $hr = { x => 10 };
-@fail.push('at-scalar-hash') unless (@$hr).map(*.key) eqv ('x',);
+@fail.push('at-scalar-hash') unless (@$hr).map(*.key).List eqv ('x',);  # .List: a map gives a Seq
 
 # 2. AT-KEY / AT-POS delegation through `handles`
 my $cfg = class :: {

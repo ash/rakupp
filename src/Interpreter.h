@@ -70,6 +70,13 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
                           const ValueList* fill = nullptr);
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
+
+// The one lock every runtime write to a stream or an open handle's buffer
+// takes. Coarse on purpose: output is not a bottleneck, and one lock is far
+// easier to reason about than a hierarchy — and than the two bugs it replaces,
+// a data race on std::cout's state and a lost-update on a FileHandle's buffer.
+// NEVER hold it across a call back into Raku (a user `print` method may print).
+std::mutex& rtOutMutex();
 // SHA-1 as UPPERCASE hex (Interpreter.cpp) — the CURI short-index / content-id scheme.
 std::string sha1hex(const std::string& msg);
 
@@ -478,6 +485,11 @@ public:
     // one-shot: the next callCallable does NOT autothread junction args
     // (Junction.THREAD passes each eigenstate — junctions included — whole)
     static thread_local bool noAutothread_;
+    // one-shot: the next callCallable's activation is a ROUTINE frame even for a
+    // bare block. `start { … }` sets it so `$/` scopes to the worker rather than
+    // to the lexical scope every worker closes over — where all of them assigned
+    // it into one std::map at once, which is a data race that corrupted the heap.
+    static thread_local bool forceRoutineFrame_;
     // one-shot: loop-phaser control for the next callCallable, set by an
     // iterating driver (.map over a block with FIRST/NEXT/LAST). Bits:
     // 1 = this call is the first iteration (run FIRST), 2 = the last (run LAST),
@@ -677,7 +689,10 @@ public:
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     Value evalNqpOp(NqpOp* n); // the `use nqp` compatibility subset (zero-cost when unused)
-    void typeCheckBind(const Param& p, const Value& v); // lone-candidate bind: throw X::TypeCheck::Binding on mismatch
+    // lone-candidate bind: throw X::TypeCheck::Binding on mismatch. blockParam
+    // says the signature belongs to a Block, whose untyped parameters are
+    // Mu-constrained where a Routine's are Any-constrained.
+    void typeCheckBind(const Param& p, const Value& v, bool blockParam = false);
     std::string symRefName(SymbolicRef* sr); // effective name of a multi-segment symbolic ref
     [[noreturn]] void throwTyped(const std::string& type,
                     std::vector<std::pair<std::string, std::string>> attrs,
@@ -1161,7 +1176,11 @@ private:
 
     Value makeClosure(BlockExpr* be);
     void bindParams(const std::vector<Param>& params, ValueList& args, std::shared_ptr<Env>& env,
-                    bool methodCtx = false); // methods have an implicit *%_ (extra nameds ignored)
+                    bool methodCtx = false, // methods have an implicit *%_ (extra nameds ignored)
+                    // A BLOCK's untyped parameter is Mu-constrained; a Routine's
+                    // is Any-constrained, so only a routine refuses Mu. Rakudo:
+                    // `sub f($x) {…}; f(Mu)` dies, `(-> $x {…})(Mu)` does not.
+                    bool blockParams = false);
 };
 
 // helpers

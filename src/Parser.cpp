@@ -3037,7 +3037,16 @@ ExprPtr Parser::parsePrimary() {
             }
             if (isIdent("for")) {
                 // (EXPR for LIST) — a for statement-modifier inside parens; run EXPR
-                // per item ($_ bound). Desugar to map({ EXPR }, LIST).
+                // per item ($_ bound). Desugar to map({ EXPR }, LIST).List.
+                //
+                // The `.List` is the difference between this and a bare map: a
+                // `for` used as an expression evaluates to a LIST, and `map`
+                // gives a Seq. The block spelling `(for LIST { EXPR })` already
+                // returned a List (ForStmt's asExpr path builds one), so without
+                // this the two spellings of the same loop disagreed about their
+                // own type — and `($_ for ^1) eqv (0,)` was False where Rakudo
+                // says True. Nothing was lost by being a Seq here, because this
+                // desugaring is eager either way; it was only ever the name.
                 advance();
                 ExprPtr list = parseExpression();
                 auto blk = std::make_unique<BlockExpr>();
@@ -3046,7 +3055,10 @@ ExprPtr Parser::parsePrimary() {
                 auto call = std::make_unique<Call>(); call->name = "map";
                 call->args.push_back(std::move(blk));
                 call->args.push_back(std::move(list));
-                e = std::move(call);
+                auto toList = std::make_unique<MethodCall>();
+                toList->inv = std::move(call);
+                toList->method = "List";
+                e = std::move(toList);
                 continue;
             }
             // (EXPR while COND) / (EXPR until COND) — collect the value per iteration

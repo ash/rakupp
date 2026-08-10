@@ -218,6 +218,31 @@ static bool isSpecialVar(const std::string& n) {
 }
 
 extern std::function<Value(const Value&)> g_deproxy;
+
+// `Any` has two spellings inside the interpreter: an untyped slot with nothing
+// in it holds VT::Any (the default-constructed Value), while the TERM `Any`
+// parses to VT::Type with s == "Any". They denote one object, and everything
+// that looks at them already agrees — .WHAT, .defined, .gist, .raku, and
+// whichOf(), which renders "Any|" for either. Only the identity operators
+// disagreed, because both open by rejecting a tag mismatch, so the extremely
+// ordinary `my $x; $x === Any` answered False while `my Int $y; $y === Int`
+// (a typed slot, which stores the type object) answered True.
+//
+// Fixed here rather than by making every undefined slot store the type object:
+// VT::Any IS the default-constructed Value, so it arrives from hundreds of
+// places — a missing hash key, an empty return, an extension's rk_any(). The
+// piecemeal approach was already tried and is visibly incomplete: the subscript
+// miss at "the TYPE OBJECT (`Str` for `my Str @s`, `Any` untyped)" normalises
+// its own result for exactly this reason, and `%h<nope> === Any` was still
+// False. One rule where identity is decided beats a normalisation at every
+// site that can produce an undefined value.
+//
+// NOT applied to =:=, which is container identity: `my $x; $x =:= Any` is
+// False on Rakudo too, and a container is not the object it holds.
+static inline bool isAnyTypeObject(const Value& v) {
+    return v.t == VT::Any || (v.t == VT::Type && v.s == "Any" && v.ofType.empty());
+}
+
 static bool valueEqv(const Value& a, const Value& b) {
     // A Proxy is a container: compare what it HOLDS. `is-deeply $q<foo>, $('1','3')`
     // over URI::Query's list of Proxy containers compared containers against
@@ -226,6 +251,8 @@ static bool valueEqv(const Value& a, const Value& b) {
         return valueEqv(g_deproxy(a), b);
     if (b.t == VT::Hash && b.hashKind == "Proxy" && b.hash && g_deproxy)
         return valueEqv(a, g_deproxy(b));
+    // the two spellings of Any are one object — see isAnyTypeObject
+    if (a.t != b.t && isAnyTypeObject(a) && isAnyTypeObject(b)) return true;
     // eqv is type-aware: 42 eqv 42.0 is False (Int vs Num/Rat), unlike ==
     if (a.t != b.t) return false;
     // …and an allomorph is its own type: `42 eqv <42>` is False although both are
@@ -233,6 +260,19 @@ static bool valueEqv(const Value& a, const Value& b) {
     if (a.isAllomorph() || b.isAllomorph()) return whichOf(a) == whichOf(b);
     switch (a.t) {
         case VT::Array:
+            // An Array, a List, a Seq and a Slip are DIFFERENT TYPES that share
+            // VT::Array here, and eqv is type-aware — that is the whole of what
+            // separates it from `==` and `eq`. Comparing only the elements made
+            // `(1,2) eqv [1,2]` True where Rakudo says False, which is the
+            // dangerous shape: a test agreeing on the values and disagreeing on
+            // the verdict. (Found writing t/regression/ast-cache-publication.raku,
+            // which passed here and failed under Rakudo with identical numbers.)
+            //
+            // typeName() is exactly the rule — it derives Array/List/Seq/Slip
+            // from isList and s, and a Junction/Capture/Uni from their own tags.
+            // It also, correctly, ignores `itemized`: `[1,2] eqv $[1,2]` is True
+            // on both engines, because itemisation is not a type difference.
+            if (a.typeName() != b.typeName()) return false;
             if (!a.arr || !b.arr || a.arr->size() != b.arr->size()) return false;
             for (size_t i = 0; i < a.arr->size(); i++) if (!valueEqv((*a.arr)[i], (*b.arr)[i])) return false;
             return true;
@@ -1521,6 +1561,7 @@ thread_local ExecContext Interpreter::tctx_;
 thread_local Value* Interpreter::topicWriteback_ = nullptr;
 thread_local Value* Interpreter::builtinTopicWB_ = nullptr;
 thread_local bool Interpreter::noAutothread_ = false;
+thread_local bool Interpreter::forceRoutineFrame_ = false;
 thread_local int Interpreter::loopPhaserCtl_ = 0;
 thread_local const std::vector<Value*>* Interpreter::pendingRwSlots_ = nullptr;
 thread_local bool Interpreter::hoistingSubs_ = false;
@@ -2064,6 +2105,22 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             Value r; bool broke = false; Value cause;
             try {
                 ValueList noargs;
+                // The worker's top-level block is a ROUTINE frame, so `$/`
+                // scopes to this thread.
+                //
+                // Without it, `$/` scoped to the nearest routine frame OUTWARDS
+                // — and a `start` block's frame is parented to its lexical
+                // closure, which every worker shares. So N threads assigned `$/`
+                // into one Env's std::map at once: a data race on a container
+                // with no locking, which corrupted the heap and surfaced as an
+                // intermittent SIGSEGV in an unrelated frame. Reachable from
+                // `await ^30 .map: { start { "abc" ~~ /.+/ } }`, and since
+                // v3.0.0 made parallel the default, without asking for threads.
+                //
+                // It is also what the semantics want: a thread's match is its
+                // own. Sharing one `$/` would let one worker read another's
+                // match, which no program could rely on — and Rakudo does not.
+                forceRoutineFrame_ = true;
                 r = code.t == VT::Code ? self->callCallable(code, noargs) : code;
             }
             catch (const RakuError& e) { broke = true; cause = e.payload; ps->causeMsg = e.message; }
@@ -6718,7 +6775,29 @@ int paramNatSpec(const Param& p) {
     return spec;
 }
 
-void Interpreter::typeCheckBind(const Param& p, const Value& v) {
+// The one value an Any-constrained parameter refuses. Cheap enough to ask on
+// every bind: the first comparison is false for every ordinary value, so only
+// an actual type object ever reaches the string compare.
+static inline bool isMuTypeObject(const Value& v) {
+    return v.t == VT::Type && v.s == "Mu" && v.ofType.empty();
+}
+
+void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam) {
+    // `Any` is everything BELOW Mu, so an Any-constrained parameter takes any
+    // value except Mu itself. Asked before the type-object bypass on the next
+    // line, which is what previously let `sub f($x) {…}; f(Mu)` bind where
+    // Rakudo raises. The bypass stays right for every other type object —
+    // `f(Int)` into an Int parameter is an undefined Int, not a mismatch — and
+    // Mu is its single exception.
+    //
+    // Written `Any` refuses Mu wherever it appears, blocks included. An UNTYPED
+    // parameter is Any-constrained only in a ROUTINE: a Block's defaults to Mu,
+    // so `(-> $x {…})(Mu)` is legal while `sub f($x) {…}; f(Mu)` is not — and
+    // `for (Mu) -> $x` and `.map(-> $x {…})` depend on that being so.
+    if (isMuTypeObject(v) && (p.type == "Any" || (p.type.empty() && !blockParam)))
+        throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
+            "Type check failed in binding to parameter '" + p.name +
+            "'; expected Any but got Mu (Mu)"};
     if (v.t == VT::Type || v.t == VT::Nil || v.t == VT::Any) return;
     if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
                              v.enumName == "one" || v.enumName == "none")) return;
@@ -6740,7 +6819,7 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v) {
 }
 
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
-                             std::shared_ptr<Env>& env, bool methodCtx) {
+                             std::shared_ptr<Env>& env, bool methodCtx, bool blockParams) {
     // Fast path: every parameter is a plain mandatory positional scalar and no
     // named arguments were passed — the overwhelmingly common signature. Bind
     // positionally, skipping the named-map / explicit-named-set / substr /
@@ -6775,7 +6854,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             for (size_t i = 0; i < params.size(); i++) {
                 if (i < args.size()) {
                     Value v = args[i];
-                    if (!params[i].type.empty()) typeCheckBind(params[i], v);
+                    // …or an untyped one handed Mu, the only value its implicit
+                    // Any constraint rejects (isMuTypeObject is one enum compare
+                    // for every ordinary argument)
+                    if (!params[i].type.empty() || isMuTypeObject(v))
+                        typeCheckBind(params[i], v, blockParams);
                     // a native-int param truncates on bind (see the slow path)
                     { int spec = paramNatSpec(params[i]);
                       if (spec >> 1) wrapNative(v, spec >> 1, spec & 1); }
@@ -6868,8 +6951,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                             for (auto& e : x.flatten()) a.arr->push_back(e);
                         else a.arr->push_back(x);
                     }
-                } else if (p.slurpyKind == 'n') {
+                } else if (p.slurpyKind == 'n' || capture) {
                     // **@a — no flatten: keep every arg as-is.
+                    //
+                    // …and a CAPTURE, for a different reason that lands in the
+                    // same place: `|c` is the argument list AS PASSED, not a
+                    // slurpy that gets to reinterpret it. It shared the
+                    // single-argument rule below until 2026-08-10, so a lone
+                    // Iterable dissolved: `sub f(|c)` saw three positionals from
+                    // `f([1,2,3])` where Rakudo sees one. That silently broke the
+                    // pass-through idiom `sub wrapper(|c) { inner(|c) }` — a
+                    // shipped Rakupp::JSON serialised `to-json([1,2,3])` as `1`,
+                    // because the array reached JSON::Fast as three arguments.
                     for (; pi < positional.size(); pi++) a.arr->push_back(positional[pi]);
                 } else {
                     // +@a (and default) — single-argument rule: a lone Iterable arg
@@ -6945,8 +7038,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     throw RakuError{Value::typeObj("X::TypeCheck::Binding"),
                         "Type check failed in binding to parameter '" + p.name + "'"};
                 if (p.subSig) destructure(p, it->second); // :value((Str :key($d), …))
-                if (!p.subSig && p.sigil == '$' && !p.type.empty() && !p.coerce)
-                    typeCheckBind(p, it->second);
+                if (!p.subSig && p.sigil == '$' && !p.coerce &&
+                    (!p.type.empty() || isMuTypeObject(it->second)))
+                    typeCheckBind(p, it->second, blockParams);
                 // named @/% params follow the positional binding rules: bind
                 // (share) the caller's container — unless `is copy`, which takes
                 // a fresh one (HTTP::Tiny's `:%headers is copy` mutates its copy;
@@ -7008,8 +7102,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // its .Type method — which FAILS where the method does (Int on <1/0>)
             if (p.coerce && !p.type.empty() && v.typeName() != p.type)
                 v = coerceToType(v, p.type);
-            else if (p.sigil == '$' && !p.invocant && !p.type.empty())
-                typeCheckBind(p, v); // a lone typed candidate REJECTS a mismatch (like Rakudo)
+            else if (p.sigil == '$' && !p.invocant &&
+                     (!p.type.empty() || isMuTypeObject(v)))
+                typeCheckBind(p, v, blockParams); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
             if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant) v.readonly = true;
             env->define(p.name, v);
@@ -9499,7 +9594,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     }
     if (c.params && !c.params->empty()) {
-        bindParams(*c.params, args, env, c.isMethod);
+        bindParams(*c.params, args, env, c.isMethod, c.isBlock);
         if (rwArgs) setupRwLinks(c.params, env, rwArgs); // rw/raw params write through
         if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
     } else if (!c.placeholders.empty()) {
@@ -9583,7 +9678,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // a ROUTINE (not a bare block) is a return boundary
     ++tctx_.frameTop;
     uint64_t savedFrameTop = tctx_.frameTop, savedRoutineFrame = tctx_.curRoutineFrame;
-    bool isRoutine = !c.isBlock;
+    // A bare block is not a routine — except the one a worker thread starts on,
+    // which must own its `$/` rather than share the lexical scope every worker
+    // closes over. One-shot, consumed here (see spawnPromise).
+    bool isRoutine = !c.isBlock || forceRoutineFrame_;
+    forceRoutineFrame_ = false;
     if (isRoutine) { tctx_.curRoutineFrame = tctx_.frameTop; env->routineFrame = true; } // $/ scopes here
     struct FrameGuard {
         ExecContext& t; uint64_t ft, rf;
@@ -13583,7 +13682,9 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     if (op == "eqv") return Value::boolean(valueEqv(l, r));
     if (op == "===" || op == "!==" || op == "!===") {
         bool same;
-        if (l.t != r.t) same = false;
+        // the two spellings of Any are one object — see isAnyTypeObject
+        if (l.t != r.t && isAnyTypeObject(l) && isAnyTypeObject(r)) same = true;
+        else if (l.t != r.t) same = false;
         else if (l.t == VT::Object) same = (l.obj == r.obj);
         else if (l.t == VT::Type) same = (l.s == r.s && l.ofType == r.ofType);
         else if (l.t == VT::Code) same = (l.code == r.code);
@@ -16038,8 +16139,14 @@ Value Interpreter::evalBinary(Binary* b) {
             bool lvar = plainLexVar(b->lhs.get()), rvar = plainLexVar(b->rhs.get());
             bool llit = plainScalarLit(b->lhs.get()), rlit = plainScalarLit(b->rhs.get());
             signed char sh = (lvar && rlit) ? 1 : (llit && rvar) ? 2 : (lvar && rvar) ? 3 : 0;
-            if (sh == 1)      b->litVal = new Value(eval(b->rhs.get()));
-            else if (sh == 2) b->litVal = new Value(eval(b->lhs.get()));
+            if (sh == 1 || sh == 2) {
+                // Publish the literal BEFORE the shape, so a thread that sees a
+                // shape needing one either sees it too or (having loaded the
+                // pointer earlier) finds null and takes the slow path — never a
+                // pointer to a half-built Value.
+                Value* mine = new Value(eval(sh == 1 ? b->rhs.get() : b->lhs.get()));
+                if (b->litVal.publish(mine) != mine) delete mine; // another thread won
+            }
             b->fastShape = sh;
         }
         if (b->fastShape > 0) {
@@ -16054,11 +16161,13 @@ Value Interpreter::evalBinary(Binary* b) {
                         (p->t == VT::Int || p->t == VT::Num ||
                          p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
             };
-            const Value* lp = b->fastShape == 2 ? static_cast<const Value*>((const void*)b->litVal)
-                                                : scal(b->lhs.get());
+            // One acquire load, reused for both sides: null means another thread
+            // is still building it, and falling through costs nothing but a
+            // second lookup of operands that have no side effects.
+            const Value* lit = static_cast<const Value*>(b->litVal.get());
+            const Value* lp = b->fastShape == 2 ? lit : scal(b->lhs.get());
             if (lp) {
-                const Value* rp = b->fastShape == 1 ? static_cast<const Value*>((const void*)b->litVal)
-                                                    : scal(b->rhs.get());
+                const Value* rp = b->fastShape == 1 ? lit : scal(b->rhs.get());
                 // tagTemporal is a no-op unless an operand is Instant/Duration,
                 // and both hashKinds are empty here, so the result needs no tag.
                 if (rp) return applyArith(op, *lp, *rp);
@@ -19533,6 +19642,14 @@ Value Interpreter::evalIndex(Index* idx) {
     return Value::any();
 }
 
+// The published payload behind NumLit::ratCache. Immutable once built: a Rat
+// literal's numerator and denominator never change, which is what makes sharing
+// them across threads safe once the pointer is published with release ordering.
+// Defined here rather than in Ast.h so BigInt stays out of the AST header.
+struct RatLitParts {
+    std::shared_ptr<BigInt> n, d;
+};
+
 Value Interpreter::eval(Expr* e) {
     switch (e->kind) {
         case NK::IntLit: {
@@ -19542,25 +19659,33 @@ Value Interpreter::eval(Expr* e) {
         case NK::NumLit: { auto* nl = static_cast<NumLit*>(e);
             if (nl->imaginary) return Value::complex(0, nl->v);
             if (nl->isRat) {
-                // build once, then share the immutable BigInt parts on every eval
-                // (ratZ: an explicit zero denominator — `<42/0>` — is preserved)
-                if (!nl->cacheN) {
-                    Value first = nl->bigNum.empty()
-                        ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))         // 3.14 is a Rat
-                        : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
-                    nl->cacheD = first.ratD; // set D first: cacheN is the "ready" flag
-                    nl->cacheN = first.ratN;
-                    return first;
+                // Build once, then share the immutable BigInt parts on every
+                // eval (ratZ: an explicit zero denominator — `<42/0>` — is
+                // preserved). Both parts live in ONE holder published
+                // atomically: as two bare shared_ptrs, "set D, then N as the
+                // ready flag" was a data race on the control blocks themselves,
+                // so a racing reader could corrupt a refcount rather than merely
+                // read a stale pointer. Readers COPY the shared_ptrs out, which
+                // is safe — the holder is never mutated after publication.
+                if (const void* p = nl->ratCache.get()) {
+                    auto* parts = static_cast<const RatLitParts*>(p);
+                    Value v; v.t = VT::Rat;
+                    v.ratN = parts->n;
+                    v.ratD = parts->d;
+                    return v;
                 }
-                Value v; v.t = VT::Rat;
-                v.ratN = std::static_pointer_cast<BigInt>(nl->cacheN);
-                v.ratD = std::static_pointer_cast<BigInt>(nl->cacheD);
-                return v;
+                Value first = nl->bigNum.empty()
+                    ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))         // 3.14 is a Rat
+                    : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
+                auto* mine = new RatLitParts{first.ratN, first.ratD};
+                if (nl->ratCache.publish(mine) != mine) delete mine; // another thread won
+                return first;
             }
             return Value::number(nl->v); }
-        case NK::StrLit: { auto* sl = static_cast<StrLit*>(e); // NFC-normalize once (Raku's NFG storage)
-            if (!sl->nfcDone) { sl->v = nfcNormalize(sl->v); sl->nfcDone = true; }
-            return Value::str(sl->v); }
+        // A pure read: the literal was NFC-normalized when it was constructed.
+        // Doing it here, in place, on a node every thread shares was a data race
+        // that corrupted the string — see StrLit in Ast.h.
+        case NK::StrLit: return Value::str(static_cast<StrLit*>(e)->v);
         case NK::AllomorphLit: {
             auto* al = static_cast<AllomorphLit*>(e);
             Value v = eval(al->num.get());

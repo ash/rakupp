@@ -80,11 +80,12 @@ check root-read(), "kept across calls", "a rooted handle survives into the next 
 root-keep("replaced");
 check root-read(), "replaced", "rooting again releases the previous root";
 root-release();
-# `.defined`, not `=== Any`: an untyped undefined value is not identical to the
-# Any type object in rakupp today (`my $x; $x === Any` is False, while
-# `my Int $y; $y === Int` is True). That is a general interpreter divergence
-# this gate found, not an ABI question, and it is being fixed separately.
 check root-read().defined, False, "after rk_unroot there is nothing left to read";
+# rk_any() produces the same VT::Any an empty slot holds, and `=== Any` on it
+# was False until this gate turned that up — the ABI-visible face of it being
+# that every JSON null from a native parser failed the idiom used to test for
+# one. Asserted here because this is where it would come back.
+check (root-read() === Any), True, "an rk_any() value is identical to Any";
 
 if @fail {
     note "FAILED:\n" ~ @fail.map({ "  - $_" }).join("\n");

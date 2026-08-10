@@ -31,7 +31,7 @@ sub ck($got, $want, $l) { unless $got eqv $want { say "FAIL: $l — {$got.raku} 
 # 4. `:16(...)` is a radix literal, so `{ :16($_) }` is a CODE block, not a hash
 {
     ck({ :16($_).Int }("ff"), 255, ':16($_) in a block is radix');
-    ck((map { :16($_).Int }, "ff00".comb(/../)), (255, 0), ':16 map');
+    ck((map { :16($_).Int }, "ff00".comb(/../)).List, (255, 0), ":16 map");  # .List: a map gives a Seq
     my %h = :a(1); ck(%h<a>, 1, 'real hash literal still works');
 }
 

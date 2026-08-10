@@ -212,7 +212,11 @@ template <class IO> void visit(IO& io, IntLit& n)   { F(io, n.v); F(io, n.big); 
 template <class IO> void visit(IO& io, NumLit& n)   { F(io, n.v); F(io, n.imaginary); F(io, n.raw);
                                                       F(io, n.isRat); F(io, n.ratNum); F(io, n.ratDen);
                                                       F(io, n.bigNum); F(io, n.bigDen); }
-template <class IO> void visit(IO& io, StrLit& n)   { F(io, n.v); F(io, n.nfcDone); }
+// `v` is written after construction here, so the constructor's normalization
+// missed it — normalize on the way in. (Both fields stay in the format so an
+// existing cache still reads.)
+template <class IO> void visit(IO& io, StrLit& n)   { F(io, n.v); F(io, n.nfcDone);
+                                                      if (IO::reading) n.normalize(); }
 template <class IO> void visit(IO& io, BoolLit& n)  { F(io, n.v); }
 template <class IO> void visit(IO& io, AllomorphLit& n) { ioExpr(io, n.num); F(io, n.str); }
 template <class IO> void visit(IO& io, RegexLit& n) { F(io, n.pattern); F(io, n.isRx); F(io, n.declKind); }

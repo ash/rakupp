@@ -26,6 +26,41 @@ struct DecidedOnce {
     DecidedOnce& operator=(T x) { v.store(x, std::memory_order_relaxed); return *this; }
 };
 
+// The same idea for a cache slot holding a POINTER TO A PAYLOAD rather than a
+// self-contained value — and relaxed is NOT enough for that.
+//
+// DecidedOnce is fine when the cached thing IS the value: two threads compute
+// the same `signed char`, either store wins, and a reader that sees either one
+// is correct. A pointer is different. The writer does two things — build the
+// payload, then publish the pointer — and under relaxed ordering a reader may
+// see the pointer WITHOUT seeing the bytes it points at. On x86 the store
+// buffer usually hides that; arm64 is weakly ordered and does not, and rakupp
+// ships arm64 binaries. ThreadSanitizer reported it as a read of a Value's type
+// tag racing against that Value's constructor.
+//
+// So: release on publish, acquire on read, which is exactly the happens-before
+// the payload needs. `publish` is a compare-exchange, so a racing double-build
+// has ONE winner and the loser can free its copy instead of leaking it.
+template <typename T>
+struct PublishedOnce {
+    std::atomic<T> v;
+    PublishedOnce(T init = T{}) : v(init) {}
+    PublishedOnce(const PublishedOnce& o) : v(o.v.load(std::memory_order_acquire)) {}
+    PublishedOnce& operator=(const PublishedOnce& o) {
+        v.store(o.v.load(std::memory_order_acquire), std::memory_order_release);
+        return *this;
+    }
+    // Null until published — a reader that sees null simply takes the slow path.
+    T get() const { return v.load(std::memory_order_acquire); }
+    // Returns whichever pointer is now published: `x` if we won, the winner's
+    // if we lost. `p.publish(mine) != mine` is the caller's cue to free `mine`.
+    T publish(T x) {
+        T expected = T{};
+        return v.compare_exchange_strong(expected, x, std::memory_order_release,
+                                         std::memory_order_acquire) ? x : expected;
+    }
+};
+
 namespace rakupp {
 
 enum class NK {
@@ -64,10 +99,45 @@ struct NumLit : Expr {
     // interpreter cache of the built Rat's (immutable) BigInt parts — literals in
     // hot loops would otherwise re-allocate + re-reduce on every evaluation.
     // (Benign same-value race under RAKUPP_PARALLEL, like Binary::simpleOp.)
-    mutable std::shared_ptr<void> cacheN, cacheD;
+    // Published once, then read by every thread. Two plain shared_ptrs were a
+    // real data race, not merely an ordering one: concurrent assignment to a
+    // shared_ptr corrupts its control block, so this could double-free rather
+    // than just read a stale pointer. The parts now go into one immutable
+    // heap-allocated holder that is published atomically; readers copy the
+    // shared_ptrs OUT of it, which is safe because copying is atomic and the
+    // holder is never mutated after publication.
+    mutable PublishedOnce<const void*> ratCache{nullptr};
     explicit NumLit(double x): Expr(NK::NumLit), v(x){}
 };
-struct StrLit : Expr { std::string v; bool nfcDone = false; /* NFC-normalized in place on first eval */ explicit StrLit(std::string s): Expr(NK::StrLit), v(std::move(s)){} };
+// Defined in Builtins.cpp, declared in Interpreter.h — which Ast.h cannot
+// include (Interpreter.h includes this file). Repeated here so a literal can
+// normalize itself at CONSTRUCTION.
+std::string nfcNormalize(std::string in);
+
+// Raku stores text NFC-normalized (its NFG grapheme model rests on it), and a
+// literal is normalized once — at construction, where it is still private to
+// the thread that parsed it.
+//
+// It used to be done lazily on first eval, in place: `if (!nfcDone) { v =
+// nfcNormalize(v); nfcDone = true; }`. The AST is SHARED by every thread, so
+// two threads evaluating one literal at the same time both rewrote that
+// std::string and corrupted the heap — reachable from ordinary code
+// (`await ^30 .map: { start { … "abc" … } }`) and, since v3.0.0 made parallel
+// the default, without asking for threads at all. It surfaced as an
+// intermittent SIGSEGV in an unrelated-looking frame, which is what a data race
+// usually looks like from the outside.
+//
+// Normalising in the constructor means eval only ever READS, so there is
+// nothing to race on. It also costs nothing measurable: nfcNormalize returns
+// immediately for pure-ASCII input, which nearly every literal is, and it
+// happens once per literal at parse time rather than once per evaluation.
+struct StrLit : Expr {
+    std::string v;
+    bool nfcDone = true;    // vestigial: kept so the precomp cache format is unchanged
+    explicit StrLit(std::string s): Expr(NK::StrLit), v(nfcNormalize(std::move(s))) {}
+    // For the deserialiser, which fills `v` in after construction.
+    void normalize() { v = nfcNormalize(std::move(v)); nfcDone = true; }
+};
 // A numeric word in a `<…>` list is an allomorph: the numeric value of `num`,
 // tagged so it is ALSO the string `str` (`<42>` is IntStr, `<1/3>` RatStr, `<1e5>` NumStr).
 struct AllomorphLit : Expr { ExprPtr num; std::string str; AllomorphLit(): Expr(NK::AllomorphLit){} };
@@ -160,13 +230,18 @@ struct Binary : Expr {
     // looked up, and type-checked, on every evaluation. A literal cannot change,
     // so building it once is safe.
     //
-    // litVal is a raw pointer that is never freed: the node outlives every
-    // evaluation, so there is nothing to reclaim before exit, and unlike a
-    // re-assigned shared_ptr it cannot be yanked out from under a reader under
-    // RAKUPP_PARALLEL (a racing double-build leaks one Value; it cannot dangle).
-    // void* keeps Value out of Ast.h, the dodge the Rat literal cache uses.
+    // litVal is a raw pointer that is never freed once published: the node
+    // outlives every evaluation, so there is nothing to reclaim before exit, and
+    // unlike a re-assigned shared_ptr it cannot be yanked out from under a
+    // reader under RAKUPP_PARALLEL. void* keeps Value out of Ast.h, the dodge
+    // the Rat literal cache uses.
+    //
+    // PublishedOnce, not DecidedOnce: the pointer is only half the story, and a
+    // reader has to see the Value it points at as well. See PublishedOnce above
+    // — with relaxed ordering this raced on arm64, and a racing double-build now
+    // frees the loser instead of leaking it.
     mutable DecidedOnce<signed char> fastShape{-1};
-    mutable DecidedOnce<const void*> litVal{nullptr};
+    mutable PublishedOnce<const void*> litVal{nullptr};
     Binary(): Expr(NK::Binary) {}
 };
 

@@ -30,8 +30,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         return Value::str(doSprintf(args.empty() ? "%s" : a0().toStr(), {inv}));
     // Cool.printf / Cool.sprintf: the invocant IS the format ("%s\n".printf($x))
     if (m == "printf" && (inv.t == VT::Str || inv.t == VT::Match)) {
-        std::cout << doSprintf(inv.toStr(), args, langRev_);
-        return Value::boolean(true);
+        // ioEmit, not std::cout: it takes the output lock, and it honours a
+        // rebound `$*OUT`. Writing the stream directly meant
+        // `my $*OUT = open(…); "%s\n".printf(…)` went to the terminal while
+        // `say` on the next line went to the file.
+        return ioEmit(doSprintf(inv.toStr(), args, langRev_), "$*OUT", false);
     }
     if (m == "sprintf" && (inv.t == VT::Str || inv.t == VT::Match))
         return Value::str(doSprintf(inv.toStr(), args, langRev_));
@@ -1397,7 +1400,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     for (size_t k = pool.size(); k-- > 0;) if (pool[k].second > 0) return (long long)k;
                     return -1;
                 };
-                if (pool.empty()) return args.empty() ? Value::nil() : Value::array();
+                // An empty quanthash still answers with a SEQ, like the
+                // non-empty path below — `set().roll(1)` is `().Seq`, which is
+                // what S02-types/set.t asserts. It returned a plain Array here,
+                // and nothing noticed until `eqv` learned to tell a Seq from an
+                // Array: the tests compared equal on elements and so passed for
+                // the wrong reason.
+                if (pool.empty()) {
+                    if (args.empty()) return Value::nil();
+                    Value empty = Value::array(); empty.isList = true; empty.s = "Seq";
+                    return empty;
+                }
                 if (args.empty()) { long long k = draw(); return k < 0 ? Value::nil() : Value::str(pool[k].first); }
                 bool all = args[0].t == VT::Whatever ||
                            (args[0].t == VT::Str && (args[0].s == "*" || args[0].s == "Inf")) ||

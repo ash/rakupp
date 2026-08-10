@@ -10,7 +10,7 @@ my @fail;
 
 # 1. contextualizer statement modifiers
 @fail.push("at-for (@(($_*2 for 1..3)).join(','))")
-    unless @($_ * 2 for 1..3) eqv [2, 4, 6];
+    unless @($_ * 2 for 1..3).Array eqv [2, 4, 6];  # .Array: eqv is type-aware
 @fail.push('at-if-true')  unless @(42 if True).elems == 1;
 @fail.push('at-if-false') unless @(42 if False).elems == 0;
 @fail.push('dollar-for')  unless $($_ + 1 for 1..3).List eqv (2, 3, 4);

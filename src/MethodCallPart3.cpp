@@ -1243,10 +1243,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             auto stdit = inv.hash->find("std");
             if (stdit != inv.hash->end()) { // $*OUT / $*ERR — write straight to the stream
+                std::lock_guard<std::mutex> lk(rtOutMutex());
                 (stdit->second.toStr() == "err" ? std::cerr : std::cout) << s;
                 return Value::boolean(true);
             }
-            (*inv.hash)["buffer"] = Value::str((*inv.hash)["buffer"].toStr() + s);
+            // Appending to an open handle is a READ-MODIFY-WRITE on state the
+            // handle shares, so two threads writing to one file both read the
+            // buffer, both append, and one write is simply lost — twelve
+            // threads writing a line each produced eleven lines. Under the
+            // output lock it is one update at a time.
+            {
+                std::lock_guard<std::mutex> lk(rtOutMutex());
+                Value& buf = (*inv.hash)["buffer"];
+                buf = Value::str(buf.toStr() + s);
+            }
             return Value::boolean(true);
         }
         if (m == "t") { // is the handle a terminal? files never; std handles ask isatty
@@ -1268,7 +1278,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 else if ((a.t == VT::Array || a.t == VT::Range) && !(a.t == VT::Array && !a.arr))
                     for (auto& e : a.flatten()) bytes += (char)(unsigned char)(e.toInt() & 0xFF);
             }
-            (*inv.hash)["buffer"] = Value::str((*inv.hash)["buffer"].toStr() + bytes);
+            {   // same read-modify-write as .print above, same lock
+                std::lock_guard<std::mutex> lk(rtOutMutex());
+                Value& buf = (*inv.hash)["buffer"];
+                buf = Value::str(buf.toStr() + bytes);
+            }
             return Value::boolean(true);
         }
         if (m == "read") { // binary read: up to N bytes from a byte cursor, as a Buf
@@ -1906,7 +1920,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             for (size_t k = gm.cpAt(g), e = gm.cpAt(g + 1); k < e; k++) r += cpToUtf8(cps[k]);
         return Value::str(r);
     }
-    if (m == "ords") { Value out = Value::array(); for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
+    // A Seq, not an Array — `Nil.ords` is `().Seq` (S02-types/nil.t). It said
+    // Array until `eqv` learned to tell the two apart, at which point the test
+    // stopped passing for the wrong reason.
+    if (m == "ords") { Value out = Value::array(); out.isList = true; out.s = "Seq"; for (auto cp : uniNormalize(utf8cp(inv.toStr()), 1 /*NFC: .ords returns grapheme ordinals*/)) out.arr->push_back(Value::integer(cp)); return out; }
     if (m == "chomp") { // a logical newline: "\n", "\r\n" or a lone "\r"
         std::string s = inv.toStr();
         if (!s.empty() && s.back() == '\n') s.pop_back();
