@@ -150,10 +150,8 @@ function makeModule() {
 Three things follow from the worker that could not be had without it.
 
 **Output streams.** `print` posts to the main thread as it fires, so a program
-that redraws — Game of Life, say — animates frame by frame instead of arriving
-as one block at the end. The page treats an ANSI cursor-home as a redraw.
-Repainting is coalesced on a timer rather than `requestAnimationFrame`, because
-that pauses in a hidden tab and would drop output there.
+that redraws animates frame by frame instead of arriving as one block at the
+end. How that actually reaches the page is the next section.
 
 **A runaway program can be stopped**, by terminating the worker. There is no
 other way to interrupt a synchronous call.
@@ -176,6 +174,152 @@ catch (err) {
 The `inRun` flag is a small thing worth noticing: outside a run, `print` is
 Emscripten's own load-time diagnostics, which belong in the devtools console
 rather than in the user's output pane.
+
+## How a line of output reaches the page
+
+There is a message protocol, a screen *model*, and a coalesced render. All three
+matter, and none of them is the obvious "append text to a `<div>`".
+
+### The protocol
+
+The worker posts one of five message types, and the main thread dispatches them
+to whichever block is currently running:
+
+```js
+// raku.js
+worker.onmessage = function (e) {
+  var m = e.data, b = current;
+  switch (m.type) {
+    case 'ready':     workerReady = true; …; next();            break;
+    case 'out':       if (b) b.feed(m.text, m.cls);             break;
+    case 'done':      if (b) b.finish(m.rc, m.ms);
+                      current = null; next();                   break;
+    case 'runerror':  if (b) { b.error(…); b.finish(1, 0); }
+                      current = null;                           break;
+    case 'loaderror': …                                         break;
+  }
+};
+```
+
+`current` is the block that owns the run, which is what lets one worker serve
+every editor on the page: output is routed to a *block*, not broadcast.
+
+### The screen is a model, not the DOM
+
+`feed` does not touch the document. It appends to an array of
+`[text, cssClass]` pairs:
+
+```js
+// raku.js
+this._screen = []; var chars = 0, pending = false, CAP = 200000;
+
+function push(text, cls) {
+  if (self._clearNext) { self._screen = []; chars = 0;
+                         self._clearNext = false; sched(); }
+  if (!text || chars > CAP) return;
+  chars += text.length; self._screen.push([text, cls || '']); sched();
+}
+```
+
+Keeping a model rather than mutating the DOM is what makes the next two things
+possible at all — you cannot *clear a screen* or *drop the oldest output* if the
+only record of it is already rendered.
+
+`CAP` is a character budget. A program that prints without end fills 200,000
+characters and then produces nothing further, rather than growing a DOM node
+until the tab dies.
+
+### Rendering is coalesced on a timer
+
+```js
+// raku.js
+function render() {
+  pending = false;
+  outEl.innerHTML = self._screen.map(function (p) {
+    return '<span class="' + p[1] + '">' + esc(p[0]) + '</span>';
+  }).join('');
+  outEl.scrollTop = outEl.scrollHeight;
+}
+function sched() { if (!pending) { pending = true; setTimeout(render, 16); } }
+```
+
+Every `push` calls `sched`, and `sched` schedules **at most one** render per
+16 milliseconds however many lines arrived in between. A program emitting
+thousands of lines therefore costs a few dozen repaints, not thousands.
+
+The timer is `setTimeout` rather than `requestAnimationFrame` on purpose:
+`requestAnimationFrame` pauses in a hidden or background tab, so output would
+simply stop appearing for anyone who switched away mid-run.
+
+The render is a full rebuild of `innerHTML` from the model, and the scroll is
+pinned to the bottom afterwards. A full rebuild sounds wasteful and is not, at
+this scale: the model is capped, and rebuilding is what makes a *clear* free.
+
+### ANSI, which is how animation works
+
+A program that animates redraws by moving the cursor home. `feed` splits its
+input on an ANSI escape pattern and treats two of them as "start again":
+
+```js
+// raku.js
+var ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+this.feed = function (text, cls) {
+  ANSI.lastIndex = 0; var lastI = 0, mm;
+  while ((mm = ANSI.exec(text))) {
+    push(text.slice(lastI, mm.index), cls);
+    var f = mm[0][mm[0].length - 1];
+    if (mm[0] === '\x1b[2J' || f === 'H' || f === 'f') clear();
+    lastI = ANSI.lastIndex;
+  }
+  push(text.slice(lastI), cls);
+};
+```
+
+Erase-display and cursor-home empty the model; every other escape sequence is
+recognised and discarded, so it neither prints as garbage nor is mistaken for
+text. That is the whole of the terminal emulation, and it is enough: a Game of
+Life that clears and redraws each generation animates in the page, because
+clearing the model and re-rendering **is** a frame.
+
+### The deferred clear
+
+The subtlest piece. Pressing Run again does not blank the pane immediately:
+
+```js
+// raku.js — inside push()
+// Deferred clear: keep the previous run's output on screen until the new run
+// actually produces something, so re-running never collapses the block.
+if (self._clearNext) { self._screen = []; … }
+```
+
+The run sets a `_clearNext` flag; the *first output of the new run* is what
+consumes it. Without this, re-running a slow program blanks the pane and leaves
+the reader looking at nothing for as long as the program takes to produce its
+first line — and re-running a program that prints nothing collapses the block to
+empty, which reads as breakage.
+
+### Finishing
+
+```js
+// raku.js
+this.finish = function (rc, ms) {
+  setRun(false);
+  if (self._clearNext) { self._screen = []; chars = 0;
+                         self._clearNext = false; }
+  if (!self._screen.length) push('(no output)', 'meta');
+  push('\n— exit ' + rc + ' · ' + ms + ' ms —', 'meta');
+  stEl.textContent = 'exit ' + rc + ' · ' + ms + ' ms';
+};
+```
+
+The exit code and elapsed time are pushed as an ordinary screen entry with a
+`meta` class, so they are styled apart from the program's own output — and the
+Copy button filters `meta` entries out, so copying an example gives you what the
+program printed and not the footer the page added.
+
+A run that produced nothing says so, because an empty pane is indistinguishable
+from a pane that never updated.
 
 ## Live coding: one script tag
 
