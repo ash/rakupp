@@ -174,7 +174,7 @@ pass the invocant and argument list by reference rather than by value, and shrin
 `Value` — and both are being approached carefully rather than quickly, because
 the first trades away an accidental safety property and the second is a
 representation change that the extension ABI was specifically designed to
-survive (Chapter 32).
+survive (Chapter 33).
 
 ## Honesty as a practice
 

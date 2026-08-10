@@ -140,6 +140,6 @@ genuine bugs in Raku++; several fixes in later chapters were found that way.
 | IV | the tree walk, calls, control flow, dispatch, objects, laziness |
 | V | the regex engine, the grammar engine, longest-token matching |
 | VI | Unicode: graphemes, normalization, collation |
-| VII | the four run modes, the C++ code generator, `-O`, serialization |
+| VII | the four run modes, the C++ code generator, `-O`, serialization, the browser |
 | VIII | modules, `use nqp`, NativeCall, the extension ABI, concurrency |
 | IX | tooling built on the AST, and how any of this is proved |

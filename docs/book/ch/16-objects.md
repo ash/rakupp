@@ -47,7 +47,7 @@ std::unordered_map<std::string, std::string> classAliases_;
 ```
 
 Flat, not per-compilation-unit. Two modules declaring the same unqualified class
-name collide — a real divergence from Rakudo, listed in Chapter 29.
+name collide — a real divergence from Rakudo, listed in Chapter 30.
 
 The alias map softens the consequences of flatness. Registering `URI::Path` also
 aliases its tail, `Path`, unless a real class already claims that name. And a

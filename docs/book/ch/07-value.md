@@ -276,7 +276,7 @@ the reductions are already in this chapter: `hashKind`, `enumName` and
 (Chapter 9), and the string payload became a copy-on-write type (Chapter 8).
 
 That instability is also the single most important input to the extension ABI
-in Chapter 32, which is why an extension module never sees this struct at all.
+in Chapter 33, which is why an extension module never sees this struct at all.
 
 ## Honest limitations
 

@@ -190,7 +190,7 @@ budget matches across modes.
 **Modules are always interpreted.** `Codegen` emits a call to
 `Interpreter::rtUse`, a thin mirror of the interpreter's `use` handling, which
 calls the same `loadModule`. Only the *main program* is compiled; a compiled
-binary still loads and interprets its modules (Chapter 29) — though it can
+binary still loads and interprets its modules (Chapter 30) — though it can
 carry their serialised ASTs inside itself, which is the next section.
 
 ## Carrying modules inside a binary
@@ -236,7 +236,6 @@ const std::string* rakuppEmbeddedModuleSource(const std::string& name);
 
 The same runtime compiled to **WebAssembly** is Raku.js: the interpreter running
 in a browser tab, with the same `Value` semantics and no server. It is mode 1
-with a different host, and the two places it changes the engineering are noted
-where they arise — C++ exceptions are very expensive there, which is part of why
-control flow is cooperative (Chapter 14), and there is no shared library to
-`dlopen`, so NativeCall always takes its fallback path (Chapter 31).
+with a different host — but the host removes the filesystem, the threads and the
+dynamic loader, which changes enough to be worth its own chapter. That is
+Chapter 29, at the end of this part.

@@ -5,7 +5,7 @@ AST, `Value`, the interpreter, the regex and grammar engine, Unicode, the four
 run modes, the native code generator and its optimizer, module loading,
 NativeCall, the extension ABI, and the concurrency runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 200 pages, 35 chapters in
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 257 pages, 36 chapters in
 nine parts, plus three appendices.
 
 ## Building it
@@ -65,6 +65,18 @@ Two that matter, because breaking either shows up in the PDF:
 
 The build prints any `Overfull \hbox` the typesetter reports; a clean build has
 none over a couple of points.
+
+**The page count is not derivable from the PDF** — it carries no `/Linearized`
+dictionary, and its page tree is inside a compressed object stream, so grepping
+for `/N` or `/Count` finds nothing (or, worse, finds an unrelated `/N` and
+reports it confidently). Get it from the typesetter instead:
+
+```sh
+pandoc docs/book/meta.yaml <(cat docs/book/ch/*.md) --to latex --standalone \
+  --include-in-header docs/book/latex/preamble.tex --toc --number-sections \
+  --top-level-division=chapter -o /tmp/bk.tex
+cd /tmp && tectonic bk.tex --keep-logs && grep "Output written" bk.log
+```
 
 ## What it is not
 

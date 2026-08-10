@@ -26,12 +26,13 @@
 | the CLI and compile drivers | `main.cpp` | Chapter 24 |
 | the native compiler | `Codegen.cpp`, the `rt*` helpers in `Interpreter.h` | Chapters 25 to 27 |
 | the parse cache | `AstSerial.cpp` | Chapter 28 |
-| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 29 |
-| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 30 |
-| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 31 |
-| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 32 |
-| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 33 |
-| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 34 |
+| the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 29 |
+| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 30 |
+| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 31 |
+| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 32 |
+| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 33 |
+| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 34 |
+| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 35 |
 
 ## Rules that are easy to break by accident
 
@@ -107,6 +108,10 @@ syntax, computed on first evaluation and never recomputed.
 
 **Fat struct** — the `Value` design: one struct with a type tag and a field for
 every kind of payload, several of which may be live at once.
+
+**Emscripten** — the toolchain that compiles the runtime to WebAssembly.
+Its `-fexceptions` mode routes C++ throws through JavaScript, which is what
+bounds recursion depth in the browser.
 
 **GIL** — the global interpreter lock. Only its holder may touch interpreter
 state; it is engaged lazily on first concurrent use.
