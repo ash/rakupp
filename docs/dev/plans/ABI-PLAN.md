@@ -244,6 +244,73 @@ Raku routine from C, and a rooted lifetime for values that must outlive a call.
 `Rakupp::JSON` that beats `JSON::Fast` — the module is the ABI's regression
 test, and this is the feature its README names as blocked.
 
+> **Outcome (2026-08-10).** Landed, with **one correction to this plan and
+> three interpreter bugs found by building the gate.**
+>
+> **The correction.** This plan said `to-json` was blocked on `rk_call`. It was
+> not: the module's own pod names the real blocker, which is that ABI 1 offered
+> only index-based hash access, `std::advance` from `begin()` on every call —
+> so walking a hash was quadratic. Both were fixed, but they are different
+> problems, and the plan was repeating a guess where the module had written
+> down the answer.
+>
+> **ABI 2**, additive, with a **downgrade handshake** so nothing breaks: the
+> host calls `rakupp_ext_init` with its own version and retries downward, so
+> the `host_abi == RAKUPP_EXT_ABI` test every ABI-1 extension was written with
+> still succeeds. Proven by building an extension against the *previously
+> committed* header and loading it into the new host unchanged; an extension
+> claiming a version newer than the host is refused with a sentence that says
+> what to do. New surface:
+>
+> - `rk_call` / `rk_call_value` / `rk_can` — native code calling Raku, by name
+>   or on a Code value it was handed. Names resolve the way the extension's own
+>   call site would resolve them: the invoking lexical scope, then GLOBAL.
+> - `rk_error` / `rk_clear_error` — a Raku exception inside `rk_call` never
+>   unwinds through C frames. It comes back as NULL plus a pending error, and
+>   if the extension returns NULL the **original exception is re-raised with
+>   its type intact**, so `CATCH { when X::Whatever }` still works across a C
+>   frame. Gated on exactly that.
+> - `rk_root` / `rk_unroot` — the host-side lifetime, over a mutex-guarded
+>   store because parallel is the default since v3.0.0. `rk_unroot` refuses a
+>   handle it never issued, which is the only safety C allows here.
+> - **Hash walks are amortised O(1)**, via a remembered position rather than a
+>   cursor type — no new ABI surface, and it invalidates itself if the hash is
+>   written during a walk. 40,000 keys serialise in 9.6 ms, a flat 0.24 µs per
+>   key from 5,000 up; the old walk would have needed ~800 million iterator
+>   steps for the same document.
+>
+> **Gate results.** `tools/embed/callback-ext.c` + `ext-callback.raku` exercise
+> every entry point above and run in `embed-smoke.raku`. Native `to-json`
+> ships in `Rakupp::JSON`, byte-identical to `JSON::Fast` across 117 checks on
+> both engines — including the two escapes JSON::Fast does *not* write as `\b`
+> and `\f`, and identical **refusal** for a Range, because a fast path that
+> invented an encoding would be a worse bug than a slow one. On the 278 KB
+> corpus:
+>
+> | | parse | serialise |
+> |---|---:|---:|
+> | Rakudo + JSON::Fast | 36 ms | 40.8 ms |
+> | rakupp + JSON::Fast | ~440 ms | 329.5 ms |
+> | rakupp + Rakupp::JSON | 2.7 ms | **3.6 ms** |
+>
+> **The three bugs the gate found**, each general and each now filed rather
+> than folded in here:
+>
+> 1. **`|c` flattens a single Array argument** — `sub f(|c)` gets 3 positionals
+>    from `f([1,2,3])` where Rakudo gets 1. This had *already* broken the
+>    shipped module: `to-json([1,2,3])` returned `1`, because the sub was
+>    declared `(|c)`. The idiom `sub wrapper(|c) { inner(|c) }` is everywhere,
+>    so this is unlikely to be the only victim.
+> 2. **`my $x; $x === Any` is False** — an untyped undefined slot holds a
+>    different representation from the `Any` type object, while a typed one
+>    (`my Int $y; $y === Int`) is correct.
+> 3. **An untyped parameter accepts `Mu`**, where Rakudo applies the implicit
+>    `Any` constraint and refuses.
+>
+> That is the argument for gates that use a real distribution rather than a
+> test double: none of the three is about the ABI, and all three were sitting
+> in paths a synthetic test would not have walked.
+
 ### A2 — `rakupp.h`: lifecycle, eval, output
 
 `rakupp.h` includes `rakupp_ext.h`; the extension header stays standalone so a

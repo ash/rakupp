@@ -170,18 +170,69 @@ RkValue rk_named(RkCtx c, const char* name);  /* NULL if not passed */
 passed an undefined value — so `:immutable` and `:!immutable` are
 distinguishable.
 
+### Calling back into Raku (ABI 2)
+
+```c
+RkValue rk_call      (RkCtx c, const char* name, const RkValue* argv, size_t argc);
+RkValue rk_call_value(RkCtx c, RkValue code,     const RkValue* argv, size_t argc);
+int     rk_can       (RkCtx c, const char* name);
+```
+
+`rk_call` resolves a name **the way your sub's own call site would**: the
+lexical scope that invoked you, then outward to GLOBAL. So an extension loaded
+by a module reaches that module's routines, which is what lets a native fast
+path hand back the cases it does not want to implement:
+
+```c
+static RkValue render(RkCtx c) {
+    RkValue v = rk_arg(c, 0);
+    if (rk_type(c, v) == RK_OTHER) {         /* not ours — ask Raku */
+        RkValue r = rk_call(c, "render-fallback", &v, 1);
+        if (!r) return 0;                     /* let the failure through */
+        return r;
+    }
+    …
+}
+```
+
+`rk_call_value` is the same for a Code value you were *handed* — a callback
+argument, `&comparator` and its kind. Positional arguments only; named ones are
+not expressible yet.
+
 ### Failing
 
 ```c
-void rk_die(RkCtx c, const char* message);
+void        rk_die        (RkCtx c, const char* message);
+const char* rk_error      (RkCtx c);          /* ABI 2 */
+void        rk_clear_error(RkCtx c);          /* ABI 2 */
 ```
 
-Call it and **return `NULL`**. The host raises a Raku exception at the call site,
-catchable with `try`/`CATCH` like any other. A second `rk_die` keeps the first
-message, so an error deep in a recursive parse survives the unwind.
+Call `rk_die` and **return `NULL`**. The host raises a Raku exception at the call
+site, catchable with `try`/`CATCH` like any other. A second `rk_die` keeps the
+first message, so an error deep in a recursive parse survives the unwind.
 
 Never throw a C++ exception across the boundary. The host did not compile your
-code and cannot catch it.
+code and cannot catch it — **and that is exactly why a Raku exception thrown
+inside `rk_call` does not unwind through your frames either.** It comes back as
+`NULL` with a pending error, and you choose:
+
+- **return `NULL`** and the original exception is re-raised at your call site
+  *with its own type* — `CATCH { when X::Whatever }` still works, as though C
+  had never been in the way;
+- or call `rk_clear_error` and carry on, having read `rk_error` for the message.
+
+### Values that outlive the call (ABI 2)
+
+```c
+RkValue rk_root  (RkCtx c, RkValue v);
+void    rk_unroot(RkCtx c, RkValue rooted);
+```
+
+**For hosts embedding rakupp, not for extensions.** This is the one place the
+ABI lets you leak, which is precisely why the arena — where you cannot — is what
+an extension sees by default. If you think you want a rooted handle, you almost
+certainly want ordinary C state instead: a compiled pattern, a parsed schema, a
+cache. Keep those in C.
 
 ### Registration
 
@@ -379,9 +430,27 @@ Two rules that follow:
 
 ## Versioning
 
-`RAKUPP_EXT_ABI` is a single integer, bumped whenever the meaning or order of
-anything in the header changes. The host passes its value to your
-`rakupp_ext_init`; you return `NULL` if it is not one you were built for.
+`RAKUPP_EXT_ABI` is a single integer, bumped when the header gains capability
+you cannot detect any other way, or when the meaning or order of anything in it
+changes. It is **2** today; 1 was the original surface, and 2 added calling back
+into Raku.
+
+The host passes its own value to your `rakupp_ext_init` **and retries downward
+if you return NULL** — so the `host_abi == RAKUPP_EXT_ABI` test extensions were
+originally written with keeps working forever, while `>=` is what you should
+write now:
+
+```c
+RAKUPP_EXT_EXPORT const RkModule* rakupp_ext_init(unsigned host_abi) {
+    return host_abi >= RAKUPP_EXT_ABI ? &mod : 0;   /* "a host at least this new" */
+}
+```
+
+`>=` says what you actually need. `==` also refuses every *future* host, which
+means a rakupp upgrade silently drops you onto your fallback path until someone
+rebuilds. Going the other way, an extension that reports a version newer than
+the host is refused outright — it was built against entry points that host does
+not have.
 
 All three failure modes report themselves and none corrupt:
 
@@ -405,10 +474,11 @@ Worth knowing before you design around them.
   parser compiled into the interpreter. Still 6.6× faster than Rakudo on that
   workload, but it means an extension is worth it for *bulk* work, not for a
   routine called once with two integers.
-- **Hash iteration is index-based**, so `rk_key_at` is O(i) and walking a whole
-  hash is quadratic. Fine for small hashes; a cursor is the obvious ABI v2
-  addition, and it is why `Rakupp::JSON` implements only the parser natively and
-  leaves serialisation in Raku.
+- **Hash iteration is still index-based**, but no longer quadratic: the host
+  remembers where it was between `rk_key_at`/`rk_val_at` calls, so a sequential
+  walk costs O(1) per key. Jumping about between two hashes, or writing to a
+  hash while walking it, falls back to the O(i) positioning — correct either
+  way, just slower.
 - **No `--exe` bundling.** A program using a native extension cannot be compiled
   into a standalone binary — the shared library is loaded at run time and is not
   part of the module graph the bundler walks.

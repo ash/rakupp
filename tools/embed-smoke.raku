@@ -1,8 +1,11 @@
-# The standing embed/ABI gate (ABI-PLAN A0, EMBED-PLAN E0). Two checks:
+# The standing embed/ABI gate (ABI-PLAN A0/A1, EMBED-PLAN E0). Three checks:
 #
 #   1. tools/embed/host.cpp compiles against the static runtime and runs Raku
 #      from C++ — the smallest real embedder, kept working on every batch.
-#   2. If a shared librakupp exists in the build directory, its export table
+#   2. tools/embed/callback-ext.c compiles against the extension ABI and calls
+#      back INTO Raku — rk_call, rk_call_value, rk_can, the error contract and
+#      rooted handles, driven from tools/embed/ext-callback.raku.
+#   3. If a shared librakupp exists in the build directory, its export table
 #      is exactly the extension ABI: every rk_* from src/rakupp_ext.h present,
 #      and not one interpreter internal leaked. (A leaked internal symbol is a
 #      permanent ABI liability the moment a binding ships.)
@@ -10,6 +13,9 @@
 # Run:  build/rakupp tools/embed-smoke.raku [build-dir]     (default: build)
 # The shared-library check self-skips when the directory has no librakupp —
 # so the gate is safe to run against a plain static build too.
+#
+# Checks 1 and 2 need a C/C++ compiler, which is why this lives here and not in
+# t/regression/: that suite must stay runnable on a machine with none.
 
 my $ROOT  = $?FILE.IO.parent.parent;
 my $BUILD = $ROOT.add(@*ARGS[0] // 'build');
@@ -50,7 +56,42 @@ else {
     say "ok - static-host check # SKIP no librakupp_rt.a in $BUILD";
 }
 
-# ---- 2. the shared library's exported surface -------------------------------
+# ---- 2. an extension that calls back into Raku ------------------------------
+
+# Headers live in src/ in a checkout, under include/rakupp after an install;
+# the extension says `#include <rakupp/rakupp_ext.h>`, so the include path has
+# to be the directory CONTAINING a `rakupp/` — hence the symlink.
+my $inc = $BUILD.add('ext-include');
+$inc.mkdir;
+my $link = $inc.add('rakupp');
+unless $link.e {
+    run 'ln', '-sfn', $ROOT.add('src').Str, $link.Str, :err;
+}
+
+if $link.e {
+    $checked++;
+    my $cc  = %*ENV<CC> // 'cc';
+    my $ext = $BUILD.add($*KERNEL.name eq 'darwin' ?? 'libcallback-ext.dylib'
+                                                   !! 'libcallback-ext.so');
+    # An extension resolves rk_* from the host executable, so undefined symbols
+    # at link time are expected — see docs/guide/EXTENSIONS.md.
+    my @flags = $*KERNEL.name eq 'darwin' ?? ('-Wl,-undefined,dynamic_lookup') !! ();
+    my $p = run $cc, '-shared', '-fPIC', "-I$inc", |@flags,
+                $ROOT.add('tools/embed/callback-ext.c').Str, '-o', $ext.Str, :err;
+    check $p.exitcode == 0, "callback-ext.c compiles against the extension ABI",
+          $p.err.slurp(:close);
+
+    if $p.exitcode == 0 {
+        my $r = run $*EXECUTABLE.Str, $ROOT.add('tools/embed/ext-callback.raku').Str,
+                    $ext.Str, :out, :err;
+        my $out = $r.out.slurp(:close);
+        check $r.exitcode == 0 && $out.lines.tail eq 'PASS',
+              "the extension calls back into Raku (rk_call, roots, errors)",
+              $out ~ $r.err.slurp(:close);
+    }
+}
+
+# ---- 3. the shared library's exported surface -------------------------------
 
 my $shared = '';
 for 'librakupp.dylib', 'librakupp.so' -> $name {

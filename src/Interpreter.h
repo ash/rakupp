@@ -453,6 +453,13 @@ public:
 
     // calling
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false);
+    // A routine by its sigilled name ("&foo"), resolved from the scope that is
+    // executing right now and then outward — what rk_call needs so an extension
+    // reaches the module that loaded it (ExtApi.cpp). Null when there is none.
+    Value* extFindRoutine(const std::string& sigilName) {
+        if (Value* v = tctx_.cur ? tctx_.cur->find(sigilName) : nullptr) return v;
+        return global_ ? global_->find(sigilName) : nullptr;
+    }
     // The one-shot CALL REGISTERS: set by a caller immediately before a call,
     // consumed at callCallableRaw's entry. `static thread_local`, like
     // redispatchStack_ — as plain members they were written by EVERY call on

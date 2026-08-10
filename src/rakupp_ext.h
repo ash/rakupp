@@ -27,10 +27,17 @@
  * refcounts, and cannot leak. Handles must not be stored across calls — a saved
  * RkValue is dangling the moment its call returns.
  *
+ * rk_root() is the deliberate exception, and it exists for HOSTS embedding
+ * rakupp rather than for extensions: it lifts a value out of the arena so it can
+ * outlive the call, and it is the only thing in this file you can leak. An
+ * extension almost certainly wants C state instead.
+ *
  * ================= ERRORS =================
  * Call rk_die() and return NULL. The interpreter raises a Raku exception at the
  * call site. Throwing a C++ exception across this boundary is undefined; the
- * host cannot catch what it did not compile.
+ * host cannot catch what it did not compile — which is also why a Raku
+ * exception thrown inside rk_call() does not unwind through your frames but
+ * comes back as a NULL and a pending error. See rk_call and rk_error.
  *
  * ================= WRITING ONE =================
  *   #include <rakupp/rakupp_ext.h>
@@ -38,7 +45,7 @@
  *   static const RkSubDef subs[] = { {"answer", my_answer}, {0, 0} };
  *   static const RkModule mod = { RAKUPP_EXT_ABI, "My::Ext", subs };
  *   RAKUPP_EXT_EXPORT const RkModule* rakupp_ext_init(unsigned host_abi) {
- *       return host_abi == RAKUPP_EXT_ABI ? &mod : 0;
+ *       return host_abi >= RAKUPP_EXT_ABI ? &mod : 0;
  *   }
  *
  * and from Raku:
@@ -55,11 +62,25 @@
 extern "C" {
 #endif
 
-/* Bumped whenever the meaning or order of anything below changes. The host
- * passes its own value to rakupp_ext_init; an extension that does not recognise
- * it must return NULL rather than guess, and the host then reports a clean
- * version mismatch instead of calling through a wrong-shaped table. */
-#define RAKUPP_EXT_ABI 1u
+/* Bumped when this file gains capability an extension cannot detect any other
+ * way, or when the meaning or order of anything below changes.
+ *
+ *   1  the original surface: construct, inspect, arguments, rk_die
+ *   2  rk_call/rk_call_value/rk_can (re-entering Raku), rk_error, rk_root
+ *
+ * THE HANDSHAKE. The host calls rakupp_ext_init with its own ABI, and retries
+ * downward if that returns NULL. So the `host_abi == RAKUPP_EXT_ABI` test that
+ * ABI-1 extensions were written with keeps working — a host at 2 that gets NULL
+ * from init(2) asks again with init(1) — while an extension built against this
+ * header should use `>=`, which states what it actually needs: a host at least
+ * this new. The module's own abi_version tells the host which of its promises
+ * are in play; a value NEWER than the host's is refused, because the host
+ * cannot provide what it has not got.
+ *
+ * Undefined symbols are the failure mode this avoids. An extension calling
+ * rk_call on a host that predates it would resolve nothing and abort at the
+ * first call under lazy binding — a version check turns that into a sentence. */
+#define RAKUPP_EXT_ABI 2u
 
 #if defined(_WIN32)
 #define RAKUPP_EXT_EXPORT __declspec(dllexport)
@@ -152,10 +173,61 @@ RK_API RkValue rk_arg  (RkCtx c, size_t i);     /* positional; NULL if absent */
  * being passed an undefined value. */
 RK_API RkValue rk_named(RkCtx c, const char* name);
 
+/* ---- calling back into Raku (ABI 2) ---- */
+/* Call a Raku routine by name with `argc` positional arguments, and return what
+ * it returned. `argv` may be NULL when `argc` is 0.
+ *
+ * The name resolves the way it would at your sub's own call site: the LEXICAL
+ * scope that invoked you, then outward to GLOBAL. So an extension loaded by a
+ * module reaches that module's subs, which is what makes a native fast path
+ * able to delegate the cases it does not handle.
+ *
+ * ON FAILURE — no such routine, or the routine threw — this returns NULL and
+ * leaves a PENDING ERROR. rk_error() has the message. If your sub then returns
+ * NULL, the original Raku exception is raised at the call site with its type
+ * intact, so `CATCH { when X::Whatever }` still works. To handle the failure
+ * yourself instead, call rk_clear_error() and carry on.
+ *
+ * A Raku exception never unwinds through your frames: C++ unwinding into C is
+ * undefined behaviour, so it is caught at this boundary and handed back as
+ * status. That is the same reason rk_die exists rather than a throw.
+ *
+ * Named arguments are not expressible yet — positional only. */
+RK_API RkValue rk_call(RkCtx c, const char* name, const RkValue* argv, size_t argc);
+/* The same, for a Code value you were handed rather than a name — a callback
+ * argument, `&comparator` and its kind. Fails if `code` is not callable. */
+RK_API RkValue rk_call_value(RkCtx c, RkValue code, const RkValue* argv, size_t argc);
+/* Is a routine of this name visible from here? Lets an extension use an
+ * optional Raku helper without provoking an error to find out. */
+RK_API int rk_can(RkCtx c, const char* name);
+
 /* ---- failing ---- */
 /* Record the message and return NULL from the sub. The host raises it as a Raku
  * exception at the call site. Calling rk_die twice keeps the first message. */
 RK_API void rk_die(RkCtx c, const char* message);
+/* The pending error's message, or NULL if there is none. Borrowed, and valid
+ * until the next call on this RkCtx. (ABI 2) */
+RK_API const char* rk_error(RkCtx c);
+/* Discard the pending error — you are handling it. Returning NULL afterwards
+ * then means an ordinary "returned Nil", not a re-raise. (ABI 2) */
+RK_API void rk_clear_error(RkCtx c);
+
+/* ---- rooted handles: values that outlive the call (ABI 2) ----
+ * FOR HOSTS, not for extensions. rk_root copies a value out of the call arena
+ * into storage that survives, and hands back a handle usable with every
+ * accessor above until rk_unroot releases it. This is the one place the ABI
+ * lets you leak, which is exactly why the arena — where you cannot — stays the
+ * default an extension sees.
+ *
+ * An extension that thinks it wants this usually wants ordinary C state: a
+ * parsed schema, a compiled pattern, a cache. Keep those in C, not in handles.
+ * Rooting is for an embedder holding a result between calls into Raku.
+ *
+ * Thread-safe: the root store is shared, and since v3.0.0 several rakupp
+ * threads can be inside extension calls at once. rk_unroot on a handle that is
+ * not rooted (an arena handle, or one already unrooted) does nothing. */
+RK_API RkValue rk_root  (RkCtx c, RkValue v);
+RK_API void    rk_unroot(RkCtx c, RkValue rooted);
 
 /* ---- registration ---- */
 typedef RkValue (*RkSubFn)(RkCtx c);

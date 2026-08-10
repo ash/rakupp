@@ -18,7 +18,10 @@
 #include "rakupp_ext.h"
 
 #include <deque>
+#include <map>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 
 namespace rakupp {
 
@@ -27,17 +30,58 @@ namespace {
 struct ExtCtx {
     std::deque<Value> arena;
     ValueList* args = nullptr;
+    Interpreter* interp = nullptr;   // ABI 2: rk_call re-enters through this
     std::string error;
     bool failed = false;
+    // A Raku exception caught at the rk_call boundary. Kept whole rather than
+    // flattened to a message so that returning NULL re-raises the ORIGINAL
+    // exception, type included — a native fast path must not turn every
+    // X::Whatever into an X::AdHoc on its way through C.
+    bool     hasPending = false;
+    RakuError pending{Value::any(), ""};
+
+    // rk_key_at/rk_val_at walk an ordered map, and walking it from begin()
+    // every time makes iterating a hash quadratic — which is why the first
+    // native module left its serializer in Raku. One remembered position turns
+    // the sequential case (every serializer, every iteration) into O(1) per
+    // step. Keyed by the hash actually being walked, so alternating between two
+    // hashes degrades to the old behaviour instead of returning wrong keys.
+    const std::map<std::string, Value>* memoHash = nullptr;
+    std::map<std::string, Value>::const_iterator memoIt;
+    size_t memoIdx = 0;
 
     RkValue make(Value v) {
         arena.push_back(std::move(v));
         return reinterpret_cast<RkValue>(&arena.back());
     }
+
+    // Positioned at `i` in `h`, reusing the remembered iterator when it is at
+    // or before `i` in the same hash. Returns end() when `i` is out of range.
+    std::map<std::string, Value>::const_iterator at(const std::map<std::string, Value>* h,
+                                                    size_t i) {
+        if (i >= h->size()) return h->end();
+        if (memoHash == h && memoIdx <= i) {
+            std::advance(memoIt, (long)(i - memoIdx));
+        }
+        else {
+            memoIt = h->begin();
+            std::advance(memoIt, (long)i);
+            memoHash = h;
+        }
+        memoIdx = i;
+        return memoIt;
+    }
 };
 
 inline ExtCtx* C(RkCtx c) { return reinterpret_cast<ExtCtx*>(c); }
 inline Value*  V(RkValue v) { return reinterpret_cast<Value*>(v); }
+
+// Rooted values (ABI 2). Heap slots rather than arena elements, because the
+// point is to outlive the arena; the set is what makes rk_unroot able to
+// refuse a handle it never issued, and a mutex because since v3.0.0 several
+// rakupp threads can be inside extension calls at once.
+std::mutex                 g_rootMu;
+std::unordered_set<Value*> g_roots;
 
 // A borrowed string has to outlive the call but not the arena, so it is parked
 // in the arena as a Str Value and its bytes borrowed from there.
@@ -75,9 +119,14 @@ void rk_push(RkCtx, RkValue a, RkValue v) {
 void rk_list(RkCtx, RkValue a) { if (Value* av = V(a)) av->isList = true; }
 
 RkValue rk_hash(RkCtx c) { return C(c)->make(Value::makeHash()); }
-void rk_set(RkCtx, RkValue h, const char* k, size_t klen, RkValue v) {
+void rk_set(RkCtx c, RkValue h, const char* k, size_t klen, RkValue v) {
     Value* hv = V(h);
-    if (hv && hv->hash && v) (*hv->hash)[std::string(k ? k : "", k ? klen : 0)] = *V(v);
+    if (!hv || !hv->hash || !v) return;
+    (*hv->hash)[std::string(k ? k : "", k ? klen : 0)] = *V(v);
+    // A new key ahead of the remembered position shifts every index after it,
+    // so the memo has to go. Building a hash and then walking it is ordinary;
+    // interleaving the two is not, and correctness beats the fast path here.
+    if (C(c)->memoHash == hv->hash.get()) C(c)->memoHash = nullptr;
 }
 void rk_map(RkCtx, RkValue h) { if (Value* hv = V(h)) hv->hashKind = "Map"; }
 
@@ -117,23 +166,24 @@ RkValue rk_at_pos(RkCtx c, RkValue a, size_t i) {
     if (!x || !x->arr || i >= x->arr->size()) return nullptr;
     return reinterpret_cast<RkValue>(&(*x->arr)[i]);
 }
-// Index-based hash access is O(i) on an ordered map, so iterating a hash this
-// way is quadratic. Acceptable at ABI v1 because it keeps the C surface tiny and
-// serializers dominate on the string building; a cursor goes in when a real
-// extension needs one.
+// Index-based access keeps the C surface tiny — no cursor type, no iterator
+// lifetime for an extension to get wrong. The cost it used to carry, an
+// std::advance from begin() on every call, is paid by ExtCtx::at's remembered
+// position instead: sequential walks, which is what every serializer does, now
+// cost one ++ per element.
 const char* rk_key_at(RkCtx c, RkValue h, size_t i, size_t* klen) {
     Value* x = V(h);
-    if (!x || !x->hash || i >= x->hash->size()) return nullptr;
-    auto it = x->hash->begin();
-    std::advance(it, (long)i);
+    if (!x || !x->hash) return nullptr;
+    auto it = C(c)->at(x->hash.get(), i);
+    if (it == x->hash->end()) return nullptr;
     return borrow(C(c), it->first, klen);
 }
-RkValue rk_val_at(RkCtx, RkValue h, size_t i) {
+RkValue rk_val_at(RkCtx c, RkValue h, size_t i) {
     Value* x = V(h);
-    if (!x || !x->hash || i >= x->hash->size()) return nullptr;
-    auto it = x->hash->begin();
-    std::advance(it, (long)i);
-    return reinterpret_cast<RkValue>(&it->second);
+    if (!x || !x->hash) return nullptr;
+    auto it = C(c)->at(x->hash.get(), i);
+    if (it == x->hash->end()) return nullptr;
+    return reinterpret_cast<RkValue>(const_cast<Value*>(&it->second));
 }
 
 size_t rk_argc(RkCtx c) {
@@ -167,6 +217,117 @@ void rk_die(RkCtx c, const char* msg) {
     if (!x->failed) { x->failed = true; x->error = msg ? msg : "extension error"; }
 }
 
+const char* rk_error(RkCtx c) {
+    ExtCtx* x = C(c);
+    if (x->hasPending) return x->pending.message.c_str();
+    return x->failed ? x->error.c_str() : nullptr;
+}
+
+void rk_clear_error(RkCtx c) {
+    ExtCtx* x = C(c);
+    x->hasPending = false;
+    x->pending = RakuError{Value::any(), ""};
+    x->failed = false;
+    x->error.clear();
+}
+
+// ---- calling back into Raku ----
+
+namespace {
+
+// The one place a C++ exception could reach an extension's frames, so it is the
+// one place that must catch everything. A Raku exception is kept whole for
+// re-raising; anything else is flattened to a message, because a std::bad_alloc
+// re-raised as itself would unwind straight past the interpreter's handlers.
+RkValue extCall(ExtCtx* x, const Value& code, const RkValue* argv, size_t argc) {
+    ValueList args;
+    args.reserve(argc);
+    for (size_t i = 0; i < argc; i++) {
+        Value* a = argv ? V(argv[i]) : nullptr;
+        args.push_back(a ? *a : Value::any());
+    }
+    try {
+        return x->make(x->interp->callCallable(code, std::move(args)));
+    }
+    catch (RakuError& e) {
+        x->hasPending = true;
+        x->pending = e;
+        return nullptr;
+    }
+    catch (const std::exception& e) {
+        x->hasPending = true;
+        x->pending = RakuError{Value::typeObj("X::AdHoc"), e.what()};
+        return nullptr;
+    }
+    catch (...) {
+        // Control-flow signals (ExitEx, NextEx, a worker abort) reach here too.
+        // An extension frame is not a place any of them can legally resume, so
+        // they become an error rather than crossing C.
+        x->hasPending = true;
+        x->pending = RakuError{Value::typeObj("X::AdHoc"),
+                               "control flow escaped a call made from a native extension"};
+        return nullptr;
+    }
+}
+
+// A routine visible from the extension's own call site: the lexical scope that
+// invoked it, then outward to GLOBAL — the same walk the Raku source would do.
+Value* extLookup(ExtCtx* x, const char* name) {
+    if (!x->interp || !name) return nullptr;
+    return x->interp->extFindRoutine(std::string("&") + name);
+}
+
+} // namespace
+
+RkValue rk_call(RkCtx c, const char* name, const RkValue* argv, size_t argc) {
+    ExtCtx* x = C(c);
+    Value* fn = extLookup(x, name);
+    if (!fn) {
+        x->hasPending = true;
+        x->pending = RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                               std::string("Undeclared routine '") + (name ? name : "") +
+                               "' called from a native extension"};
+        return nullptr;
+    }
+    return extCall(x, *fn, argv, argc);
+}
+
+RkValue rk_call_value(RkCtx c, RkValue code, const RkValue* argv, size_t argc) {
+    ExtCtx* x = C(c);
+    Value* f = V(code);
+    if (!f || f->t != VT::Code) {
+        x->hasPending = true;
+        x->pending = RakuError{Value::typeObj("X::AdHoc"),
+                               "rk_call_value was given something that is not callable"};
+        return nullptr;
+    }
+    return extCall(x, *f, argv, argc);
+}
+
+int rk_can(RkCtx c, const char* name) { return extLookup(C(c), name) ? 1 : 0; }
+
+// ---- rooted handles ----
+
+RkValue rk_root(RkCtx, RkValue v) {
+    Value* src = V(v);
+    Value* slot = new Value(src ? *src : Value::any());
+    std::lock_guard<std::mutex> lk(g_rootMu);
+    g_roots.insert(slot);
+    return reinterpret_cast<RkValue>(slot);
+}
+
+void rk_unroot(RkCtx, RkValue rooted) {
+    Value* slot = V(rooted);
+    if (!slot) return;
+    {
+        std::lock_guard<std::mutex> lk(g_rootMu);
+        // An arena handle, or one already unrooted, is not ours to delete —
+        // and in C the difference is invisible without this check.
+        if (!g_roots.erase(slot)) return;
+    }
+    delete slot;
+}
+
 } // extern "C"
 
 // ---- loading -------------------------------------------------------------
@@ -183,31 +344,51 @@ Value extLoadModule(const std::string& path, std::string& errOut,
         errOut = "'" + path + "' is not a rakupp extension (no rakupp_ext_init)";
         return Value::any();
     }
-    const RkModule* m = init(RAKUPP_EXT_ABI);
+    // The downgrade handshake (rakupp_ext.h). ABI-1 extensions were written as
+    // `host_abi == RAKUPP_EXT_ABI`, so a host at 2 asking with 2 gets NULL from
+    // every one of them; asking again with 1 is what keeps them loading. An
+    // extension built against this header answers `>=` and takes the first ask.
+    const RkModule* m = nullptr;
+    for (unsigned probe = RAKUPP_EXT_ABI; probe >= 1u && !m; probe--) m = init(probe);
     if (!m) {
         errOut = "'" + path + "' was built for a different extension ABI (host is " +
                  std::to_string(RAKUPP_EXT_ABI) + ")";
         return Value::any();
     }
-    if (m->abi_version != RAKUPP_EXT_ABI) {
+    // Older is fine — it can only use what already existed. Newer is not: it
+    // was built against entry points this host does not have.
+    if (m->abi_version > RAKUPP_EXT_ABI) {
         errOut = "'" + path + "' reports ABI " + std::to_string(m->abi_version) +
-                 ", host is " + std::to_string(RAKUPP_EXT_ABI);
+                 ", host is " + std::to_string(RAKUPP_EXT_ABI) + " (rebuild it, or upgrade rakupp)";
         return Value::any();
     }
     for (const RkSubDef* d = m->subs; d && d->name; d++) {
         RkSubFn fn = d->fn;
         std::string nm = d->name;
         // Each sub becomes an ordinary Code value; from Raku it is
-        // indistinguishable from any other sub.
-        Value code = Value::closure([fn, nm](ValueList& a) -> Value {
+        // indistinguishable from any other sub. Built as a Callable directly
+        // rather than through Value::closure, which drops the Interpreter& the
+        // wrapper is handed — and that reference is precisely what rk_call
+        // needs to get back INTO Raku.
+        Value code;
+        code.t = VT::Code;
+        code.code = std::make_shared<Callable>();
+        code.code->name = nm;
+        code.code->builtin = [fn, nm](Interpreter& I, ValueList& a) -> Value {
             ExtCtx ctx;
             ctx.args = &a;
+            ctx.interp = &I;
             RkValue r = fn(reinterpret_cast<RkCtx>(&ctx));
             if (ctx.failed)
                 throw RakuError{Value::typeObj("X::AdHoc"), ctx.error};
+            // A failed rk_call the extension neither handled nor cleared: it
+            // returned NULL, so the exception it swallowed resumes here, with
+            // its own type, as though C had never been in the way.
+            if (!r && ctx.hasPending)
+                throw ctx.pending;
             // Copied out BEFORE the arena dies with this scope.
             return r ? *reinterpret_cast<Value*>(r) : Value::any();
-        });
+        };
         subsOut.emplace_back(nm, code);
     }
     return Value::boolean(true);

@@ -1,6 +1,6 @@
-# The same documents as json-parse.raku, parsed through Rakupp::JSON — the
-# native extension module — so the three configurations that matter are
-# comparable on one corpus:
+# The same documents as json-parse.raku, parsed AND serialised through
+# Rakupp::JSON — the native extension module — so the three configurations that
+# matter are comparable on one corpus:
 #
 #   Rakudo + JSON::Fast        the bar
 #   rakupp + JSON::Fast        json-parse.raku — the interpreter's own speed
@@ -28,18 +28,29 @@ sub MAIN(*@files, Int :$reps = 3) {
     say "backend: $backend   ({ $*RAKU.compiler.name })";
     for @files -> $f {
         my $text = $f.IO.slurp;
-        my @t;
+        my (@parse, @write);
+        my $data;
         for ^$reps {
             my $t0 = now;
-            my $d = from-json($text);
-            @t.push: ((now - $t0) * 1000).Num;
-            die "bad parse of $f" unless $d.elems;   # never time a no-op
+            $data = from-json($text);
+            @parse.push: ((now - $t0) * 1000).Num;
+            die "bad parse of $f" unless $data.elems;   # never time a no-op
+
+            my $t1 = now;
+            my $out = to-json($data, :!pretty);
+            @write.push: ((now - $t1) * 1000).Num;
+            die "bad write of $f" unless $out.chars;
         }
-        my $best = @t.min;
-        my $mb   = ($text.chars / 1024 / 1024) / ($best / 1000);
-        # .fmt, not .round: these are Nums off a clock, and rounding one prints
-        # 59.800000000000004 rather than 59.8.
-        say "$f\t{ $text.chars } chars\t{ $best.fmt('%.3f') } ms\t{ $mb.fmt('%.1f') } MB/s"
-            ~ "  (runs: { @t.map(*.fmt('%.3f')).join(',') })";
+        report($f, $text.chars, 'parse', @parse);
+        report($f, $text.chars, 'write', @write);
     }
+}
+
+sub report($f, $chars, $what, @t) {
+    my $best = @t.min;
+    my $mb   = ($chars / 1024 / 1024) / ($best / 1000);
+    # .fmt, not .round: these are Nums off a clock, and rounding one prints
+    # 59.800000000000004 rather than 59.8.
+    say "$f\t$what\t{ $chars } chars\t{ $best.fmt('%.3f') } ms\t{ $mb.fmt('%.1f') } MB/s"
+        ~ "  (runs: { @t.map(*.fmt('%.3f')).join(',') })";
 }
