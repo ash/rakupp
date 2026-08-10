@@ -225,7 +225,22 @@ time, exactly as a Python C extension resolves `Py_*`. Undefined symbols at
 |---|---|
 | macOS | `-Wl,-undefined,dynamic_lookup` |
 | Linux / BSD | none — ELF resolves lazily by default |
-| Windows | link against the import library |
+| Windows | link against the import library (`lib/rakupp.lib`) |
+
+The host holds up its half of that bargain by carrying the `rk_*` surface in
+its dynamic symbol table — Mach-O executables export their globals by default,
+ELF ones need `-Wl,--dynamic-list=src/rakupp_ext.dynlist` (part of the build
+since 2026-08-10), and on Windows the `RK_API` dllexports plus `ENABLE_EXPORTS`
+produce the import library above. A rakupp built before that date loads
+extensions only on macOS: on Linux the first `rk_*` call dies with an
+undefined-symbol error, because a plain ELF executable keeps its symbols out
+of `.dynsym`.
+
+The same surface is exported by `librakupp`, the shared library built with
+`-DRAKUPP_BUILD_SHARED=ON` — so a process that *embeds* rakupp can host
+extensions too. (An ELF host must load it with `RTLD_GLOBAL` for the
+extension's lookup to see it; see
+[ABI-PLAN.md](../dev/plans/ABI-PLAN.md).)
 
 Headers come from `cmake --install`, which lays out
 `<prefix>/{bin,lib,include/rakupp}`. From a git checkout, point at `src/`

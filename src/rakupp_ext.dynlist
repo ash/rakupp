@@ -1,0 +1,14 @@
+/* Symbols the rakupp EXECUTABLE must carry in its dynamic symbol table, so a
+ * dlopen'ed extension can resolve them (see docs/guide/EXTENSIONS.md).
+ *
+ * ELF only. Without this, an extension's first rk_* call dies with an
+ * "undefined symbol" error: a plain ELF executable keeps its symbols out of
+ * .dynsym, unlike Mach-O (exports by default) and Windows (RK_API's dllexport
+ * plus the import library). The alternative, -rdynamic, would export every
+ * C++ symbol in the interpreter — thousands of accidental ABI promises and a
+ * fatter binary for nothing.
+ *
+ * The glob means a new rk_* entry point is picked up without touching this
+ * file. Understood by GNU ld, gold and lld.
+ */
+{ rk_*; };

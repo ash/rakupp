@@ -67,6 +67,26 @@ extern "C" {
 #define RAKUPP_EXT_EXPORT __attribute__((visibility("default")))
 #endif
 
+/* RK_API marks the host-side entry points, and matters only when rakupp itself
+ * is being compiled: in a shared librakupp the rk_* surface is the ONLY thing
+ * exported (everything else builds with hidden visibility), and on Windows it
+ * is what places rk_* in the executable's export table so an extension can link
+ * against the import library. For an extension including this header it expands
+ * to nothing that changes a declaration's meaning. */
+#ifndef RK_API
+#  if defined(_WIN32)
+#    if defined(RAKUPP_BUILDING)
+#      define RK_API __declspec(dllexport)
+#    else
+#      define RK_API
+#    endif
+#  elif defined(__GNUC__)
+#    define RK_API __attribute__((visibility("default")))
+#  else
+#    define RK_API
+#  endif
+#endif
+
 /* Opaque. Never dereference, never sizeof, never store past the call. */
 typedef struct RkValueOpaque* RkValue;
 typedef struct RkCtxOpaque*   RkCtx;
@@ -86,56 +106,56 @@ typedef enum {
 } RkType;
 
 /* ---- constructing ---- */
-RkValue rk_any  (RkCtx c);
-RkValue rk_bool (RkCtx c, int truthy);
-RkValue rk_int  (RkCtx c, long long v);
+RK_API RkValue rk_any  (RkCtx c);
+RK_API RkValue rk_bool (RkCtx c, int truthy);
+RK_API RkValue rk_int  (RkCtx c, long long v);
 /* Arbitrary precision: a decimal string, optionally signed. Raku's Int has no
  * width, and a JSON document may carry a 40-digit integer. */
-RkValue rk_int_s(RkCtx c, const char* decimal);
-RkValue rk_num  (RkCtx c, double v);
+RK_API RkValue rk_int_s(RkCtx c, const char* decimal);
+RK_API RkValue rk_num  (RkCtx c, double v);
 /* A Rat from decimal-string numerator and denominator, normalised by the host.
  * Strings rather than integers for the same reason as rk_int_s. */
-RkValue rk_rat_s(RkCtx c, const char* numer, const char* denom);
+RK_API RkValue rk_rat_s(RkCtx c, const char* numer, const char* denom);
 /* UTF-8. `len` in bytes; the host copies, so the buffer need not outlive this. */
-RkValue rk_str  (RkCtx c, const char* utf8, size_t len);
+RK_API RkValue rk_str  (RkCtx c, const char* utf8, size_t len);
 
-RkValue rk_array(RkCtx c);
-void    rk_push (RkCtx c, RkValue array, RkValue v);
+RK_API RkValue rk_array(RkCtx c);
+RK_API void    rk_push (RkCtx c, RkValue array, RkValue v);
 /* Mark an array as a List rather than an Array — Raku's immutable form. */
-void    rk_list (RkCtx c, RkValue array);
+RK_API void    rk_list (RkCtx c, RkValue array);
 
-RkValue rk_hash (RkCtx c);
-void    rk_set  (RkCtx c, RkValue hash, const char* key, size_t keylen, RkValue v);
+RK_API RkValue rk_hash (RkCtx c);
+RK_API void    rk_set  (RkCtx c, RkValue hash, const char* key, size_t keylen, RkValue v);
 /* Mark a hash as a Map rather than a Hash — Raku's immutable form. */
-void    rk_map  (RkCtx c, RkValue hash);
+RK_API void    rk_map  (RkCtx c, RkValue hash);
 
 /* ---- inspecting (for extensions that consume Raku data) ---- */
-RkType      rk_type   (RkCtx c, RkValue v);
-int         rk_truthy (RkCtx c, RkValue v);
-long long   rk_int_get(RkCtx c, RkValue v);
-double      rk_num_get(RkCtx c, RkValue v);
+RK_API RkType      rk_type   (RkCtx c, RkValue v);
+RK_API int         rk_truthy (RkCtx c, RkValue v);
+RK_API long long   rk_int_get(RkCtx c, RkValue v);
+RK_API double      rk_num_get(RkCtx c, RkValue v);
 /* Borrowed UTF-8, valid until the call returns. For a non-Str this is the
  * value's Str coercion, which is what a serializer wants. */
-const char* rk_str_get(RkCtx c, RkValue v, size_t* len);
+RK_API const char* rk_str_get(RkCtx c, RkValue v, size_t* len);
 
-size_t  rk_elems (RkCtx c, RkValue v);          /* array or hash */
-RkValue rk_at_pos(RkCtx c, RkValue array, size_t i);
+RK_API size_t  rk_elems (RkCtx c, RkValue v);   /* array or hash */
+RK_API RkValue rk_at_pos(RkCtx c, RkValue array, size_t i);
 /* Hash iteration by index, in the host's iteration order (which is key order).
  * `keylen` may be NULL. Returns NULL past the end. */
-const char* rk_key_at(RkCtx c, RkValue hash, size_t i, size_t* keylen);
-RkValue     rk_val_at(RkCtx c, RkValue hash, size_t i);
+RK_API const char* rk_key_at(RkCtx c, RkValue hash, size_t i, size_t* keylen);
+RK_API RkValue     rk_val_at(RkCtx c, RkValue hash, size_t i);
 
 /* ---- arguments ---- */
-size_t  rk_argc (RkCtx c);
-RkValue rk_arg  (RkCtx c, size_t i);            /* positional; NULL if absent */
+RK_API size_t  rk_argc (RkCtx c);
+RK_API RkValue rk_arg  (RkCtx c, size_t i);     /* positional; NULL if absent */
 /* A named argument, or NULL when it was not passed — which is distinct from
  * being passed an undefined value. */
-RkValue rk_named(RkCtx c, const char* name);
+RK_API RkValue rk_named(RkCtx c, const char* name);
 
 /* ---- failing ---- */
 /* Record the message and return NULL from the sub. The host raises it as a Raku
  * exception at the call site. Calling rk_die twice keeps the first message. */
-void rk_die(RkCtx c, const char* message);
+RK_API void rk_die(RkCtx c, const char* message);
 
 /* ---- registration ---- */
 typedef RkValue (*RkSubFn)(RkCtx c);

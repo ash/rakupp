@@ -192,6 +192,49 @@ because then extensions link against the library rather than the executable.
 **Gate:** `Rakupp::JSON` builds and passes its suite unchanged, against both the
 executable and the shared library.
 
+> **Outcome (2026-08-10).** Landed as planned, and the verification A0 demanded
+> turned up more than the plan feared. What exists now:
+>
+> - **`-DRAKUPP_BUILD_SHARED=ON`** builds `librakupp` (`.dylib`/`.so`/
+>   `librakupp.dll`) from the runtime sources — PIC, hidden visibility,
+>   `VERSION`/`SOVERSION` from the project version, installed to `lib/`. OFF by
+>   default: it doubles a clean build, and the plain CLI neither links nor
+>   loads it. Release/CI builds turn it on.
+> - **The export list is the header.** Each of the 26 entry points in
+>   `rakupp_ext.h` is marked `RK_API` (`visibility("default")`, or `dllexport`
+>   under `RAKUPP_BUILDING`); the library compiles `-fvisibility=hidden`, so
+>   the marked surface is the only thing exported. Verified by `nm`: all 26
+>   `rk_*`, zero `namespace rakupp` symbols — libc++'s own weak typeinfo rides
+>   along, as it does in any hidden-visibility C++ dylib, and is the
+>   toolchain's ABI rather than ours. The extension ABI stays at 1: the macro
+>   changes no declaration's meaning.
+> - **The Windows suspicion was true, and Linux was worse.** A plain ELF
+>   executable keeps its symbols out of `.dynsym`, so on Linux and the BSDs an
+>   extension's first `rk_*` call has always died with an undefined-symbol
+>   error — extensions only ever actually worked on macOS. Fixed surgically:
+>   the executable links `-Wl,--dynamic-list=src/rakupp_ext.dynlist` (the
+>   `rk_*` glob, so a new entry point needs no edit) rather than `-rdynamic`,
+>   which would have exported every C++ symbol as accidental ABI. On Windows,
+>   `RK_API` plus `ENABLE_EXPORTS` now produce and install the import library
+>   EXTENSIONS.md always promised. *Verified on macOS; the ELF and Windows
+>   halves are build-system reasoning awaiting a CI run.*
+> - **`-DRAKUPP_LINK_SHARED=ON`** is the test configuration the gate ran on:
+>   the CLI linked against the shared runtime. It is deliberately named
+>   `librakupp_testrt` and deliberately default-visibility (the CLI needs the
+>   whole C++ surface), so it can never be mistaken for the shipping artifact.
+> - **`tools/embed-smoke.raku`** is the standing gate: it compiles and runs
+>   EMBED-PLAN E0's C++ host (`tools/embed/host.cpp`) against `librakupp_rt.a`,
+>   and rejects a `librakupp` whose export table has lost an `rk_*` or leaked
+>   an internal — it caught the 928-symbol test artifact the moment that
+>   artifact briefly wore the shipping name.
+>
+> **Gate results:** `Rakupp::JSON` builds and passes 35/35 against both the
+> static CLI and the shared-linked one, reporting the `native` backend on both;
+> `perf-guard --check` OK; plain `rakupp` byte-identical in size with an
+> unchanged linked-library list; Roast 197,105 assertions / 595 files fully
+> passing / 11 timeouts (v3.0.1's four-run band: 197,056–197,098 / 593–595 /
+> 12–16); `t/run.raku` 398/398; `--exe` compiles and runs.
+
 ### A1 — `rk_call` and rooted handles
 
 The two additions both directions want. `rk_call(ctx, "name", args…)` invoking a
@@ -214,6 +257,13 @@ Python, Bun, Deno, Node — pure-source packages over the shared library, no
 compiled glue. Rust and Go alongside if they cost what the table above says
 they cost. Each one is a test of A2's design: if a binding needs something
 awkward, the header changes rather than the binding.
+
+> **Note from A0 (2026-08-10):** on ELF hosts a binding must load `librakupp`
+> into the global namespace — `ctypes.CDLL(..., mode=ctypes.RTLD_GLOBAL)` and
+> equivalents — or a Raku extension dlopen'ed *afterwards* cannot resolve
+> `rk_*` from it: an `RTLD_LOCAL` library is invisible to later lookups.
+> macOS's `dynamic_lookup` searches all loaded images and has no such
+> requirement. This belongs in every binding's loader, not its README.
 
 ### A4 — WebAssembly, which is the exception
 

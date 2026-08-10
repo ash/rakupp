@@ -52,6 +52,11 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
 target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
+# On Windows, RK_API (rakupp_ext.h) expands to dllexport under RAKUPP_BUILDING,
+# so the rk_* extension ABI lands in the export table of whatever links this
+# library — the rakupp CLI and `--exe` binaries alike, either of which may host
+# a dlopen'ed extension. Elsewhere the definition is a no-op.
+target_compile_definitions(rakupp_rt PRIVATE RAKUPP_BUILDING)
 
 if(WIN32)
   target_link_libraries(rakupp_rt PUBLIC ws2_32)   # Winsock (sockets, WSAPoll)
@@ -61,14 +66,93 @@ if(WIN32)
   target_compile_definitions(rakupp_rt PUBLIC _WIN32_WINNT=0x0602)
 endif()
 
+# ---- librakupp — the shared library a host loads (ABI-PLAN A0) --------------
+# OFF by default: it recompiles every runtime source (PIC, hidden visibility),
+# roughly doubling a clean build, and the plain CLI neither links nor loads it.
+# Release and CI builds turn it on; a local edit-compile loop never needs it.
+option(RAKUPP_BUILD_SHARED
+  "Build librakupp, the shared library embedders and language bindings load" OFF)
+# A TEST configuration, not a shipping one: link the CLI against librakupp so
+# the full Roast/module surface exercises the runtime running out of the shared
+# object. Implies default (not hidden) visibility, because the CLI needs the
+# whole C++ surface — the shipped librakupp exports only the rk_* C ABI.
+option(RAKUPP_LINK_SHARED
+  "Link the rakupp CLI against librakupp instead of the static runtime (test config)" OFF)
+
+if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
+  add_library(rakupp_shared SHARED ${RAKUPP_SOURCES})
+  target_include_directories(rakupp_shared PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(rakupp_shared PUBLIC Threads::Threads)
+  target_compile_definitions(rakupp_shared PRIVATE RAKUPP_BUILDING)
+  set_target_properties(rakupp_shared PROPERTIES
+    OUTPUT_NAME rakupp
+    POSITION_INDEPENDENT_CODE ON
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR})
+  if(RAKUPP_LINK_SHARED)
+    # The test artifact must not wear the shipping name: with the CLI linking
+    # it, it exports the whole C++ surface, and a librakupp.so that leaks
+    # internals is exactly what tools/embed-smoke.raku exists to reject.
+    set_target_properties(rakupp_shared PROPERTIES OUTPUT_NAME rakupp_testrt)
+  else()
+    # The shipping artifact: everything hidden except the RK_API-marked rk_*
+    # surface. One leaked internal symbol is a permanent ABI liability —
+    # tools/embed-smoke.raku checks the export table rather than assuming.
+    set_target_properties(rakupp_shared PROPERTIES
+      CXX_VISIBILITY_PRESET hidden
+      VISIBILITY_INLINES_HIDDEN ON)
+  endif()
+  if(WIN32)
+    if(NOT RAKUPP_LINK_SHARED)
+      # librakupp.dll, not rakupp.dll: the executable's own import library (see
+      # ENABLE_EXPORTS below) is already rakupp.lib, and the DLL's import
+      # library must not fight it for the name. PREFIX "" stops MinGW doubling
+      # the "lib". (The test artifact keeps its rakupp_testrt name everywhere.)
+      set_target_properties(rakupp_shared PROPERTIES OUTPUT_NAME librakupp PREFIX "")
+    endif()
+    target_link_libraries(rakupp_shared PUBLIC ws2_32)
+    target_compile_definitions(rakupp_shared PUBLIC _WIN32_WINNT=0x0602)
+  endif()
+  # Only the shipping artifact installs; a test-configuration librakupp_testrt
+  # must never land in a prefix.
+  if(RAKUPP_BUILD_SHARED)
+    install(TARGETS rakupp_shared
+            LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
+  endif()
+endif()
+
 add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}")
-target_link_libraries(rakupp PRIVATE rakupp_rt)
+if(RAKUPP_LINK_SHARED)
+  target_link_libraries(rakupp PRIVATE rakupp_shared)
+else()
+  target_link_libraries(rakupp PRIVATE rakupp_rt)
+endif()
+
+# An extension resolves rk_* from the host executable at load time, the way a
+# Python C extension resolves Py_*. Mach-O executables export their globals by
+# default; ELF ones do not — without the dynamic-list an extension's first rk_*
+# call dies with an "undefined symbol" error on Linux and the BSDs. The list
+# exports exactly the rk_* glob, where -rdynamic would export every C++ symbol.
+if(UNIX AND NOT APPLE)
+  target_link_options(rakupp PRIVATE
+    "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/src/rakupp_ext.dynlist")
+  set_target_properties(rakupp PROPERTIES
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rakupp_ext.dynlist")
+endif()
+# On Windows the RK_API dllexports (via rakupp_rt) put rk_* in rakupp.exe's
+# export table; ENABLE_EXPORTS makes CMake treat the generated import library
+# (rakupp.lib) as a real artifact, installed below, so an extension has
+# something to link against — the piece EXTENSIONS.md promised but the build
+# never produced.
+if(WIN32)
+  set_target_properties(rakupp PROPERTIES ENABLE_EXPORTS ON)
+endif()
 
 # Install layout (so `--exe` works after `cmake --install`): the binary in bin/,
 # the runtime static library in lib/, and every header in include/rakupp/ — the
 # `--exe` compile step needs the headers to build the generated C++. findRuntime()
 # in main.cpp looks for exactly this <prefix>/{bin,lib,include/rakupp} layout.
-install(TARGETS rakupp RUNTIME DESTINATION bin)
+install(TARGETS rakupp RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
 install(TARGETS rakupp_rt ARCHIVE DESTINATION lib)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/"
         DESTINATION include/rakupp
