@@ -149,10 +149,10 @@ a compiled program should stop carrying the parts of Raku it cannot reach.
 
 ## v4.0.0 — Raku that travels (forming, 2026-08-08)
 
-Not yet a settled campaign: two pillars are decided and written, and the rest
-of the list is open. Both are about the same thing from different directions —
-**Raku++ working somewhere other than a developer's own shell**, which is the
-one capability the earlier majors never targeted.
+Not yet a settled campaign: the pillars below are decided and written, and the
+rest of the list is open. They are about the same thing from different
+directions — **Raku++ working somewhere other than a developer's own shell**,
+which is the one capability the earlier majors never targeted.
 
 1. **Modules that travel** ([MODULES-PLAN.md](MODULES-PLAN.md)) — `rakupp
    install`, so getting a module no longer requires installing Rakudo and zef;
@@ -175,10 +175,33 @@ one capability the earlier majors never targeted.
    blocks it is a 1 GiB stack thread, a process-wide SIGPIPE change and an
    owned stdout, all of which must become opt-in.
 
+   **The substrate turned out to be its own plan** ([ABI-PLAN.md](ABI-PLAN.md),
+   2026-08-09): the native extension ABI that shipped a day after EMBED-PLAN was
+   written is the *harder half* of an embedding API, so the two directions share
+   one value vocabulary rather than growing two. Phases A0 (a shared
+   `librakupp`), A1 (`rk_call` and rooted handles) and A2 (`rakupp.h` —
+   lifecycle, eval, output capture, and Raku.js ported onto it) landed on
+   2026-08-10; the bindings are A3.
+
+3. **Raku grammars as a service for other languages**
+   ([GRAMMAR-PLAN.md](GRAMMAR-PLAN.md)) — the *reason* someone outside this
+   project cares about the two pillars above. "Embed Raku in Python" is
+   abstract; "use Raku grammars from Python" is a capability the host language
+   has no equivalent of — a regex library gives one pattern, not a composable
+   grammar with named rules, inheritance and longest-token dispatch, and the
+   ANTLR-shaped alternatives want a code-generation step in your build. The
+   grammar stays a `.raku` file and any host-language class is a *generator*
+   over that text, never a parallel path — the one decision that keeps the API
+   from owing a maintenance debt that grows with Raku itself. It needs **no ABI
+   change**: ABI 2's `rk_call` and `rk_root` already cover it, which is why it
+   can go first and act as evidence about the ABI rather than waiting on it.
+
 **The numbers a stranger can re-measure** will be written here when the
-campaign is settled. The two candidates today: a program using an ecosystem
-module, compiled and run on a machine with no Raku and no module store; and
-Raku called from a stock CPython, with the module installed by rakupp alone.
+campaign is settled. The candidates today: a program using an ecosystem
+module, compiled and run on a machine with no Raku and no module store; Raku
+called from a stock CPython, with the module installed by rakupp alone; and a
+log-parsing grammar driven from Python, against the same grammar run by
+`rakupp` directly.
 
 ---
 
