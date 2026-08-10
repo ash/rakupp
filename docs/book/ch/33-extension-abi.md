@@ -61,7 +61,7 @@ static const RkSubDef subs[] = { {"answer", answer}, {0, 0} };
 static const RkModule mod = { RAKUPP_EXT_ABI, "Hello::Ext", subs };
 
 RAKUPP_EXT_EXPORT const RkModule* rakupp_ext_init(unsigned host_abi) {
-    return host_abi == RAKUPP_EXT_ABI ? &mod : 0;
+    return host_abi >= RAKUPP_EXT_ABI ? &mod : 0;   // see Versioning, below
 }
 ```
 
@@ -74,6 +74,63 @@ say answer();      # 42
 `rakupp-ext-load` installs each of the extension's subs into the **calling
 scope**, so inside a module they land exactly where an `our sub` would, and that
 module's `is export` carries them onward.
+
+## Both halves of the linking bargain
+
+An extension resolves the `rk_*` symbols from the **host executable** at load
+time, exactly as a Python C extension resolves `Py_*`. Undefined symbols at
+*link* time are therefore expected, and must be permitted:
+
+| platform | flag |
+|---|---|
+| macOS | `-Wl,-undefined,dynamic_lookup` |
+| Linux / BSD | none — ELF resolves lazily by default |
+| Windows | link against the import library, `lib/rakupp.lib` |
+
+That is the extension's half. The host's half is to actually **publish** those
+symbols, and for a long time it did not. This was checked rather than assumed,
+and the answer was worse than expected:
+
+> **Extensions had only ever worked on macOS.** A Mach-O executable exports its
+> globals by default. A plain ELF executable keeps its symbols out of `.dynsym`,
+> so on Linux an extension's first `rk_*` call had always died with an
+> undefined-symbol error. On Windows, the documentation told authors to link
+> against an import library the build never produced.
+
+Nobody had reported it, and the reason is the very pattern this chapter
+recommends. A well-written module falls back quietly — `Rakupp::JSON`'s whole
+design is to try the extension and drop back to Raku if it does not load. So on
+Linux it loaded nothing, ran its fallback, and looked like it was working. Users
+would have seen the pure-Raku timings and assumed that was the number.
+
+The fix is deliberately narrow: `-Wl,--dynamic-list=…` puts the `rk_*` glob in
+the executable's dynamic symbol table **and nothing else**, where `-rdynamic`
+would have exported every C++ symbol in the interpreter as an accidental ABI
+promise. On Windows, `RK_API`'s `dllexport` plus `ENABLE_EXPORTS` produce the
+import library the docs already described.
+
+The lesson generalises past this bug: **a graceful fallback hides the failure it
+was written to survive.** A module that degrades quietly needs some way to say
+out loud which path it took, and a build that publishes an ABI needs a test that
+the symbols are really there rather than a belief that they are.
+
+### `librakupp` and the export discipline
+
+The same surface is exported by a shared library, built with
+`-DRAKUPP_BUILD_SHARED=ON`: position-independent, hidden visibility, versioned,
+installed beside the static archive. It is off by default, because it recompiles
+every runtime source and the plain CLI neither links nor loads it.
+
+The export list is **the header itself** rather than a second file to keep in
+sync. Each entry point carries an `RK_API` marker, the library compiles with
+`-fvisibility=hidden`, and what is marked is exactly what is exported — verified
+with `nm` rather than assumed: every `rk_*` symbol present, and no
+`namespace rakupp` symbol leaked.
+
+That is what keeps the boundary honest in the direction that matters most. A C++
+symbol accidentally exported from a shared library is an ABI promise nobody
+decided to make, and the only defence is to keep the visible set small and
+declare it in one place.
 
 ## The value vocabulary
 
@@ -135,6 +192,63 @@ RkValue rk_named(RkCtx c, const char* name);  /* NULL if not passed */
 passed an undefined value — so `:immutable` and `:!immutable` remain
 distinguishable.
 
+## Calling back into Raku
+
+ABI 2 added the other direction: an extension can invoke Raku.
+
+```c
+RkValue rk_call      (RkCtx c, const char* name,
+                      const RkValue* argv, size_t argc);
+RkValue rk_call_value(RkCtx c, RkValue code,
+                      const RkValue* argv, size_t argc);
+int     rk_can       (RkCtx c, const char* name);
+```
+
+`rk_call` resolves a name **the way the extension's own sub would at its call
+site**: the lexical scope that invoked it, then outward to global. So an
+extension loaded by a module reaches that module's subs — which is what lets a
+native fast path delegate the cases it does not handle back to the Raku it
+replaced. `rk_call_value` is the same for a `Code` value that was handed in, a
+callback rather than a name. `rk_can` asks first, so an extension can use an
+optional hook only when the caller supplied one.
+
+The failure model is the interesting part, and it follows from the one rule at
+the top of this chapter. **A Raku exception thrown inside `rk_call` does not
+unwind through the extension's frames.** It cannot — the host did not compile
+them. Instead the call returns `NULL` and leaves a *pending error*:
+
+```c
+void        rk_die        (RkCtx c, const char* message);
+const char* rk_error      (RkCtx c);
+void        rk_clear_error(RkCtx c);
+```
+
+Return `NULL` from the sub afterwards and the original Raku exception is raised
+at the call site with its own type intact. Or call `rk_clear_error` and carry
+on, which is how an extension treats a failed callback as one case among
+several rather than as a fatality.
+
+That shape — a return value plus a pending error, never a longjmp through
+foreign frames — is the same discipline `errno` and OpenGL use, and it is
+forced here by the same thing that forces the handles: neither side compiled
+the other.
+
+## Rooted handles, and the one way to leak
+
+```c
+RkValue rk_root  (RkCtx c, RkValue v);
+void    rk_unroot(RkCtx c, RkValue rooted);
+```
+
+`rk_root` lifts a value out of the arena so it can outlive the call. It is
+**for hosts embedding rakupp, not for extensions**, and it is the only thing in
+the header you can leak — which is precisely why the arena, where you cannot, is
+what an extension sees by default.
+
+The guidance in the header is blunt about it: if you think you want a rooted
+handle, you almost certainly want ordinary C state instead — a compiled
+pattern, a parsed schema, a cache. Keep those in C.
+
 ## Lifetime: handles belong to the call
 
 Everything an extension creates is allocated in the context's **arena** and
@@ -168,15 +282,43 @@ extension's code and cannot catch it.
 ## Versioning
 
 ```c
-#define RAKUPP_EXT_ABI 1u
+#define RAKUPP_EXT_ABI 2u
 typedef const RkModule* (*RkInitFn)(unsigned host_abi);
 ```
 
-One integer, bumped whenever the meaning or order of anything in the header
-changes. The host looks up one symbol, `rakupp_ext_init`, and passes its own
-version. **Return `NULL` if you do not recognise it** rather than guessing; the
-host then reports a clean mismatch instead of calling through a wrong-shaped
-table.
+One integer, bumped when the header gains capability an extension cannot detect
+any other way, or when the meaning or order of anything in it changes. Version 1
+was the original surface — construct, inspect, arguments, `rk_die`. Version 2
+added re-entering Raku, the pending-error calls, and rooted handles.
+
+The host looks up one symbol, `rakupp_ext_init`, and passes its own version.
+**Return `NULL` if you cannot serve it** rather than guessing; the host then
+reports a clean mismatch instead of calling through a wrong-shaped table.
+
+### The handshake, and why it is a downgrade
+
+Bumping the number would have broken every extension already in the wild,
+because ABI-1 extensions were all written with the equality test the original
+documentation showed:
+
+```c
+return host_abi == RAKUPP_EXT_ABI ? &mod : 0;
+```
+
+A host at 2 calling that gets `NULL`. So **the host retries downward**: `init(2)`
+returning null is followed by `init(1)`, and the old extension answers. Nothing
+that worked stops working, and it was proven rather than argued — an extension
+built against the previous day's header was loaded, unchanged, into the new
+host.
+
+An extension built against the *new* header should use `>=`, which states what
+it actually needs: a host at least this new. And a module whose `abi_version`
+is **newer** than the host's is refused with a sentence saying so, because the
+host cannot provide what it has not got.
+
+The failure this avoids is undefined symbols. An extension calling `rk_call` on
+a host that predates it would resolve nothing and abort at the first call under
+lazy binding; a version check turns a crash into a diagnostic.
 
 All three failure modes report themselves and none corrupt:
 
@@ -293,10 +435,11 @@ module, it must *only* be a module.
   compiled into the interpreter. Still 6.6 times faster than Rakudo on that
   workload, but it means an extension is worth it for **bulk** work, not for a
   routine called once with two integers.
-- **Hash iteration is index-based**, so `rk_key_at` is O(i) and walking a whole
-  hash is quadratic. A cursor is the obvious version-2 addition, and it is why
-  `Rakupp::JSON` implements only the parser natively and leaves serialisation in
-  Raku.
+- **Hash iteration is still index-based, but no longer quadratic.** The host
+  remembers where it was between `rk_key_at` and `rk_val_at` calls, so a
+  sequential walk costs O(1) per key. Jumping between two hashes, or writing to
+  one while walking it, falls back to O(i) positioning — correct either way,
+  just slower.
 - **No `--exe` bundling.** A program using a native extension cannot be compiled
   into a standalone binary; the shared library is loaded at run time and is not
   part of the module graph the bundler walks.
@@ -322,3 +465,27 @@ That is worth stating as a design principle rather than a project note: **when
 you publish a boundary, publish one.** Two vocabularies for the same values is
 twice the surface to keep stable, and the whole reason for the handle discipline
 was to have as little of that surface as possible.
+
+Two pieces of it are already in place. `librakupp` is the shared library an
+embedding host links against, and `rk_root` is how such a host keeps a value
+past the call that produced it — the two things an extension never needs and an
+embedder cannot do without.
+
+## A footnote on guessing
+
+The version-2 work was planned as one feature and turned out to be two, and the
+way that came out is worth recording.
+
+The plan asserted that `Rakupp::JSON`'s `to-json` was still written in Raku
+because the ABI had no way to call back into Raku, and that `rk_call` would fix
+it. **The module's own documentation said otherwise**: the real obstacle was
+that hash access was index-based, `std::advance` from the beginning on every
+call, so serialising a hash was quadratic in its size.
+
+Both were worth fixing and neither was the other. But the plan had been
+repeating a guess for as long as it existed, while the answer was written down
+in the thing it was guessing about.
+
+It is the same failure as the benchmark in Chapter 27 that measured a rename
+instead of the change a rename enables, and the same remedy: **before designing
+around a cause, check whether the code already says what the cause is.**
