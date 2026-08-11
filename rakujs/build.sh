@@ -50,7 +50,12 @@ echo "==> using $(em++ --version | head -1)"
 
 # --- gather sources (everything in src/ except the CLI entry main.cpp) -------
 SOURCES=()
-while IFS= read -r f; do SOURCES+=("$f"); done < <(find "$SRC_DIR" -name '*.cpp' ! -name 'main.cpp' | sort)
+# src/stubs/ holds the SLIM feature stubs — throwing doubles of the Lexer,
+# Parser and Unicode tables, linked by `--exe --slim` IN PLACE of the real
+# thing, never beside it. This find swept them in when they landed (P3) and
+# wasm-ld refused the duplicate symbols; CMake excludes them from every one
+# of its targets the same way. Raku.js is the interpreter and never slims.
+while IFS= read -r f; do SOURCES+=("$f"); done < <(find "$SRC_DIR" -name '*.cpp' ! -name 'main.cpp' ! -path '*/stubs/*' | sort)
 SOURCES+=("$RAKUJS_DIR/rakupp_web.cpp")
 echo "==> compiling ${#SOURCES[@]} translation units"
 
