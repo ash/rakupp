@@ -261,6 +261,26 @@ my $catch = probe('catch.raku', q:to/END/);
           '<:Lu>/<:Nd> resolve from never-cut tables, so props still cuts — and matches', "$out / $line";
 }
 
+# ---- 6a2. builtin wrappers around dynamic loading are triggers --------------
+# use-ok is a require in sub's clothing (the builtin Test module) — found by
+# the battery leg of the differential when a slim'd 01-load.t threw where the
+# full build passed. The scan must keep everything for it, like for require.
+
+{
+    my $useok = probe('useok.raku', q{use Test; plan 1; use-ok 'NoSuchModuleHere0'; done-testing;});
+    my $p = run $*EXECUTABLE, '--exe', $useok, '--slim',
+                '-o', $tmp.add('useok-bin').Str, :out, :err;
+    my $err = $p.err.slurp(:close);
+    $p.out.slurp(:close);
+    @made.push($tmp.add('useok-bin'));
+    check $p.exitcode == 0 && $err.contains('use-ok'),
+          'use-ok is a force-full trigger, named on stderr', $err;
+    my $info = run $*EXECUTABLE, '--exe-info', $tmp.add('useok-bin').Str, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $line.contains('"cut":[]'), '…and nothing is cut', $line;
+}
+
 # ---- 6b. verify (P5): the proof-or-nothing directive -----------------------
 
 {

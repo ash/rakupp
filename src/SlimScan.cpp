@@ -77,6 +77,13 @@ struct Scan {
         if (n == "infix:<unicmp>" || n == "infix:<coll>" ||
             n == "[unicmp]" || n == "[coll]") use(F_COLL, "a " + n + " reference");
         if (n == "EVAL" || n == "EVALFILE") { use(F_EVAL, n); trigger("EVAL"); }
+        // The builtin Test module's dynamic loaders: use-ok requires a module
+        // AT RUN TIME (a require in sub's clothing — found by the battery leg
+        // of the differential: a slim'd 01-load.t threw where full passed),
+        // and the eval-* helpers are EVAL by name. All three mean code the
+        // scan never saw, exactly like the constructs they wrap.
+        if (n == "use-ok") { use(F_EVAL, n); trigger("use-ok (a run-time require)"); }
+        if (n == "eval-dies-ok" || n == "eval-lives-ok") { use(F_EVAL, n); trigger(n + " (EVAL)"); }
         if (raw == "$*COLLATION") use(F_COLL, "$*COLLATION");
     }
     void noteOp(const std::string& op) {
@@ -294,6 +301,11 @@ struct Scan {
                     if (c->name == "uniprop" || c->name == "uniprops" || c->name == "unimatch")
                         noteUniprop(c->name, c->args, 1);
                     if (c->name == "EVALFILE") { use(F_EVAL, "EVALFILE"); trigger("EVALFILE"); }
+                    // throws-like's FIRST argument may be a string of code —
+                    // which the builtin EVALs. A block argument is ordinary.
+                    if (c->name == "throws-like" && !c->args.empty() &&
+                        c->args[0] && c->args[0]->kind == NK::StrLit)
+                        { use(F_EVAL, "throws-like with code in a string"); trigger("throws-like (EVAL)"); }
                 }
                 walkE(c->callee.get());
                 for (auto& a : c->args) walkE(a.get());

@@ -24,14 +24,18 @@
 # under test). Compiled binaries land in a scratch dir and are removed.
 
 my $ROOT = $?FILE.IO.parent.parent;
-my @dirs = @*ARGS ?? @*ARGS.map(*.IO) !! ($ROOT.add('t/regression'), $ROOT.add('examples'));
+# --lib=DIR (repeatable) adds -I DIR to every compile — the battery leg
+# compiles dist test files against the dists' own lib/ trees this way.
+my @libs = @*ARGS.grep(*.starts-with('--lib=')).map(*.substr(6));
+my @args = @*ARGS.grep({ !.starts-with('--lib=') });
+my @dirs = @args ?? @args.map(*.IO) !! ($ROOT.add('t/regression'), $ROOT.add('examples'));
 my @files;
 for @dirs -> $d {
     if $d.f {
         @files.push($d);
     }
     elsif $d.d {
-        @files.append($d.dir.grep({ .extension eq 'raku' }).sort);
+        @files.append($d.dir.grep({ .extension eq 'raku' | 'rakutest' | 't' }).sort);
     }
 }
 
@@ -39,7 +43,8 @@ my $tmp = $*TMPDIR.add("rakupp-slim-diff-{$*PID}");
 $tmp.mkdir;
 
 sub build($src, $out, *@extra) {
-    my $p = run $*EXECUTABLE, '--exe', $src.Str, '-o', $out.Str, |@extra, :out, :err;
+    my @inc = @libs.map({ ('-I', $_).Slip });
+    my $p = run $*EXECUTABLE, '--exe', $src.Str, '-o', $out.Str, |@inc, |@extra, :out, :err;
     $p.out.slurp(:close); $p.err.slurp(:close);
     $p.exitcode == 0
 }
