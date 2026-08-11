@@ -207,6 +207,32 @@ expression in the program, which is the analysis this plan is built to avoid.
 once the seam exists and it keeps the story uniform. It can be dropped from
 the flag surface if the scan turns out to be fiddly.
 
+### One constraint from outside this plan: librakupp pins `eval`
+
+*(Added 2026-08-11, after ABI-PLAN's A0–A2 shipped in v3.1.0 — this plan and
+that one were written a day apart and predicted the collision; it is now
+real.)*
+
+`librakupp` exports `rk_eval` and `rk_run`, and those ARE the parser: an
+embedder's whole reason to load the library is to hand it source text at run
+time. So the shared library is **always built with the real `eval` feature**,
+never the stub — a `librakupp` that answered `rk_eval` with
+`X::Feature::NotBuilt` would be a library whose one job is the thing it
+refuses to do.
+
+What this costs is almost nothing, and the numbers above already say so: the
+parser is 545 KB of a 51-point cut — roughly six points. The Unicode tables,
+which are the campaign, are genuinely optional for an embedder and stay
+cuttable in a slim `librakupp` build if that variant is ever wanted; `eval`
+alone is pinned.
+
+Concretely, in the machinery below: the `rakupp_shared` target always links
+`librakupp_parse.a` (P2's split), the scan never applies to the shared
+library, and `--slim`'s surface is a property of **`--exe` output only** —
+which the gates already assume ("the interpreter never slims"). The same
+sentence extends to the embedding artifact: *the interpreter never slims, and
+`librakupp` is the interpreter.*
+
 ---
 
 ## Not cutting something that is needed
@@ -527,6 +553,11 @@ Attempt only if P0–P5 hold their gates.
   itself so the grammar can never drift from its documentation. If a seventh
   feature name ever looks necessary, that is the signal to re-read the
   non-goals rather than extend the grammar.
+- **The ABI pins the parser.** `rk_eval`/`rk_run` in `librakupp` are the
+  parser, so the shared library always links the real `eval` archive (see the
+  constraint above). The risk is a future phase forgetting this and wiring the
+  scan into `rakupp_shared` — the embed-smoke gate in CI would catch it, since
+  its C host calls `rk_eval` on every run.
 - **`safe` on by default changes shipped artifacts.** Stripping is invisible
   to Raku-level behaviour but not to a C++ crash report. The manifest plus
   `--slim=none` is the answer; if bug reports get harder to act on in

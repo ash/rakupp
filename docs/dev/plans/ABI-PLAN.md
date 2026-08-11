@@ -470,6 +470,12 @@ strangers.
   the slim defaults, and the two plans have to agree on which features the
   exported ABI pins. This is a real conflict between two v4-era campaigns and
   it is better found here than in a release.
+  *Resolved 2026-08-11, before SLIM's code started:* **`librakupp` pins
+  `eval`** — always the real parser archive, never the stub, and `--slim` is a
+  property of `--exe` output only. Recorded in SLIM-PLAN (the constraint
+  section and its risk list); the parser is ~6 points of SLIM's 51, so the
+  campaign keeps essentially its whole win. The Unicode tables stay cuttable
+  for a slim `librakupp` variant if one is ever wanted.
 - **Windows symbol resolution** — see A0; possibly already broken for
   extensions, and it is the platform where "resolve from the host executable"
   is least natural.
