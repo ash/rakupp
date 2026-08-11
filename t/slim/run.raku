@@ -56,6 +56,15 @@ sub run-bin($bin) {
 }
 
 my $hello = probe('hello.raku', q{say 'Hello';});
+# Sizes cross-checked between blocks: the ABSOLUTE budgets are the plan's
+# darwin-arm64 measurements (SLIM-PLAN's header pins the machine), so they
+# gate on darwin only — the first CI run on Linux showed the same cut on a
+# bigger ELF baseline (5,937,336 where darwin is 4,856,936). What holds on
+# EVERY platform is the mechanism: cutting all four features must remove
+# megabytes, asserted below as full − slim ≥ 2 MB against this run's own
+# full build.
+my $full-size;
+my $all-size;
 
 # ---- 1. the grammar: every wrong ask is a loud error naming what exists ----
 
@@ -129,9 +138,9 @@ my $catch = probe('catch.raku', q:to/END/);
     check $rc == 0, '--slim=-all hello compiles', $log;
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim=-all hello runs', $out;
-    my $size = $bin.IO.s;
-    check $size <= 5 * 1024 * 1024,
-          "--slim=-all hello is within the 5.0 MB budget ($size bytes)";
+    $all-size = $bin.IO.s;
+    check $*KERNEL.name ne 'darwin' || $all-size <= 5 * 1024 * 1024,
+          "--slim=-all hello is within the 5.0 MB darwin budget ($all-size bytes; darwin-only gate)";
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
@@ -146,6 +155,10 @@ my $catch = probe('catch.raku', q:to/END/);
 {
     my ($rc, $log, $bin) = compile($hello, 'hello-def', '--exe');
     check $rc == 0, 'default hello compiles', $log;
+    $full-size = $bin.IO.s;
+    check $full-size - $all-size >= 2 * 1024 * 1024,
+          "cutting all four features removes >= 2 MB on this platform "
+          ~ "($full-size full vs $all-size slim, delta {$full-size - $all-size})";
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
@@ -189,8 +202,11 @@ my $catch = probe('catch.raku', q:to/END/);
     check $rc == 0, 'bare --slim (= auto) compiles', $log;
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim hello runs', $out;
-    check $bin.IO.s <= 5.5 * 1024 * 1024,
-          "--slim hello is within the 5.5 MB budget ({$bin.IO.s} bytes)";
+    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 5.5 * 1024 * 1024,
+          "--slim hello is within the 5.5 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
+    check $full-size - $bin.IO.s >= 2 * 1024 * 1024,
+          "bare --slim removes >= 2 MB from hello on this platform "
+          ~ "(delta {$full-size - $bin.IO.s})";
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
