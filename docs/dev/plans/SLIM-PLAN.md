@@ -475,6 +475,23 @@ no analysis — so the whole mechanism is testable before the scan exists.
 runs; every conflict case (two levels, `+x` with `-x`, unknown name) errors
 with the valid alternatives.
 
+> **Outcome (2026-08-11).** `--slim=-all` hello: **4,856,664 bytes** against
+> the ≤ 5.0 MB gate — the four features were carrying 3.2 MB. The parser's
+> out-of-line surface re-measured at exactly the four symbols §P1 predicted,
+> so `stub_eval.cpp` is four throwing definitions, and the same surface holds
+> for the AOT pipeline (`--aot --slim=-all` links and runs). `when
+> X::Feature::NotBuilt` catches a cut feature in compiled code; uncaught, the
+> message names the feature and the rebuild flag. Grammar semantics as
+> planned, plus one precedence rule: a named feature beats the `all` group
+> (`-all,+eval` = cut three), same sign twice is idempotent, both signs is a
+> conflict. `--bundle --slim=-eval` is refused outright — a bundled binary
+> parses its embedded source, so the cut contradicts the mode. The manifest
+> needed one real fight: clang at `-O2` elides an unescaped volatile local,
+> initializer and all, so the keep-alive initializer instead passes the
+> pointer OUT (to `rakuppKeepManifest` in rt) — an escaped address survives
+> every linker we drive. Negative suite: `t/slim/run.raku`, 30 checks, wired
+> into release.yml beside the embed smoke (POSIX legs).
+
 ### P4 — the scan, and the levels above `safe`
 
 The AST feature scan over program plus module graph, the force-full triggers,

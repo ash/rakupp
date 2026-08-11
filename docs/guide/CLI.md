@@ -152,6 +152,7 @@ disabled hooks cost nothing measurable, so there is no separate
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
 | `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
+| `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts) |
 
 ## Compiling
 
@@ -177,8 +178,40 @@ The practical cost of `safe` is exactly that second case: a C++-level crash in
 a shipped binary reports addresses instead of names. If you are debugging a
 binary, build it `--slim=+symbols`.
 
-The levels above `safe` — `auto` and `max`, which cut Unicode data tables and
-the parser a program provably does not use — arrive with the feature scan
+**Explicit feature cuts.** Four features can be cut by name — each drops its
+data (or the parser) from the binary and replaces it with a stub that throws
+`X::Feature::NotBuilt`, a typed, catchable exception naming the feature and
+the rebuild flag:
+
+| feature             | what leaves the binary        | what then throws                          |
+|---------------------|-------------------------------|-------------------------------------------|
+| `unicode-names`     | the Unicode name/numeric tables | `uniname`, `uniparse`, `unival`         |
+| `unicode-collation` | the DUCET tables              | `unicmp`, `coll`, `.collate`              |
+| `unicode-props`     | Script/Block/Bidi_Class ranges | `uniprop('Script')`, `<:Script<…>>`, …   |
+| `eval`              | the lexer and parser          | `EVAL`, `require`, runtime-compiled regexes |
+
+```
+rakupp --exe --slim=-eval               prog.raku   # cut one
+rakupp --exe --slim=-all                prog.raku   # cut all four: 8.1 → 4.6 MB
+rakupp --exe --slim=-all,+unicode-names prog.raku   # a named feature beats the
+                                                    # group: cut three, keep names
+```
+
+Cutting is explicit — nothing scans your program or guesses. Everything the
+program does NOT use is free to cut; whatever it does use will throw the named
+exception at the point of use, never crash or quietly misbehave. Every
+conflict (two levels, `+x` with `-x`, an unknown name, `none` with any
+override) is an error listing what exists. One mode refuses composition:
+`--bundle --slim=-eval`, because a bundled binary parses its embedded source
+at run time — bundling *is* the eval feature.
+
+Every compiled binary embeds a one-line build manifest; `rakupp --exe-info
+BIN` prints it (version, mode, slim level, cut list). It survives symbol
+stripping — the reader scans bytes, not symbol tables — so `strings BIN |
+grep RAKUPP-EXE` finds it too.
+
+The levels above `safe` — `auto` and `max`, which cut what a program provably
+does not use, without you naming it — arrive with the feature scan
 ([SLIM-PLAN](../dev/plans/SLIM-PLAN.md)); asking for one today errors with the
 list of what exists rather than quietly meaning something weaker. `--slim`
 shapes the link, so it applies to the compile modes only — the interpreter

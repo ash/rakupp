@@ -34,8 +34,11 @@ int main(void) {
 }
 ```
 
-Link against `librakupp` (built with `-DRAKUPP_BUILD_SHARED=ON`) or against the
-static `librakupp_rt.a` that `--exe` already uses.
+Link against `librakupp` (built with `-DRAKUPP_BUILD_SHARED=ON`) or against
+the static archive set that `--exe` already uses —
+`librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props}.a`, inside
+`-Wl,--start-group … -Wl,--end-group` on GNU ld (rt and parse reference each
+other; ld64 and link.exe iterate on their own and need no group).
 
 ## An interpreter is a session
 

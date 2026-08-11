@@ -26,7 +26,15 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace rakupp { namespace ucd {
+namespace rakupp {
+
+// What every stub throws (defined in FeatureGate.cpp, so it is always in rt):
+// X::Feature::NotBuilt, naming the missing feature and the operation that
+// needed it. The stubs (src/stubs/, librakupp_stubs.a) are the P3 half of the
+// seam — linked in place of a feature's real archive when --slim cuts it.
+[[noreturn]] void featureMissing(const char* feature, const char* neededFor);
+
+namespace ucd {
 
 struct NameEnt { const char* name; uint32_t cp; };
 struct BlockEnt { uint32_t lo, hi; const char* name; };

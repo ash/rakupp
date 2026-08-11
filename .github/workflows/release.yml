@@ -219,8 +219,18 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp tools/embed-smoke.raku build
 
+      # The SLIM negative suite (SLIM-PLAN P3): --slim's ±feature grammar,
+      # X::Feature::NotBuilt from every cut feature, the --exe-info manifest
+      # round-trip, and the -all size budget. Compiles ~10 binaries, so like
+      # the embed smoke it needs the toolchain — POSIX runners have one on
+      # PATH; the Windows compile flow is covered by the --exe step above.
+      - name: SLIM negative suite (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/slim/run.raku
+
       # Package the --exe-capable install layout: bin/rakupp, the archive set in
-      # lib/ (librakupp_rt.a plus ucd_names/ucd_coll/ucd_props/parse — the SLIM
+      # lib/ (librakupp_rt.a plus ucd_names/ucd_coll/ucd_props/parse, and the
+      # rakupp_stubs archive --slim links in place of a cut feature — the SLIM
       # split; findRuntime() locates the set and errors on a missing member),
       # and include/rakupp/*.h.
       - name: Install layout

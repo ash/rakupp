@@ -191,9 +191,15 @@ static std::string msvcEnvPrefix() {
 }
 #endif
 
+// CMake defines this from project(VERSION …); the fallback keeps ad-hoc
+// compiles of this file honest rather than lying with a real-looking number.
+#ifndef RAKUPP_VERSION
+#define RAKUPP_VERSION "0.0.0"
+#endif
+
 // --slim: how much of itself a compiled binary keeps (docs/dev/plans/SLIM-PLAN.md).
 //
-// P0 ships the LEVELS only, and `safe` becomes the default with no flag: the
+// P0 ships the LEVELS, and `safe` becomes the default with no flag: the
 // linker drops unreferenced sections and local symbols leave the symbol table.
 // That removes no Raku feature and runs no analysis — there is nothing for a
 // user to weigh, which is the bar for being a default. Measured on `say
@@ -201,27 +207,50 @@ static std::string msvcEnvPrefix() {
 // bit for bit) and `--slim=+symbols` (dead-strip but keep the symbol table,
 // for a crash report worth reading).
 //
+// P3 ships the EXPLICIT half of the feature grammar: `-feature` swaps that
+// feature's real archive for its stub in librakupp_stubs.a, so the tables (or
+// the parser) stay out of the binary and the operations that needed them
+// throw X::Feature::NotBuilt. `+feature` re-keeps one; `all` is the four as a
+// group, and a named feature beats the group — `-all,+eval` is "cut
+// everything except eval". No analysis, no guessing: the user names the cuts.
+//
 // The levels above `safe` (`auto`, `max`, and bare `--slim`, which will mean
 // `auto`) arrive with the feature scan in P4 and are refused until then rather
 // than quietly meaning something weaker — SLIM-PLAN's rule is that a wrong ask
-// is loud, never last-wins.
+// is loud, never last-wins. The same rule makes every conflict an error: two
+// levels, the same name with both signs, `none` with any override.
 struct SlimSpec {
     bool deadStrip = true;   // level ≥ safe: unreferenced sections dropped at link
     bool stripSyms = true;   // …and local symbols left out of the symbol table
+    bool cut[4] = {false, false, false, false};  // by kSlimFeatures index
 };
-static SlimSpec g_slim;                 // default = level `safe`
+static SlimSpec g_slim;                 // default = level `safe`, nothing cut
 static bool     g_slimExplicit = false; // a --slim flag was given (mode validation)
 
+// The cuttable features and their archives, index-aligned with SlimSpec::cut.
+// The names are the user-facing grammar; the archives are what findRuntimeSet
+// swaps. `eval` is index 3 — compileToExe checks it by name kSlimEval.
+static const char* kSlimFeatures[4] = {"unicode-names", "unicode-collation",
+                                       "unicode-props", "eval"};
+static const char* kSlimArchives[4] = {"ucd_names", "ucd_coll", "ucd_props", "parse"};
+static const int   kSlimEval = 3;
+static const char* kSlimValid =
+    "none, safe, +symbols, and ±feature of: unicode-names, unicode-collation, "
+    "unicode-props, eval, all";
+
 // Parse a --slim SPEC into g_slim. Returns "" on success, else the error text.
-// P0 grammar: at most one level (`none` | `safe`), plus `±symbols`. Conflicts
-// and not-yet-built levels are errors that name the valid alternatives.
+// P3 grammar: at most one level (`none` | `safe`), `±symbols`, `±feature`.
+// Conflicts and not-yet-built levels are errors that name the valid
+// alternatives.
 static std::string parseSlimSpec(const std::string& spec) {
     if (spec.empty())
         return "--slim without a level means `auto`, which arrives with the feature scan "
-               "(SLIM-PLAN P4). The default is already `safe`; the escapes are "
-               "--slim=none and --slim=+symbols.";
+               "(SLIM-PLAN P4). The default is already `safe`; available today: " +
+               std::string(kSlimValid) + ".";
     SlimSpec out;                       // start from `safe`
-    bool haveLevel = false;
+    bool haveLevel = false, levelNone = false, anyOverride = false;
+    int symSign = 0, allSign = 0;       // ±symbols / ±all seen: +1 or −1
+    int featSign[4] = {0, 0, 0, 0};     // ±feature seen, by kSlimFeatures index
     size_t pos = 0;
     while (pos <= spec.size()) {
         size_t comma = spec.find(',', pos);
@@ -232,21 +261,98 @@ static std::string parseSlimSpec(const std::string& spec) {
         if (tok == "none" || tok == "safe") {
             if (haveLevel) return "--slim takes at most one level (got a second: '" + tok + "')";
             haveLevel = true;
-            if (tok == "none") out.deadStrip = out.stripSyms = false;
+            if (tok == "none") { levelNone = true; out.deadStrip = out.stripSyms = false; }
             continue;
         }
         if (tok == "auto" || tok == "max")
             return "--slim=" + tok + " arrives with the feature scan (SLIM-PLAN P4); "
-                   "available today: none, safe, +symbols";
-        if (tok == "+symbols") { out.stripSyms = false; continue; }
-        if (tok == "-symbols") { out.stripSyms = true; continue; }
-        return "Unknown --slim token '" + tok + "' (available today: none, safe, +symbols)";
+                   "available today: " + kSlimValid;
+        if (tok[0] == '+' || tok[0] == '-') {
+            int sign = tok[0] == '+' ? 1 : -1;
+            std::string name = tok.substr(1);
+            int* slot = nullptr;
+            if (name == "symbols") slot = &symSign;
+            else if (name == "all") slot = &allSign;
+            else
+                for (int i = 0; i < 4; i++)
+                    if (name == kSlimFeatures[i]) { slot = &featSign[i]; break; }
+            if (!slot)
+                return "Unknown --slim feature '" + name + "' (available: " + kSlimValid + ")";
+            if (*slot && *slot != sign)
+                return "--slim got both +" + name + " and -" + name + " — pick one";
+            *slot = sign;
+            anyOverride = true;
+            continue;
+        }
+        return "Unknown --slim token '" + tok + "' (available: " + std::string(kSlimValid) + ")";
     }
-    if (haveLevel && !out.deadStrip && spec.find("symbols") != std::string::npos)
+    if (levelNone && anyOverride)
         return "--slim=none already keeps everything; combining it with a ±symbols "
-               "override is a conflict, not a refinement";
+               "or ±feature override is a conflict, not a refinement";
+    if (symSign) out.stripSyms = symSign < 0;
+    // `all` sets the group; a named feature overrides it (so `-all,+eval`
+    // cuts three and keeps eval, and `+all,-eval` cuts exactly eval).
+    for (int i = 0; i < 4; i++)
+        out.cut[i] = (featSign[i] ? featSign[i] : allSign) < 0;
     g_slim = out;
     return "";
+}
+
+static std::string cppstr(const std::string& s);  // defined below (C string literal)
+
+// The marker in front of the embedded manifest. Built by concatenation at run
+// time so the contiguous byte sequence exists in COMPILED programs but never
+// in rakupp's own binary — otherwise `--exe-info rakupp` would find this very
+// string constant and report the scanner's scaffolding as a manifest.
+static std::string slimMarker() { return std::string("RAKUPP-EXE-") + "MANIFEST "; }
+
+// The build manifest (SLIM-PLAN P3): appended to every generated translation
+// unit, so each compiled binary carries one greppable line saying what it is
+// and what was cut — readable with `rakupp --exe-info BIN` (or strings|grep).
+// A dynamic initializer keeps it alive: initializer arrays are dead-strip
+// roots on every linker we drive (.init_array is KEEP in ELF scripts,
+// mod_init_func on ld64, CRT$XCU on MSVC), where plain unreferenced data
+// would be exactly what --slim's own dead-strip removes. The initializer
+// hands the pointer to an rt function rather than touching a volatile local:
+// clang at -O2 elides an unescaped volatile local, initializer and all —
+// measured, not hypothetical — but a call into another TU with the address
+// as argument is beyond any optimizer's reach.
+static std::string slimManifestTU(const char* how) {
+    std::string cut;
+    for (int i = 0; i < 4; i++)
+        if (g_slim.cut[i]) cut += std::string(cut.empty() ? "" : ",") +
+                                  "\"" + kSlimFeatures[i] + "\"";
+    std::string json = std::string("{\"rakupp\":\"") + RAKUPP_VERSION +
+        "\",\"mode\":\"" + how +
+        "\",\"slim\":\"" + (g_slim.deadStrip ? "safe" : "none") +
+        "\",\"symbols\":\"" + (g_slim.stripSyms ? "stripped" : "kept") +
+        "\",\"cut\":[" + cut + "]}";
+    return "\nextern \"C\" const char rakupp_exe_manifest[] = " +
+           cppstr(slimMarker() + json) + ";\n"
+           "namespace rakupp { void rakuppKeepManifest(const char*); }\n"
+           "namespace { struct RkKeepManifest { RkKeepManifest() {\n"
+           "    rakupp::rakuppKeepManifest(rakupp_exe_manifest);\n"
+           "} } rk_keep_manifest; }\n";
+}
+
+// --exe-info FILE: print the embedded manifest of a rakupp-compiled binary.
+// A byte scan, on purpose: it needs no symbol table (--slim strips those), no
+// object-format parsing, and works on a binary for another platform.
+static int exeInfo(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { std::cerr << "Cannot read " << path << "\n"; return 5; }
+    std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::string marker = slimMarker();
+    size_t at = bytes.find(marker);
+    if (at == std::string::npos) {
+        std::cerr << path << ": no build manifest — not a rakupp-compiled "
+                  "executable (or one from before v3.14)\n";
+        return 1;
+    }
+    size_t end = bytes.find('\0', at);
+    std::cout << bytes.substr(at, end == std::string::npos ? std::string::npos : end - at)
+              << "\n";
+    return 0;
 }
 
 // Build the compile-and-link command for a generated source + the runtime
@@ -431,20 +537,35 @@ static bool findRuntime(const std::string& selfExe, std::string& lib, std::strin
 // The runtime is a SET of archives since the SLIM split (SLIM-PLAN P2): the
 // core plus the four feature groups. `rtLib` is the core archive findRuntime()
 // located; the rest ship beside it with the same prefix/extension family.
-// Everything still links all five — choosing a stub instead of a real archive
-// is P3. On a missing member this fails with the member's expected path, in
+// On a missing member this fails with the member's expected path, in
 // findRuntime()'s own error style, so a half-copied installation diagnoses
 // itself rather than surfacing as an undefined ucd:: symbol from the linker.
+//
+// P3: a feature cut by --slim drops its real archive from the line, and the
+// stub archive is appended once, LAST — every linker we drive resolves in
+// scan order (ld64 and link.exe lazily, GNU ld within the group), so a real
+// archive always beats its stub, and only the cut features' symbols fall
+// through to the throwing doubles. Only what THIS link needs is checked: a
+// missing archive the link would not touch is a fact, not an error.
 static bool findRuntimeSet(const std::string& rtLib, std::vector<std::string>& libs,
                            std::string& missing) {
     libs.clear();
     bool msvcFamily = rtLib.size() >= 4 &&
                       rtLib.compare(rtLib.size() - 4, 4, ".lib") == 0;
     std::string dir = dirOf(rtLib);
+    auto member = [&](const std::string& f) {
+        return dir + (msvcFamily ? "/rakupp_" + f + ".lib" : "/librakupp_" + f + ".a");
+    };
     libs.push_back(rtLib);
-    for (const char* f : {"ucd_names", "ucd_coll", "ucd_props", "parse"}) {
-        std::string p = dir + (msvcFamily ? "/rakupp_" + std::string(f) + ".lib"
-                                          : "/librakupp_" + std::string(f) + ".a");
+    bool anyCut = false;
+    for (int i = 0; i < 4; i++) {
+        if (g_slim.cut[i]) { anyCut = true; continue; }
+        std::string p = member(kSlimArchives[i]);
+        if (!fileExists(p)) { missing = p; return false; }
+        libs.push_back(p);
+    }
+    if (anyCut) {
+        std::string p = member("stubs");
         if (!fileExists(p)) { missing = p; return false; }
         libs.push_back(p);
     }
@@ -470,6 +591,21 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                         const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
+
+    // A bundled binary embeds its SOURCE and parses it at run time — cut the
+    // parser and its first act would be X::Feature::NotBuilt. Native and AOT
+    // binaries carry the program pre-compiled, so `-eval` is fine THERE; this
+    // is the one mode the cut contradicts outright, and it is refused loudly
+    // (SLIM-PLAN's rule) instead of producing a binary that cannot run.
+    // Reached directly via --bundle, or as the fallback when a program is
+    // outside the natively-compilable subset.
+    if (g_slim.cut[kSlimEval]) {
+        std::cerr << "--slim=-eval is incompatible with bundling: a bundled binary parses its\n"
+                     "embedded source at run time, which IS the eval feature. Natively compiled\n"
+                     "programs (--exe, when the program stays in the compilable subset) can cut\n"
+                     "eval; this one cannot. Drop -eval, or drop --bundle.\n";
+        return 5;
+    }
 
     // The runtime static library sits next to this rakupp binary.
     std::string lib, inc;
@@ -532,6 +668,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "  char rp[4096]; if (RAKUPP_REALPATH(exe.c_str(), rp)) exe = rp;\n"
                 "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
                 "}\n";
+        stub << slimManifestTU("bundle");
     }
 
     std::vector<std::string> rtLibs; std::string missingLib;
@@ -622,6 +759,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     }
 
     std::string genPath = outPath + ".rakupp.gen.cpp";
+    cpp += slimManifestTU("native");
     { std::ofstream g = openOut(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
 
     std::vector<std::string> rtLibs; std::string missingLib;
@@ -680,6 +818,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         return 5;
     }
     std::string genPath = outPath + ".rakupp.ast.cpp";
+    cpp += slimManifestTU("aot");
     { std::ofstream g = openOut(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
     std::vector<std::string> rtLibs; std::string missingLib;
     if (!findRuntimeSet(lib, rtLibs, missingLib)) {
@@ -849,6 +988,14 @@ int main(int argc, char** argv) {
             // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/…)
             // is forwarded to the C++ compiler for the generated binary.
             if (a.rfind("-O", 0) == 0) { optimize = true; if (a.size() > 2) ccOpt = a; continue; }
+            // --exe-info FILE — print a compiled binary's embedded build
+            // manifest and stop. A diagnostic mode: it takes the file
+            // directly (the argument is a binary, not Raku source, so it
+            // must not fall through to the program-token phase).
+            if (a == "--exe-info") {
+                if (i + 1 >= argc) { std::cerr << "Usage: rakupp --exe-info BINARY\n"; return 4; }
+                return exeInfo(argv[i + 1]);
+            }
             // --slim[=SPEC] — how much of itself a compiled binary keeps
             // (SLIM-PLAN). Level `safe` is the no-flag default; the SPEC's
             // errors name what exists, so a wrong ask teaches the grammar.
@@ -1090,9 +1237,6 @@ int main(int argc, char** argv) {
         }
     }
     if (mode == Mode::Version) {
-#ifndef RAKUPP_VERSION
-#define RAKUPP_VERSION "0.0.0"
-#endif
             std::cout << "Raku++ (rakupp) " RAKUPP_VERSION
                          " — a Raku interpreter and compiler in C++ (implements Raku 6.d, with 6.e features)\n";
         return 0;

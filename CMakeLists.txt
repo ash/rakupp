@@ -65,6 +65,14 @@ set(RAKUPP_UCD_PROPS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_scripts_ge
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_bidi_gen.cpp")
 set(RAKUPP_PARSE_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/src/Lexer.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/Parser.cpp")
+# The stubs (P3) are the OTHER half of the seam — throwing doubles linked in
+# place of a feature's real archive when --slim cuts it. They must never sit
+# in the same link as the real thing (an ODR violation waiting for a
+# link-order change), so they come out of the glob before anything snapshots
+# it: not in rt, not in librakupp, only in their own archive.
+file(GLOB RAKUPP_STUBS_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/stubs/*.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_STUBS_SOURCES})
 # The shared library keeps the FULL list: librakupp is the interpreter, the
 # interpreter never slims, and in particular it always carries the parser —
 # rk_eval/rk_run ARE the parser (SLIM-PLAN, "librakupp pins `eval`").
@@ -89,9 +97,10 @@ if(WIN32)
   target_compile_definitions(rakupp_rt PUBLIC _WIN32_WINNT=0x0602)
 endif()
 
-# The feature archives. Each compiles with the same include path and flags as
-# the runtime; none needs RAKUPP_BUILDING (no RK_API symbol lives in them).
-foreach(feat rakupp_ucd_names rakupp_ucd_coll rakupp_ucd_props rakupp_parse)
+# The feature archives, plus the stub archive (P3). Each compiles with the
+# same include path and flags as the runtime; none needs RAKUPP_BUILDING (no
+# RK_API symbol lives in them).
+foreach(feat rakupp_ucd_names rakupp_ucd_coll rakupp_ucd_props rakupp_parse rakupp_stubs)
   string(TOUPPER "${feat}_SOURCES" FEAT_VAR)
   add_library(${feat} STATIC ${${FEAT_VAR}})
   target_include_directories(${feat} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -106,7 +115,7 @@ endforeach()
 target_link_libraries(rakupp_rt INTERFACE rakupp_parse)
 target_link_libraries(rakupp_parse INTERFACE rakupp_rt)
 install(TARGETS rakupp_ucd_names rakupp_ucd_coll rakupp_ucd_props rakupp_parse
-        ARCHIVE DESTINATION lib)
+        rakupp_stubs ARCHIVE DESTINATION lib)
 
 # ---- librakupp — the shared library a host loads (ABI-PLAN A0) --------------
 # OFF by default: it recompiles every runtime source (PIC, hidden visibility),
