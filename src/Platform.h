@@ -6,6 +6,38 @@
 
 #include <string>
 
+// The host platform's identity, as Raku code sees it ($*KERNEL.name /
+// $*DISTRO.name). These were hardcoded to "darwin"/"macos" from the mac-only
+// days — a lie on every other platform once the v3 portability work landed,
+// found when a darwin-only test gate in t/slim fired on Linux CI because
+// $*KERNEL.name said 'darwin' there. Values match Rakudo's spellings.
+inline const char* platKernelName() {
+#if defined(_WIN32)
+    return "win32";
+#elif defined(__APPLE__)
+    return "darwin";
+#elif defined(__OpenBSD__)
+    return "openbsd";
+#elif defined(__FreeBSD__)
+    return "freebsd";
+#else
+    return "linux";
+#endif
+}
+inline const char* platDistroName() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#elif defined(__OpenBSD__)
+    return "openbsd";
+#elif defined(__FreeBSD__)
+    return "freebsd";
+#else
+    return "linux";
+#endif
+}
+
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN

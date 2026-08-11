@@ -4595,7 +4595,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "backend") return Value::str("cpp"); // rakupp's engine is a C++ tree-walking interpreter, not MoarVM
         if (m == "KERNELnames" || m == "DISTROnames" || m == "VMnames") { // known-platform introspection lists
             Value out = Value::array(); out.isList = true;
-            out.arr->push_back(Value::str(m == "KERNELnames" ? "darwin" : m == "DISTROnames" ? "macos" : "moar"));
+            out.arr->push_back(Value::str(m == "KERNELnames" ? platKernelName() : m == "DISTROnames" ? platDistroName() : "moar"));
             return out;
         }
         if (m == "name") return Value::str(nm);

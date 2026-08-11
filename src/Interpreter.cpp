@@ -8123,8 +8123,8 @@ Value Interpreter::dynVar(const std::string& name) {
         (*h.hash)["argfiles"] = Value::boolean(true);
         return h;
     }
-    if (name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash)["name"] = Value::str("macos"); return h; }
-    if (name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash)["name"] = Value::str("darwin"); return h; }
+    if (name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash)["name"] = Value::str(platDistroName()); return h; }
+    if (name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash)["name"] = Value::str(platKernelName()); return h; }
     if (name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }
     if (name == "$*SPEC") return Value::typeObj("IO::Spec::Unix");
     if (name == "$*PID") return Value::integer((long long)::getpid());
@@ -19854,8 +19854,8 @@ Value Interpreter::eval(Expr* e) {
                 return h;
             }
             if (ve->name == "$*ARGFILES") return dynVar(ve->name);       // built on access — see the resolver
-            if (ve->name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash)["name"] = Value::str("macos"); return h; }
-            if (ve->name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash)["name"] = Value::str("darwin"); return h; }
+            if (ve->name == "$*DISTRO") { Value h = Value::makeHash(); h.hashKind = "Distro"; (*h.hash)["name"] = Value::str(platDistroName()); return h; }
+            if (ve->name == "$*KERNEL") { Value h = Value::makeHash(); h.hashKind = "Kernel"; (*h.hash)["name"] = Value::str(platKernelName()); return h; }
             if (ve->name == "$*VM")     { Value h = Value::makeHash(); h.hashKind = "VM";     (*h.hash)["name"] = Value::str("moar");   return h; }
             if (ve->name == "$*SPEC") return Value::typeObj("IO::Spec::Unix"); // POSIX platform
             if (ve->name == "$*THREAD") { if (t_threadSelf.t == VT::Hash) return t_threadSelf; Value h = Value::makeHash(); h.hashKind = "Thread"; (*h.hash)["initial"] = Value::boolean(threadDepth_ == 0); (*h.hash)["id"] = Value::integer(1); return h; }
