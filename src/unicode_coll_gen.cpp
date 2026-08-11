@@ -9668,4 +9668,9 @@ extern const uint32_t COLLCONTR[] = {
   0x16D67,0x16D67,0x0,34558,1,0x16D69,0x16D67,0x0,34562,1,
 };
 extern const size_t COLLCONTR_N = 964;
+
+// The SLIM seam (src/ucd_seam.h) — see unicode_names.cpp for the note.
+const uint16_t* collceTable(size_t* n) { *n = COLLCE_N; return COLLCE; }
+const uint32_t* collsingTable(size_t* n) { *n = COLLSING_N; return COLLSING; }
+const uint32_t* collcontrTable(size_t* n) { *n = COLLCONTR_N; return COLLCONTR; }
 } }

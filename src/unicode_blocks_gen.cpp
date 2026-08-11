@@ -352,4 +352,7 @@ extern const BlockEnt BLOCKS[] = {
   {0x100000,0x10FFFF,"Supplementary Private Use Area-B"},
 };
 extern const size_t BLOCKS_N = 346;
+
+// The SLIM seam (src/ucd_seam.h) — see unicode_names.cpp for the note.
+const BlockEnt* blocksTable(size_t* n) { *n = BLOCKS_N; return BLOCKS; }
 }} // namespace rakupp::ucd

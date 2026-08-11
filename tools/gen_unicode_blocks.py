@@ -32,6 +32,8 @@ with open("src/unicode_blocks_gen.cpp", "w") as f:
         f.write(f'  {{0x{lo:X},0x{hi:X},"{name}"}},\n')
     f.write("};\n")
     f.write(f"extern const size_t BLOCKS_N = {len(blocks)};\n")
+    # The SLIM seam (src/ucd_seam.h)
+    f.write("const BlockEnt* blocksTable(size_t* n) { *n = BLOCKS_N; return BLOCKS; }\n")
     f.write("}} // namespace rakupp::ucd\n")
 
 print(f"emitted {len(blocks)} blocks -> src/unicode_blocks_gen.cpp")

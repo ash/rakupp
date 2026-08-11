@@ -69,5 +69,10 @@ with open("src/unicode_coll_gen.cpp", "w") as f:
             f.write(line + "\n"); line = "  "
     f.write(line + "\n};\n")
     f.write(f"extern const size_t COLLCONTR_N = {len(contrs)};\n")
+    # The SLIM seam (src/ucd_seam.h): accessors defined beside the data, so a
+    # build links this file or a stub — never both.
+    f.write("const uint16_t* collceTable(size_t* n) { *n = COLLCE_N; return COLLCE; }\n")
+    f.write("const uint32_t* collsingTable(size_t* n) { *n = COLLSING_N; return COLLSING; }\n")
+    f.write("const uint32_t* collcontrTable(size_t* n) { *n = COLLCONTR_N; return COLLCONTR; }\n")
     f.write("} }\n")
 print(f"ces={len(ce_flat)//3} singles={len(singles)} contractions={len(contrs)}")

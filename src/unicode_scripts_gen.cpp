@@ -2293,4 +2293,7 @@ extern const ScriptEnt SCRIPTS[] = {
   {0xE0100,0xE01EF,"Inherited"},
 };
 extern const size_t SCRIPTS_N = 2287;
+
+// The SLIM seam (src/ucd_seam.h) — see unicode_names.cpp for the note.
+const ScriptEnt* scriptsTable(size_t* n) { *n = SCRIPTS_N; return SCRIPTS; }
 }} // namespace rakupp::ucd

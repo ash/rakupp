@@ -129,6 +129,10 @@ for @numv -> $v {
 @out.push: $line;
 @out.push: '};';
 @out.push: "extern const size_t NUMV_N = {@numv.elems};";
+# The SLIM seam (src/ucd_seam.h): accessors beside the data, so a build links
+# this file or a stub — never both.
+@out.push: 'const NameEnt* namesTable(size_t* n) { *n = NAMES_N; return NAMES; }';
+@out.push: 'const int64_t* numvTable(size_t* n) { *n = NUMV_N; return NUMV; }';
 @out.push: '} }';
 'src/unicode_names.cpp'.IO.spurt(@out.join("\n") ~ "\n");
 

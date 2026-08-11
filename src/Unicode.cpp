@@ -1,4 +1,5 @@
 #include "Unicode.h"
+#include "ucd_seam.h" // the cuttable table groups, reached only via accessors
 #include <cstdint>
 #include <unordered_map>
 #include <algorithm>
@@ -12,28 +13,21 @@
 
 namespace rakupp {
 namespace ucd {
+// Only the NEVER-CUT tables are named here (SLIM-PLAN: reached by ordinary
+// string operations, so no stub will ever stand behind them). The cuttable
+// groups — NAMES/NUMV, the collation triple, SCRIPTS/BLOCKS/BIDI — have no
+// extern in this file at all: they are reached through ucd_seam.h's accessors,
+// and a new direct reference is a compile error, not a hole in the seam.
 extern const uint32_t CCC[];    extern const size_t CCC_N;
 extern const uint32_t CANON[];  extern const size_t CANON_N;
 extern const uint32_t KOMPAT[]; extern const size_t KOMPAT_N;
 extern const uint32_t COMP[];   extern const size_t COMP_N;
-struct NameEnt { const char* name; uint32_t cp; };
-extern const NameEnt NAMES[];   extern const size_t NAMES_N;
-extern const int64_t NUMV[];    extern const size_t NUMV_N;
 extern const uint32_t GBRANGE[]; extern const size_t GBRANGE_N; // real UAX#29 classes + ExtPict, as ranges
 extern const uint32_t INCB[]; extern const size_t INCB_N; // Indic_Conjunct_Break (rule GB9c)
-extern const uint16_t COLLCE[]; extern const size_t COLLCE_N;       // DUCET collation elements (L1,L2,L3)
-extern const uint32_t COLLSING[]; extern const size_t COLLSING_N;   // single-cp entries (cp, off, cnt)
-extern const uint32_t COLLCONTR[]; extern const size_t COLLCONTR_N; // contractions (cp0,cp1,cp2,off,cnt)
 extern const char* const CATNAMES[]; extern const uint32_t GCAT[]; extern const size_t GCAT_N;
-struct BlockEnt { uint32_t lo, hi; const char* name; };
-extern const BlockEnt BLOCKS[]; extern const size_t BLOCKS_N; // Unicode Blocks.txt
 extern const char* const PROPNAMES[]; extern const size_t PROPNAMES_N;
 struct PropRange { uint32_t lo, hi; uint16_t prop; };
 extern const PropRange BINPROPS[]; extern const size_t BINPROPS_N; // DerivedCoreProperties + PropList
-struct ScriptEnt { uint32_t lo, hi; const char* name; };
-extern const ScriptEnt SCRIPTS[]; extern const size_t SCRIPTS_N; // Scripts.txt
-struct BidiEnt { uint32_t lo, hi; const char* bc; };
-extern const BidiEnt BIDI[]; extern const size_t BIDI_N; // DerivedBidiClass.txt
 // case tables (unicode_case_gen.cpp): SIMPLE are (cp,mapped) pairs; FULL/FOLD are (cp,m0,m1,m2) quads
 extern const uint32_t SUPPER[]; extern const size_t SUPPER_N;
 extern const uint32_t SLOWER[]; extern const size_t SLOWER_N;
@@ -115,12 +109,13 @@ std::vector<uint32_t> uniCaseMap(uint32_t cp, int kind) {
 
 // Bidi_Class of cp ("L", "EN", "WS", …); default "L" in the assigned ranges' gaps.
 static const char* uniBidiClass(uint32_t c) {
-    size_t lo = 0, hi = ucd::BIDI_N;
+    size_t n; const ucd::BidiEnt* T = ucd::bidiTable(&n); // seam: hoisted once
+    size_t lo = 0, hi = n;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
-        if (c < ucd::BIDI[mid].lo) hi = mid;
-        else if (c > ucd::BIDI[mid].hi) lo = mid + 1;
-        else return ucd::BIDI[mid].bc;
+        if (c < T[mid].lo) hi = mid;
+        else if (c > T[mid].hi) lo = mid + 1;
+        else return T[mid].bc;
     }
     return "L";
 }
@@ -154,12 +149,13 @@ int uniBinaryProp(uint32_t cp, const std::string& prop) {
 // `<:InBlockName>` block property: normalized (lowercase, alnum-only) name of the
 // block containing cp, "" if none (an unassigned gap between blocks).
 static const char* uniBlockName(uint32_t cp) {
-    size_t lo = 0, hi = ucd::BLOCKS_N;
+    size_t n; const ucd::BlockEnt* T = ucd::blocksTable(&n); // seam: hoisted once
+    size_t lo = 0, hi = n;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
-        if (cp < ucd::BLOCKS[mid].lo) hi = mid;
-        else if (cp > ucd::BLOCKS[mid].hi) lo = mid + 1;
-        else return ucd::BLOCKS[mid].name;
+        if (cp < T[mid].lo) hi = mid;
+        else if (cp > T[mid].hi) lo = mid + 1;
+        else return T[mid].name;
     }
     return "";
 }
@@ -177,12 +173,13 @@ std::string uniGeneralCategory(uint32_t cp) {
 
 // Real Script property, from the pinned 16.0 Scripts.txt range table.
 std::string uniScript(uint32_t c) {
-    size_t lo = 0, hi = ucd::SCRIPTS_N;
+    size_t n; const ucd::ScriptEnt* T = ucd::scriptsTable(&n); // seam: hoisted once
+    size_t lo = 0, hi = n;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
-        if (c < ucd::SCRIPTS[mid].lo) hi = mid;
-        else if (c > ucd::SCRIPTS[mid].hi) lo = mid + 1;
-        else return ucd::SCRIPTS[mid].name;
+        if (c < T[mid].lo) hi = mid;
+        else if (c > T[mid].hi) lo = mid + 1;
+        else return T[mid].name;
     }
     return "Unknown"; // unassigned / no script (Zzzz)
 }
@@ -212,9 +209,10 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
     {
         static const std::set<std::string> scriptNames = [] {
             std::set<std::string> s;
-            for (size_t i = 0; i < ucd::SCRIPTS_N; i++) {
+            size_t tn; const ucd::ScriptEnt* T = ucd::scriptsTable(&tn); // seam: hoisted once
+            for (size_t i = 0; i < tn; i++) {
                 std::string n;
-                for (const char* q = ucd::SCRIPTS[i].name; *q; q++) if (std::isalnum((unsigned char)*q)) n += (char)std::tolower((unsigned char)*q);
+                for (const char* q = T[i].name; *q; q++) if (std::isalnum((unsigned char)*q)) n += (char)std::tolower((unsigned char)*q);
                 s.insert(n);
             }
             return s;
@@ -469,24 +467,26 @@ void ucaImplicit(uint32_t cp, uint16_t& aaaa, uint16_t& bbbb) {
 // DUCET lookup for a 1-3 codepoint sequence -> (offset, count) into COLLCE
 bool ducetLookup(const uint32_t* seq, size_t len, uint32_t& off, uint32_t& cnt) {
     if (len == 1) {
-        size_t lo = 0, hi = ucd::COLLSING_N;
+        size_t n; const uint32_t* S = ucd::collsingTable(&n); // seam: hoisted once
+        size_t lo = 0, hi = n;
         while (lo < hi) { size_t mid = (lo + hi) / 2;
-            if (ucd::COLLSING[mid * 3] < seq[0]) lo = mid + 1; else hi = mid; }
-        if (lo < ucd::COLLSING_N && ucd::COLLSING[lo * 3] == seq[0]) {
-            off = ucd::COLLSING[lo * 3 + 1]; cnt = ucd::COLLSING[lo * 3 + 2]; return true;
+            if (S[mid * 3] < seq[0]) lo = mid + 1; else hi = mid; }
+        if (lo < n && S[lo * 3] == seq[0]) {
+            off = S[lo * 3 + 1]; cnt = S[lo * 3 + 2]; return true;
         }
         return false;
     }
-    size_t lo = 0, hi = ucd::COLLCONTR_N;
+    size_t n; const uint32_t* C = ucd::collcontrTable(&n); // seam: hoisted once
+    size_t lo = 0, hi = n;
     while (lo < hi) { size_t mid = (lo + hi) / 2;
-        if (ucd::COLLCONTR[mid * 5] < seq[0]) lo = mid + 1; else hi = mid; }
-    for (size_t k = lo; k < ucd::COLLCONTR_N && ucd::COLLCONTR[k * 5] == seq[0]; k++) {
-        uint32_t c1 = ucd::COLLCONTR[k * 5 + 1], c2 = ucd::COLLCONTR[k * 5 + 2];
+        if (C[mid * 5] < seq[0]) lo = mid + 1; else hi = mid; }
+    for (size_t k = lo; k < n && C[k * 5] == seq[0]; k++) {
+        uint32_t c1 = C[k * 5 + 1], c2 = C[k * 5 + 2];
         size_t elen = c2 ? 3 : 2;
         if (elen != len) continue;
         if (c1 != seq[1]) continue;
         if (len == 3 && c2 != seq[2]) continue;
-        off = ucd::COLLCONTR[k * 5 + 3]; cnt = ucd::COLLCONTR[k * 5 + 4];
+        off = C[k * 5 + 3]; cnt = C[k * 5 + 4];
         return true;
     }
     return false;
@@ -541,8 +541,11 @@ size_t ucaElements(std::vector<uint32_t>& cps, size_t i, std::vector<CE>& out) {
                 j++;
             }
         }
-        for (uint32_t j = 0; j < cnt; j++)
-            out.push_back({ucd::COLLCE[(off + j) * 3], ucd::COLLCE[(off + j) * 3 + 1], ucd::COLLCE[(off + j) * 3 + 2]});
+        {   // seam: hoisted once, outside the per-element loop (P1's hot path)
+            size_t n; const uint16_t* CE = ucd::collceTable(&n); (void)n;
+            for (uint32_t j = 0; j < cnt; j++)
+                out.push_back({CE[(off + j) * 3], CE[(off + j) * 3 + 1], CE[(off + j) * 3 + 2]});
+        }
         return consumed;
     }
     // implicit weights (unassigned / siniform / Han not in the table)
@@ -680,11 +683,12 @@ int32_t uniCharByName(const std::string& name) {
         if (it != hangul.end()) return (int32_t)it->second;
         return -1;
     }
-    size_t lo = 0, hi = ucd::NAMES_N;
+    size_t n; const ucd::NameEnt* T = ucd::namesTable(&n); // seam: hoisted once
+    size_t lo = 0, hi = n;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
-        int c = strcmp(name.c_str(), ucd::NAMES[mid].name);
-        if (c == 0) return (int32_t)ucd::NAMES[mid].cp;
+        int c = strcmp(name.c_str(), T[mid].name);
+        if (c == 0) return (int32_t)T[mid].cp;
         if (c < 0) hi = mid; else lo = mid + 1;
     }
     return -1;
@@ -693,7 +697,8 @@ int32_t uniCharByName(const std::string& name) {
 std::string uniNameOf(uint32_t cp) {
     static const std::unordered_map<uint32_t, const char*> rev = [] {
         std::unordered_map<uint32_t, const char*> m;
-        for (size_t i = 0; i < ucd::NAMES_N; i++) m[ucd::NAMES[i].cp] = ucd::NAMES[i].name;
+        size_t tn; const ucd::NameEnt* T = ucd::namesTable(&tn); // seam: hoisted once
+        for (size_t i = 0; i < tn; i++) m[T[i].cp] = T[i].name;
         return m;
     }();
     auto it = rev.find(cp);
@@ -717,11 +722,12 @@ std::string uniNameOf(uint32_t cp) {
 }
 
 bool uniNumValue(uint32_t cp, long long& num, long long& den) {
-    size_t lo = 0, hi = ucd::NUMV_N / 3;
+    size_t n; const int64_t* V = ucd::numvTable(&n); // seam: hoisted once; n = rows of 3
+    size_t lo = 0, hi = n / 3;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
-        uint32_t c = (uint32_t)ucd::NUMV[mid * 3];
-        if (c == cp) { num = ucd::NUMV[mid * 3 + 1]; den = ucd::NUMV[mid * 3 + 2]; return true; }
+        uint32_t c = (uint32_t)V[mid * 3];
+        if (c == cp) { num = V[mid * 3 + 1]; den = V[mid * 3 + 2]; return true; }
         if (cp < c) hi = mid; else lo = mid + 1;
     }
     return false;

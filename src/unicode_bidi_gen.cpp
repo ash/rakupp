@@ -2329,4 +2329,7 @@ extern const BidiEnt BIDI[] = {
   {0x10FFFE,0x10FFFF,"BN"},
 };
 extern const size_t BIDI_N = 2323;
+
+// The SLIM seam (src/ucd_seam.h) — see unicode_names.cpp for the note.
+const BidiEnt* bidiTable(size_t* n) { *n = BIDI_N; return BIDI; }
 }} // namespace rakupp::ucd

@@ -29,6 +29,8 @@ with open("src/unicode_bidi_gen.cpp", "w") as f:
         f.write(f'  {{0x{lo:X},0x{hi:X},"{bc}"}},\n')
     f.write("};\n")
     f.write(f"extern const size_t BIDI_N = {len(ranges)};\n")
+    # The SLIM seam (src/ucd_seam.h)
+    f.write("const BidiEnt* bidiTable(size_t* n) { *n = BIDI_N; return BIDI; }\n")
     f.write("}} // namespace rakupp::ucd\n")
 
 print(f"emitted {len(ranges)} bidi ranges -> src/unicode_bidi_gen.cpp")

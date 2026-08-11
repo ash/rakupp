@@ -29,6 +29,8 @@ with open("src/unicode_scripts_gen.cpp", "w") as f:
         f.write(f'  {{0x{lo:X},0x{hi:X},"{name}"}},\n')
     f.write("};\n")
     f.write(f"extern const size_t SCRIPTS_N = {len(ranges)};\n")
+    # The SLIM seam (src/ucd_seam.h)
+    f.write("const ScriptEnt* scriptsTable(size_t* n) { *n = SCRIPTS_N; return SCRIPTS; }\n")
     f.write("}} // namespace rakupp::ucd\n")
 
 print(f"emitted {len(ranges)} script ranges -> src/unicode_scripts_gen.cpp")

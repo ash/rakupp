@@ -41171,4 +41171,10 @@ extern const int64_t NUMV[] = {
   3,1,133913,3,1,140176,2,1,141720,3,1,146203,3,1,156269,4,1,194704,9,1,
 };
 extern const size_t NUMV_N = 6069;
+
+// The SLIM seam (src/ucd_seam.h): the only way the runtime reaches these
+// tables. Defined beside the data so a build links this file or a stub, never
+// both, and nothing can reach the data behind the accessor's back.
+const NameEnt* namesTable(size_t* n) { *n = NAMES_N; return NAMES; }
+const int64_t* numvTable(size_t* n) { *n = NUMV_N; return NUMV; }
 } }
