@@ -245,6 +245,9 @@ iteration order per process. Do not read a ±5 move as progress.
 3. Refresh the figures in README, `docs/status/ROAST.md`, `docs/status/COUNTING.md`,
    `docs/guide/FEATURES.md`, `docs/guide/GUIDE.md`, `docs/guide/HIGHLIGHTS.md`, `docs/guide/OVERVIEW.md`
    and `docs/status/ROADMAP.md` — all from **one** run, so they agree with each other.
+   Add the release's row (and phase note) to `docs/status/MILESTONES.md` — its own
+   footer asks for this on every tag, and it sat four releases stale (v2.0.0 →
+   v3.14.0) before anyone noticed, because nothing in this list said so.
    `docs/status/BENCHMARKS.md` too if the benchmarks were re-run.
 
    Then **prove** they agree, because a half-landed refresh looks exactly like
