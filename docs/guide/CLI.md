@@ -157,8 +157,32 @@ disabled hooks cost nothing measurable, so there is no separate
 
 `--bundle`, `--aot` and `--exe` produce standalone binaries — see
 [COMPILERS.md](COMPILERS.md) and [NATIVE.md](NATIVE.md). Their flags
-(`-o OUT`, `-O[level]`, `-I`) compose in any order with the mode, before or
-after the source file.
+(`-o OUT`, `-O[level]`, `-I`, `--slim[=SPEC]`) compose in any order with the
+mode, before or after the source file.
+
+### `--slim` — how much of itself a compiled binary keeps
+
+Compiled binaries are **dead-stripped and symbol-stripped by default** (level
+`safe`): the linker drops unreferenced sections and local symbols stay out of
+the symbol table. That removes no Raku feature and runs no analysis — `say
+"Hello"` goes from 9.9 MB to 8.1 MB and behaves byte-identically. Two escapes:
+
+```
+rakupp --exe --slim=none      prog.raku   # the old output, bit for bit
+rakupp --exe --slim=+symbols  prog.raku   # dead-strip, but keep the symbol
+                                          # table (a crash report worth reading)
+```
+
+The practical cost of `safe` is exactly that second case: a C++-level crash in
+a shipped binary reports addresses instead of names. If you are debugging a
+binary, build it `--slim=+symbols`.
+
+The levels above `safe` — `auto` and `max`, which cut Unicode data tables and
+the parser a program provably does not use — arrive with the feature scan
+([SLIM-PLAN](../dev/plans/SLIM-PLAN.md)); asking for one today errors with the
+list of what exists rather than quietly meaning something weaker. `--slim`
+shapes the link, so it applies to the compile modes only — the interpreter
+never slims.
 
 ## MAIN: how a program's own arguments parse
 

@@ -191,6 +191,64 @@ static std::string msvcEnvPrefix() {
 }
 #endif
 
+// --slim: how much of itself a compiled binary keeps (docs/dev/plans/SLIM-PLAN.md).
+//
+// P0 ships the LEVELS only, and `safe` becomes the default with no flag: the
+// linker drops unreferenced sections and local symbols leave the symbol table.
+// That removes no Raku feature and runs no analysis — there is nothing for a
+// user to weigh, which is the bar for being a default. Measured on `say
+// "Hello"`: 9.86 MB → 8.09 MB. The escapes are `--slim=none` (the old output,
+// bit for bit) and `--slim=+symbols` (dead-strip but keep the symbol table,
+// for a crash report worth reading).
+//
+// The levels above `safe` (`auto`, `max`, and bare `--slim`, which will mean
+// `auto`) arrive with the feature scan in P4 and are refused until then rather
+// than quietly meaning something weaker — SLIM-PLAN's rule is that a wrong ask
+// is loud, never last-wins.
+struct SlimSpec {
+    bool deadStrip = true;   // level ≥ safe: unreferenced sections dropped at link
+    bool stripSyms = true;   // …and local symbols left out of the symbol table
+};
+static SlimSpec g_slim;                 // default = level `safe`
+static bool     g_slimExplicit = false; // a --slim flag was given (mode validation)
+
+// Parse a --slim SPEC into g_slim. Returns "" on success, else the error text.
+// P0 grammar: at most one level (`none` | `safe`), plus `±symbols`. Conflicts
+// and not-yet-built levels are errors that name the valid alternatives.
+static std::string parseSlimSpec(const std::string& spec) {
+    if (spec.empty())
+        return "--slim without a level means `auto`, which arrives with the feature scan "
+               "(SLIM-PLAN P4). The default is already `safe`; the escapes are "
+               "--slim=none and --slim=+symbols.";
+    SlimSpec out;                       // start from `safe`
+    bool haveLevel = false;
+    size_t pos = 0;
+    while (pos <= spec.size()) {
+        size_t comma = spec.find(',', pos);
+        std::string tok = spec.substr(pos, comma == std::string::npos ? std::string::npos
+                                                                      : comma - pos);
+        pos = comma == std::string::npos ? spec.size() + 1 : comma + 1;
+        if (tok.empty()) continue;
+        if (tok == "none" || tok == "safe") {
+            if (haveLevel) return "--slim takes at most one level (got a second: '" + tok + "')";
+            haveLevel = true;
+            if (tok == "none") out.deadStrip = out.stripSyms = false;
+            continue;
+        }
+        if (tok == "auto" || tok == "max")
+            return "--slim=" + tok + " arrives with the feature scan (SLIM-PLAN P4); "
+                   "available today: none, safe, +symbols";
+        if (tok == "+symbols") { out.stripSyms = false; continue; }
+        if (tok == "-symbols") { out.stripSyms = true; continue; }
+        return "Unknown --slim token '" + tok + "' (available today: none, safe, +symbols)";
+    }
+    if (haveLevel && !out.deadStrip && spec.find("symbols") != std::string::npos)
+        return "--slim=none already keeps everything; combining it with a ±symbols "
+               "override is a conflict, not a refinement";
+    g_slim = out;
+    return "";
+}
+
 // Build the compile-and-link command for a generated source + the runtime
 // archive, in the dialect of the chosen compiler. `opt` is the Unix-style
 // optimization flag ("-O2", "-O0", …); it is translated for cl.
@@ -208,24 +266,43 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
         // the recursion guard's 2 MiB headroom reserve — the first guarded
         // call in a natively-compiled program threw X::Recursion immediately
         c += " /link /STACK:268435456";
+        // --slim ≥ safe: /OPT:REF drops unreferenced COMDATs. It is link.exe's
+        // default without /DEBUG, so this is mostly documentation-by-command —
+        // but it stays explicit so the two toolchains read the same. Symbol
+        // stripping has no MSVC arm: symbols live in a PDB we never emit.
+        if (g_slim.deadStrip) c += " /OPT:REF";
 #ifdef _WIN32
         c = msvcEnvPrefix() + c; // bootstrap vcvars when cl isn't in this shell
 #endif
         return c;
     }
     std::string c = cxx + " -std=c++17 " + (opt.empty() ? "-O2" : opt) + " -w -pthread -Wl,-w";
+    // --slim ≥ safe (the default): let the linker see section granularity in
+    // the one TU we compile here, and drop what nothing references. The big
+    // win is symbol stripping — the runtime archive's reachability is real
+    // (SLIM-PLAN measured dead-strip alone at −2%, symbols at −16%) — but
+    // dead-strip is free and it is what the later phases' stubs lean on.
+    if (g_slim.deadStrip) c += " -ffunction-sections -fdata-sections";
     if (!inc.empty()) c += " -I " + shq(inc);
     c += " " + shq(in) + " " + shq(lib) + " -o " + shq(out);
 #ifdef _WIN32
     c += " -lws2_32";                 // MinGW: the runtime's sockets need Winsock
     c += " -Wl,--stack,268435456";    // and the same 256 MiB main stack as MSVC
-#endif
-#ifdef __APPLE__
+    if (g_slim.deadStrip) c += " -Wl,--gc-sections";
+    if (g_slim.stripSyms) c += " -s"; // GNU ld on PE: strip at link
+#elif defined(__APPLE__)
     // The generated main() runs on the process main thread, whose default 8 MiB
     // stack gives natively-compiled recursion a far smaller budget than the
     // interpreter's 1 GiB big-stack thread. 512 MiB is the arm64 ld cap; the
     // recursion guard reads it via pthread_get_stacksize_np automatically.
     c += " -Wl,-stack_size,0x20000000";
+    if (g_slim.deadStrip) c += " -Wl,-dead_strip";
+    // ld64's -x keeps local symbols out of the output — the same table
+    // `strip -x` would remove, without a second process.
+    if (g_slim.stripSyms) c += " -Wl,-x";
+#else
+    if (g_slim.deadStrip) c += " -Wl,--gc-sections";
+    if (g_slim.stripSyms) c += " -Wl,-s"; // ELF: no symbol table in the output
 #endif
     return c;
 }
@@ -715,6 +792,14 @@ int main(int argc, char** argv) {
             // any -O… turns on the codegen optimizer; a suffix (-O3/-Os/…)
             // is forwarded to the C++ compiler for the generated binary.
             if (a.rfind("-O", 0) == 0) { optimize = true; if (a.size() > 2) ccOpt = a; continue; }
+            // --slim[=SPEC] — how much of itself a compiled binary keeps
+            // (SLIM-PLAN). Level `safe` is the no-flag default; the SPEC's
+            // errors name what exists, so a wrong ask teaches the grammar.
+            if (a == "--slim" || a.rfind("--slim=", 0) == 0) {
+                std::string err = parseSlimSpec(a.size() > 6 ? a.substr(7) : "");
+                if (!err.empty()) { std::cerr << err << "\n"; return 4; }
+                g_slimExplicit = true; continue;
+            }
             if (a == "-e" || (a.rfind("-e", 0) == 0 && a.size() > 2)) {
                 if (!haveSrc) {
                     if (a == "-e") {
@@ -807,6 +892,9 @@ int main(int argc, char** argv) {
         if (quiet && mode != Mode::Lint) return illegalOpt("-q");
         if (!outPath.empty() && !isCompileMode(mode)) return illegalOpt("-o");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
+        // --slim shapes the LINK of a compiled binary, so it means nothing to
+        // the interpreter or to --cpp (which emits source and never links).
+        if (g_slimExplicit && !isCompileMode(mode)) return illegalOpt("--slim");
         // -M applies where the program is checked, compiled or run; the pure
         // source tools see the file exactly as written
         if (!preloadModules.empty() &&
