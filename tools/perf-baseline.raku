@@ -18,10 +18,10 @@
     'tolerance-pct' => 5,     # a build may be this much slower before the gate fails
     'kernels' => {
         # kernel  => { baseline-ms, best-ms, best-version, best-date }
-        'fib'     => { 'baseline' => 666.0, 'best' => 666.0, 'best-version' => '3.1.0', 'best-date' => '2026-08-11' },
-        'asg'     => { 'baseline' => 455.3, 'best' => 455.3, 'best-version' => '3.1.0', 'best-date' => '2026-08-11' },
-        'loopsum' => { 'baseline' => 202.0, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
-        'hash'    => { 'baseline' => 36.6, 'best' => 36.6, 'best-version' => '3.1.0', 'best-date' => '2026-08-11' },
+        'fib'     => { 'baseline' => 656.4, 'best' => 656.4, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
+        'asg'     => { 'baseline' => 447.1, 'best' => 447.1, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
+        'loopsum' => { 'baseline' => 196.3, 'best' => 194.4, 'best-version' => '1.0.0', 'best-date' => '2026-07-22' },
+        'hash'    => { 'baseline' => 36.0, 'best' => 36.0, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
         # The three string/call kernels were added 2026-08-09 and have no release
         # history, so their FIRST baseline is the number measured the day they
         # landed rather than the last release's. That is deliberate: v3.0.1
@@ -32,20 +32,16 @@
         #   strscan  2883.0 -> 221.6   (.substr stopped copying and rescanning)
         #   strpass   184.3 -> 153.8
         #   subcall   375.3 -> 281.1   (binder fast path, cached signature facts)
-        'strscan' => { 'baseline' => 205.6, 'best' => 205.6, 'best-version' => '3.1.0', 'best-date' => '2026-08-11' },
-        'strpass' => { 'baseline' => 150.5, 'best' => 150.5, 'best-version' => '3.1.0', 'best-date' => '2026-08-11' },
-        'subcall' => { 'baseline' => 274.8, 'best' => 274.8, 'best-version' => '3.1.0', 'best-date' => '2026-08-11' },
+        'strscan' => { 'baseline' => 195.8, 'best' => 195.8, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
+        'strpass' => { 'baseline' => 147.1, 'best' => 147.1, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
+        'subcall' => { 'baseline' => 267.6, 'best' => 267.6, 'best-version' => '3.14.0', 'best-date' => '2026-08-11' },
     },
-    # Re-recorded 2026-08-11 for v3.1.0, at 595/1462 Roast files, and it was
-    # overdue: the previous entry read 2026-07-29 (v1.5.1), so the gate had been
-    # comparing against a reference three releases old. It kept passing, which is
-    # exactly why nobody noticed -- RELEASING.md lists this as a known blind
-    # spot. Every kernel had drifted FASTER than that stale reference (fib
-    # -14.6%, hash -10.2%, strscan -9.6%), so the old baseline could no longer
-    # have caught a regression of less than about a tenth.
-    #
-    # `best` moves with it for six of the seven kernels, because this build IS
-    # the fastest measured. loopsum keeps its 1.0.0 best (194.4): that debt is
-    # still open and stays visible rather than being quietly reset.
-    'recorded' => '2026-08-11 (v3.1.0)',
+    # Re-recorded 2026-08-11 for v3.14.0, at 594/1462 Roast files. The check
+    # against the v3.1.0 baseline passed first (every kernel 1.9-3.0% FASTER
+    # -- the SLIM campaign's interpreter-side changes cost nothing), so this
+    # re-record tightens the reference rather than absorbing a debt. `best`
+    # moves with it for six of the seven kernels; loopsum keeps its 1.0.0
+    # best (194.4): that debt is still open and stays visible rather than
+    # being quietly reset.
+    'recorded' => '2026-08-11 (v3.14.0)',
 }

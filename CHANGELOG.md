@@ -3,6 +3,132 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v3.14.0 (2026-08-11) — only what the program needs
+
+| | v3.1.0 | v3.14.0 |
+|---|---:|---:|
+| Roast assertions (all declared) | 197,111 | **195,992** |
+| Roast files fully passing | 595 | **594** |
+| Documentation examples byte-identical | 951 | **948** |
+| Distributions passing their own suite | 48 / 59 | **48 / 59** |
+| Local regression suite (`t/run.raku`) | 406 | **433** |
+| `say "Hello"` compiled with `--exe` | 9,830,680 B | **8,087,112 B** |
+| …compiled with `--exe --slim` | — | **4,856,936 B** |
+
+Four Roast runs on one machine gave 594 / 595 / 591 / 594 files at
+195,992 / 196,811 / 195,979 / 195,817 assertions with 13 / 12 / 18 / 16
+timeouts — no repeating count in the first three, so a fourth broke the tie
+(the same thing happened at v3.0.1), and the quoted figures are the repeating
+594-file profile's. The headline reads lower than v3.1.0's published 197,111,
+and the honest comparison says that is the machine, not the code: a v3.1.0
+binary rebuilt from its tag and run the same day on the same machine scored
+197,089 over 594 files with 14 timeouts — its published 595 / 11 does not
+reproduce today either, and the ~1,100-assertion spread is two or three
+600-assertion files crossing the timeout line in either direction.
+
+**The gate that matters is the file LIST, and it is clean.** Diffed against
+that same-day v3.1.0 reference: one file each way, both members of the
+documented flap set, both passing solo on the binary that "lost" them
+(`set_intersection.t` 579/579, `list-quote-junction.t` 16/16). Zero real
+regressions, zero real gains.
+
+### The SLIM campaign: a compiled binary stops carrying what it cannot reach
+
+The whole of [SLIM-PLAN](docs/dev/plans/SLIM-PLAN.md), P0 through P5, in one
+release. The number a stranger can re-measure: `say "Hello"` compiled with
+`--exe --slim` is **4,856,936 bytes** — down 50.6% from v3.1.0's 9.83 MB —
+while every program in `t/regression` and `examples/` produces byte-identical
+stdout, stderr and exit status built slim and built full (the differential
+gate, `tools/slim-diff.raku`: 241 of 270 corpus
+programs byte-identical, 0 different, the rest named as non-compiling,
+nondeterministic or timed out; the module-battery leg adds 51 of 60 dist
+test files byte-identical, 0 different).
+
+- **Level `safe` is the new no-flag default**: compiled binaries are
+  dead-stripped and symbol-stripped (9.83 → 8.09 MB), no feature removed, no
+  analysis run. `--slim=none` is the old output; `safe,+symbols` keeps the
+  symbol table for readable crash reports.
+- **Bare `--slim` means `auto`**: a scan over the program plus every embedded
+  module proves features unreachable and cuts exactly those. Four features
+  exist — `unicode-names` (uniname/uniparse/unival), `unicode-collation`
+  (unicmp/coll/.collate), `unicode-props` (uniprop Script/Block/Bidi_Class),
+  `eval` (EVAL/require/regex code blocks) — behind a five-archive split of
+  the runtime (`librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props}.a` plus a
+  stub archive). Anything the scan cannot decide keeps the feature; any
+  dynamic construct (EVAL, `::($name)`, `."$name"()`, `<$re>`, an unembedded
+  module) keeps everything and says so on stderr. `--slim=max` cuts on
+  static evidence and ignores the dynamic constructs — unsound by design.
+- **A wrong cut throws, never lies**: every cut feature's entry points throw
+  `X::Feature::NotBuilt` — typed, catchable (`when X::Feature::NotBuilt`),
+  naming the feature and the rebuild flag. The negative suite
+  (`t/slim/run.raku`, 48 checks) proves it feature by feature.
+- **Explicit `±feature`** overrides any level (`-all,+unicode-names`;
+  a named feature beats the `unicode` group beats `all`), and every conflict
+  is a loud error naming the alternatives.
+- **The key documents itself**: `--slim=help` (grammar + feature table with
+  the real archive sizes), `--slim=list` (keep/cut per feature with the
+  reason and bytes, no compile), `--slim=why:FEAT` (every site forcing the
+  keep, with module and line), `--slim=verify` (build slim AND full, run
+  both, emit only on byte-agreement — refuses wrong cuts and
+  nondeterministic programs alike, measured).
+- **Every binary carries a manifest**: `rakupp --exe-info BIN` prints the
+  version, compile mode, slim level and cut list, read by byte-scan so it
+  survives stripping.
+
+### Correctness fixes the campaign surfaced
+
+The differential gate and the stub discipline found real bugs, all fixed
+here:
+
+- **Native codegen silently mis-ran regexes that touch program variables** —
+  `/a $x c/` failed to match and `/ a { $n = 42 } b /` skipped its block in
+  every `--exe` binary, because C++ locals live outside the regex engine's
+  interpreter-side environment. Such patterns now fall back to bundling
+  (correct output, a `note:` explains); grammar rules and named-regex
+  declarations stay native — their blocks run in match context, which works.
+- **Ordinary numification reached the cuttable numeric-value table**:
+  `"٤٢".Int` transliterates Nd digits through their numeric values. Decimal
+  digits moved to a never-cut decade-starts table (`uniDigitValue`), and the
+  cross-check against the full table found the old private copy had been
+  **missing twelve newer-script decades** (Garay, Tulu-Tigalari, Sunuwar,
+  Kawi, Tangsa, Kirat Rai, Nag Mundari, Ol Onal, …) — multi-digit numbers in
+  those scripts lexed wrongly in every prior binary. Ol Onal's zero sits at
+  U+1E5F1, a decade not aligned to `…0`, which is why it is a table and not
+  a formula. After the fix every Nd digit in Unicode agrees: `.Int` equals
+  `unival`.
+- **`<:Lu>` under `-unicode-props` threw**: the property dispatcher built its
+  script-name set — touching the cuttable SCRIPTS table — before the
+  category checks. Categories, POSIX-ish names and binary properties now
+  resolve from never-cut tables first.
+- **`X::Feature::NotBuilt` could be swallowed into a silent no-match/no-op**
+  by eight lenient catch sites in the regex machinery. It is now its own C++
+  type, rethrown exactly where leniency must not apply; ordinary errors stay
+  lenient.
+
+### Also in this release
+
+- `t/run.raku` grew 406 → 433 (every slim level, feature and directive has a
+  golden) and `t/slim/run.raku` (48 checks) plus `tools/slim-diff.raku`
+  joined the release gates (RELEASING.md gate 4b).
+- `perf-guard --check` against the v3.1.0 baseline: every kernel is 1.9-3.0%
+  FASTER (fib -2.5%, asg -1.9%, loopsum -3.0%, hash -3.0%, strscan -2.3%,
+  strpass -2.5%, subcall -2.5%). The baseline was re-recorded at this release,
+  per the discipline RELEASING.md documents.
+- The battery leg of the differential found `use-ok` (the builtin Test
+  module's runtime `require`) invisible to the scan — three dist load-tests
+  threw under `--slim` where full builds passed. The scan now treats
+  `use-ok`, `eval-dies-ok`/`eval-lives-ok` and string-form `throws-like` as
+  the dynamic constructs they wrap.
+
+The documentation-examples row moved 951 → 948 inside its documented ±5
+band (Rakudo randomizes hash iteration order per process; the moved rows are
+`Set`/`Bag`/`Mix` examples whose *oracle* output drifts between runs).
+
+Deliberately left open: flipping `auto` to the default (SLIM-PLAN P6, gated
+on several consecutive green releases plus a field-built binary); the scan
+for `--aot` (P7); a codegen env-bridge so variable-touching regexes compile
+natively instead of bundling.
+
 ## v3.1.0 (2026-08-11) — Raku++ becomes something you can link against
 
 | | v3.0.1 | v3.1.0 |

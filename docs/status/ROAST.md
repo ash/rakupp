@@ -31,8 +31,8 @@ gauge of how much of the language actually works).
 The exact definition of every figure below — and how the harness computes it — is
 in [COUNTING.md](COUNTING.md); that file is authoritative if anything here drifts.
 
-**Headline: ~90% of all declared Roast tests pass** (197,111 / 218,647); on the
-stricter file bar, ~41% of files fully pass (595 / 1,462). The per-file breakdown
+**Headline: ~90% of all declared Roast tests pass** (195,992 / 216,432); on the
+stricter file bar, ~41% of files fully pass (594 / 1,462). The per-file breakdown
 comes first below, then the per-test figures. (S15 — Unicode / strings / NFG —
 is now at 100% of assertions: full UCD case tables, grapheme-level regex, and
 complete `uniprop` coverage landed for v1.1; its lone non-passing file is a
@@ -59,7 +59,7 @@ territory, not "passing" and not "failing."
 ### The assertion count
 
 Measured per individual test rather than per file, the honest figure is
-**197,111 of ~218,647 declared tests — 90%**. "Declared" means every test the
+**195,992 of ~216,432 declared tests — 90%**. "Declared" means every test the
 suite intends to run: for files that ran, their emitted plan; for files that
 abort before emitting any TAP, the `plan N` count read straight from their
 source. Counting those aborting files (all their tests failing) is what keeps the
@@ -68,9 +68,9 @@ three denominators, widest-to-strictest:
 
 | Denominator | Ratio | What it includes |
 |---|---|---|
-| tests that **ran** | 197,111 / 203,540 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
-| tests **planned** (files that emitted a plan) | 197,111 / 215,828 (~91%) | + tests lost when a file aborts mid-plan |
-| **all declared** tests | 197,111 / 218,647 (90%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
+| tests that **ran** | 195,992 / 202,416 (~97%) | only assertions files actually emitted — flatters, ignores aborts |
+| tests **planned** (files that emitted a plan) | 195,992 / 213,613 (~91%) | + tests lost when a file aborts mid-plan |
+| **all declared** tests | 195,992 / 216,432 (90%) | + tests in parse-error files, recovered from source. This denominator grows as parse fixes land — files that died before announcing a plan now declare their real (often larger, dynamic) plans, so the percentage can dip while absolute passes rise |
 
 The 90% is the per-test analog of the ~41% file coverage. Three notes on scope:
 
@@ -164,12 +164,14 @@ the GIL while a worker waits on its child process, so the children genuinely
 overlap. Output and totals are identical to a sequential run — results are
 tallied and printed in file order regardless of N.
 
-_Snapshot: 595 / 1,462 files fully passing (~41% coverage); 723 partial,
-133 no-TAP, 11 timeout (the scheduler/io timing files flap between pass and
-timeout under runner load; three runs on one machine gave 197,110 / 197,112 /
-197,111 assertions across 595 / 595 / 595 files, an unusually tight band, so
-the figure quoted here is the middle of three identical profiles — v3.0.1's
-four runs needed a fourth to break a tie at 197,056–197,098 over 595 / 593 /
-594 / 594). Reached-assertion pass rate 197,111 / 203,540 (see caveat above —
-not a coverage figure). S05-substitution is a fully-passing subchapter (67222.t,
-match.t, subst.t)._
+_Snapshot: 594 / 1,462 files fully passing (~41% coverage); 722 partial,
+133 no-TAP, 13 timeout (the scheduler/io timing files flap between pass and
+timeout under runner load; four runs on one machine gave 594 / 595 / 591 / 594
+files at 195,992 / 196,811 / 195,979 / 195,817 assertions, so the figures
+quoted here are the repeating 594-file profile's. A v3.1.0 binary rebuilt from
+its tag and run the same day on the same machine gave 594 files and 14
+timeouts — its published 595 / 11 does not reproduce on today's machine either
+— and the fully-passing file LIST diff against it is clean: the only moved
+files pass solo and are members of the documented flap set). Reached-assertion
+pass rate 195,992 / 202,416 (see caveat above — not a coverage figure).
+S05-substitution is a fully-passing subchapter (67222.t, match.t, subst.t)._

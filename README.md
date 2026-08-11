@@ -10,7 +10,7 @@ via WebAssembly, no server required. It is not a fork of Rakudo and shares no co
 it targets the *language*, measured against [**Roast**](https://github.com/Raku/roast),
 the official Raku test suite.
 
-**Status:** current release **v3.1.0** (2026-08-11) — *something you can link
+**Status:** current release **v3.14.0** (2026-08-11) — *only what the program
 against*: Raku++ now ships `librakupp`, a C API for **embedding Raku in another
 program** ([EMBEDDING.md](docs/guide/EMBEDDING.md)) and an extension ABI that
 lets native code call back **into** Raku ([EXTENSIONS.md](docs/guide/EXTENSIONS.md)).
@@ -29,9 +29,9 @@ from an `Array` or `Seq` as Rakudo does, and an untyped *routine* parameter is
 `Any`-constrained (a block's stays `Mu`). See the
 [CHANGELOG](CHANGELOG.md#v310-2026-08-11--raku-becomes-something-you-can-link-against).
 
-| | v3.1.0 | at v2.0.0 |
+| | v3.14.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of ~218,600 the suite declares | **197,111 (90%)** | 197,090 |
+| Roast, per individual test — of ~216,400 the suite declares | **195,992 (90%)** | 197,090 |
 | Roast, all-or-nothing — files fully passing, of 1,462 | **595 (41%)** | 594 |
 | Official documentation examples byte-identical on both engines | **952**† | 952 |
 | Ecosystem distributions passing their own `zef` install-time test suite | **48 / 59**\* | 50 / 59 |
@@ -41,10 +41,11 @@ The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
 *every* assertion in it passes — and the Roast figures are measured **with
 parallelism and true LTM on**, the same binary configuration users get. They
-are the repeating profile of three runs on one machine (197,110 / 197,112 /
-197,111 assertions; 595 / 595 / 595 files), not the best run seen: the
-scheduler and IO timing files flap under runner load, and v3.0.1 needed a
-fourth run because its first three gave no repeating file count. †The doc-example count
+are the repeating profile of four runs on one machine (594 / 595 / 591 / 594
+files; 195,992 assertions on the repeating 594-file profile), not the best run
+seen: the scheduler and IO timing files flap under runner load, and — like
+v3.0.1 before it — this release's first three runs gave no repeating file
+count, so a fourth broke the tie. †The doc-example count
 carries a documented ±5 band: Rakudo randomizes hash iteration order per
 process, and the moved rows are ones where *Rakudo's* output drifted from the
 documentation. \*The distribution bar RAISED itself at v3.0.0: at v2.0.0
