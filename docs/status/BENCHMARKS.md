@@ -34,14 +34,13 @@ there.)
 - **Startup:** ~2 ms cold on this machine (best of a 200-spawn loop: 1.8 ms) —
   a tiny native binary with no VM to spin up. For one-liners, CLI glue, and
   small programs it is instant.
-- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.5× on
-  `arrayops` to 9.6× on `loopsum`, 13.5× on `hash`, and 39.9× on `strcat`.
+- **Native (`--exe`) beats Rakudo on every benchmark here** — from 2.6× on
+  `arrayops` to 9.5× on `loopsum`, 13.4× on `hash`, and 51.4× on `strcat`.
   Compiling removes interpreter overhead.
-- **Rakudo's JIT keeps two interpreter wins**, and both narrowed with the
-  interpreter fast paths added on 2026-07-31: `fib` (1.4×, was 1.6×) — deep
-  recursion of a tiny body — and `streq` (1.5×, was 1.7×). Compiling flips both:
-  `--exe` puts `fib` 3.0× ahead and `streq` 6.4× ahead (string `eq`/`lt` compile
-  to inline byte-compares — see [internals/DISPATCH.md](../internals/DISPATCH.md) for the
+- **Rakudo's JIT keeps two interpreter wins**: `fib` (1.4×) — deep recursion
+  of a tiny body — and `streq` (1.6×). Compiling flips both: `--exe` puts
+  `fib` 3.0× ahead and `streq` 6.1× ahead (string `eq`/`lt` compile to inline
+  byte-compares — see [internals/DISPATCH.md](../internals/DISPATCH.md) for the
   dispatch story).
 - Even the **interpreter** beats Rakudo on 7 of 9 — everything except `fib` and
   `streq`, including the `loopsum` loop kernel (1.3×).
@@ -50,9 +49,14 @@ there.)
 
 ## Methodology
 
-- **Machine:** macOS (Darwin 24.6), re-measured 2026-07-31 after the interpreter
-  [node-specialization work](../internals/NODE-SPECIALIZATION.md), on a lightly loaded
-  desktop. (Rows are not comparable across doc revisions — absolute times
+- **Machine:** macOS (Darwin 24.6), re-measured 2026-08-11 at v3.14.0 on an
+  idle desktop — every kernel at or slightly faster than the 2026-07-31
+  measurement, consistent with that release's perf-guard result (each of its
+  kernels 1.9–3.0% faster than the v3.1.0 baseline). The harness now REFUSES
+  a rakupp binary built for another architecture, the same guard perf-guard
+  carries: a stale x86_64 `build/` beside a `build-arm64/` measures under
+  Rosetta at a uniform 1.7–2× penalty, and exactly that nearly shipped in
+  this file at v3.14.0. (Rows are not comparable across doc revisions — absolute times
   shift a few percent with machine state; the Rakudo column, measured every
   time, is the fixed yardstick. A per-iteration `std::function` allocation that
   had crept into the loop path over the v0.7.1→v0.9.0 cycle was found by bisect
@@ -90,15 +94,15 @@ Rakudo's VM leads on `fib` (tiny-body recursion, a JIT's best case) and on
 
 | Benchmark | Raku++ (interp) | Rakudo | Faster |
 |---|---:|---:|---|
-| strcat   | 16.0 ms  | 191.3 ms | **Raku++ 12.0×** |
-| bigint   | 34.1 ms  | 266.0 ms | **Raku++ 7.8×** |
-| hash     | 37.9 ms  | 235.0 ms | **Raku++ 6.2×** |
-| sortnums | 70.6 ms  | 265.5 ms | **Raku++ 3.8×** |
-| regex    | 91.8 ms  | 298.9 ms | **Raku++ 3.3×** |
-| arrayops | 118.6 ms | 297.9 ms | **Raku++ 2.5×** |
-| loopsum  | 204.6 ms | 276.0 ms | **Raku++ 1.3×** |
-| fib      | 671.4 ms | 482.4 ms | Rakudo 1.4× |
-| streq    | 460.1 ms | 306.7 ms | Rakudo 1.5× |
+| strcat   | 15.0 ms  | 179.8 ms | **Raku++ 12.0×** |
+| bigint   | 32.0 ms  | 250.4 ms | **Raku++ 7.8×** |
+| hash     | 35.6 ms  | 223.2 ms | **Raku++ 6.3×** |
+| sortnums | 63.6 ms  | 251.3 ms | **Raku++ 4.0×** |
+| regex    | 88.5 ms  | 275.5 ms | **Raku++ 3.1×** |
+| arrayops | 108.2 ms | 273.4 ms | **Raku++ 2.5×** |
+| loopsum  | 199.1 ms | 257.9 ms | **Raku++ 1.3×** |
+| fib      | 648.6 ms | 457.0 ms | Rakudo 1.4× |
+| streq    | 458.8 ms | 282.5 ms | Rakudo 1.6× |
 
 ### Native (`--exe`) vs Rakudo
 
@@ -108,20 +112,20 @@ speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | Rakudo | Faster | vs interp |
 |---|---:|---:|---|---:|
-| strcat   | 4.8 ms   | 191.3 ms | **Raku++ 39.9×** | 3.3× |
-| hash     | 17.4 ms  | 235.0 ms | **Raku++ 13.5×** | 2.2× |
-| loopsum  | 28.9 ms  | 276.0 ms | **Raku++ 9.6×**  | 7.1× |
-| bigint   | 31.2 ms  | 266.0 ms | **Raku++ 8.5×**  | 1.1× |
-| streq    | 48.1 ms  | 306.7 ms | **Raku++ 6.4×**  | 9.6× |
-| sortnums | 51.4 ms  | 265.5 ms | **Raku++ 5.2×**  | 1.4× |
-| regex    | 72.0 ms  | 298.9 ms | **Raku++ 4.2×**  | 1.3× |
-| fib      | 159.6 ms | 482.4 ms | **Raku++ 3.0×**  | 4.2× |
-| arrayops | 118.6 ms | 297.9 ms | **Raku++ 2.5×**  | 1.0× |
+| strcat   | 3.5 ms   | 179.8 ms | **Raku++ 51.4×** | 4.3× |
+| hash     | 16.7 ms  | 223.2 ms | **Raku++ 13.4×** | 2.1× |
+| loopsum  | 27.2 ms  | 257.9 ms | **Raku++ 9.5×**  | 7.3× |
+| bigint   | 29.5 ms  | 250.4 ms | **Raku++ 8.5×**  | 1.1× |
+| streq    | 46.1 ms  | 282.5 ms | **Raku++ 6.1×**  | 10.0× |
+| sortnums | 45.8 ms  | 251.3 ms | **Raku++ 5.5×**  | 1.4× |
+| regex    | 70.8 ms  | 275.5 ms | **Raku++ 3.9×**  | 1.3× |
+| fib      | 151.4 ms | 457.0 ms | **Raku++ 3.0×**  | 4.3× |
+| arrayops | 105.7 ms | 273.4 ms | **Raku++ 2.6×**  | 1.0× |
 
 **Reading the `vs interp` column:** compiling helps most where a tree-walker
-hurts — `streq` 12.2× (per-node walking around what is, after the fast path, a
-trivial byte-compare — see [internals/DISPATCH.md](../internals/DISPATCH.md)), `loopsum` 7.0×,
-`fib` 5.1× (both re-dispatch a tiny body a huge number of times). It's a near
+hurts — `streq` 10.0× (per-node walking around what is, after the fast path, a
+trivial byte-compare — see [internals/DISPATCH.md](../internals/DISPATCH.md)), `loopsum` 7.3×,
+`fib` 4.3× (both re-dispatch a tiny body a huge number of times). It's a near
 no-op (1.0–1.3×) for the workloads whose time is spent *inside* runtime
 methods — `arrayops`/`sortnums` (`.grep`/`.map`/`.sort`) and especially
 `bigint`, which lives almost entirely in `BigInt` multiply. There the driving

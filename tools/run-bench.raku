@@ -21,6 +21,31 @@ my $repo  = $tools.parent;                  # repo root
 my $bench = $tools.add('bench');            # benchmark programs live here
 my $RAKUPP = %*ENV<RAKUPP> // $repo.add('build/rakupp').Str;
 my $RAKUDO = %*ENV<RAKUDO> // 'raku';
+
+# A binary built for ANOTHER ARCHITECTURE runs under translation, which costs
+# a uniform 1.7-2x — perf-guard refuses that binary; this harness silently
+# benchmarked it (a stale x86_64 build/ beside a build-arm64/ inflated every
+# interp row ~1.9x and startup 8x, and the numbers nearly shipped in
+# BENCHMARKS.md at v3.14.0). Same guard, same wording, same remedy.
+unless $*DISTRO.is-win {
+    my $s = run('sysctl', '-n', 'hw.optional.arm64', :out, :err);
+    my $host = $s.out.slurp(:close).trim eq '1' ?? 'arm64' !! do {
+        $s.err.slurp(:close);
+        my $u = run('uname', '-m', :out, :err);
+        my $m = $u.out.slurp(:close).trim; $u.err.slurp(:close);
+        $m
+    };
+    my $f = run('file', '-b', $RAKUPP, :out, :err);
+    my $desc = $f.out.slurp(:close); $f.err.slurp(:close);
+    my $bin = $desc.contains('arm64') ?? 'arm64'
+           !! $desc.contains('x86_64') ?? 'x86_64' !! '';
+    if $bin && $host && $bin ne $host {
+        note "run-bench REFUSED — $RAKUPP is $bin on a $host host.";
+        note "It would be measured under translation, which costs 1.7-2x uniformly.";
+        note "Build for this machine, or point RAKUPP at the $host binary.";
+        exit 2;
+    }
+}
 my $RUNS   = 7;   # 1 warm-up run (discarded) + 6 measured
 
 my @benches =
