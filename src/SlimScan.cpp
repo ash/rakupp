@@ -48,10 +48,15 @@ struct Scan {
     SlimScanResult r;
     std::set<std::string> useNames;     // every `use`/`need` module seen anywhere
     std::string where;                  // "" = mainline, else module name (for trigger text)
+    int curLine = 0;                    // nearest enclosing node line (walkE/walkS maintain it)
 
-    void use(int f) { r.used[f] = true; }
+    void use(int f, const std::string& what) {
+        r.used[f] = true;
+        r.sites.push_back({f, what, where, curLine});
+    }
     void trigger(const std::string& what) {
         std::string at = where.empty() ? "the program" : "module " + where;
+        if (curLine) at += ", line " + std::to_string(curLine);
         r.triggers.push_back(what + " (in " + at + ")");
     }
 
@@ -66,20 +71,20 @@ struct Scan {
         static const std::set<std::string> namesFns = {"uniname", "uninames", "uniparse",
                                                        "unival", "univals"};
         static const std::set<std::string> propsFns = {"uniprop", "uniprops", "unimatch"};
-        if (namesFns.count(n)) use(F_NAMES);
-        if (propsFns.count(n)) { use(F_PROPS); use(F_NAMES); } // bare &uniprop: args unknown
-        if (n == "collate") use(F_COLL);
+        if (namesFns.count(n)) use(F_NAMES, n);
+        if (propsFns.count(n)) { use(F_PROPS, n); use(F_NAMES, n); } // bare &uniprop: args unknown
+        if (n == "collate") use(F_COLL, "collate");
         if (n == "infix:<unicmp>" || n == "infix:<coll>" ||
-            n == "[unicmp]" || n == "[coll]") use(F_COLL);
-        if (n == "EVAL" || n == "EVALFILE") { use(F_EVAL); trigger("EVAL"); }
-        if (raw == "$*COLLATION") use(F_COLL);
+            n == "[unicmp]" || n == "[coll]") use(F_COLL, "a " + n + " reference");
+        if (n == "EVAL" || n == "EVALFILE") { use(F_EVAL, n); trigger("EVAL"); }
+        if (raw == "$*COLLATION") use(F_COLL, "$*COLLATION");
     }
     void noteOp(const std::string& op) {
-        if (op == "unicmp" || op == "coll") use(F_COLL);
+        if (op == "unicmp" || op == "coll") use(F_COLL, "the " + op + " operator");
     }
     // uniprop-family call with these arguments (invocant excluded).
     void noteUniprop(const std::string& fn, const std::vector<ExprPtr>& args, size_t propIdx) {
-        if (fn == "uniprops") { use(F_PROPS); use(F_NAMES); return; } // reports many properties
+        if (fn == "uniprops") { use(F_PROPS, fn); use(F_NAMES, fn); return; } // reports many properties
         if (args.size() <= propIdx) return;            // default = General_Category: never cut
         Expr* a = args[propIdx].get();
         if (a && a->kind == NK::StrLit) {
@@ -87,11 +92,12 @@ struct Scan {
             std::string norm;
             for (char c : p) if (std::isalnum((unsigned char)c)) norm += (char)std::tolower((unsigned char)c);
             if (norm == "name" || norm == "na" || norm == "numericvalue" || norm == "nv")
-                { use(F_NAMES); return; }               // Name/Numeric_Value live in the names tables
-            if (uniPropNeedsCutTables(p)) use(F_PROPS);
+                { use(F_NAMES, fn + "('" + p + "')"); return; } // Name/Numeric_Value live in the names tables
+            if (uniPropNeedsCutTables(p)) use(F_PROPS, fn + "('" + p + "')");
             return;
         }
-        use(F_PROPS); use(F_NAMES);                     // computed property name: keep both
+        use(F_PROPS, fn + " with a computed property name");
+        use(F_NAMES, fn + " with a computed property name");
     }
 
     // ---- regex pattern text -------------------------------------------------
@@ -121,7 +127,7 @@ struct Scan {
             if (c == '\\') {
                 esc = true;
                 if (i + 2 < pat.size() && (pat[i+1] == 'c' || pat[i+1] == 'C') && pat[i+2] == '[')
-                    use(F_NAMES);                       // \c[NAME]: engine resolves at run time
+                    use(F_NAMES, "\\c[…] in a regex");   // engine resolves the name at run time
                 continue;
             }
             if (cls > 0) {                              // <[…]> contents are literal
@@ -138,7 +144,7 @@ struct Scan {
                 while (j < pat.size() && (pat[j] == '+' || pat[j] == '-' || pat[j] == '!' || pat[j] == '?')) j++;
                 if (j < pat.size() && pat[j] == '[') { cls = 1; i = j; continue; }
                 if (j < pat.size() && (pat[j] == '$' || pat[j] == '{')) {
-                    use(F_EVAL);                        // parsed and matched at run time
+                    use(F_EVAL, "a regex interpolating a subregex"); // parsed and matched at run time
                     trigger("a regex interpolating a subregex (<$…>/<{…}>)");
                     if (pat[j] == '{') { std::string b; size_t e;   // still walk what IS visible
                         if (extractBlock(pat, j, b, e)) { scanEmbeddedCode(b); i = e; continue; } }
@@ -154,17 +160,18 @@ struct Scan {
                         size_t v = k + 1, vend = pat.find('>', v);
                         if (vend != std::string::npos) {
                             if (uniPropNeedsCutTables(name + "<" + pat.substr(v, vend - v) + ">"))
-                                use(F_PROPS);
+                                use(F_PROPS, "<:" + name + "<…>> in a regex");
                             i = vend; continue;
                         }
                     }
-                    if (!name.empty() && uniPropNeedsCutTables(name)) use(F_PROPS);
+                    if (!name.empty() && uniPropNeedsCutTables(name))
+                        use(F_PROPS, "<:" + name + "> in a regex");
                     i = k - 1; continue;
                 }
                 continue;
             }
             if (c == '{') {                             // a literal code block: visible source
-                use(F_EVAL);                            // evalString runs it at match time
+                use(F_EVAL, "a regex code block");      // evalString runs it at match time
                 std::string b; size_t e;
                 if (extractBlock(pat, i, b, e)) { scanEmbeddedCode(b); i = e; }
                 else trigger("a regex code block the scan could not extract");
@@ -175,8 +182,9 @@ struct Scan {
                 size_t k = i + 1;
                 while (k < pat.size() && (std::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
                 std::string adv = pat.substr(i + 1, k - i - 1);
-                if (adv == "my") use(F_EVAL);           // `:my $x;` executes via evalString
-                if (k < pat.size() && pat[k] == '(') use(F_EVAL); // `:nth(2)`: the arg evaluates
+                if (adv == "my") use(F_EVAL, ":my in a regex"); // executes via evalString
+                if (k < pat.size() && pat[k] == '(')
+                    use(F_EVAL, ":" + adv + "(…) in a regex");  // the argument evaluates
                 i = k - 1; continue;
             }
         }
@@ -190,7 +198,7 @@ struct Scan {
             if (esc) { esc = false; continue; }
             if (c == '\\') { esc = true; continue; }
             if (c == '{') {
-                use(F_EVAL);
+                use(F_EVAL, "an s/// replacement block");
                 std::string b; size_t e;
                 if (extractBlock(repl, i, b, e)) { scanEmbeddedCode(b); i = e; }
                 else trigger("an s/// replacement block the scan could not extract");
@@ -200,12 +208,14 @@ struct Scan {
                 char n = repl[i + 1];
                 // $0 / $<name> are capture refs the engine resolves itself; a
                 // method chain on one (`$0.uc`) goes through evalString.
-                if (std::isalpha((unsigned char)n) || n == '_' || n == '*') use(F_EVAL);
+                if (std::isalpha((unsigned char)n) || n == '_' || n == '*')
+                    use(F_EVAL, "an s/// replacement interpolating a variable");
                 if (std::isdigit((unsigned char)n) || n == '<') {
                     size_t k = i + 1;
                     if (n == '<') { k = repl.find('>', k); if (k == std::string::npos) continue; k++; }
                     else while (k < repl.size() && std::isdigit((unsigned char)repl[k])) k++;
-                    if (k < repl.size() && repl[k] == '.') use(F_EVAL);
+                    if (k < repl.size() && repl[k] == '.')
+                        use(F_EVAL, "an s/// replacement with a method chain");
                 }
             }
         }
@@ -224,6 +234,12 @@ struct Scan {
 
     void walkE(Expr* e) {
         if (!e) return;
+        int prevLine = curLine;
+        if (e->line) curLine = e->line;
+        walkE_(e);
+        curLine = prevLine;
+    }
+    void walkE_(Expr* e) {
         switch (e->kind) {
             case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
             case NK::Whatever: case NK::SelfTerm: case NK::AllomorphLit: break;
@@ -267,7 +283,7 @@ struct Scan {
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
-                if (u->op == "require") { use(F_EVAL); trigger("require"); }
+                if (u->op == "require") { use(F_EVAL, "require"); trigger("require"); }
                 walkE(u->operand.get());
                 break;
             }
@@ -277,7 +293,7 @@ struct Scan {
                     noteName(c->name);
                     if (c->name == "uniprop" || c->name == "uniprops" || c->name == "unimatch")
                         noteUniprop(c->name, c->args, 1);
-                    if (c->name == "EVALFILE") { use(F_EVAL); trigger("EVALFILE"); }
+                    if (c->name == "EVALFILE") { use(F_EVAL, "EVALFILE"); trigger("EVALFILE"); }
                 }
                 walkE(c->callee.get());
                 for (auto& a : c->args) walkE(a.get());
@@ -346,6 +362,12 @@ struct Scan {
 
     void walkS(Stmt* s) {
         if (!s) return;
+        int prevLine = curLine;
+        if (s->line) curLine = s->line;
+        walkS_(s);
+        curLine = prevLine;
+    }
+    void walkS_(Stmt* s) {
         switch (s->kind) {
             case NK::ExprStmt: walkE(static_cast<ExprStmt*>(s)->e.get()); break;
             case NK::VarDecl: walkE(static_cast<VarDecl*>(s)->init.get()); break;
@@ -466,7 +488,8 @@ SlimScanResult slimScan(const Program& prog, const std::vector<BundledModule>& m
     // time: code the scan never saw, plus the parser to load it.
     for (const auto& name : sc.useNames) {
         if (embedded.count(name) || isPragmaName(name)) continue;
-        sc.r.used[F_EVAL] = true;
+        sc.curLine = 0;
+        sc.use(F_EVAL, "module " + name + " loaded from disk at run time");
         sc.trigger("module " + name + " is not embedded (loaded from disk at run time)");
     }
     return sc.r;

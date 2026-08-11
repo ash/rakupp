@@ -240,10 +240,21 @@ BIN` prints it (version, mode, slim level, cut list). It survives symbol
 stripping — the reader scans bytes, not symbol tables — so `strings BIN |
 grep RAKUPP-EXE` finds it too.
 
-The introspection directives (`--slim=list`, `why:FEAT`, `verify`, `help`)
-arrive with [SLIM-PLAN](../dev/plans/SLIM-PLAN.md) P5; asking for one today
-errors with the list of what exists. `--slim` shapes the link, so it applies
-to the compile modes only — the interpreter never slims.
+**The directives** — one per SPEC, and the key documents itself:
+
+| directive | |
+|---|---|
+| `help` | the grammar, the feature table with the real archive sizes beside this rakupp, and examples. Stands alone: `rakupp --slim=help`. |
+| `list` | for *this* program: keep/cut per feature with the reason (`used: uniname (line 3)`, `proven unused`, the trigger list) and the bytes. Analyses only — does not compile. |
+| `why:FEAT` | every site — program or module, with the line — that forces FEAT to be kept; or the honest `no use anywhere`. |
+| `verify` | build the slim binary AND a full reference, run both, and emit the slim one only if stdout, stderr and exit status agree. A nondeterministic program cannot agree with anything, so `verify` refuses it too. |
+
+`list` and `why:` compose with a level (`--slim=max,list` shows what `max`
+would decide); `verify` verifies whatever the rest of the SPEC asks for —
+including an explicit cut, which is exactly when you want the proof.
+
+`--slim` shapes the link, so it applies to the compile modes only — the
+interpreter never slims.
 
 ## MAIN: how a program's own arguments parse
 

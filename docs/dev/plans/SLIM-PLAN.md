@@ -536,6 +536,27 @@ notes.
 **Gate:** every level, feature and directive has a golden in `t/run.raku`,
 in the style the CLI campaign established.
 
+> **Outcome (2026-08-11).** All four directives live, riding the compile
+> modes: `help` stands alone and prints the grammar with the REAL archive
+> sizes beside the running rakupp; `list` and `why:FEAT` run the parse, the
+> module graph and the scan — the same `slimDecide()` the compile path uses,
+> so what `list` prints is what a compile does BY CONSTRUCTION — and stop
+> without compiling; `verify` builds slim + a full reference (identical
+> strip, no cuts), runs both, and emits only on byte-agreement of
+> stdout/stderr/exit — measured refusing an explicit wrong cut
+> (`safe,-unicode-names,verify` on a uniname program: exit 6, nothing
+> emitted). The scan grew evidence: every use-site is recorded with what/
+> where/line (walkers maintain the nearest enclosing node line), which is
+> what `list`'s reason column and `why:`'s site table print. Grammar: one
+> directive per SPEC, `help` alone, `why:` validates its feature name.
+> Gate: t/run.raku grew 406 → 433 checks — `help` names every token; `list`
+> and `why:` fragment-checked on a fixture (archive sizes vary per platform,
+> so the checks pin structure and reasons, not bytes); every LEVEL compiles
+> fibonacci, lands in the manifest and matches the byte-golden; `-all`
+> names all four features in the manifest and still matches; `verify`
+> agree-path golden'd there, refuse-path in `t/slim/run.raku` (now 48
+> checks). CLI.md gets the directive table, README the size row.
+
 ### P6 — flip `auto` to the default
 
 Not part of the 3.14 tag. `auto` is sound by construction, so the end state

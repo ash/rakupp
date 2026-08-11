@@ -63,7 +63,7 @@ for ('safe,none',     'at most one level'),
     ('-eval,+eval',   'both +eval and -eval'),
     ('-bogus',        'Unknown --slim feature'),
     ('none,-eval',    'conflict, not a refinement'),
-    ('list',          'Unknown --slim token')      # the P5 directive, not built yet
+    ('why:',          'takes a feature name')      # why: with no feature
 -> ($spec, $expect) {
     my $p = run $*EXECUTABLE, '--exe', $hello, "--slim=$spec", :out, :err;
     my $err = $p.err.slurp(:close);
@@ -259,6 +259,18 @@ my $catch = probe('catch.raku', q:to/END/);
     $info.err.slurp(:close);
     check $xc == 0 && $out eq 'M' && $line.contains('"unicode-props"'),
           '<:Lu>/<:Nd> resolve from never-cut tables, so props still cuts — and matches', "$out / $line";
+}
+
+# ---- 6b. verify (P5): the proof-or-nothing directive -----------------------
+
+{
+    my $p = run $*EXECUTABLE, '--exe', %probes<unicode-names>,
+                '--slim=safe,-unicode-names,verify', '-o', $tmp.add('vf').Str, :out, :err;
+    my $err = $p.err.slurp(:close);
+    $p.out.slurp(:close);
+    check $p.exitcode == 6 && $err.contains('DISAGREE'),
+          'verify refuses to emit a binary whose cut changes behaviour', $err;
+    check !$tmp.add('vf').e, '…and nothing is left behind';
 }
 
 # ---- 7. the other pipelines: AOT takes cuts, bundling refuses -eval --------

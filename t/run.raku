@@ -919,6 +919,93 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     }
 }
 
+# ---- --slim: every level, feature and directive (SLIM-PLAN P5 gate) ----
+section('--slim: levels, features, directives');
+{
+    sub slim-err(*@args) {
+        my $p = run($*EXECUTABLE, |@args, :out, :err);
+        ($p.out.slurp(:close), $p.err.slurp(:close), $p.exitcode)
+    }
+    # help stands alone and documents the whole grammar
+    my ($out, $exit) = run-rakupp('--slim=help');
+    ok($exit == 0, '--slim=help exits 0');
+    contains-all($out, <none safe auto max unicode-names unicode-collation
+                        unicode-props eval unicode all symbols
+                        list why:FEAT verify --exe-info>,
+                 '--slim=help names every level, feature and directive');
+
+    my $demo = $ROOT.add('t/fixtures/slim-demo.raku').Str;
+
+    # list: the scan's decisions, with reasons and sites — and no compile
+    ($out, $exit) = run-rakupp('--exe', $demo, '--slim=list');
+    ok($exit == 0, '--slim=list exits 0 without compiling');
+    contains-all($out, ['used: uniname (line 1)', 'used: EVAL (line 2)',
+                        'dynamic constructs keeping everything', 'would cut'],
+                 '--slim=list shows keep/cut, the reasons, and the trigger');
+    ($out, $exit) = run-rakupp('--exe', $demo, '--slim=max,list');
+    contains-all($out, ['proven unused (dynamic constructs ignored)'],
+                 '--slim=max,list cuts on static evidence and says so');
+
+    # why:FEAT — the sites that force a keep, or the honest "nothing does"
+    ($out, $exit) = run-rakupp('--exe', $demo, '--slim=why:unicode-names');
+    contains-all($out, ['kept: unicode-names', 'uniname', 'line 1'],
+                 'why:unicode-names lists the forcing site with its line');
+    ($out, $exit) = run-rakupp('--exe', $demo, '--slim=max,why:unicode-collation');
+    contains-all($out, ['cut: unicode-collation', 'no use anywhere'],
+                 'why: on a cut feature says nothing forces it');
+
+    # the grammar refuses nonsense, naming the alternatives
+    for ('help,max',     'stands alone'),
+        ('list,verify',  'one directive at a time'),
+        ('why:bogus',    'takes a feature name')
+    -> ($spec, $expect) {
+        my ($xo, $xe, $xx) = slim-err('--exe', $demo, "--slim=$spec");
+        ok($xx == 4 && $xe.contains($expect), "--slim=$spec is refused: $expect");
+    }
+
+    # every LEVEL compiles fibonacci, lands in the manifest, and behaves
+    my $fib = $ROOT.add('examples/fibonacci.raku').Str;
+    my $want = $EXP.add('fibonacci.out').IO.slurp;
+    for <none safe auto max> -> $lvl {
+        my $bin = $*TMPDIR.add("rakupp-suite-slim-$lvl-$*PID").Str;
+        my $p = run($*EXECUTABLE, '--exe', $fib, "--slim=$lvl", '-o', $bin, :!out, :err);
+        $p.err.slurp(:close);
+        ok($p.exitcode == 0, "--slim=$lvl compiles fibonacci");
+        my ($info, $) = run-rakupp('--exe-info', $bin);
+        contains-all($info, ["\"slim\":\"$lvl\""], "--exe-info shows level $lvl");
+        $p = run($bin, :out);
+        ok($p.out.slurp(:close) eq $want, "the --slim=$lvl binary matches the golden");
+        try unlink $bin;
+    }
+
+    # every FEATURE, cut explicitly in one spec: fibonacci uses none of the
+    # four, so -all behaves identically and the manifest names each feature
+    {
+        my $bin = $*TMPDIR.add("rakupp-suite-slim-all-$*PID").Str;
+        my $p = run($*EXECUTABLE, '--exe', $fib, '--slim=-all', '-o', $bin, :!out, :err);
+        $p.err.slurp(:close);
+        ok($p.exitcode == 0, '--slim=-all compiles fibonacci');
+        my ($info, $) = run-rakupp('--exe-info', $bin);
+        contains-all($info, ['"unicode-names"', '"unicode-collation"',
+                             '"unicode-props"', '"eval"'],
+                     'the manifest names all four cut features');
+        $p = run($bin, :out);
+        ok($p.out.slurp(:close) eq $want, 'the -all binary matches the golden');
+        try unlink $bin;
+    }
+
+    # verify: builds slim AND full, emits only on agreement — and it agreed
+    {
+        my $bin = $*TMPDIR.add("rakupp-suite-slim-vf-$*PID").Str;
+        my ($xo, $xe, $xx) = slim-err('--exe', $fib, '--slim=verify', '-o', $bin);
+        ok($xx == 0 && $xe.contains('slim and full agree'),
+           '--slim=verify emits after proving agreement');
+        my $p = run($bin, :out);
+        ok($p.out.slurp(:close) eq $want, 'the verified binary matches the golden');
+        try unlink $bin;
+    }
+}
+
 # ---- summary ----------------------------------------------------------
 note "";
 say "1..$count";

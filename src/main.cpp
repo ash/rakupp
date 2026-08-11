@@ -226,12 +226,17 @@ static std::string msvcEnvPrefix() {
 // `none` with any override — SLIM-PLAN's rule is that a wrong ask is loud,
 // never last-wins.
 enum class SlimLevel { None, Safe, Auto, Max };
+// P5: the introspection directives. At most one per SPEC; `help` must stand
+// alone. `list`/`why:` analyse without compiling; `verify` compiles twice.
+enum class SlimDirective { None, Help, List, Why, Verify };
 struct SlimSpec {
     SlimLevel level = SlimLevel::Safe;
     bool deadStrip = true;   // level ≥ safe: unreferenced sections dropped at link
     bool stripSyms = true;   // …and local symbols left out of the symbol table
     int  featSign[4] = {0, 0, 0, 0};             // explicit ± per feature (0 = unsaid)
     bool cut[4] = {false, false, false, false};  // the decision; the scan adds to it
+    SlimDirective directive = SlimDirective::None;
+    std::string whyFeat;                         // why:FEAT — which feature to explain
 };
 static SlimSpec g_slim;                 // default = level `safe`, nothing cut
 static bool     g_slimExplicit = false; // a --slim flag was given (mode validation)
@@ -269,6 +274,23 @@ static std::string parseSlimSpec(const std::string& spec) {
                                                                       : comma - pos);
         pos = comma == std::string::npos ? spec.size() + 1 : comma + 1;
         if (tok.empty()) continue;
+        if (tok == "help" || tok == "list" || tok == "verify" || tok.rfind("why:", 0) == 0) {
+            if (out.directive != SlimDirective::None)
+                return "--slim takes one directive at a time (got '" + tok + "' after another)";
+            if (tok == "help") out.directive = SlimDirective::Help;
+            else if (tok == "list") out.directive = SlimDirective::List;
+            else if (tok == "verify") out.directive = SlimDirective::Verify;
+            else {
+                out.directive = SlimDirective::Why;
+                out.whyFeat = tok.substr(4);
+                bool known = false;
+                for (int i = 0; i < 4; i++) if (out.whyFeat == kSlimFeatures[i]) known = true;
+                if (!known)
+                    return "--slim=why: takes a feature name (unicode-names, "
+                           "unicode-collation, unicode-props, eval); got '" + out.whyFeat + "'";
+            }
+            continue;
+        }
         if (tok == "none" || tok == "safe" || tok == "auto" || tok == "max") {
             if (haveLevel) return "--slim takes at most one level (got a second: '" + tok + "')";
             haveLevel = true;
@@ -302,6 +324,8 @@ static std::string parseSlimSpec(const std::string& spec) {
     if (levelNone && anyOverride)
         return "--slim=none already keeps everything; combining it with a ±symbols "
                "or ±feature override is a conflict, not a refinement";
+    if (out.directive == SlimDirective::Help && (haveLevel || anyOverride))
+        return "--slim=help stands alone (it documents the whole grammar)";
     // A SPEC that names no level means `auto` — including the empty SPEC
     // (bare `--slim`). `safe` with overrides stays explicit-only, no scan.
     if (!haveLevel) out.level = SlimLevel::Auto;
@@ -359,6 +383,46 @@ static std::string slimManifestTU(const char* how) {
            "} } rk_keep_manifest; }\n";
 }
 
+// The ONE place a feature's fate is decided from (spec, scan) — the compile
+// path (applySlimScan) and the `list`/`why:` directives both read it, so what
+// `list` prints is what a compile does, by construction.
+struct SlimDecision {
+    bool cut;
+    std::string why;        // human-readable reason, in list's column style
+};
+static void slimDecide(const SlimScanResult& sr, SlimDecision d[4]) {
+    bool scans = slimScans();
+    bool full  = g_slim.level == SlimLevel::Auto && !sr.triggers.empty();
+    for (int i = 0; i < 4; i++) {
+        if (g_slim.featSign[i] > 0) { d[i] = {false, std::string("kept by +") + kSlimFeatures[i]}; continue; }
+        if (g_slim.featSign[i] < 0) { d[i] = {true,  std::string("cut by -") + kSlimFeatures[i]}; continue; }
+        // first recorded use, for the reason column
+        std::string firstUse;
+        for (const auto& site : sr.sites)
+            if (site.feat == i) {
+                firstUse = "used: " + site.what;
+                if (!site.where.empty()) firstUse += " (module " + site.where + ")";
+                else if (site.line)      firstUse += " (line " + std::to_string(site.line) + ")";
+                break;
+            }
+        if (!scans) {
+            const char* lvl = g_slim.level == SlimLevel::None ? "none" : "safe";
+            d[i] = {false, std::string("level ") + lvl + " keeps everything" +
+                           (sr.used[i] ? "; also " + firstUse
+                                       : std::string("; bare --slim would cut it"))};
+        }
+        else if (full)
+            d[i] = {false, sr.used[i] ? firstUse
+                                      : "kept: a dynamic construct keeps everything (see below)"};
+        else if (sr.used[i])
+            d[i] = {false, firstUse};
+        else
+            d[i] = {true, g_slim.level == SlimLevel::Max && !sr.triggers.empty()
+                              ? "proven unused (dynamic constructs ignored)"
+                              : "proven unused"};
+    }
+}
+
 // Fold the scan's verdict into g_slim (SLIM-PLAN P4). Under `auto` a trigger
 // keeps everything and says so — the program can run code the scan never saw,
 // and the default answer to uncertainty is "keep". Under `max` the triggers
@@ -381,11 +445,10 @@ static void applySlimScan(const SlimScanResult& sr) {
                   << " dynamic construct(s) the scan cannot see — a feature they need "
                      "at run time will throw X::Feature::NotBuilt.\n";
     }
-    for (int i = 0; i < 4; i++) {
-        if (g_slim.featSign[i]) continue;   // the user said so by name
-        if (full) continue;                 // auto + trigger: keep everything
-        if (!sr.used[i]) g_slim.cut[i] = true;
-    }
+    SlimDecision d[4];
+    slimDecide(sr, d);
+    for (int i = 0; i < 4; i++)
+        if (d[i].cut) g_slim.cut[i] = true;
 }
 
 // --exe-info FILE: print the embedded manifest of a rakupp-compiled binary.
@@ -910,6 +973,219 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
     return 0;
 }
 
+// ---- the --slim directives (SLIM-PLAN P5) ---------------------------------
+
+static long long slimFileBytes(const std::string& p) {
+    std::ifstream f(p, std::ios::binary | std::ios::ate);
+    return f ? (long long)f.tellg() : -1;
+}
+static std::string slimHuman(long long b) {
+    if (b < 0) return "?";
+    char buf[32];
+    if (b >= 1024 * 1024) snprintf(buf, sizeof buf, "%.1f MB", b / 1048576.0);
+    else                  snprintf(buf, sizeof buf, "%lld KB", b / 1024);
+    return buf;
+}
+// The four feature archives' on-disk sizes — the honest proxy for what a cut
+// saves (the tables dominate; the exact in-binary delta depends on the link).
+static void slimArchiveBytes(const std::string& selfExe, long long out[4]) {
+    std::string lib, inc;
+    for (int i = 0; i < 4; i++) out[i] = -1;
+    if (!findRuntime(selfExe, lib, inc)) return;
+    bool msvcFamily = lib.size() >= 4 && lib.compare(lib.size() - 4, 4, ".lib") == 0;
+    std::string dir = dirOf(lib);
+    for (int i = 0; i < 4; i++)
+        out[i] = slimFileBytes(dir + (msvcFamily ? "/rakupp_" + std::string(kSlimArchives[i]) + ".lib"
+                                                 : "/librakupp_" + std::string(kSlimArchives[i]) + ".a"));
+}
+
+// --slim=help: the key documents itself — grammar, feature table with the
+// REAL archive sizes beside this rakupp, directives. Needs no source file.
+static int slimHelp(const std::string& selfExe) {
+    long long b[4];
+    slimArchiveBytes(selfExe, b);
+    std::cout <<
+        "--slim[=SPEC] — how much of itself a compiled binary keeps (docs/guide/CLI.md)\n"
+        "\n"
+        "SPEC is comma-separated: one LEVEL, ±symbols, ±FEATURE, or a DIRECTIVE.\n"
+        "\n"
+        "levels (at most one; no --slim flag at all = safe):\n"
+        "  none      nothing at all: no dead-strip, symbols kept (for debugging)\n"
+        "  safe      dead-strip + strip symbols; no feature removed, no analysis\n"
+        "  auto      what bare --slim means: safe, plus cut every feature the scan\n"
+        "            PROVES unused; any dynamic construct (EVAL, ::($name), <$re>, …)\n"
+        "            keeps everything, and stderr says which construct\n"
+        "  max       auto, but ignoring those constructs — a wrong cut throws\n"
+        "            X::Feature::NotBuilt at run time, never crashes or lies\n"
+        "\n"
+        "features (+keep / -cut, overriding the level; a named feature beats a group):\n";
+    const char* what[4] = {"uniname/uniparse/unival",
+                           "unicmp, coll, .collate (DUCET)",
+                           "uniprop Script/Block/Bidi_Class",
+                           "EVAL, require, regex code blocks"};
+    for (int i = 0; i < 4; i++) {
+        char line[128];
+        snprintf(line, sizeof line, "  %-18s %-33s %s\n",
+                 kSlimFeatures[i], what[i], slimHuman(b[i]).c_str());
+        std::cout << line;
+    }
+    std::cout <<
+        "  unicode            the three Unicode features as a group\n"
+        "  all                all four\n"
+        "  symbols            the symbol table (+symbols: readable crash reports)\n"
+        "\n"
+        "directives (one per SPEC; help stands alone):\n"
+        "  help      this text\n"
+        "  list      what this compile would keep and cut, and why (does not compile)\n"
+        "  why:FEAT  every site that forces FEAT to be kept\n"
+        "  verify    build slim AND full, run both, emit only if outputs agree\n"
+        "\n"
+        "Examples:\n"
+        "  rakupp --exe prog.raku --slim                  # sound automatic pruning\n"
+        "  rakupp --exe prog.raku --slim=max,+unicode     # smallest, Unicode intact\n"
+        "  rakupp --exe prog.raku --slim=safe,-eval       # one deliberate cut, no scan\n"
+        "  rakupp --exe prog.raku --slim=list             # what would happen, and why\n"
+        "\n"
+        "rakupp --exe-info BIN prints a compiled binary's embedded build manifest.\n";
+    return 0;
+}
+
+// --slim=list / --slim=why:FEAT — analyse exactly what the compile would do
+// (same parse, same module graph, same scan, same slimDecide) and stop.
+static int slimExplain(const std::string& src, const std::string& srcName,
+                       const std::string& selfExe, const std::vector<std::string>& libPaths,
+                       const char* modeNote) {
+    Program prog;
+    std::vector<BundledModule> mods;
+    try {
+        Lexer lexer(src);
+        Parser parser(lexer.tokenize());
+        parser.libPaths_ = effectiveSearchPath(libPaths);
+        prog = parser.parseProgram();
+        mods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
+    } catch (const ParseError& e) {
+        std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+        return 2;
+    }
+    SlimScanResult sr = slimScan(prog, mods);
+    SlimDecision d[4];
+    slimDecide(sr, d);
+    const char* lvl = g_slim.level == SlimLevel::None ? "none"
+                    : g_slim.level == SlimLevel::Safe ? "safe"
+                    : g_slim.level == SlimLevel::Auto ? "auto" : "max";
+
+    if (g_slim.directive == SlimDirective::List) {
+        long long b[4];
+        slimArchiveBytes(selfExe, b);
+        std::cout << "--slim=" << lvl << " for " << srcName << " (" << modeNote << "):\n";
+        long long cutBytes = 0, cuttable = 0;
+        for (int i = 0; i < 4; i++) {
+            if (b[i] > 0) cuttable += b[i];
+            if (d[i].cut && b[i] > 0) cutBytes += b[i];
+            char line[160];
+            snprintf(line, sizeof line, "  %-18s %-5s %8s   ",
+                     kSlimFeatures[i], d[i].cut ? "cut" : "keep", slimHuman(b[i]).c_str());
+            std::cout << line << d[i].why << "\n";
+        }
+        if (g_slim.level == SlimLevel::Auto && !sr.triggers.empty()) {
+            std::cout << "dynamic constructs keeping everything (--slim=max cuts anyway):\n";
+            for (const auto& t : sr.triggers) std::cout << "  " << t << "\n";
+        }
+        else if (g_slim.level == SlimLevel::Max && !sr.triggers.empty()) {
+            std::cout << "dynamic constructs IGNORED by max (a wrong cut throws at run time):\n";
+            for (const auto& t : sr.triggers) std::cout << "  " << t << "\n";
+        }
+        std::cout << "would cut " << slimHuman(cutBytes) << " of " << slimHuman(cuttable)
+                  << " cuttable (archive sizes)\n";
+        return 0;
+    }
+
+    // why:FEAT
+    int fi = 0;
+    for (int i = 0; i < 4; i++) if (g_slim.whyFeat == kSlimFeatures[i]) fi = i;
+    std::cout << (d[fi].cut ? "cut" : "kept") << ": " << g_slim.whyFeat
+              << " for " << srcName << " under --slim=" << lvl
+              << " — " << d[fi].why << "\n";
+    bool any = false;
+    for (const auto& site : sr.sites) {
+        if (site.feat != fi) continue;
+        any = true;
+        char line[160];
+        snprintf(line, sizeof line, "  %-36s %s%s\n", site.what.c_str(),
+                 site.where.empty() ? "the program" : ("module " + site.where).c_str(),
+                 site.line ? (", line " + std::to_string(site.line)).c_str() : "");
+        std::cout << line;
+    }
+    if (!any && !d[fi].cut && g_slim.level == SlimLevel::Auto && !sr.triggers.empty()) {
+        std::cout << "  no direct use — a dynamic construct keeps every feature:\n";
+        for (const auto& t : sr.triggers) std::cout << "    " << t << "\n";
+    }
+    else if (!any)
+        std::cout << "  no use anywhere in the program or its modules\n";
+    return 0;
+}
+
+// --slim=verify (SLIM-PLAN defence 7): build the slim binary AND a full
+// reference (same strip settings, no cuts), run both bare, and emit the slim
+// one only if stdout, stderr and exit status agree. A nondeterministic
+// program cannot agree with anything — verify refuses it too, and says so.
+static int slimVerify(char modeCh, const std::string& src, const std::string& srcName,
+                      std::string outPath, const std::string& selfExe, bool optimize,
+                      const std::string& ccOpt, const std::vector<std::string>& libPaths) {
+    if (outPath.empty()) outPath = defaultOut(srcName);
+    ensureExeSuffix(outPath);
+    auto build = [&](const std::string& out) -> int {
+        if (modeCh == 'x') return compileNative(src, srcName, out, selfExe, optimize, ccOpt, libPaths);
+        if (modeCh == 'a') return compileAotAst(src, srcName, out, selfExe, libPaths);
+        return compileToExe(src, srcName, out, selfExe, libPaths);
+    };
+    SlimSpec saved = g_slim;
+    std::string fullBin = outPath + ".verify-full", slimBin = outPath + ".verify-slim";
+    // the full reference: identical strip, no cuts, no scan
+    g_slim = SlimSpec{};
+    g_slim.deadStrip = saved.deadStrip;
+    g_slim.stripSyms = saved.stripSyms;
+    int rc = build(fullBin);
+    if (rc == 0) {
+        g_slim = saved;
+        g_slim.directive = SlimDirective::None;
+        rc = build(slimBin);
+    }
+    g_slim = saved;
+    if (rc != 0) { removeFile(fullBin); removeFile(slimBin); return rc; }
+    std::string of = outPath + ".vf-out", ef = outPath + ".vf-err";
+    std::string os = outPath + ".vs-out", es = outPath + ".vs-err";
+    int xf = runCommand(shq(fullBin) + " > " + shq(of) + " 2> " + shq(ef));
+    int xs = runCommand(shq(slimBin) + " > " + shq(os) + " 2> " + shq(es));
+    auto slurp = [](const std::string& p) {
+        std::ifstream f(p, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    bool agree = xf == xs && slurp(of) == slurp(os) && slurp(ef) == slurp(es);
+    for (const auto& p : {of, ef, os, es}) removeFile(p);
+    removeFile(fullBin);
+    if (!agree) {
+        removeFile(slimBin);
+        // raw status compared above (finer: signals differ too); decoded here
+        int df = xf, ds = xs;
+#ifndef _WIN32
+        if (df > 255) df >>= 8;
+        if (ds > 255) ds >>= 8;
+#endif
+        std::cerr << "--slim=verify: the slim and full binaries DISAGREE — nothing emitted.\n"
+                     "(exit " << df << " vs " << ds << "; run --slim=list to see the cuts. If the\n"
+                     " program is nondeterministic, verify cannot judge it.)\n";
+        return 6;
+    }
+    removeFile(outPath);                       // Windows rename() will not overwrite
+    if (std::rename(slimBin.c_str(), outPath.c_str()) != 0) {
+        std::cerr << "Cannot move " << slimBin << " to " << outPath << "\n";
+        return 5;
+    }
+    std::cerr << "verified: slim and full agree — emitted " << outPath << " (slim)\n";
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
@@ -1072,6 +1348,7 @@ int main(int argc, char** argv) {
             if (a == "--slim" || a.rfind("--slim=", 0) == 0) {
                 std::string err = parseSlimSpec(a.size() > 6 ? a.substr(7) : "");
                 if (!err.empty()) { std::cerr << err << "\n"; return 4; }
+                if (g_slim.directive == SlimDirective::Help) return slimHelp(exePath);
                 g_slimExplicit = true; continue;
             }
             if (a == "-e" || (a.rfind("-e", 0) == 0 && a.size() > 2)) {
@@ -1532,6 +1809,17 @@ int main(int argc, char** argv) {
     //   with -I needs nothing at run time.
     if (isCompileMode(mode)) {
         if (!haveSrc) { std::cerr << "Usage: rakupp " << modeTok << " (FILE | -e CODE) [-o OUT] [-I dir] [-O[level]]\n"; return 4; }
+        // The P5 directives ride the compile modes: `list`/`why:` analyse and
+        // stop (no compile); `verify` compiles twice and emits only on proof.
+        if (g_slim.directive == SlimDirective::List || g_slim.directive == SlimDirective::Why) {
+            const char* note = mode == Mode::Exe ? "--exe"
+                : mode == Mode::Aot ? "--aot keeps every feature; shown as --exe would decide"
+                : "--bundle keeps every feature; shown as --exe would decide";
+            return slimExplain(src, fileName, exePath, libPaths, note);
+        }
+        if (g_slim.directive == SlimDirective::Verify)
+            return slimVerify(mode == Mode::Exe ? 'x' : mode == Mode::Aot ? 'a' : 'b',
+                              src, fileName, outPath, exePath, optimize, ccOpt, libPaths);
         if (mode == Mode::Exe) return compileNative(src, fileName, outPath, exePath, optimize, ccOpt, libPaths);
         if (mode == Mode::Aot) return compileAotAst(src, fileName, outPath, exePath, libPaths);
         return compileToExe(src, fileName, outPath, exePath, libPaths); // --bundle
