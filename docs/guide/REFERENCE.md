@@ -814,6 +814,7 @@ try { die "boom" };  say $!.message; # → boom
 | `m:i/ … /` | `:ignorecase` match |
 | `m:s/ … /` | `:sigspace` match (whitespace in the pattern must match whitespace) |
 | `m:g/ … /` | `:global` — all matches |
+| `m:P5/ … /` | `:P5`/`:Perl5` — the pattern is Perl 5 syntax (`( )` groups, `[ ]` classes, `\1` backrefs, `(?i)`/`(?m)`/`(?s)`/`(?x)`, lookaround, `(?<name>…)`, `(?(N)yes\|no)`); works on `s:P5///` and `rx:P5//` too |
 | `s/ … / … /` | substitute (in place, on an lvalue) |
 | `tr/ … / … /` | transliterate |
 | `~~` / `!~~` | apply against a string |

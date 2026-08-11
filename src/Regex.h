@@ -154,7 +154,7 @@ public:
 
 private:
     friend class LtmNfa; // the declarative-prefix ranking NFA reads Node directly
-    enum class K { Lit, Any, Class, Seq, Alt, Conj, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart, CapEnd };
+    enum class K { Lit, Any, Class, Seq, Alt, Conj, Rep, Group, AnchorStart, AnchorEnd, WBLeft, WBRight, Nop, Subrule, Look, Code, VarMatch, CapStart, CapEnd, CondRef };
     struct Node {
         K k;
         std::string lit;                 // Lit
@@ -170,6 +170,8 @@ private:
         bool icase = false;              // case-insensitive at THIS node (scoped inline :i)
         bool imark = false;              // Lit: :ignoremark — compare base codepoints, consume the whole grapheme
         bool multiline = false;          // AnchorStart/AnchorEnd: `^^`/`$$` (line) vs `^`/`$` (string)
+        bool absEnd = false;             // AnchorEnd: P5 `\z` — absolute end, not before a final newline
+        bool p5Line = false;             // AnchorStart, P5 (?m) `^`: after a \n but NOT at the very end
         mutable uint32_t byteset[8];     // per-byte match result (incl. icase+negate), built on first use
         mutable std::atomic<bool> bytesetReady{false}; // release-published after the
                                           // byteset words are filled; readers acquire-load (the flag
@@ -233,6 +235,26 @@ private:
     bool ratchet_ = false; // `token`/`rule`: quantifiers are possessive, matches commit (no backtracking)
     int assertDepth_ = 0; // >0 while parsing an assertion inner (so parseSeq stops at `>`)
     NodePtr root_;
+
+    // :P5/:Perl5 — the pattern is Perl 5 syntax. A second FRONT-END over the same
+    // Node AST; the matcher is untouched. Parse-time state mirrors the Raku
+    // parser's scoped-adverb vars: (?i)/(?m)/(?s)/(?x) apply to the end of the
+    // enclosing group.
+    bool p5_ = false;
+    bool p5Multi_ = false;   // (?m): ^/$ anchor at line boundaries
+    bool p5DotAll_ = false;  // (?s): `.` also matches \n
+    bool p5Ext_ = false;     // (?x): whitespace and #-comments are insignificant
+    int p5Depth_ = 0;        // group nesting (an unmatched `)` is a syntax error)
+    struct P5BadPattern {};  // thrown on P5 syntax errors → ok_ = false
+    NodePtr p5Alt();
+    NodePtr p5Seq();
+    NodePtr p5Quant(NodePtr atom);
+    NodePtr p5Atom();
+    NodePtr p5Group();
+    NodePtr p5Escape();
+    NodePtr p5Class();
+    void p5SkipX();          // (?x) mode: skip whitespace + # comments
+    uint32_t p5Codepoint();  // decode ONE UTF-8 codepoint at pos_, advance
 
     // parser
     NodePtr parseAlt();

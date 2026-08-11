@@ -775,6 +775,7 @@ public:
     std::thread::id mainThreadId() const { return mainThread_; } // `exit` ends the process from any thread
     // Resolve `$var` atoms inside a regex SOURCE (regex splice / literal text).
     std::string interpRegexPattern(const std::string& in);
+    std::string interpP5Pattern(const std::string& in); // :P5 — $vars splice as raw regex source
     // Bake regex-valued variables into an `rx//` source at construction time.
     std::string spliceRegexVars(const std::string& pat);
     Value regexMatch(const std::string& subject, const std::string& pattern,

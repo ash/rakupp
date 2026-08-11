@@ -174,4 +174,8 @@ timeouts — its published 595 / 11 does not reproduce on today's machine either
 — and the fully-passing file LIST diff against it is clean: the only moved
 files pass solo and are members of the documented flap set). Reached-assertion
 pass rate 195,992 / 202,416 (see caveat above — not a coverage figure).
-S05-substitution is a fully-passing subchapter (67222.t, match.t, subst.t)._
+S05-substitution is a fully-passing subchapter (67222.t, match.t, subst.t).
+S05-modifier/Perl_0–10 — the 918-assertion `m:P5` corpus generated from perl's
+own re_tests — passes fully on real Perl-5-syntax matching; before the `:P5`
+adverb landed these files skip-all'ed, so the totals don't move but the skips
+became genuine passes._

@@ -33,8 +33,9 @@ contaminating the other, and it is why the constructor takes a `std::string`
 rather than a token range.
 
 Adverbs arrive as a **flags string** alongside the pattern: `i` for
-ignorecase, `s` for sigspace, `r` for ratchet, `m` for ignoremark, and so on.
-A `token` compiles with `r`; a `rule` with `sr`.
+ignorecase, `s` for sigspace, `r` for ratchet, `m` for ignoremark, `5` for
+Perl 5 pattern syntax (the last section of this chapter). A `token` compiles
+with `r`; a `rule` with `sr`.
 
 ## The node tree
 
@@ -43,11 +44,12 @@ A `token` compiles with `r`; a `rule` with `sr`.
 enum class K {
     Lit, Any, Class, Seq, Alt, Conj, Rep, Group,
     AnchorStart, AnchorEnd, WBLeft, WBRight, Nop,
-    Subrule, Look, Code, VarMatch, CapStart, CapEnd
+    Subrule, Look, Code, VarMatch, CapStart, CapEnd, CondRef
 };
 ```
 
-Nineteen kinds, and the interesting information is in the fields rather than the
+Twenty kinds — the last one exists only for Perl 5 patterns, and this chapter
+ends with it. The interesting information is in the fields rather than the
 tags:
 
 ```cpp
@@ -222,6 +224,10 @@ The constructor records the offending sequence — `\A`, `\z`, `\G`, `\p`, `\Q`,
 match. Distinguishing "this pattern is wrong" from "this pattern did not match"
 is worth the extra field.
 
+Retired, that is, in *Raku* syntax. Every one of those spellings is alive and
+meaningful under the `:P5` adverb, where the same constructor parses the same
+text with a different front-end — the last section of this chapter.
+
 ## Interpolation happens before compilation
 
 `/$var/` and `/@words/` are resolved in the pattern *text*, before the regex is
@@ -262,3 +268,145 @@ compiled pattern, so it is computed once by `collectListNames` walking each
 quantified atom, and then shared — as a `shared_ptr` to a frozen set — into
 every match result the pattern produces. Sharing rather than copying matters
 because a grammar parse produces one of these per rule invocation.
+
+## `:P5` — the same engine wearing Perl 5 syntax
+
+Raku specifies an escape hatch: `m:P5/…/` (long form `:Perl5`, also on `s///`
+and `rx//`) promises that the pattern is Perl 5 syntax — `( )` captures,
+`[ ]` character classes, `\1` backreferences, `(?i)` inline modifiers, `|` as
+leftmost-first alternation. Roast holds it to an 11-file, 918-assertion corpus
+(`S05-modifier/Perl_0.t` through `Perl_10.t`) generated from perl's own
+`re_tests` suite.
+
+The implementation is a **second front-end, not a second engine**. Seven
+parser functions produce the same `Node` tree everything else in this chapter
+produces, and the matcher of Chapter 20 runs it unchanged:
+
+```cpp
+// src/Regex.h
+bool p5_ = false;
+bool p5Multi_ = false;   // (?m): ^/$ anchor at line boundaries
+bool p5DotAll_ = false;  // (?s): `.` also matches \n
+bool p5Ext_ = false;     // (?x): whitespace and # comments insignificant
+NodePtr p5Alt();  NodePtr p5Seq();   NodePtr p5Quant(NodePtr atom);
+NodePtr p5Atom(); NodePtr p5Group(); NodePtr p5Escape();
+NodePtr p5Class();
+```
+
+The structure is a port of the Perl-regex parser inside
+`showcase/perl/perl.raku` — the Perl 5 interpreter written *in* Raku — widened
+to the full `re_tests` surface: lookaround, named groups, backreferences,
+conditionals, inline modifier groups. The four `(?imsx)` state booleans mirror
+`curIcase_`: saved on entering a group, restored on leaving it, so a mid-group
+`(?i)` scopes exactly as Perl scopes it.
+
+### How the adverb reaches the constructor
+
+Two roads lead here, and they meet in the constructor. On the `m//` road the
+Raku lexer bakes leading adverbs into the literal's text — `m:P5:i/ab/`
+travels as the string `":P5 :i ab"` — and unknown adverbs used to fall through
+`skipWs()` untouched, becoming pattern *text* that could never match: `:P5`
+was silently `Nil` on every input. Now the constructor pre-scans a leading
+adverb run without committing, and commits only when `P5` or `Perl5` is among
+it — because in Perl 5 syntax a bare `:` is a literal, so the ordinary
+scoped-adverb machinery must never see the pattern. On the `s///` road,
+`substSelect` parses the adverb run itself (it used to *throw* on `:P5`) and
+passes the fact down as the flag character `5`.
+
+Either way the constructor ends at the same line:
+
+```cpp
+// src/Regex.cpp — the constructor, P5 branch
+if (p5_) {
+    root_ = p5Alt();
+    if (!eof()) throw P5BadPattern{}; // e.g. an unmatched `)`
+}
+```
+
+with parse errors collapsing to `ok_ = false` exactly like Raku-syntax ones.
+
+### Most of Perl desugars to nodes that already existed
+
+The engine's node inventory turned out to be almost sufficient. Some of the
+mappings are one-to-one — `(?:…)` is a `Group` with no index, `(?=…)` and
+`(?<!…)` are `Look` with the right two booleans, `\1` is the in-flight
+backreference `VarMatch` that Raku uses for `$0` inside a pattern. The rest
+are small structural rewrites:
+
+| Perl 5 | becomes |
+|---|---|
+| `\b` | `Alt(WBLeft, WBRight)` — either edge of a word |
+| `\B` | that `Alt` inside a negated `Look` |
+| `.` (no `/s`) | a negated `Class` holding `\n` |
+| `a\|b` | `Alt` with `firstMatch` — Perl `\|` is Raku `\|\|`, never LTM |
+| `[a\D]` | a `classCombo` `Alt`: the positive members, then `¬d` |
+| `[^a\D]` | De Morgan: `Conj(¬a, d)` — all at one position, last consumes |
+| `(?#…)` | consumed before quantifier detection, so `a(?#x){3}` repeats `a` |
+| `(?{…})` | nothing — a constant no-op |
+| `(??{"…"})` | a constant string sub-compiles; the root node is stolen |
+
+The conditional `(?(N)yes|no)` on a *group number* is the one construct with
+no structural equivalent — whether group N participated is match-time state —
+and it is why `K::CondRef` exists: one node, the group number in `min`, the
+two branches as kids, and a four-line matcher case that picks a kid by looking
+at `st.caps`. The conditional on an *assertion*, `(?(?=…)yes|no)`, needs no
+new node at all. The parser reads the condition **twice** — once straight,
+once with its negation flipped, because `Node` trees have no clone — and emits
+a first-match `Alt` whose branches each lead with their guard:
+
+```
+(?(COND)yes|no)   →   Alt||( Seq(COND, yes), Seq(¬COND, no) )
+```
+
+### Three places the engine had to learn something
+
+Perl's anchors are almost rakupp's anchors. `$` matching at the end *or just
+before a final newline* is what this engine's `$` always did, so `\Z` came
+free. `\z` — the absolute end, trailing newline not welcome — did not exist,
+and `(?m)^` is the engine's `^^` minus one position:
+
+```cpp
+// src/Regex.h — Node
+bool absEnd = false;  // AnchorEnd: `\z` — not before a final newline
+bool p5Line = false;  // AnchorStart, (?m) `^`: after \n, NOT at the end
+```
+
+The second flag encodes a genuine difference: `"a\nb\n" =~ /b\s^/m` must fail
+in Perl, because Perl's multiline `^` does not match in the void after a final
+newline, while the engine's `^^` does.
+
+The third lesson is in `Rep`. The matcher refuses zero-width quantifier
+iterations — the standard guard against `(x*)*` looping forever. Perl instead
+admits **one** empty iteration and then stops, and `re_tests` 1327 checks the
+observable consequence: in `2(]*)?$\1` the group matches empty, *participates*,
+and the backreference then matches empty too. The relaxation sits in the
+`Rep` case, gated so Raku patterns keep the strict guard:
+
+```cpp
+auto more = [&](long np) {
+    if (np != p) return self(self, count + 1, np);
+    return p5_ && count + 1 >= mn && finish(np, count + 1);
+};
+```
+
+### Where the semantics are Rakudo's, not Perl's
+
+Three decisions were made by the test corpus rather than by `perlre`, and the
+source says so at each site. Named groups do not take positional indices —
+in Perl, `(?<meow>…)` is also `$1`; in Rakudo's `:P5` (and per `Perl_10.t`)
+it is `$<meow>` only, and `$/[0]` is the first *unnamed* group. A
+backreference to a group that never matched **fails** — modern Perl agrees,
+but it was the corpus (`(a)|\1` against `"x"` must not match) that settled it
+after the implementation initially guessed the old matches-empty behaviour.
+And interpolation follows Perl rather than Raku: a `$var` in a `:P5` pattern
+splices its value as **raw regex source** (`interpP5Pattern`), not as the
+quotemeta'd literal of `interpRegexPattern` — `my $r = '\d+'` really compiles
+the `\d+`. Rakudo fudges its own interpolation tests as not-yet-implemented;
+rakupp passes them.
+
+The payoff of the front-end-only shape is that everything downstream is
+shared: `rx:P5` values flow through `.match`, `.split`, `.comb` and `.subst`
+untouched, `:g` and `:nth` and substitution plumbing never learn that the
+pattern was foreign, and the corpus exercises the one backtracking matcher —
+918 assertions of perl's own regression suite running against the same
+`matchNode` that grammars use.

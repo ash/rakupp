@@ -59,11 +59,43 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
         if (f == 's') sigspace_ = true;
         if (f == 'r') ratchet_ = true;
         if (f == 'm') curImark_ = true; // external :ignoremark adverb
+        if (f == '5') p5_ = true;       // Perl 5 pattern syntax (:P5/:Perl5)
+    }
+    // The lexer bakes `m:P5:i/…/` adverbs into the pattern as leading `:name `
+    // tokens. A `:P5`/`:Perl5` among them switches the whole pattern to Perl 5
+    // syntax, where `:` is a literal — so the adverb run must be consumed HERE,
+    // not by skipWs(). Scan without committing; commit only when :P5 was seen
+    // (Raku-syntax patterns keep the normal scoped-adverb handling).
+    if (!p5_ && !pat_.empty() && pat_[0] == ':') {
+        size_t p = 0; bool sawP5 = false, sawI = false;
+        while (p < pat_.size() && pat_[p] == ':') {
+            size_t j = p + 1;
+            if (j < pat_.size() && pat_[j] == '!') j++;
+            size_t ns = j;
+            while (j < pat_.size() && std::isalnum((unsigned char)pat_[j])) j++;
+            if (j == ns) break;
+            std::string name = pat_.substr(ns, j - ns);
+            if (j < pat_.size() && pat_[j] == '(') { // :nth(3)-style argument
+                int d = 0;
+                while (j < pat_.size()) { char c = pat_[j++]; if (c == '(') d++; else if (c == ')' && --d == 0) break; }
+            }
+            if (j < pat_.size() && pat_[j] == ' ') j++;
+            else if (j < pat_.size()) break; // not the lexer's `:adv ` shape — a pattern colon
+            if (name == "P5" || name == "Perl5") sawP5 = true;
+            else if (name == "i" || name == "ignorecase") sawI = true;
+            p = j;
+        }
+        if (sawP5) { p5_ = true; pos_ = p; if (sawI) icase_ = true; }
     }
     curIcase_ = icase_;
     try {
-        root_ = parseAlt();
-        if (!eof()) ok_ = false; // trailing garbage (e.g. unbalanced)
+        if (p5_) {
+            root_ = p5Alt();
+            if (!eof()) throw P5BadPattern{}; // e.g. an unmatched `)`
+        } else {
+            root_ = parseAlt();
+            if (!eof()) ok_ = false; // trailing garbage (e.g. unbalanced)
+        }
     } catch (ObsoleteEscape& oe) {
         ok_ = false; obsolete_ = oe.seq;
     } catch (FeatureNotBuilt&) {
@@ -77,6 +109,582 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
     } catch (...) {
         ok_ = false;
     }
+}
+
+// =====================  Perl 5 pattern syntax (:P5)  =====================
+// A second front-end producing the same Node AST the matcher runs. Ported from
+// the working parser in showcase/perl/perl.raku, widened to the re_tests
+// surface: lookaround, named groups, backrefs, inline (?imsx) modifiers.
+// P5 text is char-exact — no skipWs(), no Raku adverbs, `:` is a literal.
+
+static std::string p5Utf8(uint32_t cp) {
+    std::string o;
+    if (cp < 0x80) o += (char)cp;
+    else if (cp < 0x800) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+    else { o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F)); }
+    return o;
+}
+
+uint32_t Regex::p5Codepoint() {
+    unsigned char c0 = (unsigned char)pat_[pos_];
+    int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
+    uint32_t cp = clen == 1 ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
+    for (int i = 1; i < clen && pos_ + i < pat_.size(); i++) cp = (cp << 6) | ((unsigned char)pat_[pos_ + i] & 0x3F);
+    pos_ += clen;
+    return cp;
+}
+
+void Regex::p5SkipX() {
+    if (!p5Ext_) return;
+    for (;;) {
+        while (!eof() && std::isspace((unsigned char)peek())) pos_++;
+        if (peek() == '#') { while (!eof() && peek() != '\n') pos_++; continue; }
+        break;
+    }
+}
+
+Regex::NodePtr Regex::p5Alt() {
+    auto first = p5Seq();
+    if (peek() != '|') return first;
+    auto alt = std::make_unique<Node>();
+    alt->k = K::Alt;
+    alt->firstMatch = true; // P5 `|` is leftmost-first, never LTM
+    // empty branches stay: /a|/ legitimately matches the empty string
+    alt->kids.push_back(std::move(first));
+    while (peek() == '|') { pos_++; alt->kids.push_back(p5Seq()); }
+    return alt;
+}
+
+Regex::NodePtr Regex::p5Seq() {
+    auto seq = std::make_unique<Node>();
+    seq->k = K::Seq;
+    for (;;) {
+        p5SkipX();
+        if (eof() || peek() == '|') break;
+        if (peek() == ')') {
+            if (p5Depth_ == 0) throw P5BadPattern{}; // unmatched `)`
+            break;
+        }
+        auto atom = p5Atom();
+        if (!atom) continue;                          // (?i) / (?#…) — pure state, no node
+        seq->kids.push_back(p5Quant(std::move(atom)));
+    }
+    if (seq->kids.size() == 1) return std::move(seq->kids[0]);
+    return seq;
+}
+
+Regex::NodePtr Regex::p5Quant(NodePtr atom) {
+    // (?#comments) — and (?x)-mode whitespace — are invisible, so a quantifier
+    // BEYOND them still binds this atom: `a(?#xxx){3}` repeats the `a`
+    for (;;) {
+        p5SkipX();
+        if (peek() == '(' && peek(1) == '?' && peek(2) == '#') {
+            while (!eof() && peek() != ')') pos_++;
+            if (eof()) throw P5BadPattern{};
+            pos_++;
+            continue;
+        }
+        break;
+    }
+    char c = peek();
+    long mn = 0, mx = -1;
+    if (c == '*') { pos_++; }
+    else if (c == '+') { pos_++; mn = 1; }
+    else if (c == '?') { pos_++; mx = 1; }
+    else if (c == '{') {
+        // {n} / {n,} / {n,m} — anything else is a literal `{`, left for the next atom
+        size_t j = pos_ + 1; std::string lo, hi; bool comma = false;
+        while (j < pat_.size() && std::isdigit((unsigned char)pat_[j])) lo += pat_[j++];
+        if (j < pat_.size() && pat_[j] == ',') { comma = true; j++; }
+        while (j < pat_.size() && std::isdigit((unsigned char)pat_[j])) hi += pat_[j++];
+        if (j >= pat_.size() || pat_[j] != '}' || lo.empty()) return atom;
+        pos_ = j + 1;
+        mn = std::stol(lo);
+        mx = comma ? (hi.empty() ? -1 : std::stol(hi)) : mn;
+    }
+    else return atom;
+    auto rep = std::make_unique<Node>();
+    rep->k = K::Rep; rep->min = mn; rep->max = mx;
+    if (peek() == '?') { pos_++; rep->greedy = false; }       // lazy
+    else if (peek() == '+') { pos_++; rep->possessive = true; } // possessive (5.10+)
+    // NOTE: no listCap — a quantified P5 capture keeps its LAST occurrence,
+    // Perl-style, not a Raku list of every occurrence.
+    rep->kids.push_back(std::move(atom));
+    return rep;
+}
+
+Regex::NodePtr Regex::p5Atom() {
+    char c = peek();
+    if (c == '(') return p5Group();
+    if (c == '[') return p5Class();
+    if (c == '\\') return p5Escape();
+    if (c == '.') {
+        pos_++;
+        if (p5DotAll_) { auto n = std::make_unique<Node>(); n->k = K::Any; return n; }
+        auto n = std::make_unique<Node>();
+        n->k = K::Class; n->negate = true; n->ranges.push_back({'\n', '\n'});
+        return n;
+    }
+    if (c == '^') {
+        pos_++;
+        auto n = std::make_unique<Node>(); n->k = K::AnchorStart;
+        n->multiline = p5Multi_;
+        n->p5Line = p5Multi_; // P5 (?m)^: line starts only — NOT the void after a final \n
+        return n;
+    }
+    if (c == '$') {
+        // `$` is the end anchor unless what follows could only be an (upstream,
+        // already-attempted) variable interpolation — a name char. `2(]*)?$\1`
+        // anchors mid-pattern (re_tests 1327).
+        size_t j = pos_ + 1;
+        if (p5Ext_) while (j < pat_.size() && std::isspace((unsigned char)pat_[j])) j++;
+        if (j >= pat_.size() || !(std::isalnum((unsigned char)pat_[j]) || pat_[j] == '_')) {
+            pos_++;
+            auto n = std::make_unique<Node>(); n->k = K::AnchorEnd; n->multiline = p5Multi_;
+            return n;
+        }
+        pos_++;
+        auto n = std::make_unique<Node>(); n->k = K::Lit; n->icase = curIcase_; n->lit = "$";
+        return n;
+    }
+    if (c == '*' || c == '+' || c == '?') throw P5BadPattern{}; // quantifier follows nothing
+    // plain literal — one whole codepoint
+    auto n = std::make_unique<Node>();
+    n->k = K::Lit; n->icase = curIcase_;
+    n->lit = p5Utf8(p5Codepoint());
+    return n;
+}
+
+Regex::NodePtr Regex::p5Group() {
+    pos_++; // '('
+    bool savedI = curIcase_, savedM = p5Multi_, savedS = p5DotAll_, savedX = p5Ext_;
+    auto body = [&](int capIdx, const std::string& capName) -> NodePtr {
+        p5Depth_++;
+        auto inner = p5Alt();
+        p5Depth_--;
+        if (peek() != ')') throw P5BadPattern{};
+        pos_++;
+        curIcase_ = savedI; p5Multi_ = savedM; p5DotAll_ = savedS; p5Ext_ = savedX;
+        auto g = std::make_unique<Node>();
+        g->k = K::Group; g->capIndex = capIdx; g->capName = capName;
+        g->kids.push_back(std::move(inner));
+        return g;
+    };
+    if (peek() != '?') return body(ncaps_++, "");
+    pos_++; // '?'
+    char d = peek();
+    if (d == ':') { pos_++; return body(-1, ""); }
+    if (d == '#') { // comment
+        while (!eof() && peek() != ')') pos_++;
+        if (eof()) throw P5BadPattern{};
+        pos_++;
+        return nullptr;
+    }
+    if (d == '{' || (d == '?' && peek(1) == '{')) { // (?{ code }) / (??{ code })
+        bool postponed = d == '?';
+        pos_ += postponed ? 2 : 1;
+        // balanced-brace scan, honouring \-escapes and one nesting level per brace
+        std::string code;
+        int depth = 1;
+        while (!eof()) {
+            char c2 = pat_[pos_];
+            if (c2 == '\\' && pos_ + 1 < pat_.size()) { code += c2; code += pat_[pos_ + 1]; pos_ += 2; continue; }
+            if (c2 == '{') depth++;
+            if (c2 == '}' && --depth == 0) break;
+            code += c2;
+            pos_++;
+        }
+        if (eof()) throw P5BadPattern{};
+        pos_++; // '}'
+        if (peek() != ')') throw P5BadPattern{};
+        pos_++;
+        if (!postponed) return nullptr; // (?{…}): side effects only — a no-op here
+        // (??{ … }): the code's result is matched as a pattern. A CONSTANT string
+        // (the only shape Roast uses: (??{"(?!)"})) compiles right here; anything
+        // dynamic is out of scope.
+        size_t a = code.find_first_not_of(" \t"), b = code.find_last_not_of(" \t");
+        std::string t = a == std::string::npos ? "" : code.substr(a, b - a + 1);
+        if (t.size() >= 2 && (t.front() == '"' || t.front() == '\'') && t.back() == t.front()) {
+            Regex sub(t.substr(1, t.size() - 2), "5");
+            if (!sub.ok() || sub.ncaps_ > 0) throw P5BadPattern{};
+            return std::move(sub.root_);
+        }
+        throw P5BadPattern{};
+    }
+    if (d == '(') { // (?(COND)yes|no) — conditional: group N, lookaround, or (?{const})
+        pos_++;
+        long condGroup = -1;
+        NodePtr condPos, condNeg; // assertion conditions: the test, and its negation
+        if (std::isdigit((unsigned char)peek())) {
+            std::string num;
+            while (std::isdigit((unsigned char)peek())) num += pat_[pos_++];
+            if (peek() != ')') throw P5BadPattern{};
+            pos_++;
+            condGroup = std::stol(num);
+        } else if (peek() == '?') {
+            // The condition parses TWICE — once straight, once negated — because
+            // Node trees have no clone and the desugared form needs both senses.
+            size_t condStart = pos_;
+            auto parseCond = [&](bool flip) -> NodePtr {
+                pos_ = condStart + 1; // past '?'
+                char e = peek();
+                if (e == '{') { // (?{ const }) — 0 is false, any other constant true
+                    pos_++;
+                    std::string code;
+                    int depth = 1;
+                    while (!eof()) {
+                        char c2 = pat_[pos_];
+                        if (c2 == '\\' && pos_ + 1 < pat_.size()) { code += c2; code += pat_[pos_ + 1]; pos_ += 2; continue; }
+                        if (c2 == '{') depth++;
+                        if (c2 == '}' && --depth == 0) break;
+                        code += c2;
+                        pos_++;
+                    }
+                    if (eof()) throw P5BadPattern{};
+                    pos_++;
+                    size_t a2 = code.find_first_not_of(" \t");
+                    size_t b2 = code.find_last_not_of(" \t");
+                    std::string t = a2 == std::string::npos ? "" : code.substr(a2, b2 - a2 + 1);
+                    if (t.find_first_not_of("0123456789") != std::string::npos) throw P5BadPattern{}; // dynamic code: out of scope
+                    bool truth = !t.empty() && t.find_first_not_of("0") != std::string::npos;
+                    if (flip) truth = !truth;
+                    auto n = std::make_unique<Node>();
+                    if (truth) { n->k = K::Nop; }
+                    else { // always-fail: negated lookahead of the empty pattern
+                        n->k = K::Look; n->negate = true;
+                        auto empty = std::make_unique<Node>(); empty->k = K::Seq;
+                        n->kids.push_back(std::move(empty));
+                    }
+                    if (peek() != ')') throw P5BadPattern{};
+                    pos_++;
+                    return n;
+                }
+                bool behind = false, neg = false;
+                if (e == '=') pos_++;
+                else if (e == '!') { neg = true; pos_++; }
+                else if (e == '<' && peek(1) == '=') { behind = true; pos_ += 2; }
+                else if (e == '<' && peek(1) == '!') { behind = true; neg = true; pos_ += 2; }
+                else throw P5BadPattern{};
+                p5Depth_++;
+                auto inner = p5Alt();
+                p5Depth_--;
+                if (peek() != ')') throw P5BadPattern{};
+                pos_++;
+                auto look = std::make_unique<Node>();
+                look->k = K::Look; look->negate = flip ? !neg : neg; look->behind = behind;
+                look->kids.push_back(std::move(inner));
+                return look;
+            };
+            condPos = parseCond(false);
+            condNeg = parseCond(true); // leaves pos_ right after the condition
+        } else throw P5BadPattern{};
+        p5Depth_++;
+        auto yes = p5Seq();
+        NodePtr no;
+        if (peek() == '|') { pos_++; no = p5Seq(); }
+        p5Depth_--;
+        if (peek() != ')') throw P5BadPattern{}; // includes >2 branches
+        pos_++;
+        curIcase_ = savedI; p5Multi_ = savedM; p5DotAll_ = savedS; p5Ext_ = savedX;
+        if (condGroup >= 0) {
+            auto cond = std::make_unique<Node>();
+            cond->k = K::CondRef; cond->min = condGroup;
+            cond->kids.push_back(std::move(yes));
+            if (no) cond->kids.push_back(std::move(no));
+            return cond;
+        }
+        // assertion condition — desugar with what the engine has:
+        //   Alt||( Seq(COND, yes), Seq(¬COND, no) )
+        auto mkSeq = [](NodePtr a, NodePtr b2) {
+            auto s = std::make_unique<Node>();
+            s->k = K::Seq;
+            s->kids.push_back(std::move(a));
+            if (b2) s->kids.push_back(std::move(b2));
+            return s;
+        };
+        auto alt = std::make_unique<Node>();
+        alt->k = K::Alt; alt->firstMatch = true;
+        alt->kids.push_back(mkSeq(std::move(condPos), std::move(yes)));
+        alt->kids.push_back(mkSeq(std::move(condNeg), std::move(no)));
+        return alt;
+    }
+    if (d == '=' || d == '!') { // lookahead
+        pos_++;
+        p5Depth_++;
+        auto inner = p5Alt();
+        p5Depth_--;
+        if (peek() != ')') throw P5BadPattern{};
+        pos_++;
+        curIcase_ = savedI; p5Multi_ = savedM; p5DotAll_ = savedS; p5Ext_ = savedX;
+        auto look = std::make_unique<Node>();
+        look->k = K::Look; look->negate = (d == '!'); look->behind = false;
+        look->kids.push_back(std::move(inner));
+        return look;
+    }
+    if (d == '<' && (peek(1) == '=' || peek(1) == '!')) { // lookbehind
+        char e = peek(1);
+        pos_ += 2;
+        p5Depth_++;
+        auto inner = p5Alt();
+        p5Depth_--;
+        if (peek() != ')') throw P5BadPattern{};
+        pos_++;
+        curIcase_ = savedI; p5Multi_ = savedM; p5DotAll_ = savedS; p5Ext_ = savedX;
+        auto look = std::make_unique<Node>();
+        look->k = K::Look; look->negate = (e == '!'); look->behind = true;
+        look->kids.push_back(std::move(inner));
+        return look;
+    }
+    if (d == '<' || d == '\'' || d == 'P') { // named capture: (?<name>…) / (?'name'…) / (?P<name>…)
+        char open = d == 'P' ? (pos_++, peek()) : d;
+        if (open != '<' && open != '\'') throw P5BadPattern{};
+        char close = open == '<' ? '>' : '\'';
+        pos_++;
+        std::string name;
+        while (!eof() && peek() != close) name += pat_[pos_++];
+        if (eof() || name.empty()) throw P5BadPattern{}; // (?<>) is a syntax error
+        pos_++;
+        // Rakudo's m:P5 keeps named groups OUT of the positional numbering —
+        // $/[0] is the first UNNAMED group (S05-modifier/Perl_10.t), unlike Perl
+        // itself where $1 would be this group.
+        return body(-1, name);
+    }
+    if (d == 'i' || d == 'm' || d == 's' || d == 'x' || d == '-') { // (?imsx-imsx) / (?imsx:…)
+        bool on = true;
+        while (!eof()) {
+            char f = peek();
+            if (f == '-') { on = false; pos_++; continue; }
+            if (f == 'i') curIcase_ = on;
+            else if (f == 'm') p5Multi_ = on;
+            else if (f == 's') p5DotAll_ = on;
+            else if (f == 'x') p5Ext_ = on;
+            else break;
+            pos_++;
+        }
+        if (peek() == ':') { pos_++; return body(-1, ""); } // scoped: (?i:…)
+        if (peek() != ')') throw P5BadPattern{};
+        pos_++;
+        // bare (?i): applies to the END of the enclosing group — undo the
+        // body()-style restore by re-saving nothing: state simply stays set.
+        return nullptr;
+    }
+    throw P5BadPattern{};
+}
+
+Regex::NodePtr Regex::p5Escape() {
+    pos_++; // backslash
+    if (eof()) throw P5BadPattern{};
+    char e = pat_[pos_++];
+    auto mkClass = [&](char flag, bool neg) {
+        auto n = std::make_unique<Node>();
+        n->k = K::Class; n->icase = curIcase_; n->classFlags = std::string(1, flag); n->negate = neg;
+        return n;
+    };
+    auto mkLit = [&](const std::string& s) {
+        auto n = std::make_unique<Node>();
+        n->k = K::Lit; n->icase = curIcase_; n->lit = s;
+        return n;
+    };
+    switch (e) {
+        case 'd': return mkClass('d', false);
+        case 'D': return mkClass('d', true);
+        case 'w': return mkClass('w', false);
+        case 'W': return mkClass('w', true);
+        case 's': return mkClass('s', false);
+        case 'S': return mkClass('s', true);
+        case 'b': case 'B': { // word boundary — either edge (WBLeft | WBRight)
+            auto alt = std::make_unique<Node>();
+            alt->k = K::Alt; alt->firstMatch = true;
+            auto l = std::make_unique<Node>(); l->k = K::WBLeft;
+            auto r = std::make_unique<Node>(); r->k = K::WBRight;
+            alt->kids.push_back(std::move(l)); alt->kids.push_back(std::move(r));
+            if (e == 'b') return alt;
+            auto look = std::make_unique<Node>(); // \B: NOT a boundary — negated zero-width
+            look->k = K::Look; look->negate = true; look->behind = false;
+            look->kids.push_back(std::move(alt));
+            return look;
+        }
+        case 'A': { auto n = std::make_unique<Node>(); n->k = K::AnchorStart; return n; }
+        case 'Z': { auto n = std::make_unique<Node>(); n->k = K::AnchorEnd; return n; } // end or before final \n
+        case 'z': { auto n = std::make_unique<Node>(); n->k = K::AnchorEnd; n->absEnd = true; return n; }
+        case 'G': { auto n = std::make_unique<Node>(); n->k = K::AnchorStart; return n; } // ≈ \A: anchored at search start
+        case 'n': return mkLit("\n");
+        case 't': return mkLit("\t");
+        case 'r': return mkLit("\r");
+        case 'f': return mkLit("\f");
+        case 'e': return mkLit("\x1b");
+        case 'a': return mkLit("\x07");
+        case 'x': { // \xHH / \x{HHHH}
+            uint32_t cp = 0;
+            if (peek() == '{') {
+                pos_++;
+                while (!eof() && peek() != '}') { cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10)); pos_++; }
+                if (eof()) throw P5BadPattern{};
+                pos_++;
+            } else {
+                for (int i = 0; i < 2 && std::isxdigit((unsigned char)peek()); i++) {
+                    cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10));
+                    pos_++;
+                }
+            }
+            return mkLit(p5Utf8(cp));
+        }
+        case 'c': { // \cX control char
+            if (eof()) throw P5BadPattern{};
+            char x = pat_[pos_++];
+            return mkLit(std::string(1, (char)(std::toupper((unsigned char)x) ^ 64)));
+        }
+        default: break;
+    }
+    if (e == '0' || (e >= '1' && e <= '9')) {
+        if (e == '0') { // octal: \0, \0NN
+            uint32_t v = 0; int nd = 0;
+            while (nd < 2 && peek() >= '0' && peek() <= '7') { v = v * 8 + (peek() - '0'); pos_++; nd++; }
+            return mkLit(v ? p5Utf8(v) : std::string(1, '\0'));
+        }
+        std::string num(1, e); // backref: \1 → the engine's in-flight $0
+        while (std::isdigit((unsigned char)peek())) num += pat_[pos_++];
+        auto vm = std::make_unique<Node>();
+        vm->k = K::VarMatch; vm->icase = curIcase_;
+        vm->lit = "$" + std::to_string(std::stol(num) - 1);
+        // NOTE: a backref to an unmatched group FAILS (engine default) — modern
+        // Perl semantics, and what re_tests 349 (`(a)|\1` vs "x") demands
+        return vm;
+    }
+    // identity escape: \/ \. \\ \+ … — the char itself, one whole codepoint
+    pos_--;
+    return mkLit(p5Utf8(p5Codepoint()));
+}
+
+Regex::NodePtr Regex::p5Class() {
+    pos_++; // '['
+    bool neg = false;
+    if (peek() == '^') { neg = true; pos_++; }
+    auto cls = std::make_unique<Node>();
+    cls->k = K::Class; cls->icase = curIcase_;
+    std::vector<NodePtr> negMembers; // \D-style members: complement classes
+    bool first = true;
+    auto addCp = [&](uint32_t cp) {
+        if (cp < 0x80) cls->ranges.push_back({(unsigned char)cp, (unsigned char)cp});
+        else cls->cpRanges.push_back({cp, cp});
+    };
+    // a class-member escape resolves to a codepoint (-1: it was a flag/complement)
+    auto escMember = [&]() -> int32_t {
+        char e = pat_[pos_++];
+        switch (e) {
+            case 'd': cls->classFlags += 'd'; return -1;
+            case 'w': cls->classFlags += 'w'; return -1;
+            case 's': cls->classFlags += 's'; return -1;
+            case 'D': case 'W': case 'S': {
+                auto m = std::make_unique<Node>();
+                m->k = K::Class; m->icase = curIcase_; m->classFlags = std::string(1, (char)std::tolower((unsigned char)e));
+                negMembers.push_back(std::move(m));
+                return -1;
+            }
+            case 'n': return '\n';
+            case 't': return '\t';
+            case 'r': return '\r';
+            case 'f': return '\f';
+            case 'e': return 0x1b;
+            case 'a': return 0x07;
+            case 'b': return 0x08; // inside a class, \b is BACKSPACE
+            case 'x': {
+                uint32_t cp = 0;
+                if (peek() == '{') {
+                    pos_++;
+                    while (!eof() && peek() != '}') { cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10)); pos_++; }
+                    if (eof()) throw P5BadPattern{};
+                    pos_++;
+                } else {
+                    for (int i = 0; i < 2 && std::isxdigit((unsigned char)peek()); i++) {
+                        cp = cp * 16 + (std::isdigit((unsigned char)peek()) ? peek() - '0' : (std::tolower((unsigned char)peek()) - 'a' + 10));
+                        pos_++;
+                    }
+                }
+                return (int32_t)cp;
+            }
+            case 'c': { if (eof()) throw P5BadPattern{}; char x = pat_[pos_++]; return (int32_t)(std::toupper((unsigned char)x) ^ 64); }
+            case '0': { uint32_t v = 0; int nd = 0; while (nd < 2 && peek() >= '0' && peek() <= '7') { v = v * 8 + (peek() - '0'); pos_++; nd++; } return (int32_t)v; }
+            default: pos_--; return (int32_t)p5Codepoint();
+        }
+    };
+    while (!eof() && (peek() != ']' || first)) {
+        first = false;
+        // POSIX class [:alpha:] — expressed as plain ASCII ranges
+        if (peek() == '[' && peek(1) == ':') {
+            size_t j = pos_ + 2; bool pneg = false;
+            if (j < pat_.size() && pat_[j] == '^') { pneg = true; j++; }
+            std::string nm;
+            while (j < pat_.size() && std::isalpha((unsigned char)pat_[j])) nm += pat_[j++];
+            if (j + 1 < pat_.size() && pat_[j] == ':' && pat_[j + 1] == ']') {
+                pos_ = j + 2;
+                auto tgt = std::make_unique<Node>();
+                tgt->k = K::Class; tgt->icase = curIcase_;
+                auto& R = tgt->ranges;
+                if (nm == "alpha") { R.push_back({'A','Z'}); R.push_back({'a','z'}); }
+                else if (nm == "digit") R.push_back({'0','9'});
+                else if (nm == "alnum") { R.push_back({'0','9'}); R.push_back({'A','Z'}); R.push_back({'a','z'}); }
+                else if (nm == "upper") R.push_back({'A','Z'});
+                else if (nm == "lower") R.push_back({'a','z'});
+                else if (nm == "space") { R.push_back({'\t','\r'}); R.push_back({' ',' '}); }
+                else if (nm == "blank") { R.push_back({'\t','\t'}); R.push_back({' ',' '}); }
+                else if (nm == "word") { R.push_back({'0','9'}); R.push_back({'A','Z'}); R.push_back({'a','z'}); R.push_back({'_','_'}); }
+                else if (nm == "xdigit") { R.push_back({'0','9'}); R.push_back({'A','F'}); R.push_back({'a','f'}); }
+                else if (nm == "punct") { R.push_back({'!','/'}); R.push_back({':','@'}); R.push_back({'[','`'}); R.push_back({'{','~'}); }
+                else if (nm == "cntrl") { R.push_back({0,31}); R.push_back({127,127}); }
+                else if (nm == "graph") R.push_back({'!','~'});
+                else if (nm == "print") R.push_back({' ','~'});
+                else if (nm == "ascii") R.push_back({0,127});
+                else throw P5BadPattern{};
+                if (pneg) { tgt->negate = true; negMembers.push_back(std::move(tgt)); }
+                else { for (auto& r : tgt->ranges) cls->ranges.push_back(r); }
+                continue;
+            }
+        }
+        int32_t lo;
+        if (peek() == '\\') { pos_++; if (eof()) throw P5BadPattern{}; lo = escMember(); }
+        else lo = (int32_t)p5Codepoint();
+        if (lo < 0) continue; // flag / complement member — no range endpoint
+        // range? `a-z`; a trailing `-` (or `-]`) is a literal dash
+        if (peek() == '-' && peek(1) != ']' && pos_ + 1 < pat_.size()) {
+            pos_++;
+            int32_t hi;
+            if (peek() == '\\') { pos_++; if (eof()) throw P5BadPattern{}; hi = escMember(); }
+            else hi = (int32_t)p5Codepoint();
+            if (hi < 0) throw P5BadPattern{}; // [a-\d] is a syntax error
+            if (lo < 0x80 && hi < 0x80) cls->ranges.push_back({(unsigned char)lo, (unsigned char)hi});
+            else cls->cpRanges.push_back({(uint32_t)lo, (uint32_t)hi});
+        }
+        else addCp((uint32_t)lo);
+    }
+    if (eof()) throw P5BadPattern{}; // unterminated class
+    pos_++; // ']'
+    bool clsEmpty = cls->ranges.empty() && cls->cpRanges.empty() && cls->classFlags.empty();
+    if (negMembers.empty()) {
+        if (clsEmpty) throw P5BadPattern{};
+        cls->negate = neg;
+        return cls;
+    }
+    if (!neg) {
+        // [a\D] — union: a | ¬d. Complement members become negated classes; the
+        // classCombo Alt is the engine's own composed-class shape.
+        for (auto& m : negMembers) m->negate = true;
+        if (clsEmpty && negMembers.size() == 1) return std::move(negMembers[0]);
+        auto alt = std::make_unique<Node>();
+        alt->k = K::Alt; alt->firstMatch = true; alt->classCombo = true;
+        if (!clsEmpty) alt->kids.push_back(std::move(cls));
+        for (auto& m : negMembers) alt->kids.push_back(std::move(m));
+        return alt;
+    }
+    // [^a\D] — De Morgan: ¬(a ∪ ¬d) = ¬a ∩ d. Conj: all match at the same
+    // position, the last one consumes.
+    if (clsEmpty && negMembers.size() == 1) return std::move(negMembers[0]); // [^\D] = \d
+    auto conj = std::make_unique<Node>();
+    conj->k = K::Conj;
+    if (!clsEmpty) { cls->negate = true; conj->kids.push_back(std::move(cls)); }
+    for (auto& m : negMembers) conj->kids.push_back(std::move(m));
+    return conj;
 }
 
 void Regex::skipWs() {
@@ -1426,6 +2034,12 @@ std::pair<long, long> Regex::nodeWidth(const Node* n, MState& st) const {
         }
         case K::Conj: // the match is as long as the last term (all share the start)
             return n->kids.empty() ? std::make_pair(0L, 0L) : nodeWidth(n->kids.back().get(), st);
+        case K::CondRef: { // either branch may run (a missing `no` branch is zero-width)
+            auto wy = nodeWidth(n->kids[0].get(), st);
+            auto wn = n->kids.size() > 1 ? nodeWidth(n->kids[1].get(), st) : std::make_pair(0L, 0L);
+            return {std::min(wy.first, wn.first),
+                    (wy.second < 0 || wn.second < 0) ? UNB : std::max(wy.second, wn.second)};
+        }
         case K::Group: return nodeWidth(n->kids[0].get(), st);
         case K::AnchorStart: case K::AnchorEnd: case K::WBLeft: case K::WBRight:
         case K::Nop: case K::Code: case K::Look: case K::CapStart: case K::CapEnd:
@@ -1742,10 +2356,14 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             return k(pos + 1);
         case K::AnchorStart:
             // `^^` (multiline): start of any line. `^`: start of the string only.
+            // p5Line — P5's (?m)^ — is `^^` minus the position after a FINAL newline.
+            if (n->p5Line) return (pos == 0 || (pos < len && st.s[pos - 1] == '\n')) ? k(pos) : false;
             if (n->multiline ? (pos == 0 || st.s[pos - 1] == '\n') : (pos == 0)) return k(pos);
             return false;
         case K::AnchorEnd:
-            // `$$` (multiline): end of any line. `$`: end of string (or just before a final newline).
+            // `$$` (multiline): end of any line. `$`: end of string (or just before a final
+            // newline). P5 `\z` (absEnd): the absolute end, a trailing newline doesn't count.
+            if (n->absEnd) return pos == len ? k(pos) : false;
             if (n->multiline ? (pos == len || st.s[pos] == '\n')
                              : (pos == len || (pos + 1 == len && st.s[pos] == '\n'))) return k(pos);
             return false;
@@ -1795,6 +2413,12 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (n->negate) ok = !ok;
             return ok ? k(pos) : false;
         }
+        case K::CondRef: { // P5 (?(N)yes|no): which branch depends on group N having matched
+            long ci = n->min - 1;
+            bool set = ci >= 0 && ci < (long)st.caps.size() && st.caps[ci].first >= 0;
+            const Node* br = set ? n->kids[0].get() : (n->kids.size() > 1 ? n->kids[1].get() : nullptr);
+            return br ? matchNode(br, st, pos, k) : k(pos);
+        }
         case K::VarMatch: { // `$var` in a pattern — match the variable's current Str value literally
             // `$<name>` named backreference: match the in-flight named capture's text
             // literally (no new capture). Used by XML close-tag matching.
@@ -1816,7 +2440,12 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     long clen = ce - cb;
                     if (clen < 0) return false;
                     if (pos + clen > (long)st.s.size()) return false;
-                    if (st.s.compare(pos, clen, st.s, cb, clen) != 0) return false;
+                    if (n->icase) { // (?i) backref (P5): ASCII case-blind comparison
+                        for (long i = 0; i < clen; i++)
+                            if (std::tolower((unsigned char)st.s[pos + i]) != std::tolower((unsigned char)st.s[cb + i]))
+                                return false;
+                    }
+                    else if (st.s.compare(pos, clen, st.s, cb, clen) != 0) return false;
                     return k(pos + clen);
                 }
                 return false; // that group hasn't captured yet
@@ -2040,7 +2669,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 }
                 if (greedy) {
                     if (mx < 0 || count < mx) {
-                        auto more = [&](long np) { return np != p && self(self, count + 1, np); };
+                        auto more = [&](long np) {
+                            if (np != p) return self(self, count + 1, np);
+                            // zero-width child match: Perl admits it as ONE final
+                            // iteration — `(]*)?\1` participates with an empty
+                            // capture (re_tests 1327). Raku rejects it outright.
+                            return p5_ && count + 1 >= mn && finish(np, count + 1);
+                        };
                         if (matchOne(p, more)) return true;
                     }
                     if (count >= mn) return finish(p, count);
@@ -2048,7 +2683,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 } else {
                     if (count >= mn && finish(p, count)) return true;
                     if (mx < 0 || count < mx) {
-                        auto more = [&](long np) { return np != p && self(self, count + 1, np); };
+                        auto more = [&](long np) {
+                            if (np != p) return self(self, count + 1, np);
+                            return p5_ && count + 1 >= mn && finish(np, count + 1);
+                        };
                         return matchOne(p, more);
                     }
                     return false;
