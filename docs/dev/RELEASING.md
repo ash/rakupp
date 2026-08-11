@@ -148,6 +148,25 @@ there and nowhere else: [#8](https://github.com/ash/rakupp/issues/8) and the
 declared-type loss found while fixing
 [#9](https://github.com/ash/rakupp/issues/9) were both compiler-only.
 
+### 4b. Slim binaries behave identically (v3.14+)
+
+```bash
+rakupp t/slim/run.raku                    # the negative suite: cuts throw, never lie
+rakupp tools/slim-diff.raku               # the differential: --slim vs full,
+                                          # byte-identical out/err/exit per program
+```
+
+The differential builds every program in `t/regression` and `examples` twice
+and compares observable behaviour; a cut that changes anything fails the
+release (SLIM-PLAN, defence 5). Programs that disagree with THEMSELVES
+(`rand`-seeded, timing-dependent) are reported as nondeterministic rather
+than judged — read that list, it should be short and unsurprising. The
+module-battery leg runs at the release too:
+
+```bash
+rakupp tools/slim-diff.raku <battery program paths>
+```
+
 ### 5. A second toolchain
 
 ```bash

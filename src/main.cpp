@@ -6,6 +6,7 @@
 #include "Lexer.h"
 #include "Parser.h"
 #include "AstSerial.h"
+#include "SlimScan.h"
 #include "Interpreter.h"
 #include "Lint.h"
 #include "Ffi.h"
@@ -207,22 +208,30 @@ static std::string msvcEnvPrefix() {
 // bit for bit) and `--slim=+symbols` (dead-strip but keep the symbol table,
 // for a crash report worth reading).
 //
-// P3 ships the EXPLICIT half of the feature grammar: `-feature` swaps that
+// P3 shipped the EXPLICIT half of the feature grammar: `-feature` swaps that
 // feature's real archive for its stub in librakupp_stubs.a, so the tables (or
 // the parser) stay out of the binary and the operations that needed them
 // throw X::Feature::NotBuilt. `+feature` re-keeps one; `all` is the four as a
-// group, and a named feature beats the group — `-all,+eval` is "cut
-// everything except eval". No analysis, no guessing: the user names the cuts.
+// group, `unicode` the three Unicode features, and a named feature beats a
+// group — `-all,+eval` is "cut everything except eval".
 //
-// The levels above `safe` (`auto`, `max`, and bare `--slim`, which will mean
-// `auto`) arrive with the feature scan in P4 and are refused until then rather
-// than quietly meaning something weaker — SLIM-PLAN's rule is that a wrong ask
-// is loud, never last-wins. The same rule makes every conflict an error: two
-// levels, the same name with both signs, `none` with any override.
+// P4 ships the SCAN and the levels above `safe`: `auto` (what bare `--slim`
+// means, and what any level-less SPEC implies) cuts only what the scan PROVES
+// no site can reach, and keeps everything — saying so on stderr — when the
+// program contains a construct that can run code the scan never saw. `max`
+// cuts by the same static evidence but ignores those triggers: unsound by
+// design, and a wrong cut throws X::Feature::NotBuilt at run time rather
+// than crash or lie. Explicit ±feature beats either level's conclusion.
+// Every conflict is an error: two levels, the same name with both signs,
+// `none` with any override — SLIM-PLAN's rule is that a wrong ask is loud,
+// never last-wins.
+enum class SlimLevel { None, Safe, Auto, Max };
 struct SlimSpec {
+    SlimLevel level = SlimLevel::Safe;
     bool deadStrip = true;   // level ≥ safe: unreferenced sections dropped at link
     bool stripSyms = true;   // …and local symbols left out of the symbol table
-    bool cut[4] = {false, false, false, false};  // by kSlimFeatures index
+    int  featSign[4] = {0, 0, 0, 0};             // explicit ± per feature (0 = unsaid)
+    bool cut[4] = {false, false, false, false};  // the decision; the scan adds to it
 };
 static SlimSpec g_slim;                 // default = level `safe`, nothing cut
 static bool     g_slimExplicit = false; // a --slim flag was given (mode validation)
@@ -235,22 +244,24 @@ static const char* kSlimFeatures[4] = {"unicode-names", "unicode-collation",
 static const char* kSlimArchives[4] = {"ucd_names", "ucd_coll", "ucd_props", "parse"};
 static const int   kSlimEval = 3;
 static const char* kSlimValid =
-    "none, safe, +symbols, and ±feature of: unicode-names, unicode-collation, "
-    "unicode-props, eval, all";
+    "none, safe, auto, max, +symbols, and ±feature of: unicode-names, "
+    "unicode-collation, unicode-props, eval, unicode, all";
+
+static bool slimScans() {
+    return g_slim.level == SlimLevel::Auto || g_slim.level == SlimLevel::Max;
+}
 
 // Parse a --slim SPEC into g_slim. Returns "" on success, else the error text.
-// P3 grammar: at most one level (`none` | `safe`), `±symbols`, `±feature`.
-// Conflicts and not-yet-built levels are errors that name the valid
-// alternatives.
+// Grammar: at most one level (`none` | `safe` | `auto` | `max`), `±symbols`,
+// `±feature` with the groups `unicode` and `all`. A SPEC that names no level
+// means `auto` — so bare `--slim` is the button, and `--slim=+eval` is
+// "automatic pruning, but keep eval". Conflicts are errors that name the
+// valid alternatives.
 static std::string parseSlimSpec(const std::string& spec) {
-    if (spec.empty())
-        return "--slim without a level means `auto`, which arrives with the feature scan "
-               "(SLIM-PLAN P4). The default is already `safe`; available today: " +
-               std::string(kSlimValid) + ".";
-    SlimSpec out;                       // start from `safe`
+    SlimSpec out;
     bool haveLevel = false, levelNone = false, anyOverride = false;
-    int symSign = 0, allSign = 0;       // ±symbols / ±all seen: +1 or −1
-    int featSign[4] = {0, 0, 0, 0};     // ±feature seen, by kSlimFeatures index
+    int symSign = 0, allSign = 0, uniSign = 0;   // ±symbols / ±all / ±unicode
+    int featSign[4] = {0, 0, 0, 0};              // ±feature, by kSlimFeatures index
     size_t pos = 0;
     while (pos <= spec.size()) {
         size_t comma = spec.find(',', pos);
@@ -258,21 +269,23 @@ static std::string parseSlimSpec(const std::string& spec) {
                                                                       : comma - pos);
         pos = comma == std::string::npos ? spec.size() + 1 : comma + 1;
         if (tok.empty()) continue;
-        if (tok == "none" || tok == "safe") {
+        if (tok == "none" || tok == "safe" || tok == "auto" || tok == "max") {
             if (haveLevel) return "--slim takes at most one level (got a second: '" + tok + "')";
             haveLevel = true;
-            if (tok == "none") { levelNone = true; out.deadStrip = out.stripSyms = false; }
+            if (tok == "none") { levelNone = true; out.level = SlimLevel::None;
+                                 out.deadStrip = out.stripSyms = false; }
+            else if (tok == "safe") out.level = SlimLevel::Safe;
+            else if (tok == "auto") out.level = SlimLevel::Auto;
+            else out.level = SlimLevel::Max;
             continue;
         }
-        if (tok == "auto" || tok == "max")
-            return "--slim=" + tok + " arrives with the feature scan (SLIM-PLAN P4); "
-                   "available today: " + kSlimValid;
         if (tok[0] == '+' || tok[0] == '-') {
             int sign = tok[0] == '+' ? 1 : -1;
             std::string name = tok.substr(1);
             int* slot = nullptr;
             if (name == "symbols") slot = &symSign;
             else if (name == "all") slot = &allSign;
+            else if (name == "unicode") slot = &uniSign;
             else
                 for (int i = 0; i < 4; i++)
                     if (name == kSlimFeatures[i]) { slot = &featSign[i]; break; }
@@ -289,11 +302,19 @@ static std::string parseSlimSpec(const std::string& spec) {
     if (levelNone && anyOverride)
         return "--slim=none already keeps everything; combining it with a ±symbols "
                "or ±feature override is a conflict, not a refinement";
+    // A SPEC that names no level means `auto` — including the empty SPEC
+    // (bare `--slim`). `safe` with overrides stays explicit-only, no scan.
+    if (!haveLevel) out.level = SlimLevel::Auto;
     if (symSign) out.stripSyms = symSign < 0;
-    // `all` sets the group; a named feature overrides it (so `-all,+eval`
-    // cuts three and keeps eval, and `+all,-eval` cuts exactly eval).
-    for (int i = 0; i < 4; i++)
-        out.cut[i] = (featSign[i] ? featSign[i] : allSign) < 0;
+    // Group resolution, most specific wins: a named feature beats `unicode`
+    // beats `all` (so `-all,+eval` cuts three, and `-all,+unicode` cuts
+    // exactly eval). The resolved sign is remembered: under auto/max an
+    // explicit ± also beats whatever the scan concludes.
+    for (int i = 0; i < 4; i++) {
+        int g = (i < 3 && uniSign) ? uniSign : allSign;
+        out.featSign[i] = featSign[i] ? featSign[i] : g;
+        out.cut[i] = out.featSign[i] < 0;
+    }
     g_slim = out;
     return "";
 }
@@ -322,9 +343,12 @@ static std::string slimManifestTU(const char* how) {
     for (int i = 0; i < 4; i++)
         if (g_slim.cut[i]) cut += std::string(cut.empty() ? "" : ",") +
                                   "\"" + kSlimFeatures[i] + "\"";
+    const char* lvl = g_slim.level == SlimLevel::None ? "none"
+                    : g_slim.level == SlimLevel::Safe ? "safe"
+                    : g_slim.level == SlimLevel::Auto ? "auto" : "max";
     std::string json = std::string("{\"rakupp\":\"") + RAKUPP_VERSION +
         "\",\"mode\":\"" + how +
-        "\",\"slim\":\"" + (g_slim.deadStrip ? "safe" : "none") +
+        "\",\"slim\":\"" + lvl +
         "\",\"symbols\":\"" + (g_slim.stripSyms ? "stripped" : "kept") +
         "\",\"cut\":[" + cut + "]}";
     return "\nextern \"C\" const char rakupp_exe_manifest[] = " +
@@ -333,6 +357,35 @@ static std::string slimManifestTU(const char* how) {
            "namespace { struct RkKeepManifest { RkKeepManifest() {\n"
            "    rakupp::rakuppKeepManifest(rakupp_exe_manifest);\n"
            "} } rk_keep_manifest; }\n";
+}
+
+// Fold the scan's verdict into g_slim (SLIM-PLAN P4). Under `auto` a trigger
+// keeps everything and says so — the program can run code the scan never saw,
+// and the default answer to uncertainty is "keep". Under `max` the triggers
+// are ignored by design (a wrong cut throws X::Feature::NotBuilt at run
+// time), but they are still WORTH a line: the user should know the binary is
+// trusting static evidence alone. An explicit ±feature beats both.
+static void applySlimScan(const SlimScanResult& sr) {
+    bool full = g_slim.level == SlimLevel::Auto && !sr.triggers.empty();
+    if (full) {
+        std::cerr << "--slim: this program can run code the scan cannot see — keeping every feature.\n";
+        size_t show = sr.triggers.size() < 4 ? sr.triggers.size() : 4;
+        for (size_t i = 0; i < show; i++)
+            std::cerr << "        " << sr.triggers[i] << "\n";
+        if (sr.triggers.size() > show)
+            std::cerr << "        … and " << (sr.triggers.size() - show) << " more\n";
+        std::cerr << "        (--slim=max cuts on static evidence anyway; ±feature overrides either)\n";
+    }
+    else if (g_slim.level == SlimLevel::Max && !sr.triggers.empty()) {
+        std::cerr << "--slim=max: ignoring " << sr.triggers.size()
+                  << " dynamic construct(s) the scan cannot see — a feature they need "
+                     "at run time will throw X::Feature::NotBuilt.\n";
+    }
+    for (int i = 0; i < 4; i++) {
+        if (g_slim.featSign[i]) continue;   // the user said so by name
+        if (full) continue;                 // auto + trigger: keep everything
+        if (!sr.used[i]) g_slim.cut[i] = true;
+    }
 }
 
 // --exe-info FILE: print the embedded manifest of a rakupp-compiled binary.
@@ -606,6 +659,12 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                      "eval; this one cannot. Drop -eval, or drop --bundle.\n";
         return 5;
     }
+    // The scan never applies here: a bundled binary embeds SOURCE and parses
+    // it at run time, so nothing can be proven unused. Loud, per SLIM-PLAN
+    // trigger 5 — whether --bundle was asked for or codegen fell back to it.
+    if (slimScans())
+        std::cerr << "--slim: a bundled binary parses its source at run time — nothing can be "
+                     "proven unused; keeping every feature (explicit -feature still applies).\n";
 
     // The runtime static library sits next to this rakupp binary.
     std::string lib, inc;
@@ -740,6 +799,11 @@ static int compileNative(const std::string& src, const std::string& srcName, std
             emitModuleTable(mods, decls, calls);
             cpp = injectModuleTable(cpp, decls.str(), calls.str());
         }
+        // The scan (SLIM-PLAN P4), over the same Program and the same module
+        // graph codegen just compiled — and only AFTER transpile succeeded:
+        // the CodegenError fallback above bundles an interpreter, where
+        // nothing can be proven unused (compileToExe says so itself).
+        if (slimScans()) applySlimScan(slimScan(prog, mods));
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
@@ -789,6 +853,12 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
                          const std::vector<std::string>& libPaths = {}) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
+    // The scan is `--exe`-only until SLIM-PLAN P7 (an AOT binary interprets a
+    // rebuilt AST; the same scan APPLIES in principle, it just is not wired).
+    // Loud rather than quietly weaker; explicit ±feature still works here.
+    if (slimScans())
+        std::cerr << "--slim: the feature scan covers --exe only (SLIM-PLAN P7); --aot keeps "
+                     "every feature (explicit ±feature still applies).\n";
     std::string cpp, finish;
     try {
         Lexer lexer(src);

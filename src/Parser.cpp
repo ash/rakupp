@@ -2242,7 +2242,7 @@ ExprPtr Parser::parseColonPair() {
                      : (c >= 'A' && c <= 'Z') ? c - 'A' + 10 : -1;
             else { // non-ASCII: only Nd digits are allowed
                 long long nn, dd;
-                if (uniGeneralCategory(cp) == "Nd" && uniNumValue(cp, nn, dd) && dd == 1) d = nn;
+                if (uniDigitValue(cp) >= 0) d = uniDigitValue(cp); // never-cut digit table
             }
             if (d < 0 || d >= base) error("Malformed radix number");
             if (infrac) { frac = frac * base + d; fdiv *= base; }

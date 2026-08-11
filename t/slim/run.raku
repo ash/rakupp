@@ -1,16 +1,22 @@
-# The SLIM negative suite (docs/dev/plans/SLIM-PLAN.md, P3 gate). Proves the
-# cut side of --slim: that every forced-out feature THROWS a catchable, named
-# X::Feature::NotBuilt instead of crashing or quietly misbehaving, that the
-# grammar's conflicts are loud errors naming the alternatives, that the
-# embedded manifest round-trips through --exe-info, and that `--slim=-all`
-# hello stays under its size budget and runs.
+# The SLIM negative suite (docs/dev/plans/SLIM-PLAN.md, P3 + P4 gates).
+# Proves the cut side of --slim: that every forced-out feature THROWS a
+# catchable, named X::Feature::NotBuilt instead of crashing or quietly
+# misbehaving, that the grammar's conflicts are loud errors naming the
+# alternatives, that the embedded manifest round-trips through --exe-info,
+# that the size budgets hold (-all ≤ 5.0 MB, bare --slim ≤ 5.5 MB on hello) —
+# and, since P4, that the SCAN decides right: cuts what a program provably
+# does not use, keeps what it does (uniname calls, script assertions), keeps
+# EVERYTHING when a force-full trigger fires (and says so), and that max
+# trusts static evidence while auto does not.
 #
 # Run:  build/rakupp t/slim/run.raku     (any build of the rakupp under test)
 #
-# Compiles ~10 small binaries via --exe/--aot/--bundle, so it needs a C++
+# Compiles ~17 small binaries via --exe/--aot/--bundle, so it needs a C++
 # compiler — which is why it lives here and not in t/regression/: that suite
 # must stay runnable on a machine with none. Wired into CI next to the embed
-# smoke; run it by hand after touching --slim, the stubs, or the archive set.
+# smoke; run it by hand after touching --slim, the stubs, the scan, or the
+# archive set. The other half of the P4 gate is tools/slim-diff.raku — the
+# behaviour differential over the whole corpus.
 
 my $tmp = $*TMPDIR.add("rakupp-slim-{$*PID}");
 $tmp.mkdir;
@@ -57,7 +63,7 @@ for ('safe,none',     'at most one level'),
     ('-eval,+eval',   'both +eval and -eval'),
     ('-bogus',        'Unknown --slim feature'),
     ('none,-eval',    'conflict, not a refinement'),
-    ('auto',          'SLIM-PLAN P4')
+    ('list',          'Unknown --slim token')      # the P5 directive, not built yet
 -> ($spec, $expect) {
     my $p = run $*EXECUTABLE, '--exe', $hello, "--slim=$spec", :out, :err;
     my $err = $p.err.slurp(:close);
@@ -176,7 +182,86 @@ my $catch = probe('catch.raku', q:to/END/);
           "…while eval stays cut in the same spec", $err;
 }
 
-# ---- 6. the other pipelines: AOT takes cuts, bundling refuses -eval --------
+# ---- 6. the scan (P4): auto cuts what is provably unused ------------------
+
+{
+    my ($rc, $log, $bin) = compile($hello, 'hello-auto', '--exe', '--slim');
+    check $rc == 0, 'bare --slim (= auto) compiles', $log;
+    my ($xc, $out, $) = run-bin($bin);
+    check $xc == 0 && $out.trim eq 'Hello', '--slim hello runs', $out;
+    check $bin.IO.s <= 5.5 * 1024 * 1024,
+          "--slim hello is within the 5.5 MB budget ({$bin.IO.s} bytes)";
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $line.contains('"slim":"auto"')
+          && <unicode-names unicode-collation unicode-props eval>.map({ $line.contains("\"$_\"") }).all.so,
+          'the scan cut all four features from hello', $line;
+}
+{
+    my ($rc, $log, $bin) = compile(%probes<unicode-names>, 'names-auto', '--exe', '--slim');
+    check $rc == 0, '--slim on a uniname program compiles', $log;
+    my ($xc, $out, $) = run-bin($bin);
+    check $xc == 0 && $out eq 'LATIN CAPITAL LETTER A',
+          'the scan KEEPS unicode-names where uniname is used', $out;
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check !$line.contains('"unicode-names"') && $line.contains('"eval"'),
+          '…while still cutting what the program does not use', $line;
+}
+{
+    my $evalprog = probe('eval-auto.raku', q{print EVAL '40+2';});
+    my $p = run $*EXECUTABLE, '--exe', $evalprog, '--slim',
+                '-o', $tmp.add('eval-auto').Str, :out, :err;
+    my $err = $p.err.slurp(:close);
+    $p.out.slurp(:close);
+    @made.push($tmp.add('eval-auto'));
+    check $p.exitcode == 0 && $err.contains('keeping every feature') && $err.contains('EVAL'),
+          'auto + EVAL: the trigger keeps everything and says so', $err;
+    my $info = run $*EXECUTABLE, '--exe-info', $tmp.add('eval-auto').Str, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $line.contains('"cut":[]'), '…and the manifest shows nothing cut', $line;
+    my ($xc, $out, $) = run-bin($tmp.add('eval-auto').Str);
+    check $xc == 0 && $out eq '42', '…and the binary works', $out;
+}
+{
+    my $evalprog = probe('eval-max.raku', q{print EVAL '40+2';});
+    my ($rc, $log, $bin) = compile($evalprog, 'eval-max-bin', '--exe', '--slim=max');
+    check $rc == 0, '--slim=max compiles the same program', $log;
+    my ($xc, $out, $) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq '42'
+          && !$line.contains('"eval"') && $line.contains('"unicode-names"'),
+          'max keeps eval (static use) and still cuts the unused Unicode tables', "$out / $line";
+}
+{
+    my $scr = probe('rx-script.raku', q{print 'Я' ~~ /<:Cyrillic>/ ?? 'M' !! 'N';});
+    my ($rc, $log, $bin) = compile($scr, 'rx-script-bin', '--exe', '--slim');
+    check $rc == 0, 'a <:Cyrillic> regex compiles under --slim', $log;
+    my ($xc, $out, $) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq 'M' && !$line.contains('"unicode-props"'),
+          'the scan keeps unicode-props for a script assertion — and the match works', "$out / $line";
+}
+{
+    my $cat = probe('rx-cat.raku', q{print 'A5' ~~ /<:Lu><:Nd>/ ?? 'M' !! 'N';});
+    my ($rc, $log, $bin) = compile($cat, 'rx-cat-bin', '--exe', '--slim');
+    check $rc == 0, 'a category-only regex compiles under --slim', $log;
+    my ($xc, $out, $) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq 'M' && $line.contains('"unicode-props"'),
+          '<:Lu>/<:Nd> resolve from never-cut tables, so props still cuts — and matches', "$out / $line";
+}
+
+# ---- 7. the other pipelines: AOT takes cuts, bundling refuses -eval --------
 
 {
     my ($rc, $log, $bin) = compile($hello, 'hello-aot', '--aot', '--slim=-all');

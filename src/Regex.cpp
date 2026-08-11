@@ -1,5 +1,6 @@
 #include "Regex.h"
 #include "LtmNfa.h"
+#include "Interpreter.h"   // RakuError: feature-stub throws must escape the ctor
 
 namespace rakupp { bool ltmModeOn(); }
 bool rakupp::ltmModeOn() {
@@ -65,6 +66,14 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
         if (!eof()) ok_ = false; // trailing garbage (e.g. unbalanced)
     } catch (ObsoleteEscape& oe) {
         ok_ = false; obsolete_ = oe.seq;
+    } catch (FeatureNotBuilt&) {
+        // X::Feature::NotBuilt from a SLIM stub (a \c[NAME] needing the cut
+        // name table, a <:Script<…>> needing the cut props table). Folding
+        // that into ok_=false would turn "this binary lacks the feature" into
+        // a silent no-match — the exact failure mode SLIM-PLAN bans. Every
+        // OTHER throw (a bad \c name, ordinary syntax trouble) keeps the
+        // established lenient behaviour below.
+        throw;
     } catch (...) {
         ok_ = false;
     }

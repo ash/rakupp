@@ -23,11 +23,11 @@ static const char* g_exeManifest = nullptr;
 void rakuppKeepManifest(const char* m) { g_exeManifest = m; }
 
 [[noreturn]] void featureMissing(const char* feature, const char* neededFor) {
-    throw RakuError{Value::typeObj("X::Feature::NotBuilt"),
+    throw FeatureNotBuilt{{Value::typeObj("X::Feature::NotBuilt"),
         std::string(neededFor) + " needs the '" + feature +
         "' feature, and this binary was compiled without it (--slim=-" + feature +
         "). Recompile without that cut to include it; `rakupp --exe-info` on "
-        "this binary shows the full build manifest."};
+        "this binary shows the full build manifest."}};
 }
 
 }

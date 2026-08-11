@@ -219,11 +219,15 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp tools/embed-smoke.raku build
 
-      # The SLIM negative suite (SLIM-PLAN P3): --slim's ±feature grammar,
+      # The SLIM negative suite (SLIM-PLAN P3+P4): --slim's grammar,
       # X::Feature::NotBuilt from every cut feature, the --exe-info manifest
-      # round-trip, and the -all size budget. Compiles ~10 binaries, so like
-      # the embed smoke it needs the toolchain — POSIX runners have one on
-      # PATH; the Windows compile flow is covered by the --exe step above.
+      # round-trip, the size budgets, and the P4 scan's decisions (cut the
+      # provably-unused, keep the used, keep-all on a trigger). Compiles ~17
+      # binaries, so like the embed smoke it needs the toolchain — POSIX
+      # runners have one on PATH; the Windows compile flow is covered by the
+      # --exe step above. The full behaviour differential
+      # (tools/slim-diff.raku) is a release gate, not a CI step — it builds
+      # the whole corpus twice.
       - name: SLIM negative suite (POSIX)
         if: runner.os != 'Windows'
         run: build/rakupp t/slim/run.raku

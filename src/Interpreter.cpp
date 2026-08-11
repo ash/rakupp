@@ -347,10 +347,10 @@ Value numifyStr(const std::string& in) {
         if (anyHigh) {
             std::string t2;
             for (uint32_t cp : utf8cp(s)) {
-                if (cp >= 0x80 && uniGeneralCategory(cp) == "Nd") {
-                    long long num, den;
-                    if (uniNumValue(cp, num, den) && den == 1 && num >= 0 && num <= 9) {
-                        t2 += (char)('0' + num);
+                if (cp >= 0x80) {
+                    int dv = uniDigitValue(cp);   // never-cut: plain digits are not the names feature
+                    if (dv >= 0) {
+                        t2 += (char)('0' + dv);
                         continue;
                     }
                 }
@@ -3537,7 +3537,7 @@ void rakuppRegisterModule(const std::string& name, const char* blob, size_t blob
 // which is right — they change compilation details, not semantics it can observe
 // — but ignoring them must be a deliberate entry here rather than a side effect
 // of the lookup failing.
-static bool isPragmaName(const std::string& name) {
+bool isPragmaName(const std::string& name) {  // shared with SlimScan.cpp (module-vs-pragma)
     static const std::set<std::string> pragmas = {
         "strict", "fatal", "lib", "isms", "nqp", "soft", "worries", "experimental",
         "variables", "attributes", "cur", "Slang", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
@@ -14233,7 +14233,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             a = (b == std::string::npos) ? "" : a.substr(b, e2 - b + 1);
             if (a == "*") { nthStar = true; return; }
             if (a.rfind("*-", 0) == 0) { nthStar = true; nthOfs = std::strtoll(a.c_str() + 2, nullptr, 10); return; }
-            Value v; try { v = evalString(a); } catch (...) {}
+            Value v; try { v = evalString(a); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
             double d = v.toNum();
             if (!(d >= 1) || std::isnan(d) || std::isinf(d))
                 throw RakuError{Value::typeObj("X::AdHoc"),
@@ -14501,7 +14501,13 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             setMatchVar(cursor);
             tctx_.cur->define("$\xC2\xA2", cursor);
             Value tgt; tctx_.makeTargets.push_back(&tgt);
-            try { evalString(code); } catch (...) {}
+            // FeatureNotBuilt (a SLIM stub — under --slim=-eval evalString IS
+            // the stub) is re-raised after the scope restores below; anything
+            // else stays lenient, as before.
+            bool featThrow = false; FeatureNotBuilt fe;
+            try { evalString(code); }
+            catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
+            catch (...) {}
             tctx_.makeTargets.pop_back();
             if (tgt.pairVal) inlineMade = tgt.pairVal;
             // All of these are scoped to the block: the caller sets `$/` and the
@@ -14510,8 +14516,8 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             tctx_.cur->define("$\xC2\xA2", savedCursor);
             for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
                 tctx_.cur->define(it->first, it->second);
-            if (!hadSlash) return;
-            if (Value* s2 = tctx_.cur->find("$/")) *s2 = savedSlash;
+            if (Value* s2 = tctx_.cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
+            if (featThrow) throw fe;
         };
         wantHooks = true;
     }
@@ -14525,7 +14531,9 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     if (hookScan.find("?{") != std::string::npos || hookScan.find("!{") != std::string::npos) {
         rmHooks.assertPass = [this](const std::string& code, long, long,
                                     const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
-            try { return evalString(code).truthy(); } catch (...) { return false; }
+            try { return evalString(code).truthy(); }
+            catch (FeatureNotBuilt&) { throw; }   // a SLIM stub fired: loud, never a silent fail
+            catch (...) { return false; }
         };
         wantHooks = true;
     }
@@ -14552,21 +14560,35 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         // evaluate for real, all in the wired match scope
         rmHooks.run = [this, &inlineMade](const std::string& code, long, long,
                                           const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) {
+            // FeatureNotBuilt (a SLIM stub) must escape every lenient catch
+            // here — swallowing it turned `--slim=-eval` blocks into silent
+            // no-ops (measured). Ordinary block errors stay lenient.
             if (code.find("make") != std::string::npos) {
                 Value tgt; tctx_.makeTargets.push_back(&tgt);
-                try { evalString(code); } catch (...) {}
+                try { evalString(code); }
+                catch (FeatureNotBuilt&) { tctx_.makeTargets.pop_back(); throw; }
+                catch (...) {}
                 tctx_.makeTargets.pop_back();
                 if (tgt.pairVal) inlineMade = tgt.pairVal;
             }
-            else { try { evalString(code); } catch (...) {} }
+            else {
+                try { evalString(code); }
+                catch (FeatureNotBuilt&) { throw; }
+                catch (...) {}
+            }
         };
         rmHooks.assertPass = [this](const std::string& code, long, long,
                                     const GrammarHooks::NamedMap&, const GrammarHooks::ParamMap&) -> bool {
-            try { return evalString(code).truthy(); } catch (...) { return false; }
+            try { return evalString(code).truthy(); }
+            catch (FeatureNotBuilt&) { throw; }
+            catch (...) { return false; }
         };
         if (!rmHooks.range) rmHooks.range = [this](const std::string& code, const GrammarHooks::NamedMap&,
                                                    const GrammarHooks::ParamMap&) -> std::pair<long, long> {
-            Value v; try { v = evalString(code); } catch (...) {}
+            Value v;
+            try { v = evalString(code); }
+            catch (FeatureNotBuilt&) { throw; }
+            catch (...) {}
             if (v.t == VT::Range) return {(long)v.rFrom, (long)(v.rExTo ? v.rTo - 1 : v.rTo)};
             long n = v.toInt(); return {n, n};
         };
@@ -14785,6 +14807,7 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
         if (codeRepl) out += evalString(codeInner).toStr();
         else if (fullInterp) {
             try { out += evalString(std::string("qq") + qqDelim + repl + qqDelim).toStr(); }
+            catch (FeatureNotBuilt&) { throw; }   // a SLIM stub fired: loud, not the plain-interp fallback
             catch (...) { out += interpolate(mv); }
         }
         else out += interpolate(mv);
@@ -14958,7 +14981,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
               if ((name == "i" || name == "ignorecase" || name == "m" || name == "ignoremark")
                   && arg.find_first_of("$@%") != std::string::npos)
                   throw RakuError{Value::typeObj("X::Value::Dynamic"), "Value of :" + name + " must be known at compile time"};
-              try { argv = evalString(arg); } catch (...) {}
+              try { argv = evalString(arg); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
           }
           while (j < realPat.size() && realPat[j] == ' ') j++;
           setAdverb(name, argv);
@@ -15197,6 +15220,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 size_t chainEnd = methodChain(i, j);
                 if (chainEnd != i) {
                     try { r += evalString(s.substr(i, chainEnd - i)).toStr(); i = chainEnd - 1; continue; }
+                    catch (FeatureNotBuilt&) { throw; }
                     catch (...) { }                        // fall back to the plain capture
                 }
                 long idx = std::stol(num); if (mv.arr && idx < (long)mv.arr->size()) r += (*mv.arr)[idx].toStr();
@@ -15227,7 +15251,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                     std::string subx = s.substr(j + 1, k - j - 1);
                     size_t ws = subx.find_first_not_of(" \t");
                     if (k < s.size() && ws != std::string::npos) { // non-empty subscript
-                        long idx = 0; try { idx = evalString(subx).toInt(); } catch (...) {}
+                        long idx = 0; try { idx = evalString(subx).toInt(); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
                         if (Value* v = tctx_.cur->find("@" + nm)) {
                             ValueList fl = v->flatten();
                             if (idx < 0) idx += (long)fl.size();
@@ -15408,7 +15432,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         auto it = codeCache->find(code);
         if (it != codeCache->end()) return it->second;
         auto prog = std::make_shared<Program>();
+        // FeatureNotBuilt must escape: under --slim=-eval the Lexer IS the
+        // stub, and caching nullptr here would turn every code block into a
+        // silent permanent no-op (measured). Ordinary parse trouble stays
+        // lenient, as before.
         try { Lexer lx(code); Parser ps(lx.tokenize()); *prog = ps.parseProgram(); }
+        catch (FeatureNotBuilt&) { throw; }
         catch (...) { (*codeCache)[code] = nullptr; return nullptr; }
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         (*codeCache)[code] = prog;
@@ -15445,7 +15474,9 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         for (auto& p : params) overlay(p.first, Value::str(p.second));
         Value makeTarget; tctx_.makeTargets.push_back(&makeTarget); // capture an inline `make`
         Value last = Value::any();
-        try { for (auto& s : prog->stmts) last = exec(s.get()); } catch (...) {}
+        try { for (auto& s : prog->stmts) last = exec(s.get()); }
+        catch (FeatureNotBuilt&) { tctx_.makeTargets.pop_back(); throw; } // a stub fired INSIDE the block: loud
+        catch (...) {}
         tctx_.makeTargets.pop_back();
         if (makeTarget.pairVal) (*pendingMakes)[{from, to}] = *makeTarget.pairVal; // record the inline make
         for (auto it = restore.rbegin(); it != restore.rend(); ++it) tctx_.cur->define(it->first, it->second);

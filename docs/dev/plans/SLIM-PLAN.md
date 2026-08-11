@@ -499,6 +499,35 @@ levels `auto` and `max`, and `+feature` overriding a level's decision.
 **Gate:** the differential suite over `t/`, `examples/` and the battery;
 `--slim` hello ≤ 5.5 MB.
 
+> **Outcome (2026-08-11).** Bare `--slim` hello: **4,856,872 bytes** against
+> the ≤ 5.5 MB gate, all four features cut by proof. The scan
+> (src/SlimScan.cpp) walks program + embedded module graph; regex patterns
+> are scanned textually (each rule measured against slim binaries: `\c[…]` →
+> names, `<:Prop>` → props exactly when `uniPropNeedsCutTables()` says so,
+> every embedded-code construct → eval), and a literal `{…}` block's source
+> is extracted, parsed with the real Parser and walked — degradation is
+> always to a trigger, never a guess, including "an AST node the walker does
+> not model". All five triggers implemented, including the unembedded-module
+> detection this plan called a prerequisite. The differential harness is
+> `tools/slim-diff.raku` (per-run process-group-killed timeouts; programs
+> that disagree with THEMSELVES are classified nondeterministic, not
+> judged); final run **239/270 byte-identical, 0 different**. Its first full
+> run caught a real wrong cut — ordinary numification reaches NUMV via
+> non-ASCII digit transliteration — settled per this plan's own never-cut
+> criterion: decimal digits moved to a never-cut decade-starts table
+> (`uniDigitValue()`), which the cross-check against NUMV then revealed had
+> been missing twelve newer-script decades in the Lexer's private copy all
+> along (and Ol Onal's zero is at U+1E5F1, misaligned to `…0` — the reason
+> it stays a table, not a formula). Also fixed en route: `uniMatchesProp`
+> touched the SCRIPTS seam before the category checks (so `-unicode-props`
+> broke `<:Lu>`); native codegen silently mis-ran regexes that touch program
+> variables (now refused into the bundling fallback — the engine env-bridge
+> is future codegen work; grammar/named-regex match-context blocks stay
+> native and verified); and X::Feature::NotBuilt could be swallowed by eight
+> lenient catch sites — it is now its own C++ type, `FeatureNotBuilt`,
+> rethrown exactly where leniency must not apply. The battery leg of the
+> differential runs at the release gate (RELEASING.md gate 4b).
+
 ### P5 — introspection and documentation
 
 The directives — `help`, `list`, `why:`, `verify` —

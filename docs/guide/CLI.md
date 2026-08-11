@@ -176,10 +176,35 @@ rakupp --exe --slim=+symbols  prog.raku   # dead-strip, but keep the symbol
 
 The practical cost of `safe` is exactly that second case: a C++-level crash in
 a shipped binary reports addresses instead of names. If you are debugging a
-binary, build it `--slim=+symbols`.
+binary, build it `--slim=safe,+symbols`.
 
-**Explicit feature cuts.** Four features can be cut by name — each drops its
-data (or the parser) from the binary and replaces it with a stub that throws
+**The levels** — a ladder, at most one per SPEC:
+
+| level | what it does |
+|---|---|
+| `none` | nothing at all: no dead-strip, symbols kept. For debugging a compiled binary. |
+| `safe` | **the default with no flag.** Dead-strip + symbol strip. No Raku feature removed, no analysis run. |
+| `auto` | **what bare `--slim` means.** `safe`, plus every feature the scan *proves* no site in the program — or in any embedded module — can reach. Anything the scan cannot decide keeps the feature; any force-full trigger (below) keeps everything. Sound. |
+| `max` | `auto`, but ignoring the force-full triggers. Unsound by design: code the scan never saw may need a cut feature at run time, and then it throws `X::Feature::NotBuilt` — never a crash, never a wrong answer. |
+
+A SPEC that names no level means `auto` — so `--slim=+eval` is "automatic
+pruning, but keep eval".
+
+`say "Hello"` under bare `--slim`: 8.1 → 4.6 MB, all four features cut,
+because hello provably uses none of them.
+
+**The force-full triggers.** Under `auto`, any of these means the program can
+run code the scan never saw, so everything is kept — and stderr says so, with
+the construct named: `EVAL`/`EVALFILE`/`require`; a symbolic reference
+(`::($name)`); an indirect method call (`."$name"()`) or metamodel lookup
+(`.^lookup`); a regex interpolating a subregex (`<$var>`/`<{…}>`); a `use`d
+module that could not be embedded alongside the program. Literal regex code
+blocks (`{…}`) are NOT triggers — their source is visible, so the scan parses
+and walks them like any other code.
+
+**Explicit feature cuts.** The same four features can be cut (or kept) by
+name, overriding whatever the level concluded — each cut drops its data (or
+the parser) from the binary and replaces it with a stub that throws
 `X::Feature::NotBuilt`, a typed, catchable exception naming the feature and
 the rebuild flag:
 
@@ -191,31 +216,34 @@ the rebuild flag:
 | `eval`              | the lexer and parser          | `EVAL`, `require`, runtime-compiled regexes |
 
 ```
-rakupp --exe --slim=-eval               prog.raku   # cut one
-rakupp --exe --slim=-all                prog.raku   # cut all four: 8.1 → 4.6 MB
-rakupp --exe --slim=-all,+unicode-names prog.raku   # a named feature beats the
-                                                    # group: cut three, keep names
+rakupp --exe --slim                     prog.raku   # the button: sound automatic pruning
+rakupp --exe --slim=max,+unicode        prog.raku   # smallest, the Unicode features intact
+rakupp --exe --slim=safe,-eval          prog.raku   # one deliberate cut, no scan
+rakupp --exe --slim=-all,+unicode-names prog.raku   # auto is implied; a named feature
+                                                    # beats a group: cut three, keep names
 ```
 
-Cutting is explicit — nothing scans your program or guesses. Everything the
-program does NOT use is free to cut; whatever it does use will throw the named
-exception at the point of use, never crash or quietly misbehave. Every
-conflict (two levels, `+x` with `-x`, an unknown name, `none` with any
-override) is an error listing what exists. One mode refuses composition:
-`--bundle --slim=-eval`, because a bundled binary parses its embedded source
-at run time — bundling *is* the eval feature.
+The groups are `unicode` (the three Unicode features) and `all`; a named
+feature beats `unicode` beats `all`. Whatever ends up cut, using it throws
+the named exception at the point of use — never a crash, never a quiet wrong
+answer. Every conflict (two levels, `+x` with `-x`, an unknown name, `none`
+with any override) is an error listing what exists.
+
+Two modes decline the scan, loudly: `--bundle` embeds source and parses it at
+run time, so nothing can be proven unused (and `--slim=-eval` is refused there
+outright — bundling *is* the eval feature); `--aot` keeps every feature until
+the scan is wired for it (SLIM-PLAN P7). Explicit `±feature` still applies in
+both.
 
 Every compiled binary embeds a one-line build manifest; `rakupp --exe-info
 BIN` prints it (version, mode, slim level, cut list). It survives symbol
 stripping — the reader scans bytes, not symbol tables — so `strings BIN |
 grep RAKUPP-EXE` finds it too.
 
-The levels above `safe` — `auto` and `max`, which cut what a program provably
-does not use, without you naming it — arrive with the feature scan
-([SLIM-PLAN](../dev/plans/SLIM-PLAN.md)); asking for one today errors with the
-list of what exists rather than quietly meaning something weaker. `--slim`
-shapes the link, so it applies to the compile modes only — the interpreter
-never slims.
+The introspection directives (`--slim=list`, `why:FEAT`, `verify`, `help`)
+arrive with [SLIM-PLAN](../dev/plans/SLIM-PLAN.md) P5; asking for one today
+errors with the list of what exists. `--slim` shapes the link, so it applies
+to the compile modes only — the interpreter never slims.
 
 ## MAIN: how a program's own arguments parse
 

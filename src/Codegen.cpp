@@ -18,6 +18,59 @@ namespace {
 
 [[noreturn]] void unsupported(const std::string& what) { throw CodegenError{what}; }
 
+// A pattern the embedded engine can run correctly WITHOUT the surrounding
+// compiled frame. In a native binary the engine resolves variables and code
+// blocks against the interpreter-side environment, while the enclosing
+// program's lexicals are C++ locals it cannot see — so `/a $x c/` silently
+// fails to match, and `/ a { $n = 42 } b /` silently skips the assignment
+// (both measured, both the wrong kind of wrong). Until codegen can bridge
+// its frame into the engine, any expression-position regex that mentions a
+// program variable, an interpolated subregex, or a code block falls back to
+// bundling, where the interpreter owns every scope and all of it works.
+//
+// Grammar rules and named-regex declarations are NOT checked: their blocks
+// run in match context ($/, `make`), which lives interpreter-side and works
+// natively (verified; the slim differential suite re-verifies).
+//
+// The scan is char-class aware (`<[…]>` contents are literal, `<[a]+[b]>`
+// set arithmetic included) and escape-aware (`\$` is a literal). `$`/`^` as
+// anchors, `$0` backrefs and `$<name>` capture refs are match-state, not
+// program variables, and stay allowed.
+void requireEngineOnlyRegex(const std::string& pat, const char* what) {
+    int cls = 0; bool esc = false;
+    auto identStart = [](char c) { return std::isalpha((unsigned char)c) || c == '_'; };
+    for (size_t i = 0; i < pat.size(); i++) {
+        char c = pat[i];
+        if (esc) { esc = false; continue; }
+        if (c == '\\') { esc = true; continue; }
+        if (cls > 0) {
+            if (c == ']') {
+                size_t j = i + 1;                  // `<[a]+[b]>` continues the class
+                while (j < pat.size() && (pat[j] == '+' || pat[j] == '-')) j++;
+                if (j < pat.size() && pat[j] == '[') { i = j; continue; }
+                cls = 0;
+            }
+            continue;
+        }
+        if (c == '<' && i + 1 < pat.size()) {
+            size_t j = i + 1;
+            while (j < pat.size() && (pat[j] == '+' || pat[j] == '-' || pat[j] == '!' || pat[j] == '?')) j++;
+            if (j < pat.size() && pat[j] == '[') { cls = 1; i = j; continue; }
+            if (j < pat.size() && (pat[j] == '$' || pat[j] == '{'))
+                unsupported(std::string(what) + " with an interpolated subregex (<$…>/<{…}>)");
+            continue;
+        }
+        if (c == '{')
+            unsupported(std::string(what) + " with an embedded code block ({…})");
+        if ((c == '$' || c == '@' || c == '%') && i + 1 < pat.size()) {
+            char n = pat[i + 1];
+            if (identStart(n) || n == '*' || n == '!' || n == '.' || n == '?')
+                unsupported(std::string(what) + " that interpolates a variable (" +
+                            std::string(1, c) + " — native locals live outside the engine's scope)");
+        }
+    }
+}
+
 // Human-readable name for an AST node kind (for fallback messages).
 std::string nkName(NK k) {
     switch (k) {
@@ -167,8 +220,10 @@ struct Codegen {
     // Expression in value position: a `*`-bearing expression becomes a WhateverCode closure.
     std::string exArg(Expr* e) {
         // A regex literal in argument position is the Regex object (not a $_ match).
-        if (e->kind == NK::RegexLit)
+        if (e->kind == NK::RegexLit) {
+            requireEngineOnlyRegex(static_cast<RegexLit*>(e)->pattern, "a regex");
             return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
+        }
         // (the sequence op consumes `*` itself — hasWhatever already answers
         // false for all four `...` forms, so no special case is needed here)
         if (!hasWhatever(e)) return ex(e);
@@ -809,11 +864,14 @@ struct Codegen {
                      + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ")";
             }
             case NK::RegexLit: {
+                requireEngineOnlyRegex(static_cast<RegexLit*>(e)->pattern, "a regex");
                 std::string topic = topics.empty() ? "RT.dynVar(\"$_\")" : topics.back();
                 return "RT.regexMatch((" + topic + ").toStr(), " + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
             }
             case NK::SubstLit: { // bare s/// (or tr///): mutates the topic, like `$_ ~~ s///`
                 auto* sub = static_cast<SubstLit*>(e);
+                requireEngineOnlyRegex(sub->pattern, "an `s///` pattern");
+                requireEngineOnlyRegex(sub->repl, "an `s///` replacement");
                 std::string tgt = topics.empty() ? "RT.dynVarRef(\"$_\")" : topics.back();
                 return "RT.substApply(&(" + tgt + "), " + cesc(sub->pattern) + ", "
                      + cesc(sub->repl) + ", " + (sub->nonMut ? "true" : "false") + ")";
@@ -993,6 +1051,7 @@ struct Codegen {
                 auto* b = static_cast<Binary*>(e);
                 // smartmatch against a regex literal: `$x ~~ /.../`
                 if ((b->op == "~~" || b->op == "!~~") && b->rhs->kind == NK::RegexLit) {
+                    requireEngineOnlyRegex(static_cast<RegexLit*>(b->rhs.get())->pattern, "a regex");
                     std::string m = "RT.regexMatch((" + ex(b->lhs.get()) + ").toStr(), "
                                   + cesc(static_cast<RegexLit*>(b->rhs.get())->pattern) + ")";
                     return b->op == "~~" ? m : "Value::boolean(!(" + m + ").truthy())";
@@ -1001,6 +1060,8 @@ struct Codegen {
                 // that mutates the target through its lvalue like the interpreter does
                 if (b->op == "~~" && b->rhs->kind == NK::SubstLit) {
                     auto* sub = static_cast<SubstLit*>(b->rhs.get());
+                    requireEngineOnlyRegex(sub->pattern, "an `s///` pattern");
+                    requireEngineOnlyRegex(sub->repl, "an `s///` replacement");
                     return "RT.substApply(&(" + lvalueExpr(b->lhs.get()) + "), "
                          + cesc(sub->pattern) + ", " + cesc(sub->repl) + ", "
                          + (sub->nonMut ? "true" : "false") + ")";

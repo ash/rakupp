@@ -284,6 +284,11 @@ struct ResumeEx {}; // `.resume` inside a CATCH — resume execution after the t
 struct StopGatherEx {}; // a lazy gather has produced enough — unwind the (possibly infinite) block
 struct ProceedEx {};    // `proceed` leaves a `when` block but keeps matching later ones
 struct RakuError { Value payload; std::string message; };
+// X::Feature::NotBuilt from a SLIM stub (FeatureGate.cpp). Its own C++ type so
+// the LENIENT catch sites — regex code-block parse/exec, the regex ctor —
+// can rethrow exactly this and keep swallowing ordinary errors: "this binary
+// lacks the feature" must never degrade into a silent no-op or no-match.
+struct FeatureNotBuilt : RakuError {};
 // Thrown at an interpreter safe point to unwind a background worker thread whose
 // result is no longer wanted (the mainline has finished). NOT a Raku-visible
 // exception — user CATCH handles RakuError, never this.

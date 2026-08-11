@@ -204,27 +204,14 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         // bare-value handlers match on the value alone
         return uniMatchesProp(cp, val);
     }
-    // script property: <:Latin> <:Syriac> <:Canadian_Aboriginal> … (bare script
-    // value == <:Script<...>>). Loose-match p against the set of real script names.
-    {
-        static const std::set<std::string> scriptNames = [] {
-            std::set<std::string> s;
-            size_t tn; const ucd::ScriptEnt* T = ucd::scriptsTable(&tn); // seam: hoisted once
-            for (size_t i = 0; i < tn; i++) {
-                std::string n;
-                for (const char* q = T[i].name; *q; q++) if (std::isalnum((unsigned char)*q)) n += (char)std::tolower((unsigned char)*q);
-                s.insert(n);
-            }
-            return s;
-        }();
-        std::string norm;
-        for (char ch : p) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
-        if (scriptNames.count(norm)) {
-            std::string sc = uniScript(cp), scn;
-            for (char ch : sc) if (std::isalnum((unsigned char)ch)) scn += (char)std::tolower((unsigned char)ch);
-            return scn == norm;
-        }
-    }
+    // ORDER MATTERS from here down, and not for speed: everything up to the
+    // binary properties answers from the never-cut tables, so a category or
+    // binary-property assertion (<:Lu>, <:alpha>, <:White_Space>) must resolve
+    // BEFORE anything touches the cuttable SCRIPTS/BLOCKS tables. Under
+    // --slim=-unicode-props those accessors THROW; the script-name set used to
+    // be built first, which made every <:Prop> assertion — category or not —
+    // die in a slim binary. uniPropNeedsCutTables() below mirrors this exact
+    // order; change one, change both.
     std::string cat = uniGeneralCategory(cp);
     if (p == "alpha" || p == "Alpha" || p == "Letter" || p == "L") return cat[0] == 'L'; // POSIX-ish; `Alphabetic` is the binary prop (L + Other_Alphabetic), handled below
     if (p == "Assigned") return cat != "Cn";
@@ -269,6 +256,28 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         int b = uniBinProp(cp, norm);
         if (b >= 0) return b == 1;
     }
+    // ---- everything below here reaches the CUTTABLE tables ----
+    // script property: <:Latin> <:Syriac> <:Canadian_Aboriginal> … (bare script
+    // value == <:Script<...>>). Loose-match p against the set of real script names.
+    {
+        static const std::set<std::string> scriptNames = [] {
+            std::set<std::string> s;
+            size_t tn; const ucd::ScriptEnt* T = ucd::scriptsTable(&tn); // seam: hoisted once
+            for (size_t i = 0; i < tn; i++) {
+                std::string n;
+                for (const char* q = T[i].name; *q; q++) if (std::isalnum((unsigned char)*q)) n += (char)std::tolower((unsigned char)*q);
+                s.insert(n);
+            }
+            return s;
+        }();
+        std::string norm;
+        for (char ch : p) if (std::isalnum((unsigned char)ch)) norm += (char)std::tolower((unsigned char)ch);
+        if (scriptNames.count(norm)) {
+            std::string sc = uniScript(cp), scn;
+            for (char ch : sc) if (std::isalnum((unsigned char)ch)) scn += (char)std::tolower((unsigned char)ch);
+            return scn == norm;
+        }
+    }
     // block property `<:InArabic>` / `<:InLatin1Supplement>`: In-prefix + block name.
     if (p.size() > 2 && p[0] == 'I' && p[1] == 'n' && std::isupper((unsigned char)p[2])) {
         std::string q;
@@ -283,6 +292,47 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         return q == b;
     }
     return true; // unknown property (e.g. an unmodelled script): lenient match
+}
+
+// SLIM-PLAN P4: would matching `<:p>` reach the cuttable SCRIPTS/BLOCKS/BIDI
+// tables? The scan asks this for every property assertion in a regex, so the
+// answer must mirror uniMatchesProp's dispatch order above EXACTLY — a name
+// that resolves before the "cuttable" line there is safe (false here), and
+// everything at or past it (scripts, In-blocks, bc<…>, and unknown names,
+// which fall through the script-set lookup) needs the feature (true here).
+// Runs inside the rakupp CLI, where every table is present.
+bool uniPropNeedsCutTables(const std::string& p) {
+    size_t lt = p.find('<');
+    if (lt != std::string::npos && !p.empty() && p.back() == '>') {
+        std::string prop = normProp(p.substr(0, lt));
+        if (prop == "bc" || prop == "bidiclass") return true;          // bidiTable
+        return uniPropNeedsCutTables(p.substr(lt + 1, p.size() - lt - 2));
+    }
+    static const std::set<std::string> posixish = {   // the literal names uniMatchesProp
+        "alpha", "Alpha", "Letter", "L", "Assigned",  // tests against `cat` above the line
+        "digit", "Nd", "decimal", "alnum", "Alnum",
+        "space", "Space", "White_Space", "blank", "ws",
+        "upper", "Upper", "Uppercase", "Lu", "lower", "Lower", "Lowercase", "Ll",
+        "punct", "Punct", "Punctuation", "P", "word", "Word",
+        "cntrl", "Control", "Cc", "N", "Number", "Numeric", "M", "Mark",
+        "S", "Symbol", "Z", "Separator", "C", "Other",
+        "LC", "CasedLetter", "Cased_Letter",
+    };
+    if (posixish.count(p)) return false;
+    if (p.size() == 1) return false;                                    // category group letter
+    static const char* K[] = {"Lu","Ll","Lt","Lm","Lo","Mn","Mc","Me","Nd","Nl","No","Pc","Pd",
+        "Ps","Pe","Pi","Pf","Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn"};
+    for (auto* k : K) if (p == k) return false;
+    static const char* LONGN[] = {"UppercaseLetter","LowercaseLetter","TitlecaseLetter",
+        "ModifierLetter","OtherLetter","NonspacingMark","SpacingMark","EnclosingMark",
+        "DecimalNumber","LetterNumber","OtherNumber","ConnectorPunctuation","DashPunctuation",
+        "OpenPunctuation","ClosePunctuation","InitialPunctuation","FinalPunctuation",
+        "OtherPunctuation","MathSymbol","CurrencySymbol","ModifierSymbol","OtherSymbol",
+        "SpaceSeparator","LineSeparator","ParagraphSeparator","Control","Format",
+        "Surrogate","PrivateUse","Unassigned"};
+    for (auto* k : LONGN) if (p == k) return false;
+    if (uniBinProp('A', normProp(p)) >= 0) return false;   // known binary property name
+    return true; // script, In-block, or unknown: all reach the cuttable tables
 }
 
 // UAX #29 grapheme-break properties
@@ -719,6 +769,36 @@ std::string uniNameOf(uint32_t cp) {
         char b[32]; std::snprintf(b, sizeof b, "NUSHU CHARACTER-%05X", cp); return b;
     }
     return "";
+}
+
+// Decimal-digit value (0-9) of an Nd codepoint, -1 otherwise. Every decimal
+// run in Unicode is one contiguous 0..9 decade; this table is the decade
+// STARTS, nothing else, and it is NEVER-CUT on purpose: ordinary string
+// numification ("\u0664\u0662".Int is 42) transliterates through it, and the SLIM
+// never-cut criterion is exactly "reached by ordinary string operations".
+// unival()/univals() stay on the cuttable NUMV table below — Rats like \u2154
+// are the names feature; plain digits are not. (Promoted from the Lexer's
+// private copy when the P4 differential caught a slim binary throwing on
+// "\u0664\u0662".Int — same table, one owner now.)
+int uniDigitValue(uint32_t cp) {
+    static const uint32_t zeros[] = {
+        0x0030, 0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66,
+        0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040,
+        0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0, 0x1A80, 0x1A90, 0x1B50, 0x1BB0,
+        0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0, 0xAA50, 0xABF0,
+        0xFF10, 0x104A0, 0x10D30, 0x11066, 0x110F0, 0x11136, 0x111D0, 0x112F0,
+        0x11450, 0x114D0, 0x11650, 0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50,
+        0x11D50, 0x11DA0, 0x16A60, 0x16B50, 0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC,
+        0x1D7F6, 0x1E140, 0x1E2F0, 0x1E950, 0x1FBF0,
+        // UCD 16 additions the Lexer's private copy predated (found by the P4
+        // cross-check of this table against NUMV over the whole range).
+        // NOTE Ol Onal: its zero is U+1E5F1 — a decade NOT aligned to …0,
+        // which is why this is a table of zeros and not a (cp % 10) formula.
+        0x10D40, 0x116D0, 0x116DA, 0x11BF0, 0x11DE0, 0x11F50,
+        0x16130, 0x16AC0, 0x16D70, 0x1CCF0, 0x1E4F0, 0x1E5F1,
+    };
+    for (uint32_t z : zeros) if (cp >= z && cp <= z + 9) return (int)(cp - z);
+    return -1;
 }
 
 bool uniNumValue(uint32_t cp, long long& num, long long& den) {
