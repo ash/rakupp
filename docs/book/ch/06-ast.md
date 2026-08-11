@@ -138,7 +138,7 @@ Two invariants keep them safe:
   a literal, which is a constant by definition.
 - **The sentinel means undecided**, so a fresh tree and a tree that has been
   running for an hour behave identically. That is what lets the serialiser skip
-  these fields entirely (Chapter 28).
+  these fields entirely (Chapter 29).
 
 The `DecidedOnce<T>` wrapper is a relaxed atomic, for the reason given in
 Chapter 2: under parallel execution several threads may compute the same
@@ -161,7 +161,7 @@ struct NqpOp : Expr {
 
 A program that never says `use nqp` builds no such node, so the interpreter's
 `NqpOp` arm is never reached and the implementation is dead code for that run.
-Chapter 31 is about why that zero-cost property is structural rather than an
+Chapter 32 is about why that zero-cost property is structural rather than an
 optimisation.
 
 **`AllomorphLit`** exists because a numeric word inside a `<…>` list is
@@ -195,7 +195,7 @@ std::vector<std::shared_ptr<Program>> keptPrograms_;   // EVAL'd ASTs
 ```
 
 and `loadModule` pushes each module's `Program` onto the same vector
-(Chapter 30). Nothing is ever released from it. That is a deliberate, bounded
+(Chapter 31). Nothing is ever released from it. That is a deliberate, bounded
 leak: the number of distinct compilation units a process loads is small, and
 the alternative — refcounting subtrees — would cost on every call.
 

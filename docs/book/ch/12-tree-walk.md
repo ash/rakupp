@@ -59,7 +59,7 @@ static thread_local ExecContext tctx_;
 ```
 
 It is `static thread_local`, so each real worker thread owns its own set. That
-is the foundation of the concurrency model in Chapter 34 — with per-thread
+is the foundation of the concurrency model in Chapter 35 — with per-thread
 registers, running Raku on a second thread does not need a register swap at
 every handover.
 
@@ -102,7 +102,7 @@ shape of the operands. Chapter 18 is entirely about those.
 parsed into sub-expressions by the front end, so there is no string scanning
 here at all.
 
-**`NqpOp`** exists only under `use nqp` (Chapter 31).
+**`NqpOp`** exists only under `use nqp` (Chapter 32).
 
 ## Evaluating a statement
 
@@ -243,7 +243,7 @@ int rakuppMainOnBigStack(int (*body)(void*), void* ctx);
 
 and worker threads get the same treatment through `BigStackThread`, which
 reserves 256 MiB of *virtual* address space — committed only as used
-(Chapter 34). A compiled `--exe` binary calls `rakuppMainOnBigStack` for its own
+(Chapter 35). A compiled `--exe` binary calls `rakuppMainOnBigStack` for its own
 main body, so the recursion budget is the same in every mode.
 
 The interpreter also keeps a `callDepth` register and raises a clean Raku error

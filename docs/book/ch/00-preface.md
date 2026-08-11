@@ -68,8 +68,8 @@ If you are here for one thing in particular:
 | how a Raku call actually happens | Chapters 13 to 15 |
 | regexes and grammars | Part V |
 | the native compiler | Part VII |
-| Raku in a browser | Chapter 29 |
-| calling C, or being called from it | Chapters 32 and 33 |
+| Raku in a browser | Chapter 30 |
+| calling C, or being called from it | Chapters 33 and 34 |
 
 ## Conventions {-}
 

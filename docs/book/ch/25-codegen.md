@@ -179,7 +179,7 @@ because transpiling them would mean duplicating an engine:
 - **the `...` sequence operator** — `RT.seqOp` and `RT.seqOpGroups`;
 - **hyper operators** — `rtHyperMethod` and the hyper core;
 - **`nqp::` ops** — `rtNqpOp`, the same function the interpreter calls
-  (Chapter 31).
+  (Chapter 32).
 
 Each of those is a place where "call the runtime" is not a compromise but the
 correct answer: there is one implementation, so there is one behaviour.

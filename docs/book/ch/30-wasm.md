@@ -27,7 +27,7 @@ as the CLI does. The exit code that comes back is the process exit code the CLI
 would have produced.
 
 The other two exports matter more than they look: `rakupp_highlight` is the
-tokenizer behind `rakupp --highlight` (Chapter 35), and it is what lets a
+tokenizer behind `rakupp --highlight` (Chapter 36), and it is what lets a
 browser editor paint Raku with the compiler's own knowledge rather than a
 JavaScript approximation. That thread is picked up at the end of this chapter.
 
@@ -508,9 +508,9 @@ Nothing is sent anywhere. The program runs in the visitor's browser.
 | | |
 |---|---|
 | **deep recursion** | around 200 Raku levels, then a `RangeError` the page reports as a recursion-limit message and recovers from |
-| **`start` / `Promise`** | needs real threads; a threaded build needs cross-origin isolation headers, awkward for static hosting (Chapter 34) |
+| **`start` / `Promise`** | needs real threads; a threaded build needs cross-origin isolation headers, awkward for static hosting (Chapter 35) |
 | **sockets** | not available in the browser sandbox |
-| **NativeCall** | takes its no-libffi fallback path by construction — there is no shared library to open (Chapter 32) |
+| **NativeCall** | takes its no-libffi fallback path by construction — there is no shared library to open (Chapter 33) |
 | **`--exe` and the code generator** | irrelevant: this ships the interpreter, not the transpiler |
 | **`exit`** | aborts the module instance; the worker rebuilds a fresh one |
 

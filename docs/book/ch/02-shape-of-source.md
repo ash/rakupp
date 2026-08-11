@@ -113,6 +113,10 @@ compiling modes produce.
 | `AstEmit.cpp` | `--aot`: C++ that rebuilds the AST |
 | `AstSerial.{h,cpp}` | the binary AST format behind the precompiled parse |
 | `AstDump.cpp` | `--dump-ast` |
+| `SlimScan.{h,cpp}` | `--slim`: the feature scan over a parsed program |
+| `FeatureGate.cpp` | the `X::Feature::NotBuilt` a cut feature throws |
+| `ucd_seam.h` | the accessors the cuttable Unicode tables sit behind |
+| `stubs/` | one throwing stand-in per cuttable feature |
 | `Lint.{h,cpp}` | `--lint`, static analysis over the parsed tree |
 | `Highlight.{h,cpp}` | `--highlight`, parse-aware syntax colouring |
 | `Profiler.{h,cpp}` | `--profile`, the routine-level wall-time profiler |
@@ -204,5 +208,5 @@ optimisation and `-mcpu=native` were both measured and both did nothing.
 | the showcase interpreters | JavaScript, Perl, Python and Lisp, written in Raku |
 
 The release checklist in `docs/dev/RELEASING.md` gates on all of them. Chapter
-36 is about why the performance gate is there and what happens when it is
+37 is about why the performance gate is there and what happens when it is
 skipped.

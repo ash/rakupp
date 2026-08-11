@@ -99,7 +99,7 @@ A great deal of Raku's surface syntax lowers into a few of these. Every operator
 `src/Ast.h`. About fifty operation codes in seven groups: lazy control forms,
 64-bit integer operations, codepoint-indexed string operations, list and hash
 primitives, object and attribute helpers, buffer read and write, and folded
-constants. The full list is in Chapter 31.
+constants. The full list is in Chapter 32.
 
 ## Exception and control structs
 

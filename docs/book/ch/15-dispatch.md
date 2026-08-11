@@ -27,7 +27,7 @@ order is the whole rule, and it has three consequences worth spelling out.
 for free.
 
 **A module's exported sub also shadows a builtin**, because the loader copies it
-into the global environment, which is the last link of the chain (Chapter 30).
+into the global environment, which is the last link of the chain (Chapter 31).
 
 **A compiled program must reproduce this order**, which it cannot do by resolving
 names against the builtin table at compile time. That is a real bug that

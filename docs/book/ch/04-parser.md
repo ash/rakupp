@@ -215,7 +215,7 @@ The one parse-time side effect in the entire front end is registering a
 user-declared operator, which is lexical bookkeeping rather than execution.
 `use Foo` participates in exactly that much: `scanModuleOps` finds the module's
 source and *text-scans* it for operator declarations, so the rest of the
-importing file parses. It does not lex or parse the module (Chapter 30).
+importing file parses. It does not lex or parse the module (Chapter 31).
 
 ## Errors
 

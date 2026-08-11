@@ -25,14 +25,15 @@
 | Unicode | `Unicode.cpp`, `tools/ucd/`, the generators | Chapter 23 |
 | the CLI and compile drivers | `main.cpp` | Chapter 24 |
 | the native compiler | `Codegen.cpp`, the `rt*` helpers in `Interpreter.h` | Chapters 25 to 27 |
-| the parse cache | `AstSerial.cpp` | Chapter 28 |
-| the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 29 |
-| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 30 |
-| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 31 |
-| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 32 |
-| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 33 |
-| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 34 |
-| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 35 |
+| what a binary keeps | `SlimScan.cpp`, `ucd_seam.h`, `src/stubs/` | Chapter 28 |
+| the parse cache | `AstSerial.cpp` | Chapter 29 |
+| the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 30 |
+| module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 31 |
+| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 32 |
+| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 33 |
+| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 34 |
+| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 35 |
+| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 36 |
 
 ## Rules that are easy to break by accident
 
@@ -108,6 +109,13 @@ syntax, computed on first evaluation and never recomputed.
 
 **Fat struct** — the `Value` design: one struct with a type tag and a field for
 every kind of payload, several of which may be live at once.
+
+**Seam** — an accessor that is the only way to reach a piece of data, so the
+object defining it can be swapped for a stub at link time. What makes a
+Unicode table cuttable.
+
+**Trigger** (in `--slim`) — a construct meaning the program can run code the
+scan never saw, so every feature is kept. An unmodelled AST node is one.
 
 **Emscripten** — the toolchain that compiles the runtime to WebAssembly.
 Its `-fexceptions` mode routes C++ throws through JavaScript, which is what
