@@ -17,6 +17,7 @@ together they answer "what can it actually build?"
 | [**chat/**](chat) | Concurrency — many clients, one thread each | TCP chat server you connect to with `nc` |
 | [**kvstore/**](kvstore) | Protocols — a key-value store with its own text protocol | Redis-style TCP server you drive with `nc` |
 | [**modinfo/**](modinfo) | Ecosystem — 17 zef distributions doing the work | inspects Raku distributions: graph, validation, reports |
+| [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also compiles to a standalone
@@ -289,6 +290,30 @@ runs all thirteen commands under Rakudo and under Raku++ and diffs STDOUT —
 byte-identical, and byte-identical again over the 61 real distributions of the
 module battery. See [`modinfo/README.md`](modinfo/README.md) for the module map
 and what each fixture is for.
+
+## jsonreq — our own modules composing
+
+Where modinfo builds on seventeen ecosystem distributions, **jsonreq** builds on
+two of ours: `curl`+`jq` as one program, with
+[HTTP::Simple](https://github.com/ash/raku-modules) carrying the request (TLS,
+redirects, auth) and Rakupp::JSON doing every piece of JSON work — validating
+the request body before it is sent, parsing the response, printing the result
+pretty or minified, native-fast on Raku++ and via JSON::Fast on Rakudo. The
+program itself is a `sub MAIN` signature and the glue; options go anywhere on
+the command line via `%*SUB-MAIN-OPTS<named-anywhere>`, which the Raku++ MAIN
+dispatcher learned in the course of building it.
+
+```sh
+export RAKULIB=$HOME/raku-modules/Rakupp-JSON/lib,$HOME/raku-modules/HTTP-Simple/lib
+build/rakupp showcase/jsonreq/jsonreq.raku https://api.github.com/repos/ash/rakupp --query=.full_name -r
+build/rakupp showcase/jsonreq/jsonreq.raku POST https://example.test/api --json='{"a": 1}'
+RAKUPP=build/rakupp sh showcase/jsonreq/compare.sh    # the byte-identical check
+```
+
+`compare.sh` starts the [rakus](rakus) showcase serving a sample dataset on the
+loopback and runs ten commands — queries with negative indexes, `null`, a 405,
+a 404 — under both engines: STDOUT and exit codes match byte-for-byte. See
+[`jsonreq/README.md`](jsonreq/README.md) for the option table.
 
 ## In the browser — [`web/`](web)
 

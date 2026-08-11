@@ -1,0 +1,27 @@
+{
+  "count": 3,
+  "page": null,
+  "users": [
+    {
+      "name": "Ada Lovelace",
+      "login": "ada",
+      "languages": ["Analytical Engine order code", "Raku"],
+      "active": true,
+      "karma": 1015.5
+    },
+    {
+      "name": "Grace Hopper",
+      "login": "grace",
+      "languages": ["COBOL", "FLOW-MATIC"],
+      "active": true,
+      "karma": 992
+    },
+    {
+      "name": "Larry Wall",
+      "login": "larry",
+      "languages": ["Perl", "Raku"],
+      "active": false,
+      "karma": 4242
+    }
+  ]
+}
