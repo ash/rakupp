@@ -73,7 +73,7 @@ A great deal of Raku's surface syntax lowers into a few of these. Every operator
 
 ## `K` — regex node kinds
 
-`src/Regex.h`. Nineteen kinds.
+`src/Regex.h`. Twenty kinds.
 
 | Kind | Construct |
 |---|---|
@@ -91,8 +91,9 @@ A great deal of Raku's surface syntax lowers into a few of these. Every operator
 | `Subrule` | `<name>`, `<.name>`, `<alias=rule>`, `<r($x)>` |
 | `Look` | `<?…>`, `<!…>`, `<?after …>` |
 | `Code` | `{…}`, `<?{…}>`, `<!{…}>`, `:my` |
-| `VarMatch` | a `$var` atom evaluated at match time |
+| `VarMatch` | a `$var` atom evaluated at match time; backreferences |
 | `CapStart`, `CapEnd` | `<(` and `)>` |
+| `CondRef` | `(?(N)yes\|no)` under `:P5` — branch on group N's state |
 
 ## `NqpOpc` — the `use nqp` subset
 
