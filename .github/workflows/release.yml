@@ -342,6 +342,21 @@ jobs:
       - name: Build Raku.js (WebAssembly)
         run: rakujs/build.sh
 
+      # The built pair is what raku.online's playground ships (www/rakujs.js +
+      # rakujs.wasm). Uploading it lets the site-republish step of a release
+      # `gh run download -n rakujs-wasm` instead of installing emscripten and
+      # rebuilding locally — which is exactly what the v3.14.0 republish had
+      # to do when this job built the pair and then threw it away. The name
+      # stays stable; scripts depend on it.
+      - name: Upload the engine pair
+        uses: actions/upload-artifact@v4
+        with:
+          name: rakujs-wasm
+          path: |
+            rakujs/playground/rakujs.js
+            rakujs/playground/rakujs.wasm
+          if-no-files-found: error
+
       # Embed the wasm as base64 + inline the showcase sources into showcase/web/lib/,
       # so the apps in that folder open straight from disk.
       - name: Bundle the browser showcases
