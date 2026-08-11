@@ -14072,6 +14072,52 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
 // Regex value splices as a sub-pattern, anything else interpolates as literal
 // text. Repeated until stable, because a spliced regex may name more of them.
 // Shared by `~~` and by every builtin that compiles a raw pattern (`.split`).
+// A `:P5`/`:Perl5` adverb among the leading `:adv ` tokens the lexer bakes into
+// a regex literal — the whole pattern is Perl 5 syntax.
+static bool isP5Pattern(const std::string& pat) {
+    size_t p = 0;
+    while (p < pat.size() && pat[p] == ':') {
+        size_t j = p + 1;
+        if (j < pat.size() && pat[j] == '!') j++;
+        size_t ns = j;
+        while (j < pat.size() && std::isalnum((unsigned char)pat[j])) j++;
+        if (j == ns) return false;
+        std::string name = pat.substr(ns, j - ns);
+        if (j < pat.size() && pat[j] == '(') {
+            int d = 0;
+            while (j < pat.size()) { char c = pat[j++]; if (c == '(') d++; else if (c == ')' && --d == 0) break; }
+        }
+        if (j < pat.size() && pat[j] == ' ') j++;
+        else if (j < pat.size()) return false;
+        if (name == "P5" || name == "Perl5") return true;
+        p = j;
+    }
+    return false;
+}
+
+// :P5 interpolation — Perl semantics: `$var` splices its value as raw regex
+// SOURCE (`my $r = '\d+'; m:P5/$r/` compiles the \d+). No quotemeta, no code
+// braces, no single-quote spans; `\$`, `$` anchors and `$1` digits pass through.
+std::string Interpreter::interpP5Pattern(const std::string& in) {
+    if (in.find('$') == std::string::npos || !tctx_.cur) return in;
+    std::string out;
+    for (size_t i = 0; i < in.size(); i++) {
+        if (in[i] == '\\' && i + 1 < in.size()) { out += in[i]; out += in[i + 1]; i++; continue; }
+        if (in[i] == '$' && i + 1 < in.size() && (std::isalpha((unsigned char)in[i + 1]) || in[i + 1] == '_')) {
+            size_t j = i + 1;
+            while (j < in.size() && (std::isalnum((unsigned char)in[j]) || in[j] == '_')) j++;
+            if (Value* v = tctx_.cur->find("$" + in.substr(i + 1, j - i - 1))) {
+                out += v->t == VT::Regex ? "(?:" + std::string(isP5Pattern(v->s) ? v->s.substr(v->s.find(' ') + 1) : v->s) + ")"
+                                         : v->toStr();
+                i = j - 1;
+                continue;
+            }
+        }
+        out += in[i];
+    }
+    return out;
+}
+
 std::string Interpreter::interpRegexPattern(const std::string& in) {
     std::string pat = in;
     for (int pass = 0; pass < 8 && pat.find('$') != std::string::npos && tctx_.cur; pass++) {
@@ -14285,15 +14331,16 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // A regex value that closed over its creating scope resolves its $vars there
     // FIRST; anything still unresolved then falls back to the current scope (so
     // an in-flight `$0`, or a caller's variable, still works).
+    bool p5pat = isP5Pattern(pat); // :P5 — Perl-5-syntax pattern: raw-source interpolation
     if (!wired && rxVal && rxVal->t == VT::Regex && rxVal->ext &&
         pat.find('$') != std::string::npos) {
         auto savedOuter = tctx_.cur;
         tctx_.cur = std::static_pointer_cast<Env>(rxVal->ext);
-        pat = interpRegexPattern(pat);
+        pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
         tctx_.cur = savedOuter;
     }
-    if (!wired) pat = interpRegexPattern(pat);
-    if (!wired) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
+    if (!wired) pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
+    if (!wired && !p5pat) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
     std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
                                  : rxVal->hashKind == "rule" ? "sr" : "") : "";
@@ -14669,6 +14716,15 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     if (mv.t == VT::Match) {
         if (mv.arr) for (size_t k = 0; k < mv.arr->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*mv.arr)[k]);
         if (mv.hash) for (auto& kv : *mv.hash) tctx_.cur->define("$<" + kv.first + ">", kv.second);
+    } else {
+        // FAILED match: $0..$N are aliases of $/ (now Nil), but earlier matches
+        // defined them as real vars in scopes still visible from here — shadow
+        // every one that resolves, so the alias contract holds after failure
+        for (long k = 0; ; k++) {
+            std::string nm = "$" + std::to_string(k);
+            if (!tctx_.cur->find(nm)) break;
+            tctx_.cur->define(nm, Value::nil());
+        }
     }
     return mv;
 }
@@ -14714,8 +14770,8 @@ Value Interpreter::regexSubst(const std::string& subject, const std::string& pat
     // literal splice). The engine's own match-time var atom splices the RAW
     // value, so a variable holding ' ' collapsed into pattern whitespace:
     // `s/ $W ** 2 /-/` matched EMPTY at position 0 (Text::Utils).
-    pat = interpRegexPattern(pat);
-    pat = rxInterpArrays(pat);
+    if (isP5Pattern(pat)) pat = interpP5Pattern(pat);
+    else { pat = interpRegexPattern(pat); pat = rxInterpArrays(pat); }
     Regex re(pat);
     out.clear(); changed = false;
     Value last = Value::nil();
@@ -14938,7 +14994,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                                      const std::string* tmplRepl, Value* matchResult) {
     nsub = 0;
     bool global = false, samecase = false, samespace = false, samemark = false;
-    bool icase = false, sigspace = false, ignoremark = false;
+    bool icase = false, sigspace = false, ignoremark = false, p5 = false;
     bool haveX = false, haveNth = false, haveStart = false, posAnchored = false;
     Value xVal, nthVal; long startPos = 0;
     auto setAdverb = [&](const std::string& k, const Value& pv) {
@@ -14962,6 +15018,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else if (k == "samespace" || k == "ss") { sigspace = true; samespace = true; }
         else if (k == "samemark" || k == "mm") { samemark = true; ignoremark = true; } // :mm implies :m
         else if (k == "m" || k == "ignoremark") ignoremark = true;
+        else if (k == "P5" || k == "Perl5") p5 = true; // s:P5/// — Perl 5 pattern syntax
         else throw RakuError{Value::typeObj("X::Syntax::Regex::Adverb"), "Unrecognized regex adverb: :" + k};
     };
     for (auto& a : args)
@@ -15013,6 +15070,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                            ((realPat[j] == '-' || realPat[j] == '\'') && j + 1 < realPat.size() &&
                             std::isalpha((unsigned char)realPat[j + 1])))) nm += realPat[j++];
                     if (Value* v = tctx_.cur->find("$" + nm)) {
+                        // P5 pattern: Perl interpolates a variable as regex SOURCE,
+                        // not as quoted literal text — splice it raw
+                        if (p5) { ip += v->toStr(); i = j - 1; continue; }
                         // whitespace must be escaped too (it is insignificant in a
                         // regex): a variable holding ' ' spliced bare, so
                         // `s/ $W ** 2 /-/` matched EMPTY — same rule as quoteMetaRx
@@ -15031,7 +15091,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             ip += realPat[i];
         }
         realPat = ip;
-        realPat = rxInterpArrays(realPat); // `/@alpha/` — element alternation (comb path)
+        if (!p5) realPat = rxInterpArrays(realPat); // `/@alpha/` — element alternation (comb path)
     }
     // `\w**{$n}` / `**{1..3}` runtime-bounded quantifier: wire the range hook so
     // the bounds are evaluated at match time (without it they default to 0..*).
@@ -15089,7 +15149,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         foldStart.push_back((long)folded.size()); origStart.push_back(ob);
         std::string fpat; { std::vector<uint32_t> pcps = smDecode(realPat);
             for (size_t i = 0; i < pcps.size();) fpat += baseOf(nextGrapheme(pcps, i)); }
-        std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "");
+        std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
         Regex re(fpat, flags);
         if (needRangeHook) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
@@ -15104,7 +15164,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             pos = mm.to > mm.from ? mm.to : mm.to + 1;
         }
     } else {
-        std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "");
+        std::string flags = std::string(icase ? "i" : "") + (sigspace ? "s" : "") + (p5 ? "5" : "");
         Regex re(realPat, flags);
         if (needRangeHook) re.runHooks = &ssHooks;
         if (!re.ok()) return subj;
