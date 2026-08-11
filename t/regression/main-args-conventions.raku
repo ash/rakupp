@@ -131,8 +131,36 @@ check('the = form is also literal after the boundary', first-line($c, 'xx', '--f
 
 check('-xyz is one name, not a cluster',    first-line($s2, '-xyz'), 'USAGE');
 
+# --- rule 4: %*SUB-MAIN-OPTS<named-anywhere> lifts the boundary -----------
+# Options bind wherever they appear; `--foo abc` pairing follows them past
+# the first positional; a bare `--` STILL ends option parsing.
+my $na = script('na.raku', q:to/END/);
+    my %*SUB-MAIN-OPTS = :named-anywhere;
+    sub MAIN($pos, Str :$foo = 'd', Bool :$v = False) { say "pos=$pos foo=$foo v=$v" }
+    END
+check('named-anywhere: an option after a positional binds', first-line($na, 'xx', '--foo=abc'),
+      'pos=xx foo=abc v=False');
+check('named-anywhere: pairing follows past the boundary', first-line($na, 'xx', '--foo', 'abc', '-v'),
+      'pos=xx foo=abc v=True');
+check('named-anywhere: -- still ends options',             first-line($na, '--', 'xx', '--foo=abc'), 'USAGE');
+
+# --- rule 5: a repeated option collects EVERY value -----------------------
+# `--x=a --x=b` is :x(["a","b"]): it binds :@x whole, and it FAILS to bind a
+# scalar Str :$x — Rakudo does not silently keep the last value, so neither
+# do we.
+my $rep = script('rep.raku', q:to/END/);
+    sub MAIN(:@x) { say "x=[{@x.join(',')}]" }
+    END
+check('a repeated option collects into :@x',  first-line($rep, '--x=a', '--x=b'), 'x=[a,b]');
+check('a single occurrence still binds :@x',  first-line($rep, '--x=a'), 'x=[a]');
+
+my $rep2 = script('rep2.raku', q:to/END/);
+    sub MAIN(Str :$x = 'd') { say "x=$x" }
+    END
+check('a repeated option does NOT bind a scalar', first-line($rep2, '--x=1', '--x=2'), 'USAGE');
+
 unlink $work.add($_)
     for <a.raku d.raku sp.raku o1.raku s2.raku neg.raku h2.raku
-         e.raku b.raku g2.raku o3.raku c.raku>;
+         e.raku b.raku g2.raku o3.raku c.raku na.raku rep.raku rep2.raku>;
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit($fails ?? 1 !! 0);

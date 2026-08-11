@@ -846,12 +846,18 @@ Value valAllomorph(const Value& v) {
     return n;
 }
 
-ValueList rtMainArgs(const std::vector<std::string>& argv) {
-    ValueList margs;
-    auto named = [](std::string key, Value v) { // --opt args bind to :$named params
-        Value p = Value::pair(std::move(key), std::move(v));
-        p.namedArg = true;
-        return p;
+ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere) {
+    ValueList pos;
+    // A repeated option collects EVERY value into one named arg (insertion
+    // order), exactly as RUN-MAIN-args-to-capture does: `--x=a --x=b` is
+    // :x(["a","b"]) — which binds :@x whole, and (oracle-verified) FAILS to
+    // bind a scalar Str :$x instead of silently keeping the last value.
+    std::vector<std::pair<std::string, ValueList>> named;
+    auto addNamed = [&](std::string key, Value v) { // --opt args bind to :$named params
+        auto slot = std::find_if(named.begin(), named.end(),
+                                 [&](auto& kv) { return kv.first == key; });
+        if (slot == named.end()) named.push_back({std::move(key), {std::move(v)}});
+        else slot->second.push_back(std::move(v));
     };
     // Rakudo runs every command-line argument through val(), so a numeric-looking
     // one arrives as a real IntStr/RatStr and binds Int/Rat/Num params by its
@@ -864,6 +870,9 @@ ValueList rtMainArgs(const std::vector<std::string>& argv) {
     // and ends option parsing (how a positional `-5` is passed); and
     // single-dash spellings are options too (`-v`, `-n=3`, `-foo=bar` — the
     // whole rest of the token is the name, `=` splits off the value).
+    // With %*SUB-MAIN-OPTS<named-anywhere> the first-positional boundary goes
+    // away — options bind wherever they appear — but `--` still ends them
+    // (oracle-verified: `-- pos --foo=x` keeps "--foo=x" a literal positional).
     bool optionsDone = false;
     for (auto& a : argv) {
         if (!optionsDone) {
@@ -871,16 +880,28 @@ ValueList rtMainArgs(const std::vector<std::string>& argv) {
             if (a.size() > 1 && a[0] == '-' && a != "-") {
                 std::string rest = a[1] == '-' ? a.substr(2) : a.substr(1);
                 if (!rest.empty()) {
-                    if (rest[0] == '/') { margs.push_back(named(rest.substr(1), Value::boolean(false))); continue; }
+                    if (rest[0] == '/') { addNamed(rest.substr(1), Value::boolean(false)); continue; }
                     auto eq = rest.find('=');
-                    if (eq != std::string::npos) { margs.push_back(named(rest.substr(0, eq), allomorph(rest.substr(eq + 1)))); continue; }
-                    margs.push_back(named(rest, Value::boolean(true)));
+                    if (eq != std::string::npos) { addNamed(rest.substr(0, eq), allomorph(rest.substr(eq + 1))); continue; }
+                    addNamed(rest, Value::boolean(true));
                     continue;
                 }
             }
-            optionsDone = true; // the first positional: everything from here is positional
+            if (!namedAnywhere)
+                optionsDone = true; // the first positional: everything from here is positional
         }
-        margs.push_back(allomorph(a));
+        pos.push_back(allomorph(a));
+    }
+    // positionals first, then the named args — the same capture shape the
+    // RUN-MAIN builtin produces; named binding is by key, not position
+    ValueList margs = std::move(pos);
+    for (auto& kv : named) {
+        Value v;
+        if (kv.second.size() == 1) v = std::move(kv.second[0]);
+        else { v = Value::array(); *v.arr = std::move(kv.second); }
+        Value p = Value::pair(kv.first, std::move(v));
+        p.namedArg = true;
+        margs.push_back(std::move(p));
     }
     return margs;
 }
@@ -2747,87 +2768,10 @@ int Interpreter::run(Program& prog) {
         }
         // auto-invoke MAIN with command-line arguments, if defined
         if (Value* mainSub = tctx_.cur->find("&MAIN")) {
-            // Space-separated option values, Rakudo's exact (oracle-verified)
-            // rule: before the options-end boundary, `--foo abc` pairs into
-            // :foo<abc> iff the candidate declares :$foo with the Str type —
-            // untyped and Int/Num named params do NOT pair (`--n 42` genuinely
-            // fails dispatch under Rakudo). Consumption is unconditional:
-            // `--foo --verbose` makes foo eq "--verbose". Positionals need no
-            // special-casing — a positional token ends option parsing, which
-            // is what makes `prog xx --foo abc` fail exactly as in Rakudo.
-            // Decided per candidate; implemented as an argv rewrite
-            // (`--foo abc` -> `--foo=abc`) into the classic parse.
-            auto pairedArgs = [&](const Value& cand) -> ValueList {
-                if (!cand.code || !cand.code->params) return rtMainArgs(argv_);
-                std::set<std::string> keys;
-                for (auto& p : *cand.code->params) {
-                    if (!p.named || p.type != "Str") continue;
-                    std::string k = !p.namedKey.empty() ? p.namedKey
-                                  : (p.name.size() > 1 ? p.name.substr(1) : "");
-                    if (!k.empty()) keys.insert(k);
-                    for (auto& al : p.aliasKeys) keys.insert(al);
-                }
-                if (keys.empty()) return rtMainArgs(argv_);
-                std::vector<std::string> av;
-                bool done = false; // pairing obeys the same options-end-at-the-
-                                   // first-positional boundary as the parse itself
-                for (size_t i = 0; i < argv_.size(); i++) {
-                    const std::string& a = argv_[i];
-                    if (!done && a == "--") { av.push_back(a); done = true; continue; }
-                    std::string k;
-                    if (!done && a.size() > 1 && a[0] == '-' && a != "-" &&
-                        a.find('=') == std::string::npos) {
-                        k = a[1] == '-' ? a.substr(2) : a.substr(1); // --foo / -f / -foo
-                        if (!k.empty() && k[0] == '/') k.clear();    // --/k negation: not pairable
-                    }
-                    if (!k.empty() && keys.count(k) && i + 1 < argv_.size()) {
-                        av.push_back("--" + k + "=" + argv_[i + 1]);
-                        i++;
-                        continue;
-                    }
-                    if (!done && !(a.size() > 1 && a[0] == '-' && a != "-"))
-                        done = true; // the first positional token
-                    av.push_back(a);
-                }
-                return rtMainArgs(av);
-            };
             ValueList margs;
-            // Decide up front whether any MAIN candidate matches the argv. Checking
-            // BEFORE the call means a nested X::Multi::NoMatch thrown from inside a
-            // matched MAIN body propagates as a real error instead of being mistaken
-            // for "no MAIN candidate" and silently printing Usage.
-            bool mainMatches = true;
-            if (mainSub->code && mainSub->code->isMultiDispatcher) {
-                mainMatches = false;
-                for (auto& cand : mainSub->code->candidates) {
-                    ValueList mc = pairedArgs(cand);
-                    if (scoreCandidate(cand, mc) >= 0) { mainMatches = true; margs = std::move(mc); break; }
-                }
-            }
-            else if (mainSub->code && mainSub->code->params) { // single MAIN: same bind check
-                margs = pairedArgs(*mainSub);
-                mainMatches = scoreCandidate(*mainSub, margs) >= 0;
-            }
-            else margs = rtMainArgs(argv_);
-            if (!mainMatches) {
-                // an explicit --help is a REQUEST for the usage text, not a
-                // dispatch failure: Rakudo prints it to stdout and exits 0
-                // (a bare -h is NOT special — it stays the failure path)
-                bool wantHelp = false;
-                for (auto& a : argv_) if (a == "--help") { wantHelp = true; break; }
-                // a user-defined USAGE takes over (it prints to stdout, like Rakudo)
-                Value* usage = tctx_.cur->find("&USAGE");
-                if (!usage && global_) usage = global_->find("&USAGE");
-                if (usage) {
-                    try { callCallable(*usage, {}); } catch (ExitEx& e) { code = e.code; goto mainDone; }
-                }
-                else if (wantHelp) std::cout << mainUsage();
-                else std::cerr << mainUsage();
-                code = wantHelp ? 0 : 2;
-                mainDone: ;
-            } else {
-                callCallable(*mainSub, margs);
-            }
+            int rc = mainProtocol(*mainSub, margs);
+            if (rc < 0) callCallable(*mainSub, margs);
+            else code = rc;
         }
         if (docMode_) std::cout << podData_; // --doc: print the rendered POD after the program runs
     } catch (ExitEx& e) {
@@ -8251,6 +8195,161 @@ Value& Interpreter::dynVarRef(const std::string& name) {
     if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
     global_->define(name, Value::any());
     return global_->vars[name];
+}
+
+// %*SUB-MAIN-OPTS<named-anywhere> as seen from MAIN auto-invoke. The mainline's
+// `my %*SUB-MAIN-OPTS` lives in the mainline env (interpreter) or global_
+// (compiled programs route dynamics through dynVarRef), so both faces of the
+// dispatcher consult the same two scopes.
+bool Interpreter::mainNamedAnywhere() {
+    Value* smo = tctx_.cur ? tctx_.cur->find("%*SUB-MAIN-OPTS") : nullptr;
+    if (!smo && global_) smo = global_->find("%*SUB-MAIN-OPTS");
+    if (!smo || smo->t != VT::Hash || !smo->hash) return false;
+    auto it = smo->hash->find("named-anywhere");
+    return it != smo->hash->end() && it->second.truthy();
+}
+
+// The MAIN command-line protocol, shared by the interpreter's auto-invoke and
+// by compiled (--exe) binaries via runCompiledMain. Fills margs and returns -1
+// when a candidate accepts the argv; otherwise prints the usage text (a user
+// &USAGE hook wins; --help goes to stdout) and returns the process exit code.
+int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
+    // Space-separated option values, Rakudo's exact (oracle-verified)
+    // rule: before the options-end boundary, `--foo abc` pairs into
+    // :foo<abc> iff the candidate declares :$foo with the Str type —
+    // untyped and Int/Num named params do NOT pair (`--n 42` genuinely
+    // fails dispatch under Rakudo). Consumption is unconditional:
+    // `--foo --verbose` makes foo eq "--verbose". Positionals need no
+    // special-casing — a positional token ends option parsing, which
+    // is what makes `prog xx --foo abc` fail exactly as in Rakudo.
+    // Decided per candidate; implemented as an argv rewrite
+    // (`--foo abc` -> `--foo=abc`) into the classic parse.
+    const bool namedAnywhere = mainNamedAnywhere();
+    auto pairedArgs = [&](const Value& cand) -> ValueList {
+        if (!cand.code || !cand.code->params) return rtMainArgs(argv_, namedAnywhere);
+        std::set<std::string> keys;
+        for (auto& p : *cand.code->params) {
+            if (!p.named || p.type != "Str") continue;
+            std::string k = !p.namedKey.empty() ? p.namedKey
+                          : (p.name.size() > 1 ? p.name.substr(1) : "");
+            if (!k.empty()) keys.insert(k);
+            for (auto& al : p.aliasKeys) keys.insert(al);
+        }
+        if (keys.empty()) return rtMainArgs(argv_, namedAnywhere);
+        std::vector<std::string> av;
+        bool done = false; // pairing obeys the same options-end-at-the-
+                           // first-positional boundary as the parse itself
+        for (size_t i = 0; i < argv_.size(); i++) {
+            const std::string& a = argv_[i];
+            if (!done && a == "--") { av.push_back(a); done = true; continue; }
+            std::string k;
+            if (!done && a.size() > 1 && a[0] == '-' && a != "-" &&
+                a.find('=') == std::string::npos) {
+                k = a[1] == '-' ? a.substr(2) : a.substr(1); // --foo / -f / -foo
+                if (!k.empty() && k[0] == '/') k.clear();    // --/k negation: not pairable
+            }
+            if (!k.empty() && keys.count(k) && i + 1 < argv_.size()) {
+                av.push_back("--" + k + "=" + argv_[i + 1]);
+                i++;
+                continue;
+            }
+            if (!done && !namedAnywhere && !(a.size() > 1 && a[0] == '-' && a != "-"))
+                done = true; // the first positional token (named-anywhere: no boundary)
+            av.push_back(a);
+        }
+        return rtMainArgs(av, namedAnywhere);
+    };
+    // Decide up front whether any MAIN candidate matches the argv. Checking
+    // BEFORE the call means a nested X::Multi::NoMatch thrown from inside a
+    // matched MAIN body propagates as a real error instead of being mistaken
+    // for "no MAIN candidate" and silently printing Usage.
+    bool mainMatches = true;
+    if (mainSub.code && mainSub.code->isMultiDispatcher) {
+        mainMatches = false;
+        for (auto& cand : mainSub.code->candidates) {
+            ValueList mc = pairedArgs(cand);
+            if (scoreCandidate(cand, mc) >= 0) { mainMatches = true; margs = std::move(mc); break; }
+        }
+    }
+    else if (mainSub.code && mainSub.code->params) { // single MAIN: same bind check
+        margs = pairedArgs(mainSub);
+        mainMatches = scoreCandidate(mainSub, margs) >= 0;
+    }
+    else margs = rtMainArgs(argv_, namedAnywhere);
+    if (mainMatches) return -1;
+    // an explicit --help is a REQUEST for the usage text, not a
+    // dispatch failure: Rakudo prints it to stdout and exits 0
+    // (a bare -h is NOT special — it stays the failure path)
+    bool wantHelp = false;
+    for (auto& a : argv_) if (a == "--help") { wantHelp = true; break; }
+    // a user-defined USAGE takes over (it prints to stdout, like Rakudo)
+    Value* usage = tctx_.cur ? tctx_.cur->find("&USAGE") : nullptr;
+    if (!usage && global_) usage = global_->find("&USAGE");
+    if (usage) {
+        try { callCallable(*usage, {}); } catch (ExitEx& e) { return e.code; }
+    }
+    else if (wantHelp) std::cout << mainUsage();
+    else std::cerr << mainUsage();
+    return wantHelp ? 0 : 2;
+}
+
+// --exe support: adopt the signature-only Program the compiled binary embeds
+// (the MAIN candidates, bodies detached, written by the SAME serializer as the
+// module cache) and define &MAIN — full Param metadata plus the compiled entry
+// point — in the global env. From there mainProtocol()/mainUsage()/$*USAGE see
+// exactly what the interpreter sees for the same source. A blob written by a
+// different build (kAstSerialVersion mismatch) is ignored: runCompiledMain then
+// degrades to the direct call, so the program still runs.
+void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
+                                       Value (*fn)(ValueList&)) {
+    Program prog;
+    try { deserializeAst(std::string(reinterpret_cast<const char*>(blob), len), prog); }
+    catch (AstSerialError&) { return; }
+    auto prg = std::make_shared<Program>(std::move(prog));
+    std::vector<SubDecl*> cands;
+    for (auto& s : prg->stmts)
+        if (s->kind == NK::SubDecl) {
+            auto* d = static_cast<SubDecl*>(s.get());
+            if (d->name == "MAIN") cands.push_back(d);
+        }
+    if (cands.empty() || !global_) return;
+    mainSigProg_ = prg; // the Params below are borrowed from this tree
+    auto mk = [&](SubDecl* d) {
+        Value v = Value::closure(fn);
+        v.code->name = "MAIN";
+        v.code->params = &d->params;
+        v.code->pod = d->pod;
+        return v;
+    };
+    Value main;
+    if (cands.size() == 1 && !cands[0]->isMulti) main = mk(cands[0]);
+    else {
+        main = Value::closure(fn);
+        main.code->name = "MAIN";
+        main.code->isMultiDispatcher = true;
+        for (auto* d : cands) main.code->candidates.push_back(mk(d));
+    }
+    global_->define("&MAIN", main);
+}
+
+// The compiled binary's MAIN invoke: run the protocol against the registered
+// metadata and call the compiled entry on a match. Returns the process exit
+// code (0 when MAIN ran; its own `exit` still unwinds as ExitEx past this).
+// Without registered metadata this is the legacy direct call — the program
+// runs, it just cannot refuse a bad command line.
+int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
+    Value* mainSub = global_ ? global_->find("&MAIN") : nullptr;
+    if (!mainSub || mainSub->t != VT::Code || !mainSub->code ||
+        (!mainSub->code->params && !mainSub->code->isMultiDispatcher)) {
+        ValueList margs = rtMainArgs(argv_, mainNamedAnywhere());
+        fn(margs);
+        return 0;
+    }
+    ValueList margs;
+    int rc = mainProtocol(*mainSub, margs);
+    if (rc >= 0) return rc;
+    fn(margs);
+    return 0;
 }
 
 // Value-level indexing for native codegen (no AST). Read returns Nil when absent.

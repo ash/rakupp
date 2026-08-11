@@ -1,4 +1,5 @@
 #include "Codegen.h"
+#include "AstSerial.h"
 #include <functional>
 #include <memory>
 #include <cstdio>
@@ -2217,9 +2218,25 @@ struct Codegen {
                 continue;
             }
             if (p.named) {
-                std::string key = p.name.size() > 1 ? cesc(p.name.substr(1)) : cesc("");
-                if (p.defaultVal) bind("rtHasNamed(__a, " + key + ") ? rtNamed(__a, " + key + ") : (" + ex(p.defaultVal.get()) + ")");
-                else bind("rtNamed(__a, " + key + ")");
+                // Every key this param answers to, in the interpreter's lookup
+                // order: the primary (`:x($v)` renames to x — the var name does
+                // NOT answer), then the var name when `:x(:$v)` aliases both,
+                // then the nested layers of `:x(:y(:z($a)))`. Emitted as a
+                // rtHasNamed ternary chain, so `:r(:$string)` binds -r and
+                // --string alike — it used to look up only "string".
+                std::vector<std::string> keys;
+                std::string bare = p.name.size() > 1 ? p.name.substr(1) : "";
+                keys.push_back(p.namedKey.empty() ? bare : p.namedKey);
+                if (p.aliasBoth && !p.namedKey.empty() && !bare.empty() && bare != p.namedKey)
+                    keys.push_back(bare);
+                for (auto& ak : p.aliasKeys)
+                    if (std::find(keys.begin(), keys.end(), ak) == keys.end()) keys.push_back(ak);
+                std::string chain;
+                for (size_t i = 0; i + 1 < keys.size(); i++)
+                    chain += "rtHasNamed(__a, " + cesc(keys[i]) + ") ? rtNamed(__a, " + cesc(keys[i]) + ") : ";
+                std::string lastKey = cesc(keys.back());
+                if (p.defaultVal) bind(chain + "(rtHasNamed(__a, " + lastKey + ") ? rtNamed(__a, " + lastKey + ") : (" + ex(p.defaultVal.get()) + "))");
+                else bind(chain + "rtNamed(__a, " + lastKey + ")");
                 continue;
             }
             if (p.defaultVal) bind("rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ")");
@@ -2460,8 +2477,49 @@ struct Codegen {
 
 } // namespace
 
+// The signature blob a compiled binary hands RT.registerCompiledMain: the MAIN
+// candidates with their bodies detached, written by the SAME serializer as the
+// module cache — so the compiled dispatcher scores and prints usage from the
+// very Params the interpreter would build for this source. The decls are moved
+// into a scratch Program for the write and restored afterwards; on any
+// serializer error the AST is restored and "" is returned, which downgrades
+// the binary to the legacy direct call instead of failing the compile.
+static std::string mainSigBlob(Program& prog) {
+    std::vector<std::pair<size_t, std::vector<StmtPtr>>> stash; // stmt index + its body
+    // `where` clauses stay OUT of the blob: scoring evaluates them, and one that
+    // reaches past its own parameter (`where * < $limit`) would look $limit up
+    // in the runtime env, where compiled lexicals never go — the throw would
+    // read as "no match" and refuse an argv the interpreter accepts. Unscored
+    // is the pre-protocol permissiveness; sometimes-wrong would be worse.
+    std::vector<std::pair<Param*, ExprPtr>> wheres;
+    for (size_t i = 0; i < prog.stmts.size(); i++) {
+        if (prog.stmts[i]->kind != NK::SubDecl) continue;
+        auto* d = static_cast<SubDecl*>(prog.stmts[i].get());
+        if (d->name != "MAIN" || d->isProto) continue; // a proto is not a candidate
+        for (auto& p : d->params)
+            if (p.whereExpr) {
+                wheres.push_back({&p, std::move(p.whereExpr)});
+                p.hadWhere = true; // the blob's copy still stringifies as `where { ... }`
+            }
+        stash.push_back({i, std::move(d->body)});
+        d->body.clear();
+    }
+    if (stash.empty()) return "";
+    Program sig;
+    for (auto& s : stash) sig.stmts.push_back(std::move(prog.stmts[s.first]));
+    std::string blob;
+    try { blob = serializeAst(sig); } catch (...) { blob.clear(); }
+    for (size_t k = 0; k < stash.size(); k++) {
+        prog.stmts[stash[k].first] = std::move(sig.stmts[k]);
+        static_cast<SubDecl*>(prog.stmts[stash[k].first].get())->body = std::move(stash[k].second);
+    }
+    for (auto& w : wheres) { w.first->whereExpr = std::move(w.second); w.first->hadWhere = false; }
+    return blob;
+}
+
 std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcPath,
                            const std::set<std::string>& moduleExports) {
+    const std::string mainSig = mainSigBlob(prog);
     Codegen g;
     g.optimize_ = optimize;
     g.moduleExports_ = moduleExports;
@@ -2587,17 +2645,16 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         g.analyzeCells(prog.stmts, {});
         g.emitSeq(prog.stmts, 2, /*topLevel=*/true);
         g.atTopLevel_ = false;
-        // auto-invoke MAIN with the CLI args (--opt args become named, like the interpreter)
+        // auto-invoke MAIN through the interpreter's own command-line protocol
+        // (pairing, candidate scoring, usage/--help) via the metadata that
+        // __rakupp_register adopted — see mainSigBlob above. Without a blob
+        // runCompiledMain degrades to the old direct call.
         bool hasMain = false;
         for (auto& s : prog.stmts)
             if (s->kind == NK::SubDecl && static_cast<SubDecl*>(s.get())->name == "MAIN")
                 hasMain = true;
         if (hasMain)
-            // NOT `__argv`: that's a CRT macro on Windows (expands to (*__p___argv()),
-            // making the declaration a C2556/C2059 soup) — issue #1
-            g.line(2, "{ std::vector<std::string> __rakupp_argv(argv + 1, argv + argc); "
-                      "ValueList __margs = rtMainArgs(__rakupp_argv); " +
-                      mangleSub("MAIN") + "(__margs); }");
+            g.line(2, "__rakupp_exit = RT.runCompiledMain(&__rakupp_main_entry);");
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });
 
@@ -2611,11 +2668,43 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
 
     g.out << defs;
 
+    // MAIN's uniform entry point plus its signature blob (single subs take
+    // ValueList&, the multi dispatcher ValueList by value — the wrapper's
+    // by-ref parameter converts for both). hasMainProg mirrors the body
+    // emitter's own hasMain scan.
+    bool hasMainProg = false;
+    for (auto& s : prog.stmts)
+        if (s->kind == NK::SubDecl && static_cast<SubDecl*>(s.get())->name == "MAIN")
+            hasMainProg = true;
+    if (hasMainProg) {
+        g.out << "static Value __rakupp_main_entry(ValueList& __a) { return "
+              << mangleSub("MAIN") << "(__a); }\n";
+        if (!mainSig.empty()) {
+            g.out << "static const unsigned char __rakupp_main_sig[] = {";
+            for (size_t i = 0; i < mainSig.size(); i++)
+                g.out << (i % 24 == 0 ? "\n    " : "") << (unsigned)(unsigned char)mainSig[i] << ",";
+            g.out << "\n};\n";
+        }
+        g.out << "\n";
+    }
+
     // startup registration: resolve builtin pointers first (class registration
     // may call builtins), then register classes/enums
     g.out << "static void __rakupp_register() {\n";
     for (size_t i = 0; i < bfNames.size(); i++)
         g.out << "    __bfp" << i << " = RT.builtinPtr(" << cesc(*bfNames[i]) << ");\n";
+    // early, so $*USAGE inside the program body already answers with the real text
+    if (hasMainProg && !mainSig.empty())
+        g.out << "    RT.registerCompiledMain(__rakupp_main_sig, sizeof __rakupp_main_sig, &__rakupp_main_entry);\n";
+    // a user &USAGE takes over the failed-dispatch text (mainProtocol looks it
+    // up in the runtime env, where top-level compiled subs otherwise never go)
+    if (hasMainProg)
+        for (SubDecl* d : subs)
+            if (d->name == "USAGE") {
+                g.out << "    RT.dynVarRef(\"&USAGE\") = Value::closure([](ValueList& __a) -> Value { return "
+                      << mangleSub("USAGE") << "(__a); });\n";
+                break;
+            }
     g.out << reg << "}\n\n";
 
     // main()
@@ -2625,6 +2714,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "    char** argv = static_cast<std::pair<int, char**>*>(__ctxp)->second;\n"
              "    { std::vector<std::string> a; for (int i = 1; i < argc; i++) a.push_back(argv[i]); RT.setArgs(a); }\n"
              "    RT.srcFile_ = " + cesc(srcPath) + ";\n    __rakupp_register();\n"
+             "    int __rakupp_exit = 0; (void)__rakupp_exit;\n" // set by the MAIN protocol (usage exits 2, --help 0)
              "    try {\n";
     g.out << body;
     g.out << "    } catch (const ExitEx& e) { std::cout.flush(); return e.code; }\n"
@@ -2633,7 +2723,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "    catch (const RedoEx&) { std::cerr << \"redo without loop construct\\n\"; return 1; }\n"
              "    catch (const RakuError& e) { std::cerr << e.message << \"\\n\"; return 1; }\n"
              "    catch (const std::exception& e) { std::cerr << \"Internal error: \" << e.what() << \"\\n\"; return 3; }\n"
-             "    return 0;\n}\n"
+             "    return __rakupp_exit;\n}\n"
              "// The whole program runs on the interpreter's 1 GiB big-stack thread:\n"
              "// the OS default main stack (8 MiB, 1 MB on Windows) would give native\n"
              "// recursion a far smaller budget than the interpreter, on every platform.\n"

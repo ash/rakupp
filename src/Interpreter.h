@@ -593,6 +593,15 @@ public:
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
+    bool mainNamedAnywhere(); // %*SUB-MAIN-OPTS<named-anywhere> in force at MAIN dispatch (used by codegen)
+    // The MAIN command-line protocol (pairing, scoring, usage/--help), shared by
+    // the interpreter's auto-invoke and compiled binaries. -1 = matched (margs
+    // filled); otherwise the exit code, usage already printed.
+    int mainProtocol(Value& mainSub, ValueList& margs);
+    // --exe: adopt the embedded signature-only AST and define a metadata-rich
+    // &MAIN wrapping the compiled entry point; then dispatch through it.
+    void registerCompiledMain(const unsigned char* blob, size_t len, Value (*fn)(ValueList&));
+    int runCompiledMain(Value (*fn)(ValueList&));
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
     void rtUse(const std::string& module, const std::string& arg = ""); // `use MODULE` (used by codegen)
@@ -1070,6 +1079,7 @@ public:
     static thread_local std::vector<RedispatchCtx> redispatchStack_;
     std::map<std::string, std::string> namedRegex_, namedRegexKind_; // lexical `my regex NAME {…}` -> pattern/kind
     std::vector<std::string> argv_;
+    std::shared_ptr<Program> mainSigProg_; // --exe: owns the Params &MAIN's metadata borrows (registerCompiledMain)
     static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
     static thread_local int threadDepth_; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
     // (cur_/dynStack_/curStateEnv_/gatherStack_/supplyStack_/makeTargets_/pkgPrefix_/
@@ -1379,7 +1389,7 @@ Value  rtThrowRedo(const std::string& label = ""); // expression-position / labe
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
-ValueList rtMainArgs(const std::vector<std::string>& argv); // argv -> MAIN args (--opt named, rest positional)
+ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere = false); // argv -> MAIN args (--opt named, rest positional)
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
 Value  rtReduce(const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop
 Value  rtNqpOp(NqpOpc op, ValueList& args);                 // eager `use nqp` leaf ops (interp + codegen)

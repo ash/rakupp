@@ -259,7 +259,7 @@ interpreter never slims.
 ## MAIN: how a program's own arguments parse
 
 A program with a `sub MAIN` gets Rakudo-compatible argument parsing —
-byte-identical on a 30-case oracle matrix
+byte-identical on a 36-case oracle matrix
 (`t/regression/main-args-conventions.raku`, which passes under both
 engines). The conventions, which are also the ordinary Unix ones:
 
@@ -273,11 +273,18 @@ engines). The conventions, which are also the ordinary Unix ones:
 - **Options end at the first positional argument** (POSIX). After
   `prog xx`, a later `--foo=abc` is the literal string `"--foo=abc"`. A
   bare `--` is consumed and ends options — which is how you pass a
-  positional that starts with a dash: `prog -- -5`.
+  positional that starts with a dash: `prog -- -5`. Setting
+  `my %*SUB-MAIN-OPTS = :named-anywhere;` in the mainline lifts the
+  boundary — options (and space-form pairing) bind wherever they appear,
+  as in `prog URL --verbose` — while a bare `--` still ends them.
 - **Single-dash spellings are named options too**: `-v` is `:v`, `-n=3`
   binds `:n(3)`, `-foo=bar` binds `:foo<bar>`. The whole rest of the token
   is the name (`-xyz` is `:xyz`, not a `-x -y -z` cluster), and `--/key`
   passes `False`.
+- **A repeated option collects every value**: `--x=a --x=b` is
+  `:x(["a","b"])`, which binds `:@x` whole — and fails to bind a scalar
+  `Str :$x`, exactly as under Rakudo, instead of silently keeping the
+  last value.
 
 ### The usage text
 
@@ -287,3 +294,19 @@ suffix on the usage line), a parameter's trailing `#=` docs that parameter
 in the option list (and answers its `.WHY`), and a required named parameter
 prints without the optionality brackets. The text is byte-identical to
 Rakudo's.
+
+### Compiled binaries follow the same protocol
+
+Everything above holds for a `--exe` binary too. A natively-compiled program
+embeds its MAIN signatures (bodies detached, written by the same serializer
+as the module cache) and dispatches through the interpreter's own protocol —
+pairing, candidate scoring, alias keys like `:r(:$string)`, the usage text,
+`--help`, exit codes. `--slim` binaries included: the metadata is data, not
+source, so none of it needs the parser. One deliberate boundary: a `where`
+clause on a MAIN parameter is not scored in a native binary — it may close
+over lexicals that compile to C++ globals the runtime env cannot see, and
+refusing a good command line would be worse than accepting a bad one.
+`t/regression/main-args-exe.raku` compiles three probes and holds the
+compiled answers to the oracle matrix; it used to be that a compiled binary
+silently ran on argument lines the same program would refuse under the
+interpreter.
