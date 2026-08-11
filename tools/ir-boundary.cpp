@@ -5,7 +5,7 @@
 // x86_64 `build/` this machine's Rosetta cmake produces):
 //
 //   clang++ -std=c++17 -O2 -DNDEBUG -Isrc tools/ir-boundary.cpp \
-//           build-arm64/librakupp_rt.a -o /tmp/ir-boundary && /tmp/ir-boundary
+//           build-arm64/librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props}.a -o /tmp/ir-boundary && /tmp/ir-boundary
 //
 // The question I0 must answer before any opcode is written: an IR that is only
 // PARTLY lowered runs un-lowered subtrees through today's tree-walker via an

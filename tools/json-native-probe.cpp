@@ -21,7 +21,7 @@
 // Build & run (arm64 lib, NOT the default build/ which is x86_64 under Rosetta):
 //
 //   clang++ -std=c++17 -O2 -DNDEBUG -Isrc tools/json-native-probe.cpp \
-//           build-arm64/librakupp_rt.a -o /tmp/json-native-probe && \
+//           build-arm64/librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props}.a -o /tmp/json-native-probe && \
 //   /tmp/json-native-probe tools/bench/diagnose/d800.json
 //
 // Deliberately NOT a complete JSON parser: no \u surrogate pairs, no error

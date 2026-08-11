@@ -254,14 +254,18 @@ static std::string parseSlimSpec(const std::string& spec) {
 // optimization flag ("-O2", "-O0", …); it is translated for cl.
 static std::string compileCmd(const std::string& cxx, const std::string& opt,
                               const std::string& inc, const std::string& in,
-                              const std::string& lib, const std::string& out) {
+                              const std::vector<std::string>& libs, const std::string& out) {
     if (msvcStyle(cxx)) {
         std::string o = opt == "-O0" ? "/Od" : opt == "-O1" ? "/O1" : "/O2";
         // /MT: static CRT, matching the /MT-built runtime archive (mixing
         // /MD stub objects with an /MT library is a link error)
         std::string c = cxx + " /nologo /std:c++17 /EHsc /MT /w " + o;
         if (!inc.empty()) c += " /I " + shq(inc);
-        c += " " + shq(in) + " " + shq(lib) + " /Fe:" + shq(out) + " ws2_32.lib";
+        c += " " + shq(in);
+        // link.exe resolves symbols across libraries iteratively, so the
+        // rt<->parse cycle needs no grouping here.
+        for (const auto& l : libs) c += " " + shq(l);
+        c += " /Fe:" + shq(out) + " ws2_32.lib";
         // 256 MiB main-thread stack: Windows defaults to 1 MB, which is under
         // the recursion guard's 2 MiB headroom reserve — the first guarded
         // call in a natively-compiled program threw X::Recursion immediately
@@ -284,7 +288,19 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     // dead-strip is free and it is what the later phases' stubs lean on.
     if (g_slim.deadStrip) c += " -ffunction-sections -fdata-sections";
     if (!inc.empty()) c += " -I " + shq(inc);
-    c += " " + shq(in) + " " + shq(lib) + " -o " + shq(out);
+    c += " " + shq(in);
+    // rt and parse reference each other (the runtime drives the Parser; the
+    // Parser leans on runtime helpers), which a single-pass GNU ld only
+    // resolves inside a group. ld64 iterates archives on its own and has no
+    // --start-group at all, so macOS takes the plain list.
+#ifdef __APPLE__
+    for (const auto& l : libs) c += " " + shq(l);
+#else
+    c += " -Wl,--start-group";
+    for (const auto& l : libs) c += " " + shq(l);
+    c += " -Wl,--end-group";
+#endif
+    c += " -o " + shq(out);
 #ifdef _WIN32
     c += " -lws2_32";                 // MinGW: the runtime's sockets need Winsock
     c += " -Wl,--stack,268435456";    // and the same 256 MiB main stack as MSVC
@@ -412,6 +428,29 @@ static bool findRuntime(const std::string& selfExe, std::string& lib, std::strin
     return false;
 }
 
+// The runtime is a SET of archives since the SLIM split (SLIM-PLAN P2): the
+// core plus the four feature groups. `rtLib` is the core archive findRuntime()
+// located; the rest ship beside it with the same prefix/extension family.
+// Everything still links all five — choosing a stub instead of a real archive
+// is P3. On a missing member this fails with the member's expected path, in
+// findRuntime()'s own error style, so a half-copied installation diagnoses
+// itself rather than surfacing as an undefined ucd:: symbol from the linker.
+static bool findRuntimeSet(const std::string& rtLib, std::vector<std::string>& libs,
+                           std::string& missing) {
+    libs.clear();
+    bool msvcFamily = rtLib.size() >= 4 &&
+                      rtLib.compare(rtLib.size() - 4, 4, ".lib") == 0;
+    std::string dir = dirOf(rtLib);
+    libs.push_back(rtLib);
+    for (const char* f : {"ucd_names", "ucd_coll", "ucd_props", "parse"}) {
+        std::string p = dir + (msvcFamily ? "/rakupp_" + std::string(f) + ".lib"
+                                          : "/librakupp_" + std::string(f) + ".a");
+        if (!fileExists(p)) { missing = p; return false; }
+        libs.push_back(p);
+    }
+    return true;
+}
+
 // Default output path for a compiled program: the source name minus a Raku
 // extension, or `a.out` for `-e` code.
 static std::string defaultOut(const std::string& srcName) {
@@ -495,7 +534,13 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "}\n";
     }
 
-    std::string cmd = compileCmd(nativeCxx(lib), "-O2", "", stubPath, lib, outPath);
+    std::vector<std::string> rtLibs; std::string missingLib;
+    if (!findRuntimeSet(lib, rtLibs, missingLib)) {
+        std::cerr << "Runtime archive set is incomplete. Missing:\n                 " << missingLib
+                  << "\n(the archives ship together — rebuild rakupp: cmake --build build; or reinstall)\n";
+        return 5;
+    }
+    std::string cmd = compileCmd(nativeCxx(lib), "-O2", "", stubPath, rtLibs, outPath);
     int rc = runCommand(cmd);
     removeFile(stubPath);
     if (rc != 0) {
@@ -579,7 +624,13 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     std::string genPath = outPath + ".rakupp.gen.cpp";
     { std::ofstream g = openOut(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
 
-    std::string cmd = compileCmd(nativeCxx(lib), ccOpt, inc, genPath, lib, outPath);
+    std::vector<std::string> rtLibs; std::string missingLib;
+    if (!findRuntimeSet(lib, rtLibs, missingLib)) {
+        std::cerr << "Runtime archive set is incomplete. Missing:\n                 " << missingLib
+                  << "\n(the archives ship together — rebuild rakupp: cmake --build build; or reinstall)\n";
+        return 5;
+    }
+    std::string cmd = compileCmd(nativeCxx(lib), ccOpt, inc, genPath, rtLibs, outPath);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (rc != 0) {
@@ -630,7 +681,13 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
     }
     std::string genPath = outPath + ".rakupp.ast.cpp";
     { std::ofstream g = openOut(genPath); if (!g) { std::cerr << "Cannot write " << genPath << "\n"; return 5; } g << cpp; }
-    std::string cmd = compileCmd(nativeCxx(lib), "-O2", inc, genPath, lib, outPath);
+    std::vector<std::string> rtLibs; std::string missingLib;
+    if (!findRuntimeSet(lib, rtLibs, missingLib)) {
+        std::cerr << "Runtime archive set is incomplete. Missing:\n                 " << missingLib
+                  << "\n(the archives ship together — rebuild rakupp: cmake --build build; or reinstall)\n";
+        return 5;
+    }
+    std::string cmd = compileCmd(nativeCxx(lib), "-O2", inc, genPath, rtLibs, outPath);
     int rc = runCommand(cmd);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (rc != 0) {

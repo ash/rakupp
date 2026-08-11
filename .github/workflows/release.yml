@@ -219,8 +219,10 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp tools/embed-smoke.raku build
 
-      # Package the --exe-capable install layout: bin/rakupp, lib/librakupp_rt.a,
-      # include/rakupp/*.h (main.cpp's findRuntime() expects exactly this).
+      # Package the --exe-capable install layout: bin/rakupp, the archive set in
+      # lib/ (librakupp_rt.a plus ucd_names/ucd_coll/ucd_props/parse — the SLIM
+      # split; findRuntime() locates the set and errors on a missing member),
+      # and include/rakupp/*.h.
       - name: Install layout
         if: matrix.mingw != true
         run: cmake --install build --config Release --prefix dist/rakupp

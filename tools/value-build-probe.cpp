@@ -25,7 +25,7 @@
 // from-json can beat Rakudo by the margin Rakudo beats us by today.
 //
 //   clang++ -std=c++17 -O2 -DNDEBUG -Isrc tools/value-build-probe.cpp \
-//           build-arm64/librakupp_rt.a -o /tmp/value-build-probe && /tmp/value-build-probe
+//           build-arm64/librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props}.a -o /tmp/value-build-probe && /tmp/value-build-probe
 #include "Value.h"
 #include <chrono>
 #include <cstdio>

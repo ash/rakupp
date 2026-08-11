@@ -19,7 +19,7 @@
 // P392 is the discriminator: same bytes as today, zero non-trivial members.
 //
 //   clang++ -std=c++17 -O2 -DNDEBUG -Isrc tools/value-layout-probe.cpp \
-//           build-arm64/librakupp_rt.a -o /tmp/value-layout-probe && /tmp/value-layout-probe
+//           build-arm64/librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props}.a -o /tmp/value-layout-probe && /tmp/value-layout-probe
 #include "Value.h"
 #include <chrono>
 #include <cstdio>

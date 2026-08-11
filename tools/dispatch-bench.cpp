@@ -3,7 +3,7 @@
 // docs/dev/DISPATCH.md. Build & run:
 //
 //   clang++ -std=c++17 -O2 -DNDEBUG -Isrc tools/dispatch-bench.cpp \
-//           build/librakupp_rt.a -o /tmp/dispatch-bench && /tmp/dispatch-bench
+//           build/librakupp_{rt,parse,ucd_names,ucd_coll,ucd_props}.a -o /tmp/dispatch-bench && /tmp/dispatch-bench
 //
 //   A. RT.callBuiltin("chr", args)      — string + hash + map find + std::function (today)
 //   B. cached BuiltinFn call            — pointer resolved once, std::function call (proposed)

@@ -36,14 +36,22 @@ sub check(Bool $ok, $desc, $detail = '') {
 # ---- 1. the C++ host, against the static runtime ---------------------------
 
 my $rt = $BUILD.add('librakupp_rt.a');
+# The runtime is a SET of archives since the SLIM split (P2): the core plus the
+# four feature groups. rt and parse reference each other, so single-pass GNU ld
+# needs the group; ld64 iterates archives on its own and has no --start-group.
+my @rtset = $rt.Str,
+            |<ucd_names ucd_coll ucd_props parse>.map({ $BUILD.add("librakupp_$_.a").Str });
+my @rtlink = $*KERNEL.name eq 'darwin'
+    ?? @rtset
+    !! ('-Wl,--start-group', |@rtset, '-Wl,--end-group');
 if $rt.e {
     $checked++;
     my $cxx  = %*ENV<CXX> // 'c++';
     my $host = $BUILD.add('embed-smoke-host');
     my $cc = run $cxx, '-std=c++17', "-I{$ROOT.add('src')}",
-                 $ROOT.add('tools/embed/host.cpp').Str, $rt.Str,
+                 $ROOT.add('tools/embed/host.cpp').Str, |@rtlink,
                  '-lpthread', '-o', $host.Str, :err;
-    check $cc.exitcode == 0, "host.cpp compiles and links against librakupp_rt.a",
+    check $cc.exitcode == 0, "host.cpp compiles and links against the runtime archives",
           $cc.err.slurp(:close);
     if $cc.exitcode == 0 {
         my $p = run $host.Str, :out, :err;
@@ -80,7 +88,7 @@ if $rt.e {
           $cp.err.slurp(:close);
     if $cp.exitcode == 0 {
         # …but linked with the C++ driver, since the runtime it calls is C++.
-        my $lp = run $cxx, $obj.Str, $rt.Str, '-lpthread', '-o', $host.Str, :err;
+        my $lp = run $cxx, $obj.Str, |@rtlink, '-lpthread', '-o', $host.Str, :err;
         check $lp.exitcode == 0, "…and links against the runtime", $lp.err.slurp(:close);
         if $lp.exitcode == 0 {
             my $p = run $host.Str, :out, :err;

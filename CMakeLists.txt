@@ -49,6 +49,29 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_MAIN}")
 set(RAKUPP_REPL "${CMAKE_CURRENT_SOURCE_DIR}/src/Repl.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 
+# ---- the SLIM archive split (SLIM-PLAN P2) ----------------------------------
+# The four cuttable feature groups live in their own archives, so `--exe` can
+# later link a stub in place of any of them (P3). Nothing is cut yet: the CLI
+# and every `--exe` binary still link all five, and total shipped bytes only
+# grow by the archive headers. The grouping mirrors ucd_seam.h:
+#   ucd_names  NAMES + NUMV            (uniname/uniparse/unival)
+#   ucd_coll   the DUCET triple        (unicmp/coll/.collate)
+#   ucd_props  SCRIPTS, BLOCKS, BIDI   (uniprop by name, <:Script<…>>)
+#   parse      Lexer + Parser          (EVAL, require, runtime regexes)
+set(RAKUPP_UCD_NAMES_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_names.cpp")
+set(RAKUPP_UCD_COLL_SOURCES  "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_coll_gen.cpp")
+set(RAKUPP_UCD_PROPS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_scripts_gen.cpp"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_blocks_gen.cpp"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_bidi_gen.cpp")
+set(RAKUPP_PARSE_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/src/Lexer.cpp"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/Parser.cpp")
+# The shared library keeps the FULL list: librakupp is the interpreter, the
+# interpreter never slims, and in particular it always carries the parser —
+# rk_eval/rk_run ARE the parser (SLIM-PLAN, "librakupp pins `eval`").
+set(RAKUPP_ALL_SOURCES ${RAKUPP_SOURCES})
+list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_UCD_NAMES_SOURCES} ${RAKUPP_UCD_COLL_SOURCES}
+                                ${RAKUPP_UCD_PROPS_SOURCES} ${RAKUPP_PARSE_SOURCES})
+
 add_library(rakupp_rt STATIC ${RAKUPP_SOURCES})
 target_include_directories(rakupp_rt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rakupp_rt PUBLIC Threads::Threads)
@@ -66,6 +89,25 @@ if(WIN32)
   target_compile_definitions(rakupp_rt PUBLIC _WIN32_WINNT=0x0602)
 endif()
 
+# The feature archives. Each compiles with the same include path and flags as
+# the runtime; none needs RAKUPP_BUILDING (no RK_API symbol lives in them).
+foreach(feat rakupp_ucd_names rakupp_ucd_coll rakupp_ucd_props rakupp_parse)
+  string(TOUPPER "${feat}_SOURCES" FEAT_VAR)
+  add_library(${feat} STATIC ${${FEAT_VAR}})
+  target_include_directories(${feat} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  if(WIN32)
+    target_compile_definitions(${feat} PRIVATE _WIN32_WINNT=0x0602)
+  endif()
+endforeach()
+# rt and parse reference each other (Runtime.cpp drives the Parser; the Parser
+# builds AST nodes whose helpers live in rt — nfcNormalize among them).
+# Declaring the cycle lets CMake repeat the archives on a single-pass linker
+# (GNU ld) instead of leaving an unresolved symbol to the link order gods.
+target_link_libraries(rakupp_rt INTERFACE rakupp_parse)
+target_link_libraries(rakupp_parse INTERFACE rakupp_rt)
+install(TARGETS rakupp_ucd_names rakupp_ucd_coll rakupp_ucd_props rakupp_parse
+        ARCHIVE DESTINATION lib)
+
 # ---- librakupp — the shared library a host loads (ABI-PLAN A0) --------------
 # OFF by default: it recompiles every runtime source (PIC, hidden visibility),
 # roughly doubling a clean build, and the plain CLI neither links nor loads it.
@@ -80,7 +122,10 @@ option(RAKUPP_LINK_SHARED
   "Link the rakupp CLI against librakupp instead of the static runtime (test config)" OFF)
 
 if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
-  add_library(rakupp_shared SHARED ${RAKUPP_SOURCES})
+  # The FULL list, not the split one: librakupp is the interpreter, and the
+  # interpreter never slims — in particular it always carries the parser
+  # (SLIM-PLAN, "librakupp pins `eval`": rk_eval/rk_run ARE the parser).
+  add_library(rakupp_shared SHARED ${RAKUPP_ALL_SOURCES})
   target_include_directories(rakupp_shared PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(rakupp_shared PUBLIC Threads::Threads)
   target_compile_definitions(rakupp_shared PRIVATE RAKUPP_BUILDING)
@@ -125,7 +170,8 @@ add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}")
 if(RAKUPP_LINK_SHARED)
   target_link_libraries(rakupp PRIVATE rakupp_shared)
 else()
-  target_link_libraries(rakupp PRIVATE rakupp_rt)
+  target_link_libraries(rakupp PRIVATE rakupp_rt
+                        rakupp_ucd_names rakupp_ucd_coll rakupp_ucd_props rakupp_parse)
 endif()
 
 # An extension resolves rk_* from the host executable at load time, the way a
