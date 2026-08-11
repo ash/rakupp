@@ -71,6 +71,19 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
 
+// What `$*RAKU.compiler.version` answers, in Rakudo's YEAR.MONTH scheme: the
+// era of the Rakudo this tree is VERIFIED against (the conformance oracle and
+// the battery's comparison engine). Bump when the oracle bumps and the gates
+// have been re-run against it — never because the calendar advanced: the value
+// is a verification claim, not a date. Ecosystem modules gate on it
+// (`$*RAKU.compiler.version < v2023.12`), which is why it is not rakupp's own
+// release number; that stays visible in .release/.id.
+//
+// One definition. It used to be spelled twice — kOracleEra in Builtins.cpp and
+// a bare "2026.07" literal in Interpreter.cpp's raku-object builder — which is
+// exactly the drift a future bump would have tripped over.
+inline constexpr const char* kOracleEra = "2026.07";
+
 // The one lock every runtime write to a stream or an open handle's buffer
 // takes. Coarse on purpose: output is not a bottleneck, and one lock is far
 // easier to reason about than a hierarchy — and than the two bugs it replaces,

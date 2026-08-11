@@ -4611,7 +4611,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
 #define RAKUPP_VERSION "0.0.0"
 #endif
         // Documented for users in docs/faq/differences.md + REFERENCE.md §12.
-        static const char* kOracleEra = "2026.07"; // Rakudo the battery/spec diff against
+        // kOracleEra now lives in Interpreter.h — one definition for this site
+        // and the $*RAKU builder in Interpreter.cpp, which used to carry its
+        // own copy of the literal.
         if (m == "version" || m == "lang-version") { Value v = Value::str(isComp && m == "version" ? kOracleEra : langVer); v.hashKind = "Version"; return v; }
         // The LANGUAGE's authority is the Raku community; the COMPILER's is
         // whoever wrote it, which for this one is a person, not a foundation.

@@ -8076,9 +8076,9 @@ Value Interpreter::rakuIntrospection(bool compiler) {
     r.hashKind = compiler ? "Compiler" : "Raku";
     (*r.hash)["name"] = Value::str(compiler ? "Raku++" : "Raku");
     // The language object shows the language revision; the COMPILER shows its
-    // own version, which is the Rakudo era we verify against (see the note on
-    // kOracleEra in Builtins.cpp) — `rakudo (2026.07)` is the shape Rakudo uses.
-    (*r.hash)["ver"] = Value::str(compiler ? "2026.07"
+    // own version, which is the Rakudo era we verify against (kOracleEra,
+    // Interpreter.h) — `rakudo (2026.07)` is the shape Rakudo uses.
+    (*r.hash)["ver"] = Value::str(compiler ? kOracleEra
                        : (langRev_ == 0 ? "6.c" : langRev_ == 1 ? "6.d" : "6.e"));
     return r;
 }
