@@ -24,7 +24,12 @@ and the honest comparison says that is the machine, not the code: a v3.1.0
 binary rebuilt from its tag and run the same day on the same machine scored
 197,089 over 594 files with 14 timeouts — its published 595 / 11 does not
 reproduce today either, and the ~1,100-assertion spread is two or three
-600-assertion files crossing the timeout line in either direction.
+600-assertion files crossing the timeout line in either direction. The
+definitive check: across the 1,314 files that ran to completion in BOTH that
+reference run and this release's quoted run, the net assertion delta is
+**−4** — four documented timing-flap files (S17 promise/supply, pick.t, one
+integration file) each one assertion short. At assertion granularity, on the
+same machine on the same day, the two binaries are equal.
 
 **The gate that matters is the file LIST, and it is clean.** Diffed against
 that same-day v3.1.0 reference: one file each way, both members of the

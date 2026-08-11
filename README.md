@@ -27,15 +27,16 @@ ran and only the timings showed it.
 Two behaviour changes can affect existing code: `eqv` now distinguishes a `List`
 from an `Array` or `Seq` as Rakudo does, and an untyped *routine* parameter is
 `Any`-constrained (a block's stays `Mu`). See the
-[CHANGELOG](CHANGELOG.md#v310-2026-08-11--raku-becomes-something-you-can-link-against).
+[CHANGELOG](CHANGELOG.md#v3140-2026-08-11--only-what-the-program-needs).
 
 | | v3.14.0 | at v2.0.0 |
 |---|---:|---:|
-| Roast, per individual test — of ~216,400 the suite declares | **195,992 (90%)** | 197,090 |
-| Roast, all-or-nothing — files fully passing, of 1,462 | **595 (41%)** | 594 |
-| Official documentation examples byte-identical on both engines | **952**† | 952 |
+| Roast, per individual test — of what the suite declares‡ | **195,992 of ~216,400 (90%)** | 197,090 of ~203,500 (97%) |
+| Roast, all-or-nothing — files fully passing, of 1,462 | **594 (41%)** | 594 |
+| Official documentation examples byte-identical on both engines | **948**† | 952 |
 | Ecosystem distributions passing their own `zef` install-time test suite | **48 / 59**\* | 50 / 59 |
-| Local regression suite | **398** | 312 |
+| Local regression suite | **433** | 312 |
+| `say "Hello"` compiled with `--exe --slim` | **4,856,936 B** | 9,830,680 B (no `--slim`) |
 
 The per-test figure counts the tests in files that abort before running (their
 `plan N` is read from source); on the all-or-nothing bar a file counts only if
@@ -45,7 +46,15 @@ are the repeating profile of four runs on one machine (594 / 595 / 591 / 594
 files; 195,992 assertions on the repeating 594-file profile), not the best run
 seen: the scheduler and IO timing files flap under runner load, and — like
 v3.0.1 before it — this release's first three runs gave no repeating file
-count, so a fourth broke the tie. †The doc-example count
+count, so a fourth broke the tie. ‡The two columns are NOT a same-day
+measurement: each release is measured on its own machine state, the timeout
+flap moves the numerator by hundreds either way, and the declared denominator
+itself grew ~13k since v2.0.0 as parse fixes let more files declare their real
+plans — which is why the percentage can dip while the language got better. The
+comparison that IS valid: a v3.1.0 binary rebuilt from its tag and run the
+same day as this release's runs completes 1,314 files in common with it, and
+across those the assertion delta is **−4** — all four in the documented
+timing-flap set. †The doc-example count
 carries a documented ±5 band: Rakudo randomizes hash iteration order per
 process, and the moved rows are ones where *Rakudo's* output drifted from the
 documentation. \*The distribution bar RAISED itself at v3.0.0: at v2.0.0
