@@ -161,6 +161,11 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
 
+# ---- bare --refresh is a complete command ----------------------------------
+my %refresh = installer('--refresh');
+check %refresh<exit> == 0 && %refresh<out>.contains('index refreshed'),
+      'bare --refresh refetches the index and stops';
+
 # ---- a dead :auth/:ver pin falls back to the name, loudly ------------------
 my %pinned = installer('Gate::Pinned');
 check %pinned<exit> == 0 && %pinned<err>.contains('cpan:GONE') && %pinned<err>.contains('is not in the index'),

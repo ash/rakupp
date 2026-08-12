@@ -579,10 +579,16 @@ sub MAIN(
         }
         exit do-uninstall(@modules, $to, :force($force // False));
     }
+    if $refresh && !@modules {
+        # bare --refresh is a complete command: refetch the index, report, stop
+        my @index = load-index(True).list;
+        say "index refreshed: {@index.elems} distributions";
+        return;
+    }
     unless @modules {
         note q:to/END/.trim;
             usage: rakupp install [options] Module ...
-                   rakupp install --list | --check
+                   rakupp install --list | --check | --refresh
                    rakupp uninstall [--force] Module ...
             options:
               --dry-run        resolve and print the plan; write nothing
@@ -590,7 +596,8 @@ sub MAIN(
               --check          store integrity report (exit 1 on damage); fixes nothing
               --no-test        skip the per-distribution test suites
               --force          reinstall / uninstall despite refusals
-              --refresh        refetch the ecosystem index (else cached 24h)
+              --refresh        refetch the ecosystem index (else cached 24h);
+                               alone: refresh and stop
               --to=PATH        the store prefix to use (default: ~/.raku)
             END
         exit 2;
