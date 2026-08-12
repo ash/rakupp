@@ -239,6 +239,37 @@ struct SlimSpec {
     std::string whyFeat;                         // why:FEAT — which feature to explain
 };
 static SlimSpec g_slim;                 // default = level `safe`, nothing cut
+static bool g_standalone = false;       // --standalone: an unembeddable module is a build ERROR (MODULES-PLAN B2)
+
+// MODULES-PLAN B1: every compile mode says what it embedded and — one line
+// each, with the reason — what it could NOT. B2: under --standalone the
+// skips are fatal. B5: the native libraries the binary will still dlopen
+// are named; they cannot be embedded and must not be hidden.
+// Returns false when --standalone must fail the build.
+static bool reportModuleEmbedding(const char* mode,
+                                  const std::vector<rakupp::BundledModule>& mods,
+                                  const std::vector<rakupp::ModuleSkip>& skips,
+                                  const std::set<std::string>& natives) {
+    if (!mods.empty()) {
+        std::cerr << mode << ": embedded " << mods.size() << " module"
+                  << (mods.size() == 1 ? "" : "s") << ":";
+        for (auto& m : mods) std::cerr << " " << m.name;
+        std::cerr << "\n";
+    }
+    for (auto& s : skips)
+        std::cerr << mode << ": not embedded: " << s.name << " — " << s.reason
+                  << (g_standalone ? "" : " (the binary will need the disk at run time)") << "\n";
+    if (!natives.empty()) {
+        std::cerr << mode << ": native libraries the binary will dlopen at run time:";
+        for (auto& n : natives) std::cerr << " " << n;
+        std::cerr << "\n";
+    }
+    if (g_standalone && !skips.empty()) {
+        std::cerr << mode << ": --standalone: the modules above cannot be embedded — refusing to build a binary that needs the disk\n";
+        return false;
+    }
+    return true;
+}
 static bool     g_slimExplicit = false; // a --slim flag was given (mode validation)
 
 // The cuttable features and their archives, index-aligned with SlimSpec::cut.
@@ -772,7 +803,11 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 Parser ps(lx.tokenize());
                 ps.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
                 Program pr = ps.parseProgram();
-                mods = collectModuleGraph(pr, effectiveSearchPath(libPaths));
+                std::vector<ModuleSkip> skips;
+                std::set<std::string> natives;
+                mods = collectModuleGraph(pr, effectiveSearchPath(libPaths), nullptr,
+                                          &skips, &natives);
+                if (!reportModuleEmbedding("--bundle", mods, skips, natives)) return 4;
             } catch (const ParseError&) {}
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls, /*withSources=*/true);
@@ -855,7 +890,11 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         // those modules export: it resolves calls by name, so an exported sub that
         // collides with a built-in has to be known to reach it at all.
         std::set<std::string> moduleExports;
-        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports);
+        std::vector<ModuleSkip> skips;
+        std::set<std::string> natives;
+        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports,
+                                       &skips, &natives);
+        if (!reportModuleEmbedding("--exe", mods, skips, natives)) return 4;
         cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports);
         if (!mods.empty()) {
             std::ostringstream decls, calls;
@@ -932,7 +971,11 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         // Everything the program `use`s, resolved and parsed NOW, so the binary
         // carries it. Anything unresolvable is simply absent and falls back to a
         // run-time load — see collectModuleGraph.
-        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
+        std::vector<ModuleSkip> skips;
+        std::set<std::string> natives;
+        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), nullptr,
+                                       &skips, &natives);
+        if (!reportModuleEmbedding("--aot", mods, skips, natives)) return 4;
         std::ostringstream ss;
         emitAstProgram(prog, ss, baseOf(srcName), finish, mods);
         cpp = ss.str();
@@ -1195,6 +1238,36 @@ int main(int argc, char** argv) {
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }
 #endif // Windows: GetModuleFileNameW is already absolute; _fullpath would ANSI-mangle the UTF-8
 
+    // `rakupp install ...` — the module installer (MODULES-PLAN Part A): a
+    // Raku program shipped BESIDE the binary, never inside it. Dispatch =
+    // rewrite the command line to run that program; everything after
+    // `install` is its arguments. Looked up relative to the real binary:
+    // an installed layout's libexec/, or the checkout's tools/ from a build
+    // directory.
+    static std::vector<std::string> installArgs;
+    static std::vector<char*> installArgv;
+    bool isUninstall = argc >= 2 && std::string(argv[1]) == "uninstall";
+    if (argc >= 2 && (std::string(argv[1]) == "install" || isUninstall)) {
+        std::string exeDir = exePath.substr(0, exePath.find_last_of("/\\"));
+        std::string script;
+        for (const char* rel : {"/../libexec/rakupp/install.raku", "/../tools/install.raku"}) {
+            std::string cand = exeDir + rel;
+            if (std::ifstream(cand).good()) { script = cand; break; }
+        }
+        if (script.empty()) {
+            std::cerr << "rakupp install: cannot find install.raku beside this binary\n"
+                      << "  (expected in libexec/rakupp/ of an installed layout, or tools/ of a checkout)\n";
+            return 4;
+        }
+        installArgs.push_back(argv[0]);
+        installArgs.push_back(script);
+        if (isUninstall) installArgs.push_back("--uninstall");
+        for (int i = 2; i < argc; i++) installArgs.push_back(argv[i]);
+        for (auto& s : installArgs) installArgv.push_back(const_cast<char*>(s.c_str()));
+        argv = installArgv.data();
+        argc = (int)installArgv.size();
+    }
+
     // A single-dash spelling of a known long option (`-exe`, `-cpp`, `-lint`, …)
     // is a common typo for the `--` form. These names are unambiguous — none is
     // a valid short-option cluster (`-exe` is NOT `-e xe`) — so accept them with
@@ -1351,6 +1424,10 @@ int main(int argc, char** argv) {
                 if (g_slim.directive == SlimDirective::Help) return slimHelp(exePath);
                 g_slimExplicit = true; continue;
             }
+            // --standalone (MODULES-PLAN B2): a module the compile modes
+            // cannot embed becomes a BUILD ERROR instead of a silent
+            // load-from-disk-at-run-time fallback.
+            if (a == "--standalone") { g_standalone = true; continue; }
             if (a == "-e" || (a.rfind("-e", 0) == 0 && a.size() > 2)) {
                 if (!haveSrc) {
                     if (a == "-e") {
@@ -1446,6 +1523,7 @@ int main(int argc, char** argv) {
         // --slim shapes the LINK of a compiled binary, so it means nothing to
         // the interpreter or to --cpp (which emits source and never links).
         if (g_slimExplicit && !isCompileMode(mode)) return illegalOpt("--slim");
+        if (g_standalone && !isCompileMode(mode)) return illegalOpt("--standalone");
         // -M applies where the program is checked, compiled or run; the pure
         // source tools see the file exactly as written
         if (!preloadModules.empty() &&

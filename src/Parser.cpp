@@ -5277,6 +5277,15 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     if (isOp("!")) { advance(); s->isPrivate = true; } // private method `method !name` — self!name only
     if (isKind(Tok::Ident)) s->name = advance().text;
     else if (isKind(Tok::Var)) s->name = advance().text; // &-name
+    else if (isOp("::") && peek().kind == Tok::LParen) {
+        // INDIRECT name: `sub ::(EXPR) (…) {…}` / `method ::('name') {…}` —
+        // the name is computed when the declaration RUNS (declarations are
+        // evaluated at run time here, so this is an expression slot, not a
+        // compile-time contortion)
+        advance(); advance();               // :: (
+        s->nameExpr = parseExpression();
+        expectKind(Tok::RParen, "expected ')' after ::( name expression");
+    }
     // trait handler declaration: sub trait_mod:<is>(…) — name keeps the angle form
     // an unknown extension category (`sub twigil:<@>`) cannot be added
     static const std::set<std::string> kCats = {
@@ -5685,7 +5694,14 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     cd->isGrammar = isGrammar;
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
-    else if (isOp("::")) advance(); // anonymous type: `class :: does R { … }`
+    else if (isOp("::")) {
+        advance(); // anonymous type: `class :: does R { … }` …
+        if (isKind(Tok::LParen)) { // …or an INDIRECT name: `class ::(EXPR) { … }`
+            advance();
+            cd->nameExpr = parseExpression();
+            expectKind(Tok::RParen, "expected ')' after ::( name expression");
+        }
+    }
     // name adverbs: `module M:ver<0.19>:auth<zef:x>:api<2> { … }` — without
     // this, the `:` failed the brace check and the package took the UNIT-form
     // branch, swallowing the block up to its first `;` (JSON::Fast was
@@ -6554,10 +6570,16 @@ StmtPtr Parser::parseStatementImpl() {
             if (peek().kind == Tok::Ident && declKw.count(peek().text)) {
                 bool wasOur = (kw == "our");
                 bool wasUnit = (kw == "unit");
+                bool wasMy = (kw == "my");
                 advance(); // strip scope/unit; re-dispatch on the declaration keyword
                 bool savedUnit = unitDecl_; unitDecl_ = wasUnit;
                 StmtPtr st = parseStatement();
                 unitDecl_ = savedUnit;
+                // `my class`/`my grammar` is lexically scoped — the runtime
+                // redeclaration guard exempts it (a later EVAL may declare the
+                // same name again, as Rakudo allows for my-scoped types)
+                if (wasMy && st && st->kind == NK::ClassDecl)
+                    static_cast<ClassDecl*>(st.get())->isMy = true;
                 // `our sub`/`our multi` — remember package scope so it installs globally.
                 if (wasOur && st && st->kind == NK::SubDecl) {
                     auto* osd = static_cast<SubDecl*>(st.get());

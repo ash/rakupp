@@ -373,6 +373,19 @@ public:
     long candLitPrefix_ = 0; // set alongside candDeclEnd_: leading-literal length (LTM specificity)
     void clearMemo() { memo_.clear(); }
 
+    // G1 highwater (GRAMMAR-PLAN): the furthest input position where a named
+    // rule FRESHLY failed during this parse, and which rule — rule-grained
+    // parse diagnostics. Strict `>`: at one position the FIRST failure wins,
+    // and recursive descent fails innermost-first, so that is the deepest,
+    // most specific expectation (<key>, not the <entry> wrapping it). Reset
+    // by parse(); read by the interpreter when the whole parse fails. Byte
+    // offsets, as all matcher positions are.
+    long hwPos = -1;
+    std::string hwRule;
+    void noteFail(long pos, const std::string& rule) {
+        if (pos > hwPos) { hwPos = pos; hwRule = rule; }
+    }
+
     using NameMeta = GrammarRuleMeta;
     const NameMeta& nameMeta(const std::string& name);      // cached per-name metadata (see GrammarRuleMeta)
     // The LTM expansion route for this grammar's rules (see LtmExpand::grammar):

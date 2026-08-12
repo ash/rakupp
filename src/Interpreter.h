@@ -132,9 +132,20 @@ struct BundledModule { std::string name, blob, finish, src; };
 // in the graph — including ones left out of the returned table. Codegen needs
 // them: a compiled call is resolved by name at compile time, so it has to know
 // which names a module is about to take over (see collectExportedSubNames).
+// A module the graph could NOT embed, and why — the compile modes report
+// these (MODULES-PLAN B1) and --standalone turns them into build errors (B2).
+// `name` is "<dynamic require>" for a runtime-computed `require ::($n)`,
+// whose target cannot be known at compile time.
+struct ModuleSkip {
+    std::string name;
+    std::string reason;
+};
+
 std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               const std::vector<std::string>& searchPath,
-                                              std::set<std::string>* exportsOut = nullptr);
+                                              std::set<std::string>* exportsOut = nullptr,
+                                              std::vector<ModuleSkip>* skipsOut = nullptr,
+                                              std::set<std::string>* nativeLibsOut = nullptr);
 
 // The `is export` sub names declared by `stmts` (recursing into braced
 // module/package bodies). This is the scan that decides whether a module sub may
@@ -355,6 +366,12 @@ struct ExecContext {
     std::vector<ValueList*> supplyStack;
     std::vector<std::shared_ptr<SupplyTapCtx>> tapStack; // active on-demand supply activations
     std::vector<Value*> makeTargets;
+    // Dynamically-enclosing CONTROL { } handlers (block + its closure env),
+    // innermost last. `warn` runs the innermost IN PLACE — no unwinding, so
+    // `.resume` is resumable by construction. Pushed/popped by the block
+    // runner; a handler is popped WHILE it runs so its own warns escape
+    // outward instead of recursing.
+    std::vector<std::pair<Block*, std::shared_ptr<Env>>> controlHandlers;
     std::string pkgPrefix;
     // Cooperative `return`: when a return executes with NO callable boundary
     // between it and its enclosing routine (frameTop == curRoutineFrame), it
@@ -623,6 +640,10 @@ public:
     std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
+    // Run the innermost CONTROL handler for a `warn` (CX::Warn). True = the
+    // handler .resume'd, so the default stderr print is suppressed; false =
+    // no handler, or it finished without resuming (default behaviour stands).
+    bool runControlWarn(const std::string& msg);
     std::string gistOf(const Value& v); // .gist, honouring a user-defined `method gist` (for say/note)
     std::string strOf(const Value& v);  // .Str,  honouring user `method Str`/`gist` (for print/put/interpolation)
     // The string a regex matches AGAINST. An object matches on its Str form:

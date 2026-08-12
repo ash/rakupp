@@ -16,6 +16,7 @@
 // The value surface is not here at all: rk_int_get, rk_at_pos, rk_call and the
 // rest come from rakupp_ext.h and work on a host's values because rk_ctx hands
 // back the same ExtCtx an extension is given. One vocabulary, two directions.
+#include "BuiltinsShared.h" // grammarShimSource (GrammarShim.cpp, generated)
 #include "ExtCtx.h"
 #include "Interpreter.h"
 #include "Parser.h"     // ParseError
@@ -206,6 +207,34 @@ int rk_eval_file(RkInterp rk, const char* path, RkValue* out) {
     p->interp.srcFile_ = path ? path : "";
     return rk_eval(rk, ss.str().c_str(), out);
 }
+
+int rk_register(RkInterp rk, const char* name, RkHostFn fn, void* userdata) {
+    if (!rk || !name || !*name || !fn) return RK_FATAL;
+    Interp* p = I(rk);
+    // The same wrapping extLoadModule gives an extension's subs — one
+    // mechanism, so a registered host function is indistinguishable from an
+    // extension sub, and both are ordinary Code values from Raku's side.
+    Value code;
+    code.t = VT::Code;
+    code.code = std::make_shared<Callable>();
+    code.code->name = name;
+    std::string nm = name;
+    code.code->builtin = [fn, userdata, nm](Interpreter& I, ValueList& a) -> Value {
+        ExtCtx ctx;
+        ctx.args = &a;
+        ctx.interp = &I;
+        RkValue r = fn(reinterpret_cast<RkCtx>(&ctx), userdata);
+        if (ctx.failed)
+            throw RakuError{Value::typeObj("X::AdHoc"), ctx.error};
+        if (!r && ctx.hasPending)
+            throw ctx.pending; // an unhandled rk_call failure resumes with its own type
+        return r ? *reinterpret_cast<Value*>(r) : Value::any();
+    };
+    p->interp.global_->define("&" + nm, code);
+    return RK_OK;
+}
+
+const char* rk_grammar_shim(void) { return grammarShimSource(); }
 
 int rk_run(RkInterp rk, const char* src, const char* file_name, int* exit_code) {
     if (!rk) return RK_FATAL;

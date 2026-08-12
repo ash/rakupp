@@ -2260,6 +2260,11 @@ struct Codegen {
     }
     void classMethodDefs(ClassDecl* cd) {
         if (cd->isPackage) unsupported("a package declaration");
+        // an indirect ::() name exists only when the declaration RUNS — the
+        // AOT path evaluates it; native emission cannot
+        if (cd->nameExpr) unsupported("a type with an indirect ::() name");
+        for (auto& mp : cd->methods)
+            if (mp->nameExpr) unsupported("a method with an indirect ::() name");
         std::map<std::string, int> multiSeq; // per-name candidate counter
         for (auto& mp : cd->methods) {
             SubDecl* md = mp.get();
@@ -2344,6 +2349,9 @@ struct Codegen {
         }
         if (cd->isGrammar) { // grammar rules are pattern strings — the embedded engine runs them
             line(1, "  " + ci + "->isGrammar = true;");
+            // same implicit ancestor the interpreter gives a parentless grammar
+            if (cd->parent.empty())
+                line(1, "  if (!" + ci + "->parent && " + ci + "->nativeParent.empty()) " + ci + "->nativeParent = \"Grammar\";");
             for (auto& r : cd->rules) {
                 std::string reg = "  " + ci + "->rules[" + cesc(r.name) + "] = " + cesc(r.pattern) + "; "
                                 + ci + "->ruleKind[" + cesc(r.name) + "] = " + cesc(r.kind) + ";";

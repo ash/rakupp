@@ -3066,6 +3066,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                 return false;
             }
         }
+        noteFail(pos, name);
         return false;
     }
     // If this call is a proto candidate `X:sym<VALUE>`, its body's `<sym>` matches VALUE;
@@ -3158,11 +3159,11 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         long pend = -1;
         if (name == "ident") { // real multi-char identifier, not a one-char class
             pend = builtinRuleMatch("ident", st.s, pos, (long)st.s.size());
-            if (pend < 0) return false;
+            if (pend < 0) { noteFail(pos, name); return false; }
         } else {
             const std::string& fl = meta.builtinClass;
             if (fl.empty()) return false; // unknown subrule
-            if (pos >= (long)st.s.size()) return false;
+            if (pos >= (long)st.s.size()) { noteFail(pos, name); return false; }
             unsigned char c = (unsigned char)st.s[pos]; bool ok = false;
             for (char f : fl) switch (f) {
                 case 'd': ok |= (bool)std::isdigit(c); break; case 'a': ok |= (bool)std::isalpha(c); break;
@@ -3170,7 +3171,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                 case 'l': ok |= (bool)std::islower(c); break; case 'x': ok |= (bool)std::isxdigit(c); break;
                 case 'b': ok |= (c == ' ' || c == '\t'); break; // <blank>: horizontal ws
             }
-            if (!ok) return false;
+            if (!ok) { noteFail(pos, name); return false; }
             pend = pos + 1;
         }
         if (capKey.empty()) return k(pend);
@@ -3201,7 +3202,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     // machinery. These are the overwhelming majority of subrule calls.
     if (meta.singleChar && args.empty()) {
         long np = meta.singleChar->trySingleChar(st.s, pos);
-        if (np < 0) return false;
+        if (np < 0) { noteFail(pos, name); return false; }
         if (capKey.empty()) return k(np);
         // capturing <name>: record a leaf node spanning the one char, then continue
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = np;
@@ -3314,6 +3315,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         });
         if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
         scope_.pop_back();
+        if (!me.matched) noteFail(pos, name); // the RULE failed here (not a continuation)
         // a FRESH completion fires its action method now (memo replays reuse it) —
         // Rakudo fires actions during the match, and a later failure keeps them
         if (me.matched && st.hooks && st.hooks->onRule && st.hooks->hasAction &&
@@ -3350,7 +3352,9 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     scope_.push_back(std::move(bound));
     std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
                                      ? st.hooks->saveState() : nullptr;   // fresh dynamic scope for `:my`
+    bool calleeMatched = false; // vs. failing in the CALLER's continuation (G1 highwater)
     bool ok = re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
+        calleeMatched = true;
         // The callee has matched; the continuation `k` belongs to the CALLER, so its
         // code blocks must see the caller's params — pop the callee's param frame for
         // the duration of `k` (restore it so backtracking into the callee still works).
@@ -3382,12 +3386,14 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     });
     if (savedScope) st.hooks->restoreState(savedScope); // rule exited: restore caller's dynamic scope
     scope_.pop_back();
+    if (!calleeMatched) noteFail(pos, name); // the rule itself never completed here
     return ok;
 }
 
 bool GrammarMatcher::parse(const std::string& input, const std::string& top, bool subparse,
                            ParseNode& out, long& endOut) {
     clearMemo(); // packrat memo is valid only within a single input parse
+    hwPos = -1; hwRule.clear(); // fresh highwater per parse (G1 diagnostics)
     // A proto rule used as the entry point (`.parse(:rule('lit'))`) dispatches to its
     // candidates with LTM, exactly as a `<lit>` subrule call would.
     if (protos.count(top)) {

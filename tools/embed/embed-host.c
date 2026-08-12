@@ -28,6 +28,14 @@ static char captured[4096];
 static size_t captured_len = 0;
 static int    saw_stderr = 0;
 
+/* A host function for the rk_register check: adds its two args plus the
+ * userdata's int — arriving on the same RkCtx vocabulary an extension uses. */
+static RkValue host_add(RkCtx c, void* userdata) {
+    long long a = rk_int_get(c, rk_arg(c, 0));
+    long long b = rk_int_get(c, rk_arg(c, 1));
+    return rk_int(c, a + b + *(int*)userdata);
+}
+
 static void on_output(void* ud, const char* text, size_t len, int is_err) {
     (void)ud;
     if (is_err) saw_stderr = 1;
@@ -113,6 +121,27 @@ int main(void) {
     check(rk_eval(rk, "get()", &v) == RK_OK &&
           strcmp(rk_str_get(c, v, 0), "fed line") == 0, "stdin can be fed");
     rk_set_input(rk, 0, 0);
+
+    /* --- a host function, callable from Raku (rk_register, ABI 2) ------- */
+    {
+        static int offset = 1; /* userdata: proves it arrives */
+        RkValue r2;
+        rk_register(rk, "host-add", host_add, &offset);
+        check(rk_eval(rk, "host-add(20, 21)", &r2) == RK_OK &&
+              rk_int_get(c, r2) == 42, "a registered host function is a Raku sub");
+        check(rk_eval(rk, "[+] (1..5).map({ host-add($_, 0) - 1 })", &r2) == RK_OK &&
+              rk_int_get(c, r2) == 15, "…and composes like one");
+    }
+
+    /* --- the grammar shim ships inside the library (ABI 2) -------------- */
+    {
+        const char* shim = rk_grammar_shim();
+        check(shim && strstr(shim, "rk-grammar-compile") && strstr(shim, "rk-match-walk"),
+              "rk_grammar_shim hands back the grammar service");
+        check(rk_eval(rk, shim, 0) == RK_OK, "the baked shim evaluates");
+        RkValue sv = rk_call(c, "rk-shim-abi", 0, 0);
+        check(sv && rk_int_get(c, sv) >= 1, "…and answers its ABI stamp");
+    }
 
     /* --- one interpreter per process, refused rather than corrupting ---- */
     check(rk_new(0) == 0, "a second interpreter is refused while one is live");

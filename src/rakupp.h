@@ -65,8 +65,9 @@ extern "C" {
 
 /* Bumped on a change to anything in THIS file. Independent of
  * RAKUPP_EXT_ABI: an addition here must never disturb an extension, which is
- * the promise the extension version negotiation was written for. */
-#define RAKUPP_ABI 1u
+ * the promise the extension version negotiation was written for.
+ * 2: rk_register (host functions callable from Raku), rk_grammar_shim. */
+#define RAKUPP_ABI 2u
 
 typedef struct RkInterpOpaque* RkInterp;
 
@@ -146,6 +147,24 @@ RK_API void rk_set_output(RkInterp rk, RkOutputFn fn, void* userdata);
  * and then see EOF rather than blocking on a terminal the host may not have.
  * Pass NULL to restore the process's own stdin. */
 RK_API void rk_set_input(RkInterp rk, const char* text, size_t len);
+
+/* Install a host function as a Raku sub `name` in the interpreter's mainline
+ * scope — the other direction of rk_call, and the point where an embedded
+ * language stops being a calculator. The function receives the same RkCtx an
+ * extension sub gets: arguments via rk_argc/rk_arg/rk_named, values via the
+ * whole rakupp_ext.h vocabulary, rk_die for a Raku exception — plus the
+ * userdata it was registered with. Raku then calls name(...) like any sub,
+ * including from threads Raku itself started (see THREADS above): make the
+ * function re-entrant. Returns RK_OK, or RK_FATAL for a NULL argument. */
+typedef RkValue (*RkHostFn)(RkCtx c, void* userdata);
+RK_API int rk_register(RkInterp rk, const char* name, RkHostFn fn, void* userdata);
+
+/* The grammar-service shim (docs/dev/plans/GRAMMAR-PLAN.md): the Raku source
+ * a binding rk_eval's once to get rk-grammar-compile / rk-grammar-parse /
+ * rk-match-walk / rk-grammar-diagnosis and friends, then reaches with
+ * rk_call. Baked into the library so a host never ships a sidecar copy that
+ * could skew against its engine. NUL-terminated, static lifetime. */
+RK_API const char* rk_grammar_shim(void);
 
 #ifdef __cplusplus
 } /* extern "C" */

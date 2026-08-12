@@ -67,6 +67,18 @@ bool isCoreTypeName(const std::string& n);
 Value makeSignature(const Callable* c);
 std::shared_ptr<Param> signatureParamCopy(const Param& p);
 const std::vector<std::string>& typeAncestry(const std::string& t);
+
+// G1 (GRAMMAR-PLAN): the last FAILED grammar parse's highwater on this
+// thread — CHARACTER position plus the rule that was trying there. valid is
+// false when the last parse on this thread succeeded (or none ran). Written
+// by grammarParse, read by the `rakupp-parse-diagnosis` builtin.
+struct GrammarParseDiag { bool valid = false; long pos = 0; std::string rule; };
+GrammarParseDiag& grammarParseDiag();
+
+// The grammar-service shim source baked into the library (GrammarShim.cpp,
+// generated — see tools/grammar/gen-shim-src.raku). Served to hosts by
+// rk_grammar_shim().
+const char* grammarShimSource();
 extern std::function<Value(const Value&)> g_deproxy; // reads a Proxy container
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen);
 std::string rakuRepr(const Value& v);

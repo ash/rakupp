@@ -1678,6 +1678,32 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             return Value::object(od);
         }
+        // .^attributes on the built-in Date/DateTime: the introspection
+        // JSON::Unmarshal walks to rebuild a value from its parts (its tests
+        // mirror Rakudo's internals, daycount and formatter included). Names,
+        // order and flags match Rakudo's; every type is Any — the rebuild
+        // treats the parts opaquely and .new ignores unknown nameds exactly
+        // as Rakudo's does. Other built-ins keep answering the empty list.
+        if (m == "attributes" && !classes_.count(inv.s) &&
+            (inv.s == "DateTime" || inv.s == "Date")) {
+            static const char* dtA[] = {"$!hour", "$!minute", "$!second", "$!timezone",
+                                        "$!year", "$!month", "$!day", "$!daycount", "&!formatter"};
+            static const char* dA[]  = {"$!year", "$!month", "$!day", "$!daycount", "&!formatter"};
+            Value out = Value::array(); out.isList = true;
+            auto one = [&](const char* nm) {
+                Value at = Value::makeHash(); at.hashKind = "Attribute";
+                (*at.hash)["name"] = Value::str(nm);
+                (*at.hash)["type"] = Value::typeObj("Any");
+                (*at.hash)["readonly"] = Value::boolean(true);
+                (*at.hash)["has_accessor"] = Value::boolean(true);
+                (*at.hash)["is_built"] = Value::boolean(true);
+                (*at.hash)["package"] = Value::typeObj(inv.s);
+                out.arr->push_back(at);
+            };
+            if (inv.s == "DateTime") for (auto* n : dtA) one(n);
+            else                     for (auto* n : dA)  one(n);
+            return out;
+        }
         // .^mro / .mro on a built-in type → the class-only linearisation (roles like
         // Real/Numeric are excluded, matching Rakudo's Int.^mro == (Int Cool Any Mu)).
         if (m == "mro" && !classes_.count(inv.s)) {
@@ -1965,6 +1991,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value out = Value::array(); out.isList = true;
                 if (ci->parent && !ci->parent->isRole) out.arr->push_back(Value::typeObj(ci->parent->name));
                 for (auto& p : ci->extraParents) if (p && !p->isRole) out.arr->push_back(Value::typeObj(p->name));
+                // a built-in parent answers with its ancestry minus the hidden/
+                // universal tail, matching Rakudo: G.^parents is (Grammar Match
+                // Capture) — no Cool (hidden), no Any/Mu
+                if (out.arr->empty() && !ci->nativeParent.empty()) {
+                    const auto& anc = typeAncestry(ci->nativeParent);
+                    if (anc.empty() || anc[0] != ci->nativeParent)
+                        out.arr->push_back(Value::typeObj(ci->nativeParent));
+                    else for (auto& a : anc)
+                        if (a != "Any" && a != "Mu" && a != "Cool" && !isBuiltinRole(a))
+                            out.arr->push_back(Value::typeObj(a));
+                }
                 if (out.arr->empty() && !ci->isRole) out.arr->push_back(Value::typeObj("Any"));
                 return out;
             }
@@ -1986,6 +2023,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (size_t j = i + 1; j < lin.size(); j++) if (lin[j] == lin[i]) { later = true; break; }
                     if (!later) out.arr->push_back(Value::typeObj(lin[i]));
                 }
+                // a built-in parent anywhere up the primary chain contributes
+                // its class-only ancestry: G,Grammar,Match,Capture,Cool,Any,Mu
+                // for a grammar, F,DateTime,Any,Mu for `class F is DateTime`
+                for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+                    if (!c->nativeParent.empty()) {
+                        const auto& anc = typeAncestry(c->nativeParent);
+                        if (anc.empty() || anc[0] != c->nativeParent) // no table entry: the parent alone
+                            out.arr->push_back(Value::typeObj(c->nativeParent));
+                        else for (auto& a : anc)
+                            if (a != "Any" && a != "Mu" && !isBuiltinRole(a))
+                                out.arr->push_back(Value::typeObj(a));
+                        break;
+                    }
                 out.arr->push_back(Value::typeObj("Any"));
                 out.arr->push_back(Value::typeObj("Mu"));
                 return out;
@@ -2261,7 +2311,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // that type's constructor, which does take a positional
                 bool nativeBased = false;
                 for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get())
-                    if (!c2->nativeParent.empty()) { nativeBased = true; break; }
+                    // the implicit Grammar ancestor brings no positional
+                    // constructor — Rakudo's G.new(42) refuses like any class
+                    if (!c2->nativeParent.empty() && c2->nativeParent != "Grammar") { nativeBased = true; break; }
                 if (!nativeBased && !ci->findMethod("new") && !ci->findMethod("BUILD"))
                     for (auto& arg : args)
                         if (arg.t != VT::Pair)
@@ -3480,6 +3532,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (!res && ci) {
             for (ClassInfo* c = ci; c; c = c->parent.get()) if (c->name == rn) { res = true; break; }
             if (!res) res = ci->doesRole(rn);
+            // a built-in parent's ancestry counts: G.does(Grammar) and
+            // G.does(Match) are True for a grammar, F.does(Real) for `is Int`
+            if (!res)
+                for (ClassInfo* c = ci; c && !res; c = c->parent.get())
+                    if (!c->nativeParent.empty()) {
+                        if (c->nativeParent == rn) res = true;
+                        else for (auto& a : typeAncestry(c->nativeParent))
+                            if (a == rn) { res = true; break; }
+                    }
         }
         // a BUILT-IN value does the roles its ancestry lists (`Date.does(Dateish)`)
         if (!res && !ci)

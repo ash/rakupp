@@ -261,7 +261,7 @@ template <class IO> void visit(IO& io, ExprStmt& n) { ioExpr(io, n.e); }
 template <class IO> void visit(IO& io, NamedRegexDecl& n) { F(io, n.name); F(io, n.pattern); F(io, n.kind); }
 template <class IO> void visit(IO& io, VarDecl& n)  { F(io, n.scope); ioVec(io, n.names); F(io, n.op); ioExpr(io, n.init); }
 template <class IO> void visit(IO& io, SubDecl& n)  {
-    F(io, n.name); ioParams(io, n.params);
+    F(io, n.name); ioExpr(io, n.nameExpr); ioParams(io, n.params);
     if constexpr (IO::reading) {
         size_t k = io.count(); n.altParams.clear(); n.altParams.resize(k);
         for (auto& a : n.altParams) ioParams(io, a);
@@ -300,7 +300,8 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
         io.uvar(n.rules.size());   for (auto& r : n.rules) ioRule(io, r);
     }
     F(io, n.isRole); F(io, n.parentIsDoes); F(io, n.isGrammar); F(io, n.isAugment);
-    F(io, n.isStubDecl); F(io, n.pod); F(io, n.parameterized);
+    F(io, n.isStubDecl); F(io, n.pod); F(io, n.parameterized); F(io, n.isMy);
+    ioExpr(io, n.nameExpr);
     F(io, n.ver); F(io, n.auth); F(io, n.api);
     ioExpr(io, n.verExpr); ioExpr(io, n.authExpr); ioExpr(io, n.apiExpr);
     F(io, n.repr); ioParams(io, n.roleParams);

@@ -2642,10 +2642,17 @@ int Interpreter::run(Program& prog) {
     std::vector<Block*> beginP, checkP, initP, endP, leaveP, enterP;
     std::vector<Stmt*> mainline;
     Block* topCatch = nullptr; // a CATCH in the mainline (the UNIT block) guards it
+    Block* topControl = nullptr; // …and a mainline CONTROL is the outermost warn handler
     for (auto& s : prog.stmts) {
         if (s->kind == NK::Block) {
             auto* b = static_cast<Block*>(s.get());
-            if (b->isCatch)          { topCatch = b;        continue; }
+            if (b->isCatch) {
+                // CATCH and CONTROL share the flag; the phaser tells them
+                // apart, and a CONTROL must not swallow real exceptions
+                if (b->phaser == "CONTROL") topControl = b;
+                else topCatch = b;
+                continue;
+            }
             if (b->phaser == "BEGIN") { beginP.push_back(b); continue; }
             if (b->phaser == "CHECK") { checkP.push_back(b); continue; }
             if (b->phaser == "INIT")  { initP.push_back(b);  continue; }
@@ -2729,6 +2736,8 @@ int Interpreter::run(Program& prog) {
         for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
         for (auto* b : initP) runPhaser(b);                                       // INIT: source order
         for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
+        // a mainline CONTROL {} is the outermost warn handler for the run
+        if (topControl) tctx_.controlHandlers.push_back({topControl, tctx_.cur});
         for (auto* s : mainline) {
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
                 !static_cast<SubDecl*>(s)->isMethod) { applySubTraits(static_cast<SubDecl*>(s)); continue; } // hoisted
@@ -2767,6 +2776,7 @@ int Interpreter::run(Program& prog) {
             exec(s, /*sink=*/true); // every top-level statement is in sink context (Rakudo)
         }
         // auto-invoke MAIN with command-line arguments, if defined
+        // (a mainline CONTROL, registered below, is already live here)
         if (Value* mainSub = tctx_.cur->find("&MAIN")) {
             ValueList margs;
             int rc = mainProtocol(*mainSub, margs);
@@ -2811,6 +2821,10 @@ int Interpreter::run(Program& prog) {
     } catch (RedoEx&) {
         std::cerr << "redo without loop construct\n"; code = 1; crashed = true;
     }
+    // the mainline CONTROL's registration ends with the mainline — an rk_run
+    // session may run several programs in one process, and a stale handler
+    // would point into a dead scope
+    if (topControl && !tctx_.controlHandlers.empty()) tctx_.controlHandlers.pop_back();
     flushOpenWriteHandles(); // write out any file handle the program forgot to .close
     drainWorkers(); // join any outstanding async workers before we tear down
     // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
@@ -3501,6 +3515,30 @@ bool isPragmaName(const std::string& name) {  // shared with SlimScan.cpp (modul
 // Find a module's SOURCE the way loadModule does: the search path first (trying
 // both <base>/ and <base>/lib/), then the installed zef/Rakudo repositories via
 // their short-name index. Returns false when nothing matches.
+// Module names are case-sensitive; a case-insensitive filesystem (APFS,
+// NTFS) opens Config.raku as config.raku, so a stray lowercase file silently
+// SHADOWS the real dist (a grammar demo named config.raku ate the ecosystem
+// Config for an afternoon). realpath does NOT case-correct on APFS — compare
+// the actual directory entry byte-exact. Both resolver loops use this.
+static bool dirEntryCaseExact(const std::string& cand) {
+#ifndef _WIN32
+    size_t slash = cand.find_last_of('/');
+    if (slash == std::string::npos) return true;
+    std::string parent = slash == 0 ? "/" : cand.substr(0, slash);
+    std::string want = cand.substr(slash + 1);
+    bool exact = false;
+    if (DIR* dp = opendir(parent.c_str())) {
+        while (struct dirent* de = readdir(dp))
+            if (want == de->d_name) { exact = true; break; }
+        closedir(dp);
+    }
+    return exact;
+#else
+    (void)cand;
+    return true; // Windows: GetFinalPathNameByHandle territory, out of scope
+#endif
+}
+
 static bool findModuleSourceFor(const std::string& name,
                                 const std::vector<std::string>& searchPath,
                                 std::string& pathOut, std::string& srcOut) {
@@ -3510,10 +3548,12 @@ static bool findModuleSourceFor(const std::string& name,
     for (auto& base : searchPath)
         for (const std::string& dir : {base, base + "/lib"})
             for (auto ext : exts) {
-                std::ifstream in(dir + "/" + rel + ext);
+                std::string cand = dir + "/" + rel + ext;
+                std::ifstream in(cand);
                 if (!in) continue;
+                if (!dirEntryCaseExact(cand)) continue; // config.raku is not Config.raku
                 std::ostringstream ss; ss << in.rdbuf();
-                pathOut = dir + "/" + rel + ext; srcOut = ss.str();
+                pathOut = cand; srcOut = ss.str();
                 return true;
             }
     std::string nameSha = sha1hex(name);
@@ -3594,6 +3634,82 @@ static void collectUseNames(const std::vector<StmtPtr>& stmts, std::vector<std::
     for (auto& st : stmts) collectUseNamesStmt(st.get(), out);
 }
 
+// A DYNAMIC require (`require ::($name)`) escapes the static module graph —
+// its target does not exist until run time. The statement spelling
+// (`require Foo`) parses as a UseStmt and is embedded like any `use`; only
+// the expression form (Unary op "require") is undetectable, and B1 wants it
+// REPORTED, not guessed at. Walks the same statement shapes collectUseNames
+// does, drilling into the two expression positions the parser produces.
+static bool exprHasDynRequire(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::Unary && static_cast<const Unary*>(e)->op == "require") return true;
+    if (e->kind == NK::Assign) {
+        auto* a = static_cast<const Assign*>(e);
+        return exprHasDynRequire(a->target.get()) || exprHasDynRequire(a->value.get());
+    }
+    return false;
+}
+static void collectDynRequires(const std::vector<StmtPtr>& stmts, bool& found) {
+    for (auto& st : stmts) {
+        if (!st || found) return;
+        switch (st->kind) {
+            case NK::ExprStmt:
+                if (exprHasDynRequire(static_cast<const ExprStmt*>(st.get())->e.get())) found = true;
+                break;
+            case NK::Block: collectDynRequires(static_cast<const Block*>(st.get())->stmts, found); break;
+            case NK::SubDecl: collectDynRequires(static_cast<const SubDecl*>(st.get())->body, found); break;
+            case NK::ClassDecl: {
+                auto* c = static_cast<const ClassDecl*>(st.get());
+                collectDynRequires(c->body, found);
+                for (auto& m : c->methods) if (m) collectDynRequires(m->body, found);
+                break;
+            }
+            case NK::IfStmt: {
+                auto* f = static_cast<const IfStmt*>(st.get());
+                for (auto& br : f->branches) if (br.second) collectDynRequires(br.second->stmts, found);
+                if (f->elseBlock) collectDynRequires(f->elseBlock->stmts, found);
+                break;
+            }
+            case NK::WhileStmt: if (auto* b = static_cast<const WhileStmt*>(st.get())->body.get()) collectDynRequires(b->stmts, found); break;
+            case NK::ForStmt:   if (auto* b = static_cast<const ForStmt*>(st.get())->body.get())   collectDynRequires(b->stmts, found); break;
+            default: break;
+        }
+    }
+}
+
+// The shared libraries `is native(...)` subs in `stmts` will dlopen at run
+// time (MODULES-PLAN B5): a standalone binary cannot embed them, so it must
+// name them. "" (the default namespace: libc and friends) is reported as
+// such; a runtime-computed library path is reported as unknowable.
+static void collectNativeLibNames(const std::vector<StmtPtr>& stmts, std::set<std::string>& out) {
+    for (auto& st : stmts) {
+        if (!st) continue;
+        if (st->kind == NK::SubDecl) {
+            auto* sd = static_cast<const SubDecl*>(st.get());
+            if (sd->isNative) {
+                if (!sd->nativeLib.empty()) out.insert(sd->nativeLib);
+                else if (!sd->nativeLibSub.empty() || sd->nativeLibExpr)
+                    out.insert("<computed at run time>");
+                else out.insert("<default namespace (libc)>");
+            }
+            collectNativeLibNames(sd->body, out);
+        }
+        else if (st->kind == NK::ClassDecl) {
+            auto* c = static_cast<const ClassDecl*>(st.get());
+            collectNativeLibNames(c->body, out);
+            for (auto& m : c->methods)
+                if (m && m->isNative) {
+                    if (!m->nativeLib.empty()) out.insert(m->nativeLib);
+                    else if (!m->nativeLibSub.empty() || m->nativeLibExpr)
+                        out.insert("<computed at run time>");
+                    else out.insert("<default namespace (libc)>");
+                }
+        }
+        else if (st->kind == NK::Block)
+            collectNativeLibNames(static_cast<const Block*>(st.get())->stmts, out);
+    }
+}
+
 void collectExportedSubNames(const std::vector<StmtPtr>& stmts, std::set<std::string>& out) {
     for (auto& st : stmts) {
         if (!st) continue;
@@ -3609,18 +3725,31 @@ void collectExportedSubNames(const std::vector<StmtPtr>& stmts, std::set<std::st
 
 std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               const std::vector<std::string>& searchPath,
-                                              std::set<std::string>* exportsOut) {
+                                              std::set<std::string>* exportsOut,
+                                              std::vector<ModuleSkip>* skipsOut,
+                                              std::set<std::string>* nativeLibsOut) {
     std::vector<BundledModule> out;
     std::set<std::string> seen;
     std::vector<std::string> queue;
     collectUseNames(prog.stmts, queue);
+    if (nativeLibsOut) collectNativeLibNames(prog.stmts, *nativeLibsOut);
+    if (skipsOut) {
+        bool dynReq = false;
+        collectDynRequires(prog.stmts, dynReq);
+        if (dynReq) skipsOut->push_back({"<dynamic require>",
+            "a runtime-computed `require ::($name)` — its target cannot be known at compile time"});
+    }
 
     for (size_t qi = 0; qi < queue.size(); qi++) {
         const std::string name = queue[qi];
         if (name.empty() || !seen.insert(name).second) continue;
         if (isPragmaName(name)) continue;                 // no file behind it
         std::string path, src;
-        if (!findModuleSourceFor(name, searchPath, path, src)) continue;  // load from disk at run time
+        if (!findModuleSourceFor(name, searchPath, path, src)) {
+            // load from disk at run time — silently before MODULES-PLAN B1
+            if (skipsOut) skipsOut->push_back({name, "not found on the module search path"});
+            continue;
+        }
         Program mp;
         std::string finish;
         try {
@@ -3629,15 +3758,29 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
             parser.libPaths_ = searchPath;                // its own `use`s resolve like the real load
             mp = parser.parseProgram();
             finish = lx.finishData();
-        } catch (ParseError&) { continue; }               // let the run-time loader report it
+        } catch (ParseError&) {                           // let the run-time loader report it
+            if (skipsOut) skipsOut->push_back({name, "its source does not parse (the run-time loader will report the error)"});
+            continue;
+        }
         collectUseNames(mp.stmts, queue);                 // depth-first over its dependencies
+        if (nativeLibsOut) collectNativeLibNames(mp.stmts, *nativeLibsOut);
+        if (skipsOut) {
+            bool dynReq = false;
+            collectDynRequires(mp.stmts, dynReq);
+            if (dynReq) skipsOut->push_back({name,
+                "contains a runtime-computed `require ::($name)` — that load escapes the embedded graph"});
+        }
         // Before the embeddability checks below: a module that is loaded from
         // DISK at run time still exports these names, and a compiled call site
         // has to resolve them the same way either way.
         if (exportsOut) collectExportedSubNames(mp.stmts, *exportsOut);
         std::string blob;
         try { blob = serializeAst(mp); }
-        catch (AstSerialError&) { continue; }             // not embeddable: disk fallback
+        catch (AstSerialError& e) {                       // not embeddable: disk fallback
+            if (skipsOut) skipsOut->push_back({name,
+                "its AST does not serialize (" + e.msg + ")"});
+            continue;
+        }
         out.push_back({name, std::move(blob), std::move(finish), std::move(src)});
     }
     // Dependencies first, so a registration order matching load order costs
@@ -3940,6 +4083,7 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
             for (auto ext : exts) {
                 std::ifstream in(dir + "/" + rel + ext);
                 if (!in) continue;
+                if (!dirEntryCaseExact(dir + "/" + rel + ext)) continue; // config.raku is not Config.raku
                 if (!verReq.empty()) {
                     // `use Foo:ver<0.0.14+>`: a too-old candidate must NOT win
                     // just by being first on the path — skip it and let a later
@@ -4309,10 +4453,26 @@ Value Interpreter::execBlock(Block* b, std::shared_ptr<Env> scope, bool sink) {
             !static_cast<SubDecl*>(s)->isMethod) continue;
         lastIdx = i; break;
     }
-    // a CATCH {} anywhere in the block handles exceptions from the whole block
+    // a CATCH {} anywhere in the block handles exceptions from the whole
+    // block; a CONTROL {} registers as the dynamic handler `warn` runs
+    // (they share isCatch — the phaser tells them apart, and a CONTROL
+    // block must NOT swallow ordinary exceptions as a CATCH would)
     Block* catchBlk = nullptr;
+    Block* controlBlk = nullptr;
     for (auto& s : b->stmts)
-        if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) catchBlk = static_cast<Block*>(s.get());
+        if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch) {
+            if (static_cast<Block*>(s.get())->phaser == "CONTROL")
+                controlBlk = static_cast<Block*>(s.get());
+            else
+                catchBlk = static_cast<Block*>(s.get());
+        }
+    struct ControlReg { // registered for the block's whole run, all exits
+        ExecContext& t;
+        bool on;
+        ControlReg(ExecContext& tc, Block* cb, std::shared_ptr<Env> env)
+            : t(tc), on(cb != nullptr) { if (on) t.controlHandlers.push_back({cb, std::move(env)}); }
+        ~ControlReg() { if (on) t.controlHandlers.pop_back(); }
+    } controlReg{tctx_, controlBlk, tctx_.cur}; // tctx_.cur IS the block env here
     hasNestedSub = hoistSubs(b->stmts);
     hoistExprDecls(b->stmts, blockEnv, &b->hoistNeed); // `my` buried in ternary/nqp branches → block scope
     runEnterPhasers(b->stmts);
@@ -4469,10 +4629,16 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
 
 // Is `n` a built-in type name that a class may legitimately derive from?
 // (Used to decide whether `class X is Y` with an unregistered Y is an error.)
+GrammarParseDiag& grammarParseDiag() {
+    static thread_local GrammarParseDiag d;
+    return d;
+}
+
 bool isNativeTypeName(const std::string& n) {
     static const std::set<std::string> t = {
         "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
-        "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint"};
+        "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint",
+        "array"};
     return t.count(n) > 0;
 }
 
@@ -4481,6 +4647,8 @@ bool isKnownTypeName(const std::string& n) {
     if (n.rfind("X::", 0) == 0) return true;         // exception types
     if (n.rfind("Metamodel::", 0) == 0) return true; // HOWs
     if (n.rfind("IO::", 0) == 0) return true;         // IO::Path::Unix, etc.
+    if (n.rfind("Pod::", 0) == 0) return true;        // Pod DOM nodes
+    if (n.rfind("CompUnit::", 0) == 0) return true;   // repository chain
     // NativeCall's containers, bare or parameterized: `--> CArray[uint8]` is a
     // routine return type in NativeHelpers::Array and friends
     if (n == "CArray" || n == "Pointer" ||
@@ -4505,6 +4673,20 @@ bool isKnownTypeName(const std::string& n) {
         // was rejected as inheriting from an unknown TRAIT rather than a type.
         "Supplier", "Supplier::Preserving", "Tap",
         "Distribution", "CompUnit", "Label", "Nd",
+        // Core names Rakudo resolves that rakupp has not materialized — real
+        // types, answered as unmaterialized stubs (the Cursor/Nd model).
+        // S02-types/WHICH.t enumerates the lot through ::($name).
+        "AST", "Allomorph", "Backtrace::Frame", "CallFrame", "Cancellation",
+        "IntStr", "NumStr", "RatStr", "ComplexStr",
+        "CurrentThreadScheduler", "ThreadPoolScheduler", "Deprecation",
+        "Distro", "Kernel", "VM", "Perl", "Raku", "Unicode",
+        "Hashray", "HyperConfiguration", "HyperSeq", "HyperWhatever",
+        "IterationBuffer", "Macro", "ObjAt", "Operator", "OperatorProperties",
+        "ParallelSequence", "Proc::Async", "PseudoStash", "ScalarVAR",
+        "SignedBlob", "UnsignedBlob", "Slang", "StrDistance", "Variable",
+        "IntAttrRef", "IntLexRef", "IntPosRef", "NumAttrRef", "NumLexRef",
+        "NumPosRef", "StrAttrRef", "StrLexRef", "StrPosRef", "UIntAttrRef",
+        "UIntLexRef", "UIntPosRef",
     };
     return t.count(n) > 0;
 }
@@ -4862,9 +5044,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
         }
         case NK::SubDecl: {
             auto* sd = static_cast<SubDecl*>(s);
+            // `sub ::(EXPR) (…) {…}` — the INDIRECT name, computed as the
+            // declaration runs. Hoisting never pre-registers these (it keys
+            // on the static name, which is empty), so the sub exists from
+            // this statement on — which is also Rakudo's constraint: the
+            // name expression's inputs must already have values.
+            std::string dynSubName;
+            if (sd->name.empty() && sd->nameExpr)
+                dynSubName = eval(sd->nameExpr.get()).toStr();
+            const std::string& sname = dynSubName.empty() ? sd->name : dynSubName;
             auto makeCand = [&](const std::vector<Param>* prms) {
                 Value c; c.t = VT::Code; c.code = std::make_shared<Callable>();
-                c.code->name = sd->name;
+                c.code->name = sname;
                 c.code->pkg = tctx_.pkgPrefix.empty() ? "GLOBAL"
                             : tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2); // strip trailing ::
                 c.code->params = prms;
@@ -4911,7 +5102,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (c.code->nativeLib.empty())
                             c.code->nativeLibExpr = sd->nativeLibExpr.get();
                     }
-                                    c.code->nativeSym = sd->nativeSym.empty() ? sd->name : sd->nativeSym; }
+                                    c.code->nativeSym = sd->nativeSym.empty() ? sname : sd->nativeSym; }
                 for (auto& p : *prms) {
                     // a default makes no sense on a slurpy or a required param
                     if (p.defaultVal && p.slurpy)
@@ -5023,9 +5214,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 share(code);
                 for (auto& c : altCands) share(c);
             }
-            if (!sd->name.empty()) {
+            if (!sname.empty()) {
                 if (sd->isMulti || !sd->altParams.empty()) {
-                    std::string key = "&" + sd->name;
+                    std::string key = "&" + sname;
                     Value* existing = tctx_.cur->find(key);
                     Callable* disp;
                     Value dispVal;
@@ -5033,7 +5224,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         disp = existing->code.get(); dispVal = *existing;
                     } else {
                         dispVal.t = VT::Code; dispVal.code = std::make_shared<Callable>();
-                        dispVal.code->name = sd->name;
+                        dispVal.code->name = sname;
                         dispVal.code->isMultiDispatcher = true;
                         disp = dispVal.code.get();
                         tctx_.cur->define(key, dispVal);
@@ -5042,15 +5233,15 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     for (auto& c : altCands) disp->candidates.push_back(c);
                     return dispVal;
                 }
-                tctx_.cur->define("&" + sd->name, code);
+                tctx_.cur->define("&" + sname, code);
                 // `our sub` is package-scoped: also install globally so a sibling block
                 // (or an `our &name;` re-declaration) can reach it.
-                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) curPkgEnv_->define("&" + sd->name, code);
+                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) curPkgEnv_->define("&" + sname, code);
                 // and publish the fully-qualified name (Foo::Bar::name) so callers
                 // outside the module can reach an unexported `our sub` — the only
                 // way OpenSSL::Version::version_num etc. are invoked.
                 if (sd->isOur && !tctx_.pkgPrefix.empty())
-                    global_->define("&" + tctx_.pkgPrefix + sd->name, code);
+                    global_->define("&" + tctx_.pkgPrefix + sname, code);
             }
             if (sd->immediateCall) { // `sub f(...) {...}(args)` — call right away
                 ValueList ia;
@@ -5302,10 +5493,20 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // A COMPOUND name nests the same way: `grammar Schema::Core` inside
             // `unit module YAMLish` is YAMLish::Schema::Core, so an importer can
             // reach it. (Only a name that already carries the prefix is left alone.)
-            std::string clsName = cd->name.empty()
+            // `class ::(EXPR)` — the INDIRECT name, computed now (declarations
+            // run at run time here, so this is just an expression slot)
+            std::string dynName;
+            if (cd->name.empty() && cd->nameExpr) {
+                dynName = eval(cd->nameExpr.get()).toStr();
+                if (dynName.empty())
+                    throw RakuError{Value::typeObj("X::Syntax::Name::Null"),
+                                    "an indirect type name evaluated to an empty string"};
+            }
+            const std::string& declName = dynName.empty() ? cd->name : dynName;
+            std::string clsName = declName.empty()
                 ? "<anon|" + std::to_string(++anonTypeCounter_) + ">"
-                : (!tctx_.pkgPrefix.empty() && cd->name.rfind(tctx_.pkgPrefix, 0) != 0
-                    ? tctx_.pkgPrefix + cd->name : cd->name);
+                : (!tctx_.pkgPrefix.empty() && declName.rfind(tctx_.pkgPrefix, 0) != 0
+                    ? tctx_.pkgPrefix + declName : declName);
             ci->name = clsName;
             ci->pod = cd->pod;
             if (!cd->parent.empty()) {
@@ -5494,6 +5695,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
             ci->isGrammar = cd->isGrammar;
+            // A grammar with no explicit parent derives from the built-in
+            // Grammar type, as Rakudo's do (G, Grammar, Match, Capture, Cool,
+            // Any, Mu) — nativeParent is the existing seam for a built-in
+            // ancestor, so ~~/.isa/.does/.^mro all follow from it.
+            if (ci->isGrammar && !ci->parent && ci->nativeParent.empty())
+                ci->nativeParent = "Grammar";
             ci->isRole = cd->isRole;
             ci->repr = cd->repr;
             ci->ver = cd->ver; ci->auth = cd->auth; ci->api = cd->api;
@@ -5602,9 +5809,17 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // class registers (the handler may call $*PACKAGE.^add_method / .HOW)
             std::vector<std::pair<SubDecl*, Value>> methodTraitQueue;
             for (auto& md : cd->methods) {
+                // `method ::('indirect')` / `method ::('with space')` — the
+                // name is an expression, computed as the class is built. The
+                // method map takes any string, spaces included; the QUOTED
+                // call form (`A."with space"()`) is how such a name is reached.
+                std::string mdDyn;
+                if (md->name.empty() && md->nameExpr)
+                    mdDyn = eval(md->nameExpr.get()).toStr();
+                const std::string& mdName = mdDyn.empty() ? md->name : mdDyn;
                 Value code; code.t = VT::Code;
                 code.code = std::make_shared<Callable>();
-                code.code->name = md->name;
+                code.code->name = mdName;
                 code.code->params = &md->params;
                 code.code->retType = md->retType;
                 code.code->body = &md->body;
@@ -5647,7 +5862,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     md->body[0]->kind == NK::ExprStmt &&
                     static_cast<ExprStmt*>(md->body[0].get())->e &&
                     static_cast<ExprStmt*>(md->body[0].get())->e->kind == NK::Whatever;
-                const std::string key = md->isPrivate ? "!" + md->name : md->name;
+                const std::string key = md->isPrivate ? "!" + mdName : mdName;
                 if (!md->traits.empty()) methodTraitQueue.push_back({md.get(), code});
                 if (md->isMulti) {
                     auto it = ci->methods.find(key);
@@ -5769,6 +5984,41 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 }
             }
             noteSymbolMutation("class/role/grammar declaration");
+            // The registry is name-keyed, so a second declaration of a live name
+            // would CLOBBER every held type object of the first — old handles
+            // silently adopt the new body. When the first declaration is still
+            // lexically REACHABLE, refuse instead, as Rakudo does (its EVAL of a
+            // plain redeclaration at the same visibility is a compile-time
+            // X::Redeclaration, leaving the original intact; rakupp's EVAL
+            // shares the caller's scope, so mainline-then-EVAL lands here).
+            // Reachability is approximated as: the previous declaration's site
+            // env is an ancestor of the current scope. A declaration whose
+            // block has EXITED is fair game — roast redeclares plain classes
+            // across sibling blocks and inside eval-lives-ok all over, and
+            // Rakudo accepts those. Also exempt:
+            //   - the same declaration node re-evaluated (a class in a sub body
+            //     runs its decl on every call; Rakudo compiles it once)
+            //   - `my`-scoped types (lexical in Rakudo, legally redeclarable;
+            //     rakupp approximates with latest-wins)
+            //   - stubs, augment, parameterized roles, weak packages — the same
+            //     coexistence rules checkRedeclarations() applies at parse time
+            {
+                auto prev = classes_.find(clsName);
+                if (prev != classes_.end() && prev->second->decl && prev->second->decl != cd &&
+                    !cd->isMy && !prev->second->decl->isMy &&
+                    !cd->isAugment && !cd->parameterized && !prev->second->decl->parameterized &&
+                    !cd->isStubDecl && !prev->second->decl->isStubDecl &&
+                    !cd->isPackage && !prev->second->decl->isPackage) {
+                    Env* prevSite = prev->second->declEnv && prev->second->declEnv->parent
+                                  ? prev->second->declEnv->parent.get() : nullptr;
+                    bool visible = false;
+                    for (Env* e = tctx_.cur.get(); e && prevSite; e = e->parent.get())
+                        if (e == prevSite) { visible = true; break; }
+                    if (visible)
+                        throwTyped("X::Redeclaration", {{"symbol", clsName}},
+                                   "Redeclaration of symbol '" + clsName + "'");
+                }
+            }
             classes_[clsName] = ci;
             // now the type resolves, dispatch the collected non-type `is` names to a
             // user trait_mod:<is>. Only NO-CANDIDATE means "not a trait"; a trait
@@ -7170,6 +7420,8 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"IO::Path",   {"IO::Path", "IO", "Cool"}},
         {"IO::Handle", {"IO::Handle", "IO"}},
         {"IO::Special", {"IO::Special", "IO"}},
+        {"Grammar", {"Grammar", "Match", "Capture", "Cool"}},
+        {"Match",   {"Match", "Capture", "Cool"}},
     };
     auto td = typeDoes.find(ln);
     bool baseOk = (td != typeDoes.end() && td->second.count(rn));
@@ -7186,12 +7438,17 @@ static bool typeNameConforms(const std::string& lnIn, const std::string& rn,
     }
     if (baseOk && (rOfType.empty() || rOfType == lOfType)) return true;
     // a user type object matches its own ancestry: parent classes, composed
-    // roles, and roles/parents anywhere up the chain
+    // roles, and roles/parents anywhere up the chain — including a BUILT-IN
+    // parent (`is Str`, or the implicit Grammar) and everything above it
     if (g_matchClasses) {
         auto itc = g_matchClasses->find(ln);
         if (itc != g_matchClasses->end())
             for (ClassInfo* c = itc->second.get(); c; c = c->parent.get()) {
                 if (c->name == rn || c->doneRoles.count(rn)) return true;
+                if (!c->nativeParent.empty()) {
+                    if (c->nativeParent == rn) return true; // ancestry may lack table entries
+                    for (auto& anc : typeAncestry(c->nativeParent)) if (anc == rn) return true;
+                }
                 for (auto& p : c->extraParents)
                     if (p && (p->name == rn || p->doneRoles.count(rn))) return true;
             }
@@ -7279,12 +7536,17 @@ static bool typeMatchesArg(const Value& arg, const std::string& type) {
         case VT::Code: return type == "Code" || type == "Callable" || type == "Routine" || type == "Block" || type == "Sub" ||
                               (type == "Method" && arg.code && arg.code->isMethod); // a method is a Method, not just a Sub
         case VT::Regex: return type == "Regex";
-        case VT::Match: return type == "Match";
+        // a Match IS a Capture and IS Cool (Rakudo: Match ~~ Capture/Cool both True)
+        case VT::Match: return type == "Match" || type == "Capture" || type == "Cool";
         case VT::Range: return type == "Range" || type == "Iterable";
         case VT::Object: {
             for (ClassInfo* ci = arg.obj ? arg.obj->cls.get() : nullptr; ci; ci = ci->parent.get()) {
                 if (ci->name == type || ci->nativeParent == type) return true;
                 if (ci->doneRoles.count(type)) return true; // composed roles count as types
+                // …and the built-in parent's whole ancestry: a grammar instance
+                // is a Match/Capture/Cool, a `class F is Int` instance is Real
+                if (!ci->nativeParent.empty())
+                    for (auto& anc : typeAncestry(ci->nativeParent)) if (anc == type) return true;
                 for (auto& p : ci->extraParents) if (p && p->name == type) return true;
             }
             // package-relative short name: a `Path`-typed param accepts URI::Path
@@ -10142,6 +10404,9 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     std::string nb;
     if (!userNext)
         for (ClassInfo* c = owner; c && nb.empty(); c = c->parent.get()) nb = c->nativeParent;
+    // the implicit Grammar ancestor has no builtin method table to redispatch
+    // into — keep the no-native-base behaviour for grammars
+    if (nb == "Grammar") nb.clear();
     if (!userNext && nb.empty())
         return invokeMethod(*um, self, args, rwArgs);
     RedispatchCtx rc;
@@ -15887,6 +16152,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         auto savedScope = tctx_.cur;
         tctx_.cur = matchScope;
         matched = gm.parse(input, startRule, subparse, tree, endPos);
+        // G1: publish the highwater for rakupp-parse-diagnosis — byte offset
+        // to CHARACTER position here, where the input is at hand. A success
+        // clears it; a stale diagnosis must not outlive the parse it names.
+        if (!matched && gm.hwPos >= 0) {
+            long cp = 0;
+            for (long b = 0; b < gm.hwPos && b < (long)input.size(); b++)
+                if (((unsigned char)input[b] & 0xC0) != 0x80) cp++;
+            grammarParseDiag() = {true, cp, gm.hwRule};
+        }
+        else grammarParseDiag() = {};
         if (!matched) {
             // the parse FAILED, but the subrules that completed still fire their
             // actions, in completion order — Rakudo's during-match firing does
@@ -17921,6 +18196,40 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
 // payload (`throw RakuError{Value::typeObj("X::Foo"), msg}`) would be an
 // UNDEFINED type object — `$!.defined` must be True and `.message` must answer,
 // so wrap it into a defined instance of that class (registered on the fly).
+bool Interpreter::runControlWarn(const std::string& msg) {
+    if (tctx_.controlHandlers.empty()) return false;
+    // pop while running: a warn INSIDE the handler goes to the next one out
+    auto handler = tctx_.controlHandlers.back();
+    tctx_.controlHandlers.pop_back();
+    struct Repush {
+        ExecContext& t;
+        std::pair<Block*, std::shared_ptr<Env>> h;
+        ~Repush() { t.controlHandlers.push_back(std::move(h)); }
+    } repush{tctx_, handler};
+
+    Value ex = exceptionFor(RakuError{Value::typeObj("CX::Warn"), msg});
+    auto env = std::make_shared<Env>();
+    env->parent = handler.second;
+    env->define("$_", ex);
+    env->define("$!", ex);
+    auto saved = tctx_.cur;
+    tctx_.cur = env;
+    uint64_t savedGF = tctx_.curGivenFrame;
+    tctx_.curGivenFrame = 0;              // `when` inside the handler must THROW to be seen
+    struct Restore {
+        Interpreter& I; std::shared_ptr<Env> e; uint64_t gf;
+        ~Restore() { I.tctx_.cur = e; I.tctx_.curGivenFrame = gf; }
+    } restore{*this, saved, savedGF};
+    bool resumed = false;
+    try {
+        struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_}; // .resume is legal here
+        for (auto& s : handler.first->stmts) exec(s.get());
+    }
+    catch (BreakGivenEx&) { /* a when matched but did not .resume: default print stands */ }
+    catch (ResumeEx&) { resumed = true; }
+    return resumed;
+}
+
 Value Interpreter::exceptionFor(const RakuError& e) {
     // A Str payload NAMING an exception type ("X::Recursion", "X::Multi::NoMatch")
     // builds a real exception object like a type payload would — otherwise the
@@ -20260,9 +20569,12 @@ Value Interpreter::eval(Expr* e) {
             // sigilless: constant, then type / builtin resolution (NameTerm rules)
             if (Value* p = tctx_.cur->find(nm)) return *p;
             // an unknown lowercase name is no type — X::NoSuchSymbol (`"::a".EVAL`)
-            if (!classes_.count(nm) && !nm.empty() && std::islower((unsigned char)nm[0]))
+            // …except the native type names, which resolve like any type
+            if (!classes_.count(nm) && !nm.empty() && std::islower((unsigned char)nm[0]) &&
+                !isNativeTypeName(nm))
                 throw RakuError{Value::typeObj("X::NoSuchSymbol"), "No such symbol '" + nm + "'"};
             NameTerm tmp(nm); tmp.line = e->line;
+            tmp.symbolicStrict = true; // unknown capitalized names fail softly, not stub
             return eval(&tmp);
         }
         case NK::SelfTerm: {
@@ -20396,7 +20708,41 @@ Value Interpreter::eval(Expr* e) {
             if (it != builtins_.end()) { ValueList none; return it->second(*this, none); }
             // package-relative short name: bare `Path` answers `URI::Path` when no
             // class/var/builtin claims it (see classAliases_)
-            return Value::typeObj(resolveClassAlias(n));
+            {
+                const std::string& rn = resolveClassAlias(n);
+                // ::($name) resolution refuses to manufacture: a name no registry
+                // knows throws X::NoSuchSymbol instead of minting a stub type
+                // object — a stub and a real class are both undefined, so a
+                // caller could never tell the lookup failed. Ordinary NameTerms
+                // keep the lenient fallback (forward references rely on it).
+                // Pseudo-packages (`::GLOBAL.WHO`, EXPORT::DEFAULT::…) resolve
+                // through dedicated machinery, not the registries — pass them.
+                static const auto isPseudoPkg = [](const std::string& s) {
+                    static const std::set<std::string> ps = {
+                        "MY", "OUR", "CORE", "GLOBAL", "PROCESS", "COMPILING",
+                        "DYNAMIC", "CALLER", "CALLERS", "LEXICAL", "OUTER",
+                        "OUTERS", "SETTING", "UNIT", "CLIENT", "PARENT", "EXPORT"};
+                    if (ps.count(s)) return true;
+                    size_t c = s.find("::");
+                    return c != std::string::npos && ps.count(s.substr(0, c)) > 0;
+                };
+                if (nt->symbolicStrict && !classes_.count(rn) && !subsets_.count(rn) &&
+                    !pkgMeta_.count(rn) && !isKnownTypeName(rn) && !isNativeTypeName(rn) &&
+                    !isPseudoPkg(rn)) {
+                    // …and the refusal is a Failure, not a throw: Rakudo's
+                    // ::('NoSuch') hands back a broken Failure whose
+                    // X::NoSuchSymbol fires on USE, so existence probes like
+                    // `try ::($n)` / `.defined` work without a control jump.
+                    // The exception slot carries the TYPE (failureDetonate
+                    // throws it), so `try ::($n); $!.^name` answers
+                    // X::NoSuchSymbol exactly as Rakudo's does.
+                    Value f = Value::makeHash(); f.hashKind = "Failure";
+                    (*f.hash)["exception"] = Value::typeObj("X::NoSuchSymbol");
+                    (*f.hash)["message"]   = Value::str("No such symbol '" + n + "'");
+                    return f;
+                }
+                return Value::typeObj(rn);
+            }
         }
         case NK::ListExpr: {
             auto* l = static_cast<ListExpr*>(e);

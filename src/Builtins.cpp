@@ -37,6 +37,7 @@
 #include <sys/stat.h>
 #if !defined(_WIN32)
 #include <fcntl.h>
+#include <sys/file.h>   // flock (rakupp-repo-lock)
 #include <sys/utsname.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -103,6 +104,11 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Cool",    {"Cool","Any","Mu"}},
         {"Date",    {"Date","Dateish","Any","Mu"}},
         {"DateTime",{"DateTime","Dateish","Any","Mu"}},
+        // the grammar/match family: a grammar IS a Match (that is how `self`
+        // works inside rule methods), and a Match IS a Capture
+        {"Grammar", {"Grammar","Match","Capture","Cool","Any","Mu"}},
+        {"Match",   {"Match","Capture","Cool","Any","Mu"}},
+        {"Capture", {"Capture","Any","Mu"}},
     };
     static const std::vector<std::string> fallback = {"Any","Mu"};
     auto it = A.find(t);
@@ -2821,6 +2827,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // $cur.install($dist, :$force) — write the CURI layout under `prefix`
                 // (sources/<sha>, short/<sha1(name)>/<dist-id>, dist/<dist-id> JSON,
                 // resources/, bin/). rakupp reads exactly this to resolve `use`.
+                // A prefix-less repository object would write into "/sources" and
+                // fail SILENTLY on every file — refuse loudly instead (the
+                // .new(prefix=>) spelling does not thread the prefix through;
+                // repository-for-spec("inst#/path") does).
+                if (prefix.empty())
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "install: this repository object carries no prefix — construct it with "
+                        "CompUnit::RepositoryRegistry.repository-for-spec('inst#/path')"};
                 Value dist = args.empty() ? Value::any() : args[0];
                 bool force = false;
                 for (auto& a : args)
@@ -2893,7 +2907,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 Value distMeta = metaV; distMeta.hash = std::make_shared<std::map<std::string, Value>>(meta);
                 (*distMeta.hash)["files"] = filesOut;
                 { std::ofstream o(prefix + "/dist/" + distId); o << jsonEncode(distMeta); }
-                return Value::boolean(true);
+                // the dist-id, so the CALLER can record provenance ("what did
+                // rakupp install" is the question uninstall refuses without)
+                return Value::str(distId);
             }
         }
     }
@@ -3333,8 +3349,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // enumerate (dispatch is an if-chain), so the honest answer is the empty
         // list — Data::Dump walks `.^mro[1..*]».^methods` to EXCLUDE inherited
         // methods, and dying on Any took the whole dump down.
+        // Date/DateTime fall through: they DO answer .^attributes (the
+        // synthesized Rakudo-shaped list JSON::Unmarshal rebuilds from).
         if ((mm == "methods" || mm == "attributes") &&
-            !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s)))) {
+            !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s))) &&
+            !(mm == "attributes" && tobj.t == VT::Type &&
+              (tobj.s == "DateTime" || tobj.s == "Date"))) {
             Value o = Value::array(); o.isList = true; return o;
         }
         return methodCall(tobj, mm, args, rwArgs);
@@ -6198,6 +6218,46 @@ void Interpreter::registerBuiltins() {
     // the module degrades to its pure-Raku path everywhere else. Reachable via
     // `use Rakupp::Ext` too, which is the discoverable spelling for code that is
     // rakupp-only by design.
+    // MODULES-PLAN M6: REAL advisory locking on the shared CURI store's
+    // repo.lock — the store is also zef's and Rakudo's, and a writer that
+    // ignores the lock can corrupt it under a concurrent zef. IO::Handle
+    // .lock is a stub here (buffered handles carry no live fd), so the
+    // installer takes the lock through these instead. POSIX flock; on
+    // Windows the installer proceeds unlocked (cross-tool locking there is
+    // out of scope, and saying so beats pretending).
+    B["rakupp-repo-lock"] = [](Interpreter&, ValueList& a) -> Value {
+#ifndef _WIN32
+        if (a.empty()) return Value::integer(-1);
+        int fd = ::open(a[0].toStr().c_str(), O_CREAT | O_RDWR, 0666);
+        if (fd < 0) return Value::integer(-1);
+        if (::flock(fd, LOCK_EX) != 0) { ::close(fd); return Value::integer(-1); }
+        return Value::integer(fd);
+#else
+        return Value::integer(-1);
+#endif
+    };
+    B["rakupp-repo-unlock"] = [](Interpreter&, ValueList& a) -> Value {
+#ifndef _WIN32
+        if (!a.empty()) {
+            int fd = (int)a[0].toInt();
+            if (fd >= 0) { ::flock(fd, LOCK_UN); ::close(fd); }
+        }
+#endif
+        return Value::boolean(true);
+    };
+    // G1 (GRAMMAR-PLAN): after a FAILED .parse/.subparse on this thread,
+    // answers { pos => Int (characters), rule => Str } — the furthest point a
+    // named rule failed at, and which rule. Any after a success. A rakupp
+    // extension (Rakudo grammars have no diagnostics API); reach it portably
+    // with the same `try &::('rakupp-parse-diagnosis')` idiom as ext-load.
+    B["rakupp-parse-diagnosis"] = [](Interpreter&, ValueList&) -> Value {
+        auto& d = grammarParseDiag();
+        if (!d.valid) return Value::any();
+        Value h = Value::makeHash();
+        (*h.hash)["pos"] = Value::integer(d.pos);
+        (*h.hash)["rule"] = Value::str(d.rule);
+        return h;
+    };
     B["rakupp-ext-load"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
         std::string err;
@@ -6247,8 +6307,14 @@ void Interpreter::registerBuiltins() {
     };
     B["warn"] = [](Interpreter& I, ValueList& a) -> Value {
         if (I.quietDepth_ > 0) return Value::boolean(true); // muted inside quietly {…}
-        if (a.empty()) { std::cerr << "Warning: something's wrong\n"; return Value::boolean(true); }
-        for (auto& v : a) std::cerr << I.gistOf(v); std::cerr << "\n"; return Value::boolean(true);
+        std::string msg;
+        if (a.empty()) msg = "Warning: something's wrong";
+        else for (auto& v : a) msg += I.gistOf(v);
+        // a dynamically-enclosing CONTROL {} sees the CX::Warn first; if it
+        // .resume's, the warning is handled and nothing prints
+        if (I.runControlWarn(msg)) return Value::boolean(true);
+        std::cerr << msg << "\n";
+        return Value::boolean(true);
     };
     B["die"] = [](Interpreter& I, ValueList& a) -> Value {
         Value payload = a.empty() ? Value::str("Died") : a[0];

@@ -184,6 +184,10 @@ struct NameTerm : Expr {
     std::string name;
     std::string ofType; // type parameters for `Array[Int]` / `Hash[Int,Str]` (comma-joined)
     int defConstraint = 0; // type smiley: 1 = `:D` (defined), 2 = `:U` (type object)
+    // set only on the throwaway NameTerm a ::($name) lookup builds: an unknown
+    // name must throw X::NoSuchSymbol there, never mint a stub type object.
+    // Parsed and serialized nodes keep the default.
+    bool symbolicStrict = false;
     explicit NameTerm(std::string n): Expr(NK::NameTerm), name(std::move(n)) {}
 };
 
@@ -436,6 +440,7 @@ struct SubTraitSpec { std::string name; ExprPtr arg; }; // `is traced` / `is rol
 
 struct SubDecl : Stmt {
     std::string name; // empty for anon
+    ExprPtr nameExpr; // `sub ::(EXPR) (…) {…}` / `method ::('name')` — computed when the decl runs
     std::vector<Param> params;
     std::vector<std::vector<Param>> altParams; // extra `(sig1) | (sig2)` signatures, share the body
     std::vector<StmtPtr> body;
@@ -501,6 +506,8 @@ struct ClassDecl : Stmt {
     bool parentIsDoes = false; // the first inheritance target came from `does` (composition), not `is`
     bool isGrammar = false;
     bool isAugment = false;        // augment class Foo { … } — merge methods into an existing type
+    bool isMy = false;             // `my class`/`my grammar` — lexically scoped, redeclarable across EVALs
+    ExprPtr nameExpr;              // `class ::(EXPR) { … }` — the name, computed when the decl runs
     bool isStubDecl = false;
     std::string pod; // `#|` leading declarator pod (.WHY)       // body was a bare `...` — a forward declaration, redeclarable
     bool parameterized = false;    // role R[T] — parameterizations coexist by name
