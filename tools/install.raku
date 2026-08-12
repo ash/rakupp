@@ -450,11 +450,11 @@ sub store-check(Str $prefix) {
 }
 
 # ---- uninstall (M6): mark-and-sweep over a shared, content-addressed store --
-# :for-reinstall relaxes exactly two refusals, because the dist is coming
-# right back: "not installed" becomes a fresh install (note, skip the removal)
-# and installed DEPENDENTS do not block (a removal would strand them; a
-# reinstall restores what they depend on). Provenance still refuses — a
-# reinstall rewrites zef's dist no more politely than an uninstall removes it.
+# :for-reinstall relaxes three refusals, because the dist is coming right
+# back: "not installed" becomes a fresh install (note, skip the removal),
+# installed DEPENDENTS do not block (a removal would strand them; a reinstall
+# restores what they depend on), and foreign PROVENANCE downgrades to a
+# warning — the replacement becomes rakupp-owned, and the warning says so.
 sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
     my $p = $prefix.IO;
     unless $p.add('dist').d {
@@ -496,10 +496,18 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
         my %meta = @hits[0].value;
         my $identity = "{%meta<name>}:ver<{%meta<version> // ''}>:auth<{%meta<auth> // ''}>";
 
-        # ours? (a zef-installed dist is zef's; --force means you mean it)
+        # ours? (a zef-installed dist is zef's; --force means you mean it).
+        # REINSTALL only warns: its destruction is bounded — the dist is
+        # replaced in the same run and becomes rakupp-owned, which the warning
+        # says out loud. Plain uninstall (pure removal) keeps the hard refusal.
         if !$force && !is-owned($prefix, $dist-id) {
-            note "$identity was not installed by `rakupp install` — refusing (--force to override)";
-            return 1;
+            if $for-reinstall {
+                note "warning: $identity was not installed by `rakupp install` — reinstalling anyway; it becomes rakupp-owned";
+            }
+            else {
+                note "$identity was not installed by `rakupp install` — refusing (--force to override)";
+                return 1;
+            }
         }
         # reverse dependencies: anything still installed that depends on a
         # name this dist provides?

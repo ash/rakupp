@@ -2874,6 +2874,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
                 mkdirp(prefix + "/sources"); mkdirp(prefix + "/short"); mkdirp(prefix + "/dist");
                 Value filesOut = Value::makeHash();
+                // The dist RECORD's provides must be the NESTED store shape
+                // Rakudo writes — {mod => {relpath => {file => <source-id>,
+                // time => Nil}}} — not META6's flat mod=>path. zef's uninstall
+                // walks provides{$mod}{$path}<file>, and a flat record died
+                // there with "Type Str does not support associative indexing";
+                // loading never noticed, since resolution reads short/ entries.
+                Value provOut = Value::makeHash();
                 if (provV.t == VT::Hash && provV.hash)
                     for (auto& kv : *provV.hash) {
                         std::string mod = kv.first, srcRel;
@@ -2889,6 +2896,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         std::ofstream o(sdir + "/" + distId);
                         o << ver << "\n" << auth << "\n" << api << "\n" << srcSha << "\n" << distId << "\n";
                         (*filesOut.hash)[srcRel] = Value::str(srcSha);
+                        Value leaf = Value::makeHash();
+                        (*leaf.hash)["file"] = Value::str(srcSha);
+                        (*leaf.hash)["time"] = Value::nil();
+                        Value byPath = Value::makeHash();
+                        (*byPath.hash)[srcRel] = leaf;
+                        (*provOut.hash)[mod] = byPath;
                     }
                 // resources/ and bin/ — zef injects these into meta<files> (rel-path => src)
                 if (meta.count("files") && meta["files"].t == VT::Hash && meta["files"].hash) {
@@ -2906,6 +2919,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // scans it for `resources/…` → the on-disk resource copy).
                 Value distMeta = metaV; distMeta.hash = std::make_shared<std::map<std::string, Value>>(meta);
                 (*distMeta.hash)["files"] = filesOut;
+                if (provOut.hash && !provOut.hash->empty())
+                    (*distMeta.hash)["provides"] = provOut;
+                // Rakudo's records carry `ver` beside META6's `version`; zef's
+                // list/upgrade logic reads the short spelling (ver<0> without it)
+                if (!meta.count("ver") && !ver.empty())
+                    (*distMeta.hash)["ver"] = Value::str(ver);
                 { std::ofstream o(prefix + "/dist/" + distId); o << jsonEncode(distMeta); }
                 // the dist-id, so the CALLER can record provenance ("what did
                 // rakupp install" is the question uninstall refuses without)

@@ -236,6 +236,12 @@ $owned.spurt("\n");
 my %notours = installer('--uninstall', 'Gate::Flaky');
 check %notours<exit> != 0 && %notours<err>.contains('not installed by'),
       'M6: a dist without our provenance is refused';
+# …but reinstall only WARNS on foreign provenance: it replaces, then owns
+my %re-foreign = installer('--reinstall', '--no-test', 'Gate::Flaky');
+check %re-foreign<exit> == 0 && %re-foreign<err>.contains('reinstalling anyway'),
+      'reinstall of a foreign dist warns, replaces, and takes ownership';
+check $owned.lines.grep(*.chars).elems >= 1,
+      '…and the replacement is recorded in owned';
 my %forced2 = installer('--uninstall', '--force', 'Gate::Flaky');
 check %forced2<exit> == 0, 'M6: --force overrides for people who mean it';
 my %chk4 = installer('--check');
