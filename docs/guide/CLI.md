@@ -256,6 +256,31 @@ including an explicit cut, which is exactly when you want the proof.
 `--slim` shapes the link, so it applies to the compile modes only — the
 interpreter never slims.
 
+## Installing modules
+
+`rakupp install` is the ecosystem installer — a Raku program shipped with
+the release and dispatched by the binary. It writes the same CURI store
+zef and Rakudo share (`~/.raku` by default), so an installed module is
+loadable by either engine.
+
+```console
+rakupp install Foo::Bar          # newest satisfying, plus dependencies
+rakupp install Foo:ver<1.2.3>    # a specific version (installs are additive)
+rakupp uninstall Foo             # remove what THIS installer put there
+rakupp reinstall Foo             # uninstall + install fresh, one command
+rakupp install --list            # what is installed in the target store
+rakupp install --check           # store integrity report; fixes nothing
+rakupp install --refresh         # refetch the cached ecosystem index(es)
+rakupp install --to=PATH Foo     # another store prefix (default ~/.raku)
+```
+
+Resolution is zef-index-first with the community's REA archive
+(github.com/Raku/REA) as the fallback, the same order zef itself uses —
+names and exact `:ver`/`:auth` pins the live index no longer carries still
+resolve. A distribution's own test suite runs under rakupp before it is
+marked installed (`--no-test` skips; `--dry-run` prints the plan and writes
+nothing). Each command alone prints its full usage.
+
 ## MAIN: how a program's own arguments parse
 
 A program with a `sub MAIN` gets Rakudo-compatible argument parsing —
