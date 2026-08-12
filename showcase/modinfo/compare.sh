@@ -34,6 +34,8 @@ run_all() {
         "deps Gadget" \
         "rdeps Corelib" \
         "deps Loopy" \
+        "path Gadget" \
+        "path Corelib::Util" \
         "check" \
         "check Rusty" \
         "export --format=json" \

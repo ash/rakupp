@@ -10,9 +10,15 @@ do the work, and the program runs unchanged on Rakudo and on Raku++.
 ```sh
 build/rakupp showcase/modinfo/modinfo.raku list
 build/rakupp showcase/modinfo/modinfo.raku deps Gadget
+build/rakupp showcase/modinfo/modinfo.raku path JSON::Fast --installed
 build/rakupp showcase/modinfo/modinfo.raku rank --path=~/dists --top=20
 build/rakupp showcase/modinfo/modinfo.raku export --format=xml --out=/tmp/report
 ```
+
+`path` answers where a module (or every module of a distribution) lives on
+this machine: the real file under a scanned checkout, or the installation
+store's content-addressed source blob for `--installed` — resolved from the
+same repository chain the engine itself searches.
 
 ## What it is built on
 

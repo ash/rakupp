@@ -97,6 +97,7 @@ class Dist {
     has          %.meta;             # the raw decoded META6.json
     has IO::Path $.root;             # Nil for installed-database entries
     has Str      $.origin = 'path';  # path | installed
+    has Str      $.store = '';       # the CURI prefix an installed entry came from
 
     method runtime-deps { @!depends.grep(*.phase eq 'runtime') }
     method all-deps     { @!depends }
@@ -169,7 +170,7 @@ sub collect-deps($raw, Str $phase --> Array[DepSpec]) {
 }
 
 #| Build a Dist from decoded META6.json data.
-sub dist-from-meta(%meta, IO::Path :$root, Str :$origin = 'path' --> Dist) {
+sub dist-from-meta(%meta, IO::Path :$root, Str :$origin = 'path', Str :$store = '' --> Dist) {
     my DepSpec @deps;
     @deps.append(collect-deps(%meta<depends>,       'runtime'));
     @deps.append(collect-deps(%meta<build-depends>, 'build'));
@@ -191,6 +192,7 @@ sub dist-from-meta(%meta, IO::Path :$root, Str :$origin = 'path' --> Dist) {
         meta        => %meta,
         :$root,
         :$origin,
+        :$store,
     )
 }
 
@@ -246,7 +248,8 @@ sub scan-installed(--> Array[Dist]) {
             next unless %meta && %meta<name>;
             my $key = "%meta<name> %meta<version>";
             next if %seen{$key}++;
-            @dists.push(dist-from-meta(%meta, root => IO::Path, origin => 'installed'));
+            @dists.push(dist-from-meta(%meta, root => IO::Path, origin => 'installed',
+                                       store => $root));
         }
     }
     @dists
@@ -753,6 +756,64 @@ sub cmd-check(Graph $g, @dists --> List) {
     (@out.join("\n"), $errors)
 }
 
+#| The on-disk source id of one provided module in an INSTALLED dist record.
+#| Two record shapes exist in the wild: the engine's own writer keeps
+#| `provides` flat (module → relpath) with a `files` map (relpath → id);
+#| zef nests it (module → { relpath → { file → id, … } }).
+sub installed-source-id(%meta, Str $module --> Str) {
+    my $p = (%meta<provides> // {}){$module};
+    if $p ~~ Associative {
+        for $p.values -> $info {
+            return ~$info<file> if $info ~~ Associative && $info<file>;
+        }
+        return '';
+    }
+    my $rel = ~($p // '');
+    return '' unless $rel;
+    ~((%meta<files> // {}){$rel} // '')
+}
+
+#| Where a module (or every module of a distribution) lives on THIS machine:
+#| a real file under the dist root for a scanned checkout, the CURI store's
+#| content-addressed blob for an installed one.
+sub cmd-path(Graph $g, Str $target --> Str) {
+    # a dist name lists every module it provides; a module name just itself
+    my @rows;   # [module, dist, path]
+    my @dist-hits = $g.dists.grep(*.name eq $target);
+    @dist-hits = [resolve($g, $target)] unless @dist-hits
+        || $g.dists.first({ .provides{$target}:exists });
+    for @dist-hits -> $d {
+        @rows.push([$_, $d, module-location($d, $_)]) for $d.provides.keys.sort;
+    }
+    unless @dist-hits {
+        for $g.dists.grep({ .provides{$target}:exists }) -> $d {
+            @rows.push([$target, $d, module-location($d, $target)]);
+        }
+    }
+    die "no such distribution or module: $target (try `modinfo list`)" unless @rows;
+    @rows .= sort({ .[0] ~ "\x01" ~ .[1].spec });
+    my $mw = @rows.map(*.[0].chars).max;
+    my $pw = @rows.map(*.[2].chars).max;
+    @rows.map(-> [$mod, $d, $path] {
+        sprintf("%-*s  %-*s  %s", $mw, $mod, $pw, $path, $d.spec)
+    }).join("\n")
+}
+
+sub module-location(Dist $d, Str $module --> Str) {
+    if $d.origin eq 'installed' {
+        my $sid = installed-source-id($d.meta, $module);
+        return "$d.store() (source id not recorded)" unless $sid;
+        my $blob = $d.store.IO.add('sources').add($sid);
+        # a dist record can outlive its blob (partial uninstalls happen);
+        # say so instead of reporting a path that is not there
+        return $blob.e ?? $blob.Str !! $blob.Str ~ ' (missing!)';
+    }
+    my $p = $d.provides{$module};
+    my $rel = $p ~~ Associative ?? ~$p.keys.sort.head !! ~($p // '');
+    return '(no path recorded)' unless $rel && $d.root.defined;
+    ~$d.root.add($rel).absolute
+}
+
 sub cmd-about(--> Str) {
     my @out;
     @out.push(header("modinfo {VERSION}") ~ ' — a Raku distribution inspector');
@@ -996,6 +1057,7 @@ modinfo — a Raku distribution inspector
   modinfo show <dist>              one distribution in detail
   modinfo deps <dist>              what it depends on, as a tree
   modinfo rdeps <dist>             what depends on it, as a tree
+  modinfo path <module|dist>       where it lives on this machine
   modinfo graph                    roots, leaves, build order, cycles
   modinfo rank                     rank by number of dependents
   modinfo check [<dist>]           validate META6.json
@@ -1090,6 +1152,10 @@ sub MAIN(
         when 'deps' {
             die 'deps needs a distribution name' unless $target;
             say cmd-deps($g, resolve($g, ~$target));
+        }
+        when 'path' {
+            die 'path needs a module or distribution name' unless $target;
+            say cmd-path($g, ~$target);
         }
         when 'rdeps' {
             die 'rdeps needs a distribution name' unless $target;
