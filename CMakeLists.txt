@@ -211,4 +211,8 @@ install(TARGETS rakupp RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
 install(TARGETS rakupp_rt ARCHIVE DESTINATION lib)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/"
         DESTINATION include/rakupp
-        FILES_MATCHING PATTERN "*.h")
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+# the module installer `rakupp install` dispatches to (MODULES-PLAN Part A) —
+# shipped beside the binary, never compiled into it
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/install.raku"
+        DESTINATION libexec/rakupp)

@@ -101,6 +101,39 @@ installed on this machine.
 
 ## Part A — `rakupp install`
 
+> **M1-M5 landed 2026-08-12** — `tools/install.raku`, dispatched by
+> `rakupp install` (a command-line rewrite in main.cpp; the script ships in
+> the install layout's `libexec/rakupp/`, found beside the binary; a
+> checkout uses `tools/`). What deviates from the sketch below, and why:
+>
+> - **Transport is `curl` + `tar`, v1** — certificate verification on (curl
+>   never gets `-k`), redirects and proxies for free. The dlopen-libssl/zlib
+>   transport stays the self-containment refinement; the M2 checksum gate is
+>   ours either way: fez archives are content-addressed (the path stem IS
+>   the SHA-1), and a fetched archive that hashes differently is refused.
+>   Verified live and pinned by t/install.
+> - **The store writer is the ENGINE's** — the same `.install` the zef work
+>   built (Builtins.cpp), reached via
+>   `CompUnit::RepositoryRegistry.repository-for-spec("inst#/prefix")`.
+>   Found and fixed en route: a repository object built by `.new(prefix=>)`
+>   carries NO prefix and the writer failed SILENTLY into "/sources" —
+>   install now refuses a prefix-less repository loudly.
+> - **JSON is `Rakudo::Internals::JSON`** (the built-in codec) — the
+>   installer cannot depend on an ecosystem JSON module, since installing
+>   those is its own job.
+> - **The cross-engine gate held on first try**: a 7-distribution graph
+>   (License::SPDX ← JSON::Class ← Marshal/Unmarshal ← …) installed by
+>   rakupp loads under Rakudo from the same store, resources included
+>   (`License::SPDX.new.licenses.elems` = 727 under both).
+> - **The M4 test gate caught a real engine bug on its first live run**:
+>   JSON::Unmarshal 0.18's own suite fails one test under rakupp
+>   ('unmarshall named arguments') and the installer refused the chain —
+>   chip filed; `--no-test` is the documented override.
+> - t/install/run.raku (10 checks, network-free: RAKUPP_INSTALL_INDEX
+>   accepts a local fixture index, archive paths resolve beside it) runs in
+>   CI. **M6 (uninstall + `--check`) remains open, deliberately** — the plan
+>   below still governs it, checker first.
+
 ### The shape, and why it is not C++
 
 `rakupp install Foo` is a thin front-end that runs a **Raku program shipped with
@@ -174,6 +207,25 @@ trade for a package manager whose delete path is the dangerous one.
 
 ### M6 — uninstall as garbage collection
 
+> **M6 landed 2026-08-12, checker first as prescribed.** `rakupp install
+> --check` reports unreadable dist records, dangling index entries, missing
+> blobs behind live entries (each BROKEN, exit 1) and unreferenced blobs
+> (wasted disk, exit 0); it fixes nothing. `rakupp uninstall` follows the
+> exact order below: index entries first, then blobs nothing else
+> references (verified: a byte-identical file shared by two dists survives
+> the first uninstall), the dist record last, all under a REAL flock on
+> repo.lock (new engine builtins `rakupp-repo-lock`/`-unlock`; Windows
+> proceeds unlocked and the docs say so). Reverse dependencies refuse with
+> the dependents named; provenance refuses what `rakupp install` did not
+> install (the engine's `.install` now returns the dist-id, recorded per
+> store in `rakupp-install/owned`) — `--force` for both, for people who
+> mean it. The gate runs the plan's 4b discipline: `--check` clean before
+> and after every uninstall in t/install/run.raku (22 checks, network-free,
+> CI). Deliberately still out: `--fix` for the checker, and precomp
+> invalidation (rakupp writes none; whether REMOVING a dist must invalidate
+> Rakudo's is still the unverified question below — measure before
+> designing).
+
 Removing a distribution means, from its `dist/<dist-id>` record:
 
 1. delete `short/<sha1(name)>/<dist-id>` for **every** name it provides;
@@ -221,6 +273,20 @@ sets are ever wanted, that is a different design and a different plan.
 ---
 
 ## Part B — binaries that are actually standalone
+
+> **B1/B2/B4/B5 landed 2026-08-12.** collectModuleGraph reports every skip
+> with its reason (not found / does not parse / AST does not serialize /
+> dynamic `require ::($n)` — the static `require Foo` spelling was already
+> embedded, it parses as a `use`); every compile mode prints the embedded
+> list, each skip, and the native libraries the binary will still dlopen
+> (`is native` scan over the whole graph). `--standalone` turns any skip
+> into a build refusal (exit 4). t/standalone/run.raku (11 checks) builds
+> binaries and RUNS them with `HOME` at an empty directory and `RAKULIB`
+> cleared — B4's gate is a standing CI check, fixtures self-contained.
+> **B3 (resources) stays open**: nothing installed here used resources when
+> the plan was written; now that `rakupp install` exists the measurement is
+> reachable (install a resource-using dist, compile a user of it, run it
+> store-hidden) — measure before designing, as below.
 
 The mechanism exists and works. What is missing is the **guarantee**, so this
 half is strictness and proof rather than plumbing.
