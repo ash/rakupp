@@ -141,7 +141,12 @@ sub sha1-str(Str $s) {
     my $t = $*TMPDIR.add("rakupp-install-sha-$*PID");
     $t.spurt($s);
     LEAVE $t.unlink;
-    sha1-file($t.Str)
+    # UPPERCASE: the engine names short/ index directories in uppercase hex,
+    # and on a case-SENSITIVE filesystem a lowercase path is a different path
+    # — the checker reported every provided module as broken on Linux, and
+    # uninstall left dangling index entries, while macOS's case-insensitive
+    # APFS hid both. sha1-file stays lowercase for the fez archive stems.
+    sha1-file($t.Str).uc
 }
 
 # The store is shared with zef and Rakudo: every mutation happens under its
