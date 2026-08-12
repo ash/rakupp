@@ -13,9 +13,13 @@
 # both unset.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+START=$(pwd)
 cd "$HERE"
 
 R="${RAKUPP:?set RAKUPP=<path to the rakupp binary>}"
+# RAKUPP=build/rakupp from the repo root is the natural spelling — resolve it
+# against the CALLER's directory, since everything below runs from $HERE
+case "$R" in /*) ;; */*) R="$START/$R" ;; esac
 RAKU="${RAKU:-raku}"
 PORT="${PORT:-8123}"
 
@@ -29,12 +33,23 @@ export RAKULIB
 # The test server: rakus serving sample/, torn down when the script ends.
 "$R" ../rakus/rakus.raku "$PORT" sample >/dev/null 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null' EXIT
+# `|| true`: under set -e a failing kill in the EXIT trap would REPLACE the
+# script's own exit status — a byte-identical MATCH then reported failure
+trap 'kill $SERVER 2>/dev/null || true' EXIT
 i=0
 until nc -z 127.0.0.1 "$PORT" 2>/dev/null; do
     i=$((i + 1)); [ "$i" -gt 50 ] && { echo "rakus did not come up on :$PORT"; exit 1; }
     sleep 0.1
 done
+# The port answering is not enough: with SO_REUSEADDR a squatter and our
+# server can coexist on :$PORT and the squatter may win the accept — every
+# request then compares identical 404s and the MATCH means nothing. So probe
+# IDENTITY, not liveness: only sample/users.json answers ada here.
+probe=$("$R" "$HERE"/jsonreq.raku "http://127.0.0.1:$PORT/users.json" --query=.users[0].login -r 2>/dev/null || true)
+[ "$probe" = "ada" ] || {
+    echo "the server on :$PORT is not serving sample/ — is something else holding the port? (set PORT= to move)"
+    exit 1
+}
 
 BASE="http://127.0.0.1:$PORT"
 
@@ -42,6 +57,7 @@ BASE="http://127.0.0.1:$PORT"
 # process, so unsorted pretty output is SUPPOSED to differ between runs, let
 # alone engines. The 404/405 cases print the server's HTML error body verbatim
 # and exit 1 — captured, because that behaviour is part of the contract too.
+# The last two cases skip the server entirely: a bare path is a local document.
 run_all() {
     engine=$1
     for cmd in \
@@ -54,7 +70,9 @@ run_all() {
         "$BASE/users.json --query=.users[1].languages --compact" \
         "$BASE/users.json --query=.users[2].active" \
         "POST $BASE/users.json --json={\"probe\":true}" \
-        "$BASE/nope.json"
+        "$BASE/nope.json" \
+        "sample/users.json --sorted --compact" \
+        "sample/users.json --query=.users[1].login -r"
     do
         echo "===== jsonreq $cmd"
         st=0

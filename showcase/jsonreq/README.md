@@ -26,7 +26,16 @@ build/rakupp showcase/jsonreq/jsonreq.raku URL --query=.users[0].name -r   # one
 build/rakupp showcase/jsonreq/jsonreq.raku POST URL --json='{"a": 1}'      # send JSON
 build/rakupp showcase/jsonreq/jsonreq.raku URL --json=@body.json           # body from a file (implies POST)
 build/rakupp showcase/jsonreq/jsonreq.raku URL --header='X-Token: t' -v    # -v shows the exchange on stderr
+build/rakupp showcase/jsonreq/jsonreq.raku data.json --query=.users[-1]    # a local file — no socket at all
+cat data.json | build/rakupp showcase/jsonreq/jsonreq.raku - --compact     # or stdin
 ```
+
+A target without an `http(s)://` scheme is a **local document** — a path, a
+`file://` URL, or `-` for stdin — run through the same query/pretty-print
+pipeline. It is presumed JSON, so a broken file dies with the parse error
+instead of echoing through (`--raw` prints it untouched); the HTTP-only
+options (`--json`, `--header`, `--auth`, `--bearer`, `--insecure`) refuse a
+local target.
 
 The `RAKULIB` line is temporary: once the two distributions are on fez,
 `zef install Rakupp::JSON HTTP::Simple` replaces it.
@@ -66,9 +75,9 @@ RAKUPP=build/rakupp sh showcase/jsonreq/compare.sh
 ```
 
 starts the [rakus](../rakus) showcase serving [`sample/`](sample) on the
-loopback, runs ten jsonreq commands under Rakudo and under Raku++ — queries,
-negative indexes, `null`, a POST refused with a 405, a 404 — and diffs STDOUT
-and exit codes byte-for-byte.
+loopback, runs twelve jsonreq commands under Rakudo and under Raku++ —
+queries, negative indexes, `null`, a POST refused with a 405, a 404, and two
+local-file reads — and diffs STDOUT and exit codes byte-for-byte.
 
 Like every showcase, it compiles: `build/rakupp --exe -o jsonreq
 showcase/jsonreq/jsonreq.raku` produces a single binary (interpreter-bundled,

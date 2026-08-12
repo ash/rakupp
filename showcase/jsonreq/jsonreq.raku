@@ -11,6 +11,8 @@
 #   jsonreq.raku URL --query=.users[0].name       # pull one value out
 #   jsonreq.raku POST URL --json='{"a": 1}'       # send JSON (implies POST)
 #   jsonreq.raku URL --header='X-Token: t' -v     # headers; -v shows the exchange
+#   jsonreq.raku data.json --query=.users[-1]     # a local file — no socket at all
+#   cat data.json | jsonreq.raku -                # or stdin
 #
 # The named options go anywhere on the command line — URL first reads naturally
 # — which %*SUB-MAIN-OPTS<named-anywhere> asks of the MAIN dispatcher.
@@ -59,48 +61,77 @@ sub MAIN(
         $target = $method-or-url;
     }
 
-    my %opt = timeout => $timeout;
-    %opt<insecure> = True if $insecure;
-    %opt<auth>     = $auth   if $auth.defined;
-    %opt<bearer>   = $bearer if $bearer.defined;
-
-    my %headers;
-    for @header -> $h {
-        my ($name, $value) = $h.split(':', 2);
-        die "bad --header '$h' (expected 'Name: value')" unless $value.defined;
-        %headers{$name.trim.lc} = $value.trim;
-    }
-    %opt<headers> = %headers if %headers;
-
-    # The body is parsed BEFORE it is sent: a request body this program puts on
-    # the wire is valid JSON, canonicalized by the same to-json that prints
-    # responses. A typo dies here, not as a server-side 400.
-    if $json.defined {
-        my $text = $json eq '-'            ?? $*IN.slurp
-                !! $json.starts-with('@')  ?? $json.substr(1).IO.slurp
-                !!                            $json;
-        my $data = try from-json($text);
-        die "request body is not valid JSON: " ~ ($! // 'parse failed') without $data;
-        %opt<body>         = to-json($data, :!pretty);
-        %opt<content-type> = 'application/json';
-    }
-
-    note "* $method $target  (JSON via Rakupp::JSON, {json-backend()} backend)"
-        if $verbose;
-
-    my $resp = http-request($method, $target, |%opt);
-
-    if $verbose {
-        for $resp.history -> $hop {
-            note "< HTTP {$hop.status} {$hop.reason} -> {$hop.header('location')}";
+    # A target with no http(s):// scheme is a LOCAL document — a path, a
+    # file:// URL, or `-` for stdin. Same query/pretty-print pipeline, no
+    # socket involved; it is presumed JSON (that is why you pointed jsonreq
+    # at it), so a parse error surfaces instead of the file echoing through.
+    # --raw still prints it untouched.
+    my $text;
+    my $ctype  = '';
+    my $failed = False;   # HTTP >= 400: exit 1 after the body has printed
+    if !($target.starts-with('http://') || $target.starts-with('https://')) {
+        my $path = $target.starts-with('file://') ?? $target.substr(7) !! $target;
+        die "a local file takes no method ('$method-or-url')" if $url.defined;
+        die "--json, --header, --auth, --bearer and --insecure need a URL, not a local file"
+            if $json.defined || @header || $auth.defined || $bearer.defined || $insecure;
+        if $path eq '-' {
+            $text = $*IN.slurp;
         }
-        note "< HTTP {$resp.status} {$resp.reason}";
-        for $resp.headers.keys.sort -> $k {
-            note "< $k: " ~ $resp.header($k);
+        else {
+            die "no such file '$path'" unless $path.IO.e;
+            $text = $path.IO.slurp;
         }
+        $ctype = 'application/json';
+        note "* local $path  (JSON via Rakupp::JSON, {json-backend()} backend)"
+            if $verbose;
+    }
+    else {
+        my %opt = timeout => $timeout;
+        %opt<insecure> = True if $insecure;
+        %opt<auth>     = $auth   if $auth.defined;
+        %opt<bearer>   = $bearer if $bearer.defined;
+
+        my %headers;
+        for @header -> $h {
+            my ($name, $value) = $h.split(':', 2);
+            die "bad --header '$h' (expected 'Name: value')" unless $value.defined;
+            %headers{$name.trim.lc} = $value.trim;
+        }
+        %opt<headers> = %headers if %headers;
+
+        # The body is parsed BEFORE it is sent: a request body this program
+        # puts on the wire is valid JSON, canonicalized by the same to-json
+        # that prints responses. A typo dies here, not as a server-side 400.
+        if $json.defined {
+            my $body = $json eq '-'            ?? $*IN.slurp
+                    !! $json.starts-with('@')  ?? $json.substr(1).IO.slurp
+                    !!                            $json;
+            my $data = try from-json($body);
+            die "request body is not valid JSON: " ~ ($! // 'parse failed') without $data;
+            %opt<body>         = to-json($data, :!pretty);
+            %opt<content-type> = 'application/json';
+        }
+
+        note "* $method $target  (JSON via Rakupp::JSON, {json-backend()} backend)"
+            if $verbose;
+
+        my $resp = http-request($method, $target, |%opt);
+
+        if $verbose {
+            for $resp.history -> $hop {
+                note "< HTTP {$hop.status} {$hop.reason} -> {$hop.header('location')}";
+            }
+            note "< HTTP {$resp.status} {$resp.reason}";
+            for $resp.headers.keys.sort -> $k {
+                note "< $k: " ~ $resp.header($k);
+            }
+        }
+
+        $text   = $resp.text;
+        $ctype  = $resp.content-type;
+        $failed = $resp.status >= 400;
     }
 
-    my $text = $resp.text;
     if $raw {
         print $text;
         print "\n" if $text.chars && !$text.ends-with("\n");
@@ -109,11 +140,11 @@ sub MAIN(
         # HEAD, 204, an empty 200 — nothing to print (use -v for the headers)
     }
     else {
-        my $is-json = $resp.content-type.contains('json')
+        my $is-json = $ctype.contains('json')
                    || $text.trim.starts-with('{')
                    || $text.trim.starts-with('[');
         if !$is-json {
-            die "response is {$resp.content-type || 'untyped'}, not JSON (--raw prints it anyway)"
+            die "response is {$ctype || 'untyped'}, not JSON (--raw prints it anyway)"
                 if $query.defined;
             print $text;
             print "\n" unless $text.ends-with("\n");
@@ -133,7 +164,7 @@ sub MAIN(
     }
 
     # like curl --fail, but the (JSON) error body still prints above
-    exit 1 if $resp.status >= 400;
+    exit 1 if $failed;
 }
 
 # ---------- jq-lite ------------------------------------------------------

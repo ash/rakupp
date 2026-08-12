@@ -310,9 +310,12 @@ build/rakupp showcase/jsonreq/jsonreq.raku POST https://example.test/api --json=
 RAKUPP=build/rakupp sh showcase/jsonreq/compare.sh    # the byte-identical check
 ```
 
-`compare.sh` starts the [rakus](rakus) showcase serving a sample dataset on the
-loopback and runs ten commands — queries with negative indexes, `null`, a 405,
-a 404 — under both engines: STDOUT and exit codes match byte-for-byte. See
+A target without an `http(s)://` scheme — a path, `file://`, or `-` for stdin
+— is a local document through the same query/pretty-print pipeline, so it
+covers the `jq` errand too. `compare.sh` starts the [rakus](rakus) showcase
+serving a sample dataset on the loopback and runs twelve commands — queries
+with negative indexes, `null`, a 405, a 404, local files — under both engines:
+STDOUT and exit codes match byte-for-byte. See
 [`jsonreq/README.md`](jsonreq/README.md) for the option table.
 
 ## In the browser — [`web/`](web)
