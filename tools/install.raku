@@ -22,11 +22,24 @@
 # gate is ours either way: a fetched archive must hash to the SHA-1 its index
 # path names, or it is refused.
 #
+# Resolution is zef-index-first with the community's REA archive
+# (github.com/Raku/REA — a copy of every distribution ever released) as the
+# fallback for names and exact pins the live index no longer carries: 48 of
+# the battery's top-200 dists are REA-only, and zef itself resolves them
+# through the same archive. The REA index is fetched lazily — only on the
+# first zef-index miss — and cached like the zef index.
+# RAKUPP_INSTALL_REA_INDEX overrides its source (file path or URL); when
+# RAKUPP_INSTALL_INDEX is overridden and no REA source is given, the
+# fallback stays OFF, so an offline suite or a mirror sees no surprise
+# network fetch. REA archive URLs carry no content hash, so for REA fetches
+# TLS is the only integrity — the install says so, per dist, out loud.
+#
 # Test gate: a distribution's own t/ suite runs under rakupp before it is
 # marked installed (--no-test to skip). Dependencies install first, so a
 # dist's tests see its deps.
 
 my constant $INDEX-URL = 'https://360.zef.pm/index.json';
+my constant $REA-INDEX-URL = 'https://raw.githubusercontent.com/raku/REA/main/META.json';
 my constant $CACHE-TTL = 24 * 3600;
 
 # The engine's built-in JSON codec (the same Rakudo::Internals::JSON Rakudo
@@ -208,6 +221,40 @@ sub load-index(Bool $refresh) {
     $idx
 }
 
+# The REA archive index, loaded lazily on the first zef-index miss. ~18 MB,
+# one entry per released dist-version; the engine's JSON codec parses it in
+# well under a second, so the whole index is held rather than line-scanned.
+my @REA;
+my $REA-STATE = 'unloaded';
+my $REA-REFRESH = False;
+
+sub rea-index() {
+    return @REA if $REA-STATE eq 'ready';
+    $REA-STATE = 'ready';
+    my $override = %*ENV<RAKUPP_INSTALL_REA_INDEX> // '';
+    if $override eq '' && (%*ENV<RAKUPP_INSTALL_INDEX> // '') ne '' {
+        # a mirror or the offline suite overrode the zef index without
+        # giving an REA source — no surprise fallback, no surprise network
+        return @REA;
+    }
+    if $override ne '' && !$override.starts-with('http') {
+        @REA = json-decode($override.IO.slurp).list;
+        return @REA;
+    }
+    my $url = $override ne '' ?? $override !! $REA-INDEX-URL;
+    my $cache = cache-dir.add('rea-meta.json');
+    if !$REA-REFRESH && $cache.e && (now.to-posix[0] - $cache.modified.to-posix[0]) < $CACHE-TTL {
+        @REA = json-decode($cache.slurp).list;
+        return @REA;
+    }
+    note "fetching the REA archive index: $url";
+    my $text = fetch-text($url);
+    my $idx = json-decode($text);    # parse BEFORE caching — same rule as the zef index
+    $cache.spurt($text);
+    @REA = $idx.list;
+    @REA
+}
+
 # Every index entry providing `name` (as dist name or module), constraints
 # applied, newest version first.
 sub candidates(@index, %want) {
@@ -233,19 +280,30 @@ sub resolve(@index, @wants, %notes) {
         my %want = @work.shift;
         next if %want<from> eq 'native' | 'bin';
         my @c = candidates(@index, %want);
-        # A pinned :ver/:auth that matches NOTHING falls back to name-only,
-        # loudly. Real case: JSONL depends on JSON::Fast:ver<0.19>:auth<cpan:
-        # TIMOTIMO> — an identity that predates the author's cpan→zef
-        # migration and exists in no current index. zef satisfies it from the
-        # REA archive; we satisfy the NAME from the live index and say so.
+        # The archive keeps EXACT identities the live index has dropped —
+        # consult it before loosening any pin (the zef-then-REA order zef
+        # itself uses). Real case: JSON::Fast:ver<0.19>:auth<cpan:TIMOTIMO>
+        # predates the author's cpan→zef migration and exists only in REA.
+        if !@c {
+            @c = candidates(rea-index(), %want);
+            note "note: {%want<name>} — not in the zef index, resolved from the REA archive"
+                if @c;
+        }
+        # A pinned :ver/:auth that matches nothing ANYWHERE falls back to
+        # name-only, loudly — first the live index, then the archive.
         if !@c && (%want<ver> ne '' || %want<auth> ne '') {
             my %bare = name => %want<name>, ver => '', auth => '', from => %want<from>;
+            my $pin = %want<name>
+                ~ (%want<ver>  ne '' ?? ":ver<{%want<ver>}>"   !! '')
+                ~ (%want<auth> ne '' ?? ":auth<{%want<auth>}>" !! '');
             @c = candidates(@index, %bare);
             if @c {
-                my $pin = %want<name>
-                    ~ (%want<ver>  ne '' ?? ":ver<{%want<ver>}>"   !! '')
-                    ~ (%want<auth> ne '' ?? ":auth<{%want<auth>}>" !! '');
                 note "note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)";
+            }
+            else {
+                @c = candidates(rea-index(), %bare);
+                note "note: $pin matches nothing — using {@c[0]<dist> // @c[0]<name>} from the REA archive"
+                    if @c;
             }
         }
         if !@c {
@@ -283,6 +341,12 @@ sub base-url {
     'https://360.zef.pm'
 }
 
+# fez entries carry a store-relative `path`; REA entries carry an absolute
+# `source-url`. Either way, this is where the archive lives.
+sub archive-url(%e) {
+    %e<source-url> // (base-url() ~ '/' ~ (%e<path> // ''))
+}
+
 # The engine's CompUnit install takes any object with .meta and .IO.
 class InstallableDist {
     has %.meta;
@@ -314,7 +378,7 @@ sub run-dist-tests(%e, $root) {
 }
 
 sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force) {
-    my $url = base-url() ~ '/' ~ %e<path>;
+    my $url = archive-url(%e);
     my $tmp = $*TMPDIR.add("rakupp-install-{$*PID}-{%e<name>.subst(/<-alnum>/, '-', :g)}");
     $tmp.mkdir;
     LEAVE { run 'rm', '-rf', $tmp.Str }
@@ -323,10 +387,11 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force) {
     note "fetching $url";
     fetch-file($url, $tarball);
 
-    # The archive must hash to the SHA-1 its index path names (fez archives
-    # are content-addressed). Refuse anything else — this is the checksum
-    # gate the plan's M2 requires, and it holds for mirrors too.
-    if %e<path> ~~ / ( <[0..9 a..f]> ** 40 ) '.tar.gz' $ / {
+    # The archive must hash to the SHA-1 its URL names (fez archives are
+    # content-addressed). Refuse anything else — this is the checksum gate
+    # the plan's M2 requires, and it holds for mirrors too. REA archive
+    # URLs carry no hash and fall to the TLS-only note below.
+    if $url ~~ / ( <[0..9 a..f]> ** 40 ) '.tar.gz' $ / {
         my $want = ~$0;
         my $got = sha1-file($tarball);
         die "checksum mismatch for %e<name>: archive is $got, index says $want"
@@ -592,6 +657,13 @@ sub MAIN(
     Bool :$refresh,            #= refetch the ecosystem index (else cached 24h)
     Str  :$to = %*ENV<HOME> ~ '/.raku',  #= the CURI store prefix to write
 ) {
+    # `rakupp uninstall --list` is a mode mix, not a synonym for install
+    # --list — refuse it rather than silently answering as a different command
+    if ($uninstall || $reinstall) && ($list || $check) {
+        note "rakupp {$uninstall ?? 'uninstall' !! 'reinstall'} --{$list ?? 'list' !! 'check'}: "
+           ~ "--list/--check belong to `rakupp install` — pick one";
+        exit 2;
+    }
     if $list {
         list-installed($to);
         return;
@@ -616,9 +688,16 @@ sub MAIN(
         exit $rc if $rc != 0;
     }
     if $refresh && !@modules {
-        # bare --refresh is a complete command: refetch the index, report, stop
+        # bare --refresh is a complete command: refetch the index, report,
+        # stop. The REA cache refreshes only if it exists — nobody pays for
+        # the 18 MB archive index before their first REA-resolved install.
         my @index = load-index(True).list;
         say "index refreshed: {@index.elems} distributions";
+        if cache-dir.add('rea-meta.json').e {
+            $REA-REFRESH = True;
+            my @rea = rea-index();
+            say "REA archive index refreshed: {@rea.elems} archived releases";
+        }
         return;
     }
     unless @modules {
@@ -633,13 +712,14 @@ sub MAIN(
               --check          store integrity report (exit 1 on damage); fixes nothing
               --no-test        skip the per-distribution test suites
               --force          reinstall / uninstall despite refusals
-              --refresh        refetch the ecosystem index (else cached 24h);
+              --refresh        refetch the ecosystem index(es) (else cached 24h);
                                alone: refresh and stop
               --to=PATH        the store prefix to use (default: ~/.raku)
             END
         exit 2;
     }
 
+    $REA-REFRESH = $refresh // False;
     my @index = load-index($refresh // False).list;
     my %notes;
     my @plan = resolve(@index, @modules, %notes);
@@ -651,7 +731,7 @@ sub MAIN(
 
     say "plan ({@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'}, dependencies first):";
     for @plan -> %e {
-        say "  {%e<dist> // %e<name>}   {base-url()}/{%e<path>}";
+        say "  {%e<dist> // %e<name>}   {archive-url(%e)}";
     }
     for %notes.sort -> $n {
         say "  skipped: {$n.key} — {$n.value}";

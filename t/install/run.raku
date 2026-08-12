@@ -147,6 +147,28 @@ my $use = run 'env', "HOME={$home}", 'RAKULIB=', $EXE, '-e',
 check $use.out.slurp(:close) eq '0.4.2', 'M3: the installed module loads and runs';
 $use.err.slurp(:close);
 
+# ---- repository SPECS: inst# reaches the store, file# is a plain dir --------
+# HOME points elsewhere, so the spec alone must find the module
+my $elsewhere = $tmp.add('elsewhere');
+$elsewhere.mkdir;
+my $spec-use = run 'env', "HOME={$elsewhere}", 'RAKULIB=', $EXE, '-e',
+    'use lib "inst#' ~ $home.add('.raku') ~ '"; use Gate::Demo; print which-version()',
+    :out, :err;
+check $spec-use.out.slurp(:close) eq '0.4.2',
+      'use lib "inst#<store>" resolves an installed module';
+$spec-use.err.slurp(:close);
+my $spec-I = run 'env', "HOME={$elsewhere}", 'RAKULIB=', $EXE,
+    '-I', 'inst#' ~ $home.add('.raku'), '-e', 'use Gate::Demo; print which-version()',
+    :out, :err;
+check $spec-I.out.slurp(:close) eq '0.4.2', '-I inst#<store> resolves it too';
+$spec-I.err.slurp(:close);
+my $file-use = run 'env', "HOME={$elsewhere}", 'RAKULIB=', $EXE, '-e',
+    'use lib "file#' ~ $tmp.add('build-Gate-Demo-0.4.2') ~ '"; use Gate::Demo; print which-version()',
+    :out, :err;
+check $file-use.out.slurp(:close) eq '0.4.2',
+      'use lib "file#<dir>" is the explicit plain-directory spelling';
+$file-use.err.slurp(:close);
+
 # ---- M5: additive; a re-install says so ------------------------------------
 my %again = installer('Gate::Demo');
 check %again<exit> == 0 && %again<out>.contains('already installed'),
@@ -181,6 +203,11 @@ check %rechk<exit> == 0 && %rechk<out>.contains('0 broken'), '--check is clean a
 my %refresh = installer('--refresh');
 check %refresh<exit> == 0 && %refresh<out>.contains('index refreshed'),
       'bare --refresh refetches the index and stops';
+
+# ---- uninstall --list is a mode mix, not a synonym --------------------------
+my %mode-mix = installer('--uninstall', '--list');
+check %mode-mix<exit> == 2 && %mode-mix<err>.contains('pick one'),
+      'uninstall --list is refused instead of quietly listing';
 
 # ---- a dead :auth/:ver pin falls back to the name, loudly ------------------
 my %pinned = installer('Gate::Pinned');
@@ -255,6 +282,58 @@ $home2.mkdir;
 my %bad-arc = installer('--no-test', 'Gate::Demo');
 check %bad-arc<exit> != 0 && %bad-arc<err>.contains('checksum mismatch'),
       'M2: a corrupted archive is refused by checksum';
+
+# ---- the REA fallback: names the zef index lost -----------------------------
+# Two dists that exist ONLY in a local REA-format index (entries carry an
+# absolute source-url, no path) — the 48-of-top-200 shape from the battery's
+# install sweep. Fallback rules pinned here: OFF when the zef index is
+# overridden without an REA source; exact-pin resolution from the archive
+# BEFORE any loosening; the resolved module really installs and loads.
+my ($arcR, $shaR) = make-dist('Gate::Archived', 'Gate::Archived', '1.2');
+my ($arcP, $shaP) = make-dist('Gate::OldPin', 'Gate::OldPin', '0.9');
+$tmp.add('rea-meta.json').spurt(qq:to/END/);
+    [ \{ "name": "Gate::Archived", "version": "1.2", "auth": "test:rea",
+         "dist": "Gate::Archived:ver<1.2>:auth<test:rea>",
+         "provides": \{ "Gate::Archived": "lib/Gate/Archived.rakumod" \},
+         "depends": [], "source-url": "$arcR" \},
+      \{ "name": "Gate::OldPin", "version": "0.9", "auth": "cpan:OLD",
+         "dist": "Gate::OldPin:ver<0.9>:auth<cpan:OLD>",
+         "provides": \{ "Gate::OldPin": "lib/Gate/OldPin.rakumod" \},
+         "depends": [], "source-url": "$arcP" \} ]
+    END
+
+# zef index overridden, no REA source given: the fallback stays off
+my %rea-off = installer('Gate::Archived');
+check %rea-off<exit> != 0 && %rea-off<err>.contains('not in the ecosystem index'),
+      'REA: with the zef index overridden and no REA source, the fallback stays off';
+
+my $home3 = $tmp.add('home3');
+$home3.mkdir;
+my %envR = %env.clone;
+%envR<HOME> = $home3.Str;
+%envR<RAKUPP_INSTALL_REA_INDEX> = $tmp.add('rea-meta.json').Str;
+sub installer-rea(*@args) {
+    my $p = run 'env', |%envR.map({ "{.key}={.value}" }), $EXE, 'install', |@args, :out, :err;
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    { exit => (try $p.exitcode) // 1, out => $out, err => $err }
+}
+
+# a name the zef index does not carry resolves from the archive and installs
+my %rea-inst = installer-rea('Gate::Archived');
+check %rea-inst<exit> == 0 && %rea-inst<err>.contains('resolved from the REA archive'),
+      'REA: a zef-index miss resolves from the archive, loudly';
+my $rea-use = run 'env', "HOME={$home3}", 'RAKULIB=', $EXE, '-e',
+                  'use Gate::Archived; print which-version()', :out, :err;
+check $rea-use.out.slurp(:close) eq '1.2', 'REA: the archived module loads from the store';
+$rea-use.err.slurp(:close);
+
+# an exact pin the zef index lost is honoured from the archive — no loosening
+my %rea-pin = installer-rea('Gate::OldPin:ver<0.9>:auth<cpan:OLD>');
+check %rea-pin<exit> == 0
+      && %rea-pin<err>.contains('resolved from the REA archive')
+      && !%rea-pin<err>.contains('matches nothing'),
+      'REA: a dead exact pin is satisfied exactly from the archive';
 
 say "install gate: $ok ok, $bad failed";
 exit 1 if $bad;
