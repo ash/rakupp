@@ -233,6 +233,21 @@ sub resolve(@index, @wants, %notes) {
         my %want = @work.shift;
         next if %want<from> eq 'native' | 'bin';
         my @c = candidates(@index, %want);
+        # A pinned :ver/:auth that matches NOTHING falls back to name-only,
+        # loudly. Real case: JSONL depends on JSON::Fast:ver<0.19>:auth<cpan:
+        # TIMOTIMO> — an identity that predates the author's cpan→zef
+        # migration and exists in no current index. zef satisfies it from the
+        # REA archive; we satisfy the NAME from the live index and say so.
+        if !@c && (%want<ver> ne '' || %want<auth> ne '') {
+            my %bare = name => %want<name>, ver => '', auth => '', from => %want<from>;
+            @c = candidates(@index, %bare);
+            if @c {
+                my $pin = %want<name>
+                    ~ (%want<ver>  ne '' ?? ":ver<{%want<ver>}>"   !! '')
+                    ~ (%want<auth> ne '' ?? ":auth<{%want<auth>}>" !! '');
+                note "note: $pin is not in the index — using {@c[0]<dist> // @c[0]<name>} (the pin may predate an ecosystem migration)";
+            }
+        }
         if !@c {
             %notes{%want<name>} = 'not in the ecosystem index'
                 unless %planned{%want<name>};   # a planned dist also PROVIDES names

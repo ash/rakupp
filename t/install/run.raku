@@ -85,6 +85,11 @@ my ($arc3, $sha3)  = make-dist('Gate::ShareA', 'Gate::ShareA', '0.1.0', :shared)
 my ($arc4, $sha4)  = make-dist('Gate::ShareB', 'Gate::ShareB', '0.1.0', :shared);
 my ($arc5, $sha5)  = make-dist('Gate::Consumer', 'Gate::Consumer', '0.1.0',
                                :depends(['Gate::Demo']));
+# a dependency pinned to an identity NO index entry carries (the JSONL shape:
+# JSON::Fast:ver<0.19>:auth<cpan:TIMOTIMO> predates the author's cpan→zef
+# migration) — resolution must fall back to the name, loudly
+my ($arc6, $sha6)  = make-dist('Gate::Pinned', 'Gate::Pinned', '0.1.0',
+                               :depends(['Gate::Demo:ver<0.4.2>:auth<cpan:GONE>']));
 
 $tmp.add('index.json').spurt(qq:to/END/);
     [ \{ "name": "Gate::Demo", "version": "0.4.2", "auth": "test:gate",
@@ -108,7 +113,11 @@ $tmp.add('index.json').spurt(qq:to/END/);
       \{ "name": "Gate::Consumer", "version": "0.1.0", "auth": "test:gate",
          "dist": "Gate::Consumer:ver<0.1.0>:auth<test:gate>",
          "provides": \{ "Gate::Consumer": "lib/Gate/Consumer.rakumod" \},
-         "depends": ["Gate::Demo"], "path": "$sha5.tar.gz" \} ]
+         "depends": ["Gate::Demo"], "path": "$sha5.tar.gz" \},
+      \{ "name": "Gate::Pinned", "version": "0.1.0", "auth": "test:gate",
+         "dist": "Gate::Pinned:ver<0.1.0>:auth<test:gate>",
+         "provides": \{ "Gate::Pinned": "lib/Gate/Pinned.rakumod" \},
+         "depends": ["Gate::Demo:ver<0.4.2>:auth<cpan:GONE>"], "path": "$sha6.tar.gz" \} ]
     END
 
 my $home = $tmp.add('home');
@@ -151,6 +160,15 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
       'M4: a failing test suite refuses the install';
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
+
+# ---- a dead :auth/:ver pin falls back to the name, loudly ------------------
+my %pinned = installer('Gate::Pinned');
+check %pinned<exit> == 0 && %pinned<err>.contains('cpan:GONE') && %pinned<err>.contains('is not in the index'),
+      'a dependency pinned to a dead identity resolves by name, with the note';
+# …and leaves: Gate::Pinned depends on Gate::Demo, so keeping it installed
+# would (rightly) block the M6 chain test's second Gate::Demo uninstall
+my %pinned-gone = installer('--uninstall', 'Gate::Pinned');
+check %pinned-gone<exit> == 0, '…and uninstalls cleanly so M6 starts fresh';
 
 # ---- M6: the checker, then uninstall as gated destruction ------------------
 # (the plan's 4b gate: --check clean BEFORE and AFTER every uninstall)
