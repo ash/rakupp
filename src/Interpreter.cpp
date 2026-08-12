@@ -2883,6 +2883,33 @@ const std::vector<std::string>& rakuRepoPrefixes() {
     return repos;
 }
 
+// A search-path entry may be a repository SPEC rather than a plain directory —
+// Rakudo's `use lib "inst#/prefix"` / `"file#/dir"` spellings, equally valid
+// in RAKULIB and -I. inst# names a CURI installation store (what `rakupp
+// install --to` writes): it belongs in the short/-index lookup, not the
+// directory probe. file# is just the explicit spelling of the directory
+// default. Before this, an inst# entry was probed as a literal directory
+// named "inst#…" and silently found nothing.
+static bool repoSpecStore(const std::string& entry, std::string& prefixOut) {
+    if (entry.compare(0, 5, "inst#") == 0) { prefixOut = entry.substr(5); return true; }
+    return false;
+}
+static std::string repoSpecDir(const std::string& entry) {
+    if (entry.compare(0, 5, "file#") == 0) return entry.substr(5);
+    return entry;
+}
+// The store prefixes one lookup consults: inst# entries from the search path
+// first (an explicit `use lib` / -I outranks the machine's defaults), then
+// the default repos (~/.raku, the Rakudo Cellar stores).
+static std::vector<std::string> repoPrefixesFor(const std::vector<std::string>& searchPath) {
+    std::vector<std::string> repos;
+    std::string pre;
+    for (auto& e : searchPath)
+        if (repoSpecStore(e, pre)) repos.push_back(pre);
+    for (auto& r : rakuRepoPrefixes()) repos.push_back(r);
+    return repos;
+}
+
 // Build the %?RESOURCES hash for an installed distribution: read its dist meta
 // (JSON) and map each `resources/<name>` file entry to an IO::Path pointing at
 // the on-disk `<repo>/resources/<content-id>` copy. The dist `files` map is a
@@ -3547,7 +3574,10 @@ static bool findModuleSourceFor(const std::string& name,
     std::string rel = name;
     for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
     static const char* exts[] = {".rakumod", ".pm6", ".raku", ".pm"};
-    for (auto& base : searchPath)
+    for (auto& entry : searchPath) {
+        std::string storePre;
+        if (repoSpecStore(entry, storePre)) continue; // an inst# store is not a directory
+        const std::string base = repoSpecDir(entry);
         for (const std::string& dir : {base, base + "/lib"})
             for (auto ext : exts) {
                 std::string cand = dir + "/" + rel + ext;
@@ -3558,8 +3588,9 @@ static bool findModuleSourceFor(const std::string& name,
                 pathOut = cand; srcOut = ss.str();
                 return true;
             }
+    }
     std::string nameSha = sha1hex(name);
-    for (auto& repo : rakuRepoPrefixes()) {
+    for (auto& repo : repoPrefixesFor(searchPath)) {
         std::string shortDir = repo + "/short/" + nameSha;
         DIR* dd = opendir(shortDir.c_str());
         if (!dd) continue;
@@ -4084,7 +4115,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     if (traceLoad) {
         std::cerr << "[LibPaths]"; for (auto& b : libPaths_) std::cerr << " [" << b << "]"; std::cerr << "\n";
     }
-    for (auto& base : libPaths_) {
+    for (auto& pathEntry : libPaths_) {
+        std::string storePre;
+        if (repoSpecStore(pathEntry, storePre)) continue; // an inst# store joins phase 2 below
+        const std::string base = repoSpecDir(pathEntry);
         for (const std::string& dir : {base, base + "/lib"}) {
             for (auto ext : exts) {
                 std::ifstream in(dir + "/" + rel + ext);
@@ -4127,8 +4161,9 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
         }
     }
     // 2. installed Rakudo/zef modules: resolve name via the CURI short/ index
+    // (inst# entries from `use lib`/-I/RAKULIB first, then the default repos)
     std::string nameSha = sha1hex(name);
-    for (auto& repo : rakuRepoPrefixes()) {
+    for (auto& repo : repoPrefixesFor(libPaths_)) {
         std::string shortDir = repo + "/short/" + nameSha;
         DIR* dd = opendir(shortDir.c_str());
         if (!dd) continue;
