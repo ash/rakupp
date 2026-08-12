@@ -219,6 +219,20 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp tools/embed-smoke.raku build
 
+      # The grammar-service gate (GRAMMAR-PLAN G0-G2): the Raku shim's own
+      # contract under plain rakupp, then every host binding the runner can
+      # drive — Python (ctypes), C++ (grammar.hpp), JS (bun:ffi),
+      # Go (cgo), Rust (crate) — each against the same grammar and corpus as
+      # the Raku reference driver, byte-compared. Legs self-skip when their
+      # toolchain is absent; bun is installed here because the runners lack
+      # it while go/cargo/python3/c++ are preinstalled.
+      - name: Install bun (for the JS binding leg)
+        if: runner.os != 'Windows'
+        uses: oven-sh/setup-bun@v2
+      - name: Grammar service gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp tools/grammar-smoke.raku build
+
       # The SLIM negative suite (SLIM-PLAN P3+P4): --slim's grammar,
       # X::Feature::NotBuilt from every cut feature, the --exe-info manifest
       # round-trip, the size budgets, and the P4 scan's decisions (cut the
@@ -231,6 +245,22 @@ jobs:
       - name: SLIM negative suite (POSIX)
         if: runner.os != 'Windows'
         run: build/rakupp t/slim/run.raku
+
+      # The standalone-binary gate (MODULES-PLAN B1/B2/B4/B5): binaries that
+      # claim to carry their modules RUN with the store hidden; unembeddable
+      # modules are loud (and fatal under --standalone); native libraries are
+      # named. Compiles binaries, so POSIX-only like the slim suite.
+      - name: Standalone binary gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/standalone/run.raku
+
+      # The installer gate (MODULES-PLAN M1-M5): `rakupp install` against a
+      # LOCAL fixture index and archive — resolution, checksum refusal, a
+      # real store write the engine then loads from, the per-dist test gate.
+      # No network: the fixture stands in for the ecosystem.
+      - name: Installer gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/install/run.raku
 
       # Package the --exe-capable install layout: bin/rakupp, the archive set in
       # lib/ (librakupp_rt.a plus ucd_names/ucd_coll/ucd_props/parse, and the
@@ -278,6 +308,14 @@ jobs:
           echo "got: [$out]"
           test "$out" = "42"
 
+      # The Python platform wheel: bindings/python with librakupp bundled
+      # inside, so `pip install <wheel>` works on a machine with no rakupp at
+      # all (macOS wheel carries the universal library). Publishing to PyPI
+      # is a manual decision; the wheel ships as a release asset either way.
+      - name: Python wheel (bundled librakupp)
+        if: runner.os != 'Windows'
+        run: sh tools/build-wheel.sh build dist-wheel && cp dist-wheel/rakulang-*.whl .
+
       - name: Package (POSIX)
         if: runner.os != 'Windows'
         run: |
@@ -301,14 +339,18 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rakupp-${{ matrix.name }}
-          path: rakupp-${{ matrix.name }}.*
+          path: |
+            rakupp-${{ matrix.name }}.*
+            rakulang-*.whl
           if-no-files-found: error
 
       - name: Attach to Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
-          files: rakupp-${{ matrix.name }}.*
+          files: |
+            rakupp-${{ matrix.name }}.*
+            rakulang-*.whl
 
   # Raku.js: the interpreter compiled to WebAssembly (rakujs/build.sh). Ships two
   # release assets so users don't need Emscripten:
