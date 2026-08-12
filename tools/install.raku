@@ -580,7 +580,19 @@ sub MAIN(
         exit do-uninstall(@modules, $to, :force($force // False));
     }
     unless @modules {
-        note "usage: rakupp install [--dry-run] [--check] [--no-test] [--force] [--refresh] Module ...";
+        note q:to/END/.trim;
+            usage: rakupp install [options] Module ...
+                   rakupp install --list | --check
+                   rakupp uninstall [--force] Module ...
+            options:
+              --dry-run        resolve and print the plan; write nothing
+              --list           what is installed in the target store
+              --check          store integrity report (exit 1 on damage); fixes nothing
+              --no-test        skip the per-distribution test suites
+              --force          reinstall / uninstall despite refusals
+              --refresh        refetch the ecosystem index (else cached 24h)
+              --to=PATH        the store prefix to use (default: ~/.raku)
+            END
         exit 2;
     }
 
