@@ -2321,16 +2321,17 @@ const char* quantValueType(const std::string& kind) {
 
 static Value makeAsyncSocket(int fd); // defined with the supply-wiring block below
 
-// ---- JSON parser (native JSON::Fast + Rakudo::Internals::JSON) ---------------
-// ONE recursive-descent parser serves both the internal readers (jsonParseDoc:
-// META6, resource maps, OpenSSL's libraries.json) and the native JSON::Fast
-// from-json builtin: object→Hash/Map, array→Array/List, string→Str, number
-// typed exactly like Str.Numeric (Int with arbitrary precision, Rat for
-// decimals, Num for exponents), true/false→Bool, null→Any. Full JSON::Fast
-// fidelity — surrogate pairs, strict escapes, :immutable containers, JSONC
-// comments — lives HERE rather than in a second parser because the interpreted
-// one is the single thing rakupp could not serve: the 332 KB SPDX license file
-// costs 52 s interpreted and milliseconds native.
+// ---- JSON parser (internal readers + Rakudo::Internals::JSON) -----------------
+// ONE recursive-descent parser, ours and original, serves the internal readers
+// (jsonParseDoc: META6, resource maps, OpenSSL's libraries.json) and the
+// Rakudo::Internals::JSON compatibility class (only the NAME is Rakudo's — the
+// dependency-free codec toolchain code reaches for, e.g. rakupp's own
+// install.raku): object→Hash/Map, array→Array/List, string→Str, number typed
+// exactly like Str.Numeric (Int with arbitrary precision, Rat for decimals,
+// Num for exponents), true/false→Bool, null→Any. The full JSON::Fast fidelity
+// — surrogate pairs, strict escapes, :immutable containers, JSONC comments —
+// dates from the one-day native `use JSON::Fast` era (added 8d43ed0, unvendored
+// 2001a12) and stays: Rakupp::JSON's engine backend leans on that typing.
 struct JsonCfg {
     bool immutable = false; // containers become Map/List instead of Hash/Array
     bool jsonc     = false; // JSON::Fast :allow-jsonc — // and /* */ comments
@@ -3934,7 +3935,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "from-json") {
             std::string j = args.empty() ? "" : args[0].toStr();
             size_t i = 0; Value out;
-            if (!jsonParseValue(j, i, out, JsonCfg{}))
+            JsonCfg cfg;
+            if (!jsonParseValue(j, i, out, cfg))
+                throw RakuError{Value::typeObj("X::AdHoc"), "Invalid JSON"};
+            // trailing content after the top-level value is a parse error in
+            // JSON::Fast, and this class advertises its semantics (the
+            // internal jsonParseDoc reader stays lenient on purpose — META
+            // files are trusted input, user JSON is not)
+            jsonSkipWs(j, i, cfg);
+            if (i != j.size())
                 throw RakuError{Value::typeObj("X::AdHoc"), "Invalid JSON"};
             return out;
         }
