@@ -161,6 +161,22 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
 
+# ---- reinstall: uninstall + install as one command -------------------------
+my %re1 = installer('--reinstall', 'Gate::Demo');
+check %re1<exit> == 0 && %re1<out>.contains('uninstalled') && %re1<out>.contains('installed Gate::Demo'),
+      'reinstall of an installed dist removes and installs';
+my $re-use = run 'env', "HOME={$home}", 'RAKULIB=', $EXE, '-e',
+                 'use Gate::Demo; print which-version()', :out, :err;
+check $re-use.out.slurp(:close) eq '0.4.2', '…and the module still loads after';
+$re-use.err.slurp(:close);
+my %re2 = installer('--reinstall', 'Gate::Pinned');
+check %re2<exit> == 0 && %re2<err>.contains('not installed: Gate::Pinned — installing fresh'),
+      'reinstall of a missing dist installs fresh, with the note';
+my %re2gone = installer('--uninstall', 'Gate::Pinned');
+check %re2gone<exit> == 0, '…and cleans up so the M6 choreography starts fresh';
+my %rechk = installer('--check');
+check %rechk<exit> == 0 && %rechk<out>.contains('0 broken'), '--check is clean after the reinstalls';
+
 # ---- bare --refresh is a complete command ----------------------------------
 my %refresh = installer('--refresh');
 check %refresh<exit> == 0 && %refresh<out>.contains('index refreshed'),
@@ -198,6 +214,10 @@ installer('Gate::Consumer');
 my %rd = installer('--uninstall', 'Gate::Demo');
 check %rd<exit> != 0 && %rd<err>.contains('depended on by'),
       'M6: a dist with installed dependents refuses to go';
+# …but REINSTALL of the same dist is not blocked: it comes right back
+my %rd-re = installer('--reinstall', 'Gate::Demo');
+check %rd-re<exit> == 0 && %rd-re<err>.contains('reinstalling in place'),
+      'M6: reinstall of a depended-on dist proceeds, with the note';
 installer('--uninstall', 'Gate::Consumer');
 my %un2 = installer('--uninstall', 'Gate::Demo');
 check %un2<exit> == 0, 'M6: …and goes once the dependent is gone';

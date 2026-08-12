@@ -450,9 +450,18 @@ sub store-check(Str $prefix) {
 }
 
 # ---- uninstall (M6): mark-and-sweep over a shared, content-addressed store --
-sub do-uninstall(@names, Str $prefix, Bool :$force) {
+# :for-reinstall relaxes exactly two refusals, because the dist is coming
+# right back: "not installed" becomes a fresh install (note, skip the removal)
+# and installed DEPENDENTS do not block (a removal would strand them; a
+# reinstall restores what they depend on). Provenance still refuses — a
+# reinstall rewrites zef's dist no more politely than an uninstall removes it.
+sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
     my $p = $prefix.IO;
     unless $p.add('dist').d {
+        if $for-reinstall {
+            note "nothing installed in $prefix — installing fresh";
+            return 0;
+        }
         note "nothing installed in $prefix";
         return 1;
     }
@@ -471,6 +480,10 @@ sub do-uninstall(@names, Str $prefix, Bool :$force) {
             && (%want<auth> eq '' || (%m<auth> // '') eq %want<auth>)
         });
         if !@hits {
+            if $for-reinstall {
+                note "not installed: $want-str — installing fresh";
+                next;
+            }
             note "not installed: $want-str";
             return 1;
         }
@@ -501,8 +514,13 @@ sub do-uninstall(@names, Str $prefix, Bool :$force) {
             }
         }
         if @dependents && !$force {
-            note "$identity is still depended on by {@dependents.unique.join(', ')} — refusing (--force to override)";
-            return 1;
+            if $for-reinstall {
+                note "$identity is depended on by {@dependents.unique.join(', ')} — reinstalling in place";
+            }
+            else {
+                note "$identity is still depended on by {@dependents.unique.join(', ')} — refusing (--force to override)";
+                return 1;
+            }
         }
 
         with-repo-lock($prefix, {
@@ -560,6 +578,7 @@ sub MAIN(
     Bool :$list,               #= list what is installed in the target store
     Bool :$check,              #= check the store's integrity; fix nothing
     Bool :$uninstall,          #= remove distributions (rakupp uninstall Foo)
+    Bool :$reinstall,          #= uninstall then install fresh (rakupp reinstall Foo)
     Bool :$no-test,            #= skip the per-distribution test suites
     Bool :$force,              #= reinstall / uninstall despite refusals
     Bool :$refresh,            #= refetch the ecosystem index (else cached 24h)
@@ -579,6 +598,15 @@ sub MAIN(
         }
         exit do-uninstall(@modules, $to, :force($force // False));
     }
+    if $reinstall {
+        unless @modules {
+            note "usage: rakupp reinstall [--no-test] [--force] Module ...";
+            exit 2;
+        }
+        # the uninstall half; the normal install flow below is the other half
+        my $rc = do-uninstall(@modules, $to, :force($force // False), :for-reinstall);
+        exit $rc if $rc != 0;
+    }
     if $refresh && !@modules {
         # bare --refresh is a complete command: refetch the index, report, stop
         my @index = load-index(True).list;
@@ -590,6 +618,7 @@ sub MAIN(
             usage: rakupp install [options] Module ...
                    rakupp install --list | --check | --refresh
                    rakupp uninstall [--force] Module ...
+                   rakupp reinstall [--no-test] [--force] Module ...
             options:
               --dry-run        resolve and print the plan; write nothing
               --list           what is installed in the target store
@@ -633,6 +662,8 @@ sub MAIN(
                 next;
             }
             note $!.Str;
+            note "reinstall: the previous installation was already removed — `rakupp install {%e<name>}` (or --no-test) to restore"
+                if $reinstall;
             exit 1;
         }
     }

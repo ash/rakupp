@@ -1247,7 +1247,8 @@ int main(int argc, char** argv) {
     static std::vector<std::string> installArgs;
     static std::vector<char*> installArgv;
     bool isUninstall = argc >= 2 && std::string(argv[1]) == "uninstall";
-    if (argc >= 2 && (std::string(argv[1]) == "install" || isUninstall)) {
+    bool isReinstall = argc >= 2 && std::string(argv[1]) == "reinstall";
+    if (argc >= 2 && (std::string(argv[1]) == "install" || isUninstall || isReinstall)) {
         std::string exeDir = exePath.substr(0, exePath.find_last_of("/\\"));
         std::string script;
         for (const char* rel : {"/../libexec/rakupp/install.raku", "/../tools/install.raku"}) {
@@ -1262,6 +1263,7 @@ int main(int argc, char** argv) {
         installArgs.push_back(argv[0]);
         installArgs.push_back(script);
         if (isUninstall) installArgs.push_back("--uninstall");
+        if (isReinstall) installArgs.push_back("--reinstall");
         for (int i = 2; i < argc; i++) installArgs.push_back(argv[i]);
         for (auto& s : installArgs) installArgv.push_back(const_cast<char*>(s.c_str()));
         argv = installArgv.data();
