@@ -104,7 +104,9 @@ For each base, both `<base>/` and `<base>/lib/` are tried, with the extensions
 If nothing matches, the **installed** repositories are searched. Resolution
 mirrors a real installation repository: SHA-1 the module name, read the short-name
 index entry, take its content id, and read the source by that id. So Raku++
-loads zef-installed modules directly out of Rakudo's own install tree.
+loads zef-installed modules directly out of Rakudo's own install tree. That
+store — its layout, the installer that writes it, and how the engines share
+it — is Chapter 32.
 
 ```sh
 RAKUPP_TRACE=1 rakupp myprogram.raku
@@ -232,7 +234,7 @@ differently under Raku++ than under Rakudo even when nothing is broken.
 | 4 | The parse is cached; declarations and `BEGIN` still run every time. | `.precomp` caches the parse *and* the objects compile-time code produced. |
 | 5 | A module's operators reach the importer by **text scan**. | Real lexical export of the operator into the importer's grammar. |
 | 6 | One flat class registry — no per-compunit type isolation. | Each compunit has its own stash. |
-| 7 | `use Foo:ver<…>:auth<…>` adverbs are accepted and **discarded**; the first match on the search path wins. | Full version, auth and API resolution. |
+| 7 | `use Foo:ver<…>` is honoured only against the **installed** index (line 1 of a short entry); on the lib path all adverbs are discarded, and `:auth`/`:api` are never consulted. | Full version, auth and API resolution. |
 
 Divergence 1 is the big one and it cuts both ways. It is why some modules work
 under Raku++ that would otherwise need more machinery, and it is why a module's

@@ -161,7 +161,7 @@ struct NqpOp : Expr {
 
 A program that never says `use nqp` builds no such node, so the interpreter's
 `NqpOp` arm is never reached and the implementation is dead code for that run.
-Chapter 32 is about why that zero-cost property is structural rather than an
+Chapter 33 is about why that zero-cost property is structural rather than an
 optimisation.
 
 **`AllomorphLit`** exists because a numeric word inside a `<…>` list is

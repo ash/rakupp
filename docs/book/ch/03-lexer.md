@@ -236,4 +236,4 @@ meaningful once the scan has eaten the rest of the file.
 An `atEof` flag rides along on the resulting error. Only the REPL reads it, to
 tell "give me a continuation line" from "this is a syntax error" — which is how
 a half-typed string literal at an interactive prompt asks for more input instead
-of failing (Chapter 36).
+of failing (Chapter 37).

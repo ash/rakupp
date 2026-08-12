@@ -69,7 +69,8 @@ If you are here for one thing in particular:
 | regexes and grammars | Part V |
 | the native compiler | Part VII |
 | Raku in a browser | Chapter 30 |
-| calling C, or being called from it | Chapters 33 and 34 |
+| installing modules, and the store zef shares | Chapter 32 |
+| calling C, or being called from it | Chapters 34 and 35 |
 
 ## Conventions {-}
 

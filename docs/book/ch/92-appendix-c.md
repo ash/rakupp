@@ -29,11 +29,12 @@
 | the parse cache | `AstSerial.cpp` | Chapter 29 |
 | the browser build | `rakujs/rakupp_web.cpp`, `rakujs/build.sh`, `raku.js` | Chapter 30 |
 | module loading | `Interpreter.cpp` `loadModule`, `Parser.cpp` `scanModuleOps` | Chapter 31 |
-| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 32 |
-| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 33 |
-| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 34 |
-| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 35 |
-| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 36 |
+| the installer and the store | `tools/install.raku`, `Builtins.cpp` `.install` | Chapter 32 |
+| `nqp::` ops | `Parser::makeNqpOp`, `Interpreter::evalNqpOp` | Chapter 33 |
+| NativeCall | `Ffi.cpp`, `Interpreter::callNative` | Chapter 34 |
+| the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 35 |
+| threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 36 |
+| lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 37 |
 
 ## Rules that are easy to break by accident
 
