@@ -164,10 +164,16 @@ sub sha1-str(Str $s) {
 
 # The store is shared with zef and Rakudo: every mutation happens under its
 # repo.lock (a real flock — the engine builtin; on Windows the lock call
-# answers -1 and we proceed unlocked, which the docs say out loud).
+# answers -1 and we proceed unlocked, which the docs say out loud). The
+# builtins are looked up DYNAMICALLY so this file stays compilable by other
+# engines (Rakudo's undeclared-routine check is static and fires even on
+# calls that would never run there); an engine without them proceeds
+# unlocked, exactly like Windows.
 sub with-repo-lock(Str $prefix, &code) {
-    my $tok = rakupp-repo-lock("$prefix/repo.lock");
-    LEAVE rakupp-repo-unlock($tok) if $tok >= 0;
+    my $lock   = try ::('&rakupp-repo-lock');
+    my $unlock = try ::('&rakupp-repo-unlock');
+    my $tok = $lock ~~ Callable ?? $lock("$prefix/repo.lock") !! -1;
+    LEAVE $unlock($tok) if $tok >= 0 && $unlock ~~ Callable;
     code()
 }
 
@@ -259,7 +265,11 @@ sub rea-index() {
 # applied, newest version first.
 sub candidates(@index, %want) {
     my @c = @index.grep(-> %e {
-        (%e<name> // '') eq %want<name> || (%e<provides> // {}){%want<name>}:exists
+        # the extra parens are load-bearing: a subscript adverb binds to the
+        # TOP operator of its expression, so without them `:exists` lands on
+        # the `||` and Rakudo refuses to compile (rakupp is laxer — it binds
+        # the adverb to the subscript either way)
+        (%e<name> // '') eq %want<name> || ((%e<provides> // {}){%want<name>}:exists)
     });
     @c .= grep(-> %e { ver-ok(%e<version> // '', %want<ver>) });
     @c .= grep(-> %e { (%e<auth> // '') eq %want<auth> }) if %want<auth> ne '';
@@ -540,7 +550,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
         my %want = parse-identity($want-str);
         my @hits = %dists.grep(-> $kv {
             my %m = $kv.value;
-            ((%m<name> // '') eq %want<name> || (%m<provides> // {}){%want<name>}:exists)
+            ((%m<name> // '') eq %want<name> || ((%m<provides> // {}){%want<name>}:exists))
             && ver-ok(%m<version> // '', %want<ver>)
             && (%want<auth> eq '' || (%m<auth> // '') eq %want<auth>)
         });
