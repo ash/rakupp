@@ -104,6 +104,11 @@ private:
     bool lastIsDynamic_ = false;  // `is dynamic` captured by skipTraits, same way
     // `my $x will leave {…}` — the phaser name + block captured by skipTraits;
     // the declarator turns them into a synthetic LEAVE/KEEP/UNDO phaser stmt
+    // Type names this unit declares (see Program::declaredTypeNames) —
+    // recorded as parseClass/parseSubset/parseEnum see them, handed to the
+    // Program at the end of parseProgram.
+    std::set<std::string> declTypeNames_;
+    bool declTypesOpaque_ = false;
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;
     ExprPtr lastWillBlock_;

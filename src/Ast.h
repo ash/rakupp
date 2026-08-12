@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -654,6 +655,17 @@ struct RepeatStmt : Stmt { // repeat { } while/until cond
 
 struct Program {
     std::vector<StmtPtr> stmts;
+    // Type-ish names DECLARED anywhere in this unit (class/grammar/role/module/
+    // package, subset, enum + statically visible enum members), collected by
+    // the parser. The interpreter's bare-name fallback stays lenient only for
+    // these (forward references); any other unknown bare name is refused, as
+    // Rakudo refuses it at compile time. typeNamesOpaque = "cannot know" —
+    // the default, kept by a DESERIALIZED cached/embedded Program and set by
+    // the parser for units with computed declarations (`class ::(EXPR)`, enum
+    // members from a runtime expression) — and means the old fully-lenient
+    // rule.
+    std::set<std::string> declaredTypeNames;
+    bool typeNamesOpaque = true;
 };
 
 // Print a program's AST as an indented plain-text tree (for --dump-ast).

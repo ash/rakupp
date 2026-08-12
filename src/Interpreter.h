@@ -1180,6 +1180,10 @@ private:
 private:
     std::unordered_map<std::string, BuiltinFn> builtins_;
     std::vector<std::shared_ptr<Program>> keptPrograms_; // keep EVAL'd ASTs alive
+    // The compilation unit currently EXECUTING its top level (mainline, a
+    // module load, an EVAL/REPL line) — consulted by the bare-name fallback
+    // for Program::declaredTypeNames. Pushed/popped at unit boundaries only.
+    std::vector<const Program*> unitStack_;
     void registerBuiltins();
 
     // asInvocant: we only need this slot to reach INTO the value (an invocant or a

@@ -2617,6 +2617,8 @@ static void sinkWarnStmt(Stmt* s, bool nilHint, std::vector<std::string>& out) {
 int Interpreter::run(Program& prog) {
     int code = 0;
     bool crashed = false;
+    unitStack_.push_back(&prog);
+    struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
     { // mainline sink warnings, printed before execution (Rakudo compile-time style)
         bool noWorries = false;
         for (auto& s : prog.stmts)
@@ -3890,6 +3892,10 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
                                         nm.c_str(), how, pms, now() - t0); }
         } tg{traceLoad, name, howMs, tRun, nowMs, howLabel};
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
+        // this module is now the executing unit (bare-name forward references
+        // resolve against ITS declarations while its top level runs)
+        unitStack_.push_back(prog.get());
+        struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
         auto saved = tctx_.cur;
         std::string savedFinish = finishData_;
         finishData_ = finish; // this module's $=finish data block
@@ -4240,6 +4246,9 @@ Value Interpreter::evalString(const std::string& src, bool mainlinePH, bool* inc
             throwTyped("X::Placeholder::Mainline", {{"placeholder", ph}},
                        "Cannot use placeholder parameter " + ph + " in the mainline");
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
+    // this EVAL/REPL line is its own unit for the bare-name fallback
+    unitStack_.push_back(prog.get());
+    struct UnitGuard { std::vector<const Program*>& s; ~UnitGuard() { s.pop_back(); } } unitG{unitStack_};
     Value last = Value::any();
     for (auto& s : prog->stmts) {
         // An END block in EVAL'd code runs at the END of the whole program (not here),
@@ -4638,7 +4647,8 @@ bool isNativeTypeName(const std::string& n) {
     static const std::set<std::string> t = {
         "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
         "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint",
-        "array"};
+        "array", "bool", "size_t", "ssize_t", "long", "longlong", "ulong",
+        "ulonglong"};
     return t.count(n) > 0;
 }
 
@@ -4649,6 +4659,9 @@ bool isKnownTypeName(const std::string& n) {
     if (n.rfind("IO::", 0) == 0) return true;         // IO::Path::Unix, etc.
     if (n.rfind("Pod::", 0) == 0) return true;        // Pod DOM nodes
     if (n.rfind("CompUnit::", 0) == 0) return true;   // repository chain
+    if (n.rfind("Rakudo::", 0) == 0) return true;     // Rakudo::Internals and kin
+    if (n.rfind("CX::", 0) == 0) return true;         // control exceptions (CX::Last, CX::Warn…)
+    if (n.rfind("Encoding::", 0) == 0) return true;   // Encoding::Registry and kin
     // NativeCall's containers, bare or parameterized: `--> CArray[uint8]` is a
     // routine return type in NativeHelpers::Array and friends
     if (n == "CArray" || n == "Pointer" ||
@@ -4687,6 +4700,14 @@ bool isKnownTypeName(const std::string& n) {
         "IntAttrRef", "IntLexRef", "IntPosRef", "NumAttrRef", "NumLexRef",
         "NumPosRef", "StrAttrRef", "StrLexRef", "StrPosRef", "UIntAttrRef",
         "UIntLexRef", "UIntPosRef",
+        // Names the bare-name strictness flushed out of t/run.raku: each is a
+        // real Raku entity rakupp serves by NAME (a stub type object, an enum
+        // registered elsewhere, a methodCall-handled namespace, a sentinel) —
+        // the old always-lenient fallback had been quietly covering them.
+        "Dateish", "Format", "IterationEnd", "Lock::Async", "Signal",
+        "Systemic", "Endian", "Encoding", "ValueObjAt", "Telemetry", "RaceSeq",
+        "Rational", "PositionalBindFailover", "Sequence", "Awaitable",
+        "Scheduler", "ForeignCode", "NFC", "NFD", "NFKC", "NFKD",
     };
     return t.count(n) > 0;
 }
@@ -20792,9 +20813,10 @@ Value Interpreter::eval(Expr* e) {
                     size_t c = s.find("::");
                     return c != std::string::npos && ps.count(s.substr(0, c)) > 0;
                 };
-                if (nt->symbolicStrict && !classes_.count(rn) && !subsets_.count(rn) &&
-                    !pkgMeta_.count(rn) && !isKnownTypeName(rn) && !isNativeTypeName(rn) &&
-                    !isPseudoPkg(rn)) {
+                bool known = classes_.count(rn) || subsets_.count(rn) ||
+                             pkgMeta_.count(rn) || isKnownTypeName(rn) ||
+                             isNativeTypeName(rn) || isPseudoPkg(rn);
+                if (!known && nt->symbolicStrict) {
                     // …and the refusal is a Failure, not a throw: Rakudo's
                     // ::('NoSuch') hands back a broken Failure whose
                     // X::NoSuchSymbol fires on USE, so existence probes like
@@ -20806,6 +20828,38 @@ Value Interpreter::eval(Expr* e) {
                     (*f.hash)["exception"] = Value::typeObj("X::NoSuchSymbol");
                     (*f.hash)["message"]   = Value::str("No such symbol '" + n + "'");
                     return f;
+                }
+                if (!known) {
+                    // Known PARSE gaps stay lenient: constructs the parser does
+                    // not yet understand leak their keyword as a bare term, and
+                    // refusing it would abort whole roast files that otherwise
+                    // score. Each entry names its file; remove the entry when
+                    // the construct lands.
+                    static const std::set<std::string> parseGapWords = {
+                        "TEMP",  // the TEMP phaser        (S04 temp.t)
+                        "TR",    // TR/// transliteration  (S05 regex.t)
+                        "where", // trailing where-clause forms (S06 return.t)
+                    };
+                    if (parseGapWords.count(n)) return Value::typeObj(rn);
+                    // The lenient stub exists for FORWARD REFERENCES: a name the
+                    // unit declares further down. A name this unit never declares
+                    // is refused — Rakudo refuses it at compile time, and the
+                    // stub made `say dfdf` print "(dfdf)". A unit whose
+                    // declarations the parser could not enumerate (a cached
+                    // Program, a computed `class ::(EXPR)` name) stays lenient.
+                    const Program* unit = unitStack_.empty() ? nullptr : unitStack_.back();
+                    bool declared = !unit || unit->typeNamesOpaque ||
+                                    unit->declaredTypeNames.count(n) ||
+                                    unit->declaredTypeNames.count(rn);
+                    if (!declared) { // a qualified forward ref still counts by its last segment
+                        size_t c = n.rfind("::");
+                        if (c != std::string::npos)
+                            declared = unit->declaredTypeNames.count(n.substr(c + 2)) > 0;
+                    }
+                    if (!declared)
+                        throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+                            (std::isupper((unsigned char)n[0]) ? "Undeclared name '" : "Undefined routine '")
+                                + n + "'"};
                 }
                 return Value::typeObj(rn);
             }

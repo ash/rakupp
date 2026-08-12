@@ -4958,6 +4958,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // the shared var/named/default handling so it can type a following param.
         if (isOp("::") && peek().kind == Tok::Ident) {
             advance(); p.type = advance().text; p.typeCapture = true;
+            // a type capture DECLARES its name for the unit: `::T $x` makes a
+            // later bare `T` a legitimate (captured) type, not an undeclared one
+            declTypeNames_.insert(p.type);
             if (isOp(":") && peek().kind == Tok::Ident &&
                 (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
                 advance(); std::string sm = advance().text;
@@ -5571,6 +5574,7 @@ StmtPtr Parser::parseSubset() {
     // 'subset' already consumed:  subset NAME [of TYPE] [where EXPR] ;
     auto sd = std::make_unique<SubsetDecl>();
     if (isKind(Tok::Ident)) sd->name = advance().text;
+    if (!sd->name.empty()) declTypeNames_.insert(sd->name);
     // `of` and traits come in EITHER order — Cro writes `of Str is export`,
     // JSON::Class writes `is export of Mu` — and a trait may carry a tag list
     // (`is export(:TAG)`), which must be consumed with it or it desyncs the
@@ -5622,6 +5626,19 @@ StmtPtr Parser::parseEnum() {
     }
     if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace))
         ed->values = parseExpr(BP_ASSIGN);
+    if (!ed->name.empty()) declTypeNames_.insert(ed->name);
+    // enum MEMBERS are bare-name terms too. A word-list (`<Red Green>`) is
+    // statically visible; anything computed makes the whole unit opaque —
+    // over-lenient beats a false "Undeclared name".
+    if (ed->values && ed->values->kind == NK::ArrayLit) {
+        for (auto& it : static_cast<ArrayLit*>(ed->values.get())->items) {
+            if (it->kind == NK::StrLit)
+                declTypeNames_.insert(static_cast<StrLit*>(it.get())->v);
+            else { declTypesOpaque_ = true; break; }
+        }
+    }
+    else if (ed->values)
+        declTypesOpaque_ = true;
     return ed;
 }
 
@@ -5702,6 +5719,8 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             expectKind(Tok::RParen, "expected ')' after ::( name expression");
         }
     }
+    if (!cd->name.empty()) declTypeNames_.insert(cd->name);
+    if (cd->nameExpr) declTypesOpaque_ = true; // the declared name is a run-time value
     // name adverbs: `module M:ver<0.19>:auth<zef:x>:api<2> { … }` — without
     // this, the `:` failed the brace check and the package took the UNIT-form
     // branch, swallowing the block up to its first `;` (JSON::Fast was
@@ -7126,6 +7145,8 @@ Program Parser::parseProgram() {
         if (!matchKind(Tok::Semicolon)) enforceStmtSep();
     }
     checkRedeclarations(prog.stmts);
+    prog.declaredTypeNames = std::move(declTypeNames_);
+    prog.typeNamesOpaque = declTypesOpaque_;
     return prog;
 }
 
