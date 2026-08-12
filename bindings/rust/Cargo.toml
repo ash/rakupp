@@ -1,0 +1,10 @@
+[package]
+name = "rakulang"
+version = "0.1.0"
+edition = "2021"
+description = "Raku grammars and an embedded Raku++ interpreter, over librakupp"
+license = "MIT"
+
+[dependencies]
+# none, deliberately: the FFI is hand-declared and build.rs links the shared
+# library from RAKUPP_LIB_DIR — no network needed to build or gate this crate

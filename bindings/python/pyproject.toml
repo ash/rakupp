@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rakulang"
+version = "0.1.0"
+description = "Raku grammars and an embedded Raku++ interpreter for Python, over librakupp"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+
+[tool.setuptools]
+packages = ["rakulang"]
+
+# the Raku shim is the other half of the binding — it must travel in the
+# wheel; _lib/ holds the bundled librakupp when tools/build-wheel.sh builds a
+# platform wheel (absent in a source checkout)
+[tool.setuptools.package-data]
+rakulang = ["grammar_shim.raku", "_lib/*"]

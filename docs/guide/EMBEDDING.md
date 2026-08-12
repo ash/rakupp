@@ -152,9 +152,26 @@ created, and by more than one at once. Make those re-entrant.
   ([EXTENSIONS.md](EXTENSIONS.md)), which is the same mechanism from the other
   side.
 
+## Bindings
+
+You may not need the C surface directly. [bindings/](../../bindings/README.md)
+holds five hosts built for the first real workload embedding was named for —
+**using Raku grammars from a host language**
+([GRAMMAR-PLAN](../dev/plans/GRAMMAR-PLAN.md)): Python (ctypes; ships as a
+platform wheel with librakupp bundled), C++ (`<rakupp/grammar.hpp>`,
+header-only, in the install layout), JS/TS (bun:ffi), Go (cgo), and Rust
+(zero-dependency crate). All five drive the same Raku shim, which lives
+INSIDE the library (`rk_grammar_shim`) so a binding can never skew against
+its engine, and all five are byte-compared against plain `rakupp` by
+`tools/grammar-smoke.raku` in CI. The other direction — your functions
+callable from Raku — is `rk_register`.
+
 ## See also
 
 - [EXTENSIONS.md](EXTENSIONS.md) — the other direction, and the value ABI both
   share
 - [ABI-PLAN.md](../dev/plans/ABI-PLAN.md) — why the boundary is C, why an
   extension never sees `Value`, and what is still to come
+- [GRAMMAR-PLAN.md](../dev/plans/GRAMMAR-PLAN.md) — grammars as a service:
+  the design the Python binding implements, and the measured cost of each
+  access pattern

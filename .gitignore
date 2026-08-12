@@ -48,3 +48,15 @@
 .claude-memory/
 build-mingw/
 /result
+
+# Python bytecode caches (bindings/python)
+__pycache__/
+*.pyc
+
+# setuptools editable-install metadata (bindings/python)
+*.egg-info/
+
+# host-binding build artifacts
+bindings/rust/target/
+bindings/rust/Cargo.lock
+bindings/python/build/

@@ -392,6 +392,17 @@ compiled glue. Rust and Go alongside if they cost what the table above says
 they cost. Each one is a test of A2's design: if a binding needs something
 awkward, the header changes rather than the binding.
 
+> **A3 landed 2026-08-11/12** — Python (ctypes), C++ (header-only), JS
+> (bun:ffi), Go (cgo), Rust (zero-dep extern): see bindings/README.md and
+> GRAMMAR-PLAN's G0-G2 outcome notes, which carry the details. The one
+> header change the bindings forced was the RIGHT kind: RAKUPP_ABI 2 adds
+> `rk_grammar_shim` (the grammar service's Raku half baked into librakupp,
+> so no binding ships a sidecar file) and `rk_register` (EMBED-PLAN E2's
+> host-functions-into-Raku, reusing the extension sub wrapping verbatim).
+> Registry naming settled: `rakulang` on PyPI/npm/crates.io. Release wiring:
+> the Python platform wheel (librakupp bundled) ships as a release asset
+> from tools/build-wheel.sh.
+
 > **Note from A0 (2026-08-10):** on ELF hosts a binding must load `librakupp`
 > into the global namespace — `ctypes.CDLL(..., mode=ctypes.RTLD_GLOBAL)` and
 > equivalents — or a Raku extension dlopen'ed *afterwards* cannot resolve

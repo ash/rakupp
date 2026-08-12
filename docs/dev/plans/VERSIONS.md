@@ -196,12 +196,47 @@ which is the one capability the earlier majors never targeted.
    change**: ABI 2's `rk_call` and `rk_root` already cover it, which is why it
    can go first and act as evidence about the ABI rather than waiting on it.
 
+   > **G0 landed 2026-08-11** — and the no-ABI-change claim held exactly: the
+   > shim plus the Python binding (`bindings/python/`, ctypes, pure source)
+   > shipped without touching `src/` at all. Byte-identical host-vs-rakupp
+   > outputs gate in CI (`tools/grammar-smoke.raku`); factors documented at
+   > parse 1.0× / tree 1.4× / selective ~31×. Outcome details in
+   > [GRAMMAR-PLAN.md](GRAMMAR-PLAN.md). This is also A3's first binding.
+
 **The numbers a stranger can re-measure** will be written here when the
 campaign is settled. The candidates today: a program using an ecosystem
 module, compiled and run on a machine with no Raku and no module store; Raku
 called from a stock CPython, with the module installed by rakupp alone; and a
 log-parsing grammar driven from Python, against the same grammar run by
 `rakupp` directly.
+
+> **Measured so far (2026-08-12), pillars 2+3:** the log-parsing grammar
+> from a stock CPython lands at parse 1.0× / eager tree 1.4× / two-fields-
+> per-line ~30× of plain `rakupp` (bindings/python/README.md carries the
+> table), and the same corpus is byte-identical from five hosts — Python,
+> C++, JS (bun), Go, Rust — in `tools/grammar-smoke.raku`, run in CI. "Raku
+> called from a stock CPython" needs no rakupp install at all now: the
+> release ships a platform wheel with librakupp bundled
+> (tools/build-wheel.sh), verified in a clean venv. G1 diagnostics landed
+> (line/column/rule in every host's exception type); G3/G4 stay
+> evidence-gated; E5 stays a documented limit.
+>
+> **Pillar 1 landed 2026-08-12 (same day):** "a program using an ecosystem
+> module, compiled and run on a machine with no Raku and no module store"
+> is now a STANDING CI GATE, not a claim — t/standalone builds binaries and
+> runs them with the store hidden, `--standalone` refuses to build a binary
+> that would need the disk, and every compile mode reports what it embedded
+> and what it could not, with reasons. "The module installed by rakupp
+> alone": `rakupp install` resolves the fez index, verifies checksums,
+> runs each distribution's own tests, and writes the shared CURI store —
+> a 7-dist graph installed by rakupp loads under Rakudo (727 SPDX licenses
+> enumerated by both engines from one store). Outcomes in
+> [MODULES-PLAN.md](MODULES-PLAN.md). M6 landed the same day — the checker
+> first, then uninstall as gated mark-and-sweep under a real flock, with
+> shared-blob survival, reverse-dependency and provenance refusals all
+> pinned by the 22-check installer gate. **Open before tagging v4.0.0:**
+> B3 resources (measure first — now measurable), and the
+> release-procedure sweep.
 
 ---
 

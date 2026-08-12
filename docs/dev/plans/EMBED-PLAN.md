@@ -168,7 +168,7 @@ grammars and multi-dispatch are genuinely good at that, without embedding a
 ### Python
 
 ```python
-import rakupp
+import rakulang
 
 rk = rakupp.Interpreter()
 rk.eval('say "hello from Raku"')
@@ -254,10 +254,33 @@ anything from the interpreter that the four above do not.
 - **E2 — the two-way boundary**: calling Raku subs from the host, and host
   functions callable from Raku. This is where an embedded language stops being
   a calculator.
+
+  > **E2 complete 2026-08-12.** The host→Raku half was A1's `rk_call`; the
+  > other direction is `rk_register(rk, name, fn, userdata)` (RAKUPP_ABI 2):
+  > the function receives the same RkCtx an extension sub gets plus its
+  > userdata, and the installation reuses extLoadModule's wrapping verbatim —
+  > one mechanism, so a registered host function is indistinguishable from an
+  > extension sub. Gated in embed-host.c (a C `host-add` called from Raku,
+  > composing inside `[+] (1..5).map(...)`). The thread warning in the
+  > header is load-bearing: Raku may call the function from threads it
+  > started.
 - **E3 — Python.** A wheel wrapping the C API. The specific risks are below.
+
+  > **Done 2026-08-12**: the ctypes binding (bindings/python, G0) plus
+  > `tools/build-wheel.sh` — a platform wheel with librakupp bundled in the
+  > package's `_lib/`, built on the macOS (universal) and Linux release legs
+  > and attached as a release asset. Verified end to end: installed in a
+  > clean venv on a machine path with NO rakupp, parses. PyPI publication
+  > stays a manual decision.
 - **E4 — Node (napi), and whatever else the same header supports.** Each of
   these should be small. If one is not, E1's design was wrong and that is the
   signal to fix the header rather than the binding.
+
+  > **Served FFI-first 2026-08-12, as A5 prescribes**: JS/TS on `bun:ffi`
+  > (bindings/js), Go on cgo, Rust zero-dep, C++ header-only — each a few
+  > hundred lines, each byte-identical in the grammar gate. Every one WAS
+  > small, which is E1's design validated. A napi addon stays A5-gated:
+  > only if the FFI version measures too slow on a real workload.
 - **E5 — more than one interpreter per process.** Move the globals in blocker 2
   into `Interpreter`. A separate campaign; v1 documents the limit instead of
   hiding it.

@@ -204,8 +204,8 @@ lines**, because the grammar lives in a `.raku` file:
 
 ```
 auto  g = rakupp::Grammar::from_file("config.raku");   // C++
-g,  err := rakupp.GrammarFromFile("config.raku")       // Go
-let   g = rakupp::Grammar::from_file("config.raku")?;  // Rust
+g,  err := rakulang.GrammarFromFile("config.raku")       // Go
+let   g = rakulang::Grammar::from_file("config.raku")?;  // Rust
 ```
 
 What follows is the **sugar** — the optional class layer — and it is shown per
@@ -282,7 +282,7 @@ Macros get closest to Python's declarative body, and Rust is the one host that
 can do **better** than Python here:
 
 ```rust
-rakupp::grammar! { Config,
+rakulang::grammar! { Config,
     rule  TOP   = r"<entry>+ % \n";
     token entry = r#"<key> " = " <value>"#;
     token key   = r"\w+";
@@ -331,9 +331,93 @@ impossible.
   log benchmark from a Python host lands within a documented factor of the same
   grammar run by `rakupp` directly, and results are byte-identical to running
   the grammar file under `rakupp` on its own.
+
+  > **G0 landed 2026-08-11, zero ABI changes, zero interpreter changes.**
+  > The shim is `bindings/python/rakulang/grammar_shim.raku` (five subs:
+  > compile / parse / walk / tree / a shim-ABI stamp the binding checks at
+  > startup); the binding is `bindings/python/rakulang/` — `_abi.py` mirrors
+  > the headers one-to-one over ctypes, `__init__.py` is `Grammar`, `Match`
+  > and the lazy path. The standing gate is `tools/grammar-smoke.raku`
+  > (shim self-test 25 checks; then the Raku driver and the Python driver
+  > walk the same 2000-line corpus and are compared **byte for byte** —
+  > 36,744 bytes identical), wired into release.yml next to embed-smoke.
+  >
+  > **The documented factors** (bench.py, M-series macOS, best of three):
+  > parse **1.0×** (11.6 ms direct, 10.5 ms from Python — engine-bound),
+  > eager tree **1.4×** (68 → 93 ms), selective two-fields-per-line **~31×**
+  > (1.7 → 52.6 ms; ≈13 µs per leaf, split half engine-side walk sub, half
+  > ABI + ctypes). That last number is G4's trigger data, recorded before
+  > G4 exists; eager-vs-lazy remains the right default because selective
+  > still beats tree whenever the host wants less than ~half the nodes.
+  >
+  > **One design correction from building it:** grammar and actions are
+  > named EXPLICITLY and resolved as a trailing expression inside the same
+  > EVAL as the source — the plan's implied `::('Name')` route is unusable,
+  > twice over: a missing `::()` lookup manufactures a stub type instead of
+  > failing, and `(try ::('X')) // Any` discards every REAL type object too,
+  > because type objects are undefined and `//` tests definedness. Three
+  > interpreter divergences were found en route, and all three are now
+  > **fixed (2026-08-11)**, each pinned by a both-engine regression file:
+  >
+  > - `grammar G {} ~~ Grammar` was False (no `Grammar` in the MRO): grammars
+  >   get the implicit built-in Grammar parent through the nativeParent seam,
+  >   the Grammar/Match/Capture family joined the ancestry tables, and the
+  >   type-object conformance walk now follows built-in parents generally, so
+  >   `class F is Str ~~ Cool` came along. t/regression/grammar-ancestry.raku,
+  >   21 oracle-verified checks.
+  > - `::('Missing')` manufactured a stub type object: it now hands back a
+  >   broken Failure carrying X::NoSuchSymbol, which is exactly Rakudo's
+  >   behaviour — the lookup is soft (existence probes work), use throws.
+  >   Strict only on the ::() resolution path: pseudo-packages and native
+  >   type names pass, ordinary bare names keep the forward-reference
+  >   fallback. En route, ~64 real core type names Rakudo resolves were
+  >   missing from the known-types table (AST, ObjAt, the allomorphs, Pod::*,
+  >   the *Ref internals…) — added, which took S02-types/WHICH.t from 9 to
+  >   432 assertions. The one honest casualty: S02-names/indirect.t lost its
+  >   single (stub-faked) pass — indirect DECLARATIONS (`class ::(name)`)
+  >   were the actual missing feature, and landed the same day: ClassDecl/
+  >   SubDecl carry a nameExpr evaluated when the declaration runs, covering
+  >   classes, subs and (spaced) method names — indirect.t 0/10 → 10/10,
+  >   pinned by t/regression/indirect-declarations.raku on both engines.
+  > - Re-EVALing a same-named type CLOBBERED every held handle (name-keyed
+  >   registry): registration now refuses with X::Redeclaration while the
+  >   first declaration's scope is still lexically REACHABLE (an ancestor of
+  >   the current scope) — mainline-then-EVAL refuses, as Rakudo does; a
+  >   declaration whose block has exited stays redeclarable, which roast
+  >   relies on (eval-lives-ok patterns, sibling blocks). Exempt: `my`-scoped
+  >   types, stubs, augment, parameterized roles, weak packages, and
+  >   re-evaluation of the same declaration node.
+  >   t/regression/type-registry.raku.
+  >
+  > **The shim rode the last fix**: every named compile now lives in its own
+  > wrapper package (RKGRAMMAR0::Log, RKGRAMMAR1::Log, …), so recompiling an
+  > edited grammar under the same name never collides — and a held handle
+  > GENUINELY keeps the body it was compiled from, which closes gate 4
+  > (grammar cache correctness) properly rather than by cache-key honesty
+  > alone. The unnamed (last-statement) path has no wrapper; a same-name
+  > recompile there surfaces the engine's X::Redeclaration, and the
+  > self-test pins both behaviours.
 - **G1 — parse failure diagnostics.** Highwater mark, position, expected rule.
   **Gate:** a deliberately broken input produces line, column and rule name in
   the host's own exception type.
+
+  > **G1 landed 2026-08-12.** The engine grew a highwater in GrammarMatcher —
+  > the furthest position a named rule FRESHLY failed at, first-failure-wins
+  > at a position so the deepest (most specific) rule names the expectation:
+  > `<key>`, not the `<entry>` wrapping it. Rule-grained by design (the
+  > position is where that rule started, not the exact character) — the
+  > refinement to literal-level positions is possible but priced as MState
+  > instrumentation on the hot path, so it waits for a need. Exposed as the
+  > `rakupp-parse-diagnosis` builtin (thread-local, cleared by a successful
+  > parse; character positions, converted from the matcher's byte offsets),
+  > surfaced by the shim as `rk-grammar-diagnosis` with 1-based line/col, and
+  > raised in every host's own type: Python `ParseError` via
+  > `parse(strict=True)`, C++ `rakupp::ParseError` via `parse_or_throw`, JS
+  > `ParseError` via `{ strict: true }`, Go `*ParseError` via `ParseStrict`,
+  > Rust `Error::Parse` via `parse_strict`. Roast-neutral (only S17 timing
+  > flappers moved), grammar parse time unmoved (11.9 vs 11.6 ms, run noise),
+  > perf-guard OK. The diag line is part of every driver's byte-compared
+  > output, so the five hosts provably agree on it.
 - **G2 — ergonomics, and a host that is not Python-shaped.** `from_file()`,
   grammar inheritance, `:sigspace` and the `rule`/`token`/`regex` distinction
   surfaced properly. Then a **second host, chosen to break assumptions**: C++ or
@@ -341,6 +425,27 @@ impossible.
   things a Python-only design would get wrong (lifetime, and declaring rules
   without reflection). Go and JS/TS follow; each is cheap once the shim is
   shared, and each is a test of G0's design rather than new machinery.
+
+  > **G2's hosts landed 2026-08-12 — all four, one afternoon, which is
+  > itself the design's report card.** The enabler was moving the shim INTO
+  > the library: `rk_grammar_shim()` (ABI 2, with `rk_register` beside it)
+  > hands every binding the exact shim its engine was built with, so no host
+  > ships a sidecar file and skew is impossible; src/GrammarShim.cpp is
+  > generated from the canonical source and grammar-smoke fails when stale.
+  > The hosts: **C++** ([src/grammar.hpp](../../src/grammar.hpp), header-only,
+  > installed as `<rakupp/grammar.hpp>`; RAII unroot — the lifetime story is
+  > free, as predicted); **JS** (bindings/js, bun:ffi, explicit `close()`);
+  > **Go** (bindings/go, cgo, explicit `Close()`, no finalizer, !Send by
+  > construction); **Rust** (bindings/rust, zero-dep extern + build.rs,
+  > `Drop` unroot, `Node<'m>` borrows its Match so a path cannot outlive its
+  > parse). Every host's driver is byte-compared against the Raku reference
+  > in grammar-smoke; Python, C++, JS and Go verified byte-identical locally
+  > (JS and Go against an x86_64 build — this machine's bun/go are Rosetta
+  > leftovers, and the smoke self-skips on that arch mismatch); Rust compiles
+  > only in CI (the local toolchain is broken), where its leg runs strict.
+  > Class-layer sugar (metaclass/builder/macro) remains deliberately
+  > unbuilt — nothing in four hosts needed it, which is evidence for the
+  > text-is-the-primitive rule rather than a gap.
 - **G3 — host callbacks**, only if a real workload shows the tree walk is the
   bottleneck. Depends on EMBED-PLAN E2.
 - **G4 — a native Match walker** in C, only if the shim's per-access `rk_call`

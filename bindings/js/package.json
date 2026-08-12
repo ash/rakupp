@@ -1,0 +1,9 @@
+{
+  "name": "rakulang",
+  "version": "0.1.0",
+  "description": "Raku grammars and an embedded Raku++ interpreter for JavaScript, over librakupp (bun:ffi)",
+  "type": "module",
+  "main": "rakulang.js",
+  "license": "MIT",
+  "engines": { "bun": ">=1.0" }
+}
