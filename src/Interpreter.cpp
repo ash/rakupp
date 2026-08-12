@@ -4711,6 +4711,13 @@ static std::vector<std::string> libCandidates(const std::string& l) {
 #endif
     for (std::string c : {l, "lib" + l + ".dylib", "lib" + l + ".so", l + ".dylib", l + ".so"})
         cands.push_back(std::move(c));
+#if !defined(__APPLE__)
+    // glibc ships libm/libc/libdl at the unversioned name only as linker
+    // SCRIPTS (dlopen refuses those), and only when the -dev package is
+    // installed; the loadable object is the soname, .so.6 for the whole
+    // glibc family. `is native('m')` must work on a bare Linux.
+    cands.push_back("lib" + l + ".so.6");
+#endif
     return cands;
 }
 
