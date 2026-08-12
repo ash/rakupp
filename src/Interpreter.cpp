@@ -7341,6 +7341,19 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Unexpected named argument '" + kv.first + "' passed"};
 
+    // A METHOD carries an implicit *%_ (Rakudo): nameds no explicit param
+    // claimed land in %_ — `multi method new($l = "EN") { %_ ?? self.bless(|%_)
+    // !! … }` (Locale::Dates) forwards attribute inits through it. Skipped when
+    // a declared *%slurpy already collects them, and left to the existing
+    // undefined-%_ fallback (empty hash) on the no-nameds fast path.
+    if (methodCtx && !hasNamedSlurpy && !named.empty()) {
+        Value h = Value::makeHash();
+        for (auto& kv : named)
+            if (!explicitNamed.count(kv.first))
+                (*h.hash)[kv.first] = kv.second;
+        env->define("%_", std::move(h));
+    }
+
     // a NATIVE-int parameter truncates its argument at bind time, as Rakudo's
     // does: `sub f(uint32 $n)` called with 2**40+5 binds 5. Digest::RIPEMD's
     // rotl leans on exactly this — without the wrap its accumulator grew a few
@@ -17753,6 +17766,17 @@ Value Interpreter::evalUnary(Unary* u) {
         return r;
     }
     if (u->op == "try") {
+        // An EXPLICIT CATCH in the try block REPLACES try's implicit swallow
+        // (Rakudo): whatever leaves the block — an exception no when/default
+        // matched, or one the handler itself threw (`CATCH { default { die
+        // "wrapped" } }`, the catch-wrap-rethrow idiom) — propagates PAST the
+        // try. Swallowing it here turned every rethrow into a survived try.
+        bool explicitCatch = false;
+        if (u->operand->kind == NK::BlockExpr)
+            for (auto& s : static_cast<BlockExpr*>(u->operand.get())->body)
+                if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch &&
+                    static_cast<Block*>(s.get())->phaser != "CONTROL")
+                    { explicitCatch = true; break; }
         try {
             Value r;
             if (u->operand->kind == NK::BlockExpr)
@@ -17769,6 +17793,7 @@ Value Interpreter::evalUnary(Unary* u) {
             else tctx_.cur->define("$!", Value::nil());
             return r;
         } catch (RakuError& e) {
+            if (explicitCatch) throw; // the block's CATCH was the only handler
             tctx_.cur->define("$!", exceptionFor(e));
             return Value::nil();
         }
@@ -18928,11 +18953,33 @@ Value Interpreter::evalCall(Call* c) {
     // e.g. Promise(supply {…}) == $supply.Promise, Supply($chan) == $chan.Supply.
     // Only reached after the specialized coercers above, so it just upgrades former
     // "Undefined routine" errors into real coercions (or a clearer "No such method").
-    if (!args.empty() && isKnownTypeName(c->name)) {
-        Value a0 = args[0];
-        if (a0.t == VT::Object && a0.obj && a0.obj->cls && a0.obj->cls->doesRole(c->name))
-            return a0; // already a T — identity
-        return methodCall(a0, c->name, ValueList{});
+    {
+        auto cit = classes_.find(c->name);
+        if (!args.empty() && (cit != classes_.end() || isKnownTypeName(c->name))) {
+            Value a0 = args[0];
+            // already a T — identity. doesRole self-matches only for ROLES, so
+            // walk the class-ancestry names as well (T(a T) must not re-new).
+            bool isaT = false;
+            if (a0.t == VT::Object && a0.obj && a0.obj->cls) {
+                for (const ClassInfo* ci = a0.obj->cls.get(); ci; ci = ci->parent.get())
+                    if (ci->name == c->name) { isaT = true; break; }
+                isaT = isaT || a0.obj->cls->doesRole(c->name);
+            }
+            if (isaT)
+                return a0;
+            if (cit != classes_.end()) {
+                // a USER type: the argument's own .T method wins if its class
+                // has one; then T.COERCE(x); then T.new(x) — the same fallback
+                // chain Rakudo runs for `Locale::Dates("EN")`
+                if (a0.t == VT::Object && a0.obj && a0.obj->cls &&
+                    a0.obj->cls->findMethod(c->name))
+                    return methodCall(a0, c->name, ValueList{});
+                if (Value* co = cit->second->findMethod("COERCE"))
+                    return invokeMethod(*co, Value::typeObj(c->name), std::move(args), &c->args);
+                return methodCall(Value::typeObj(c->name), "new", std::move(args));
+            }
+            return methodCall(a0, c->name, ValueList{});
+        }
     }
     throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
                     "Undefined routine '" + c->name + "'"};
@@ -19334,6 +19381,18 @@ Value Interpreter::evalIndex(Index* idx) {
     // Indexing an unhandled Failure propagates it (`@a[-1][0]` keeps the Failure
     // from the out-of-range outer index rather than reading through it).
     if (base.t == VT::Hash && base.hashKind == "Failure") return base;
+    // A Junction BASE autothreads the subscript (Rakudo): `@rows.all.<age> > 30`
+    // is a junction of the per-row lookups. Each eigenstate goes through the
+    // AT-KEY/AT-POS protocol, so user classes with their own AT-KEY (JSONL's
+    // Line) thread the same as plain Hashes. Adverbed/slice subscripts on a
+    // junction stay unsupported rather than half-threaded.
+    if (isJunction(base) && idx->index && idx->adverb.empty()) {
+        Value iv = eval(idx->index.get());
+        Value out = Value::array(); out.enumName = base.enumName;
+        for (auto& el : *base.arr)
+            out.arr->push_back(methodCall(el, idx->isHash ? "AT-KEY" : "AT-POS", ValueList{iv}));
+        return out;
+    }
     // IO::Path::Parts is Positional AS WELL AS Associative: `$parts<volume>` is the
     // string, `$parts[0]` the volume PAIR, and `$parts[]` all three in DECLARATION
     // order (not the map's sorted order). It has to answer here because everything
