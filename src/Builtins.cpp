@@ -3929,9 +3929,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::any();
         }
     }
-    // Rakudo::Internals::JSON — the built-in JSON codec several modules use at
-    // load time (OpenSSL::NativeLib reads libraries.json through it).
-    if (inv.t == VT::Type && inv.s == "Rakudo::Internals::JSON") {
+    // The built-in JSON codec, under two names. Rakupp::Internals::JSON is
+    // the first-party, durable one — what rakupp's own tooling calls.
+    // Rakudo::Internals::JSON is COMPATIBILITY surface: real ecosystem code
+    // (zef, OpenSSL, Pakku — see docs/dev/ecosystem/RAKUDO-INTERNALS.md)
+    // calls Rakudo's internal class because the language offers no
+    // dependency-free JSON, and an implementation that runs real code
+    // inherits that. The plan of record: someday the Rakudo spelling warns
+    // that the program leans on another implementation's internals —
+    // deliberately NOT yet, while the battery still measures those dists.
+    if (inv.t == VT::Type && (inv.s == "Rakudo::Internals::JSON" ||
+                              inv.s == "Rakupp::Internals::JSON")) {
         if (m == "from-json") {
             std::string j = args.empty() ? "" : args[0].toStr();
             size_t i = 0; Value out;

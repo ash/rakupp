@@ -42,11 +42,18 @@ my constant $INDEX-URL = 'https://360.zef.pm/index.json';
 my constant $REA-INDEX-URL = 'https://raw.githubusercontent.com/raku/REA/main/META.json';
 my constant $CACHE-TTL = 24 * 3600;
 
-# The engine's built-in JSON codec (the same Rakudo::Internals::JSON Rakudo
-# ships) — the installer must not depend on an ecosystem JSON module, since
-# installing those is its own job.
+# The engine's built-in JSON codec — the installer must not depend on an
+# ecosystem JSON module, since installing those is its own job. The codec's
+# first-party name is Rakupp::Internals::JSON; the Rakudo spelling is the
+# same codec under its compatibility alias, and doubles as the fallback that
+# keeps this file runnable under Rakudo (docs/dev/ecosystem/
+# RAKUDO-INTERNALS.md). Probed FUNCTIONALLY: a type object is undefined, so
+# a `//` against the lookup would always reject it.
+my $have-own-json = ?(try { ::('Rakupp::Internals::JSON').from-json('1') === 1 });
 sub json-decode(Str $text) {
-    Rakudo::Internals::JSON.from-json($text)
+    $have-own-json
+        ?? ::('Rakupp::Internals::JSON').from-json($text)
+        !! Rakudo::Internals::JSON.from-json($text)
 }
 
 

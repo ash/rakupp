@@ -4695,6 +4695,10 @@ bool isKnownTypeName(const std::string& n) {
     if (n.rfind("Pod::", 0) == 0) return true;        // Pod DOM nodes
     if (n.rfind("CompUnit::", 0) == 0) return true;   // repository chain
     if (n.rfind("Rakudo::", 0) == 0) return true;     // Rakudo::Internals and kin
+    // Rakupp::Internals only — NOT all of Rakupp::: Rakupp::JSON is a real
+    // ecosystem module, and a typo'd Rakupp:: name must stay an error
+    if (n == "Rakupp::Internals" || n.rfind("Rakupp::Internals::", 0) == 0)
+        return true;                                  // the first-party internals names
     if (n.rfind("CX::", 0) == 0) return true;         // control exceptions (CX::Last, CX::Warn…)
     if (n.rfind("Encoding::", 0) == 0) return true;   // Encoding::Registry and kin
     // NativeCall's containers, bare or parameterized: `--> CArray[uint8]` is a
