@@ -313,6 +313,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
         for (auto& ra : n.roleArgs) { F(io, ra.first); ioExprVec(io, ra.second); }
     }
     F(io, n.isPackage); ioStmtVec(io, n.body);
+    F(io, n.isMonitor);
 }
 template <class IO> void visit(IO& io, Block& n)    { ioStmtVec(io, n.stmts); F(io, n.isCatch);
                                                       F(io, n.phaser); F(io, n.stmtForm); }

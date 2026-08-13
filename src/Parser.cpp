@@ -5709,6 +5709,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         cd->pod = trailingPodFor(pos_ > 0 ? toks_[pos_ - 1].line : cur().line);
     cd->isRole = isRole;
     cd->isGrammar = isGrammar;
+    cd->isMonitor = kindKw == "monitor";
     cd->isPackage = isPackage;
     if (isKind(Tok::Ident)) cd->name = advance().text;
     else if (isOp("::")) {

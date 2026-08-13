@@ -5792,6 +5792,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
             ci->isGrammar = cd->isGrammar;
+            ci->isMonitor = cd->isMonitor;
             // A grammar with no explicit parent derives from the built-in
             // Grammar type, as Rakudo's do (G, Grammar, Match, Capture, Cool,
             // Any, Mu) — nativeParent is the existing seam for a built-in
@@ -10565,6 +10566,23 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
                                 Value* selfBack, bool skipWrappers) {
     if (codeVal.t != VT::Code || !codeVal.code) return Value::any();
+    // `monitor` semantics, native: every method call on a monitor INSTANCE
+    // holds the object's reentrant lock for its duration (OO::Monitors'
+    // contract — its own HOW wrapping never engages here). The lock is
+    // created lazily under one global mutex; the shared_ptr copy keeps it
+    // alive across the call. Reentrant, so self-calls nest freely.
+    std::unique_lock<std::recursive_mutex> monitorGuard;
+    std::shared_ptr<std::recursive_mutex> monitorHeld;
+    if (self.t == VT::Object && self.obj && self.obj->cls && self.obj->cls->isMonitor) {
+        static std::mutex mkMonitorLock;
+        {
+            std::lock_guard<std::mutex> g(mkMonitorLock);
+            if (!self.obj->monitorLock)
+                self.obj->monitorLock = std::make_shared<std::recursive_mutex>();
+            monitorHeld = self.obj->monitorLock;
+        }
+        monitorGuard = std::unique_lock<std::recursive_mutex>(*monitorHeld);
+    }
     // --profile: method entry/exit, same shape as callCallableRaw's hook
     struct ProfG {
         bool armed = false;

@@ -575,6 +575,7 @@ struct ClassInfo {
     std::map<std::string, std::vector<std::string>> ruleParams; // name -> positional param var names ($indent…)
     bool isGrammar = false;
     bool isRole = false;
+    bool isMonitor = false; // `monitor Foo {…}` — per-instance lock around every method call
     std::string repr; // `is repr("CStruct")` — NativeCall native memory layout
     std::string ver, auth, api; // :ver<>/:auth<>/:api<> — answered by .^ver/.^auth/.^api
     std::string pod; // `#|` declarator pod (.WHY)
@@ -639,6 +640,11 @@ struct ObjectData {
     // operators, and unfound methods to it.
     Value boxed;
     bool hasBoxed = false;
+    // `monitor` instances: one reentrant lock per object, held around every
+    // method call (created lazily by invokeMethod's guard). Reentrant, so a
+    // monitor method calling another method on self does not deadlock —
+    // OO::Monitors' semantics, native.
+    std::shared_ptr<std::recursive_mutex> monitorLock;
 };
 
 } // namespace rakupp
