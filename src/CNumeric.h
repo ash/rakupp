@@ -17,11 +17,15 @@
 #pragma once
 
 // newlocale/uselocale are POSIX 2008 names. glibc C++ always sees them
-// (libstdc++ predefines _GNU_SOURCE), and Apple's headers expose everything
-// by default (there the macro would RESTRICT — never define it), but a
-// strict-ANSI musl build (Emscripten) hides them unless a feature macro
-// asks. Only fires when no libc feature choice exists yet.
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_GNU_SOURCE) && !defined(_POSIX_C_SOURCE)
+// (libstdc++ predefines _GNU_SOURCE), and Apple's and the BSDs' headers
+// expose everything by default (there the macro would RESTRICT — on OpenBSD
+// it hides vasprintf, which libc++'s bsd_locale_fallbacks.h calls, and every
+// TU touching <locale> stops compiling — never define it), but a strict-ANSI
+// musl build (Emscripten) hides them unless a feature macro asks. Only fires
+// when no libc feature choice exists yet.
+#if !defined(_WIN32) && !defined(__APPLE__) && \
+    !defined(__OpenBSD__) && !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__DragonFly__) && \
+    !defined(_GNU_SOURCE) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
 #endif
 
