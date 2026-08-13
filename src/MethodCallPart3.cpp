@@ -1973,14 +1973,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         const std::string& raw = cowOk ? inv.s.str() : rawCopy;
         const bool plain = cowStr ? cowByteIsGraphemeIndex(inv.s)
                                   : byteIsGraphemeIndex(raw);
+        // Non-ASCII text: take the grapheme→byte table cached on the body
+        // (built once) rather than decoding the string and building a
+        // GraphemeMap PER CALL — which made a `.substr($i, 1)` loop over a
+        // string with one `é` O(n²) all over again, this time in the
+        // non-ASCII lane (STRING-SCAN-QUADRATICS, the 52.8 s JSON::Fast
+        // parse). The per-call path remains for short/unpromoted strings.
+        const std::vector<uint32_t>* gt = (!plain && cowOk) ? cowGraphemeIndex(inv.s) : nullptr;
         std::vector<uint32_t> cps;
         std::unique_ptr<GraphemeMap> gm;
-        if (!plain) { cps = utf8cp(raw); gm.reset(new GraphemeMap(cps)); }
-        long long n = plain ? (long long)raw.size() : (long long)gm->count();
+        if (!plain && !gt) { cps = utf8cp(raw); gm.reset(new GraphemeMap(cps)); }
+        long long n = plain ? (long long)raw.size()
+                    : gt    ? (long long)gt->size() - 1
+                            : (long long)gm->count();
         auto slice = [&](long long lo, long long hi) { // [lo, hi) in graphemes
             std::string r;
             if (hi <= lo) return r;
             if (plain) return raw.substr((size_t)lo, (size_t)(hi - lo));
+            if (gt) { size_t a = (*gt)[(size_t)lo]; return raw.substr(a, (*gt)[(size_t)hi] - a); }
             size_t a = gm->cpAt((size_t)lo), b = gm->cpAt((size_t)hi);
             for (size_t k = a; k < b; k++) r += cpToUtf8(cps[k]);
             return r;

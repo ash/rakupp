@@ -1104,6 +1104,68 @@ long long cowGraphemeCount(const CowStr& s) {
     return n;
 }
 
+// The positional-op tables for NON-ASCII text (see StrBody in Value.h).
+// cowCpIndex: byte offset of every codepoint + an end sentinel — the nqp ops
+// (ordat/eqat/substr/index/…) index codepoints. cowGraphemeIndex: byte offset
+// of every grapheme + sentinel — the Raku-level methods index graphemes. Both
+// answer nullptr for a short (unpromoted) string, where a per-call rescan of
+// ≤64 bytes is free and there is no body to cache on. Built at most once per
+// body; the CAS loser deletes its copy.
+const std::vector<uint32_t>* cowCpIndex(const CowStr& s) {
+    const StrBody* b = s.body();
+    if (!b) return nullptr;
+    const std::vector<uint32_t>* t = b->cpIndex.load(std::memory_order_acquire);
+    if (t) return t;
+    const std::string& x = b->text;
+    auto* mine = new std::vector<uint32_t>;
+    mine->reserve(x.size() / 2 + 2);
+    for (size_t i = 0; i < x.size(); i++)
+        if ((static_cast<unsigned char>(x[i]) & 0xC0) != 0x80) mine->push_back((uint32_t)i);
+    mine->push_back((uint32_t)x.size());
+    const std::vector<uint32_t>* expect = nullptr;
+    if (b->cpIndex.compare_exchange_strong(expect, mine, std::memory_order_acq_rel))
+        return mine;
+    delete mine;
+    return expect;
+}
+const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s) {
+    const StrBody* b = s.body();
+    if (!b) return nullptr;
+    const std::vector<uint32_t>* t = b->gIndex.load(std::memory_order_acquire);
+    if (t) return t;
+    const std::string& x = b->text;
+    const std::vector<uint32_t>* ci = cowCpIndex(s); // byte offset per codepoint
+    auto cps = utf8cp(x);
+    auto* mine = new std::vector<uint32_t>;
+    if (ci && cps.size() + 1 == ci->size()) {
+        auto starts = uniGraphemeStarts(cps); // cluster starts, codepoint space
+        mine->reserve(starts.size() + 1);
+        for (size_t g : starts) mine->push_back((*ci)[g]);
+        mine->push_back((uint32_t)x.size());
+    }
+    // else: decode disagreement (malformed UTF-8) — install the EMPTY table as
+    // a cached negative so the disagreement is not re-derived per call; callers
+    // treat empty as "no table" and keep the legacy path
+    const std::vector<uint32_t>* expect = nullptr;
+    if (!b->gIndex.compare_exchange_strong(expect, mine, std::memory_order_acq_rel)) {
+        delete mine;
+        mine = const_cast<std::vector<uint32_t>*>(expect);
+    }
+    return mine->empty() ? nullptr : mine;
+}
+// Decode the ONE codepoint whose lead byte sits at `b` — the per-call
+// replacement for decoding the whole string.
+uint32_t cpAtByte(const std::string& s, size_t b) {
+    unsigned char c = (unsigned char)s[b];
+    if (c < 0x80) return c;
+    int w = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+    static const uint32_t mask[5] = {0, 0x7F, 0x1F, 0x0F, 0x07};
+    uint32_t cp = c & mask[w];
+    for (int i = 1; i < w && b + i < s.size(); i++)
+        cp = (cp << 6) | ((unsigned char)s[b + i] & 0x3F);
+    return cp;
+}
+
 // True when a BYTE index into `s` is also a GRAPHEME index — which is what Raku
 // string positions actually are. Needs two things: every byte ASCII (so one byte
 // is one codepoint), and no CR, because CR LF is the one ASCII sequence that
@@ -9689,6 +9751,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (i < 0) return Value::integer(-1);
             if (cowAllAscii(cs))
                 return Value::integer((size_t)i < s.size() ? (long long)(unsigned char)s[i] : -1);
+            if (auto* ci = cowCpIndex(cs)) { // decode ONE codepoint, not the string
+                long long ncp = (long long)ci->size() - 1;
+                return Value::integer(i < ncp ? (long long)cpAtByte(s, (*ci)[(size_t)i]) : -1);
+            }
             auto cps = utf8cp(s);
             return Value::integer(i < (long long)cps.size() ? (long long)cps[i] : -1);
         }
@@ -9702,6 +9768,16 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             size_t want = (size_t)at + nd.size();
             if (cowAllAscii(hc0) && cowAllAscii(ndc0))
                 return Value::integer(want <= h.size() && h.compare((size_t)at, nd.size(), nd) == 0 ? 1 : 0);
+            if (auto* ci = cowCpIndex(hc0)) {
+                // UTF-8 is injective: codepoint-sequence equality IS byte
+                // equality, so compare the needle's bytes at the byte offset of
+                // codepoint `at` — no whole-string decode
+                long long ncp = (long long)ci->size() - 1;
+                if (at > ncp) return Value::integer(0);
+                size_t hb = (*ci)[(size_t)at];
+                return Value::integer(hb + nd.size() <= h.size() &&
+                                      std::memcmp(h.data() + hb, nd.data(), nd.size()) == 0 ? 1 : 0);
+            }
             auto hc = utf8cp(h), ndc = utf8cp(nd);
             if (at + (long long)ndc.size() > (long long)hc.size()) return Value::integer(0);
             for (size_t k = 0; k < ndc.size(); k++)
@@ -9719,6 +9795,15 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 if (len < 0 || from + len > (long long)s.size()) len = (long long)s.size() - from;
                 return Value::str(s.substr((size_t)from, (size_t)len));
             }
+            if (auto* ci = cowCpIndex(cs)) { // byte slice via the cached offsets
+                long long ncp = (long long)ci->size() - 1;
+                long long len = v.size() > 2 ? I(2) : ncp - from;
+                if (from < 0) from = 0;
+                if (from > ncp) from = ncp;
+                if (len < 0 || from + len > ncp) len = ncp - from;
+                size_t a = (*ci)[(size_t)from];
+                return Value::str(s.substr(a, (*ci)[(size_t)(from + len)] - a));
+            }
             auto cps = utf8cp(s);
             long long len = v.size() > 2 ? I(2) : (long long)cps.size() - from;
             if (from < 0) from = 0;
@@ -9731,6 +9816,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Chars: {
             const CowStr& cs = S(0);
             if (cowAllAscii(cs)) return Value::integer((long long)cs.size());
+            if (auto* ci = cowCpIndex(cs)) return Value::integer((long long)ci->size() - 1);
             return Value::integer((long long)utf8cp(cs.str()).size());
         }
         // NFC-composed, as Rakudo's NFG strings are: chaining nqp::concat with a
@@ -9755,6 +9841,23 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 if ((size_t)from > hs.size()) return Value::integer(-1);
                 auto at = hs.find(nds, (size_t)from);
                 return Value::integer(at == std::string::npos ? -1 : (long long)at);
+            }
+            if (auto* ci = cowCpIndex(hcs)) {
+                // byte-level find (needle bytes ⟺ needle codepoints), accepted
+                // only on a codepoint boundary; answer = codepoint index
+                long long ncp = (long long)ci->size() - 1;
+                if (nds.empty()) return Value::integer(from <= ncp ? from : -1);
+                if (from > ncp) return Value::integer(-1);
+                size_t b = (*ci)[(size_t)from];
+                while (true) {
+                    b = hs.find(nds, b);
+                    if (b == std::string::npos) return Value::integer(-1);
+                    if ((static_cast<unsigned char>(hs[b]) & 0xC0) != 0x80) {
+                        auto it = std::lower_bound(ci->begin(), ci->end(), (uint32_t)b);
+                        return Value::integer((long long)(it - ci->begin()));
+                    }
+                    b++;
+                }
             }
             auto h = utf8cp(hs), nd = utf8cp(nds);
             if (nd.empty()) return Value::integer(from <= (long long)h.size() ? from : -1);
@@ -9805,6 +9908,13 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                     if (!cclassHas(mask, (uint32_t)(unsigned char)s[k])) return Value::integer(k);
                 return Value::integer(end);
             }
+            if (auto* ci = cowCpIndex(cs)) { // decode only the scanned window
+                long long ncp = (long long)ci->size() - 1;
+                long long end = std::min<long long>(want, ncp);
+                for (long long k = from; k < end; k++)
+                    if (!cclassHas(mask, cpAtByte(s, (*ci)[(size_t)k]))) return Value::integer(k);
+                return Value::integer(end);
+            }
             auto cps = utf8cp(s);
             long long end = std::min<long long>(want, (long long)cps.size());
             for (long long k = from; k < end; k++)
@@ -9819,6 +9929,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (cowAllAscii(cs))
                 return Value::integer((size_t)i < s.size() &&
                                       cclassHas(I(0), (uint32_t)(unsigned char)s[i]) ? 1 : 0);
+            if (auto* ci = cowCpIndex(cs)) {
+                long long ncp = (long long)ci->size() - 1;
+                return Value::integer(i < ncp && cclassHas(I(0), cpAtByte(s, (*ci)[(size_t)i])) ? 1 : 0);
+            }
             auto cps = utf8cp(s);
             return Value::integer(i < (long long)cps.size() &&
                                   cclassHas(I(0), cps[i]) ? 1 : 0);

@@ -278,3 +278,44 @@ without numbers: LTO on the runtime (slower than `-O2`, and 10× the link time),
 and blaming `Value`'s size for array work (§4's rejected hypothesis still
 holds — the fat struct is noise next to dispatch *there*; it is the copying on
 the argument path that shows up, not the size in containers).
+
+## 7. The non-ASCII lane had the SAME quadratic — FIXED (2026-08-13)
+
+Sections 1–6 fixed the ASCII fast path and left every non-ASCII string on
+the slow lane's original behavior: each positional op (`nqp::ordat`,
+`eqat`, `substr`, `chars`, `index`, `findnotcclass`, `iscclass`, and the
+method-level `substr`) re-decoded the WHOLE string (`utf8cp` — an O(n)
+decode plus a megabyte-scale vector allocation) or rebuilt a `GraphemeMap`
+per call. One `é` anywhere in the text put the quadratic back in full:
+
+- micro: 20k `.substr($i, 1)` at position ~20k — 18 ms ASCII, **4,041 ms**
+  with a single leading `é` (~200 µs per call).
+- real: JSON::Fast on a 203 KB document with `é中` in each record —
+  **52.8 s**, vs 314 ms for the identical file with the unicode stripped.
+  Found by the grammar-speed campaign's four-way comparison
+  (GRAMMAR-SPEED-PLAN.md).
+
+Fix, same shape as §1 — don't repeat the derivation: two byte-offset
+tables cached on the immutable `StrBody` (`cpIndex`: one entry per
+codepoint; `gIndex`: one per grapheme; both +sentinel; CAS-installed,
+loser deletes, acquire/release since the pointer gates a filled vector).
+The nqp ops keep codepoint indexing, the method path keeps grapheme
+indexing — behavior is preserved by construction; the ops now decode ONE
+codepoint at a cached offset (`cpAtByte`) or slice bytes directly.
+`eqat`/`index` exploit UTF-8's injectivity: codepoint-sequence equality
+IS byte equality, so they byte-compare/byte-find with a boundary check.
+Short (unpromoted) strings keep the per-call path — no body to cache on,
+rescanning ≤64 bytes is free. Malformed-UTF-8 decode disagreements
+install an empty table as a cached negative and stay on the legacy path.
+
+After: micro-probe 18 → 22 ms (table build amortized), JSON::Fast
+api.json **52,820 → 335 ms** (158×), strings.json 9,355 → 425 ms.
+Positional-op oracle on clustering content (combining ring, CRLF, emoji
+modifier, regional-indicator pair) byte-identical to Rakudo. Retained
+cost: the tables live as long as the string's body — 4 bytes per
+codepoint + 4 per grapheme, paid only by non-ASCII strings that actually
+take a positional op.
+
+The §1 lesson held again, in mirror image: fixing the ASCII lane of seven
+sites and calling it done left the SAME seven sites quadratic for
+everyone else. The scaling table has to be run per LANE, not per site.

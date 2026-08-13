@@ -47,7 +47,21 @@ struct StrBody {
     mutable std::atomic<signed char> crFree{-1};     // no CR: with allAscii, a byte index is a GRAPHEME index
                                                      // (CR LF is the one ASCII sequence that clusters, GB3)
     mutable std::atomic<long long>   nGraphemes{-1}; // .chars
+    // Byte-offset tables for POSITIONAL ops on non-ASCII text, built lazily by
+    // cowCpIndex/cowGraphemeIndex (Builtins.cpp). Without them every positional
+    // op re-decoded the WHOLE text per call, so one `é` anywhere turned a
+    // scanner into O(n²) — the non-ASCII half of STRING-SCAN-QUADRATICS
+    // (JSON::Fast on a 203 KB doc: 52.8 s → ASCII-band once cached). Install is
+    // a CAS; a racing loser deletes its copy — both compute identical tables
+    // from the immutable text. acquire/release: the pointer gates a filled
+    // vector, the byteset lesson.
+    mutable std::atomic<const std::vector<uint32_t>*> cpIndex{nullptr}; // byte offset of codepoint i, +end sentinel
+    mutable std::atomic<const std::vector<uint32_t>*> gIndex{nullptr};  // byte offset of grapheme g, +end sentinel
     explicit StrBody(std::string t) : text(std::move(t)) {}
+    ~StrBody() {
+        delete cpIndex.load(std::memory_order_relaxed);
+        delete gIndex.load(std::memory_order_relaxed);
+    }
 };
 
 class CowStr {

@@ -43,6 +43,12 @@ std::recursive_mutex& supplierMutex(const void* key);
 bool cowAllAscii(const CowStr& s);
 bool cowByteIsGraphemeIndex(const CowStr& s);
 long long cowGraphemeCount(const CowStr& s);
+// Byte-offset tables for positional ops on non-ASCII promoted strings (one
+// entry per codepoint / per grapheme, +end sentinel), cached on the body.
+// nullptr for short (unpromoted) strings — rescanning those is free.
+const std::vector<uint32_t>* cowCpIndex(const CowStr& s);
+const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s);
+uint32_t cpAtByte(const std::string& s, size_t b); // decode ONE codepoint at byte b
 
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
