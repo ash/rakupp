@@ -6,7 +6,7 @@
 # reinterpret it. Fixed by routing a capture through the no-flatten branch.
 #
 # Not hypothetical: `sub wrapper(|c) { inner(|c) }` is the standard pass-through
-# idiom, and the shipped Rakupp::JSON declared `to-json(|c) { jf-to-json(|c) }`.
+# idiom, and the shipped JSON::Native declared `to-json(|c) { jf-to-json(|c) }`.
 # Its `to-json([1,2,3])` returned `1` — the array reached JSON::Fast as three
 # separate arguments, so it serialised only the first. Found while building the
 # ABI A1 extension gate.

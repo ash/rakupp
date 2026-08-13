@@ -1,7 +1,7 @@
 #!/usr/bin/env raku
 # A command-line client for JSON APIs — the curl+jq of this repository, built
 # almost entirely out of our own modules: HTTP::Simple carries the request
-# (plain sockets, TLS, redirects, retries) and Rakupp::JSON does every piece of
+# (plain sockets, TLS, redirects, retries) and JSON::Native does every piece of
 # JSON work — validating the request body, parsing the response, and printing
 # the result. Where the json/ showcase parses JSON with a grammar it owns, this
 # one is the ecosystem answer: the program is just the argument parser and the
@@ -18,7 +18,7 @@
 # — which %*SUB-MAIN-OPTS<named-anywhere> asks of the MAIN dispatcher.
 my %*SUB-MAIN-OPTS = :named-anywhere;
 
-use Rakupp::JSON;
+use JSON::Native;
 use HTTP::Simple;
 
 my @METHODS = <GET POST PUT PATCH DELETE HEAD OPTIONS>;
@@ -82,7 +82,7 @@ sub MAIN(
             $text = $path.IO.slurp;
         }
         $ctype = 'application/json';
-        note "* local $path  (JSON via Rakupp::JSON, {json-backend()} backend)"
+        note "* local $path  (JSON via JSON::Native, {json-backend()} backend)"
             if $verbose;
     }
     else {
@@ -112,7 +112,7 @@ sub MAIN(
             %opt<content-type> = 'application/json';
         }
 
-        note "* $method $target  (JSON via Rakupp::JSON, {json-backend()} backend)"
+        note "* $method $target  (JSON via JSON::Native, {json-backend()} backend)"
             if $verbose;
 
         my $resp = http-request($method, $target, |%opt);

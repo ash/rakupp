@@ -4722,8 +4722,11 @@ bool isKnownTypeName(const std::string& n) {
     if (n.rfind("Pod::", 0) == 0) return true;        // Pod DOM nodes
     if (n.rfind("CompUnit::", 0) == 0) return true;   // repository chain
     if (n.rfind("Rakudo::", 0) == 0) return true;     // Rakudo::Internals and kin
-    // Rakupp::Internals only — NOT all of Rakupp::: Rakupp::JSON is a real
-    // ecosystem module, and a typo'd Rakupp:: name must stay an error
+    // Rakupp::Internals only, NOT all of Rakupp:: — a typo'd Rakupp:: name
+    // must stay an error rather than resolve to nothing. (This exception used
+    // to exist for a second reason: an ecosystem module, Rakupp::JSON, lived
+    // in the engine's own namespace. It is JSON::Native now — that collision,
+    // and the one with Rakupp::Internals::JSON beside it, is why it moved.)
     if (n == "Rakupp::Internals" || n.rfind("Rakupp::Internals::", 0) == 0)
         return true;                                  // the first-party internals names
     if (n.rfind("CX::", 0) == 0) return true;         // control exceptions (CX::Last, CX::Warn…)
@@ -7249,7 +7252,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // Iterable dissolved: `sub f(|c)` saw three positionals from
                     // `f([1,2,3])` where Rakudo sees one. That silently broke the
                     // pass-through idiom `sub wrapper(|c) { inner(|c) }` — a
-                    // shipped Rakupp::JSON serialised `to-json([1,2,3])` as `1`,
+                    // shipped JSON::Native (then Rakupp::JSON) serialised `to-json([1,2,3])` as `1`,
                     // because the array reached JSON::Fast as three arguments.
                     for (; pi < positional.size(); pi++) a.arr->push_back(positional[pi]);
                 } else {

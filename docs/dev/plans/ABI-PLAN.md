@@ -8,7 +8,7 @@
 
 An extension ABI shipped on 2026-08-09 — [`src/rakupp_ext.h`](../../../src/rakupp_ext.h)
 (157 lines), [`src/ExtApi.cpp`](../../../src/ExtApi.cpp) (216), a
-`rakupp-ext-load` builtin, and `Rakupp::JSON` as its first user (2.7 ms on a
+`rakupp-ext-load` builtin, and `JSON::Native` as its first user (2.7 ms on a
 278 KB document against ~440 ms for the same module's Raku fallback).
 
 **That ABI is the harder half of an embedding API, already designed, already
@@ -50,7 +50,7 @@ threading contract — stands; this plan is the layer beneath it.
 | errors without exceptions crossing | **yes** | `rk_die` → `X::AdHoc` at the call site |
 | ABI version negotiation | **yes** | `RAKUPP_EXT_ABI`, `rakupp_ext_init(host_abi)` |
 | lifetime | **call-scoped arena** — a `std::deque<Value>`; handles die with the call, the return value is copied out first | `ExtApi.cpp` |
-| build story for a distribution | **yes** | `Rakupp::JSON`'s `Build.rakumod`, with a quiet fallback |
+| build story for a distribution | **yes** | `JSON::Native`'s `Build.rakumod`, with a quiet fallback |
 
 The lifetime model deserves the emphasis. A `deque` rather than a `vector` so
 thousands of handles never reallocate and invalidate; nothing to free; a handle
@@ -66,7 +66,7 @@ a result. That asymmetry is the single largest item below.
 2. **Evaluate and load.** `rk_eval(rk, src, &out)`, `rk_load_file`.
 3. **`rk_call` — native code calling a Raku routine.** Missing today in *both*
    directions: an extension cannot call back into Raku either, which is why
-   `Rakupp::JSON` implements `from-json` natively but leaves `to-json` to
+   `JSON::Native` implements `from-json` natively but leaves `to-json` to
    `JSON::Fast` (its README says so in as many words).
 4. **A lifetime that outlives a call.** Rooted handles: `rk_root` / `rk_unroot`,
    or a host-owned scope. The arena stays the default for extension calls
@@ -189,7 +189,7 @@ describes for Windows may not currently be producible. **Verify before
 designing**; if it is broken, a shared `librakupp` fixes it as a side effect,
 because then extensions link against the library rather than the executable.
 
-**Gate:** `Rakupp::JSON` builds and passes its suite unchanged, against both the
+**Gate:** `JSON::Native` builds and passes its suite unchanged, against both the
 executable and the shared library.
 
 > **Outcome (2026-08-10).** Landed as planned, and the verification A0 demanded
@@ -228,7 +228,7 @@ executable and the shared library.
 >   an internal — it caught the 928-symbol test artifact the moment that
 >   artifact briefly wore the shipping name.
 >
-> **Gate results:** `Rakupp::JSON` builds and passes 35/35 against both the
+> **Gate results:** `JSON::Native` builds and passes 35/35 against both the
 > static CLI and the shared-linked one, reporting the `native` backend on both;
 > `perf-guard --check` OK; plain `rakupp` byte-identical in size with an
 > unchanged linked-library list; Roast 197,105 assertions / 595 files fully
@@ -241,7 +241,7 @@ The two additions both directions want. `rk_call(ctx, "name", args…)` invoking
 Raku routine from C, and a rooted lifetime for values that must outlive a call.
 
 **Gate:** an extension that calls back into Raku, and a `to-json` in
-`Rakupp::JSON` that beats `JSON::Fast` — the module is the ABI's regression
+`JSON::Native` that beats `JSON::Fast` — the module is the ABI's regression
 test, and this is the feature its README names as blocked.
 
 > **Outcome (2026-08-10).** Landed, with **one correction to this plan and
@@ -281,7 +281,7 @@ test, and this is the feature its README names as blocked.
 >
 > **Gate results.** `tools/embed/callback-ext.c` + `ext-callback.raku` exercise
 > every entry point above and run in `embed-smoke.raku`. Native `to-json`
-> ships in `Rakupp::JSON`, byte-identical to `JSON::Fast` across 117 checks on
+> ships in `JSON::Native`, byte-identical to `JSON::Fast` across 117 checks on
 > both engines — including the two escapes JSON::Fast does *not* write as `\b`
 > and `\f`, and identical **refusal** for a Range, because a fast path that
 > invented an encoding would be a worse bug than a slow one. On the 278 KB
@@ -291,7 +291,7 @@ test, and this is the feature its README names as blocked.
 > |---|---:|---:|
 > | Rakudo + JSON::Fast | 36 ms | 40.8 ms |
 > | rakupp + JSON::Fast | ~440 ms | 329.5 ms |
-> | rakupp + Rakupp::JSON | 2.7 ms | **3.6 ms** |
+> | rakupp + JSON::Native | 2.7 ms | **3.6 ms** |
 >
 > **The three bugs the gate found**, each general and each now filed rather
 > than folded in here:
@@ -423,7 +423,7 @@ WASM has **no `dlopen`**, so neither of the two mechanisms above applies:
 The static registry is worth having on native too: it is what a `--exe` binary
 needs in order to carry an extension the way it already carries modules, and it
 connects to [MODULES-PLAN.md](MODULES-PLAN.md)'s standalone-binary work — a
-program using `Rakupp::JSON` cannot currently be a self-contained binary,
+program using `JSON::Native` cannot currently be a self-contained binary,
 because the `.so` is a resource loaded from disk.
 
 Also: the WASM build is single-threaded, so the parallel default must be off
@@ -457,7 +457,7 @@ strangers.
 
 ## Gates
 
-1. **`Rakupp::JSON` is the ABI's regression test** — it builds, loads and passes
+1. **`JSON::Native` is the ABI's regression test** — it builds, loads and passes
    its suite unchanged after every batch here. It is a real distribution outside
    this repo, which is exactly what makes it a good gate.
 2. **Roast** zero regressions; **module battery** unchanged; **`perf-guard

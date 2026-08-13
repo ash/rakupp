@@ -224,7 +224,7 @@ default — no `start` block or thread of your own is required to hit them.
   are unaffected.
 - **`|c` no longer flattens a single `Array` argument**, so
   `sub wrapper(|c) { inner(|c) }` forwards what it was given. This had been
-  silently breaking real code: `Rakupp::JSON`'s `to-json([1,2,3])` returned `1`.
+  silently breaking real code: `JSON::Native`'s (then `Rakupp::JSON`) `to-json([1,2,3])` returned `1`.
 - **`printf` honours a rebound `$*OUT`** instead of writing to the terminal.
 - **`my $x; $x === Any` is `True`**, matching Rakudo.
 

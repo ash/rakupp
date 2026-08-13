@@ -6,7 +6,7 @@ Unlike every other showcase, almost none of it is hand-rolled — the program is
 an argument parser and glue around two modules from
 [github.com/ash/raku-modules](https://github.com/ash/raku-modules):
 
-- **Rakupp::JSON** does every piece of JSON work: it validates the request
+- **JSON::Native** does every piece of JSON work: it validates the request
   body before it is sent, parses the response, and prints the result. On
   Raku++ with its compiled extension present it parses natively; everywhere
   else it rides JSON::Fast. The program cannot tell the difference — that is
@@ -17,7 +17,7 @@ an argument parser and glue around two modules from
 ## Usage
 
 ```sh
-export RAKULIB=$HOME/raku-modules/Rakupp-JSON/lib,$HOME/raku-modules/HTTP-Simple/lib
+export RAKULIB=$HOME/raku-modules/JSON-Native/lib,$HOME/raku-modules/HTTP-Simple/lib
 
 build/rakupp showcase/jsonreq/jsonreq.raku https://api.github.com/repos/ash/rakupp --query=.stargazers_count
 build/rakupp showcase/jsonreq/jsonreq.raku URL                             # GET, pretty-printed
@@ -38,7 +38,7 @@ options (`--json`, `--header`, `--auth`, `--bearer`, `--insecure`) refuse a
 local target.
 
 The `RAKULIB` line is temporary: once the two distributions are on fez,
-`zef install Rakupp::JSON HTTP::Simple` replaces it.
+`zef install JSON::Native HTTP::Simple` replaces it.
 
 | Option | What it does |
 |---|---|

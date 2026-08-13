@@ -2393,7 +2393,7 @@ static Value makeAsyncSocket(int fd); // defined with the supply-wiring block be
 // Num for exponents), true/false→Bool, null→Any. The full JSON::Fast fidelity
 // — surrogate pairs, strict escapes, :immutable containers, JSONC comments —
 // dates from the one-day native `use JSON::Fast` era (added 8d43ed0, unvendored
-// 2001a12) and stays: Rakupp::JSON's engine backend leans on that typing.
+// 2001a12) and stays: JSON::Native's engine backend leans on that typing.
 struct JsonCfg {
     bool immutable = false; // containers become Map/List instead of Hash/Array
     bool jsonc     = false; // JSON::Fast :allow-jsonc — // and /* */ comments

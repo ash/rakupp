@@ -99,8 +99,8 @@ Match-object construction plus per-action interpreter dispatch.
    `--exe` (sub hoisting), where Rakudo switches at the declaration
    point. Also, class-body statements other than `my` declarations
    (nested classes, `use`, lexical regexes) are still dropped by `--exe`.
-5. **Rakupp::JSON's C extension parsed quadratically above ~1 MB — FIXED
-   2026-08-13** (in ~/raku-modules/Rakupp-JSON, not this repo). Found while
+5. **JSON::Native's C extension parsed quadratically above ~1 MB — FIXED
+   2026-08-13** (in ~/raku-modules/JSON-Native, not this repo). Found while
    reconciling a user's fez.json timing against the built-in codec's: two
    "native" backends, 46× apart on one file. `jstring` sized its decode
    buffer to *the rest of the document*, and the callers malloc'd and freed

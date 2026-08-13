@@ -98,7 +98,7 @@ and the answer was worse than expected:
 > against an import library the build never produced.
 
 Nobody had reported it, and the reason is the very pattern this chapter
-recommends. A well-written module falls back quietly — `Rakupp::JSON`'s whole
+recommends. A well-written module falls back quietly — `JSON::Native`'s whole
 design is to try the extension and drop back to Raku if it does not load. So on
 Linux it loaded nothing, ran its fallback, and looked like it was working. Users
 would have seen the pure-Raku timings and assumed that was the number.
@@ -415,14 +415,14 @@ somewhere unrelated. That is a recorded bug, not a design.
 ## The naming convention
 
 A module whose behaviour depends on Raku++ should say so in its name.
-`Rakupp::JSON` tells a reader at the point of `use` that this is not a portable
+`JSON::Native` tells a reader at the point of `use` that this is not a portable
 choice — better than a footnote in a README, and better than discovering it when
 the deploy target turns out to be Rakudo.
 
 Two rules follow. A `Rakupp::` module is still a normal distribution: installed
 by zef, carrying a `META6.json`, degrading gracefully elsewhere. And **the
-compiler must not special-case a module name.** An early draft of `Rakupp::JSON`
-was built into the interpreter, and `use Rakupp::JSON` intercepted the name
+compiler must not special-case a module name.** An early draft of `JSON::Native`
+was built into the interpreter, and `use JSON::Native` intercepted the name
 before module loading — so the real distribution's tests silently exercised the
 built-in copy instead of the extension they were written for. If a name can be a
 module, it must *only* be a module.
@@ -431,7 +431,7 @@ module, it must *only* be a module.
 
 - **There is a per-value cost.** Each value crosses as an arena-allocated handle
   and is then copied into its container — roughly one extra `Value` copy per
-  node. Measured on `Rakupp::JSON`: 5.7 ms against 2.7 ms for the same parser
+  node. Measured on `JSON::Native`: 5.7 ms against 2.7 ms for the same parser
   compiled into the interpreter. Still 6.6 times faster than Rakudo on that
   workload, but it means an extension is worth it for **bulk** work, not for a
   routine called once with two integers.
@@ -476,7 +476,7 @@ embedder cannot do without.
 The version-2 work was planned as one feature and turned out to be two, and the
 way that came out is worth recording.
 
-The plan asserted that `Rakupp::JSON`'s `to-json` was still written in Raku
+The plan asserted that `JSON::Native`'s `to-json` was still written in Raku
 because the ABI had no way to call back into Raku, and that `rk_call` would fix
 it. **The module's own documentation said otherwise**: the real obstacle was
 that hash access was index-based, `std::advance` from the beginning on every

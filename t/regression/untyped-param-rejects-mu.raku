@@ -10,7 +10,7 @@
 # and bare-block cases below must keep working — and `for (Mu) -> $x` and
 # `.map(-> $x {…})` depend on it, which is how a too-eager fix announces itself.
 #
-# Found porting Rakupp::JSON to an explicit signature: its tests passed on Raku++
+# Found porting JSON::Native to an explicit signature: its tests passed on Raku++
 # and failed on Rakudo, because Raku++ never applied the constraint.
 #
 # Contract: exit 0 + last line PASS.

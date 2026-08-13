@@ -6,7 +6,7 @@
 
 > **Read [ABI-PLAN.md](ABI-PLAN.md) first.** The native extension ABI shipped
 > on 2026-08-09, one day after this was written, and it is the harder half of
-> an embedding API — already designed, already proven by `Rakupp::JSON`. This
+> an embedding API — already designed, already proven by `JSON::Native`. This
 > plan's *value* API is superseded by it (`RkValue`, not `rakupp_value*`), and
 > the per-language cost estimates below are pessimistic: a stable C ABI means
 > most bindings need no compiled glue at all. The phases, the per-host examples

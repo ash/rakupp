@@ -166,7 +166,7 @@ not a semantics bug, but worth aligning with Rakudo eventually:
 
 ## `$?FILE` in a module is the main program's path, not the module's
 
-Found 2026-08-09 building Rakupp::JSON, whose Raku half locates its compiled
+Found 2026-08-09 building JSON::Native, whose Raku half locates its compiled
 half relative to itself.
 
 ```raku

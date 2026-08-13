@@ -1,5 +1,5 @@
 # A full-scale JSON parser written as a pure Raku grammar — the workload for
-# the grammar-speed campaign. NOT a replacement for Rakupp::JSON (the native
+# the grammar-speed campaign. NOT a replacement for JSON::Native (the native
 # codec stays the production path): this is the thing we PROFILE, so it is
 # written the way a Raku programmer would write it — proto tokens for the
 # value dispatch, actions building real Raku values — not micro-tuned.

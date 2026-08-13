@@ -7,7 +7,7 @@
 #
 #   RAKUPP=../../build/rakupp sh compare.sh
 #
-# Rakupp::JSON and HTTP::Simple are not installed by this script: point
+# JSON::Native and HTTP::Simple are not installed by this script: point
 # RAKU_MODULES at a github.com/ash/raku-modules checkout (default ~/raku-modules),
 # or set RAKULIB yourself, or `zef install` them once they are on fez and leave
 # both unset.
@@ -26,7 +26,7 @@ PORT="${PORT:-8123}"
 # Both engines accept a comma-separated RAKULIB, so one setting serves both.
 if [ -z "$RAKULIB" ]; then
     RAKU_MODULES="${RAKU_MODULES:-$HOME/raku-modules}"
-    RAKULIB="$RAKU_MODULES/Rakupp-JSON/lib,$RAKU_MODULES/HTTP-Simple/lib"
+    RAKULIB="$RAKU_MODULES/JSON-Native/lib,$RAKU_MODULES/HTTP-Simple/lib"
 fi
 export RAKULIB
 

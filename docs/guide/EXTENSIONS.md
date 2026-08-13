@@ -11,7 +11,7 @@ a C extension. The point is the same, and so is the most important property —
 **the module versions independently of the compiler.** A faster JSON parser
 should not require a new release of Raku++.
 
-- **Reference implementation:** `Rakupp::JSON` in
+- **Reference implementation:** `JSON::Native` in
   [github.com/ash/raku-modules](https://github.com/ash/raku-modules) — 5.7 ms on
   a 278 KB document where the same module's Raku fallback takes ~440 ms.
 - **The header:** [`src/rakupp_ext.h`](../../src/rakupp_ext.h), installed to
@@ -295,7 +295,7 @@ extension's lookup to see it; see
 
 Headers come from `cmake --install`, which lays out
 `<prefix>/{bin,lib,include/rakupp}`. From a git checkout, point at `src/`
-instead. `Rakupp::JSON`'s `Build.rakumod` looks in both, and honours
+instead. `JSON::Native`'s `Build.rakumod` looks in both, and honours
 `RAKUPP_SRC` for the checkout case.
 
 ## Writing a portable module
@@ -413,7 +413,7 @@ somewhere unrelated (recorded in
 ## Naming: the `Rakupp::` convention
 
 A module whose behaviour depends on Raku++ should say so in its name.
-`Rakupp::JSON` tells a reader at the point of `use` that this is not a portable
+`JSON::Native` tells a reader at the point of `use` that this is not a portable
 choice — better than a footnote in a README, and better than discovering it when
 the deploy target turns out to be Rakudo.
 
@@ -423,7 +423,7 @@ Two rules that follow:
   it carries a `META6.json`, and it should degrade gracefully rather than refuse
   to load elsewhere.
 - **The compiler must not special-case a module name.** An early draft of
-  `Rakupp::JSON` was built into the interpreter, and `use Rakupp::JSON`
+  `JSON::Native` was built into the interpreter, and `use JSON::Native`
   intercepted the name before module loading — so the real distribution's tests
   silently exercised the built-in copy instead of the extension they were written
   for. If a name can be a module, it must *only* be a module.
@@ -470,7 +470,7 @@ Worth knowing before you design around them.
 
 - **There is a per-value cost.** Each value crosses as an arena-allocated handle
   and is then copied into its container — roughly one extra `Value` copy per
-  node. Measured on `Rakupp::JSON`, that is 5.7 ms against 2.7 ms for the same
+  node. Measured on `JSON::Native`, that is 5.7 ms against 2.7 ms for the same
   parser compiled into the interpreter. Still 6.6× faster than Rakudo on that
   workload, but it means an extension is worth it for *bulk* work, not for a
   routine called once with two integers.

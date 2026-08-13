@@ -258,7 +258,7 @@ struct Env {
 // claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
 bool rtIsDefined(const Value& v);
 
-// `use Rakupp::JSON` — installs native `from-json`/`to-json` into the using
+// `use JSON::Native` — installs native `from-json`/`to-json` into the using
 // scope (JsonNative.cpp). Under RAKUPP_NATIVE_JSON=1 the same natives are also
 // installed over `use JSON::Fast`, which is opt-in on purpose: silently
 // answering another module's name would fork its semantics behind its back.

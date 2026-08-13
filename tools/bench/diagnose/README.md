@@ -28,7 +28,7 @@ R=./build-arm64/rakupp
 |---|---|
 | [json-gen.raku](json-gen.raku) | builds the corpus — deterministic, so both engines and every run see identical bytes |
 | [json-parse.raku](json-parse.raku) | how long does `from-json` take, best-of-N, across a size ladder |
-| [json-native.raku](json-native.raku) | the same corpus through **`Rakupp::JSON`**, the native extension module — what the C ABI is worth against the interpreted parse |
+| [json-native.raku](json-native.raku) | the same corpus through **`JSON::Native`**, the native extension module — what the C ABI is worth against the interpreted parse |
 | [string-scale.raku](string-scale.raku) | **is a string op's per-call cost proportional to the string's length?** |
 | [call-cost.raku](call-cost.raku) | where does the time in a *call* go — the frame, each parameter, `is rw`, the body |
 
@@ -41,10 +41,10 @@ raku -I$L json-parse.raku --reps=5 d200.json d400.json d800.json d1600.json
 ```
 
 and, for the third configuration — the native extension module, which needs
-[Rakupp::JSON](../../../docs/guide/EXTENSIONS.md) with its library built:
+[JSON::Native](../../../docs/guide/EXTENSIONS.md) with its library built:
 
 ```bash
-M=~/raku-modules/Rakupp-JSON
+M=~/raku-modules/JSON-Native
 $R -I$M/lib json-native.raku --reps=7 d200.json d400.json d800.json d1600.json
 ```
 
@@ -55,10 +55,10 @@ The three sit on one corpus, so they subtract. Measured 2026-08-09, `d800.json`
 |---|---:|
 | Rakudo + `JSON::Fast` | 34.0 |
 | rakupp + `JSON::Fast` | ~440 |
-| rakupp + `Rakupp::JSON` | **4.5** |
+| rakupp + `JSON::Native` | **4.5** |
 
 `json-native.raku` **prints the backend it used** on every run, and that is not
-decoration. `Rakupp::JSON` falls back to `JSON::Fast` when its library is
+decoration. `JSON::Native` falls back to `JSON::Fast` when its library is
 missing, on Rakudo, or after a compiler upgrade it has not been rebuilt for — so
 a run that quietly measured the fallback would look like a catastrophic
 regression, and one on Rakudo would look like a triumph. Read the label before

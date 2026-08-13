@@ -42,7 +42,7 @@ observed behaviour, tested against the modules that call them.
 - `Rakudo::Internals::JSON` — from-json/to-json, backed by **rakupp's own
   C++ codec** (original code; only the class name is Rakudo's). Typing
   matches JSON::Fast (Int/Rat/Num per `Str.Numeric`), trailing content is
-  refused (9072beb — caught by Rakupp::JSON's value-by-value suite).
+  refused (9072beb — caught by JSON::Native's value-by-value suite).
 - `Rakudo::Internals.IS-WIN` and `.REGISTER-DYNAMIC` — the platform probe
   and dynamic-variable registration NativeCall dists need at BEGIN time.
 
@@ -54,11 +54,11 @@ to the terse mode harmlessly.
 ## The two-name policy
 
 The codec's **first-party name is `Rakupp::Internals::JSON`** — what
-rakupp's own tooling (`tools/install.raku`, Rakupp::JSON's engine backend)
+rakupp's own tooling (`tools/install.raku`, JSON::Native's engine backend)
 calls. `Rakudo::Internals::JSON` is the **compatibility alias**: answered
 so real code runs, and nothing more. Only `Rakupp::Internals::*` is
 whitelisted for the first-party spelling — a typo'd `Rakupp::` name is
-still an error, because `Rakupp::JSON` is a real ecosystem module and the
+still an error, because `JSON::Native` is a real ecosystem module and the
 namespace must not quietly swallow mistakes.
 
 Plan of record, deliberately **not implemented yet**: once the battery
@@ -70,12 +70,12 @@ that: it has its own name today.
 
 ## Aren't we doing the same thing?
 
-Rakupp::JSON's engine backend calls `Rakupp::Internals::JSON` — the same
+JSON::Native's engine backend calls `Rakupp::Internals::JSON` — the same
 shape as OpenSSL calling Rakudo's. Two differences are the point, one
 hazard is real:
 
 - **Opposite failure mode.** The census entries hard-depend: no internals,
-  no module. Rakupp::JSON probes functionally and falls back to JSON::Fast
+  no module. JSON::Native probes functionally and falls back to JSON::Fast
   — on any engine, the module works; internals only buy speed. Relying on
   internals for *function* is the anti-pattern; for *speed behind a
   fallback* it is a fast path.
@@ -83,9 +83,9 @@ hazard is real:
   surface with no promise behind it. This codec and its callers are one
   project: the small surface (from-json/to-json, JSON::Fast-typed values,
   trailing-content strict) is a deliberate commitment, pinned by
-  Rakupp::JSON's value-by-value suite and the install gate.
+  JSON::Native's value-by-value suite and the install gate.
 - **The hazard:** third-party modules copying the spelling would mint a
   second de-facto internal API — the history above, replayed. The blessed
-  public doorway is **the Rakupp::JSON module**; `Rakupp::Internals::JSON`
+  public doorway is **the JSON::Native module**; `Rakupp::Internals::JSON`
   is for toolchain code that cannot have dependencies (install.raku), and
   nothing else.

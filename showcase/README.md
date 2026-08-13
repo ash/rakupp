@@ -296,7 +296,7 @@ and what each fixture is for.
 Where modinfo builds on seventeen ecosystem distributions, **jsonreq** builds on
 two of ours: `curl`+`jq` as one program, with
 [HTTP::Simple](https://github.com/ash/raku-modules) carrying the request (TLS,
-redirects, auth) and Rakupp::JSON doing every piece of JSON work — validating
+redirects, auth) and JSON::Native doing every piece of JSON work — validating
 the request body before it is sent, parsing the response, printing the result
 pretty or minified, native-fast on Raku++ and via JSON::Fast on Rakudo. The
 program itself is a `sub MAIN` signature and the glue; options go anywhere on
@@ -304,7 +304,7 @@ the command line via `%*SUB-MAIN-OPTS<named-anywhere>`, which the Raku++ MAIN
 dispatcher learned in the course of building it.
 
 ```sh
-export RAKULIB=$HOME/raku-modules/Rakupp-JSON/lib,$HOME/raku-modules/HTTP-Simple/lib
+export RAKULIB=$HOME/raku-modules/JSON-Native/lib,$HOME/raku-modules/HTTP-Simple/lib
 build/rakupp showcase/jsonreq/jsonreq.raku https://api.github.com/repos/ash/rakupp --query=.full_name -r
 build/rakupp showcase/jsonreq/jsonreq.raku POST https://example.test/api --json='{"a": 1}'
 RAKUPP=build/rakupp sh showcase/jsonreq/compare.sh    # the byte-identical check

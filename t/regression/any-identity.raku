@@ -9,7 +9,7 @@
 # .WHICH all render the two identically.
 #
 # Found building the ABI A1 extension gate — an extension's rk_any() is JSON
-# null, so `$data<key> === Any` was False for every null Rakupp::JSON returned.
+# null, so `$data<key> === Any` was False for every null JSON::Native returned.
 # Fixed in applyArith's `===` arm and valueEqv (isAnyTypeObject).
 #
 # Contract: exit 0 + last line PASS.
